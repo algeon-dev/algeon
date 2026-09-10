@@ -2,10 +2,10 @@ use std::time::Instant;
 
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
-    ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ReservationKind,
-    ResidentGpuFrame, Result, bounded_join_request, dataframe_cross_join_options, execution_overrides,
-    materialize_compiled_indices_output, observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output,
-    side_metric, unsupported_bounded_shape,
+    ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result,
+    dataframe_cross_join_options, execution_overrides, materialize_compiled_indices_output,
+    observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
+    unsupported_bounded_shape,
 };
 
 pub(super) fn execute_compiled_projected_cross_join_materialize(
@@ -55,13 +55,6 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             )
             .with_fact("join_type", node.spec.join_type)
         })?;
-    let output_reservation = execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_output",
-        output_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    ))?;
     let output = plan.materialize_in(&overrides).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.join.projected_cross_materialize",
@@ -101,7 +94,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             output_bytes,
         },
     ));
-    Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
+    Ok(ResidentGpuFrame::with_device_bytes(GpuDataFrame::new(output), output_bytes))
 }
 
 pub(super) fn execute_compiled_keyless_outer_cross_join_materialize(
@@ -212,25 +205,9 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
         .with_fact("output_rows", output_size));
     }
 
-    let gather_map_reservation_bytes = cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.keyless_outer_cross_gather_map_reservation",
-                "failed to size keyless outer cross join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-        })?;
-    let gather_map_reservation = execution.try_reserve(bounded_join_request(
-        ReservationKind::GatherMap,
-        "join_gather_map",
-        gather_map_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    ))?;
     let timer = Instant::now();
     let indices = keyless_outer_cross_join_indices(execution.context(), preserved_side, output_size, node)?;
+    let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
     materialize_compiled_indices_output(
         execution,
         node,
@@ -247,7 +224,7 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
             mixed_size_data_bytes: 0,
             filtered_probe_state_bytes: 0,
             expected_output_rows: output_size as u64,
-            gather_map_reservation,
+            gather_map_bytes,
             timer,
             one_shot_index_bytes: None,
         },

@@ -10,14 +10,9 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
-    contract_report::{
-        CapabilityContractGateId, CapabilityContractGateRow, CapabilityContractOwner, CapabilityContractReport,
-    },
+    contract_report::CapabilityContractReport,
     mode::CapabilityEnvelopeStatus,
-    pipeline::{ReservationGateId, ReservationGateOwner},
     plan::QueryPlanBuilder,
-    runtime::ReservationKind,
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
@@ -56,10 +51,8 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(report.rejected_before_execution_count(), 0);
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, Some(CandidateOutcomeKind::Selected));
-    assert_eq!(row.capability_contract_rows.len(), 2);
+    assert!(row.capability_decision_rows.is_empty());
     assert_eq!(row.capability_compiled_graphs.len(), 1);
-    assert!(row.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::Materialization
-        && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary));
     assert_eq!(row.post_native_plan_root, "NexusNativeExec");
     assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Native));
     assert!(!row.rejected_before_execution);
@@ -83,8 +76,6 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.read_columns, 4);
     assert_eq!(row.metrics.resident_dataframe_peak_bytes, Some(4096));
     assert_eq!(row.metrics.allocator_high_water_bytes, Some(8192));
-    assert_eq!(row.metrics.reservation_live_peak_bytes, 96);
-    assert_eq!(row.metrics.max_task_reservation_bytes, 64);
     assert_eq!(row.metrics.max_task_observed_peak_bytes, Some(72));
     assert_eq!(row.metrics.max_task_retained_bytes, Some(48));
     assert_eq!(row.metrics.graph_runtime_rows.len(), 1);
@@ -102,19 +93,11 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.task_operator_rows.len(), 1);
     assert_eq!(row.metrics.task_operator_rows[0].operator_kind, "source_read");
     assert_eq!(row.metrics.task_operator_rows[0].task_count, 3);
-    assert_eq!(row.metrics.task_operator_rows[0].reservation_requested_bytes, 120);
-    assert_eq!(row.metrics.task_operator_rows[0].reservation_granted_bytes, 96);
-    assert_eq!(row.metrics.task_operator_rows[0].reservation_released_bytes, 32);
-    assert_eq!(row.metrics.task_operator_rows[0].reservation_live_peak_bytes, 64);
     assert_eq!(row.metrics.task_operator_rows[0].max_observed_peak_bytes, Some(72));
     assert_eq!(row.metrics.task_operator_rows[0].max_retained_bytes, Some(48));
     assert_eq!(row.metrics.task_runtime_rows.len(), 1);
     assert_eq!(row.metrics.task_runtime_rows[0].compiled_task_id, "t7");
     assert_eq!(row.metrics.task_runtime_rows[0].operator_kind, "source_read");
-    assert_eq!(row.metrics.task_runtime_rows[0].reservation_requested_bytes, 80);
-    assert_eq!(row.metrics.task_runtime_rows[0].reservation_granted_bytes, 64);
-    assert_eq!(row.metrics.task_runtime_rows[0].reservation_released_bytes, 48);
-    assert_eq!(row.metrics.task_runtime_rows[0].reservation_live_peak_bytes, 64);
     assert_eq!(row.metrics.task_runtime_rows[0].max_observed_peak_bytes, Some(72));
     assert_eq!(row.metrics.task_runtime_rows[0].max_retained_bytes, Some(48));
     assert_eq!(row.metrics.source_chunks_planned, 6);
@@ -136,7 +119,6 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.final_merge_max_fan_in, 3);
     assert_eq!(row.metrics.retry_count, 3);
     assert_eq!(row.metrics.retry_resource_exhausted_count, 1);
-    assert_eq!(row.metrics.retry_reservation_failure_count, 2);
     assert_eq!(row.metrics.dynamic_filter_produced_count, 1);
     assert_eq!(row.metrics.dynamic_filter_skipped_count, 1);
     assert_eq!(row.metrics.dynamic_filter_applied_count, 1);
@@ -229,43 +211,18 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_unique.as_deref(), Some("true"));
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_status.as_deref(), Some("measured"));
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_error_code, None);
-    assert_eq!(row.metrics.graph_reservation_rows.len(), 1);
-    assert_eq!(row.metrics.graph_reservation_rows[0].algorithm, "pagerank");
-    assert_eq!(row.metrics.graph_reservation_rows[0].class, "output_sized");
-    assert_eq!(row.metrics.graph_reservation_rows[0].outcome, "admitted");
-    assert_eq!(row.metrics.graph_reservation_rows[0].raw_input_edges, None);
-    assert!(!row.metrics.graph_reservation_rows[0].edge_normalize_inserted);
-    assert_eq!(row.metrics.graph_reservation_rows[0].calibration_source, "none");
-    assert_eq!(row.metrics.graph_reservation_rows[0].seed_mode, "none");
-    assert_eq!(row.metrics.graph_reservation_rows[0].model_requested_bytes, 4096);
-    assert_eq!(row.metrics.graph_reservation_rows[0].requested_bytes, 4096);
-    assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
-    assert_eq!(row.metrics.graph_reservation_rows[0].graph_model_error_ratio.as_deref(), Some("2.000"));
-    assert_eq!(row.metrics.graph_reservation_rows[0].pair_rows, None);
-    assert_eq!(row.metrics.graph_reservation_rows[0].pair_vertex_width_bytes, None);
-    assert_eq!(row.metrics.graph_reservation_rows[0].pair_cardinality_source, "none");
-    assert_eq!(row.metrics.graph_reservation_rows[0].pair_cardinality_admission_mode, "none");
-    assert_eq!(row.metrics.graph_reservation_rows[0].measured_peak_bytes, Some(2048));
-    assert_eq!(row.metrics.graph_reservation_rows[0].graph_statistics_exact_vertices, None);
-
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 115);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 108);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
     ));
-    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
-        "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
-    ));
     assert!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
-            .contains("\tcapability_contract_rows\tcapability_compiled_graphs\tpost_native_plan_root\t")
+            .contains("\tcapability_decision_rows\tcapability_compiled_graphs\tpost_native_plan_root\t")
     );
     assert!(text.starts_with(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(
-        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
-            .contains("\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\t")
-    );
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
     assert!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
             .contains("\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\t")
@@ -309,17 +266,8 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
             .ends_with("\tsource_diagnostics\tlakehouse_cache_fill_event_snapshot_rows\tplan_task_mapping_rows")
     );
     assert!(text.contains("selected_strategy=libcudf_groupby,execution_stage=partial"));
-    assert!(text.contains("algorithm=pagerank,class=output_sized,outcome=admitted"));
     assert!(text.contains("algorithm=pagerank,runtime_outcome=succeeded"));
     assert!(text.contains("graph_peak_bytes=2048"));
-    assert!(text.contains("raw_input_edges=none"));
-    assert!(text.contains("calibration_source=none"));
-    assert!(text.contains("seed_mode=none"));
-    assert!(text.contains("model_requested_bytes=4096"));
-    assert!(text.contains("graph_model_error_ratio=2.000"));
-    assert!(text.contains("pair_cardinality_source=none,pair_cardinality_admission_mode=none"));
-    assert!(text.contains("measured_peak_bytes=2048"));
-    assert!(text.contains("graph_statistics_exact_vertices=none"));
     assert!(
         text.contains(
             "construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight"
@@ -349,11 +297,12 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     let fill_rows = data_fields[header_index(&header_fields, "lakehouse_cache_fill_event_snapshot_rows")];
     assert!(fill_rows.contains("outcome=completed,bytes=4096,elapsed_ns=9000000"));
     assert!(fill_rows.contains("cache_path_hash=cache123,stable_id_hash=stable456"));
-    assert!(text.contains("operator_kind=source_read,task_count=3,elapsed_ns=0,reservation_requested_bytes=120,reservation_granted_bytes=96,reservation_released_bytes=32,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
-    assert!(text.contains("\tcompiled_task_id=t7,operator_kind=source_read,elapsed_ns=0,reservation_requested_bytes=80,reservation_granted_bytes=64,reservation_released_bytes=48,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
-    assert!(text.contains("execution_mode=bounded"));
-    assert!(text.contains("contract_status=modeled"));
-    assert!(text.contains("contract_quality=query_engine_owned_boundary"));
+    assert!(text.contains(
+        "operator_kind=source_read,task_count=3,elapsed_ns=0,max_observed_peak_bytes=72,max_retained_bytes=48\t"
+    ));
+    assert!(text.contains(
+        "\tcompiled_task_id=t7,operator_kind=source_read,elapsed_ns=0,max_observed_peak_bytes=72,max_retained_bytes=48\t"
+    ));
     assert!(!text.contains("bounded_join_execution_status"));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(text.contains("node_id=n2,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
@@ -746,10 +695,10 @@ fn native_datafusion_reports_scope_admission_contract_rows_to_join_candidates() 
         })
         .expect("non-join candidate row should exist");
 
-    assert_eq!(join_row.capability_contract_rows.len(), 2);
+    assert!(join_row.capability_decision_rows.is_empty());
     assert_eq!(join_row.capability_compiled_graphs.len(), 1);
     assert!(
-        non_join_row.capability_contract_rows.is_empty(),
+        non_join_row.capability_decision_rows.is_empty(),
         "bounded contract rows must not bleed into unrelated candidate rows"
     );
     assert!(
@@ -775,22 +724,8 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
         source_diagnostics: Vec::new(),
         capability_contract: NativeCapabilityContractDiagnostics {
             accepted_candidates: vec![
-                accepted_candidate_contract_entry(
-                    first_candidate.clone(),
-                    ReservationGateId::new(11),
-                    ReservationKind::BuildSide,
-                    "join_build_input",
-                    "query_engine_build_side_source_reservation",
-                    11,
-                ),
-                accepted_candidate_contract_entry(
-                    second_candidate.clone(),
-                    ReservationGateId::new(22),
-                    ReservationKind::Materialization,
-                    "host_arrow_materialization",
-                    "query_engine_explicit_sink_materialization_reservation",
-                    22,
-                ),
+                accepted_candidate_contract_entry(first_candidate.clone(), 11),
+                accepted_candidate_contract_entry(second_candidate.clone(), 22),
             ],
             deferred_candidates: Vec::new(),
             rejected_candidates: Vec::new(),
@@ -816,17 +751,9 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
         .find(|row| row.native_candidate_shape.as_deref() == Some(second_candidate.shape.as_str()))
         .expect("second join row should exist");
 
-    assert_eq!(first_row.capability_contract_rows.len(), 1);
-    assert_eq!(
-        first_row.capability_contract_rows[0].gate_id,
-        CapabilityContractGateId::Compiled(ReservationGateId::new(11))
-    );
+    assert!(first_row.capability_decision_rows.is_empty());
     assert_eq!(first_row.capability_compiled_graphs[0].task_count, 11);
-    assert_eq!(second_row.capability_contract_rows.len(), 1);
-    assert_eq!(
-        second_row.capability_contract_rows[0].gate_id,
-        CapabilityContractGateId::Compiled(ReservationGateId::new(22))
-    );
+    assert!(second_row.capability_decision_rows.is_empty());
     assert_eq!(second_row.capability_compiled_graphs[0].task_count, 22);
 }
 
@@ -1163,50 +1090,17 @@ fn semijoin_schema(fields: &[&str]) -> Arc<Schema> {
 
 fn accepted_candidate_contract_entry(
     candidate: GpuCandidate,
-    gate_id: ReservationGateId,
-    reservation_kind: ReservationKind,
-    memory_boundary: &'static str,
-    required_contract: &'static str,
     task_count: usize,
 ) -> NativeCapabilityAcceptedCandidateDiagnostics {
-    let contract_scope = ReservationRequirementScope::Edge;
-    let owner = if reservation_kind == ReservationKind::Materialization {
-        CapabilityContractOwner::Compiled(ReservationGateOwner::SinkBoundary)
-    } else {
-        CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(
-            nexus_query_engine::pipeline::PipelineEdgeId::new(gate_id.index()),
-        ))
-    };
     NativeCapabilityAcceptedCandidateDiagnostics {
         candidate,
-        report: CapabilityContractReport::from_gate_rows(
-            CapabilityEnvelopeStatus::Admitted,
-            vec![CapabilityContractGateRow {
-                execution_mode: CapabilityEnvelopeStatus::Admitted,
-                contract_scope,
-                gate_id: CapabilityContractGateId::Compiled(gate_id),
-                owner,
-                reservation_kind,
-                memory_boundary,
-                required_contract,
-                contract_status: ContractStatus::Modeled,
-                contract_quality: if reservation_kind == ReservationKind::Materialization {
-                    ContractQuality::QueryEngineOwnedBoundary
-                } else {
-                    ContractQuality::ExactPreflight
-                },
-                unresolved_preflight_gap: None,
-            }],
-        )
-        .unwrap(),
+        report: CapabilityContractReport::from_decision_rows(CapabilityEnvelopeStatus::Admitted, Vec::new()).unwrap(),
         compiled_graph: NativeCapabilityCompiledGraphDiagnostics {
             task_count,
             edge_count: 1,
             barrier_count: 0,
             resource_count: 1,
-            gate_count: 1,
             sink_kind: "host_arrow_materialization".to_string(),
-            sink_gate_count: usize::from(reservation_kind == ReservationKind::Materialization),
         },
     }
 }
@@ -1229,7 +1123,7 @@ fn native_datafusion_execution_report_marks_terminal_planning_failure_before_run
     assert_eq!(row.final_disposition, None);
     assert_eq!(row.native_plan_fragment_count, None);
     assert_eq!(row.host_datafusion_boundary_count, None);
-    assert!(row.capability_contract_rows.is_empty());
+    assert!(row.capability_decision_rows.is_empty());
     assert!(row.capability_compiled_graphs.is_empty());
     assert!(row.rejected_before_execution);
     assert!(!row.native_runtime_started);
@@ -1335,73 +1229,23 @@ fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagnostics {
 fn accepted_capability_contract_diagnostics() -> NativeCapabilityContractDiagnostics {
     let candidate =
         GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1);
-    let rows = vec![
-        bounded_gate_row(
-            CapabilityContractGateId::Compiled(ReservationGateId::new(0)),
-            CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(
-                nexus_query_engine::pipeline::PipelineEdgeId::new(0),
-            )),
-            ReservationRequirementScope::Edge,
-            ReservationKind::BuildSide,
-            "join_build_input",
-            "query_engine_build_side_source_reservation",
-            ContractQuality::ExactPreflight,
-            None,
-        ),
-        bounded_gate_row(
-            CapabilityContractGateId::Compiled(ReservationGateId::new(1)),
-            CapabilityContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
-            ReservationRequirementScope::Edge,
-            ReservationKind::Materialization,
-            "host_arrow_materialization",
-            "query_engine_explicit_sink_materialization_reservation",
-            ContractQuality::QueryEngineOwnedBoundary,
-            None,
-        ),
-    ];
     NativeCapabilityContractDiagnostics {
         accepted_candidates: vec![NativeCapabilityAcceptedCandidateDiagnostics {
             candidate,
-            report: CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Admitted, rows).unwrap(),
+            report: CapabilityContractReport::from_decision_rows(CapabilityEnvelopeStatus::Admitted, Vec::new())
+                .unwrap(),
             compiled_graph: NativeCapabilityCompiledGraphDiagnostics {
                 task_count: 2,
                 edge_count: 1,
                 barrier_count: 0,
                 resource_count: 2,
-                gate_count: 2,
                 sink_kind: "host_arrow_materialization".to_string(),
-                sink_gate_count: 1,
             },
         }],
         deferred_candidates: Vec::new(),
         rejected_candidates: Vec::new(),
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
-    }
-}
-
-#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
-fn bounded_gate_row(
-    gate_id: CapabilityContractGateId,
-    owner: CapabilityContractOwner,
-    contract_scope: ReservationRequirementScope,
-    reservation_kind: ReservationKind,
-    memory_boundary: &'static str,
-    required_contract: &'static str,
-    contract_quality: ContractQuality,
-    unresolved_preflight_gap: Option<&'static str>,
-) -> CapabilityContractGateRow {
-    CapabilityContractGateRow {
-        execution_mode: CapabilityEnvelopeStatus::Admitted,
-        contract_scope,
-        gate_id,
-        owner,
-        reservation_kind,
-        memory_boundary,
-        required_contract,
-        contract_status: ContractStatus::Modeled,
-        contract_quality,
-        unresolved_preflight_gap,
     }
 }
 
@@ -1425,11 +1269,6 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         ("resident_dataframe_peak_bytes_observed", 1),
         ("allocator_high_water_bytes", 8192),
         ("allocator_high_water_bytes_observed", 1),
-        ("reservation_requested_bytes", 128),
-        ("reservation_granted_bytes", 128),
-        ("reservation_live_peak_bytes", 96),
-        ("reservation_denied_count", 0),
-        ("max_task_reservation_bytes", 64),
         ("max_task_observed_peak_bytes", 72),
         ("max_task_observed_peak_bytes_observed", 1),
         ("max_task_retained_bytes", 48),
@@ -1453,7 +1292,6 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         ("final_merge_max_fan_in", 3),
         ("retry_count", 3),
         ("retry_resource_exhausted_count", 1),
-        ("retry_reservation_failure_count", 2),
         ("dynamic_filter_produced_count", 1),
         ("dynamic_filter_skipped_count", 1),
         ("dynamic_filter_applied_count", 1),
@@ -1488,40 +1326,6 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         .with_type(MetricType::Summary)
         .with_new_label("node_id", "n3")
         .with_new_label("algorithm", "pagerank")
-        .with_new_label("class", "output_sized")
-        .with_new_label("outcome", "admitted")
-        .with_new_label("raw_input_edges", "none")
-        .with_new_label("input_edges", "6")
-        .with_new_label("vertex_upper_bound", "12")
-        .with_new_label("vertex_estimate", "12")
-        .with_new_label("vertex_estimate_source", "edge_endpoint_upper_bound")
-        .with_new_label("vertex_width_bytes", "4")
-        .with_new_label("weight_width_bytes", "8")
-        .with_new_label("pair_rows", "none")
-        .with_new_label("pair_vertex_width_bytes", "none")
-        .with_new_label("pair_cardinality_source", "none")
-        .with_new_label("pair_cardinality_admission_mode", "none")
-        .with_new_label("has_edge_id", "false")
-        .with_new_label("directed", "true")
-        .with_new_label("renumber", "true")
-        .with_new_label("construction_policy", "python_cugraph")
-        .with_new_label("edge_normalize_inserted", "false")
-        .with_new_label("calibration_source", "none")
-        .with_new_label("seed_count", "none")
-        .with_new_label("seed_mode", "none")
-        .with_new_label("data_dependent", "false")
-        .with_new_label("model_requested_bytes", "4096")
-        .with_new_label("requested_bytes", "4096")
-        .with_new_label("budget_bytes", "1048576")
-        .with_new_label("graph_model_error_ratio", "2.000")
-        .with_new_label("measured_peak_bytes", "2048")
-        .with_new_label("reason", "none")
-        .global_counter("native_graph_reservation_rows")
-        .add(1);
-    MetricBuilder::new(&metrics)
-        .with_type(MetricType::Summary)
-        .with_new_label("node_id", "n3")
-        .with_new_label("algorithm", "pagerank")
         .with_new_label("runtime_outcome", "succeeded")
         .with_new_label("input_boundary", "gpu_resident")
         .with_new_label("output_boundary", "gpu_resident")
@@ -1549,10 +1353,6 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         .with_type(MetricType::Summary)
         .with_new_label("operator_kind", "source_read")
         .with_new_label("task_count", "3")
-        .with_new_label("reservation_requested_bytes", "120")
-        .with_new_label("reservation_granted_bytes", "96")
-        .with_new_label("reservation_released_bytes", "32")
-        .with_new_label("reservation_live_peak_bytes", "64")
         .with_new_label("max_observed_peak_bytes", "72")
         .with_new_label("max_retained_bytes", "48")
         .global_counter("native_task_operator_rows")
@@ -1561,10 +1361,6 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         .with_type(MetricType::Summary)
         .with_new_label("compiled_task_id", "t7")
         .with_new_label("operator_kind", "source_read")
-        .with_new_label("reservation_requested_bytes", "80")
-        .with_new_label("reservation_granted_bytes", "64")
-        .with_new_label("reservation_released_bytes", "48")
-        .with_new_label("reservation_live_peak_bytes", "64")
         .with_new_label("max_observed_peak_bytes", "72")
         .with_new_label("max_retained_bytes", "48")
         .global_counter("native_task_runtime_rows")

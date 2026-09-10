@@ -383,7 +383,7 @@ fn required_option_value(args: &[String], index: &mut usize, flag: &str) -> Tool
 fn run_dry_run(profile: RunProfile, config_sha256: String, out_dir: &Path) -> ToolResult<PathBuf> {
     if !profile.workloads.is_empty() {
         return Err(
-            "--dry-run accepts only an empty workloads list; use --fixture-preflight for the P6.4 fixture contract"
+            "--dry-run accepts only an empty workloads list; use --fixture-preflight to validate workload fixtures"
                 .into(),
         );
     }

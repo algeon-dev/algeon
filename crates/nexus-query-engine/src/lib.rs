@@ -22,12 +22,6 @@
 #[cfg(test)]
 extern crate self as nexus_query_engine;
 
-// These focused contract sources exercise crate-private reservation and frame
-// ownership hooks.  They remain outside the production facade while compiling
-// with the engine's unit-test crate.
-#[cfg(test)]
-#[path = "../tests/native_contract_tests/reservation_tracker_contracts.rs"]
-mod reservation_tracker_contracts;
 #[cfg(test)]
 #[path = "execution_integration_tests/runtime_observability.rs"]
 mod runtime_observability_integration_tests;
@@ -48,8 +42,8 @@ pub use nexus_query_planning::{contract_report, error};
 pub mod exec;
 /// DataFusion-free expression IR used by native query plans.
 pub use nexus_query_planning::expr;
-/// Approximate cuGraph memory pricing outside bounded admission.
-pub use nexus_query_planning::graph_memory;
+/// Measured graph-execution observation rows.
+pub use nexus_query_planning::graph_observation;
 pub(crate) use nexus_query_planning::{execution_contracts, expression_lowering_policy};
 /// Stable helper primitives shared by report and benchmark harnesses.
 pub mod harness;

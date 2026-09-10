@@ -92,70 +92,13 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
     let accepted = &diagnostics.capability_contract.accepted_candidates[0];
     assert_eq!(accepted.compiled_graph.sink_kind, "host_arrow_materialization");
-    assert!(accepted.compiled_graph.gate_count > 0);
-    assert!(accepted.compiled_graph.sink_gate_count > 0);
+    assert!(accepted.compiled_graph.resource_count > 0);
     let admission_report = &accepted.report;
     assert_eq!(admission_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert!(admission_report.is_ready());
-    assert_admission_report_has_host_sink_boundary(admission_report);
-    assert_admission_report_has_join_path_gates(admission_report);
-    assert!(
-        admission_report
-            .stable_kv_rows()
-            .iter()
-            .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath")),
-        "bounded planner diagnostics must not require family/path vocabulary"
-    );
+    assert!(admission_report.decision_rows().is_empty());
 
     fs::remove_dir_all(dir).unwrap();
-}
-
-fn assert_admission_report_has_host_sink_boundary(
-    report: &nexus_query_engine::contract_report::CapabilityContractReport,
-) {
-    assert!(
-        report.gate_rows().iter().any(|row| {
-            row.owner.to_string() == "sink_boundary"
-                && row.reservation_kind == ReservationKind::Materialization
-                && row.memory_boundary == "host_materialization"
-                && row.required_contract == "query_engine_explicit_sink_materialization_reservation"
-                && row.contract_quality == ContractQuality::QueryEngineOwnedBoundary
-        }),
-        "accepted bounded diagnostics must identify the host materialization sink boundary"
-    );
-}
-
-fn assert_admission_report_has_join_path_gates(report: &nexus_query_engine::contract_report::CapabilityContractReport) {
-    for kind in [
-        ReservationKind::SourceRead,
-        ReservationKind::BuildSide,
-        ReservationKind::ProbeSide,
-        ReservationKind::HashTable,
-        ReservationKind::GatherMap,
-        ReservationKind::JoinOutput,
-        ReservationKind::Materialization,
-    ] {
-        assert!(
-            report.gate_rows().iter().any(|row| row.reservation_kind == kind),
-            "accepted bounded diagnostics should include reservation gate {kind:?}"
-        );
-    }
-
-    let stable_rows = report.stable_kv_rows().join("|");
-    for retired_term in [
-        "BoundedJoinExecutionFamily",
-        "BoundedJoinExecutionPath",
-        "bounded_join_execution_family",
-        "bounded_join_execution_families",
-        "bounded_join_required_shape_contract",
-        "bounded_join_contract_modes",
-        "bounded_join_unresolved_preflight_contracts",
-    ] {
-        assert!(
-            !stable_rows.contains(retired_term),
-            "bounded diagnostics must not contain retired family/path term {retired_term}"
-        );
-    }
 }
 
 #[test]
@@ -196,7 +139,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 }
 
 #[test]
-fn bounded_planner_rows_cover_supported_join_path() {
+fn bounded_planner_reports_compiled_graph_for_supported_join_path() {
     let dir = unique_temp_dir("datafusion-nexus-bounded-join-planner-rows");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -209,14 +152,9 @@ fn bounded_planner_rows_cover_supported_join_path() {
 
     assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
-    let admission_rows = diagnostics.capability_contract.accepted_candidates[0].report.gate_rows();
-    assert!(admission_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
-    assert!(
-        admission_rows
-            .iter()
-            .map(|row| row.to_stable_kv_row())
-            .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath"))
-    );
+    let accepted = &diagnostics.capability_contract.accepted_candidates[0];
+    assert!(accepted.report.decision_rows().is_empty());
+    assert!(accepted.compiled_graph.resource_count > 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -1,52 +1,3 @@
-pub(super) fn pipeline_without_reservation_gates(pipeline: &CompiledPipeline) -> CompiledPipeline {
-    let tasks = pipeline
-        .tasks()
-        .iter()
-        .map(|task| {
-            let base = match task.plan_node() {
-                Some(node_id) => PipelineTask::for_plan_node(task.id(), task.kind(), node_id),
-                None => PipelineTask::new(task.id(), task.kind()),
-            };
-            base.with_input_resources(task.input_resources().to_vec())
-                .with_output_resources(task.output_resources().to_vec())
-                .with_gates(vec![])
-        })
-        .collect::<Vec<_>>();
-    let edges = pipeline
-        .edges()
-        .iter()
-        .map(|edge| {
-            PipelineEdge::new(edge.id(), edge.from(), edge.to(), edge.kind())
-                .with_resources(edge.resources().to_vec())
-                .with_gates(vec![])
-        })
-        .collect::<Vec<_>>();
-    let barriers = pipeline
-        .barriers()
-        .iter()
-        .map(|barrier| {
-            PipelineBarrier::new(barrier.id(), barrier.kind())
-                .with_upstream_tasks(barrier.upstream_tasks().to_vec())
-                .with_downstream_tasks(barrier.downstream_tasks().to_vec())
-                .with_gates(vec![])
-        })
-        .collect::<Vec<_>>();
-    let resources = pipeline
-        .resources()
-        .iter()
-        .map(|resource| {
-            ResidentResource::new(
-                resource.id(),
-                resource.producer(),
-                resource.consumers().to_vec(),
-                resource.lifetime(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(vec![]);
-    CompiledPipeline::new(tasks, edges, barriers, resources, vec![], sink)
-}
-
 pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) -> CompiledPipeline {
     let mut tasks = pipeline.tasks().to_vec();
     let mut edges = pipeline.edges().to_vec();
@@ -80,9 +31,8 @@ pub(super) fn pipeline_with_extra_sink_candidate(pipeline: &CompiledPipeline) ->
             ResidentResource::new(resource.id(), resource.producer(), consumers, resource.lifetime())
         })
         .collect::<Vec<_>>();
-    let sink =
-        SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(pipeline.sink().gates().to_vec());
-    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, pipeline.gates().to_vec(), sink)
+    let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input());
+    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
 }
 
 pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> CompiledPipeline {
@@ -139,9 +89,8 @@ pub(super) fn pipeline_with_post_root_fanout(pipeline: &CompiledPipeline) -> Com
         vec![],
         ResidentLifetime::TaskLocal { task: extra_task },
     ));
-    let sink =
-        SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(pipeline.sink().gates().to_vec());
-    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, pipeline.gates().to_vec(), sink)
+    let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input());
+    CompiledPipeline::new(tasks, edges, pipeline.barriers().to_vec(), resources, sink)
 }
 
 pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
@@ -166,7 +115,6 @@ pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
                 .with_upstream_tasks(vec![unary]),
         ],
         vec![ResidentResource::new(frame, source, vec![unary], ResidentLifetime::BetweenTasks { producer: source })],
-        vec![],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, unary),
     )
 }
@@ -216,7 +164,6 @@ pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
                 ResidentLifetime::BetweenTasks { producer: second_source },
             ),
         ],
-        vec![],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, second_consumer),
     )
 }
@@ -275,7 +222,6 @@ pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
                 ResidentLifetime::BetweenTasks { producer: materialize },
             ),
         ],
-        vec![],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink),
     )
 }
@@ -408,7 +354,6 @@ pub(super) fn downstream_build_branch_after_completed_upstream_build_pipeline() 
                 ResidentLifetime::BetweenTasks { producer: second_materialize },
             ),
         ],
-        vec![],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink),
     )
 }
@@ -449,101 +394,6 @@ pub(super) fn shared_resident_fanout_pipeline() -> CompiledPipeline {
             vec![first_consumer, second_consumer],
             ResidentLifetime::BetweenTasks { producer: source },
         )],
-        vec![],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, second_consumer),
-    )
-}
-
-pub(super) fn root_join_shaped_pipeline_with_blocked_gate() -> CompiledPipeline {
-    let left_source = PipelineTaskId::new(0);
-    let right_source = PipelineTaskId::new(1);
-    let build = PipelineTaskId::new(2);
-    let probe = PipelineTaskId::new(3);
-    let materialize = PipelineTaskId::new(4);
-    let sink_task = PipelineTaskId::new(5);
-
-    let left_frame = ResidentResourceId::new(0);
-    let right_frame = ResidentResourceId::new(1);
-    let join_output = ResidentResourceId::new(2);
-    let blocked_gate = ReservationGateId::new(0);
-
-    let tasks = vec![
-        PipelineTask::new(left_source, PipelineTaskKind::SourceRead).with_output_resources(vec![left_frame]),
-        PipelineTask::new(right_source, PipelineTaskKind::SourceRead).with_output_resources(vec![right_frame]),
-        PipelineTask::new(build, PipelineTaskKind::JoinBuild)
-            .with_input_resources(vec![right_frame])
-            .with_gates(vec![blocked_gate]),
-        PipelineTask::new(probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![left_frame]),
-        PipelineTask::new(materialize, PipelineTaskKind::JoinMaterialize).with_output_resources(vec![join_output]),
-        PipelineTask::new(sink_task, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![join_output]),
-    ];
-
-    let edges = vec![
-        PipelineEdge::new(PipelineEdgeId::new(0), right_source, build, PipelineEdgeKind::JoinBuildInput)
-            .with_resources(vec![right_frame]),
-        PipelineEdge::new(PipelineEdgeId::new(1), left_source, probe, PipelineEdgeKind::JoinProbeInput)
-            .with_resources(vec![left_frame]),
-        PipelineEdge::new(PipelineEdgeId::new(2), build, probe, PipelineEdgeKind::Control),
-        PipelineEdge::new(PipelineEdgeId::new(3), probe, materialize, PipelineEdgeKind::Control),
-        PipelineEdge::new(PipelineEdgeId::new(4), materialize, sink_task, PipelineEdgeKind::SinkInput)
-            .with_resources(vec![join_output]),
-    ];
-
-    let barriers = vec![
-        PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
-            .with_upstream_tasks(vec![left_source])
-            .with_downstream_tasks(vec![probe]),
-        PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SourceChunkBoundary)
-            .with_upstream_tasks(vec![right_source])
-            .with_downstream_tasks(vec![build]),
-        PipelineBarrier::new(PipelineBarrierId::new(2), PipelineBarrierKind::JoinBuildBeforeProbe)
-            .with_upstream_tasks(vec![build])
-            .with_downstream_tasks(vec![probe]),
-        PipelineBarrier::new(PipelineBarrierId::new(3), PipelineBarrierKind::JoinMaterialization)
-            .with_upstream_tasks(vec![probe])
-            .with_downstream_tasks(vec![materialize]),
-        PipelineBarrier::new(PipelineBarrierId::new(4), PipelineBarrierKind::SinkBoundary)
-            .with_upstream_tasks(vec![sink_task]),
-    ];
-
-    let resources = vec![
-        ResidentResource::new(
-            left_frame,
-            left_source,
-            vec![probe],
-            ResidentLifetime::BetweenTasks { producer: left_source },
-        ),
-        ResidentResource::new(
-            right_frame,
-            right_source,
-            vec![build],
-            ResidentLifetime::BetweenTasks { producer: right_source },
-        ),
-        ResidentResource::new(
-            join_output,
-            materialize,
-            vec![sink_task],
-            ResidentLifetime::BetweenTasks { producer: materialize },
-        ),
-    ];
-
-    let gates = vec![ReservationGate::new(
-        blocked_gate,
-        ReservationGateOwner::Task(build),
-        ReservationKind::HashTable,
-        ReservationRequirementScope::Node,
-        "join_hash_table",
-        "hash_join_pre_build_reservation_size_bytes",
-        ContractStatus::BlockedByLowerLevel,
-        ContractQuality::ExactPreflight,
-    )];
-
-    CompiledPipeline::new(
-        tasks,
-        edges,
-        barriers,
-        resources,
-        gates,
-        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink_task),
     )
 }

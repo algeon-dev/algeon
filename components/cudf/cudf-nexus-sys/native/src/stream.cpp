@@ -297,6 +297,12 @@ cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle)
   CUDF_RUST_TRY
   {
     auto stream = cudf_stream_view_from_handle(handle);
+    cudf::rust::test_support::record_stream_synchronize();
+    if (cudf::rust::test_support::stream_synchronize_should_fail()) {
+      set_error("forced stream synchronization failure for tests");
+      return CUDF_ERROR_CUDA;
+    }
+    cudf::rust::test_support::wait_for_stream_synchronize_release();
     stream.synchronize();
     cudf_record_synchronized_stream(stream);
     return CUDF_SUCCESS;

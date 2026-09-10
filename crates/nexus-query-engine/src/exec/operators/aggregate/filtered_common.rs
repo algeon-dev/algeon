@@ -1,4 +1,4 @@
-use std::{cmp, collections::BTreeSet};
+use std::cmp;
 
 use arrow::datatypes::DataType as ArrowDataType;
 
@@ -8,7 +8,6 @@ use crate::datatypes::arrow_fixed_width_byte_size;
 pub(super) trait FilteredSegmentRuntimeStats {
     fn observed_temporary_peak_bytes_mut(&mut self) -> &mut u64;
     fn observed_retained_peak_bytes_mut(&mut self) -> &mut u64;
-    fn unresolved_contracts_mut(&mut self) -> &mut BTreeSet<String>;
 }
 
 pub(super) fn unsupported_stateful_filtered_merge(spec: &AggregateSpec) -> bool {
@@ -39,9 +38,6 @@ pub(super) fn add_segmented_budgeted_execution_stats<T: FilteredSegmentRuntimeSt
         if let Some(bytes) = event.retained_bytes {
             let peak = stats.observed_retained_peak_bytes_mut();
             *peak = (*peak).max(bytes);
-        }
-        if let Some(contract) = &event.unresolved_contract {
-            stats.unresolved_contracts_mut().insert(contract.clone());
         }
     }
 }

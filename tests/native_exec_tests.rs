@@ -44,10 +44,8 @@ use datafusion_nexus::{
     session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::{
-    capability::ContractQuality,
     mode::CapabilityEnvelopeStatus,
     plan::{NativePlanCostOptions, NativePlanCostReason},
-    runtime::ReservationKind,
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use parquet::arrow::ArrowWriter;

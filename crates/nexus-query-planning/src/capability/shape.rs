@@ -81,13 +81,13 @@ pub(in crate::capability) use root_topk_join_aggregate::root_topk_join_aggregate
 pub(in crate::capability) use single_join_post_root::single_join_post_root_pipeline_shape_decision;
 pub(in crate::capability) use subquery_filter::multi_join_resident_grouped_aggregate_subquery_filter_shape_decision;
 pub(in crate::capability) use types::{
-    FinalRollupWidthClass, HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape,
-    KeyedHashJoinResidentSubplanShape, KeylessConditionalJoinAggregateOverJoinSubplanInputsShape,
-    KeylessConditionalJoinInputSubplanShape, MixedResidualResidentGroupedAggregateInputShape,
-    MultiJoinAggregateOverJoinSubplanTopKShape, MultiJoinResidentGroupedAggregateSubqueryFilterShape, OutputLineage,
-    PostRootStage, ProjectionGlobalLimitShape, ProjectionScalarSetopKind, ProjectionScalarSetopShape,
-    ResidentGroupedAggregateSubqueryFilterStats, RollupRankTopKAfterAggregateJoinPushdownShape,
-    RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
+    HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape, KeyedHashJoinResidentSubplanShape,
+    KeylessConditionalJoinAggregateOverJoinSubplanInputsShape, KeylessConditionalJoinInputSubplanShape,
+    MixedResidualResidentGroupedAggregateInputShape, MultiJoinAggregateOverJoinSubplanTopKShape,
+    MultiJoinResidentGroupedAggregateSubqueryFilterShape, OutputLineage, PostRootStage, ProjectionGlobalLimitShape,
+    ProjectionScalarSetopKind, ProjectionScalarSetopShape, ResidentGroupedAggregateSubqueryFilterStats,
+    RollupRankTopKAfterAggregateJoinPushdownShape, RootFullSortJoinAggregateShape,
+    RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
 };
 
 #[doc(hidden)]

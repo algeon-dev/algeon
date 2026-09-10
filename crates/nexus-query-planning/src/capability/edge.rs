@@ -5,13 +5,11 @@
 //! here are local to the edge; whole-plan admission lives in [`super::admission`].
 
 use super::{
-    JoinSide, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, NodeId, PlanNode, QueryPlan, ReservationKind,
-    SourceNode,
+    JoinSide, NodeId, PlanNode, QueryPlan,
     graph::{collect_reachable_node_ids, consumer_nodes_for_reachable},
-    keyed_hash_join_strategy_decision_for_plan, local_parquet_source_has_exact_read_preflight,
     model::{
-        CapabilityDecision, ContractQuality, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty,
-        RequiredProperty, ReservationRequirement, ResultSinkKind, SharedProducerIdentity, VectorInputRole,
+        CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty,
+        RequiredProperty, ResultSinkKind, SharedProducerIdentity, VectorInputRole,
     },
     node::{produced_properties, source_format_capability},
 };
@@ -25,17 +23,8 @@ pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &
             let input_role = input_role(kind, input_index);
             let contract_kinds = edge_contract_kinds(plan, *producer, consumer, kind, input_role);
             let required_properties = vec![RequiredProperty::ResidentFrame];
-            let reservation_requirements = edge_requirements(plan, *producer, kind, input_role);
             let decision = edge_decision(plan, *producer, consumer, &required_properties);
-            EdgeContract {
-                producer: *producer,
-                consumer,
-                contract_kinds,
-                input_role,
-                required_properties,
-                reservation_requirements,
-                decision,
-            }
+            EdgeContract { producer: *producer, consumer, contract_kinds, input_role, required_properties, decision }
         })
         .collect()
 }
@@ -174,124 +163,6 @@ pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     }
 }
 
-pub(super) fn edge_requirements(
-    plan: &QueryPlan,
-    producer: NodeId,
-    consumer_kind: &PlanNode,
-    input_role: InputRole,
-) -> Vec<ReservationRequirement> {
-    let mut requirements = Vec::new();
-    append_source_read_edge_requirement(plan, producer, &mut requirements);
-    if matches!(input_role, InputRole::JoinBuildInput { .. }) {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::BuildSide,
-            "join_build_side",
-            "query_engine_build_side_source_reservation",
-            ContractQuality::ExactPreflight,
-        ));
-    }
-    if matches!(input_role, InputRole::JoinProbeInput { .. }) {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::ProbeSide,
-            "join_probe_side",
-            "query_engine_probe_side_source_reservation",
-            ContractQuality::QueryEngineOwnedOrdering,
-        ));
-    }
-    append_producer_output_edge_requirements(plan, producer, &mut requirements);
-    if matches!(consumer_kind, PlanNode::Sort(_)) {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::FinalSort,
-            "join_pipeline_final_sort",
-            "final_sort_contract",
-            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        ));
-    }
-    requirements
-}
-
-pub(super) fn append_source_read_edge_requirement(
-    plan: &QueryPlan,
-    producer: NodeId,
-    requirements: &mut Vec<ReservationRequirement>,
-) {
-    if let Some(PlanNode::Source(source)) = plan.node(producer).map(|node| &node.kind)
-        && let SourceNode::LocalParquet(source) = source.as_ref()
-    {
-        let (required_contract, quality) = if local_parquet_source_has_exact_read_preflight(source) {
-            ("parquet_source_read_exact_preflight", ContractQuality::ExactPreflight)
-        } else {
-            ("source_contract", ContractQuality::HardBudgetedReportWithUnresolvedPreflight)
-        };
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::SourceRead,
-            "source_read",
-            required_contract,
-            quality,
-        ));
-    }
-}
-
-pub(super) fn append_producer_output_edge_requirements(
-    plan: &QueryPlan,
-    producer: NodeId,
-    requirements: &mut Vec<ReservationRequirement>,
-) {
-    if let Some(PlanNode::Join(join)) = plan.node(producer).map(|node| &node.kind) {
-        let indexed_equality_strategy = keyed_hash_join_strategy_decision_for_plan(plan, producer, join);
-        let gather_map_requirement = if matches!(
-            indexed_equality_strategy.as_ref(),
-            Some(KeyedHashJoinStrategyDecision::Selected {
-                strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedHashEqui,
-                ..
-            })
-        ) {
-            let memory_boundary = match indexed_equality_strategy.as_ref() {
-                Some(KeyedHashJoinStrategyDecision::Selected {
-                    strategy: KeyedHashJoinStrategy::PartitionedHashEqui,
-                    ..
-                }) => "join_partition_indices",
-                _ => "join_one_shot_indices",
-            };
-            ReservationRequirement::modeled(
-                ReservationKind::GatherMap,
-                memory_boundary,
-                "join_gather_map_reservation_size_bytes",
-                ContractQuality::ExactPreflight,
-            )
-        } else {
-            ReservationRequirement::modeled(
-                ReservationKind::GatherMap,
-                "join_gather_map",
-                "join_gather_map_reservation_size_bytes",
-                ContractQuality::ExactPreflight,
-            )
-        };
-        requirements.push(gather_map_requirement);
-        if matches!(
-            indexed_equality_strategy.as_ref(),
-            Some(KeyedHashJoinStrategyDecision::Selected {
-                strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedHashEqui,
-                ..
-            })
-        ) {
-            requirements.push(ReservationRequirement::modeled(
-                ReservationKind::JoinOutput,
-                "join_output",
-                "keyed_equality_join_output_size_preflight",
-                ContractQuality::ExactPreflight,
-            ));
-        } else {
-            requirements.push(ReservationRequirement::modeled(
-                ReservationKind::JoinOutput,
-                "join_output",
-                "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
-                ContractQuality::ExactPreflight,
-            ));
-        }
-    }
-}
-
 pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     let producer = plan.sink().input();
     let consumer = match plan.sink() {
@@ -311,27 +182,8 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
         contract_kinds.push(EdgeContractKind::ExplicitSinkMaterialization);
     }
     let required_properties = vec![RequiredProperty::ResidentFrame];
-    let mut reservation_requirements = Vec::new();
-    append_source_read_edge_requirement(plan, producer, &mut reservation_requirements);
-    append_producer_output_edge_requirements(plan, producer, &mut reservation_requirements);
-    if matches!(plan.sink(), crate::plan::ResultSink::HostArrow { .. }) {
-        reservation_requirements.push(ReservationRequirement::modeled(
-            ReservationKind::Materialization,
-            "host_materialization",
-            "query_engine_explicit_sink_materialization_reservation",
-            ContractQuality::QueryEngineOwnedBoundary,
-        ));
-    }
     let decision = edge_decision(plan, producer, consumer, &required_properties);
-    EdgeContract {
-        producer,
-        consumer,
-        contract_kinds,
-        input_role: InputRole::SinkInput,
-        required_properties,
-        reservation_requirements,
-        decision,
-    }
+    EdgeContract { producer, consumer, contract_kinds, input_role: InputRole::SinkInput, required_properties, decision }
 }
 
 pub(super) fn mark_shared_producer_edge_contracts(plan: &QueryPlan, edges: &mut [EdgeContract]) {

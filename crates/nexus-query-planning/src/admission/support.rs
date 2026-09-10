@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::join_strategy::CompiledJoinExecutionStrategy;
 use crate::{
-    capability::{CapabilityDecision, ContractStatus, KeylessConditionalJoinKind, SubgraphInvariantKind},
+    capability::{CapabilityDecision, SubgraphInvariantKind},
     error::Result,
-    execution_contracts::ReservationKind,
     pipeline::{
         CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
-        ReservationGate, ReservationGateId, ResidentLifetime, SinkBoundaryKind,
+        ResidentLifetime, SinkBoundaryKind,
     },
     plan::{NodeId, PlanNode, QueryPlan, ResultSink},
 };
@@ -27,9 +26,6 @@ pub enum CompiledBoundedPipelineSupport {
 pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<CompiledBoundedPipelineSupport> {
     pipeline.validate()?;
 
-    if pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
     let Some(join_groups) = join_task_groups(pipeline) else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     };
@@ -47,9 +43,6 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
         + task_kind_count(pipeline, PipelineTaskKind::LiteralBatchSource)
         < 1
     {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !task_reservation_gates_are_in_d2_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !task_resource_shapes_are_in_d2_envelope(pipeline, &join_groups) {
@@ -116,12 +109,9 @@ pub fn compiled_bounded_query_plan_support(
         let PlanNode::Join(join) = &node.kind else {
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         };
-        let Ok(Some(strategy)) = CompiledJoinExecutionStrategy::from_plan_join_node(plan, group.plan_node, join) else {
+        let Ok(Some(_)) = CompiledJoinExecutionStrategy::from_plan_join_node(plan, group.plan_node, join) else {
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         };
-        if !join_strategy_reservations_are_modeled(pipeline, &group, strategy) {
-            return Ok(CompiledBoundedPipelineSupport::Unsupported);
-        }
     }
     let Some(final_plan_node) = sink_output_plan_node(pipeline) else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
@@ -142,114 +132,6 @@ fn plan_sink_matches_pipeline_sink(plan: &QueryPlan, pipeline: &CompiledPipeline
         (ResultSink::HostArrow { .. }, SinkBoundaryKind::HostArrowMaterialization)
             | (ResultSink::GpuResident { .. }, SinkBoundaryKind::GpuResidentOutput)
     )
-}
-
-fn join_strategy_reservations_are_modeled(
-    pipeline: &CompiledPipeline,
-    group: &JoinTaskGroup<'_>,
-    strategy: CompiledJoinExecutionStrategy,
-) -> bool {
-    task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::BuildSide)
-        && task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.probe, ReservationKind::ProbeSide)
-        && task_runtime_attachment_has_modeled_reservation_gate(
-            pipeline,
-            group.materialize,
-            ReservationKind::JoinOutput,
-        )
-        && join_strategy_specific_reservations_are_modeled(pipeline, group, strategy)
-}
-
-fn join_strategy_specific_reservations_are_modeled(
-    pipeline: &CompiledPipeline,
-    group: &JoinTaskGroup<'_>,
-    strategy: CompiledJoinExecutionStrategy,
-) -> bool {
-    match strategy {
-        CompiledJoinExecutionStrategy::HashEqui => {
-            task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
-                && task_runtime_attachment_has_modeled_reservation_gate(
-                    pipeline,
-                    group.materialize,
-                    ReservationKind::GatherMap,
-                )
-        },
-        CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui => {
-            task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::HashTable,
-            ) && task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::GatherMap,
-            )
-        },
-        CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual => {
-            task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::MixedSizeData,
-            ) && task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::GatherMap,
-            )
-        },
-        CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
-                && task_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::OperatorOutput)
-                && task_runtime_attachment_has_modeled_reservation_gate(
-                    pipeline,
-                    group.materialize,
-                    ReservationKind::FilteredProbeState,
-                )
-                && task_runtime_attachment_has_modeled_reservation_gate(
-                    pipeline,
-                    group.materialize,
-                    ReservationKind::GatherMap,
-                )
-        },
-        CompiledJoinExecutionStrategy::KeylessConditional { join_type } => {
-            (join_type != KeylessConditionalJoinKind::Full
-                || task_runtime_attachment_has_modeled_reservation_gate(
-                    pipeline,
-                    group.materialize,
-                    ReservationKind::MixedSizeData,
-                ))
-                && task_runtime_attachment_has_modeled_reservation_gate(
-                    pipeline,
-                    group.materialize,
-                    ReservationKind::GatherMap,
-                )
-        },
-        CompiledJoinExecutionStrategy::MixedKeyedResidual => {
-            task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::MixedSizeData,
-            ) && task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::GatherMap,
-            )
-        },
-        CompiledJoinExecutionStrategy::ProjectedCross => task_runtime_attachment_has_modeled_reservation_gate(
-            pipeline,
-            group.materialize,
-            ReservationKind::JoinOutput,
-        ),
-        CompiledJoinExecutionStrategy::KeylessOuterCross => {
-            task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::GatherMap,
-            ) && task_runtime_attachment_has_modeled_reservation_gate(
-                pipeline,
-                group.materialize,
-                ReservationKind::JoinOutput,
-            )
-        },
-    }
 }
 
 fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
@@ -331,92 +213,6 @@ fn sink_boundary_shape_is_in_d3_6_envelope(pipeline: &CompiledPipeline) -> bool 
                     .is_some_and(|task| task.output_resources().contains(&resource.id()))
             }),
     }
-}
-
-fn task_reservation_gates_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
-    pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::Aggregate | PipelineTaskKind::Window => {
-            task_has_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput)
-        },
-        PipelineTaskKind::Union => task_has_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput),
-        PipelineTaskKind::FinalSort => {
-            task_runtime_attachment_has_modeled_reservation_gate(pipeline, task, ReservationKind::FinalSort)
-        },
-        _ => true,
-    })
-}
-
-fn task_has_modeled_reservation_gate(
-    pipeline: &CompiledPipeline,
-    task: &PipelineTask,
-    reservation_kind: ReservationKind,
-) -> bool {
-    task.gates().iter().any(|gate_id| {
-        pipeline.gates().iter().any(|gate| {
-            gate.id() == *gate_id
-                && gate.reservation_kind() == reservation_kind
-                && gate.status() == ContractStatus::Modeled
-        })
-    })
-}
-
-fn task_runtime_attachment_has_modeled_reservation_gate(
-    pipeline: &CompiledPipeline,
-    task: &PipelineTask,
-    reservation_kind: ReservationKind,
-) -> bool {
-    runtime_visible_gate_for_task(pipeline, task, reservation_kind).is_some()
-}
-
-fn runtime_visible_gate_for_task<'a>(
-    pipeline: &'a CompiledPipeline,
-    task: &PipelineTask,
-    reservation_kind: ReservationKind,
-) -> Option<&'a ReservationGate> {
-    if let Some(gate) =
-        task.gates().iter().find_map(|gate_id| modeled_gate_for_kind(pipeline, *gate_id, reservation_kind))
-    {
-        return Some(gate);
-    }
-    let task_id = task.id();
-    if let Some(gate) = pipeline
-        .edges()
-        .iter()
-        .filter(|edge| edge.from() == task_id || edge.to() == task_id)
-        .flat_map(|edge| edge.gates())
-        .find_map(|gate_id| modeled_gate_for_kind(pipeline, *gate_id, reservation_kind))
-    {
-        return Some(gate);
-    }
-    if let Some(gate) = pipeline
-        .barriers()
-        .iter()
-        .filter(|barrier| barrier.upstream_tasks().contains(&task_id) || barrier.downstream_tasks().contains(&task_id))
-        .flat_map(|barrier| barrier.gates())
-        .find_map(|gate_id| modeled_gate_for_kind(pipeline, *gate_id, reservation_kind))
-    {
-        return Some(gate);
-    }
-
-    if pipeline.sink().input() == task_id {
-        return pipeline
-            .sink()
-            .gates()
-            .iter()
-            .find_map(|gate_id| modeled_gate_for_kind(pipeline, *gate_id, reservation_kind));
-    }
-
-    None
-}
-
-fn modeled_gate_for_kind(
-    pipeline: &CompiledPipeline,
-    gate_id: ReservationGateId,
-    reservation_kind: ReservationKind,
-) -> Option<&ReservationGate> {
-    pipeline.gates().iter().find(|gate| {
-        gate.id() == gate_id && gate.reservation_kind() == reservation_kind && gate.status() == ContractStatus::Modeled
-    })
 }
 
 fn edge_kinds_are_in_d3_2_envelope(pipeline: &CompiledPipeline) -> bool {
@@ -803,11 +599,7 @@ fn task_feeds_modeled_join_input_or_shared_branch(pipeline: &CompiledPipeline, t
 
         for edge in pipeline.edges().iter().filter(|edge| edge.from() == current) {
             match edge.kind() {
-                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => {
-                    if edge.gates().iter().all(|gate_id| pipeline.gates().iter().any(|gate| gate.id() == *gate_id)) {
-                        return true;
-                    }
-                },
+                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => return true,
                 PipelineEdgeKind::SharedResidentProducer => return true,
                 PipelineEdgeKind::ResidentFrame => pending.push(edge.to()),
                 PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => {},
@@ -1089,12 +881,7 @@ fn has_edge(pipeline: &CompiledPipeline, from: PipelineTaskId, to: PipelineTaskI
 }
 
 fn has_join_input_edge(pipeline: &CompiledPipeline, to: PipelineTaskId, kind: PipelineEdgeKind) -> bool {
-    pipeline.edges().iter().any(|edge| {
-        edge.to() == to
-            && edge.kind() == kind
-            && edge.resources().len() == 1
-            && edge.gates().iter().all(|gate| pipeline.gates().iter().any(|candidate| candidate.id() == *gate))
-    })
+    pipeline.edges().iter().any(|edge| edge.to() == to && edge.kind() == kind && edge.resources().len() == 1)
 }
 
 fn has_barrier(

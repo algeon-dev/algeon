@@ -34,9 +34,6 @@ use crate::common::{
     sample_runtime,
 };
 
-const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
-    "libcudf_parquet_decoded_output_preflight_unavailable";
-
 fn dtype(id: TypeId) -> DataType {
     DataType::new(id)
 }
@@ -1355,7 +1352,6 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
     assert_budget_report_high_water(report, expected_output_bytes);
-    assert_eq!(report.unresolved_contract(), None);
     assert_eq!(
         report.context_facts().get("source_read_preflight_contract").map(String::as_str),
         Some("exact_retained_output_upper_bound")
@@ -1439,7 +1435,6 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
     assert_budget_report_high_water(report, expected_output_bytes);
-    assert_eq!(report.unresolved_contract(), None);
     assert_eq!(
         report.context_facts().get("source_read_preflight_contract").map(String::as_str),
         Some("exact_retained_output_upper_bound")
@@ -1976,7 +1971,6 @@ fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
     assert_eq!(outcome.report().request().boundary(), "source_read_minimum");
     assert_eq!(outcome.report().request().budget_bytes(), DataFrame::minimum_parquet_source_read_budget_bytes());
-    assert_eq!(outcome.report().unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
 }
 
 #[test]
@@ -2018,7 +2012,6 @@ fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolve
     );
     assert_eq!(report.output_rows(), Some(3));
     assert!(report.output_bytes().unwrap() > 0);
-    assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
 }
 
 #[test]
@@ -2065,7 +2058,6 @@ fn source_contract_reports_exact_preflight_with_known_fixed_width_source_metadat
 
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
     assert_eq!(outcome.report().request().boundary(), "estimated_source_read");
-    assert_eq!(outcome.report().unresolved_contract(), None);
     assert_eq!(
         outcome.report().context_facts().get("source_read_preflight_contract").map(String::as_str),
         Some("exact_retained_output_upper_bound")

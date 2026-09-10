@@ -663,7 +663,6 @@ fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig)
         keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
         source_chunk_planning_options: execution_config.source_chunk_planning_options(),
-        graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
         max_source_chunk_bytes,
         max_row_groups_per_chunk,
         max_retry_attempts,

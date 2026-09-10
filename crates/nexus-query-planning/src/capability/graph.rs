@@ -4,10 +4,7 @@
 //! nodes that admission and invariant analyses share.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    JoinSide, NodeId, PlanNode, QueryPlan,
-    model::{CapabilityDecision, EdgeContract, NodeCapability, ReservationRequirement, SubgraphInvariant},
-};
+use super::{JoinSide, NodeId, PlanNode, QueryPlan, model::CapabilityDecision};
 
 // Proves a dependency walk can be scheduled without cycles or missing nodes.
 pub(super) struct GraphScheduleProof<'a> {
@@ -169,18 +166,4 @@ pub(super) fn peel_projection_chain_for_capability(plan: &QueryPlan, node_id: No
         projection_count += 1;
         current = projection.input;
     }
-}
-
-pub(super) fn collect_requirements(
-    nodes: &[NodeCapability],
-    edges: &[EdgeContract],
-    invariants: &[SubgraphInvariant],
-) -> Vec<ReservationRequirement> {
-    nodes
-        .iter()
-        .flat_map(|node| node.local_requirements.iter())
-        .chain(edges.iter().flat_map(|edge| edge.reservation_requirements.iter()))
-        .chain(invariants.iter().flat_map(|invariant| invariant.reservation_requirements.iter()))
-        .cloned()
-        .collect()
 }

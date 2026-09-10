@@ -225,14 +225,6 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
         "join-fed ROLLUP AVG should aggregate more than one streamed partial"
     );
     assert!(metrics.final_merge_attempts >= 1);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| event.outcome.as_str() == "granted"
-                && event.memory_boundary == "compiled_aggregate_final_merge"),
-        "ROLLUP AVG over a joined stream should merge partials at the compiled aggregate final-merge boundary"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

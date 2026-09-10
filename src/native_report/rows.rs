@@ -6,7 +6,7 @@
 //! accounting over the query lifetime; live peak and retained-byte fields
 //! describe instantaneous resident device memory.
 
-use nexus_query_engine::contract_report::CapabilityContractGateRow;
+use nexus_query_engine::contract_report::CapabilityDecisionRow;
 
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
@@ -15,10 +15,10 @@ use super::{
         NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
     },
     tsv::{
-        TsvRow, format_aggregate_strategy_rows, format_capability_compiled_graphs, format_capability_contract_rows,
-        format_dynamic_filter_runtime_rows, format_graph_reservation_rows, format_graph_runtime_rows,
-        format_join_diagnostics, format_join_strategy_rows, format_lakehouse_cache_fill_event_snapshot_rows,
-        format_plan_task_mapping_rows, format_source_diagnostics, format_task_operator_rows, format_task_runtime_rows,
+        TsvRow, format_aggregate_strategy_rows, format_capability_compiled_graphs, format_capability_decision_rows,
+        format_dynamic_filter_runtime_rows, format_graph_runtime_rows, format_join_diagnostics,
+        format_join_strategy_rows, format_lakehouse_cache_fill_event_snapshot_rows, format_plan_task_mapping_rows,
+        format_source_diagnostics, format_task_operator_rows, format_task_runtime_rows,
     },
 };
 use crate::planner::{FinalPlanDisposition, NativeCapabilityCompiledGraphDiagnostics};
@@ -47,8 +47,8 @@ pub struct NativeDataFusionPlanningRow {
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
-    /// Capability gate rows emitted by the selected candidate.
-    pub capability_contract_rows: Vec<CapabilityContractGateRow>,
+    /// Deferred or rejected capability decisions emitted by the selected candidate.
+    pub capability_decision_rows: Vec<CapabilityDecisionRow>,
     /// Compiled graph summaries for capability-supported candidates.
     pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     /// Native optimizer diagnostics emitted while preparing the candidate.
@@ -96,7 +96,7 @@ pub struct NativeDataFusionExecutionRow {
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
     pub unsupported_category: Option<String>,
     /// Capability gate rows emitted by the selected candidate.
-    pub capability_contract_rows: Vec<CapabilityContractGateRow>,
+    pub capability_decision_rows: Vec<CapabilityDecisionRow>,
     /// Compiled graph summaries for capability-supported candidates.
     pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     /// Nested source-scan diagnostics serialized as stable key/value rows.
@@ -297,7 +297,7 @@ impl TsvRow for NativeDataFusionPlanningRow {
             self.outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
-            format_capability_contract_rows(&self.capability_contract_rows),
+            format_capability_decision_rows(&self.capability_decision_rows),
             format_capability_compiled_graphs(&self.capability_compiled_graphs),
             super::tsv::format_native_optimizer_diagnostics(&self.native_optimizer),
             self.edge_normalize_inserted.to_string(),
@@ -329,7 +329,7 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.planning_outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
-            format_capability_contract_rows(&self.capability_contract_rows),
+            format_capability_decision_rows(&self.capability_decision_rows),
             format_capability_compiled_graphs(&self.capability_compiled_graphs),
             self.post_native_plan_root.clone(),
             self.final_disposition.map_or_else(|| "none".to_string(), |d| d.as_str().to_string()),
@@ -361,14 +361,8 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.read_columns.to_string(),
             self.metrics.resident_dataframe_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.metrics.allocator_high_water_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
-            self.metrics.reservation_requested_bytes.to_string(),
-            self.metrics.reservation_granted_bytes.to_string(),
-            self.metrics.reservation_live_peak_bytes.to_string(),
-            self.metrics.reservation_denied_count.to_string(),
-            self.metrics.max_task_reservation_bytes.to_string(),
             self.metrics.max_task_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.metrics.max_task_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
-            format_graph_reservation_rows(&self.metrics.graph_reservation_rows),
             format_graph_runtime_rows(&self.metrics.graph_runtime_rows),
             format_task_operator_rows(&self.metrics.task_operator_rows),
             format_task_runtime_rows(&self.metrics.task_runtime_rows),
@@ -417,7 +411,6 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.aggregate_encoded_key_partial_elapsed_ns().to_string(),
             self.metrics.retry_count.to_string(),
             self.metrics.retry_resource_exhausted_count.to_string(),
-            self.metrics.retry_reservation_failure_count.to_string(),
             self.metrics.hash_join_build_count.to_string(),
             self.metrics.filtered_join_build_count.to_string(),
             self.metrics.one_shot_join_count.to_string(),
@@ -491,7 +484,7 @@ mod tests {
             outcome: Some(CandidateOutcomeKind::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
-            capability_contract_rows: Vec::new(),
+            capability_decision_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
             native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             edge_normalize_inserted: false,
@@ -518,7 +511,7 @@ mod tests {
             planning_outcome: Some(CandidateOutcomeKind::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
-            capability_contract_rows: Vec::new(),
+            capability_decision_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "Root".to_string(),
@@ -552,7 +545,7 @@ mod tests {
                 "dynamic_filter_measured_reduction_status" | "dynamic_filter_work_avoidance_status" => "unknown",
                 "native_candidate_shape"
                 | "native_candidate_shape_family"
-                | "capability_contract_rows"
+                | "capability_decision_rows"
                 | "capability_compiled_graphs"
                 | "admission_sequence"
                 | "admission_wait_ms"
@@ -563,7 +556,6 @@ mod tests {
                 | "allocator_high_water_bytes"
                 | "max_task_observed_peak_bytes"
                 | "max_task_retained_bytes"
-                | "graph_reservation_rows"
                 | "graph_runtime_rows"
                 | "task_operator_rows"
                 | "task_runtime_rows"
@@ -591,7 +583,7 @@ mod tests {
             planning_outcome: Some(CandidateOutcomeKind::Selected),
             reason_code: None,
             unsupported_category: None,
-            capability_contract_rows: Vec::new(),
+            capability_decision_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "NexusNativeExec".to_string(),
@@ -625,11 +617,6 @@ mod tests {
                 read_columns: 22,
                 resident_dataframe_peak_bytes: Some(23),
                 allocator_high_water_bytes: Some(24),
-                reservation_requested_bytes: 25,
-                reservation_granted_bytes: 26,
-                reservation_live_peak_bytes: 27,
-                reservation_denied_count: 28,
-                max_task_reservation_bytes: 29,
                 max_task_observed_peak_bytes: Some(30),
                 max_task_retained_bytes: Some(31),
                 dynamic_filter_produced_count: 32,
@@ -665,7 +652,6 @@ mod tests {
                 final_merge_max_fan_in: 67,
                 retry_count: 68,
                 retry_resource_exhausted_count: 69,
-                retry_reservation_failure_count: 70,
                 hash_join_build_count: 77,
                 filtered_join_build_count: 78,
                 one_shot_join_count: 79,
@@ -705,11 +691,11 @@ mod tests {
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\tselected\tnone\tnone\t",
                 "none\tnone\tNexusNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
                 "true\tsucceeded\tnone\t3\t111\t2222\t",
-                "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
-                "none\tnone\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
+                "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t30\t31\t",
+                "none\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
                 "46\t47\t48\t49\t50\t51\t52\t53\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
-                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t77\t78\t79\t80\t81\t85\t86\t",
+                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t77\t78\t79\t80\t81\t85\t86\t",
                 "87\t88\t89\t90\t91\t92\tnone\tnone\tnone\t",
                 "outcome=completed,bytes=4096,elapsed_ns=9000000,cache_path_hash=cache123,stable_id_hash=stable456,",
                 "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none",

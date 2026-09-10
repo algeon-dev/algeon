@@ -45,16 +45,6 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.reservation_kind == ReservationKind::FinalMerge
-            && event.memory_boundary == "post_aggregate_projection"
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.reservation_kind == ReservationKind::FinalMerge
-            && event.memory_boundary == "post_aggregate_projection_output"
-            && event.action == MemoryReservationEventAction::Transfer
-    }));
     assert!(
         metrics
             .budgeted_execution_events

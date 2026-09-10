@@ -143,6 +143,36 @@ unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
 impl Column {
+    pub(crate) fn backing_allocation_pointers(&self) -> Result<Vec<usize>> {
+        let operation = "column::backing_allocation_pointers";
+        let mut count = 0usize;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_backing_allocation_pointers(
+                    self.handle.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut count,
+                )
+            },
+            operation,
+        )?;
+        let mut pointers = vec![std::ptr::null_mut(); count];
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_backing_allocation_pointers(
+                    self.handle.as_ptr(),
+                    pointers.as_mut_ptr(),
+                    pointers.len(),
+                    &mut count,
+                )
+            },
+            operation,
+        )?;
+        pointers.truncate(count);
+        Ok(pointers.into_iter().map(|pointer| pointer as usize).collect())
+    }
+
     fn from_handle_with_domain(handle: cudf_sys::cudf_column_handle, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_handle_with_domain_and_owner(handle, domain, None)
     }

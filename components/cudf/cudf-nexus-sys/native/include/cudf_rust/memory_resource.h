@@ -124,6 +124,16 @@ cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_h
                                                           cudf_memory_resource_handle* out);
 cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
                                          cudf_memory_resource_usage_t* out);
+
+/// Return the hard allocation cap remaining after aligned live charges.
+///
+/// Budget-tracking and query-domain member resources ignore `cuda_stream`. A
+/// device-manager resource resolves the active member bound to `cuda_stream`.
+/// Query-domain resources report their parent domain's remaining cap.
+/// Returns `CUDF_ERROR_UNSUPPORTED` when the resource has no hard cap.
+cudf_status_t cudf_memory_resource_effective_device_memory(cudf_memory_resource_handle handle,
+                                                            void* cuda_stream,
+                                                            size_t* out);
 cudf_status_t cudf_memory_resource_pool_usage(cudf_memory_resource_handle handle,
                                               cudf_memory_pool_usage_t* out);
 cudf_status_t cudf_memory_resource_trim_to(cudf_memory_resource_handle handle, uint64_t keep_bytes);

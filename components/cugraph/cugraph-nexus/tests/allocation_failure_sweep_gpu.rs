@@ -11,10 +11,11 @@ use cugraph::{
     traversal::BfsParams,
 };
 use cugraph_sys::{
-    bool_t, cugraph_data_type_id_t, cugraph_error_alignment, cugraph_error_allocation_source, cugraph_error_code_t,
-    cugraph_error_cuda_error, cugraph_error_domain_id, cugraph_error_failure_source, cugraph_error_free,
-    cugraph_error_generation, cugraph_error_member_id, cugraph_error_requested_bytes, cugraph_error_t,
-    cugraph_graph_create_sg_from_csr, cugraph_graph_free, cugraph_graph_properties_t, cugraph_graph_t,
+    bool_t, cugraph_centrality_result_free, cugraph_centrality_result_t, cugraph_data_type_id_t,
+    cugraph_error_alignment, cugraph_error_allocation_source, cugraph_error_code_t, cugraph_error_cuda_error,
+    cugraph_error_domain_id, cugraph_error_failure_source, cugraph_error_free, cugraph_error_generation,
+    cugraph_error_member_id, cugraph_error_requested_bytes, cugraph_error_t, cugraph_graph_create_sg_from_csr,
+    cugraph_graph_free, cugraph_graph_properties_t, cugraph_graph_t, cugraph_pagerank,
     cugraph_type_erased_device_array_view_create, cugraph_type_erased_device_array_view_free,
     cugraph_type_erased_device_array_view_t,
 };
@@ -43,7 +44,7 @@ trait SweepError {
 
 impl SweepError for cugraph::Error {
     fn assert_allocation_facts(&self, name: &str, successful_allocations: u64, generation: u64) {
-        assert_eq!(self.kind(), ErrorKind::OutOfMemory, "{name} allocation {successful_allocations}");
+        assert_eq!(self.kind(), ErrorKind::OutOfMemory, "{name} allocation {successful_allocations}: {self:?}");
         assert_eq!(self.allocation_source(), AllocationSource::RmmOutOfMemory);
         assert_eq!(self.allocation_failure_source(), AllocationFailureSource::Physical);
         assert_eq!(self.allocation_domain_id(), DOMAIN_ID);
@@ -59,6 +60,14 @@ struct RawGraph(*mut cugraph_graph_t);
 impl Drop for RawGraph {
     fn drop(&mut self) {
         unsafe { cugraph_graph_free(self.0) };
+    }
+}
+
+struct RawCentralityResult(*mut cugraph_centrality_result_t);
+
+impl Drop for RawCentralityResult {
+    fn drop(&mut self) {
+        unsafe { cugraph_centrality_result_free(self.0) };
     }
 }
 
@@ -190,6 +199,40 @@ fn build_csr(
     }
 }
 
+fn pagerank_with_transpose(
+    entered: &cugraph::EnteredContext<'_>,
+    graph: &mut RawGraph,
+) -> Result<RawCentralityResult, RawError> {
+    let mut result = std::ptr::null_mut();
+    let mut error = std::ptr::null_mut();
+    let code = unsafe {
+        cugraph_pagerank(
+            entered.handle_ptr(),
+            graph.0,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0.85,
+            1.0e-6,
+            100,
+            bool_t::FALSE,
+            &mut result,
+            &mut error,
+        )
+    };
+    if code == cugraph_error_code_t::CUGRAPH_SUCCESS {
+        assert!(error.is_null());
+        assert!(!result.is_null());
+        Ok(RawCentralityResult(result))
+    } else {
+        assert_eq!(code, cugraph_error_code_t::CUGRAPH_ALLOC_ERROR);
+        assert!(result.is_null());
+        assert!(!error.is_null());
+        Err(RawError(error))
+    }
+}
+
 #[test]
 fn pagerank_bfs_betweenness_and_path_decode_failures_are_typed_and_recoverable() {
     let _guard = common::cudf::cuda_test_serial_guard();
@@ -231,6 +274,10 @@ fn pagerank_bfs_betweenness_and_path_decode_failures_are_typed_and_recoverable()
     let warmup = pagerank_graph.pagerank(&entered, &PageRankParams::default()).expect("PageRank warmup");
     drop(warmup);
     sweep_operation("pagerank", &runtime, &domain, || pagerank_graph.pagerank(&entered, &PageRankParams::default()));
+    sweep_operation("pagerank_with_transpose", &runtime, &domain, || {
+        let mut graph = build_csr(&entered, &raw_csr_offsets, &raw_csr_indices)?;
+        pagerank_with_transpose(&entered, &mut graph)
+    });
 
     let mut bfs_graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("BFS graph");
     let warmup = bfs_graph.bfs(&entered, &sources_view, &BfsParams::default().with_predecessors()).expect("BFS warmup");

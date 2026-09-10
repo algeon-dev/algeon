@@ -113,7 +113,7 @@ fn close_cuvs_iceberg_session(fixture: crate::backend::InstalledTestGpuBackend, 
 
 #[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn cuvs_sql_plans_a_real_iceberg_relation_then_rejects_bounded_execution() {
+async fn cuvs_sql_executes_a_real_iceberg_relation_with_bounded_memory() {
     let fixture = RealIcebergProviderFixture::new();
     fixture.write_one_row_and_current_manifest_list().await;
     let provider =
@@ -161,13 +161,13 @@ async fn cuvs_sql_plans_a_real_iceberg_relation_then_rejects_bounded_execution()
     assert!(plan_contains_name(plan.as_ref(), "CuvsAlgoExec"));
     assert_eq!(plan.schema().field(0).name(), "query_id");
     assert_eq!(plan.schema().field(1).name(), "neighbor_id");
-    assert_cuvs_iceberg_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    assert_cuvs_iceberg_results(plan, &ctx).await;
     close_cuvs_iceberg_session(backend, ctx);
 }
 
 #[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn cuvs_sql_plans_uniform_float32_list_iceberg_vectors_then_rejects_bounded_execution() {
+async fn cuvs_sql_executes_uniform_float32_list_iceberg_vectors_with_bounded_memory() {
     let fixture = RealIcebergProviderFixture::new_float32_vector_list();
     fixture.write_float32_vector_list_rows_and_current_manifest_list(&[(100, &[0.0, 0.0]), (100, &[3.0, 3.0])]).await;
     let provider =
@@ -220,13 +220,13 @@ async fn cuvs_sql_plans_uniform_float32_list_iceberg_vectors_then_rejects_bounde
     assert_eq!(plan.schema().field(0).name(), "query_id");
     assert_eq!(plan.schema().field(1).name(), "neighbor_id");
     assert_eq!(plan.schema().field(2).name(), "rank");
-    assert_cuvs_iceberg_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    assert_cuvs_iceberg_results(plan, &ctx).await;
     close_cuvs_iceberg_session(backend, ctx);
 }
 
 #[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn cuvs_kmeans_and_pca_plan_over_real_iceberg_then_reject_bounded_execution() {
+async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_with_bounded_memory() {
     let fixture = RealIcebergProviderFixture::new();
     fixture.write_clusterable_vector_rows_and_current_manifest_list().await;
     let provider =
@@ -253,7 +253,7 @@ async fn cuvs_kmeans_and_pca_plan_over_real_iceberg_then_reject_bounded_executio
     assert!(plan_contains_name(kmeans.as_ref(), "CuvsAlgoExec"));
     assert_eq!(kmeans.schema().field(0).name(), "id");
     assert_eq!(kmeans.schema().field(1).name(), "cluster_id");
-    assert_cuvs_iceberg_bounded_rejection(kmeans, &ctx, "cuvs_kmeans").await;
+    assert_cuvs_iceberg_results(kmeans, &ctx).await;
 
     let pca_options = r#"{
       "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -272,26 +272,14 @@ async fn cuvs_kmeans_and_pca_plan_over_real_iceberg_then_reject_bounded_executio
     assert!(plan_contains_name(pca.as_ref(), "CuvsAlgoExec"));
     assert_eq!(pca.schema().field(0).name(), "id");
     assert_eq!(pca.schema().field(1).name(), "pc_0");
-    assert_cuvs_iceberg_bounded_rejection(pca, &ctx, "cuvs_pca").await;
+    assert_cuvs_iceberg_results(pca, &ctx).await;
     close_cuvs_iceberg_session(backend, ctx);
 }
 
 #[cfg(feature = "cuvs")]
-async fn assert_cuvs_iceberg_bounded_rejection(
-    plan: Arc<dyn ExecutionPlan>,
-    ctx: &SessionContext,
-    expected_operation: &'static str,
-) {
-    let error = collect(plan, ctx.task_ctx()).await.expect_err("bounded cuVS Iceberg execution must fail closed");
-    let typed =
-        error.find_nexus_error().expect("bounded cuVS Iceberg rejection must preserve the structured Nexus error");
-    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.operation(), "datafusion_nexus.cuvs_sql.bounded_admission");
-    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-    assert_eq!(typed.facts().get("execution_mode"), Some("bounded"));
-    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
-    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-    assert_eq!(typed.facts().get("cuvs_operation"), Some(expected_operation));
+async fn assert_cuvs_iceberg_results(plan: Arc<dyn ExecutionPlan>, ctx: &SessionContext) {
+    let batches = collect(plan, ctx.task_ctx()).await.expect("bounded cuVS Iceberg execution");
+    assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "cuVS execution must return rows");
 }
 
 #[tokio::test]

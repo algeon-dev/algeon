@@ -494,150 +494,36 @@ pub(super) fn residual_validation_error_with_schema(
 }
 
 pub(super) fn assert_bounded_join_rejection_contract(error: &nexus_query_engine::error::QueryError) {
-    let contract = BoundedJoinReservationContract;
-    let expected_facts = contract.unsupported_shape_facts(ExecutionBoundaryPolicy::default());
-
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.operation(), "nexus_query_engine.bounded.plan");
     assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-
-    for (key, expected) in &expected_facts {
-        if matches!(
-            *key,
-            "bounded_join_reservation_kinds"
-                | "bounded_join_reservation_statuses"
-                | "blocked_reservations"
-                | "missing_reservations"
-                | "modeled_reservations"
-                | "bounded_join_lower_level_blockers"
-                | "bounded_join_reservation_requirements"
-        ) {
-            continue;
-        }
-        assert_eq!(
-            error.fact_value(key),
-            Some(expected.as_str()),
-            "bounded join unsupported-shape fact mismatch for {key}"
-        );
+    for key in [
+        "bounded_join_rejection_scope",
+        "bounded_join_rejection_owner",
+        "bounded_join_rejection_boundary",
+        "bounded_join_rejection_category",
+        "bounded_join_rejection_reason",
+        "bounded_join_rejection_facts",
+    ] {
+        assert!(error.fact_value(key).is_some(), "bounded join rejection must include {key}");
     }
-
-    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some(contract.model_status()));
-    assert_eq!(error.fact_value("bounded_join_execution_families"), None);
-    assert_eq!(error.fact_value("bounded_join_enabled"), Some("true"));
-    assert_eq!(
-        error.fact_value("boundary_policy"),
-        Some(
-            "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
-        )
-    );
-    assert_eq!(error.fact_value("source_read_boundary"), Some("direct_device_local_parquet"));
-    assert_eq!(error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
-    assert_eq!(error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
-    assert_eq!(error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
-    assert_bounded_join_rejection_reservation_facts_are_consistent(error);
-    assert_eq!(error.fact_value("deferred_reservations"), Some(contract.deferred_reservation_kinds_csv().as_str()));
-    assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
-    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
-    assert_eq!(
-        error.fact_value("cudf_rs_hash_join_gather_map_reservation_contract"),
-        Some("hash_join_gather_map_reservation_size_bytes")
-    );
-    assert_eq!(error.fact_value("cudf_rs_hash_join_output_size_observability"), Some("hash_join_exact_output_size"));
-    assert_eq!(error.fact_value("cudf_rs_hash_join_probe_output_size_hint"), Some("hash_join_probe_with_output_size"));
-    assert_eq!(
-        error.fact_value("cudf_rs_conditional_join_output_size_observability"),
-        Some("conditional_join_exact_output_size")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_conditional_join_output_size_hint"),
-        Some("conditional_join_indices_with_output_size")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_hash_join_pre_build_reservation_contract"),
-        Some("hash_join_pre_build_reservation_size_bytes")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_hash_join_pre_build_reservation_status"),
-        Some("available_exact_flat_hash_join_builds")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_hash_table_observability"),
-        Some("filtered_join_device_allocated_size_bytes")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_output_size_observability"),
-        Some("filtered_join_probe_state_output_size")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_state_contract"),
-        Some("filtered_join_retained_probe_state")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_state_observability"),
-        Some("filtered_join_probe_device_allocated_size_bytes")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_materialization_contract"),
-        Some("filtered_join_probe_state_materialize_indices")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
-        Some("dataframe_gather_output_reservation_size_bytes")
-    );
-    assert_eq!(error.fact_value("missing_lower_level_contract"), None);
-    assert_eq!(error.fact_value("missing_reservations"), Some(contract.blocking_reservation_kinds_csv().as_str()));
+    for retired_key in [
+        "bounded_join_reservation_model",
+        "bounded_join_reservation_kinds",
+        "bounded_join_reservation_statuses",
+        "bounded_join_reservation_requirements",
+        "blocked_reservations",
+        "missing_reservations",
+        "modeled_reservations",
+        "deferred_reservations",
+        "boundary_policy",
+    ] {
+        assert_eq!(error.fact_value(retired_key), None, "bounded join rejection must omit {retired_key}");
+    }
     assert_eq!(error.fact_value("path"), None);
     assert_eq!(error.fact_value("file_index"), None);
     assert_eq!(error.fact_value("row_group_indexes"), None);
     assert_eq!(error.fact_value("row_group_count"), None);
     assert_eq!(error.fact_value("chunk_index"), None);
     assert!(error.source_error().is_none());
-}
-
-fn assert_bounded_join_rejection_reservation_facts_are_consistent(error: &nexus_query_engine::error::QueryError) {
-    let modeled = error
-        .fact_value("modeled_reservations")
-        .map(csv_values)
-        .expect("bounded join rejection should include modeled reservations");
-    let statuses = error
-        .fact_value("bounded_join_reservation_statuses")
-        .map(csv_pairs)
-        .expect("bounded join rejection should include reservation statuses");
-    let requirements = error
-        .fact_value("bounded_join_reservation_requirements")
-        .map(csv_triples)
-        .expect("bounded join rejection should include reservation requirements");
-    let kinds = error
-        .fact_value("bounded_join_reservation_kinds")
-        .map(csv_values)
-        .expect("bounded join rejection should include reservation kinds");
-
-    assert_eq!(statuses.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), kinds);
-    assert_eq!(requirements.iter().map(|(kind, _, _)| *kind).collect::<Vec<_>>(), kinds);
-    assert_eq!(
-        modeled,
-        statuses.iter().filter_map(|(kind, status)| (*status == "modeled").then_some(*kind)).collect::<Vec<_>>()
-    );
-    assert_eq!(error.fact_value("blocked_reservations"), Some(""));
-    assert_eq!(error.fact_value("missing_reservations"), Some(""));
-    assert_eq!(error.fact_value("bounded_join_lower_level_blockers"), Some(""));
-}
-
-fn csv_values(value: &str) -> Vec<&str> {
-    value.split(',').filter(|value| !value.is_empty()).collect()
-}
-
-fn csv_pairs(value: &str) -> Vec<(&str, &str)> {
-    value.split(',').filter_map(|row| row.split_once(':')).collect()
-}
-
-fn csv_triples(value: &str) -> Vec<(&str, &str, &str)> {
-    value
-        .split(',')
-        .filter_map(|row| {
-            let (left, detail) = row.rsplit_once(':')?;
-            let (kind, contract) = left.split_once(':')?;
-            Some((kind, contract, detail))
-        })
-        .collect()
 }

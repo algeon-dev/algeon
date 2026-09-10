@@ -8,7 +8,6 @@ use nexus_query_planning::{
     execution_contracts::{
         ExecutionBoundaryPolicy, MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
     },
-    graph_memory::GraphMemoryCalibrationOverride,
     mode::StatisticalAggregateExecutionMode,
 };
 
@@ -69,8 +68,6 @@ pub struct QueryExecutionConfig {
     pub aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert local-throughput source chunk planning policy copied into admitted contexts.
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
-    /// Optional service-scoped graph calibration metadata copied into admitted contexts.
-    pub graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     /// Source chunk byte target copied into admitted bounded contexts.
     pub max_source_chunk_bytes: u64,
     /// Source row-group target copied into admitted bounded contexts.
@@ -120,7 +117,6 @@ impl Default for QueryExecutionConfig {
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
-            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             max_source_chunk_bytes: 64 * 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,

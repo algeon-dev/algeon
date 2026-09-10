@@ -686,7 +686,6 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
     assert_eq!(usage.peak_bytes as usize, report.allocator_high_water_bytes().unwrap());
     assert!(usage.current_bytes >= output_bytes as u64);
     assert!(usage.peak_aligned_bytes <= report.request().budget_bytes() as u64);
-    assert_eq!(report.unresolved_contract(), None);
 }
 
 #[test]
@@ -721,10 +720,6 @@ fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
-    assert_eq!(
-        report.unresolved_contract(),
-        Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable")
-    );
 }
 
 #[test]
@@ -754,11 +749,10 @@ fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
-    assert_eq!(report.unresolved_contract(), None);
 }
 
 #[test]
-fn runtime_nulls_with_budget_decimal_scale_reports_budgeted_cast_contract_gap() {
+fn runtime_nulls_with_budget_decimal_scale_routes_allocator() {
     let runtime = sample_runtime();
     let token = runtime
         .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_null_series"))
@@ -769,7 +763,6 @@ fn runtime_nulls_with_budget_decimal_scale_reports_budgeted_cast_contract_gap() 
     reset_exec_observation();
     let outcome = runtime.nulls_with_budget(dtype, 4, &token).unwrap();
     let series = outcome.value();
-    let report = outcome.report();
     let view = series.as_column().testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 4);
@@ -780,7 +773,6 @@ fn runtime_nulls_with_budget_decimal_scale_reports_budgeted_cast_contract_gap() 
         token.memory_resource().testing_raw_handle_value()
     );
     assert_all_observed_exec_mrs_are_manager_mr(&token);
-    assert_eq!(report.unresolved_contract(), Some("libcudf_decimal_scaled_nulls_budgeted_cast_preflight_unavailable"));
 }
 
 #[test]
@@ -809,7 +801,6 @@ fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() 
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
-    assert_eq!(report.unresolved_contract(), None);
 }
 
 #[test]

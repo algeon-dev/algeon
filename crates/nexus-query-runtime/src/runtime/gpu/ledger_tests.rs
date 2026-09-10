@@ -8,6 +8,28 @@ use crate::{
     runtime::gpu::{DeviceCapabilities, DeviceResourceEnvelope, LedgerTransitionKind},
 };
 
+struct StreamSynchronizeHookReset;
+
+impl StreamSynchronizeHookReset {
+    fn new() -> Self {
+        unsafe { cudf_sys::test_support::cudf_test_stream_synchronize_reset() };
+        Self
+    }
+}
+
+impl Drop for StreamSynchronizeHookReset {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::test_support::cudf_test_stream_synchronize_reset() };
+    }
+}
+
+fn stream_synchronize_call_count() -> i32 {
+    let mut count = 0;
+    let status = unsafe { cudf_sys::test_support::cudf_test_stream_synchronize_call_count(&mut count) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    count
+}
+
 fn profile(
     managed_capacity_bytes: u64,
     default_query_limit_bytes: u64,
@@ -123,35 +145,35 @@ fn frozen_resident_transition_moves_budget_to_resident_and_preserves_cap_boundar
 }
 
 #[test]
-fn frozen_resident_is_positive_bounded_and_cannot_resume_execution() {
-    let ledger = DeviceLedger::new(profile(1_000, 800, 1));
-    let grant = ledger.try_admit(request(1), Some(500)).unwrap().expect("grant admits");
+fn frozen_resident_accepts_empty_outputs_but_remains_bounded_and_terminal() {
+    let empty_ledger = DeviceLedger::new(profile(1_000, 800, 1));
+    let empty_grant = empty_ledger.try_admit(request(1), Some(500)).unwrap().expect("empty grant admits");
+    empty_grant.freeze_resident(0).unwrap();
+    assert!(empty_grant.retain_resident_owner(1).is_err());
 
-    assert!(grant.freeze_resident(0).is_err());
+    let ledger = DeviceLedger::new(profile(1_000, 800, 1));
+    let grant = ledger.try_admit(request(2), Some(500)).unwrap().expect("bounded grant admits");
     assert!(grant.freeze_resident(501).is_err());
     grant.freeze_resident(300).unwrap();
     grant.freeze_resident(300).unwrap();
     assert!(grant.freeze_resident(301).is_err());
-    assert!(!grant.try_reserve_live_bytes(1).unwrap());
-    assert!(grant.activate_phase(1).is_err());
+    assert!(grant.retain_resident_owner(1).is_err());
 }
 
 #[test]
-fn live_reservations_are_observation_not_a_model_derived_allocation_gate() {
+fn resident_owners_are_observation_not_an_allocation_gate() {
     let ledger = DeviceLedger::new(profile(1_000, 800, 1));
     let grant = ledger.try_admit(request(1), Some(300)).unwrap().expect("grant admits");
-    let phase = grant.activate_phase(250).unwrap();
 
-    assert_eq!(phase.required_bytes(), 250);
-    assert!(grant.try_reserve_live_bytes(250).unwrap());
-    assert!(grant.try_reserve_live_bytes(1).unwrap());
-    assert_eq!(grant.live_reserved_bytes(), 251);
-    assert_eq!(ledger.snapshot().unwrap().live_reserved_bytes, 251);
+    let first = grant.retain_resident_owner(250).unwrap().expect("positive owner bytes");
+    let second = grant.retain_resident_owner(1).unwrap().expect("positive owner bytes");
+    assert_eq!(grant.resident_owner_bytes(), 251);
+    assert_eq!(ledger.snapshot().unwrap().resident_owner_bytes, 251);
 
-    grant.release_live_bytes(251);
-    drop(phase);
-    assert_eq!(grant.live_reserved_bytes(), 0);
-    assert_eq!(ledger.snapshot().unwrap().live_reserved_bytes, 0);
+    drop(first);
+    drop(second);
+    assert_eq!(grant.resident_owner_bytes(), 0);
+    assert_eq!(ledger.snapshot().unwrap().resident_owner_bytes, 0);
 }
 
 #[test]
@@ -219,6 +241,61 @@ fn prepared_resident_transition_keeps_full_grant_until_report_publication() {
     assert_eq!(after_report.frozen_resident_bytes, 200);
     let exact_remaining = ledger.try_admit(request(2), Some(800)).unwrap().expect("remaining capacity admits");
     assert_eq!(exact_remaining.budget_bytes(), 800);
+}
+
+#[test]
+fn final_resident_consumer_fence_retains_capacity_until_completion() {
+    let _reset = StreamSynchronizeHookReset::new();
+    let ledger = DeviceLedger::new(profile(1_000, 800, 2));
+    let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
+    let producer_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
+    producer_owner
+        .set_completion_stream(cudf::runtime::CudaStream::new().expect("completion stream"))
+        .expect("completion stream binds once");
+    let consumer_owner = producer_owner.clone();
+    grant.freeze_resident(200).expect("resident charge freezes");
+    drop(producer_owner);
+    drop(grant);
+    assert_eq!(ledger.snapshot().unwrap().frozen_resident_bytes, 200);
+
+    unsafe { cudf_sys::test_support::cudf_test_stream_block_synchronize() };
+    let release = std::thread::spawn(move || drop(consumer_owner));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while stream_synchronize_call_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "final resident owner reaches its completion fence");
+        std::thread::yield_now();
+    }
+    assert!(!release.is_finished(), "the final owner waits for consumer completion");
+    assert_eq!(ledger.snapshot().unwrap().frozen_resident_bytes, 200);
+    assert!(ledger.try_admit(request(2), Some(801)).unwrap().is_none());
+
+    unsafe { cudf_sys::test_support::cudf_test_stream_unblock_synchronize() };
+    release.join().expect("final resident release completes");
+    assert_eq!(ledger.snapshot().unwrap().frozen_resident_bytes, 0);
+    let replacement = ledger.try_admit(request(3), Some(1_000)).unwrap().expect("released capacity is reusable");
+    drop(replacement);
+}
+
+#[test]
+fn resident_completion_failure_closes_device_admission() {
+    let _reset = StreamSynchronizeHookReset::new();
+    let ledger = DeviceLedger::new(profile(1_000, 800, 1));
+    let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
+    let resident_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
+    resident_owner
+        .set_completion_stream(cudf::runtime::CudaStream::new().expect("completion stream"))
+        .expect("completion stream binds once");
+    grant.freeze_resident(200).expect("resident charge freezes");
+    drop(grant);
+
+    unsafe { cudf_sys::test_support::cudf_test_stream_fail_synchronize() };
+    drop(resident_owner);
+    let snapshot = ledger.snapshot().expect("ledger snapshot after failed fence");
+    let DeviceAdmissionHealth::Closed { reason, .. } = snapshot.health else {
+        panic!("a failed resident completion fence must close device admission");
+    };
+    assert!(reason.contains("resident completion fence failed"));
+    assert!(ledger.try_admit(request(2), Some(1)).unwrap().is_none());
 }
 
 #[test]

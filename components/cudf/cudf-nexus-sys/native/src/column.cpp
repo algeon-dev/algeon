@@ -25,6 +25,7 @@
 
 #include <rmm/device_buffer.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -480,6 +481,30 @@ cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle, size_
   CUDF_RUST_TRY
   {
     *out = cudf_column_state_from_handle(handle).device_allocated_size();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_backing_allocation_pointers(cudf_column_handle handle,
+                                                       void** out,
+                                                       size_t capacity,
+                                                       size_t* count)
+{
+  CUDF_RUST_NULL_CHECK(count, "count is null");
+  *count = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  if (capacity != 0) { CUDF_RUST_NULL_CHECK(out, "out is null with non-zero capacity"); }
+  CUDF_RUST_TRY
+  {
+    auto pointers = cudf_column_state_from_handle(handle).backing_allocation_pointers();
+    *count        = pointers.size();
+    if (out == nullptr && capacity == 0) { return CUDF_SUCCESS; }
+    if (capacity < pointers.size()) {
+      set_error("backing allocation pointer capacity is too small");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    std::copy(pointers.begin(), pointers.end(), out);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

@@ -62,7 +62,6 @@ string_id!(RuntimeWorkerId, "Worker identity scoped to one query.");
 string_id!(RuntimePipelineEdgeId, "Compiled-pipeline edge identity scoped to one plan execution.");
 string_id!(RuntimeBarrierId, "Compiled pipeline-barrier identity scoped to one plan execution.");
 string_id!(RuntimeSinkId, "Compiled pipeline-sink identity scoped to one plan execution.");
-string_id!(RuntimeReservationGateId, "Reservation-gate identity scoped to one plan execution.");
 
 /// Service-local identity for one admission attempt.
 ///
@@ -271,7 +270,6 @@ pub struct CompiledEdgeRow {
     pub to_task_id: RuntimeTaskId,
     pub edge_kind: String,
     pub resource_ids: Vec<RuntimeResourceId>,
-    pub gate_ids: Vec<RuntimeReservationGateId>,
 }
 
 /// One compiled barrier definition in the static runtime topology.
@@ -282,7 +280,6 @@ pub struct BarrierDefinitionRow {
     pub barrier_kind: String,
     pub upstream_task_ids: Vec<RuntimeTaskId>,
     pub downstream_task_ids: Vec<RuntimeTaskId>,
-    pub gate_ids: Vec<RuntimeReservationGateId>,
 }
 
 /// The compiled result-sink definition in the static runtime topology.
@@ -292,22 +289,6 @@ pub struct SinkDefinitionRow {
     pub sink_id: RuntimeSinkId,
     pub sink_kind: String,
     pub input_task_id: RuntimeTaskId,
-    pub gate_ids: Vec<RuntimeReservationGateId>,
-}
-
-/// One reservation gate and its owner in the static runtime topology.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ReservationGateRow {
-    pub plan_execution_id: PlanExecutionId,
-    pub gate_id: RuntimeReservationGateId,
-    pub owner_kind: String,
-    pub owner_id: String,
-    pub reservation_kind: String,
-    pub requirement_scope: String,
-    pub memory_boundary: String,
-    pub required_contract: String,
-    pub contract_status: String,
-    pub contract_quality: String,
 }
 
 /// One GPU executor job definition.
@@ -358,7 +339,6 @@ pub enum RuntimeTopologyRecord {
     CompiledEdge(CompiledEdgeRow),
     BarrierDefinition(BarrierDefinitionRow),
     SinkDefinition(SinkDefinitionRow),
-    ReservationGate(ReservationGateRow),
     JobDefinition(JobDefinitionRow),
     WorkerDefinition(WorkerDefinitionRow),
     Resource(RuntimeResourceRow),
@@ -971,7 +951,6 @@ pub enum RuntimeObservationRecordClass {
     CompiledEdge,
     BarrierDefinition,
     SinkDefinition,
-    ReservationGate,
     JobDefinition,
     WorkerDefinition,
     Resource,
@@ -1070,7 +1049,6 @@ pub enum RuntimeObservationRecord {
     CompiledEdge { sequence: ObservationSequence, row: CompiledEdgeRow },
     BarrierDefinition { sequence: ObservationSequence, row: BarrierDefinitionRow },
     SinkDefinition { sequence: ObservationSequence, row: SinkDefinitionRow },
-    ReservationGate { sequence: ObservationSequence, row: ReservationGateRow },
     JobDefinition { sequence: ObservationSequence, row: JobDefinitionRow },
     WorkerDefinition { sequence: ObservationSequence, row: WorkerDefinitionRow },
     Resource { sequence: ObservationSequence, row: RuntimeResourceRow },
@@ -1097,7 +1075,6 @@ impl RuntimeTopologyRecord {
             Self::CompiledEdge(_) => RuntimeObservationRecordClass::CompiledEdge,
             Self::BarrierDefinition(_) => RuntimeObservationRecordClass::BarrierDefinition,
             Self::SinkDefinition(_) => RuntimeObservationRecordClass::SinkDefinition,
-            Self::ReservationGate(_) => RuntimeObservationRecordClass::ReservationGate,
             Self::JobDefinition(_) => RuntimeObservationRecordClass::JobDefinition,
             Self::WorkerDefinition(_) => RuntimeObservationRecordClass::WorkerDefinition,
             Self::Resource(_) => RuntimeObservationRecordClass::Resource,
@@ -1135,7 +1112,6 @@ impl LogicalRetainedBytes for RuntimeTopologyRecord {
                         + string_bytes(row.to_task_id.as_str())
                         + string_bytes(&row.edge_kind)
                         + row.resource_ids.iter().map(|id| string_bytes(id.as_str())).sum::<u64>()
-                        + row.gate_ids.iter().map(|id| string_bytes(id.as_str())).sum::<u64>()
                 },
                 Self::BarrierDefinition(row) => {
                     string_bytes(row.plan_execution_id.as_str())
@@ -1143,26 +1119,12 @@ impl LogicalRetainedBytes for RuntimeTopologyRecord {
                         + string_bytes(&row.barrier_kind)
                         + row.upstream_task_ids.iter().map(|id| string_bytes(id.as_str())).sum::<u64>()
                         + row.downstream_task_ids.iter().map(|id| string_bytes(id.as_str())).sum::<u64>()
-                        + row.gate_ids.iter().map(|id| string_bytes(id.as_str())).sum::<u64>()
                 },
                 Self::SinkDefinition(row) => {
                     string_bytes(row.plan_execution_id.as_str())
                         + string_bytes(row.sink_id.as_str())
                         + string_bytes(&row.sink_kind)
                         + string_bytes(row.input_task_id.as_str())
-                        + row.gate_ids.iter().map(|id| string_bytes(id.as_str())).sum::<u64>()
-                },
-                Self::ReservationGate(row) => {
-                    string_bytes(row.plan_execution_id.as_str())
-                        + string_bytes(row.gate_id.as_str())
-                        + string_bytes(&row.owner_kind)
-                        + string_bytes(&row.owner_id)
-                        + string_bytes(&row.reservation_kind)
-                        + string_bytes(&row.requirement_scope)
-                        + string_bytes(&row.memory_boundary)
-                        + string_bytes(&row.required_contract)
-                        + string_bytes(&row.contract_status)
-                        + string_bytes(&row.contract_quality)
                 },
                 Self::JobDefinition(row) => {
                     row.plan_execution_id.as_ref().map_or(0, |id| string_bytes(id.as_str()))

@@ -140,7 +140,6 @@ pub(super) enum GraphClaimCalibrationNonPhysicalReason {
         #[serde(skip_serializing_if = "Option::is_none")]
         leader_attempt_id: Option<String>,
     },
-    GraphMemoryAdmissionDenied,
 }
 
 #[cfg(feature = "single-node-multi-gpu-validate-run")]
@@ -164,9 +163,6 @@ impl From<datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason>
             datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
                 leader_attempt_id,
             } => Self::BfsSingleflightFollower { leader_attempt_id: leader_attempt_id.map(|id| id.to_string()) },
-            datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied => {
-                Self::GraphMemoryAdmissionDenied
-            },
         }
     }
 }
@@ -176,13 +172,9 @@ impl From<datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason>
 pub(super) struct GraphClaimCalibrationRow {
     pub(super) node_id: String,
     pub(super) algorithm: String,
-    pub(super) model_requested_bytes: u64,
-    pub(super) requested_bytes: u64,
-    pub(super) budget_bytes: Option<u64>,
     pub(super) execution_state: String,
     pub(super) measured_peak_bytes: Option<u64>,
     pub(super) measured_peak_provenance: String,
-    pub(super) graph_model_error_ratio: Option<String>,
 }
 
 /// Graph-model calibration completeness result for every measurement-phase graph attempt.
@@ -249,7 +241,7 @@ pub(super) struct DeviceOccupancyPeaks {
     pub(super) peak_active_attempts: usize,
     pub(super) peak_active_query_jobs: usize,
     pub(super) peak_live_grants_bytes: u64,
-    pub(super) peak_live_reserved_bytes: u64,
+    pub(super) peak_resident_owner_bytes: u64,
     pub(super) allocation_failure_count: u64,
     /// Minimum observed logical root-stream slot availability. Profile-derived
     /// accounting, not a CUDA stream counter.
@@ -467,7 +459,7 @@ pub(super) fn graph_claim_calibration_evidence(observations: &[AttemptObservatio
                     snapshot: None,
                 };
             };
-            let (status, reason) = match graph_claim_calibration_reason(snapshot, attempt, &attempts_by_id) {
+            let (status, reason) = match graph_claim_calibration_reason(snapshot, &attempts_by_id) {
                 Some(reason) => (ClauseStatus::NotEvidenced, reason),
                 None => (ClauseStatus::Evidenced, "complete"),
             };
@@ -494,7 +486,6 @@ pub(super) fn graph_claim_calibration_evidence(observations: &[AttemptObservatio
 /// non-physical follower semantics are complete.
 fn graph_claim_calibration_reason(
     snapshot: &GraphClaimCalibrationSnapshot,
-    attempt: &AttemptObservation,
     attempts_by_id: &BTreeMap<&str, Vec<&AttemptObservation>>,
 ) -> Option<&'static str> {
     if snapshot.truncated {
@@ -532,9 +523,6 @@ fn graph_claim_calibration_reason(
                 Some("singleflight_follower_leader_not_evidenced")
             }
         },
-        GraphClaimCalibrationExecution::NonPhysical(
-            GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
-        ) => graph_memory_admission_denied_reason(snapshot, attempt),
     }
 }
 
@@ -548,44 +536,8 @@ fn physical_graph_claim_calibration_reason(snapshot: &GraphClaimCalibrationSnaps
         return Some("physical_graph_execution_state_not_started");
     }
     match (row.measured_peak_bytes, row.measured_peak_provenance.as_str()) {
-        (Some(_), "reservation_high_water" | "cache_scope_high_water" | "pool_delta") => None,
+        (Some(_), "cache_scope_high_water") => None,
         _ => Some("graph_peak_measurement_unavailable"),
-    }
-}
-
-/// A graph-memory model denial can qualify without a runtime peak only when
-/// the engine row proves that the executor never started and the canonical
-/// attempt failure has the matching closed native reservation class.
-fn graph_memory_admission_denied_reason(
-    snapshot: &GraphClaimCalibrationSnapshot,
-    attempt: &AttemptObservation,
-) -> Option<&'static str> {
-    if snapshot.rows.len() != 1 {
-        return Some("expected_exactly_one_graph_claim_row");
-    }
-    let row = &snapshot.rows[0];
-    if row.execution_state != "graph_memory_admission_denied" {
-        return Some("graph_memory_admission_denied_state_missing");
-    }
-    if row.measured_peak_bytes.is_some() || row.measured_peak_provenance != "unavailable" {
-        return Some("graph_memory_admission_denied_has_graph_peak");
-    }
-    let Some(budget_bytes) = row.budget_bytes else {
-        return Some("graph_memory_admission_denied_budget_missing");
-    };
-    if row.requested_bytes <= budget_bytes {
-        return Some("graph_memory_admission_denied_budget_mismatch");
-    }
-    match attempt.failure.as_ref() {
-        Some(AttemptFailureClass { origin, code, status, operation })
-            if origin == "Native"
-                && code == "MemoryReservationFailed"
-                && status == "Temporary"
-                && operation == "Execution" =>
-        {
-            None
-        },
-        _ => Some("graph_memory_admission_denied_failure_mismatch"),
     }
 }
 

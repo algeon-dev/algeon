@@ -17,7 +17,7 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::AttemptCapabilityEvidence,
     exec::{execute_query_plan_observed, output::QueryOutput},
     plan::QueryPlan,
 };
@@ -241,19 +241,11 @@ impl ExecutionPlan for NexusNativeExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
-                let unresolved_capability_proof =
-                    QueryPlanCapabilityProof::for_query_plan_preflighted(&plan).map_err(|error| {
-                        DataFusionError::from(Error::from_native(
-                            "datafusion_nexus.native_exec.admission_proof",
-                            "failed to preflight the unresolved native host plan before admission",
-                            error,
-                        ))
-                    })?;
+                let unresolved_capability_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
                 let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
                 if execution_config.memory_control_policy().is_bounded() {
                     nexus_query_engine::exec::preflight_bounded_query_plan(
                         &plan,
-                        execution_config.boundary_policy(),
                         execution_config.statistical_aggregate_execution_mode(),
                     )
                     .map_err(|error| {
@@ -268,30 +260,24 @@ impl ExecutionPlan for NexusNativeExec {
                     && let Some(ticket) =
                         execution_config.query_admission_ticket_for_task_context(task_context.as_ref())
                 {
-                    let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(&plan).map_err(|error| {
-                        DataFusionError::from(Error::from_native(
-                            "datafusion_nexus.native_exec.admission_proof",
-                            "failed to preflight the resolved native host plan before admission",
-                            error,
-                        ))
-                    })?;
-                    if let Some(existing) = ticket.attempt_capability_proof_for_rebind()
-                        && existing != unresolved_capability_proof
-                        && existing != proof
+                    let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
+                    if let Some(existing) = ticket.attempt_capability_evidence_for_rebind()
+                        && existing != unresolved_capability_evidence
+                        && existing != evidence
                     {
                         return Err(DataFusionError::from(
                             Error::new(
                                 ErrorCode::InvalidExecutionPlan,
-                                "datafusion_nexus.native_exec.admission_proof",
+                                "datafusion_nexus.native_exec.admission_evidence",
                                 "the active native host admission ticket does not attest to this single host plan",
                             )
-                            .with_fact("reason", "native_host_admission_proof_scope_mismatch")
-                            .with_fact("ticket_proof_scope", "combined_or_different_native_plan"),
+                            .with_fact("reason", "native_host_admission_evidence_scope_mismatch")
+                            .with_fact("ticket_evidence_scope", "combined_or_different_native_plan"),
                         ));
                     }
-                    ticket.rebind_capability_proof_before_admission(proof).map_err(|error| {
+                    ticket.rebind_capability_evidence_before_admission(evidence).map_err(|error| {
                         DataFusionError::from(Error::from_native(
-                            "datafusion_nexus.native_exec.admission_proof",
+                            "datafusion_nexus.native_exec.admission_evidence",
                             "failed to rebind the native host admission ticket before query-service admission",
                             error,
                         ))

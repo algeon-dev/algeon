@@ -1681,13 +1681,14 @@ pub fn cudf::DataFrame::with_column(&self, &str, impl cudf::IntoSeries) -> cudf:
 pub fn cudf::DataFrame::with_columns<I, T>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 pub fn cudf::DataFrame::with_columns_with_budget<I, T>(&self, I, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 impl cudf::DataFrame
+pub fn cudf::DataFrame::backing_allocation_pointers(&self) -> cudf::core::error::Result<alloc::vec::Vec<usize>>
+impl cudf::DataFrame
 pub fn cudf::DataFrame::build_filtered_join<I, S>(&self, I, cudf::DataFrameFilteredJoinOptions) -> cudf::core::error::Result<cudf::DataFrameFilteredJoin> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::filter_join_indices(&self, &cudf::DataFrame, &cudf::DataFrameJoinIndices, &cudf::DataFrameJoinIndices, &cudf::ops::ast::AstExpression, cudf::DataFramePredicateJoinOptions, cudf::JoinType) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrame::filtered_join_pre_build_reservation_size_bytes<I, S>(&self, I, cudf::DataFrameFilteredJoinOptions) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::build_hash_join<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<cudf::DataFrameHashJoin> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::full_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
-pub fn cudf::DataFrame::hash_join_allocation_preflight<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<cudf::ops::join::HashJoinAllocationPreflight> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::hash_join_pre_build_reservation_size_bytes<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::inner_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrame::left_anti_join(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<Self>
@@ -1998,7 +1999,6 @@ pub fn cudf::DataFrameFilteredJoinProbeState::output_size(&self) -> usize
 pub fn cudf::DataFrameFilteredJoinProbeState::probe_gather_map_reservation_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub struct cudf::frame::dataframe::DataFrameHashJoin
 impl cudf::DataFrameHashJoin
-pub fn cudf::DataFrameHashJoin::allocation_preflight(&self) -> &cudf::ops::join::HashJoinAllocationPreflight
 pub fn cudf::DataFrameHashJoin::build(&self) -> &cudf::DataFrame
 pub fn cudf::DataFrameHashJoin::build_keys(&self) -> &[alloc::string::String]
 pub fn cudf::DataFrameHashJoin::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -2157,11 +2157,6 @@ pub fn cudf::DataFramePreparedSort::materialized_output_reservation_size_bytes_i
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
 pub fn cudf::DataFramePreparedSort::retained_sorted_order_device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::sorted_order(&self) -> &cudf::Series
-pub fn cudf::DataFramePreparedSort::sorted_order_lexicographic_preflight(&self) -> core::option::Option<cudf::ops::sorting::SortedOrderLexicographicPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_lexicographic_preflight_for_metadata(usize, &[cudf::core::types::DataType], &[usize], bool, &[cudf::ops::sorting::Order], &[cudf::ops::sorting::NullOrder], cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderLexicographicPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_preflight(&self) -> core::option::Option<cudf::ops::sorting::SortedOrderPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_radix_preflight(&self) -> core::option::Option<cudf::ops::sorting::SortedOrderRadixPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(usize, cudf::core::types::DataType, usize, bool, cudf::ops::sorting::Order, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderRadixPreflight>
 pub fn cudf::DataFramePreparedSort::sorted_order_reservation_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::sorted_order_reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
 pub struct cudf::frame::dataframe::DataFrameProjectedCrossJoinPlan
@@ -2414,13 +2409,6 @@ pub fn cudf::frame::factorization::Factorized::decode(&self) -> cudf::core::erro
 pub fn cudf::frame::factorization::Factorized::into_parts(self) -> (cudf::frame::factorization::EncodedSeries, cudf::frame::factorization::Codebook)
 pub fn cudf::frame::factorization::Factorized::row_codes(&self) -> &cudf::frame::factorization::EncodedSeries
 pub mod cudf::frame::series
-pub struct cudf::frame::series::ScalarReductionDistinctWorkspacePreflight
-impl cudf::ScalarReductionDistinctWorkspacePreflight
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::for_metadata(usize, cudf::core::types::DataType, usize) -> cudf::core::error::Result<Self>
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::insertion_count_bytes(self) -> usize
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::preprocessing_retained_bytes(self) -> usize
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::static_set_storage_bytes(self) -> usize
 pub struct cudf::frame::series::ScalarReductionOutput
 impl cudf::ScalarReductionOutput
 pub fn cudf::ScalarReductionOutput::into_scalar(self) -> cudf::core::scalar::Scalar
@@ -3331,7 +3319,6 @@ pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Resu
 pub struct cudf::frame::series::SeriesPreparedScalarReduction<'a>
 impl<'a> cudf::SeriesPreparedScalarReduction<'a>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::aggregation(&self) -> &cudf::ops::reduction::ReduceAgg
-pub fn cudf::SeriesPreparedScalarReduction<'a>::distinct_workspace_preflight(&self) -> core::option::Option<cudf::ScalarReductionDistinctWorkspacePreflight>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::execute(&self) -> cudf::core::error::Result<cudf::ScalarReductionOutput>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::execute_with_budget(&self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::ScalarReductionOutput>>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::input(&self) -> &cudf::Series
@@ -3363,13 +3350,14 @@ pub fn cudf::DataFrame::with_column(&self, &str, impl cudf::IntoSeries) -> cudf:
 pub fn cudf::DataFrame::with_columns<I, T>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 pub fn cudf::DataFrame::with_columns_with_budget<I, T>(&self, I, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 impl cudf::DataFrame
+pub fn cudf::DataFrame::backing_allocation_pointers(&self) -> cudf::core::error::Result<alloc::vec::Vec<usize>>
+impl cudf::DataFrame
 pub fn cudf::DataFrame::build_filtered_join<I, S>(&self, I, cudf::DataFrameFilteredJoinOptions) -> cudf::core::error::Result<cudf::DataFrameFilteredJoin> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::filter_join_indices(&self, &cudf::DataFrame, &cudf::DataFrameJoinIndices, &cudf::DataFrameJoinIndices, &cudf::ops::ast::AstExpression, cudf::DataFramePredicateJoinOptions, cudf::JoinType) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrame::filtered_join_pre_build_reservation_size_bytes<I, S>(&self, I, cudf::DataFrameFilteredJoinOptions) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::build_hash_join<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<cudf::DataFrameHashJoin> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::full_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
-pub fn cudf::DataFrame::hash_join_allocation_preflight<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<cudf::ops::join::HashJoinAllocationPreflight> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::hash_join_pre_build_reservation_size_bytes<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::inner_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrame::left_anti_join(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<Self>
@@ -5225,20 +5213,9 @@ pub mod cudf::ops::concatenate
 pub fn cudf::ops::concatenate::concatenate_columns(&[&cudf::core::column::ColumnView<'_>]) -> cudf::core::error::Result<cudf::core::Column>
 pub fn cudf::ops::concatenate::concatenate_tables(&[&cudf::core::table::TableView<'_>]) -> cudf::core::error::Result<cudf::core::Table>
 pub mod cudf::ops::copying
-pub struct cudf::ops::copying::GatherFixedWidthDontCheckPreflight
-impl cudf::ops::copying::GatherFixedWidthDontCheckPreflight
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::active_phase_peak_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::gather_map_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::native_workspace_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::output_frame_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::output_null_mask_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::source_table_device_view_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::target_mask_pointer_array_bytes(self) -> usize
-pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::valid_count_array_bytes(self) -> usize
 pub fn cudf::ops::copying::copy_if_else(&cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Column>
 pub fn cudf::ops::copying::copy_if_else_in(&cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::core::Column>
 pub fn cudf::ops::copying::gather(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Table>
-pub fn cudf::ops::copying::gather_fixed_width_dont_check_preflight_for_metadata(&[(cudf::core::types::DataType, bool)], usize, usize, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::copying::GatherFixedWidthDontCheckPreflight>
 pub unsafe fn cudf::ops::copying::gather_unchecked(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::copying::scatter(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::table::TableView<'_>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::copying::scatter_in(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::table::TableView<'_>, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::core::Table>
@@ -5902,16 +5879,6 @@ pub fn cudf::ops::join::HashJoin::pre_build_reservation_size_bytes(&cudf::core::
 pub fn cudf::ops::join::HashJoin::pre_build_reservation_size_bytes_in(&cudf::core::Table, cudf::ops::join::HashJoinOptions, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<usize>
 impl core::fmt::Debug for cudf::ops::join::HashJoin
 pub fn cudf::ops::join::HashJoin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct cudf::ops::join::HashJoinAllocationPreflight
-impl cudf::ops::join::HashJoinAllocationPreflight
-pub fn cudf::ops::join::HashJoinAllocationPreflight::active_phase_peak_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::hash_table_storage_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::preprocessed_string_null_mask_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::preprocessed_string_offsets_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::preprocessed_string_payload_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::retained_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::retained_key_view_storage_bytes(&self) -> usize
-pub fn cudf::ops::join::HashJoinAllocationPreflight::temporary_row_validity_workspace_bytes(&self) -> usize
 pub struct cudf::ops::join::HashJoinKeyMetadata
 impl cudf::ops::join::HashJoinKeyMetadata
 pub fn cudf::ops::join::HashJoinKeyMetadata::fixed_width(cudf::core::types::TypeId, bool) -> Self
@@ -5960,7 +5927,6 @@ pub fn cudf::MergeOptions::default() -> Self
 pub struct cudf::ops::join::SingleSideJoinIndices
 pub cudf::ops::join::SingleSideJoinIndices::indices: cudf::core::Column
 pub const cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str
-pub const cudf::ops::join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str
 pub fn cudf::ops::join::conditional_full_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::conditional_full_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::conditional_inner_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
@@ -5996,7 +5962,6 @@ pub fn cudf::ops::join::filtered_join_probe_allocation_preflight(u64, u64) -> cu
 pub fn cudf::ops::join::full_join(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::JoinSides>
 pub fn cudf::ops::join::full_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::full_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
-pub fn cudf::ops::join::hash_join_allocation_preflight_for_metadata(&[cudf::ops::join::HashJoinKeyMetadata], u64, f64, cudf::ops::join::HashJoinPreprocessingMode) -> cudf::core::error::Result<cudf::ops::join::HashJoinAllocationPreflight>
 pub fn cudf::ops::join::inner_join(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::JoinSides>
 pub fn cudf::ops::join::inner_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::inner_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
@@ -6087,13 +6052,6 @@ pub cudf::ops::sorting::NullOrder::Before = 1
 #[repr(i32)] pub enum cudf::ops::sorting::Order
 pub cudf::ops::sorting::Order::Ascending = 0
 pub cudf::ops::sorting::Order::Descending = 1
-pub enum cudf::ops::sorting::SortedOrderPreflight
-pub cudf::ops::sorting::SortedOrderPreflight::Lexicographic(cudf::ops::sorting::SortedOrderLexicographicPreflight)
-pub cudf::ops::sorting::SortedOrderPreflight::Radix(cudf::ops::sorting::SortedOrderRadixPreflight)
-impl cudf::ops::sorting::SortedOrderPreflight
-pub fn cudf::ops::sorting::SortedOrderPreflight::active_phase_peak_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderPreflight::retained_order_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderPreflight::temporary_workspace_bytes(self) -> usize
 pub struct cudf::ops::sorting::SortOptions
 pub cudf::ops::sorting::SortOptions::descending: alloc::vec::Vec<bool>
 pub cudf::ops::sorting::SortOptions::nulls_first: alloc::vec::Vec<bool>
@@ -6105,29 +6063,10 @@ pub fn cudf::ops::sorting::SortOptions::with_nulls_first(self, alloc::vec::Vec<b
 pub fn cudf::ops::sorting::SortOptions::with_stable(self, bool) -> Self
 impl core::default::Default for cudf::ops::sorting::SortOptions
 pub fn cudf::ops::sorting::SortOptions::default() -> Self
-pub struct cudf::ops::sorting::SortedOrderLexicographicPreflight
-impl cudf::ops::sorting::SortedOrderLexicographicPreflight
-pub fn cudf::ops::sorting::SortedOrderLexicographicPreflight::active_phase_peak_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderLexicographicPreflight::comparator_state_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderLexicographicPreflight::retained_order_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderLexicographicPreflight::temporary_workspace_bytes(self) -> usize
-pub struct cudf::ops::sorting::SortedOrderRadixPreflight
-impl cudf::ops::sorting::SortedOrderRadixPreflight
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::active_phase_peak_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::key_input_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::key_output_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::retained_order_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::sequence_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::temporary_workspace_bytes(self) -> usize
-pub const cudf::ops::sorting::SORTED_ORDER_LEXICOGRAPHIC_PREFLIGHT_CONTRACT: &str
-pub const cudf::ops::sorting::SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT: &str
 pub fn cudf::ops::sorting::is_sorted(&cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<bool>
 pub fn cudf::ops::sorting::sort(&cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::sorting::sort_by_key(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::sorting::sorted_order(&cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Column>
-pub fn cudf::ops::sorting::sorted_order_lexicographic_preflight(usize, &[cudf::core::types::DataType], &[usize], bool, &[cudf::ops::sorting::Order], &[cudf::ops::sorting::NullOrder], cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderLexicographicPreflight>
-pub fn cudf::ops::sorting::sorted_order_radix_key_supported(cudf::core::types::TypeId) -> bool
-pub fn cudf::ops::sorting::sorted_order_radix_preflight(usize, cudf::core::types::DataType, usize, bool, cudf::ops::sorting::Order, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderRadixPreflight>
 pub fn cudf::ops::sorting::sorted_order_reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
 pub fn cudf::ops::sorting::stable_sort(&cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::sorting::stable_sort_by_key(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Table>
@@ -6611,6 +6550,7 @@ pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::auxiliary_count(&self) -> usize
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::parent(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::register(&cudf::runtime::stream::CudaStream, &[cudf::runtime::stream::CudaStream]) -> cudf::core::error::Result<Self>
+pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::synchronize_auxiliary_for_teardown(&self) -> cudf::core::error::Result<()>
 impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderRegistration
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderRegistration
@@ -6689,6 +6629,7 @@ pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::auxiliary_count(&self) -> usize
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::parent(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::register(&cudf::runtime::stream::CudaStream, &[cudf::runtime::stream::CudaStream]) -> cudf::core::error::Result<Self>
+pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::synchronize_auxiliary_for_teardown(&self) -> cudf::core::error::Result<()>
 impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderRegistration
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderRegistration
@@ -6839,7 +6780,6 @@ pub fn cudf::ExecutionBudgetReport::output_rows(&self) -> core::option::Option<u
 pub fn cudf::ExecutionBudgetReport::request(&self) -> &cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetReport::retained_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::status(&self) -> cudf::ExecutionBudgetStatus
-pub fn cudf::ExecutionBudgetReport::unresolved_contract(&self) -> core::option::Option<&str>
 pub struct cudf::runtime::ExecutionBudgetRequest
 impl cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetRequest::boundary(&self) -> &str
@@ -7660,6 +7600,7 @@ pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::auxiliary_count(&self) -> usize
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::parent(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::register(&cudf::runtime::stream::CudaStream, &[cudf::runtime::stream::CudaStream]) -> cudf::core::error::Result<Self>
+pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::synchronize_auxiliary_for_teardown(&self) -> cudf::core::error::Result<()>
 impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderRegistration
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderRegistration
@@ -7756,13 +7697,14 @@ pub fn cudf::DataFrame::with_column(&self, &str, impl cudf::IntoSeries) -> cudf:
 pub fn cudf::DataFrame::with_columns<I, T>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 pub fn cudf::DataFrame::with_columns_with_budget<I, T>(&self, I, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 impl cudf::DataFrame
+pub fn cudf::DataFrame::backing_allocation_pointers(&self) -> cudf::core::error::Result<alloc::vec::Vec<usize>>
+impl cudf::DataFrame
 pub fn cudf::DataFrame::build_filtered_join<I, S>(&self, I, cudf::DataFrameFilteredJoinOptions) -> cudf::core::error::Result<cudf::DataFrameFilteredJoin> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::filter_join_indices(&self, &cudf::DataFrame, &cudf::DataFrameJoinIndices, &cudf::DataFrameJoinIndices, &cudf::ops::ast::AstExpression, cudf::DataFramePredicateJoinOptions, cudf::JoinType) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrame::filtered_join_pre_build_reservation_size_bytes<I, S>(&self, I, cudf::DataFrameFilteredJoinOptions) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::build_hash_join<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<cudf::DataFrameHashJoin> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::full_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
-pub fn cudf::DataFrame::hash_join_allocation_preflight<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<cudf::ops::join::HashJoinAllocationPreflight> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::hash_join_pre_build_reservation_size_bytes<I, S>(&self, I, cudf::DataFrameHashJoinOptions) -> cudf::core::error::Result<usize> where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn cudf::DataFrame::inner_join_indices(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrame::left_anti_join(&self, &cudf::DataFrame, cudf::DataFrameJoinOptions) -> cudf::core::error::Result<Self>
@@ -7996,7 +7938,6 @@ pub fn cudf::DataFrameFilteredJoinProbeState::output_size(&self) -> usize
 pub fn cudf::DataFrameFilteredJoinProbeState::probe_gather_map_reservation_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub struct cudf::DataFrameHashJoin
 impl cudf::DataFrameHashJoin
-pub fn cudf::DataFrameHashJoin::allocation_preflight(&self) -> &cudf::ops::join::HashJoinAllocationPreflight
 pub fn cudf::DataFrameHashJoin::build(&self) -> &cudf::DataFrame
 pub fn cudf::DataFrameHashJoin::build_keys(&self) -> &[alloc::string::String]
 pub fn cudf::DataFrameHashJoin::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -8143,11 +8084,6 @@ pub fn cudf::DataFramePreparedSort::materialized_output_reservation_size_bytes_i
 pub fn cudf::DataFramePreparedSort::output_rows(&self) -> usize
 pub fn cudf::DataFramePreparedSort::retained_sorted_order_device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::sorted_order(&self) -> &cudf::Series
-pub fn cudf::DataFramePreparedSort::sorted_order_lexicographic_preflight(&self) -> core::option::Option<cudf::ops::sorting::SortedOrderLexicographicPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_lexicographic_preflight_for_metadata(usize, &[cudf::core::types::DataType], &[usize], bool, &[cudf::ops::sorting::Order], &[cudf::ops::sorting::NullOrder], cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderLexicographicPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_preflight(&self) -> core::option::Option<cudf::ops::sorting::SortedOrderPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_radix_preflight(&self) -> core::option::Option<cudf::ops::sorting::SortedOrderRadixPreflight>
-pub fn cudf::DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(usize, cudf::core::types::DataType, usize, bool, cudf::ops::sorting::Order, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderRadixPreflight>
 pub fn cudf::DataFramePreparedSort::sorted_order_reservation_size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::DataFramePreparedSort::sorted_order_reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
 pub struct cudf::DataFrameProjectedCrossJoinPlan
@@ -8335,7 +8271,6 @@ pub fn cudf::ExecutionBudgetReport::output_rows(&self) -> core::option::Option<u
 pub fn cudf::ExecutionBudgetReport::request(&self) -> &cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetReport::retained_bytes(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::status(&self) -> cudf::ExecutionBudgetStatus
-pub fn cudf::ExecutionBudgetReport::unresolved_contract(&self) -> core::option::Option<&str>
 pub struct cudf::ExecutionBudgetRequest
 impl cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetRequest::boundary(&self) -> &str
@@ -8670,13 +8605,6 @@ pub struct cudf::RuntimeLeaseAnchor
 impl cudf::RuntimeLeaseAnchor
 pub fn cudf::RuntimeLeaseAnchor::affinity_id(&self) -> cudf::RuntimeAffinityId
 pub fn cudf::RuntimeLeaseAnchor::is_current(&self) -> bool
-pub struct cudf::ScalarReductionDistinctWorkspacePreflight
-impl cudf::ScalarReductionDistinctWorkspacePreflight
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::for_metadata(usize, cudf::core::types::DataType, usize) -> cudf::core::error::Result<Self>
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::insertion_count_bytes(self) -> usize
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::preprocessing_retained_bytes(self) -> usize
-pub fn cudf::ScalarReductionDistinctWorkspacePreflight::static_set_storage_bytes(self) -> usize
 pub struct cudf::ScalarReductionOutput
 impl cudf::ScalarReductionOutput
 pub fn cudf::ScalarReductionOutput::into_scalar(self) -> cudf::core::scalar::Scalar
@@ -9595,7 +9523,6 @@ pub fn cudf::ops::strings::SeriesPreparedReplaceWithBackrefs::drop(&mut self)
 pub struct cudf::SeriesPreparedScalarReduction<'a>
 impl<'a> cudf::SeriesPreparedScalarReduction<'a>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::aggregation(&self) -> &cudf::ops::reduction::ReduceAgg
-pub fn cudf::SeriesPreparedScalarReduction<'a>::distinct_workspace_preflight(&self) -> core::option::Option<cudf::ScalarReductionDistinctWorkspacePreflight>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::execute(&self) -> cudf::core::error::Result<cudf::ScalarReductionOutput>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::execute_with_budget(&self, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::ScalarReductionOutput>>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::input(&self) -> &cudf::Series
@@ -9621,14 +9548,6 @@ pub fn cudf::ops::sorting::SortOptions::with_nulls_first(self, alloc::vec::Vec<b
 pub fn cudf::ops::sorting::SortOptions::with_stable(self, bool) -> Self
 impl core::default::Default for cudf::ops::sorting::SortOptions
 pub fn cudf::ops::sorting::SortOptions::default() -> Self
-pub struct cudf::SortedOrderRadixPreflight
-impl cudf::ops::sorting::SortedOrderRadixPreflight
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::active_phase_peak_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::key_input_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::key_output_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::retained_order_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::sequence_bytes(self) -> usize
-pub fn cudf::ops::sorting::SortedOrderRadixPreflight::temporary_workspace_bytes(self) -> usize
 pub struct cudf::StreamReservationLease
 impl cudf::core::memory::StreamReservationLease
 pub fn cudf::core::memory::StreamReservationLease::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
@@ -9664,7 +9583,6 @@ pub fn cudf::ValidatedPackedFloat32Matrix<'_>::shape(&self) -> [usize; 2]
 impl core::fmt::Debug for cudf::ValidatedPackedFloat32Matrix<'_>
 pub fn cudf::ValidatedPackedFloat32Matrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT: &str
-pub const cudf::SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT: &str
 pub trait cudf::BoundaryObserver: core::marker::Send + core::marker::Sync + 'static
 pub fn cudf::BoundaryObserver::observe(&self, cudf::BoundaryObservation)
 impl<F> cudf::BoundaryObserver for F where F: core::ops::function::Fn(cudf::BoundaryObservation) + core::marker::Send + core::marker::Sync + 'static

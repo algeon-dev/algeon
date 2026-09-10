@@ -1,76 +1,25 @@
 //! Capability-analysis model for native query admission.
 //!
 //! This module is the public vocabulary for local node, edge, and subgraph
-//! proofs. Rejection reasons and fact keys are report-facing stable strings;
+//! capabilities. Rejection reasons and fact keys are report-facing stable strings;
 //! add new labels instead of reusing old whole-plan family names.
 use std::collections::BTreeMap;
 
-use super::{
-    AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId, ReservationKind,
-};
+use super::{AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId};
 use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 
-/// Whether the engine currently proves a bounded contract.
+/// The most local graph scope that owns a capability decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContractStatus {
-    /// The boundary has an admissible contract for capability-envelope execution.
-    Modeled,
-    /// The boundary is understood, but a required cudf/libcudf contract is
-    /// not available yet.
-    BlockedByLowerLevel,
-    /// The boundary can be decided only after another capability proof lands.
-    DeferredUntilPrerequisite,
-    /// The owning node, edge, or invariant failed capability analysis.
-    RejectedByCapability,
-}
-
-/// How precise a modeled bounded contract is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContractQuality {
-    /// A lower layer provides the bytes or bound before the operation runs.
-    ExactPreflight,
-    /// Authoritative metadata provides the bound before the operation runs.
-    MetadataBound,
-    /// A bounded budget is granted before execution, but exact preflight is
-    /// waiting on a named lower-level API.
-    HardBudgetedReportWithUnresolvedPreflight,
-    /// The engine accounts for retained state after a bounded operation runs.
-    ObservedRetainedState,
-    /// The query engine owns the ordering guarantee rather than a memory size.
-    QueryEngineOwnedOrdering,
-    /// The query engine owns the boundary semantics rather than a lower layer.
-    QueryEngineOwnedBoundary,
-    /// The row represents a capability proof failure, not a memory contract.
-    CapabilityProof,
-}
-
-impl ContractQuality {
-    /// Stable snake-case label emitted in contract diagnostics.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ExactPreflight => "exact_preflight",
-            Self::MetadataBound => "metadata_bound",
-            Self::HardBudgetedReportWithUnresolvedPreflight => "hard_budgeted_report_with_unresolved_preflight",
-            Self::ObservedRetainedState => "observed_retained_state",
-            Self::QueryEngineOwnedOrdering => "query_engine_owned_ordering",
-            Self::QueryEngineOwnedBoundary => "query_engine_owned_boundary",
-            Self::CapabilityProof => "capability_proof",
-        }
-    }
-}
-
-/// The most local graph scope that owns a reservation requirement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReservationRequirementScope {
-    /// Requirement owned by one native plan node.
+pub enum CapabilityScope {
+    /// Decision owned by one native plan node.
     Node,
-    /// Requirement owned by one producer-consumer boundary.
+    /// Decision owned by one producer-consumer boundary.
     Edge,
-    /// Requirement owned by a non-local graph proof or compiled envelope.
+    /// Decision owned by a non-local graph constraint or compiled pipeline.
     Subgraph,
 }
 
-impl ReservationRequirementScope {
+impl CapabilityScope {
     /// Stable snake-case label emitted in contract diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -81,180 +30,17 @@ impl ReservationRequirementScope {
     }
 }
 
-/// One memory or execution-boundary requirement attached to the most local
-/// capability owner that can state it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReservationRequirement {
-    /// The reservation class enforced by runtime accounting.
-    pub kind: ReservationKind,
-    /// The most local graph scope that owns this requirement.
-    pub scope: ReservationRequirementScope,
-    /// Stable report label for the resource or execution boundary.
-    pub memory_boundary: &'static str,
-    /// Stable report label for the lower-level or query-engine contract.
-    pub required_contract: &'static str,
-    /// Whether the contract is currently admitted for capability-envelope mode.
-    pub status: ContractStatus,
-    /// How strong the admitted contract evidence is.
-    pub quality: ContractQuality,
-}
-
-/// A current capability preflight gap that can only be retired by replacing the
-/// placeholder contract with a stronger cudf/libcudf contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UnresolvedPreflightGap {
-    /// Reservation kind affected by the unresolved lower-level contract.
-    pub kind: ReservationKind,
-    /// Stable contract label that currently relies on a placeholder proof.
-    pub required_contract: &'static str,
-    /// Stable report code naming the missing cudf/libcudf preflight.
-    pub unresolved_gap: &'static str,
-    /// Human-readable condition required to remove this gap from capability-envelope mode.
-    pub retirement_requirement: &'static str,
-}
-
-/// Known capability-mode preflight gaps that require lower-level cudf/libcudf work.
-pub const UNRESOLVED_PREFLIGHT_GAPS: &[UnresolvedPreflightGap] = &[
-    UnresolvedPreflightGap {
-        kind: ReservationKind::SourceRead,
-        required_contract: "row_delete_application_contract",
-        unresolved_gap: "libcudf_row_delete_application_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf row-delete file read, anti-join, and workspace preflight for capability source chunks",
-    },
-    UnresolvedPreflightGap {
-        kind: ReservationKind::SourceRead,
-        required_contract: "source_contract",
-        unresolved_gap: "libcudf_parquet_decoded_output_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf decoded-output preflight for planned row groups and projected columns",
-    },
-    UnresolvedPreflightGap {
-        kind: ReservationKind::OperatorOutput,
-        required_contract: "aggregate_contract",
-        unresolved_gap: "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf groupby aggregate output and temporary-workspace preflight",
-    },
-    UnresolvedPreflightGap {
-        kind: ReservationKind::OperatorOutput,
-        required_contract: "window_contract",
-        unresolved_gap: "libcudf_window_output_temporary_workspace_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf window output and temporary-workspace preflight",
-    },
-    UnresolvedPreflightGap {
-        kind: ReservationKind::OperatorOutput,
-        required_contract: "edge_normalize_output_size_preflight",
-        unresolved_gap: "libcudf_edge_normalize_output_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf edge normalization output and temporary-workspace preflight",
-    },
-    UnresolvedPreflightGap {
-        kind: ReservationKind::FinalSort,
-        required_contract: "final_sort_contract",
-        unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf final sort or top-k output and temporary-workspace preflight",
-    },
-    UnresolvedPreflightGap {
-        kind: ReservationKind::OperatorOutput,
-        required_contract: "join_filtered_build_key_deduplicate_output_contract",
-        unresolved_gap: "libcudf_drop_duplicates_output_preflight_unavailable",
-        retirement_requirement: "cudf/libcudf drop-duplicates output and temporary-workspace preflight",
-    },
-];
-
-/// Rejection code for large grouping-set/rank-window scans whose blocking
-/// aggregate, rank-sort, window, and optional final top-k stages still rely on
-/// unresolved hard-budget contracts.
-pub const BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS: &str =
-    "blocking_rollup_rank_full_scan_requires_exact_contracts";
-
 /// Rejection code for precision-sensitive floating statistical aggregates over
 /// join pipelines whose final output is a full sort. The aggregate itself may
 /// have a DataFusion-exact host Welford implementation, but capability-envelope
-/// admission still needs a plan-level order/batch and full-sort bound proof.
+/// admission still needs a plan-level order/batch and full-sort bound evidence.
 pub const STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS: &str =
     "statistical_join_final_sort_requires_exact_contracts";
-
-impl ReservationRequirement {
-    /// Creates an admitted capability-envelope reservation requirement.
-    pub fn modeled(
-        kind: ReservationKind,
-        memory_boundary: &'static str,
-        required_contract: &'static str,
-        quality: ContractQuality,
-    ) -> Self {
-        Self {
-            kind,
-            scope: reservation_requirement_scope(kind),
-            memory_boundary,
-            required_contract,
-            status: ContractStatus::Modeled,
-            quality,
-        }
-    }
-
-    /// Creates a requirement whose capability proof waits on a lower-level contract.
-    pub fn blocked_by_lower_level(
-        kind: ReservationKind,
-        memory_boundary: &'static str,
-        required_contract: &'static str,
-        quality: ContractQuality,
-    ) -> Self {
-        Self {
-            kind,
-            scope: reservation_requirement_scope(kind),
-            memory_boundary,
-            required_contract,
-            status: ContractStatus::BlockedByLowerLevel,
-            quality,
-        }
-    }
-}
-
-/// Returns the stable unresolved-gap code for a reservation contract, if known.
-pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
-    unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap)
-}
-
-/// Returns the stable unresolved-gap code for a contract label, if known.
-pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str) -> Option<&'static str> {
-    UNRESOLVED_PREFLIGHT_GAPS
-        .iter()
-        .find(|gap| gap.required_contract == required_contract)
-        .map(|gap| gap.unresolved_gap)
-}
-
-/// Looks up the full capability-mode unresolved preflight descriptor.
-pub fn unresolved_preflight_gap(
-    kind: ReservationKind,
-    required_contract: &str,
-) -> Option<&'static UnresolvedPreflightGap> {
-    UNRESOLVED_PREFLIGHT_GAPS.iter().find(|gap| gap.kind == kind && gap.required_contract == required_contract)
-}
-
-/// Maps a reservation kind to the most local capability scope that owns it.
-pub const fn reservation_requirement_scope(kind: ReservationKind) -> ReservationRequirementScope {
-    match kind {
-        ReservationKind::OperatorOutput
-        | ReservationKind::HashTable
-        | ReservationKind::FilteredProbeState
-        | ReservationKind::MixedSizeData
-        | ReservationKind::ChunkOperator
-        | ReservationKind::GraphAlgorithm
-        | ReservationKind::PartialState
-        | ReservationKind::FinalMerge => ReservationRequirementScope::Node,
-        ReservationKind::SourceRead
-        | ReservationKind::BuildSide
-        | ReservationKind::ProbeSide
-        | ReservationKind::GatherMap
-        | ReservationKind::JoinOutput
-        | ReservationKind::FinalSort
-        | ReservationKind::Materialization => ReservationRequirementScope::Edge,
-        ReservationKind::CapabilityContract => ReservationRequirementScope::Subgraph,
-    }
-}
 
 /// A symbolic dependency that a conditional capability is waiting for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintRef {
-    /// Graph scope that owns the prerequisite proof.
+    /// Graph scope that owns the prerequisite.
     pub scope: ConstraintScope,
     /// Stable local constraint name within that scope.
     pub name: &'static str,
@@ -293,7 +79,7 @@ pub enum ConstraintScope {
     Invariant(InvariantId),
 }
 
-/// Capability proof result for a node, edge, or invariant.
+/// Capability result for a node, edge, or invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityDecision {
     /// The capability is fully proven at its owning scope.
@@ -305,9 +91,9 @@ pub enum CapabilityDecision {
         /// Stable fact-key map with values formatted for diagnostics.
         facts: BTreeMap<&'static str, String>,
     },
-    /// The capability depends on other graph-scope proofs.
+    /// The capability depends on other graph-scope constraints.
     Conditional {
-        /// Prerequisite proofs that must be satisfied before this decision is final.
+        /// Prerequisites that must be satisfied before this decision is final.
         waiting_on: Vec<ConstraintRef>,
     },
 }
@@ -345,8 +131,6 @@ pub struct NodeCapability {
     pub executable: CapabilityDecision,
     /// Properties this node makes available to consumers.
     pub produced_properties: Vec<ProducedProperty>,
-    /// Reservations owned by this node itself.
-    pub local_requirements: Vec<ReservationRequirement>,
 }
 
 /// Native operator shape captured without naming a whole bounded family.
@@ -444,7 +228,7 @@ pub enum AggregateGrouping {
 pub enum OrderingRequirement {
     /// The operator or edge must establish an ordered output.
     Required,
-    /// No ordering proof is required.
+    /// No ordering evidence is required.
     None,
 }
 
@@ -483,8 +267,6 @@ pub struct EdgeContract {
     pub input_role: InputRole,
     /// Producer properties required by the consumer.
     pub required_properties: Vec<RequiredProperty>,
-    /// Reservations owned by this edge boundary.
-    pub reservation_requirements: Vec<ReservationRequirement>,
     /// Whether this edge satisfies its consumer contract.
     pub decision: CapabilityDecision,
 }
@@ -522,7 +304,7 @@ pub enum EdgeContractKind {
     },
     /// Shared resident producer identity contract.
     SharedProducer {
-        /// Identity proof that lets multiple consumers reuse the producer.
+        /// Identity evidence that lets multiple consumers reuse the producer.
         identity: SharedProducerIdentity,
     },
     /// Generic resident-frame flow between native nodes.
@@ -542,7 +324,7 @@ pub enum EdgeContractKind {
     ExplicitSinkMaterialization,
 }
 
-/// Identity proof used for resident producers with multiple consumers.
+/// Identity evidence used for resident producers with multiple consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SharedProducerIdentity {
     /// Common-subexpression elimination preserved the same producer node id.
@@ -673,10 +455,8 @@ pub struct SubgraphInvariant {
     pub nodes: Vec<NodeId>,
     /// Scheduling property required from the compiled pipeline.
     pub required_schedule: ScheduleConstraint,
-    /// Resident resources whose lifetime participates in the proof.
+    /// Resident resources whose lifetime participates in the evidence.
     pub required_resources: Vec<ResidentResource>,
-    /// Reservations owned by this subgraph boundary.
-    pub reservation_requirements: Vec<ReservationRequirement>,
     /// Whether the invariant is satisfied for this graph.
     pub decision: CapabilityDecision,
 }
@@ -730,10 +510,6 @@ pub enum SubgraphInvariantKind {
     },
     /// A root projection is bounded by its immediate fetch-bearing limit input.
     LimitBoundedProjection,
-    /// A large full-source scan feeds grouping sets and a rank window while
-    /// blocking-stage exact preflight/progress contracts are not modeled.
-    /// A downstream final top-k may exist but is not required for the guard.
-    BlockingRollupRankTopKFullScan,
     /// A floating statistical aggregate participates in a join pipeline whose
     /// final output is a full sort; capability-envelope admission needs an explicit
     /// exactness envelope before this can replace the DataFusion baseline.
@@ -744,7 +520,7 @@ pub enum SubgraphInvariantKind {
     ResidentLifetimeDominatesConsumers,
 }
 
-/// Scheduling proof required by an invariant.
+/// Scheduling evidence required by an invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScheduleConstraint {
     /// No non-local scheduling constraint is required.
@@ -786,9 +562,9 @@ pub struct CapabilityRejectionProjection {
     /// Stable rejection category for report/fact projections.
     pub category: CapabilityRejectionCategory,
     /// Contract scope used by capability-envelope reports.
-    pub contract_scope: ReservationRequirementScope,
+    pub contract_scope: CapabilityScope,
     /// Stable diagnostic boundary label.
-    pub memory_boundary: &'static str,
+    pub boundary: &'static str,
     /// Stable rejection code.
     pub reason: &'static str,
     /// Stable fact-key map copied from the rejected capability decision.
@@ -798,8 +574,6 @@ pub struct CapabilityRejectionProjection {
 /// Stable category for rejected capability or envelope admission projections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityRejectionCategory {
-    /// A lower-level cudf/libcudf contract is not available yet.
-    MissingLowerLevelContract,
     /// An expression family is not supported by the native engine.
     UnsupportedExpressionFamily,
     /// An Arrow data type is not supported by the native engine.
@@ -808,7 +582,7 @@ pub enum CapabilityRejectionCategory {
     UnsupportedNodeOperator,
     /// A producer-consumer edge contract is missing.
     MissingEdgeContract,
-    /// A subgraph invariant or envelope proof is missing.
+    /// A subgraph invariant or envelope evidence is missing.
     MissingSubgraphInvariant,
     /// The final sink boundary is outside the compiled bounded runtime envelope.
     UnsupportedSinkBoundary,
@@ -820,7 +594,6 @@ impl CapabilityRejectionCategory {
     /// Stable snake-case label emitted in diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::MissingLowerLevelContract => "missing_lower_level_contract",
             Self::UnsupportedExpressionFamily => "unsupported_expression_family",
             Self::UnsupportedArrowDtype => "unsupported_arrow_dtype",
             Self::UnsupportedNodeOperator => "unsupported_node_operator",
@@ -942,19 +715,17 @@ pub enum CapabilityEnvelopeAdmission {
 
 /// Capability analysis for one lowered native query plan.
 ///
-/// The node, edge, and invariant vectors are the primary proof surface.
-/// The `*_admission` decisions are compiled-executor envelope gates derived
-/// from those proofs; they must not become report compatibility families.
+/// The node, edge, and invariant vectors are the primary evidence surface.
+/// The `*_admission` decisions select compiled-executor envelopes from those
+/// facts; they must not become report compatibility families.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityAnalysis {
-    /// Node-local executable proofs.
+    /// Node-local executable facts.
     pub nodes: Vec<NodeCapability>,
-    /// Producer-consumer edge proofs.
+    /// Producer-consumer edge facts.
     pub edges: Vec<EdgeContract>,
-    /// Non-local scheduling, lifetime, and shared-resource proofs.
+    /// Non-local scheduling, lifetime, and shared-resource facts.
     pub invariants: Vec<SubgraphInvariant>,
-    /// Flattened reservation requirements used by reports and compiled gates.
-    pub requirements: Vec<ReservationRequirement>,
     /// Node-local aggregate strategy capability facts.
     pub aggregate_strategies: Vec<AggregateStrategyCapability>,
     /// Capability root-join compiled-envelope admission.
@@ -1007,9 +778,6 @@ impl CapabilityAnalysis {
         if let Some(projection) = self.first_local_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };
         }
-        if let Some(projection) = self.first_requirement_rejection_projection() {
-            return CapabilityEnvelopeAdmission::Rejected { projection };
-        }
         if let Some(projection) = self.projection_global_limit_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };
         }
@@ -1032,15 +800,15 @@ impl CapabilityAnalysis {
             projection: CapabilityRejectionProjection {
                 owner: CapabilityRejectionOwner::Admission("capability_envelope_admission"),
                 category: CapabilityRejectionCategory::MissingSubgraphInvariant,
-                contract_scope: ReservationRequirementScope::Subgraph,
-                memory_boundary: "capability_envelope_admission",
+                contract_scope: CapabilityScope::Subgraph,
+                boundary: "capability_envelope_admission",
                 reason: "capability_envelope_not_satisfied",
                 facts: BTreeMap::from([("capability_envelope_admission", "false".to_string())]),
             },
         }
     }
 
-    /// Returns whether the generic closed multi-join capability proof is satisfied.
+    /// Returns whether the generic closed multi-join capability evidence is satisfied.
     ///
     /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
@@ -1048,7 +816,7 @@ impl CapabilityAnalysis {
         admission_is_satisfied(&self.closed_multi_join_subgraph_admission)
     }
 
-    /// Returns whether the generic root-join capability proof is satisfied.
+    /// Returns whether the generic root-join capability evidence is satisfied.
     ///
     /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
@@ -1056,7 +824,7 @@ impl CapabilityAnalysis {
         admission_is_satisfied(&self.root_join_admission)
     }
 
-    /// Returns whether the generic single-join post-root capability proof is satisfied.
+    /// Returns whether the generic single-join post-root capability evidence is satisfied.
     ///
     /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
@@ -1215,7 +983,7 @@ impl CapabilityAnalysis {
             .find_map(|node| {
                 Some(capability_rejection_projection(
                     CapabilityRejectionOwner::Node(node.node_id),
-                    ReservationRequirementScope::Node,
+                    CapabilityScope::Node,
                     "node_capability",
                     node.executable.rejection_reason()?,
                     node.executable.rejection_facts()?,
@@ -1225,7 +993,7 @@ impl CapabilityAnalysis {
                 self.edges.iter().find_map(|edge| {
                     Some(capability_rejection_projection(
                         CapabilityRejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
-                        ReservationRequirementScope::Edge,
+                        CapabilityScope::Edge,
                         "edge_capability",
                         edge.decision.rejection_reason()?,
                         edge.decision.rejection_facts()?,
@@ -1236,7 +1004,7 @@ impl CapabilityAnalysis {
                 self.invariants.iter().find_map(|invariant| {
                     Some(capability_rejection_projection(
                         CapabilityRejectionOwner::Invariant(invariant.invariant_id),
-                        ReservationRequirementScope::Subgraph,
+                        CapabilityScope::Subgraph,
                         "subgraph_capability",
                         invariant.decision.rejection_reason()?,
                         invariant.decision.rejection_facts()?,
@@ -1249,7 +1017,7 @@ impl CapabilityAnalysis {
         if root_topk_join_aggregate_rejection_projects_before_root_join(&self.root_topk_join_aggregate_admission) {
             return Some(capability_rejection_projection(
                 CapabilityRejectionOwner::Admission("root_topk_join_aggregate_admission"),
-                ReservationRequirementScope::Subgraph,
+                CapabilityScope::Subgraph,
                 "admission_capability",
                 self.root_topk_join_aggregate_admission.rejection_reason()?,
                 self.root_topk_join_aggregate_admission.rejection_facts()?,
@@ -1296,7 +1064,7 @@ impl CapabilityAnalysis {
         .find_map(|(admission, decision)| {
             Some(capability_rejection_projection(
                 CapabilityRejectionOwner::Admission(admission),
-                ReservationRequirementScope::Subgraph,
+                CapabilityScope::Subgraph,
                 "admission_capability",
                 decision.rejection_reason()?,
                 decision.rejection_facts()?,
@@ -1312,7 +1080,7 @@ impl CapabilityAnalysis {
         }
         Some(capability_rejection_projection(
             CapabilityRejectionOwner::Admission("root_full_sort_join_aggregate_admission"),
-            ReservationRequirementScope::Subgraph,
+            CapabilityScope::Subgraph,
             "admission_capability",
             self.root_full_sort_join_aggregate_admission.rejection_reason()?,
             self.root_full_sort_join_aggregate_admission.rejection_facts()?,
@@ -1325,7 +1093,7 @@ impl CapabilityAnalysis {
         }
         Some(capability_rejection_projection(
             CapabilityRejectionOwner::Admission("projection_global_limit_admission"),
-            ReservationRequirementScope::Subgraph,
+            CapabilityScope::Subgraph,
             "admission_capability",
             self.projection_global_limit_admission.rejection_reason()?,
             self.projection_global_limit_admission.rejection_facts()?,
@@ -1338,40 +1106,11 @@ impl CapabilityAnalysis {
         }
         Some(capability_rejection_projection(
             CapabilityRejectionOwner::Admission("projection_scalar_setop_admission"),
-            ReservationRequirementScope::Subgraph,
+            CapabilityScope::Subgraph,
             "admission_capability",
             self.projection_scalar_setop_admission.rejection_reason()?,
             self.projection_scalar_setop_admission.rejection_facts()?,
         ))
-    }
-
-    fn first_requirement_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
-        self.requirements.iter().find(|requirement| requirement.status != ContractStatus::Modeled).map(|requirement| {
-            let (reason, category) = match requirement.status {
-                ContractStatus::BlockedByLowerLevel => {
-                    ("blocked_lower_level_contract", CapabilityRejectionCategory::MissingLowerLevelContract)
-                },
-                ContractStatus::DeferredUntilPrerequisite => {
-                    ("deferred_capability_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
-                },
-                ContractStatus::RejectedByCapability => {
-                    ("rejected_capability_contract", CapabilityRejectionCategory::MissingSubgraphInvariant)
-                },
-                ContractStatus::Modeled => unreachable!("modeled requirements are filtered above"),
-            };
-            CapabilityRejectionProjection {
-                owner: CapabilityRejectionOwner::Admission("lower_level_contract"),
-                category,
-                contract_scope: ReservationRequirementScope::Subgraph,
-                memory_boundary: "lower_level_contract",
-                reason,
-                facts: BTreeMap::from([
-                    ("reservation_kind", requirement.kind.as_str().to_string()),
-                    ("required_contract", requirement.required_contract.to_string()),
-                    ("contract_status", requirement.status.as_str().to_string()),
-                ]),
-            }
-        })
     }
 }
 
@@ -1379,7 +1118,7 @@ fn root_topk_join_aggregate_rejection_projects_before_root_join(decision: &Capab
     matches!(
         decision.rejection_reason(),
         Some(
-            "root_topk_join_aggregate_requires_source_reduction_proof"
+            "root_topk_join_aggregate_requires_source_reduction_evidence"
                 | "root_topk_join_aggregate_requires_fetch_limit"
                 | "root_topk_join_aggregate_rejects_distinct_subcontract"
                 | "root_topk_join_aggregate_rejects_rollup_subcontract"
@@ -1430,27 +1169,20 @@ fn admission_is_satisfied(decision: &CapabilityDecision) -> bool {
 
 fn capability_rejection_projection(
     owner: CapabilityRejectionOwner,
-    contract_scope: ReservationRequirementScope,
-    memory_boundary: &'static str,
+    contract_scope: CapabilityScope,
+    boundary: &'static str,
     reason: &'static str,
     facts: &BTreeMap<&'static str, String>,
 ) -> CapabilityRejectionProjection {
-    let category = capability_rejection_category(&owner, memory_boundary, reason, facts);
-    CapabilityRejectionProjection { owner, category, contract_scope, memory_boundary, reason, facts: facts.clone() }
+    let category = capability_rejection_category(&owner, reason, facts);
+    CapabilityRejectionProjection { owner, category, contract_scope, boundary, reason, facts: facts.clone() }
 }
 
 fn capability_rejection_category(
     owner: &CapabilityRejectionOwner,
-    memory_boundary: &str,
     reason: &str,
     facts: &BTreeMap<&'static str, String>,
 ) -> CapabilityRejectionCategory {
-    if reason == "blocked_lower_level_contract"
-        || memory_boundary == "lower_level_contract"
-        || facts.get("contract_status").is_some_and(|status| status == "blocked_by_lower_level")
-    {
-        return CapabilityRejectionCategory::MissingLowerLevelContract;
-    }
     if facts.contains_key("expression_family") {
         return CapabilityRejectionCategory::UnsupportedExpressionFamily;
     }
@@ -1467,17 +1199,5 @@ fn capability_rejection_category(
         CapabilityRejectionOwner::Invariant(_) | CapabilityRejectionOwner::Admission(_) => {
             CapabilityRejectionCategory::MissingSubgraphInvariant
         },
-    }
-}
-
-impl ContractStatus {
-    /// Stable snake-case label emitted in contract diagnostics.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Modeled => "modeled",
-            Self::BlockedByLowerLevel => "blocked_by_lower_level",
-            Self::DeferredUntilPrerequisite => "deferred_until_prerequisite",
-            Self::RejectedByCapability => "rejected_by_capability",
-        }
     }
 }

@@ -283,9 +283,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
         1,
         2,
     );
-    let active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
-        .unwrap();
+    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
     let queued_service = service.clone();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
@@ -312,9 +310,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
         1,
         2,
     );
-    let active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
-        .unwrap();
+    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
     let retained_grant = active.memory_grant().unwrap();
     drop(active);
     assert_eq!(first_memory_governor_report(&service).live_grants_bytes, 150);
@@ -343,12 +339,9 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
         1,
         2,
     );
-    let _active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
-        .unwrap();
-    let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
-        .unwrap();
+    let _active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
+    let mut waiter =
+        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap();
     service.expire_waiter(&mut waiter);
 
     let error = waiter.try_admit().unwrap_err();
@@ -383,8 +376,8 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
 
     let mut waiter = service.enqueue_admission().expect("request enters the shared queue");
     let entries = DeviceAdmissionEntries::from([
-        (0, DeviceAdmissionEntry { requirement: requirement(111, Some(111)) }),
-        (1, DeviceAdmissionEntry { requirement: requirement(222, Some(222)) }),
+        (0, DeviceAdmissionEntry { requirement: requirement() }),
+        (1, DeviceAdmissionEntry { requirement: requirement() }),
     ]);
     {
         let mut state = service.inner.admission.lock().expect("admission state");
@@ -423,9 +416,8 @@ fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
         2,
     );
     let active = service.admit_query().unwrap();
-    let mut large = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(295))
-        .unwrap();
+    let mut large =
+        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(295)).unwrap();
     let mut small = service.enqueue_admission().unwrap();
 
     assert!(large.try_admit().unwrap().is_none());
@@ -448,13 +440,10 @@ fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
         10,
         2,
     );
-    let active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60))
-        .unwrap();
+    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60)).unwrap();
     let grant = active.memory_grant().unwrap();
-    let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60))
-        .unwrap();
+    let mut waiter =
+        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60)).unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
     grant.freeze_resident(50).unwrap();
@@ -476,18 +465,14 @@ fn frozen_resident_release_revalidates_and_wakes_a_capacity_waiter() {
         10,
         2,
     );
-    let resident_owner = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(50))
-        .unwrap();
+    let resident_owner =
+        service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(50)).unwrap();
     let resident_grant = resident_owner.memory_grant().unwrap();
     resident_grant.freeze_resident(30).unwrap();
     drop(resident_owner);
-    let active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40))
-        .unwrap();
-    let mut waiter = service
-        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40))
-        .unwrap();
+    let active = service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40)).unwrap();
+    let mut waiter =
+        service.enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40)).unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
     drop(resident_grant);
@@ -611,7 +596,7 @@ fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
 }
 
 #[test]
-fn phase_d_full_queue_rejects_before_owner_preflight_or_lifecycle_ticket() {
+fn full_queue_rejects_before_owner_resolution_or_lifecycle_ticket() {
     let service = test_service(1, 1);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let queued = service.enqueue_admission().expect("one real waiter fills the queue");
@@ -631,7 +616,7 @@ fn phase_d_full_queue_rejects_before_owner_preflight_or_lifecycle_ticket() {
 }
 
 #[test]
-fn phase_d_counts_queued_and_pending_reservations_against_one_bound() {
+fn queued_and_pending_reservations_share_one_bound() {
     let service = test_service(1, 2);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let queued = service.enqueue_admission().expect("first waiter enters the queue");
@@ -655,7 +640,7 @@ fn phase_d_counts_queued_and_pending_reservations_against_one_bound() {
 }
 
 #[test]
-fn phase_d_pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
+fn pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
     let service = test_service(1, 2);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let pause = service.pause_pending_preflight();
@@ -683,7 +668,7 @@ fn phase_d_pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
 }
 
 #[test]
-fn phase_d_owner_preflight_failure_releases_pending_reservation() {
+fn owner_resolution_failure_releases_pending_reservation() {
     let service = test_service(1, 1);
     service.fail_next_pending_preflight();
 
@@ -694,7 +679,7 @@ fn phase_d_owner_preflight_failure_releases_pending_reservation() {
 }
 
 #[test]
-fn phase_d_cancellation_and_deadline_release_pending_reservations() {
+fn cancellation_and_deadline_release_pending_reservations() {
     let service = test_service(1, 2);
     let cancellation = ExecutionCancellation::new();
     let pause = service.pause_pending_preflight();
@@ -739,7 +724,7 @@ fn phase_d_cancellation_and_deadline_release_pending_reservations() {
 }
 
 #[test]
-fn phase_d_pending_guard_releases_during_panic_unwind() {
+fn pending_guard_releases_during_panic_unwind() {
     let service = test_service(1, 1);
     let panic_service = service.clone();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -755,7 +740,7 @@ fn phase_d_pending_guard_releases_during_panic_unwind() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn phase_d_pending_guard_releases_when_task_is_dropped() {
+async fn pending_guard_releases_when_task_is_dropped() {
     let service = test_service(1, 1);
     let task_service = service.clone();
     let task = tokio::spawn(async move {
@@ -773,7 +758,7 @@ async fn phase_d_pending_guard_releases_when_task_is_dropped() {
 }
 
 #[test]
-fn phase_d_close_waits_for_pending_preflight_release() {
+fn close_waits_for_pending_owner_resolution_release() {
     let service = test_service(1, 1);
     let pause = service.pause_pending_preflight();
     let pending_service = service.clone();
@@ -801,7 +786,7 @@ fn phase_d_close_waits_for_pending_preflight_release() {
 }
 
 #[test]
-fn phase_d_direct_try_observes_pending_without_reserving_or_resolving() {
+fn direct_try_observes_pending_without_reserving_or_resolving() {
     let service = test_service(1, 2);
     let active = service.admit_query().expect("first admission occupies the only slot");
     let pause = service.pause_pending_preflight();
@@ -818,7 +803,7 @@ fn phase_d_direct_try_observes_pending_without_reserving_or_resolving() {
 }
 
 #[test]
-fn phase_d_direct_try_rechecks_queue_after_owner_preflight() {
+fn direct_try_rechecks_queue_after_owner_resolution() {
     let service = test_service(1, 2);
     let pause = service.pause_pending_preflight();
     let direct_service = service.clone();
@@ -834,7 +819,7 @@ fn phase_d_direct_try_rechecks_queue_after_owner_preflight() {
 }
 
 #[test]
-fn phase_d_direct_owner_preflight_does_not_consume_commit_wait() {
+fn direct_owner_resolution_does_not_consume_commit_wait() {
     let max_wait = Duration::from_millis(20);
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),

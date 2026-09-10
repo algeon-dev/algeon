@@ -59,18 +59,6 @@ fn bounded_native_query_executes_avg_from_sum_count_state() {
     assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.partial_aggregate_count, 2);
     assert_eq!(metrics.final_merge_attempts, 1);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.memory_boundary == "source_adjacent_partitioned_partial_aggregate_output" })
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.memory_boundary == "partitioned_final_aggregate_merge_output" })
-    );
     let final_strategy = metrics
         .aggregate_strategy_decisions
         .iter()

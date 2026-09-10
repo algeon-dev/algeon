@@ -653,17 +653,6 @@ cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handl
                                                            size_t* out,
                                                            cudf_exec_options_t const* options);
 
-/// Return checked hash-table and retained key-view storage bytes from build
-/// metadata only. This owner preflight does not construct a table or allocate
-/// device memory. `rows` must fit `cudf::size_type`, `load_factor` must be in
-/// `(0, 1]`, and `flat_device_view_count` is the number of flat key views.
-cudf_status_t cudf_hash_join_metadata_only_owner_preflight_ex(
-  size_t rows,
-  double load_factor,
-  size_t flat_device_view_count,
-  size_t* hash_table_storage_bytes,
-  size_t* retained_key_view_storage_bytes);
-
 /// Destroy a reusable hash-join handle under its build-time device and memory
 /// resource. Ownership is consumed on call; failure quarantines it.
 cudf_status_t cudf_hash_join_destroy(cudf_hash_join_handle handle);

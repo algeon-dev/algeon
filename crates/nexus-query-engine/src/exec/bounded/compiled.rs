@@ -1,7 +1,7 @@
 //! Shared compiled bounded-pipeline runtime support.
 //!
 //! The support checker is intentionally graph-driven: it inspects
-//! `CompiledPipeline` task, edge, barrier, sink, and gate contracts and does
+//! `CompiledPipeline` task, edge, barrier, and sink contracts and does
 //! not route by named bounded join family/path vocabulary. Unsupported graph
 //! envelopes fail deterministically instead of falling back to whole-query
 //! wrappers.
@@ -16,9 +16,9 @@ mod scheduler;
 mod state;
 
 pub use executor::CompiledGpuTaskExecutor;
-pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
 #[cfg(test)]
-pub(crate) use frame_stream::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
+pub(crate) use frame_stream::YieldedFrameCounterTestHarness;
+pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
 pub use resource::CompiledGpuResource;
 pub use scheduler::{CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput};
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
@@ -28,11 +28,11 @@ use crate::{
     exec::output::QueryOutput,
     metrics::QueryMetrics,
     observability::{
-        BarrierDefinitionRow, CompiledEdgeRow, ReservationGateRow, RuntimeBarrierId, RuntimePipelineEdgeId,
-        RuntimePlanNodeId, RuntimeReservationGateId, RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow,
-        RuntimeSinkId, RuntimeTaskId, RuntimeTopologyRecord, SinkDefinitionRow, TaskDefinitionRow,
+        BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimePipelineEdgeId, RuntimePlanNodeId,
+        RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId,
+        RuntimeTopologyRecord, SinkDefinitionRow, TaskDefinitionRow,
     },
-    pipeline::{CompiledPipeline, PipelineTaskId, PipelineTaskKind, ReservationGateOwner, ResidentLifetime},
+    pipeline::{CompiledPipeline, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
     plan::{JoinType, PlanNode, QueryPlan, ResultSink},
     runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
@@ -65,8 +65,6 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
             ResultSink::GpuResident { .. } => (QueryOutput::GpuResident(executor.take_gpu_output(&mut state)?), false),
         };
         let completed_task_count = state.completed_task_count();
-        let reservations = executor.into_reservations();
-        debug_assert_eq!(reservations.reserved_bytes(), 0);
         (completed_task_count, output, host_sink)
     };
     metrics.record_compiled_pipeline_tasks_executed(completed_task_count as u64);
@@ -108,11 +106,6 @@ fn record_compiled_pipeline_topology(
                     .iter()
                     .map(|resource_id| RuntimeResourceId::new(resource_id.to_string()))
                     .collect(),
-                gate_ids: edge
-                    .gates()
-                    .iter()
-                    .map(|gate_id| RuntimeReservationGateId::new(gate_id.to_string()))
-                    .collect(),
             })
         });
     }
@@ -134,11 +127,6 @@ fn record_compiled_pipeline_topology(
                         .iter()
                         .map(|task_id| RuntimeTaskId::new(task_id.to_string()))
                         .collect(),
-                    gate_ids: barrier
-                        .gates()
-                        .iter()
-                        .map(|gate_id| RuntimeReservationGateId::new(gate_id.to_string()))
-                        .collect(),
                 })
             },
         );
@@ -150,12 +138,6 @@ fn record_compiled_pipeline_topology(
             sink_id: sink_id.clone(),
             sink_kind: pipeline.sink().kind().as_str().to_string(),
             input_task_id: RuntimeTaskId::new(pipeline.sink().input().to_string()),
-            gate_ids: pipeline
-                .sink()
-                .gates()
-                .iter()
-                .map(|gate_id| RuntimeReservationGateId::new(gate_id.to_string()))
-                .collect(),
         })
     });
     for resource in pipeline.resources() {
@@ -181,31 +163,6 @@ fn record_compiled_pipeline_topology(
                 lifetime,
             })
         });
-    }
-    for gate in pipeline.gates() {
-        let (owner_kind, owner_id) = match gate.owner() {
-            ReservationGateOwner::Task(task) => ("task", task.to_string()),
-            ReservationGateOwner::Edge(edge) => ("edge", edge.to_string()),
-            ReservationGateOwner::Barrier(barrier) => ("barrier", barrier.to_string()),
-            ReservationGateOwner::SinkBoundary => ("sink", sink_id.to_string()),
-        };
-        scope.observation().record_topology(
-            crate::observability::RuntimeObservationRecordClass::ReservationGate,
-            || {
-                RuntimeTopologyRecord::ReservationGate(ReservationGateRow {
-                    plan_execution_id: plan_execution_id.clone(),
-                    gate_id: RuntimeReservationGateId::new(gate.id().to_string()),
-                    owner_kind: owner_kind.to_string(),
-                    owner_id,
-                    reservation_kind: gate.reservation_kind().as_str().to_string(),
-                    requirement_scope: gate.requirement().scope.as_str().to_string(),
-                    memory_boundary: gate.memory_boundary().to_string(),
-                    required_contract: gate.required_contract().to_string(),
-                    contract_status: gate.status().as_str().to_string(),
-                    contract_quality: gate.quality().as_str().to_string(),
-                })
-            },
-        );
     }
 }
 
@@ -237,24 +194,20 @@ mod topology_tests {
 
     use super::*;
     use crate::{
-        capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
         observability::{
             PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryLifecycle,
             RuntimeTopologyRecord,
         },
         pipeline::{
             CompiledPipeline, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
-            PipelineTaskKind, ReservationGate, ReservationGateId, ReservationGateOwner, ResidentLifetime,
-            ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+            PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
         },
-        runtime::ReservationKind,
     };
 
     fn topology_pipeline() -> CompiledPipeline {
         let producer = PipelineTaskId::new(0);
         let consumer = PipelineTaskId::new(1);
         let resource = ResidentResourceId::new(0);
-        let gate = ReservationGateId::new(0);
         CompiledPipeline::new(
             vec![
                 PipelineTask::new(producer, PipelineTaskKind::SourceRead).with_output_resources(vec![resource]),
@@ -262,8 +215,7 @@ mod topology_tests {
             ],
             vec![
                 PipelineEdge::new(PipelineEdgeId::new(0), producer, consumer, PipelineEdgeKind::SinkInput)
-                    .with_resources(vec![resource])
-                    .with_gates(vec![gate]),
+                    .with_resources(vec![resource]),
             ],
             vec![],
             vec![ResidentResource::new(
@@ -271,16 +223,6 @@ mod topology_tests {
                 producer,
                 vec![consumer],
                 ResidentLifetime::BetweenTasks { producer },
-            )],
-            vec![ReservationGate::new(
-                gate,
-                ReservationGateOwner::Edge(PipelineEdgeId::new(0)),
-                ReservationKind::SourceRead,
-                ReservationRequirementScope::Edge,
-                "source_read",
-                "bounded_read",
-                ContractStatus::Modeled,
-                ContractQuality::ExactPreflight,
             )],
             SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, consumer),
         )
@@ -323,14 +265,6 @@ mod topology_tests {
                         assert!(tasks.contains(&(plan_execution_id.clone(), consumer.clone())));
                     }
                     assert_eq!(row.lifetime, "between_tasks:0");
-                },
-                RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "edge" => {
-                    assert!(snapshot.topology().any(|candidate| matches!(
-                        candidate,
-                        RuntimeTopologyRecord::CompiledEdge(edge)
-                            if edge.plan_execution_id == row.plan_execution_id
-                                && edge.edge_id.as_str() == row.owner_id
-                    )));
                 },
                 _ => {},
             }

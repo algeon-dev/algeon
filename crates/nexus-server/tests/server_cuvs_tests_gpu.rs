@@ -8,15 +8,12 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
+use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::{backend::GpuMemoryOwnership, gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION};
 use futures::TryStreamExt;
-use nexus_server::{
-    ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, Result as ServerResult, ServerConfig,
-    serve_with_listener,
-};
+use nexus_server::{Result as ServerResult, ServerConfig, serve_with_listener};
 use parquet::arrow::ArrowWriter;
-use tonic::{Code, transport::Endpoint};
+use tonic::transport::Endpoint;
 
 const KNN_OPTIONS: &str = r#"{
   "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -46,7 +43,7 @@ fn test_server_config() -> ServerConfig {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqueries() {
+async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     let _guard = crate::server_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
@@ -75,7 +72,7 @@ async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqu
         vec!["cuvs_brute_force_knn", "cuvs_kmeans", "cuvs_pca"],
     );
 
-    let knn = bounded_cuvs_rejection(
+    let knn = execute_batches(
         &mut client,
         &format!(
             "SELECT query_id, neighbor_id, rank \
@@ -85,9 +82,9 @@ async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqu
         ),
     )
     .await;
-    assert_bounded_cuvs_status(&knn);
+    assert_nonempty(&knn);
 
-    let kmeans = bounded_cuvs_rejection(
+    let kmeans = execute_batches(
         &mut client,
         &format!(
             "SELECT id, cluster_id \
@@ -97,9 +94,9 @@ async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqu
         ),
     )
     .await;
-    assert_bounded_cuvs_status(&kmeans);
+    assert_nonempty(&kmeans);
 
-    let pca = bounded_cuvs_rejection(
+    let pca = execute_batches(
         &mut client,
         &format!(
             "SELECT id, pc_0 \
@@ -109,11 +106,11 @@ async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqu
         ),
     )
     .await;
-    assert_bounded_cuvs_status(&pca);
+    assert_nonempty(&pca);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution() {
+async fn bounded_flight_sql_executes_parquet_cuvs_relations() {
     let _guard = crate::server_gpu_fixture::lock_async().await;
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let parquet_path = temp_dir.path().join("vector_input.parquet");
@@ -135,7 +132,7 @@ async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution(
     )
     .await;
 
-    let kmeans = bounded_cuvs_rejection(
+    let kmeans = execute_batches(
         &mut client,
         &format!(
             "SELECT id, cluster_id \
@@ -145,9 +142,9 @@ async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution(
         ),
     )
     .await;
-    assert_bounded_cuvs_status(&kmeans);
+    assert_nonempty(&kmeans);
 
-    let pca = bounded_cuvs_rejection(
+    let pca = execute_batches(
         &mut client,
         &format!(
             "SELECT id, pc_0 \
@@ -157,11 +154,11 @@ async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution(
         ),
     )
     .await;
-    assert_bounded_cuvs_status(&pca);
+    assert_nonempty(&pca);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn default_bounded_flight_sql_rejects_cuvs_before_child_execution_with_structured_status() {
+async fn default_bounded_flight_sql_executes_cuvs() {
     let _guard = crate::server_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
@@ -171,7 +168,7 @@ async fn default_bounded_flight_sql_rejects_cuvs_before_child_execution_with_str
     let _server = ScopedServer::spawn(config, listener);
     let mut client = connect_with_retry(addr).await;
     register_vector_views(&mut client).await;
-    let status = bounded_cuvs_rejection(
+    let batches = execute_batches(
         &mut client,
         &format!(
             "SELECT * FROM cuvs_brute_force_knn((SELECT * FROM dataset_vectors), (SELECT * FROM query_vectors), '{}')",
@@ -179,7 +176,7 @@ async fn default_bounded_flight_sql_rejects_cuvs_before_child_execution_with_str
         ),
     )
     .await;
-    assert_bounded_cuvs_status(&status);
+    assert_nonempty(&batches);
 }
 
 async fn register_vector_views(client: &mut FlightSqlServiceClient<tonic::transport::Channel>) {
@@ -288,57 +285,8 @@ fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
     &batches[0]
 }
 
-async fn bounded_cuvs_rejection(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> tonic::Status {
-    let info = client
-        .execute(sql.to_string(), None)
-        .await
-        .expect("bounded execution is rejected when Flight consumes the statement ticket");
-    let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
-    match client.do_get(ticket).await {
-        Ok(stream) => {
-            let error = stream.try_collect::<Vec<_>>().await.expect_err("bounded cuVS execution must be rejected");
-            flight_status(error)
-        },
-        Err(error) => flight_status(error),
-    }
-}
-
-fn assert_bounded_cuvs_status(status: &tonic::Status) {
-    assert_eq!(status.code(), Code::Unimplemented);
-    assert_metadata(status, "unsupported_operator", "unsupported", "permanent");
-    assert!(
-        status.message().contains("bounded cuVS execution requires a lower-level peak-memory preflight contract"),
-        "unexpected bounded cuVS message: {}",
-        status.message()
-    );
-}
-
-fn flight_status(error: FlightError) -> tonic::Status {
-    match error {
-        FlightError::Tonic(status) => *status,
-        other => panic!("expected tonic Flight error, got {other:?}"),
-    }
-}
-
-fn assert_metadata(status: &tonic::Status, code: &str, kind: &str, error_status: &str) {
-    assert_eq!(
-        status.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
-        Some(code),
-        "error code metadata"
-    );
-    assert_eq!(
-        status.metadata().get(ERROR_KIND_METADATA_KEY).and_then(|value| value.to_str().ok()),
-        Some(kind),
-        "error kind metadata"
-    );
-    assert_eq!(
-        status.metadata().get(ERROR_STATUS_METADATA_KEY).and_then(|value| value.to_str().ok()),
-        Some(error_status),
-        "error status metadata"
-    );
+fn assert_nonempty(batches: &[RecordBatch]) {
+    assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "cuVS execution must return rows");
 }
 
 fn sql_literal(json: &str) -> String {

@@ -22,7 +22,7 @@ use crate::{
 pub struct AggregateStrategyCapability {
     /// Native aggregate node id.
     pub node_id: NodeId,
-    /// Aggregate execution stage represented by this capability proof.
+    /// Aggregate execution stage represented by this capability decision.
     pub stage: AggregateExecutionStage,
     /// Strategy decision and local candidate rejection facts.
     pub decision: AggregateStrategyCapabilityDecision,

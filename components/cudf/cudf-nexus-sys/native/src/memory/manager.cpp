@@ -891,6 +891,7 @@ cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
     auto state              = std::make_unique<memory_resource_handle_state>();
     state->owner            = manager_state->owner;
     state->non_owning_alias = true;
+    state->current_resource_route_uses_manager_upstream = true;
     *out                    = reinterpret_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
   }

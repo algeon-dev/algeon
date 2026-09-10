@@ -1,8 +1,8 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
 use cudf::{
-    DataFrame, DataFramePreparedSort, DataType, DeviceId, ErrorCode, ErrorKind, ExecutionBudgetEnforcement,
-    ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, SortOptions, TypeId,
+    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus,
+    SortOptions,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     ops::sorting,
@@ -63,72 +63,6 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, lower_b
         report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
         "aligned allocator peak should stay within budget: {report:?}",
     );
-}
-
-fn assert_sorted_order_radix_preflight_facts(
-    report: &cudf::ExecutionBudgetReport,
-    preflight: sorting::SortedOrderRadixPreflight,
-) {
-    let key_input_bytes = preflight.key_input_bytes().to_string();
-    let key_output_bytes = preflight.key_output_bytes().to_string();
-    let sequence_bytes = preflight.sequence_bytes().to_string();
-    let temporary_workspace_bytes = preflight.temporary_workspace_bytes().to_string();
-    let retained_order_bytes = preflight.retained_order_bytes().to_string();
-    let active_phase_peak_bytes = preflight.active_phase_peak_bytes().to_string();
-
-    assert_eq!(report.unresolved_contract(), None);
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_preflight_status").map(String::as_str),
-        Some("supported")
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_preflight_contract").map(String::as_str),
-        Some(sorting::SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT),
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_key_input_bytes").map(String::as_str),
-        Some(key_input_bytes.as_str()),
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_key_output_bytes").map(String::as_str),
-        Some(key_output_bytes.as_str()),
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_sequence_bytes").map(String::as_str),
-        Some(sequence_bytes.as_str()),
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_temporary_workspace_bytes").map(String::as_str),
-        Some(temporary_workspace_bytes.as_str()),
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_retained_order_bytes").map(String::as_str),
-        Some(retained_order_bytes.as_str()),
-    );
-    assert_eq!(
-        report.context_facts().get("sorted_order_radix_active_phase_peak_bytes").map(String::as_str),
-        Some(active_phase_peak_bytes.as_str()),
-    );
-}
-
-fn assert_sorted_order_lexicographic_preflight_facts(
-    report: &cudf::ExecutionBudgetReport,
-    preflight: sorting::SortedOrderLexicographicPreflight,
-) {
-    assert_eq!(report.unresolved_contract(), None);
-    assert_eq!(report.context_facts().get("sorted_order_preflight_status").map(String::as_str), Some("supported"));
-    assert_eq!(
-        report.context_facts().get("sorted_order_preflight_contract").map(String::as_str),
-        Some(sorting::SORTED_ORDER_LEXICOGRAPHIC_PREFLIGHT_CONTRACT),
-    );
-    for (name, expected) in [
-        ("sorted_order_lexicographic_comparator_state_bytes", preflight.comparator_state_bytes()),
-        ("sorted_order_lexicographic_temporary_workspace_bytes", preflight.temporary_workspace_bytes()),
-        ("sorted_order_lexicographic_retained_order_bytes", preflight.retained_order_bytes()),
-        ("sorted_order_lexicographic_active_phase_peak_bytes", preflight.active_phase_peak_bytes()),
-    ] {
-        assert_eq!(report.context_facts().get(name), Some(&expected.to_string()));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -501,101 +435,6 @@ fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
 }
 
 #[test]
-fn test_sorted_order_radix_preflight_rejects_unsupported_metadata_shapes() {
-    let stable = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
-        4,
-        DataType::new(TypeId::Int32),
-        0,
-        true,
-        sorting::Order::Ascending,
-        DeviceId::DEFAULT,
-    )
-    .expect_err("stable sorted-order radix preflight must remain unsupported");
-    assert_eq!(stable.code(), ErrorCode::UnsupportedOperation);
-    assert_eq!(error_context_value(&stable, "reason").as_deref(), Some("stable_sort_unsupported"));
-
-    let nullable = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
-        4,
-        DataType::new(TypeId::Int32),
-        1,
-        false,
-        sorting::Order::Ascending,
-        DeviceId::DEFAULT,
-    )
-    .expect_err("nullable sorted-order radix preflight must remain unsupported");
-    assert_eq!(nullable.code(), ErrorCode::NullUnexpected);
-    assert_eq!(error_context_value(&nullable, "reason").as_deref(), Some("nullable_key_unsupported"));
-
-    let unsupported = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
-        4,
-        DataType::new(TypeId::String),
-        0,
-        false,
-        sorting::Order::Ascending,
-        DeviceId::DEFAULT,
-    )
-    .expect_err("non-radix sorted-order key type must remain unsupported");
-    assert_eq!(unsupported.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(error_context_value(&unsupported, "reason").as_deref(), Some("key_type_not_radix_dispatchable"));
-}
-
-#[test]
-fn test_sorted_order_radix_preflight_accounts_float_pair_buffers() {
-    for (key_type, expected_key_bytes) in [(TypeId::Float32, 8_usize), (TypeId::Float64, 16_usize)] {
-        let preflight = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
-            4,
-            DataType::new(key_type),
-            0,
-            false,
-            sorting::Order::Ascending,
-            DeviceId::DEFAULT,
-        )
-        .expect("floating-point sorted-order radix preflight should be supported");
-
-        assert_eq!(preflight.key_input_bytes(), 4 * expected_key_bytes);
-        assert_eq!(preflight.key_output_bytes(), preflight.key_input_bytes());
-        assert_eq!(preflight.sequence_bytes(), 4 * std::mem::size_of::<i32>());
-        assert_eq!(preflight.retained_order_bytes(), preflight.sequence_bytes());
-        assert_eq!(
-            preflight.active_phase_peak_bytes(),
-            preflight
-                .key_input_bytes()
-                .checked_add(preflight.key_output_bytes())
-                .and_then(|bytes| bytes.checked_add(preflight.sequence_bytes()))
-                .and_then(|bytes| bytes.checked_add(preflight.temporary_workspace_bytes()))
-                .and_then(|bytes| bytes.checked_add(preflight.retained_order_bytes()))
-                .expect("preflight components should sum without overflow")
-        );
-    }
-}
-
-#[test]
-fn test_float_sorted_order_runtime_peak_matches_owner_preflight() {
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    for key_type in [TypeId::Float32, TypeId::Float64] {
-        let key = match key_type {
-            TypeId::Float32 => runtime.series(&(0..4096).map(|row| (4096 - row) as f32).collect::<Vec<_>>()).unwrap(),
-            TypeId::Float64 => runtime.series(&(0..4096).map(|row| (4096 - row) as f64).collect::<Vec<_>>()).unwrap(),
-            _ => unreachable!(),
-        };
-        let df = DataFrame::from_series([("value", key)]).unwrap();
-        let token = runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("float_sort"))
-            .unwrap();
-
-        let outcome = df.prepare_sort_values_with_budget(["value"], SortOptions::new(), &token).unwrap();
-        let prepared = outcome.value();
-        let preflight = prepared
-            .sorted_order_radix_preflight()
-            .expect("non-null floating-point sorted-order dispatch should expose owner preflight");
-
-        assert!(preflight.temporary_workspace_bytes() > 0);
-        assert_eq!(prepared.sorted_order().len(), 4096);
-        assert_eq!(token.reservation_usage().unwrap().peak_bytes as usize, preflight.active_phase_peak_bytes());
-    }
-}
-
-#[test]
 fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let vals = crate::common::series::<i32>("val", &[30, 10, 20]).unwrap();
@@ -623,7 +462,6 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     let prepared = outcome.value();
     let report = outcome.report();
     let expected_order_bytes = prepared.sorted_order_reservation_size_bytes().unwrap();
-    let preflight = prepared.sorted_order_radix_preflight().expect("i32 unstable sort should have owner preflight");
 
     assert_eq!(report.request().boundary(), "final_sort");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
@@ -632,7 +470,6 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
     assert_eq!(report.output_bytes(), None);
     assert_budget_report_high_water(report, expected_order_bytes);
-    assert_sorted_order_radix_preflight_facts(report, preflight);
     assert_eq!(
         prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
@@ -643,127 +480,6 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
         token.memory_resource().testing_raw_handle_value(),
         "prepared sort execution should route through the device manager resource",
     );
-}
-
-#[test]
-fn test_prepare_sort_values_with_budget_descending_reports_owner_preflight() {
-    let df = sample_df();
-    let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("descending_final_sort"),
-            )
-            .unwrap()
-    });
-
-    let outcome =
-        df.prepare_sort_values_with_budget(["id"], SortOptions::new().with_descending(vec![true]), &token).unwrap();
-    let prepared = outcome.value();
-    let preflight = prepared.sorted_order_radix_preflight().expect("i32 unstable sort should have owner preflight");
-
-    assert_sorted_order_radix_preflight_facts(outcome.report(), preflight);
-    assert_eq!(prepared.sorted_order().to_vec_strict::<i32>().unwrap(), vec![4, 2, 0, 1, 3]);
-}
-
-#[test]
-fn test_prepare_sort_values_with_budget_multi_key_uses_lexicographic_owner_contract() {
-    let df = sample_df();
-    let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("multi_key_final_sort"))
-            .unwrap()
-    });
-
-    let outcome = df
-        .prepare_sort_values_with_budget(["id", "score"], SortOptions::new().with_descending(vec![false, true]), &token)
-        .unwrap();
-
-    let preflight = outcome
-        .value()
-        .sorted_order_lexicographic_preflight()
-        .expect("multi-key unstable sort must retain its lexicographic owner preflight");
-    assert!(outcome.value().sorted_order_radix_preflight().is_none());
-    assert!(preflight.comparator_state_bytes() > 0);
-    assert!(preflight.temporary_workspace_bytes() > 0);
-    assert_eq!(preflight.retained_order_bytes(), outcome.value().output_rows() * std::mem::size_of::<i32>());
-    assert_eq!(token.reservation_usage().unwrap().peak_bytes as usize, preflight.active_phase_peak_bytes(),);
-    assert_sorted_order_lexicographic_preflight_facts(outcome.report(), preflight);
-}
-
-#[test]
-fn test_prepare_sort_values_with_budget_single_string_key_uses_lexicographic_owner_contract() {
-    let names = cudf::Series::from_column(
-        crate::common::column_from_strs_nullable(&["beta", "", "alpha"], &[true, false, true]).unwrap(),
-    )
-    .unwrap();
-    let df = DataFrame::from_series([("name", names)]).unwrap();
-    let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("string_sort"))
-            .unwrap()
-    });
-
-    let outcome = df.prepare_sort_values_with_budget(["name"], SortOptions::new(), &token).unwrap();
-    let preflight = outcome
-        .value()
-        .sorted_order_lexicographic_preflight()
-        .expect("single non-radix key must retain its lexicographic owner preflight");
-    assert!(outcome.value().sorted_order_radix_preflight().is_none());
-    assert!(token.reservation_usage().unwrap().peak_bytes as usize <= preflight.active_phase_peak_bytes());
-    assert_sorted_order_lexicographic_preflight_facts(outcome.report(), preflight);
-}
-
-#[test]
-fn test_lexicographic_owner_contract_covers_nullable_string_keys_and_exact_budget_rejection() {
-    let names = cudf::Series::from_column(
-        crate::common::column_from_strs_nullable(&["beta", "", "alpha", "beta"], &[true, false, true, true]).unwrap(),
-    )
-    .unwrap();
-    let ranks = crate::common::series::<i32>("rank", &[1, 9, 2, 3]).unwrap();
-    let df = DataFrame::from_series([("name", names), ("rank", ranks)]).unwrap();
-    let options = SortOptions::new().with_descending(vec![false, true]).with_nulls_first(vec![true, false]);
-    let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("string_key_sort"))
-            .unwrap()
-    });
-    let outcome = df.prepare_sort_values_with_budget(["name", "rank"], options.clone(), &token).unwrap();
-    let preflight = outcome.value().sorted_order_lexicographic_preflight().unwrap();
-    assert_eq!(token.reservation_usage().unwrap().peak_bytes as usize, preflight.active_phase_peak_bytes());
-    assert_sorted_order_lexicographic_preflight_facts(outcome.report(), preflight);
-    drop(outcome);
-    drop(token);
-
-    let insufficient = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(preflight.active_phase_peak_bytes() - 1)
-                    .with_boundary("string_key_sort_insufficient"),
-            )
-            .unwrap()
-    });
-    let error = df
-        .prepare_sort_values_with_budget(["name", "rank"], options, &insufficient)
-        .expect_err("one byte below the owner peak must reject before publishing an order");
-    assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
-}
-
-#[test]
-fn test_lexicographic_metadata_preflight_zero_rows_has_no_allocation_terms() {
-    let preflight = DataFramePreparedSort::sorted_order_lexicographic_preflight_for_metadata(
-        0,
-        &[DataType::new(TypeId::String), DataType::new(TypeId::Int32)],
-        &[0, 0],
-        false,
-        &[sorting::Order::Ascending, sorting::Order::Descending],
-        &[sorting::NullOrder::Before, sorting::NullOrder::After],
-        DeviceId::new(0).expect("test device ordinal must be valid"),
-    )
-    .unwrap();
-    assert_eq!(preflight.comparator_state_bytes(), 0);
-    assert_eq!(preflight.temporary_workspace_bytes(), 0);
-    assert_eq!(preflight.retained_order_bytes(), 0);
-    assert_eq!(preflight.active_phase_peak_bytes(), 0);
 }
 
 #[test]
@@ -804,7 +520,6 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
     );
     assert_eq!(outcome.report().request().boundary(), "stable_final_sort");
     assert_eq!(outcome.report().retained_bytes(), Some(prepared.sorted_order_reservation_size_bytes().unwrap()));
-    assert_eq!(outcome.report().unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
 }
 
 #[test]
@@ -835,7 +550,6 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
     assert_eq!(report.retained_bytes(), Some(prepared.retained_sorted_order_device_allocated_size_bytes().unwrap()));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_budget_report_high_water(report, output_bytes);
-    assert_sorted_order_radix_preflight_facts(report, prepared.sorted_order_radix_preflight().unwrap());
     assert_eq!(
         sorted.testing_execution_domain_mr_value(),
         materialize_token.memory_resource().testing_raw_handle_value(),

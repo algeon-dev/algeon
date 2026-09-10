@@ -103,19 +103,12 @@ pub(in crate::capability) struct RollupRankTopKAfterAggregateJoinPushdownShape {
     pub(in crate::capability) detail_pre_aggregate_id: NodeId,
     pub(in crate::capability) root_join_id: NodeId,
     pub(in crate::capability) final_grouping_aggregate_id: NodeId,
-    pub(in crate::capability) final_rollup_width: FinalRollupWidthClass,
     pub(in crate::capability) rank_sort_id: NodeId,
     pub(in crate::capability) rank_window_id: NodeId,
     pub(in crate::capability) rank_filter_id: Option<NodeId>,
     pub(in crate::capability) rank_output_residency_consumer_id: Option<NodeId>,
     pub(in crate::capability) final_sort_id: Option<NodeId>,
     pub(in crate::capability) final_limit_id: Option<NodeId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::capability) enum FinalRollupWidthClass {
-    Narrow,
-    Wide,
 }
 
 /// Top-k query whose root join combines a deep multi-join side with a grouped
@@ -141,16 +134,9 @@ pub(in crate::capability) struct MultiJoinAggregateOverJoinSubplanTopKShape {
 pub(in crate::capability) struct RootTopKJoinAggregateShape {
     pub(in crate::capability) root_join_id: NodeId,
     pub(in crate::capability) join_ids: Vec<NodeId>,
-    pub(in crate::capability) distinct_aggregate_ids: Vec<NodeId>,
-    pub(in crate::capability) keyless_or_cross_join_ids: Vec<NodeId>,
-    pub(in crate::capability) keyed_filtered_semi_join_ids: Vec<NodeId>,
-    pub(in crate::capability) null_filtered_left_join_ids: Vec<NodeId>,
     pub(in crate::capability) window_ids: Vec<NodeId>,
     pub(in crate::capability) window_input_sort_ids: Vec<NodeId>,
-    pub(in crate::capability) window_full_outer_join_ids: Vec<NodeId>,
-    pub(in crate::capability) keyless_outer_cross_window_join_ids: Vec<NodeId>,
     pub(in crate::capability) shared_producer_ids: Vec<NodeId>,
-    pub(in crate::capability) sort_fetch_hash_join_input_subcontract: bool,
     pub(in crate::capability) sort_fetch_hash_join_aggregate_subcontract: bool,
     pub(in crate::capability) aggregate_id: NodeId,
     pub(in crate::capability) aggregate_projection_id: NodeId,

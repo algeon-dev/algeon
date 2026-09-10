@@ -49,63 +49,6 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    let left_node_id = left.to_string();
-    let left_source_read_reserves = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-                && event.node_id.as_deref() == Some(left_node_id.as_str())
-        })
-        .count();
-    assert_eq!(
-        left_source_read_reserves, 1,
-        "multi-chunk join probe source should batch adjacent row groups without an extra full-source concat reservation"
-    );
-    let left_source_read_bytes = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-                && event.node_id.as_deref() == Some(left_node_id.as_str())
-        })
-        .map(|event| event.requested_bytes)
-        .sum::<u64>();
-    assert!(left_source_read_bytes > 0);
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.memory_boundary != "join_source_concat" || event.requested_bytes < left_source_read_bytes
-        }),
-        "streamed join probe leaves must not reserve all source chunks again as a full concat output"
-    );
-    let join_source_reads = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-        })
-        .count();
-    assert_eq!(join_source_reads, 2);
-    let join_source_prefetches = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.memory_boundary == "join_source_read_prefetch"
-        })
-        .count();
-    assert_eq!(join_source_prefetches, 0);
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -179,9 +122,7 @@ fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
     assert_eq!(metrics.source_read_prefetches_started, metrics.source_read_prefetches_completed);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.retry_resource_exhausted_count, 0);
-    assert!(metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_read_prefetch"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -245,11 +186,6 @@ fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decod
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_read_prefetch"),
-        "optional join source prefetch should not reserve when its minimum decode reservation cannot be admitted"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -319,53 +255,6 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
     assert_eq!(metrics.source_chunks_committed, 7);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    let left_node_id = left.to_string();
-    let left_source_read_reserves = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-                && event.node_id.as_deref() == Some(left_node_id.as_str())
-        })
-        .count();
-    assert_eq!(left_source_read_reserves, 1);
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),
-        "source-adjacent unary probe stream should not materialize and concat the full source before probing"
-    );
-    let streamed_filter_outputs = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "applied"
-                && event.action == MemoryReservationEventAction::Transfer
-                && event.reservation_kind == ReservationKind::OperatorOutput
-                && event.memory_boundary == "join_source_filter_output"
-        })
-        .count();
-    let streamed_projection_outputs = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "applied"
-                && event.action == MemoryReservationEventAction::Transfer
-                && event.reservation_kind == ReservationKind::OperatorOutput
-                && event.memory_boundary == "join_source_projection_output"
-        })
-        .count();
-    assert_eq!(streamed_filter_outputs, 1);
-    assert_eq!(streamed_projection_outputs, 1);
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.memory_boundary != "compiled_filter_output" && event.memory_boundary != "compiled_projection_output"
-        }),
-        "source-adjacent filter/projection should be fused into the source stream consumer path"
-    );
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -443,18 +332,6 @@ fn bounded_native_query_executes_source_adjacent_join_filter_predicate() {
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.outcome.as_str() == "applied"
-                && event.action == MemoryReservationEventAction::Transfer
-                && event.reservation_kind == ReservationKind::OperatorOutput
-                && event.memory_boundary == "join_source_filter_output"
-        }),
-        "source-adjacent filter must execute on the join_source_filter reservation boundary"
-    );
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -537,49 +414,6 @@ fn bounded_native_query_defers_single_chunk_source_adjacent_filter_projection_in
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);
     assert_eq!(metrics.source_chunks_committed, 2);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    let left_node_id = left.to_string();
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            !(event.memory_boundary == "join_source_read"
-                && event.node_id.as_deref() == Some(left_node_id.as_str())
-                && event.action == MemoryReservationEventAction::Grow)
-        }),
-        "single-chunk source-adjacent join input should not grow the raw source-read reservation before filtering"
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.reservation_kind == ReservationKind::OperatorOutput
-                    && event.memory_boundary == "join_source_filter_output"
-            })
-            .count(),
-        1
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.reservation_kind == ReservationKind::OperatorOutput
-                    && event.memory_boundary == "join_source_projection_output"
-            })
-            .count(),
-        1
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.memory_boundary != "compiled_filter_output" && event.memory_boundary != "compiled_projection_output"
-        }),
-        "single-chunk source-adjacent filter/projection should be fused into the source stream consumer path"
-    );
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -646,37 +480,6 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
     assert_eq!(metrics.source_chunks_committed, 7);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),
-        "source-adjacent unary build stream should not concat the raw source before filtering/projection"
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.reservation_kind == ReservationKind::OperatorOutput
-                    && event.memory_boundary == "join_source_filter_output"
-            })
-            .count(),
-        1
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.reservation_kind == ReservationKind::OperatorOutput
-                    && event.memory_boundary == "join_source_projection_output"
-            })
-            .count(),
-        1
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -746,77 +549,10 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.source_read_prefetches_started, 0);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_read_prefetch"),
-        "partitioned source-adjacent materialization should not prefetch while transformed chunks are retained"
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat_output"),
-        "partitioned source-adjacent probe streaming should not concatenate the source before join materialization"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "join_output_stream_concat"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::JoinOutput
-        }),
-        "partitioned source-adjacent probe streaming should concatenate join output chunks at the output boundary"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "join_hash_partitioned_left_side"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::OperatorOutput
-        }),
-        "partitioned probe streaming should hash-partition each streamed probe chunk"
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.reservation_kind == ReservationKind::OperatorOutput
-                    && event.memory_boundary == "join_source_filter_output"
-            })
-            .count(),
-        1
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.reservation_kind == ReservationKind::OperatorOutput
-                    && event.memory_boundary == "join_source_projection_output"
-            })
-            .count(),
-        1
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.memory_boundary != "compiled_filter_output" && event.memory_boundary != "compiled_projection_output"
-        }),
-        "source-adjacent partitioned probe filtering/projection should be fused into the join source stream"
-    );
-    let first_projection_transfer = metrics.reservation_events.iter().position(|event| {
-        event.outcome.as_str() == "applied"
-            && event.action == MemoryReservationEventAction::Transfer
-            && event.reservation_kind == ReservationKind::OperatorOutput
-            && event.memory_boundary == "join_source_projection_output"
-    });
-    assert!(
-        first_projection_transfer.is_some(),
-        "partitioned probe stream should still filter/project the batched source stream"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

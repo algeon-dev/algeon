@@ -1,10 +1,9 @@
 use std::time::Instant;
 
 use super::{
-    ActiveReservation, CommittedPartial, CudfSortOptions, FinalSortExecutor, GpuDataFrame, LimitNode,
-    MemoryReservationRequest, QueryError, ReservationKind, Result, estimated_limited_output_bytes,
-    execute_limit_with_token, execution_overrides, final_sort_retained_bytes, limit_keeps_all_rows, lower_sort_spec,
-    release_committed_partial,
+    CommittedPartial, CudfSortOptions, FinalSortExecutor, GpuDataFrame, LimitNode, QueryError, Result,
+    estimated_limited_output_bytes, execute_limit_with_token, execution_overrides, final_sort_retained_bytes,
+    limit_keeps_all_rows, lower_sort_spec,
 };
 
 impl FinalSortExecutor<'_, '_> {
@@ -25,7 +24,7 @@ impl FinalSortExecutor<'_, '_> {
     ) -> Result<CommittedPartial> {
         let sort = lower_sort_spec(&self.sort.spec)?;
         let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
-        let (materialized_frame, materialized_reservation, sorted_order_reservation) = {
+        let (materialized_frame, materialized_reservation) = {
             let timer = Instant::now();
             let (prepared_sort, prepare_report) = {
                 let prepare_token = self.final_sort_budget_token("final_sort", attempt)?;
@@ -48,18 +47,8 @@ impl FinalSortExecutor<'_, '_> {
             self.execution
                 .metrics_mut()
                 .record_budgeted_execution("nexus_query_engine.final_sort.prepare", &prepare_report);
-            let sorted_order_bytes = final_sort_retained_bytes(&prepare_report)
+            final_sort_retained_bytes(&prepare_report)
                 .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
-            let sorted_order_request = MemoryReservationRequest::new(
-                ReservationKind::FinalSort,
-                sorted_order_bytes,
-                self.execution.reservations().budget(),
-            )
-            .with_memory_boundary("final_sort")
-            .with_node_id(self.node_id)
-            .with_stage("final_sort")
-            .with_attempt(attempt, self.max_attempts);
-            let sorted_order_reservation = self.execution.try_reserve(sorted_order_request)?;
 
             let timer = Instant::now();
             let materialize_overrides_lease = execution_overrides(self.execution.context())?;
@@ -78,14 +67,12 @@ impl FinalSortExecutor<'_, '_> {
             let materialized_reservation =
                 self.reserve_full_sort_materialized_output(materialized_output_bytes, attempt)?;
             let materialized_frame = {
-                let materialize_token =
-                    match self.final_sort_budget_token_including("final_sort", attempt, &materialized_reservation) {
-                        Ok(token) => token,
-                        Err(error) => {
-                            self.execution.release(materialized_reservation);
-                            return Err(error);
-                        },
-                    };
+                let materialize_token = match self.final_sort_budget_token("final_sort", attempt) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        return Err(error);
+                    },
+                };
                 match prepared_sort
                     .materialize_with_budget(&materialize_token)
                     .map_err(|error| {
@@ -105,7 +92,6 @@ impl FinalSortExecutor<'_, '_> {
                 {
                     Ok(frame) => frame,
                     Err(error) => {
-                        self.execution.release(materialized_reservation);
                         return Err(error);
                     },
                 }
@@ -113,44 +99,19 @@ impl FinalSortExecutor<'_, '_> {
             self.execution.metrics_mut().operator_time += timer.elapsed();
             self.execution.metrics_mut().record_device_memory_observation(materialized_output_bytes);
 
-            (materialized_frame, materialized_reservation, sorted_order_reservation)
+            (materialized_frame, materialized_reservation)
         };
-        self.execution.release(sorted_order_reservation);
 
         if let Some(limit) = limit {
             if limit_keeps_all_rows(materialized_frame.num_rows(), limit.spec)? {
-                return Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation });
+                return Ok(CommittedPartial::with_device_bytes(materialized_frame, materialized_reservation));
             }
 
-            let output_reservation = match self.reserve_estimated_final_sort_output(
-                estimated_limited_output_bytes(
-                    materialized_reservation.bytes(),
-                    materialized_frame.num_rows(),
-                    limit.spec,
-                )?,
+            let output_reservation = self.reserve_estimated_final_sort_output(
+                estimated_limited_output_bytes(materialized_reservation, materialized_frame.num_rows(), limit.spec)?,
                 attempt,
-            ) {
-                Ok(reservation) => reservation,
-                Err(error) => {
-                    release_committed_partial(
-                        self.execution,
-                        CommittedPartial { frame: materialized_frame, reservation: materialized_reservation },
-                    );
-                    return Err(error);
-                },
-            };
-            let limit_token =
-                match self.final_sort_budget_token_including("final_sort_limit", attempt, &output_reservation) {
-                    Ok(token) => token,
-                    Err(error) => {
-                        release_committed_partial(
-                            self.execution,
-                            CommittedPartial { frame: materialized_frame, reservation: materialized_reservation },
-                        );
-                        self.execution.release(output_reservation);
-                        return Err(error);
-                    },
-                };
+            )?;
+            let limit_token = self.final_sort_budget_token("final_sort_limit", attempt)?;
             let frame = match execute_limit_with_token(
                 limit,
                 materialized_frame,
@@ -162,32 +123,17 @@ impl FinalSortExecutor<'_, '_> {
             {
                 Ok(frame) => frame,
                 Err(error) => {
-                    self.execution.release(materialized_reservation);
-                    self.execution.release(output_reservation);
                     return Err(error);
                 },
             };
-            self.execution.release(materialized_reservation);
             self.finalize_final_sort_output_reservation(frame, output_reservation, attempt)
         } else {
-            Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation })
+            Ok(CommittedPartial::with_device_bytes(materialized_frame, materialized_reservation))
         }
     }
 
-    fn reserve_full_sort_materialized_output(
-        &mut self,
-        output_bytes: u64,
-        attempt: usize,
-    ) -> Result<ActiveReservation> {
-        let output_request = MemoryReservationRequest::new(
-            ReservationKind::FinalSort,
-            output_bytes,
-            self.execution.reservations().budget(),
-        )
-        .with_memory_boundary("final_sort")
-        .with_node_id(self.node_id)
-        .with_stage("final_sort")
-        .with_attempt(attempt, self.max_attempts);
-        self.execution.try_reserve(output_request)
+    fn reserve_full_sort_materialized_output(&mut self, output_bytes: u64, attempt: usize) -> Result<u64> {
+        let _ = attempt;
+        Ok(output_bytes)
     }
 }

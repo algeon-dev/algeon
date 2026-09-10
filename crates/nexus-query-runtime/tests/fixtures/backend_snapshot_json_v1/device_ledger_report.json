@@ -18,7 +18,7 @@
             "frozen_resident_bytes": "null",
             "grant_bytes": "number",
             "grant_id": "number",
-            "live_reserved_bytes": "number"
+            "resident_owner_bytes": "number"
           },
           "type": "object"
         }
@@ -28,7 +28,7 @@
     },
     "health": "string",
     "live_grants_bytes": "number",
-    "live_reserved_bytes": "number",
+    "resident_owner_bytes": "number",
     "managed_capacity_bytes": "number",
     "max_active_attempts": "number",
     "frozen_resident_bytes": "number",

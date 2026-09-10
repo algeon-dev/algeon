@@ -93,10 +93,16 @@ unsafe extern "C" {
     fn cugraph_rs_runtime_resource_handle_create(
         cuda_stream: *mut std::ffi::c_void,
         device_memory_resource: *mut std::ffi::c_void,
+        memory_resource_owner: *mut std::ffi::c_void,
     ) -> *mut cugraph_rs_runtime_resource_handle_t;
     fn cugraph_rs_runtime_resource_handle_get(
         handle: *mut cugraph_rs_runtime_resource_handle_t,
     ) -> *mut cugraph_resource_handle_t;
+    #[cfg(test)]
+    fn cugraph_rs_runtime_resource_handle_effective_device_memory(
+        handle: *mut cugraph_rs_runtime_resource_handle_t,
+        out: *mut usize,
+    ) -> i32;
 }
 
 struct RuntimeResourceHandleOwner {
@@ -141,6 +147,7 @@ impl RuntimeResourceHandleOwner {
             cugraph_rs_runtime_resource_handle_create(
                 binding.cuda_stream().as_raw(),
                 binding.memory_resource().as_raw(),
+                runtime.memory_resource().as_borrowed_sys().as_raw().cast(),
             )
         };
         let raw = NonNull::new(shim).ok_or_else(|| {
@@ -165,6 +172,21 @@ impl RuntimeResourceHandleOwner {
     fn resource_handle(&self) -> *mut cugraph_resource_handle_t {
         // SAFETY: the entered binding-extension lease retains this live shim.
         unsafe { cugraph_rs_runtime_resource_handle_get(self.raw.as_ptr()) }
+    }
+
+    #[cfg(test)]
+    fn effective_device_memory(&self) -> Result<usize> {
+        let mut out = 0;
+        // SAFETY: the binding-extension lease retains the shim and its RAFT
+        // handle for this call.
+        let status = unsafe { cugraph_rs_runtime_resource_handle_effective_device_memory(self.raw.as_ptr(), &mut out) };
+        if status == 0 {
+            Ok(out)
+        } else {
+            Err(Error::new(ErrorKind::InvalidState, "RuntimeResourceHandleOwner::effective_device_memory")
+                .with_message("cuGraph effective device memory provider rejected the runtime-bound handle")
+                .with_context("provider_status", status.to_string()))
+        }
     }
 }
 
@@ -612,11 +634,34 @@ impl Drop for ResourceHandle {
 mod tests {
     use std::ptr;
 
+    use cudf::{DeviceMemoryResource, QueryMemoryDomainOptions};
     use cugraph_sys::cugraph_create_resource_handle;
     use static_assertions::assert_not_impl_any;
 
     use super::*;
-    use crate::cuda::{TestCudaCall, TestCudaHooks};
+    use crate::{
+        DeviceArray,
+        cuda::{TestCudaCall, TestCudaHooks},
+    };
+
+    fn budgeted_runtime(capacity_bytes: usize) -> (Arc<cudf::Runtime>, DeviceMemoryResource) {
+        let device = DeviceId::current().expect("current device");
+        let upstream = DeviceMemoryResource::cuda_async_on(device, None, Some(0)).expect("CUDA async resource");
+        let budget = upstream.budget_tracking_limit(capacity_bytes).expect("budget tracking resource");
+        let runtime =
+            Arc::new(cudf::Runtime::builder().with_memory_resource(budget.clone()).build().expect("budgeted runtime"));
+        (runtime, budget)
+    }
+
+    fn effective_device_memory(entered: &EnteredContext<'_>) -> usize {
+        entered
+            .runtime_extension
+            .as_ref()
+            .expect("runtime-bound context")
+            .value()
+            .effective_device_memory()
+            .expect("effective device memory")
+    }
 
     fn state_variant_name(state: &ResourceHandleState) -> &'static str {
         match state {
@@ -902,6 +947,80 @@ mod tests {
         let entered = handle.enter("ResourceHandle::enter").expect("entered context");
         let session_runtime = entered.runtime().expect("runtime-bound handle should expose runtime");
         assert_eq!(session_runtime.device().ordinal(), runtime.device().ordinal());
+    }
+
+    #[test]
+    fn runtime_handle_effective_memory_tracks_aligned_domain_charge() {
+        const CAPACITY_BYTES: usize = 1 << 20;
+        let (runtime, budget) = budgeted_runtime(CAPACITY_BYTES);
+        let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+        let entered = handle.enter("effective_memory_charge_test").expect("entered context");
+
+        assert_eq!(effective_device_memory(&entered), CAPACITY_BYTES);
+        let allocation = DeviceArray::from_slice(&entered, &[7_i32; 257]).expect("device allocation");
+        let usage = budget.budget_tracking_usage().expect("budget usage");
+        assert!(usage.current_aligned_bytes > 0);
+        assert_eq!(
+            effective_device_memory(&entered),
+            CAPACITY_BYTES - usize::try_from(usage.current_aligned_bytes).expect("aligned charge fits usize")
+        );
+
+        drop(allocation);
+        assert_eq!(budget.budget_tracking_usage().expect("released usage").current_aligned_bytes, 0);
+        assert_eq!(effective_device_memory(&entered), CAPACITY_BYTES);
+    }
+
+    #[test]
+    fn runtime_handle_effective_memory_accepts_query_domain_member_resource() {
+        const CAPACITY_BYTES: usize = 1 << 20;
+        let base = cudf::Runtime::builder().with_device_memory_manager().build().expect("base runtime");
+        let manager = base.device_memory_manager().expect("device memory manager");
+        let domain = manager
+            .query_memory_domain(
+                81_001,
+                QueryMemoryDomainOptions::new(CAPACITY_BYTES).with_ceiling_bytes(CAPACITY_BYTES),
+            )
+            .expect("query memory domain");
+        let lease = domain.reserve_stream(base.stream(), 81_101, CAPACITY_BYTES).expect("domain member");
+        let runtime = Arc::new(
+            cudf::Runtime::builder()
+                .with_device(base.device())
+                .with_stream(base.stream().clone())
+                .with_memory_resource(lease.memory_resource().clone())
+                .build()
+                .expect("member runtime"),
+        );
+        let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
+        let entered = handle.enter("query_domain_member_effective_memory_test").expect("entered context");
+
+        assert_eq!(effective_device_memory(&entered), CAPACITY_BYTES);
+        let allocation = DeviceArray::from_slice(&entered, &[9_i32; 257]).expect("device allocation");
+        let usage = domain.usage().expect("domain usage");
+        assert!(usage.current_aligned_bytes > 0);
+        assert_eq!(
+            effective_device_memory(&entered),
+            CAPACITY_BYTES - usize::try_from(usage.current_aligned_bytes).expect("aligned charge fits usize")
+        );
+
+        drop(allocation);
+        assert_eq!(domain.usage().expect("released usage").current_aligned_bytes, 0);
+        assert_eq!(effective_device_memory(&entered), CAPACITY_BYTES);
+    }
+
+    #[test]
+    fn runtime_handles_keep_distinct_effective_memory_providers() {
+        const SMALL_CAPACITY_BYTES: usize = 1 << 20;
+        const LARGE_CAPACITY_BYTES: usize = 2 << 20;
+        let (small_runtime, _small_budget) = budgeted_runtime(SMALL_CAPACITY_BYTES);
+        let (large_runtime, _large_budget) = budgeted_runtime(LARGE_CAPACITY_BYTES);
+        let small = ResourceHandle::for_runtime(small_runtime).expect("small resource handle");
+        let large = ResourceHandle::for_runtime(large_runtime).expect("large resource handle");
+
+        let small_entered = small.enter("small_effective_memory_test").expect("small entered context");
+        assert_eq!(effective_device_memory(&small_entered), SMALL_CAPACITY_BYTES);
+        drop(small_entered);
+        let large_entered = large.enter("large_effective_memory_test").expect("large entered context");
+        assert_eq!(effective_device_memory(&large_entered), LARGE_CAPACITY_BYTES);
     }
 
     #[test]

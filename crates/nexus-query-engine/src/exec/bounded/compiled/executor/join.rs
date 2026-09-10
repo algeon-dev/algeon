@@ -13,10 +13,8 @@ use crate::{
         execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame,
         execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
         execute_bounded_compiled_join_probe_from_stream, materialize_bounded_join_leaf_local_parquet_source_stream,
-        release_bounded_compiled_join_build_state,
     },
     pipeline::PipelineTask,
-    runtime::ReservationKind,
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -36,7 +34,6 @@ impl CompiledGpuTaskExecutor<'_> {
         let node = join_node(self.plan, task, node_id)?;
         let build = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-            let _resource_observation_scope = self.execution.reservations().enter_resource_observation_scope(input);
             let input_frame = match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
@@ -53,13 +50,8 @@ impl CompiledGpuTaskExecutor<'_> {
                 },
             }?;
             self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
-            let strategy = self.select_join_build_strategy(
-                task,
-                node_id,
-                node,
-                &input_frame.frame,
-                input_frame.reservation.bytes(),
-            )?;
+            let strategy =
+                self.select_join_build_strategy(task, node_id, node, &input_frame.frame, input_frame.device_bytes())?;
             execute_bounded_compiled_join_build_from_resident_frame(
                 &mut self.execution,
                 node_id,
@@ -80,7 +72,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     node_id,
                     node,
                     &input_frame.frame,
-                    input_frame.reservation.bytes(),
+                    input_frame.device_bytes(),
                 )?;
                 execute_bounded_compiled_join_build_from_resident_frame(
                     &mut self.execution,
@@ -115,7 +107,6 @@ impl CompiledGpuTaskExecutor<'_> {
                     strategy.strategy,
                     self.plan.keyed_hash_join_strategy_options(),
                     input_frame,
-                    input_payload.reservation(),
                 )
             }
         }
@@ -146,7 +137,6 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         let probe = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-            let _resource_observation_scope = self.execution.reservations().enter_resource_observation_scope(input);
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream)?;
@@ -191,21 +181,14 @@ impl CompiledGpuTaskExecutor<'_> {
                 execute_bounded_compiled_join_probe_from_stream(&mut self.execution, node_id, node, build, stream)
             } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
                 if !self.join_probe_task_can_consume_frame_stream(task) {
-                    release_bounded_compiled_join_build_state(&mut self.execution, build);
                     return Err(invalid("compiled join probe cannot share this resident frame stream")
                         .with_fact("compiled_task_id", task.id())
                         .with_fact("plan_node_id", node_id)
                         .with_fact("resident_resource_id", input));
                 }
-                let stream = match stream.alias_eager(
-                    &mut self.execution,
-                    node_id,
-                    ReservationKind::ProbeSide,
-                    "compiled_join_probe_stream_alias",
-                ) {
+                let stream = match stream.alias_eager(node_id, "compiled_join_probe_stream_alias") {
                     Ok(stream) => stream,
                     Err(error) => {
-                        release_bounded_compiled_join_build_state(&mut self.execution, build);
                         return Err(error);
                     },
                 };
@@ -213,7 +196,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 execute_bounded_compiled_join_probe_from_frame_stream(&mut self.execution, node_id, node, build, stream)
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
             {
-                release_bounded_compiled_join_build_state(&mut self.execution, build);
                 return Err(invalid("compiled join probe cannot share a pending source read")
                     .with_fact("compiled_task_id", task.id())
                     .with_fact("plan_node_id", node_id)
@@ -221,12 +203,9 @@ impl CompiledGpuTaskExecutor<'_> {
             } else {
                 self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                 let input_payload = state.resource_payload(input)?;
-                if let Some(frame) = self.apply_dynamic_filters_to_join_probe_shared_frame(
-                    node_id,
-                    node,
-                    input_payload.clone_frame(),
-                    input_payload.reservation_bytes(),
-                )? {
+                if let Some(frame) =
+                    self.apply_dynamic_filters_to_join_probe_shared_frame(node_id, node, input_payload.clone_frame())?
+                {
                     execute_bounded_compiled_join_probe_from_resident_frame(
                         &mut self.execution,
                         node_id,
@@ -241,7 +220,6 @@ impl CompiledGpuTaskExecutor<'_> {
                         node,
                         build,
                         input_payload.clone_frame(),
-                        input_payload.reservation(),
                     )
                 }
             }

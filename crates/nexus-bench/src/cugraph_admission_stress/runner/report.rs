@@ -21,42 +21,13 @@ pub(super) const QUERY_COLUMNS: &[&str] = &[
     "admission_wait_ms",
     "device_ordinal",
     "query_grant_bytes",
-    "reservation_requested_bytes",
-    "reservation_granted_bytes",
-    "reservation_live_peak_bytes",
-    "reservation_denied_count",
     "allocator_high_water_bytes",
     "max_task_observed_peak_bytes",
-    "max_task_reservation_bytes",
     "graph_algorithm",
-    "graph_class",
-    "graph_outcome",
-    "graph_raw_input_edges",
-    "graph_input_edges",
-    "graph_vertex_estimate",
-    "graph_vertex_estimate_source",
-    "graph_vertex_width_bytes",
-    "graph_weight_width_bytes",
     "graph_directed",
     "graph_renumber",
     "graph_construction_policy",
-    "graph_edge_normalize_inserted",
-    "graph_calibration_source",
-    "graph_seed_count",
-    "graph_seed_mode",
-    "graph_model_requested_bytes",
-    "graph_requested_bytes",
-    "graph_budget_bytes",
-    "graph_model_error_ratio",
-    "graph_statistics_exact_vertices",
-    "graph_statistics_degree_max",
-    "graph_statistics_degree_p99",
-    "graph_statistics_sum_min_degree_oriented",
-    "graph_statistics_oriented_edge_count",
-    "graph_statistics_peak_chunk_min_degree_sum",
-    "graph_statistics_sum_out_degree",
     "graph_peak_bytes",
-    "graph_reason",
     "graph_elapsed_ms",
     "graph_output_device_bytes",
     "output_rows",
@@ -116,42 +87,13 @@ impl QueryRow {
             admission_wait_ms: None,
             device_ordinal: None,
             query_grant_bytes: None,
-            reservation_requested_bytes: 0,
-            reservation_granted_bytes: 0,
-            reservation_live_peak_bytes: 0,
-            reservation_denied_count: 0,
             allocator_high_water_bytes: None,
             max_task_observed_peak_bytes: None,
-            max_task_reservation_bytes: 0,
             graph_algorithm: None,
-            graph_class: None,
-            graph_outcome: None,
-            graph_raw_input_edges: None,
-            graph_input_edges: None,
-            graph_vertex_estimate: None,
-            graph_vertex_estimate_source: None,
-            graph_vertex_width_bytes: None,
-            graph_weight_width_bytes: None,
             graph_directed: None,
             graph_renumber: None,
             graph_construction_policy: None,
-            graph_edge_normalize_inserted: None,
-            graph_calibration_source: None,
-            graph_seed_count: None,
-            graph_seed_mode: None,
-            graph_model_requested_bytes: None,
-            graph_requested_bytes: None,
-            graph_budget_bytes: None,
-            graph_model_error_ratio: None,
-            graph_statistics_exact_vertices: None,
-            graph_statistics_degree_max: None,
-            graph_statistics_degree_p99: None,
-            graph_statistics_sum_min_degree_oriented: None,
-            graph_statistics_oriented_edge_count: None,
-            graph_statistics_peak_chunk_min_degree_sum: None,
-            graph_statistics_sum_out_degree: None,
             graph_peak_bytes: None,
-            graph_reason: None,
             graph_elapsed_ms: None,
             graph_output_device_bytes: None,
             output_rows: None,
@@ -166,50 +108,16 @@ impl QueryRow {
         self.admission_wait_ms = metrics.admission_wait_time_ns.map(|ns| ns as f64 / 1_000_000.0);
         self.device_ordinal = metrics.device_ordinal;
         self.query_grant_bytes = metrics.query_grant_bytes;
-        self.reservation_requested_bytes = metrics.reservation_requested_bytes;
-        self.reservation_granted_bytes = metrics.reservation_granted_bytes;
-        self.reservation_live_peak_bytes = metrics.reservation_live_peak_bytes;
-        self.reservation_denied_count = metrics.reservation_denied_count;
         self.allocator_high_water_bytes = metrics.allocator_high_water_bytes;
         self.max_task_observed_peak_bytes = metrics.max_task_observed_peak_bytes;
-        self.max_task_reservation_bytes = metrics.max_task_reservation_bytes;
-        if let Some(reservation) = metrics.graph_reservation_rows.first() {
-            self.graph_algorithm = Some(reservation.algorithm.clone());
-            self.graph_class = Some(reservation.class.clone());
-            self.graph_outcome = Some(reservation.outcome.clone());
-            self.graph_raw_input_edges = reservation.raw_input_edges;
-            self.graph_input_edges = Some(reservation.input_edges);
-            self.graph_vertex_estimate = Some(reservation.vertex_estimate);
-            self.graph_vertex_estimate_source = Some(reservation.vertex_estimate_source.clone());
-            self.graph_vertex_width_bytes = Some(reservation.vertex_width_bytes);
-            self.graph_weight_width_bytes = reservation.weight_width_bytes;
-            self.graph_directed = Some(reservation.directed);
-            self.graph_renumber = Some(reservation.renumber);
-            self.graph_construction_policy = Some(reservation.construction_policy.clone());
-            self.graph_edge_normalize_inserted = Some(reservation.edge_normalize_inserted);
-            self.graph_calibration_source = Some(reservation.calibration_source.clone());
-            self.graph_seed_count = reservation.seed_count;
-            self.graph_seed_mode = Some(reservation.seed_mode.clone());
-            self.graph_model_requested_bytes = Some(reservation.model_requested_bytes);
-            self.graph_requested_bytes = Some(reservation.requested_bytes);
-            self.graph_budget_bytes = reservation.budget_bytes;
-            self.graph_model_error_ratio = reservation.graph_model_error_ratio.clone();
-            self.graph_statistics_exact_vertices = reservation.graph_statistics_exact_vertices;
-            self.graph_statistics_degree_max = reservation.graph_statistics_degree_max;
-            self.graph_statistics_degree_p99 = reservation.graph_statistics_degree_p99;
-            self.graph_statistics_sum_min_degree_oriented = reservation.graph_statistics_sum_min_degree_oriented;
-            self.graph_statistics_oriented_edge_count = reservation.graph_statistics_oriented_edge_count;
-            self.graph_statistics_peak_chunk_min_degree_sum = reservation.graph_statistics_peak_chunk_min_degree_sum;
-            self.graph_statistics_sum_out_degree = reservation.graph_statistics_sum_out_degree;
-            self.graph_reason = Some(reservation.reason.clone());
-        }
         if let Some(runtime) = metrics.graph_runtime_rows.first() {
             self.graph_elapsed_ms = Some(runtime.elapsed_ns as f64 / 1_000_000.0);
             self.graph_output_device_bytes = runtime.output_device_bytes;
             self.graph_peak_bytes = runtime.graph_peak_bytes;
-            if self.graph_algorithm.is_none() {
-                self.graph_algorithm = Some(runtime.algorithm.clone());
-            }
+            self.graph_algorithm = Some(runtime.algorithm.clone());
+            self.graph_directed = Some(runtime.directed);
+            self.graph_renumber = Some(runtime.renumber);
+            self.graph_construction_policy = Some(runtime.construction_policy.clone());
         }
     }
 
@@ -242,42 +150,13 @@ impl QueryRow {
             self.admission_wait_ms.map_or_else(|| "none".to_string(), |value| format!("{value:.3}")),
             fmt_opt(self.device_ordinal),
             fmt_opt(self.query_grant_bytes),
-            self.reservation_requested_bytes.to_string(),
-            self.reservation_granted_bytes.to_string(),
-            self.reservation_live_peak_bytes.to_string(),
-            self.reservation_denied_count.to_string(),
             fmt_opt(self.allocator_high_water_bytes),
             fmt_opt(self.max_task_observed_peak_bytes),
-            self.max_task_reservation_bytes.to_string(),
             fmt_opt_str(&self.graph_algorithm),
-            fmt_opt_str(&self.graph_class),
-            fmt_opt_str(&self.graph_outcome),
-            fmt_opt(self.graph_raw_input_edges),
-            fmt_opt(self.graph_input_edges),
-            fmt_opt(self.graph_vertex_estimate),
-            fmt_opt_str(&self.graph_vertex_estimate_source),
-            fmt_opt(self.graph_vertex_width_bytes),
-            fmt_opt(self.graph_weight_width_bytes),
             self.graph_directed.map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.graph_renumber.map_or_else(|| "none".to_string(), |value| value.to_string()),
             fmt_opt_str(&self.graph_construction_policy),
-            self.graph_edge_normalize_inserted.map_or_else(|| "none".to_string(), |value| value.to_string()),
-            fmt_opt_str(&self.graph_calibration_source),
-            fmt_opt(self.graph_seed_count),
-            fmt_opt_str(&self.graph_seed_mode),
-            fmt_opt(self.graph_model_requested_bytes),
-            fmt_opt(self.graph_requested_bytes),
-            fmt_opt(self.graph_budget_bytes),
-            fmt_opt_str(&self.graph_model_error_ratio),
-            fmt_opt(self.graph_statistics_exact_vertices),
-            fmt_opt(self.graph_statistics_degree_max),
-            fmt_opt(self.graph_statistics_degree_p99),
-            fmt_opt(self.graph_statistics_sum_min_degree_oriented),
-            fmt_opt(self.graph_statistics_oriented_edge_count),
-            fmt_opt(self.graph_statistics_peak_chunk_min_degree_sum),
-            fmt_opt(self.graph_statistics_sum_out_degree),
             fmt_opt(self.graph_peak_bytes),
-            fmt_opt_str(&self.graph_reason),
             self.graph_elapsed_ms.map_or_else(|| "none".to_string(), |value| format!("{value:.3}")),
             fmt_opt(self.graph_output_device_bytes),
             fmt_opt(self.output_rows),

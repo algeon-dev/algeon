@@ -37,16 +37,6 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.filtered_join_build_count, 0);
     assert_eq!(metrics.mixed_join_size_data_bytes, 0);
-    assert!(metrics.reservation_events.iter().all(|event| event.reservation_kind != ReservationKind::GatherMap));
-    assert_reservation_kind_subsequence(
-        metrics,
-        &[
-            ReservationKind::BuildSide,
-            ReservationKind::ProbeSide,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
-        ],
-    );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "cross");
@@ -58,10 +48,6 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
     assert_eq!(join_metrics.mixed_size_data_bytes, 0);
     assert_eq!(join_metrics.gather_map_bytes, 0);
     assert_eq!(join_metrics.output_rows, 12);
-    assert_eq!(
-        granted_reservation_requested_bytes(metrics, ReservationKind::JoinOutput, "join_output"),
-        join_metrics.output_bytes
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

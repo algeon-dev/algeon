@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use nexus_query_engine::admission::QueryPlanCapabilityProof;
+use nexus_query_engine::admission::AttemptCapabilityEvidence;
 
 use super::{
     Boundedness, BoxFuture, Column, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode,
@@ -18,7 +18,7 @@ use super::{
     Result, Schema, SchemaRef, SendableRecordBatchStream, SortOptions, SourceNode, StagedCugraphInputs, TaskContext,
     TreeNodeRecursion, TryStreamExt, UploadedCugraphInputs, attach_graph_residency, check_host_staging_cancellation,
     collect_cugraph_inputs, counted_cudf_runtime, cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted,
-    cugraph_execution_capability_proof, cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor,
+    cugraph_execution_capability_evidence, cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor,
     cugraph_schema_query_plan, edge_execution_config, edge_source_graph_vertex_estimate,
     exact_native_edge_source_gpu_plan, execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping,
     is_bfs_path_output, materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan_error,
@@ -28,8 +28,6 @@ use super::{
     validate_standalone_bounded_cugraph_sources,
 };
 use crate::attempt::NexusAttemptExtension;
-#[cfg(test)]
-use crate::{cugraph_sql::exec::admission::cugraph_graph_model_ask_bytes, native_exec::graph::GraphAdmissionModelAsk};
 #[derive(Clone, Debug)]
 pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
@@ -156,8 +154,7 @@ impl CugraphAlgoExec {
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
         let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
-        let edge_vertex_upper_bound =
-            edge_source_graph_vertex_estimate(edge_source.as_ref()).map(|estimate| estimate.count);
+        let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source.as_ref());
         preflight_cugraph_query_plan(&CugraphPlanDefinition {
             spec: spec.clone(),
             edge_schema: edge_source.schema(),
@@ -212,12 +209,6 @@ impl CugraphAlgoExec {
 
     pub(crate) fn edge_normalize_inserted(&self) -> bool {
         cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<GraphAdmissionModelAsk>> {
-        let (graph_plan, _) = cugraph_execution_capability_proof(&self.plan_definition())?;
-        cugraph_graph_model_ask_bytes(&graph_plan, self.edge_source.as_ref(), &self.native_execution_config)
     }
 
     pub(crate) fn coverage_algorithm_name(&self) -> &'static str {
@@ -876,11 +867,15 @@ impl GpuResidentProducer for CugraphAlgoExec {
         &self.gpu_result_input_name
     }
 
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
+        cugraph_execution_capability_evidence(&self.plan_definition()).map(|(_, evidence)| evidence)
+    }
+
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
         cugraph_schema_query_plan(&self.plan_definition())
             .ok()
             .as_ref()
-            .and_then(nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound)
+            .and_then(nexus_query_engine::plan::row_bounds::query_plan_hard_row_upper_bound)
     }
 
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
@@ -1036,19 +1031,14 @@ impl CugraphAlgoExec {
             result_options: self.result_options.clone(),
             edge_normalize_inserted: self.edge_normalize_inserted(),
             edge_row_upper_bound: self.input_row_bounds.edge_row_upper_bound(),
-            edge_vertex_upper_bound: edge_source_graph_vertex_estimate(self.edge_source.as_ref())
-                .map(|estimate| estimate.count),
+            edge_vertex_upper_bound: edge_source_graph_vertex_estimate(self.edge_source.as_ref()),
         }
     }
 }
 
 impl GraphExecutionPlan for CugraphAlgoExec {
-    fn graph_execution_capability_proof(&self) -> Result<QueryPlanCapabilityProof> {
-        cugraph_execution_capability_proof(&self.plan_definition()).map(|(_, proof)| proof)
-    }
-
-    fn graph_result_input_name(&self) -> &str {
-        &self.gpu_result_input_name
+    fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
+        cugraph_execution_capability_evidence(&self.plan_definition()).map(|(_, evidence)| evidence)
     }
 
     fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {

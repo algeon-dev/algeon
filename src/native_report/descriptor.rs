@@ -74,7 +74,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "final_merge_time",
     "final_sort_time",
     "gpu_resident_input_handoffs",
-    "graph_reservation_rows",
     "graph_runtime_rows",
     "hash_join_build_count",
     "hash_join_cache_hits",
@@ -93,7 +92,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "materialization_time",
     "max_task_observed_peak_bytes",
     "max_task_observed_peak_bytes_observed",
-    "max_task_reservation_bytes",
     "max_task_retained_bytes",
     "max_task_retained_bytes_observed",
     "mixed_join_size_data_bytes",
@@ -102,7 +100,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "native_candidate_shape_family",
     "native_dynamic_filter_runtime_rows",
     "native_graph_claim_calibration_rows",
-    "native_graph_reservation_rows",
     "native_graph_runtime_rows",
     "native_join_strategy_rows",
     "native_lakehouse_cache_fill_event_snapshot_rows",
@@ -114,8 +111,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "native_plan_task_mapping_rows",
     "native_planning_outcome",
     "native_reason_code",
-    "native_reservation_denied_count",
-    "native_reservation_live_peak_bytes",
     "native_retry_count",
     "native_runtime_failure",
     "native_runtime_outcome",
@@ -157,15 +152,10 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "read_columns",
     "reason_code",
     "rejected_before_execution",
-    "reservation_denied_count",
-    "reservation_granted_bytes",
-    "reservation_live_peak_bytes",
-    "reservation_requested_bytes",
     "resident_dataframe_peak_bytes",
     "resident_dataframe_peak_bytes_observed",
     "result_materialization_boundary_explicit",
     "retry_count",
-    "retry_reservation_failure_count",
     "retry_resource_exhausted_count",
     "row_groups_committed",
     "row_groups_planned",
@@ -186,7 +176,7 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "source_read_queue_wait_time",
     "source_read_time",
     "capability_compiled_graphs",
-    "capability_contract_rows",
+    "capability_decision_rows",
     "task_operator_rows",
     "task_runtime_rows",
     "unsupported_category",
@@ -349,11 +339,10 @@ fn semantics_for_name(name: &str) -> &'static str {
 fn is_nested_row_cell(name: &str) -> bool {
     matches!(
         name,
-        "capability_contract_rows"
+        "capability_decision_rows"
             | "capability_compiled_graphs"
             | "join_diagnostics"
             | "source_diagnostics"
-            | "graph_reservation_rows"
             | "graph_runtime_rows"
             | "task_operator_rows"
             | "task_runtime_rows"
@@ -368,8 +357,7 @@ fn is_nested_row_cell(name: &str) -> bool {
 fn is_nested_row_count_metric(name: &str) -> bool {
     matches!(
         name,
-        "native_graph_reservation_rows"
-            | "native_graph_claim_calibration_rows"
+        "native_graph_claim_calibration_rows"
             | "native_graph_runtime_rows"
             | "native_task_operator_rows"
             | "native_task_runtime_rows"

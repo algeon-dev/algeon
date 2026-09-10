@@ -30,9 +30,8 @@ ORDER BY function_name;
 
 Availability is static planning availability for that function. It does not
 reserve GPU memory, inspect relation rows, or prove that a surrounding query is
-fully GPU-native. A cuVS function is unavailable in bounded execution until
-cuVS has a lower-level peak-memory preflight; see the
-[cuVS SQL API](../cuvs/overview.mdx) for that execution boundary.
+fully GPU-native. Runtime admission and the query-domain allocator enforce the
+configured memory cap when a cuVS call executes.
 
 ## 2. Describe the selected function
 

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    CapabilityDecision, ContractStatus, EdgeContract, InvariantSelector, JoinExecutionCapability, JoinNode, JoinSide,
-    JoinType, KeylessConditionalJoinKind, NodeCapability, NodeId, PlanNode, QueryPlan, ResultSink,
+    CapabilityDecision, EdgeContract, InvariantSelector, JoinExecutionCapability, JoinNode, JoinSide, JoinType,
+    KeylessConditionalJoinKind, NodeCapability, NodeId, PlanNode, QueryPlan, ResultSink,
     RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, SubgraphInvariant, SubgraphInvariantKind,
     collect_reachable_node_ids, consumer_nodes_for_reachable, first_reachable_edge_rejection,
     first_reachable_node_rejection, join_node_execution_capability, join_node_with_missing_reason, join_side_index,
@@ -155,20 +155,6 @@ pub(in crate::capability) fn analyze_exact_statistical_join_final_full_sort_admi
         CapabilityDecision::Conditional { waiting_on } => {
             return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
         },
-    }
-    for required_contract in [
-        "host_welford_input_materialization_preflight",
-        "host_welford_output_upload_reservation",
-        "final_full_sort_output_cardinality_bound",
-    ] {
-        if !invariant.reservation_requirements.iter().any(|requirement| {
-            requirement.required_contract == required_contract && requirement.status == ContractStatus::Modeled
-        }) {
-            return CapabilityDecision::rejected(
-                "exact_statistical_join_final_full_sort_missing_contract_gate",
-                [("required_contract", required_contract.to_string())],
-            );
-        }
     }
     CapabilityDecision::Satisfied
 }

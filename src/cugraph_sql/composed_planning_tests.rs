@@ -111,7 +111,7 @@ fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_t
     let weights = match &weight_type {
         DataType::Float32 => Arc::new(Float32Array::from(vec![1.0_f32; sources.len()])) as ArrayRef,
         DataType::Float64 => Arc::new(Float64Array::from(vec![1.0_f64; sources.len()])) as ArrayRef,
-        other => panic!("phase C PageRank fixture does not support {other:?}"),
+        other => panic!("PageRank fixture does not support {other:?}"),
     };
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -261,7 +261,7 @@ fn producer_plan(schema: &arrow::datatypes::SchemaRef) -> nexus_query_engine::pl
 }
 
 #[tokio::test]
-async fn phase0_pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
+async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
     let (_backend, ctx) = backend_context();
     register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let sql = "WITH pagerank AS (\n\
@@ -337,7 +337,7 @@ async fn phase0_pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
 }
 
 #[test]
-fn phase0_synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
+fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
     let schema =
         Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new("vertex", DataType::Int64, false)]));
     let producers = ["producer-0", "producer-1", "producer-2"]

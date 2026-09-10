@@ -419,58 +419,6 @@ pub mod cugraph::cudf_interop
 pub enum cugraph::cudf_interop::GraphConstructionPolicy
 pub cugraph::cudf_interop::GraphConstructionPolicy::PythonCugraph
 pub cugraph::cudf_interop::GraphConstructionPolicy::RawLibcugraph
-pub struct cugraph::cudf_interop::BfsSideInputPreflight
-impl cugraph::cudf_interop::BfsSideInputPreflight
-pub const fn cugraph::cudf_interop::BfsSideInputPreflight::additional_peak_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::BfsSideInputPreflight::edge_mask_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::BfsSideInputPreflight::peak_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::BfsSideInputPreflight::predicate_bitmap_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::BfsSideInputPreflight::source_copy_bytes(self) -> u64
-pub struct cugraph::cudf_interop::BfsSideInputPreflightInput
-impl cugraph::cudf_interop::BfsSideInputPreflightInput
-pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::edge_type(self) -> cugraph::types::DataType
-pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::exclude_vertices_rows(self) -> core::option::Option<usize>
-pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::include_edge_ids_rows(self) -> core::option::Option<usize>
-pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::include_vertices_rows(self) -> core::option::Option<usize>
-pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::new(cugraph::types::DataType, cugraph::types::DataType, usize, usize, usize, core::option::Option<usize>, core::option::Option<usize>, core::option::Option<usize>, core::option::Option<usize>) -> cugraph::error::Result<Self>
-pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::num_edges(self) -> usize
-pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::num_vertices(self) -> usize
-pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::source_rows(self) -> usize
-pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::target_vertices_rows(self) -> core::option::Option<usize>
-pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::vertex_type(self) -> cugraph::types::DataType
-pub struct cugraph::cudf_interop::ForceAtlas2SideInputPreflight
-impl cugraph::cudf_interop::ForceAtlas2SideInputPreflight
-pub const fn cugraph::cudf_interop::ForceAtlas2SideInputPreflight::copy_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::ForceAtlas2SideInputPreflight::peak_bytes(self) -> u64
-pub struct cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput
-impl cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput
-pub fn cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput::new(cugraph::types::DataType, core::option::Option<usize>, core::option::Option<usize>, bool, bool, bool) -> cugraph::error::Result<Self>
-pub struct cugraph::cudf_interop::GraphConstructionPreflight
-impl cugraph::cudf_interop::GraphConstructionPreflight
-pub const fn cugraph::cudf_interop::GraphConstructionPreflight::compression_workspace_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::GraphConstructionPreflight::renumber_workspace_bytes(self) -> u64
-pub struct cugraph::cudf_interop::GraphConstructionPreflightInput
-impl cugraph::cudf_interop::GraphConstructionPreflightInput
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::edge_type(self) -> cugraph::types::DataType
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::has_edge_ids(self) -> bool
-pub fn cugraph::cudf_interop::GraphConstructionPreflightInput::new(cugraph::types::DataType, cugraph::types::DataType, core::option::Option<cugraph::types::DataType>, bool, bool, bool, usize, usize) -> cugraph::error::Result<Self>
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::num_edges(self) -> usize
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::num_vertices(self) -> usize
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::renumber(self) -> bool
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::store_transposed(self) -> bool
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::vertex_type(self) -> cugraph::types::DataType
-pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::weight_type(self) -> core::option::Option<cugraph::types::DataType>
-pub struct cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight
-impl cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight
-pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight::additional_peak_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight::copy_bytes(self) -> u64
-pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight::peak_bytes(self) -> u64
-pub struct cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput
-impl cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput
-pub fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::new(cugraph::types::DataType, cugraph::types::DataType, usize) -> cugraph::error::Result<Self>
-pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::rows(self) -> usize
-pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::vertex_type(self) -> cugraph::types::DataType
-pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::weight_type(self) -> cugraph::types::DataType
 pub struct cugraph::cudf_interop::PreparedGraphOptions
 pub cugraph::cudf_interop::PreparedGraphOptions::construction_policy: cugraph::cudf_interop::GraphConstructionPolicy
 pub cugraph::cudf_interop::PreparedGraphOptions::properties: cugraph::types::GraphProperties
@@ -511,15 +459,11 @@ impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Sc
 pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
 pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
-pub fn cugraph::cudf_interop::bfs_side_input_workspace_preflight(&cugraph::cudf_interop::BfsSideInputPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::BfsSideInputPreflight>
 pub fn cugraph::cudf_interop::cudf_type_to_cugraph(cudf::core::types::TypeId) -> core::option::Option<cugraph::types::DataType>
 pub fn cugraph::cudf_interop::cugraph_type_to_cudf(cugraph::types::DataType) -> core::option::Option<cudf::core::types::TypeId>
 pub fn cugraph::cudf_interop::device_array_view_from_slice<'a, T: cugraph::types::CugraphElement>(&'a cudf::core::column::device_slice::DeviceSlice<'a>) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'a, T>>
-pub fn cugraph::cudf_interop::force_atlas2_side_input_workspace_preflight(&cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::ForceAtlas2SideInputPreflight>
-pub fn cugraph::cudf_interop::graph_construction_workspace_preflight(&cugraph::cudf_interop::GraphConstructionPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::GraphConstructionPreflight>
 pub fn cugraph::cudf_interop::graph_from_prepared_columns<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>, core::option::Option<&rapids_interop::prepared::PreparedColumnExport<'_>>, &cugraph::cudf_interop::PreparedGraphOptions) -> cugraph::error::Result<cugraph::graph::Graph<T>>
 pub fn cugraph::cudf_interop::graph_from_prepared_table_export<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &rapids_interop::prepared::PreparedTableExport<'_>, &cugraph::cudf_interop::TableGraphOptions) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::cudf_interop::personalized_pagerank_side_input_workspace_preflight(&cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight>
 pub fn cugraph::cudf_interop::vertex_pairs_from_prepared_columns<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<T>, &rapids_interop::prepared::PreparedColumnExport<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
 pub fn cugraph::cudf_interop::vertex_pairs_from_prepared_table_export<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<T>, &rapids_interop::prepared::PreparedTableExport<'_>, &cugraph::cudf_interop::TableVertexPairOptions) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
 pub mod cugraph::error
@@ -1375,16 +1319,6 @@ pub fn cugraph::traversal::sssp::SsspResult::to_dataframe(&self, &cudf::runtime:
 pub fn cugraph::traversal::sssp::SsspResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
 impl core::fmt::Debug for cugraph::traversal::sssp::SsspResult
 pub fn cugraph::traversal::sssp::SsspResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct cugraph::traversal::sssp::SsspWorkspacePreflight
-impl cugraph::traversal::sssp::SsspWorkspacePreflight
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflight::unit_weight_bytes(self) -> u64
-pub struct cugraph::traversal::sssp::SsspWorkspacePreflightInput
-impl cugraph::traversal::sssp::SsspWorkspacePreflightInput
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::edge_count(self) -> usize
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::has_edge_weights(self) -> bool
-pub fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::new(usize, cugraph::types::DataType, bool) -> cugraph::error::Result<Self>
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::weight_type(self) -> cugraph::types::DataType
-pub fn cugraph::traversal::sssp::sssp_workspace_preflight(&cugraph::traversal::sssp::SsspWorkspacePreflightInput) -> cugraph::error::Result<cugraph::traversal::sssp::SsspWorkspacePreflight>
 pub struct cugraph::traversal::BfsParams
 pub cugraph::traversal::BfsParams::compute_predecessors: bool
 pub cugraph::traversal::BfsParams::depth_limit: core::option::Option<cugraph::params::BfsDepthLimit>
@@ -1417,17 +1351,6 @@ pub fn cugraph::traversal::bfs::BfsResult::fmt(&self, &mut core::fmt::Formatter<
 pub struct cugraph::traversal::BfsTargetInfo
 pub cugraph::traversal::BfsTargetInfo::target_distance: core::option::Option<i64>
 pub cugraph::traversal::BfsTargetInfo::target_found: bool
-pub struct cugraph::traversal::ExtractPathsPreflight
-impl cugraph::traversal::ExtractPathsPreflight
-pub const fn cugraph::traversal::ExtractPathsPreflight::destination_copy_bytes(self) -> u64
-pub const fn cugraph::traversal::ExtractPathsPreflight::path_output_bytes(self) -> u64
-pub const fn cugraph::traversal::ExtractPathsPreflight::peak_bytes(self) -> u64
-pub const fn cugraph::traversal::ExtractPathsPreflight::predecessor_copy_bytes(self) -> u64
-pub const fn cugraph::traversal::ExtractPathsPreflight::source_bytes(self) -> u64
-pub const fn cugraph::traversal::ExtractPathsPreflight::workspace_bytes(self) -> u64
-pub struct cugraph::traversal::ExtractPathsPreflightInput
-impl cugraph::traversal::ExtractPathsPreflightInput
-pub fn cugraph::traversal::ExtractPathsPreflightInput::new(cugraph::types::DataType, usize, usize, usize, usize) -> cugraph::error::Result<Self>
 pub struct cugraph::traversal::ExtractPathsResult
 impl cugraph::traversal::ExtractPathsResult
 pub fn cugraph::traversal::ExtractPathsResult::max_path_length(&self) -> usize
@@ -1456,17 +1379,6 @@ pub fn cugraph::traversal::sssp::SsspResult::to_dataframe(&self, &cudf::runtime:
 pub fn cugraph::traversal::sssp::SsspResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
 impl core::fmt::Debug for cugraph::traversal::sssp::SsspResult
 pub fn cugraph::traversal::sssp::SsspResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct cugraph::traversal::SsspWorkspacePreflight
-impl cugraph::traversal::sssp::SsspWorkspacePreflight
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflight::unit_weight_bytes(self) -> u64
-pub struct cugraph::traversal::SsspWorkspacePreflightInput
-impl cugraph::traversal::sssp::SsspWorkspacePreflightInput
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::edge_count(self) -> usize
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::has_edge_weights(self) -> bool
-pub fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::new(usize, cugraph::types::DataType, bool) -> cugraph::error::Result<Self>
-pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::weight_type(self) -> cugraph::types::DataType
-pub fn cugraph::traversal::extract_paths_preflight(&cugraph::traversal::ExtractPathsPreflightInput) -> cugraph::error::Result<cugraph::traversal::ExtractPathsPreflight>
-pub fn cugraph::traversal::sssp_workspace_preflight(&cugraph::traversal::sssp::SsspWorkspacePreflightInput) -> cugraph::error::Result<cugraph::traversal::sssp::SsspWorkspacePreflight>
 pub mod cugraph::tree
 pub mod cugraph::tree::minimum_spanning_tree
 pub struct cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeParams

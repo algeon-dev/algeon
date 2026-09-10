@@ -28,7 +28,7 @@ use nexus_query_engine::{
 
 use super::{
     CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions,
-    error::{bounded_execution_unsupported, feature_disabled, invalid_call},
+    error::{feature_disabled, invalid_call},
     lowering::{CuvsPlanSink, lower_cuvs_query_plan},
 };
 use crate::{
@@ -146,6 +146,10 @@ impl CuvsAlgoExec {
     }
 
     pub(crate) fn native_plan(&self) -> Result<QueryPlan> {
+        self.native_plan_for_sink(CuvsPlanSink::HostArrow)
+    }
+
+    fn native_plan_for_sink(&self, sink: CuvsPlanSink) -> Result<QueryPlan> {
         lower_cuvs_query_plan(
             self.operation,
             &self.options,
@@ -163,7 +167,7 @@ impl CuvsAlgoExec {
                 })
                 .collect::<Vec<_>>(),
             Arc::clone(&self.output_schema),
-            CuvsPlanSink::HostArrow,
+            sink,
         )
     }
 
@@ -186,7 +190,7 @@ impl CuvsAlgoExec {
         if !cfg!(feature = "cuvs") {
             return Err(feature_disabled(self.operation));
         }
-        Err(bounded_execution_unsupported(self.operation, "bounded"))
+        Ok(())
     }
 
     fn take_prepared_staged_inputs(&self) -> Result<StagedNativeChildren> {
@@ -296,6 +300,23 @@ impl CuvsAlgoExec {
 impl GpuResidentProducer for CuvsAlgoExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
+    }
+
+    fn gpu_result_capability_evidence(&self) -> Result<nexus_query_engine::admission::AttemptCapabilityEvidence> {
+        let plan = self.native_plan_for_sink(CuvsPlanSink::GpuResident)?;
+        Ok(nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan))
+    }
+
+    fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
+        let mut tickets = Vec::new();
+        for input in &self.inputs {
+            for ticket in crate::native_exec::prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
+                if !tickets.iter().any(|existing| Arc::ptr_eq(existing, &ticket)) {
+                    tickets.push(ticket);
+                }
+            }
+        }
+        tickets
     }
 
     fn prepare_execution_plan<'a>(

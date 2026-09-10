@@ -24,15 +24,14 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BoundedExecutionAttempt, Expr,
-    Field, GpuDataFrame, JoinOutputColumnUpperBoundInput, MemoryReservationRequest, NodeId, PartialAggregateShape,
-    QueryError, QueryErrorCode, ReservationKind, Result, avg_sum_state_data_type, execution_budget_token_for_boundary,
-    global_valid_count_state_alias, join_output_upper_bound_bytes, lower_column_expr, lower_named_column_expr,
-    lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes, partial_global_aggregate_output_schema,
+    Field, GpuDataFrame, JoinOutputColumnUpperBoundInput, PartialAggregateShape, QueryError, QueryErrorCode, Result,
+    avg_sum_state_data_type, execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr,
+    lower_named_column_expr, lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes,
+    partial_global_aggregate_output_schema,
 };
 
 pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
@@ -47,20 +46,13 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     } else {
         PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 }
     };
-    let columns = partial_aggregate_upper_bound_columns(
-        execution,
-        node_id,
-        aggregate,
-        input_schema,
-        aggregate_output_schema,
-        input,
-    )?;
+    let columns =
+        partial_aggregate_upper_bound_columns(execution, aggregate, input_schema, aggregate_output_schema, input)?;
     partial_aggregate_upper_bound_bytes(shape, &columns)
 }
 
 pub(super) fn statistical_partial_aggregate_work_reservation_upper_bound_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
@@ -69,7 +61,6 @@ pub(super) fn statistical_partial_aggregate_work_reservation_upper_bound_bytes(
     let shape = PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 };
     let columns = statistical_partial_aggregate_upper_bound_columns(
         execution,
-        node_id,
         &aggregate.spec,
         input_schema,
         aggregate_output_schema,
@@ -80,7 +71,6 @@ pub(super) fn statistical_partial_aggregate_work_reservation_upper_bound_bytes(
 
 fn partial_aggregate_upper_bound_columns(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
@@ -89,7 +79,6 @@ fn partial_aggregate_upper_bound_columns(
     if aggregate.spec.group_exprs.is_empty() {
         return global_partial_aggregate_upper_bound_columns(
             execution,
-            node_id,
             &aggregate.spec,
             input_schema,
             aggregate_output_schema,
@@ -98,7 +87,6 @@ fn partial_aggregate_upper_bound_columns(
     }
     grouped_partial_aggregate_upper_bound_columns(
         execution,
-        node_id,
         &aggregate.spec,
         input_schema,
         aggregate_output_schema,
@@ -108,7 +96,6 @@ fn partial_aggregate_upper_bound_columns(
 
 fn global_partial_aggregate_upper_bound_columns(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
@@ -137,7 +124,6 @@ fn global_partial_aggregate_upper_bound_columns(
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
                 columns.push(partial_column_for_field_and_optional_input(
                     execution,
-                    node_id,
                     take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate value state")?,
                     Some(&expr.expr),
                     input_schema,
@@ -160,7 +146,6 @@ fn global_partial_aggregate_upper_bound_columns(
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 columns.push(partial_column_for_field_and_optional_input(
                     execution,
-                    node_id,
                     take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate state")?,
                     None,
                     input_schema,
@@ -173,7 +158,6 @@ fn global_partial_aggregate_upper_bound_columns(
             | AggregateFunction::VarPop => {
                 columns.push(partial_column_for_field_and_optional_input(
                     execution,
-                    node_id,
                     take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate state")?,
                     None,
                     input_schema,
@@ -188,7 +172,6 @@ fn global_partial_aggregate_upper_bound_columns(
 
 fn grouped_partial_aggregate_upper_bound_columns(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
@@ -210,13 +193,7 @@ fn grouped_partial_aggregate_upper_bound_columns(
             .with_fact("output_name", output_name.as_str())
             .with_fact("arrow_error", error.to_string())
         })?;
-        columns.push(partial_column_for_field_and_input_column(
-            execution,
-            node_id,
-            field,
-            input_column.as_str(),
-            input,
-        )?);
+        columns.push(partial_column_for_field_and_input_column(execution, field, input_column.as_str(), input)?);
     }
 
     if let Some(grouping_sets) = &spec.grouping_sets {
@@ -284,7 +261,6 @@ fn grouped_partial_aggregate_upper_bound_columns(
                 })?;
                 columns.push(partial_column_for_field_and_optional_input(
                     execution,
-                    node_id,
                     field,
                     Some(&expr.expr),
                     input_schema,
@@ -314,7 +290,6 @@ fn grouped_partial_aggregate_upper_bound_columns(
                 })?;
                 columns.push(partial_column_for_field_and_optional_input(
                     execution,
-                    node_id,
                     field,
                     Some(&expr.expr),
                     input_schema,
@@ -329,7 +304,6 @@ fn grouped_partial_aggregate_upper_bound_columns(
 
 fn statistical_partial_aggregate_upper_bound_columns(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
@@ -351,13 +325,7 @@ fn statistical_partial_aggregate_upper_bound_columns(
             .with_fact("output_name", output_name.as_str())
             .with_fact("arrow_error", error.to_string())
         })?;
-        columns.push(partial_column_for_field_and_input_column(
-            execution,
-            node_id,
-            field,
-            input_column.as_str(),
-            input,
-        )?);
+        columns.push(partial_column_for_field_and_input_column(execution, field, input_column.as_str(), input)?);
     }
 
     let mut statistical_inputs = BTreeSet::new();
@@ -434,7 +402,6 @@ fn fixed_partial_column_for_type(data_type: ArrowDataType) -> JoinOutputColumnUp
 
 fn partial_column_for_field_and_optional_input(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     field: &Field,
     input_expr: Option<&Expr>,
     input_schema: &ArrowSchemaRef,
@@ -473,19 +440,18 @@ fn partial_column_for_field_and_optional_input(
         .with_fact("input_type", format!("{:?}", schema_field.data_type()))
         .with_fact("output_type", format!("{:?}", field.data_type())));
     }
-    partial_column_for_field_and_input_column(execution, node_id, field, input_column.as_str(), input)
+    partial_column_for_field_and_input_column(execution, field, input_column.as_str(), input)
 }
 
 fn partial_column_for_field_and_input_column(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     field: &Field,
     input_column: &str,
     input: &GpuDataFrame,
 ) -> Result<JoinOutputColumnUpperBoundInput> {
     let (input_max_string_length_bytes, input_total_string_bytes) =
         if partial_sizing_dtype_needs_string_max(field.data_type()) {
-            let stats = string_byte_length_stats_for_partial_sizing(execution, node_id, input, input_column)?;
+            let stats = string_byte_length_stats_for_partial_sizing(execution, input, input_column)?;
             (Some(stats.max_len), Some(stats.total_bytes))
         } else {
             (None, None)
@@ -505,41 +471,21 @@ struct StringByteLengthStats {
 
 fn string_byte_length_stats_for_partial_sizing(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     input: &GpuDataFrame,
     input_column: &str,
 ) -> Result<StringByteLengthStats> {
     if input.num_rows() == 0 {
         return Ok(StringByteLengthStats { max_len: 0, total_bytes: 0 });
     }
-    let byte_count_bound = join_output_upper_bound_bytes(
-        input.num_rows() as u64,
-        &[JoinOutputColumnUpperBoundInput {
-            data_type: ArrowDataType::Int32,
-            input_max_string_length_bytes: None,
-            input_total_string_bytes: None,
-        }],
-    )?;
-    let mut reservation = execution.try_reserve_work(
-        MemoryReservationRequest::new(
-            ReservationKind::ChunkOperator,
-            byte_count_bound,
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("compiled_aggregate_string_length_sizing")
-        .with_node_id(node_id)
-        .with_stage("compiled_aggregate_string_length_sizing"),
-    )?;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&reservation),
+        execution.device_budget_bytes(),
         "compiled_aggregate_string_length_sizing",
         "nexus_query_engine.bounded.aggregate.string_length_sizing.budget_token",
         "failed to create bounded native partial aggregate string-length sizing budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(reservation);
             return Err(error);
         },
     };
@@ -547,7 +493,6 @@ fn string_byte_length_stats_for_partial_sizing(
     let series = match input.frame().series(input_column) {
         Ok(series) => series,
         Err(error) => {
-            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to access string input column for partial aggregate sizing",
@@ -559,7 +504,6 @@ fn string_byte_length_stats_for_partial_sizing(
     let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
         Ok(byte_counts) => byte_counts,
         Err(error) => {
-            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to compute string byte counts for partial aggregate sizing",
@@ -568,28 +512,9 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    let observed = match byte_counts.device_allocated_size_bytes() {
-        Ok(bytes) => bytes as u64,
-        Err(error) => {
-            execution.release(reservation);
-            return Err(QueryError::from_cudf(
-                "nexus_query_engine.bounded.aggregate.string_length_sizing",
-                "failed to observe string byte-count sizing memory",
-                error,
-            )
-            .with_fact("column", input_column));
-        },
-    };
-    if observed > reservation.bytes() {
-        let error = partial_aggregate_string_sizing_upper_bound_violation_error(node_id, reservation.bytes(), observed);
-        execution.release(reservation);
-        return Err(error.with_fact("column", input_column));
-    }
-    execution.shrink_to_observed(&mut reservation, observed);
     let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
         Ok(max_len) => max_len,
         Err(error) => {
-            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to reduce string byte-count sizing column",
@@ -601,7 +526,6 @@ fn string_byte_length_stats_for_partial_sizing(
     let total_bytes = match byte_counts.sum_value_in::<i64>(&token.execution_overrides()) {
         Ok(total_bytes) => total_bytes,
         Err(error) => {
-            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to sum string byte-count sizing column",
@@ -610,7 +534,6 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    execution.release(reservation);
     Ok(StringByteLengthStats { max_len: max_len.unwrap_or(0).max(0) as u64, total_bytes: total_bytes.max(0) as u64 })
 }
 
@@ -629,36 +552,4 @@ fn aggregate_input_data_type(expr: &Expr, input_schema: &ArrowSchemaRef) -> Resu
 
 fn partial_sizing_dtype_needs_string_max(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
-}
-
-pub(super) fn partial_aggregate_upper_bound_violation_error(
-    node_id: NodeId,
-    upper_bound_bytes: u64,
-    observed_bytes: u64,
-) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::Internal,
-        "nexus_query_engine.bounded.aggregate.partial_upper_bound",
-        "partial aggregate output exceeded its bounded upper-bound reservation",
-    )
-    .with_fact("node_id", node_id)
-    .with_fact("contract", "partial_aggregate_output_work_reservation")
-    .with_fact("upper_bound_bytes", upper_bound_bytes)
-    .with_fact("observed_bytes", observed_bytes)
-}
-
-fn partial_aggregate_string_sizing_upper_bound_violation_error(
-    node_id: NodeId,
-    upper_bound_bytes: u64,
-    observed_bytes: u64,
-) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::Internal,
-        "nexus_query_engine.bounded.aggregate.string_length_sizing",
-        "string byte-count sizing output exceeded its bounded upper-bound reservation",
-    )
-    .with_fact("node_id", node_id)
-    .with_fact("contract", "partial_aggregate_string_length_work_reservation")
-    .with_fact("upper_bound_bytes", upper_bound_bytes)
-    .with_fact("observed_bytes", observed_bytes)
 }

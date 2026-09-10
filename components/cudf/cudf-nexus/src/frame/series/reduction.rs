@@ -18,152 +18,6 @@ use crate::{
     runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, Runtime},
 };
 
-const SCALAR_REDUCTION_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
-    "libcudf_scalar_reduction_temporary_workspace_preflight_unavailable";
-
-const DISTINCT_WORKSPACE_PREFLIGHT_CONTRACT: &str = "libcudf_distinct_count_workspace_preflight";
-
-/// Allocation-free native workspace bound for one non-null fixed-width distinct key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScalarReductionDistinctWorkspacePreflight {
-    preprocessing_retained_bytes: usize,
-    static_set_storage_bytes: usize,
-    insertion_count_bytes: usize,
-    active_workspace_peak_bytes: usize,
-}
-
-impl ScalarReductionDistinctWorkspacePreflight {
-    /// Resolve the libcudf-owned workspace contract from input metadata.
-    pub fn for_metadata(num_rows: usize, key_type: DataType, null_count: usize) -> Result<Self> {
-        let operation = "series::scalar_reduction_distinct_workspace_preflight";
-        if num_rows > i32::MAX as usize {
-            return Err(Error::new_with(
-                ErrorCode::SizeOverflow,
-                operation,
-                "distinct-count workspace preflight rows exceed cudf::size_type",
-            )
-            .with_detail("reason", "row_count_exceeds_cudf_size_type")
-            .with_detail("row_count", num_rows.to_string()));
-        }
-        if null_count != 0 {
-            return Err(Error::new_with(
-                ErrorCode::NullUnexpected,
-                operation,
-                "distinct-count workspace preflight requires a non-null key",
-            )
-            .with_detail("reason", "nullable_key_unsupported")
-            .with_detail("null_count", null_count.to_string()));
-        }
-        if !distinct_workspace_key_supported(key_type.id()) {
-            return Err(Error::new_with(
-                ErrorCode::UnsupportedDtype,
-                operation,
-                "distinct-count workspace preflight requires a fixed-width non-nested key",
-            )
-            .with_fact(FACT_TYPE_ID, key_type.id())
-            .with_detail("reason", "key_type_not_fixed_width"));
-        }
-        let mut raw = cudf_sys::cudf_distinct_count_workspace_preflight_result_t {
-            preprocessing_retained_bytes: 0,
-            static_set_storage_bytes: 0,
-            insertion_count_bytes: 0,
-            active_workspace_peak_bytes: 0,
-        };
-        let status = unsafe {
-            cudf_sys::cudf_distinct_count_workspace_preflight(
-                error::usize_to_i64(num_rows, operation, "num_rows")?,
-                key_type.id().to_raw(),
-                error::usize_to_i64(null_count, operation, "null_count")?,
-                1,
-                &mut raw,
-            )
-        };
-        error::check_status_in(status, operation)?;
-        let checked = |bytes: u64, field: &'static str| {
-            usize::try_from(bytes).map_err(|_| {
-                Error::new_with(ErrorCode::SizeOverflow, operation, "native distinct workspace bytes exceed usize")
-                    .with_detail("reason", "native_byte_count_exceeds_usize")
-                    .with_detail("resource", field)
-                    .with_detail("native_bytes", bytes.to_string())
-            })
-        };
-        let preprocessing_retained_bytes = checked(raw.preprocessing_retained_bytes, "preprocessing_retained_bytes")?;
-        let static_set_storage_bytes = checked(raw.static_set_storage_bytes, "static_set_storage_bytes")?;
-        let insertion_count_bytes = checked(raw.insertion_count_bytes, "insertion_count_bytes")?;
-        let active_workspace_peak_bytes = checked(raw.active_workspace_peak_bytes, "active_workspace_peak_bytes")?;
-        let expected_peak = preprocessing_retained_bytes
-            .checked_add(static_set_storage_bytes)
-            .and_then(|bytes| bytes.checked_add(insertion_count_bytes))
-            .ok_or_else(|| {
-                Error::new_with(
-                    ErrorCode::SizeOverflow,
-                    operation,
-                    "distinct-count workspace component sum overflowed usize",
-                )
-                .with_detail("reason", "component_sum_overflowed_usize")
-            })?;
-        if active_workspace_peak_bytes != expected_peak {
-            return Err(Error::new_with(
-                ErrorCode::ForeignInvariantViolation,
-                operation,
-                "native distinct workspace peak is not the checked component sum",
-            )
-            .with_detail("reason", "active_workspace_peak_component_sum_mismatch")
-            .with_detail("expected_peak_bytes", expected_peak.to_string())
-            .with_detail("reported_peak_bytes", active_workspace_peak_bytes.to_string()));
-        }
-        Ok(Self {
-            preprocessing_retained_bytes,
-            static_set_storage_bytes,
-            insertion_count_bytes,
-            active_workspace_peak_bytes,
-        })
-    }
-
-    /// Bytes retained by row preprocessing while the hash set is active.
-    pub fn preprocessing_retained_bytes(self) -> usize {
-        self.preprocessing_retained_bytes
-    }
-
-    /// Bytes allocated by the pinned cuco static-set storage owner.
-    pub fn static_set_storage_bytes(self) -> usize {
-        self.static_set_storage_bytes
-    }
-
-    /// Bytes for cuco's synchronous insertion-result counter.
-    pub fn insertion_count_bytes(self) -> usize {
-        self.insertion_count_bytes
-    }
-
-    /// Checked sum of all simultaneously live distinct workspace components.
-    pub fn active_workspace_peak_bytes(self) -> usize {
-        self.active_workspace_peak_bytes
-    }
-}
-
-fn distinct_workspace_key_supported(type_id: TypeId) -> bool {
-    !matches!(type_id, TypeId::Empty | TypeId::Dictionary32 | TypeId::String | TypeId::List | TypeId::Struct)
-}
-
-fn distinct_workspace_context_facts(
-    preflight: Option<ScalarReductionDistinctWorkspacePreflight>,
-) -> Vec<(&'static str, String)> {
-    let mut facts = vec![(
-        "distinct_workspace_preflight_status",
-        if preflight.is_some() { "supported" } else { "unresolved_unsupported_shape" }.to_string(),
-    )];
-    if let Some(preflight) = preflight {
-        facts.extend([
-            ("distinct_workspace_preflight_contract", DISTINCT_WORKSPACE_PREFLIGHT_CONTRACT.to_string()),
-            ("distinct_workspace_preprocessing_retained_bytes", preflight.preprocessing_retained_bytes().to_string()),
-            ("distinct_workspace_static_set_storage_bytes", preflight.static_set_storage_bytes().to_string()),
-            ("distinct_workspace_insertion_count_bytes", preflight.insertion_count_bytes().to_string()),
-            ("distinct_workspace_active_peak_bytes", preflight.active_workspace_peak_bytes().to_string()),
-        ]);
-    }
-    facts
-}
-
 /// Conservative output-shape facts for a prepared scalar reduction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScalarReductionOutputShape {
@@ -222,17 +76,11 @@ pub struct SeriesPreparedScalarReduction<'a> {
     input: &'a Series,
     aggregation: ReduceAgg,
     output_shape: ScalarReductionOutputShape,
-    distinct_workspace_preflight: Option<ScalarReductionDistinctWorkspacePreflight>,
 }
 
 impl<'a> SeriesPreparedScalarReduction<'a> {
-    fn new(
-        input: &'a Series,
-        aggregation: ReduceAgg,
-        output_shape: ScalarReductionOutputShape,
-        distinct_workspace_preflight: Option<ScalarReductionDistinctWorkspacePreflight>,
-    ) -> Self {
-        Self { input, aggregation, output_shape, distinct_workspace_preflight }
+    fn new(input: &'a Series, aggregation: ReduceAgg, output_shape: ScalarReductionOutputShape) -> Self {
+        Self { input, aggregation, output_shape }
     }
 
     /// Borrow the retained input series.
@@ -255,11 +103,6 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
         &self.output_shape
     }
 
-    /// Exact native workspace owner contract for supported `NUnique` inputs.
-    pub fn distinct_workspace_preflight(&self) -> Option<ScalarReductionDistinctWorkspacePreflight> {
-        self.distinct_workspace_preflight
-    }
-
     /// Execute the prepared scalar reduction.
     pub fn execute(&self) -> Result<ScalarReductionOutput> {
         self.execute_in_context(&default_execution_context(), "series::prepared_scalar_reduction::execute", |error| {
@@ -270,9 +113,8 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
     /// Execute the prepared scalar reduction with a hard execution-budget token.
     ///
     /// Execution allocations are routed through the token's stream-bound
-    /// reservation. The report records the fixed scalar output row count and
-    /// the unresolved libcudf temporary-workspace preflight contract. It does
-    /// not estimate scalar retained/output bytes.
+    /// reservation. The report records the fixed scalar output row count. It
+    /// does not estimate scalar retained/output bytes.
     pub fn execute_with_budget(
         &self,
         token: &ExecutionBudgetToken,
@@ -282,13 +124,7 @@ impl<'a> SeriesPreparedScalarReduction<'a> {
         let output = self.execute_in_context(&ctx, operation, |error| {
             annotate_scalar_reduction_budget_execution_error(error, token, operation)
         })?;
-        let mut report = token
-            .reservation_enforced_report()
-            .with_output_rows(output.output_rows())
-            .with_context_facts(distinct_workspace_context_facts(self.distinct_workspace_preflight));
-        if self.distinct_workspace_preflight.is_none() {
-            report = report.with_unresolved_contract(SCALAR_REDUCTION_TEMPORARY_WORKSPACE_CONTRACT_GAP);
-        }
+        let report = token.reservation_enforced_report().with_output_rows(output.output_rows());
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
@@ -401,20 +237,7 @@ impl Series {
         let operation = "series::prepare_scalar_reduction";
         let input_type = self.dtype().map_err(|error| error.reanchor_if_needed(operation))?;
         let output_type = infer_reduce_output_type(&input_type, &agg, operation)?;
-        let distinct_workspace_preflight = match &agg {
-            ReduceAgg::NUnique { .. }
-                if self.null_count() == 0 && distinct_workspace_key_supported(input_type.id()) =>
-            {
-                Some(ScalarReductionDistinctWorkspacePreflight::for_metadata(self.len(), input_type, 0)?)
-            },
-            _ => None,
-        };
-        Ok(SeriesPreparedScalarReduction::new(
-            self,
-            agg,
-            ScalarReductionOutputShape::new(output_type),
-            distinct_workspace_preflight,
-        ))
+        Ok(SeriesPreparedScalarReduction::new(self, agg, ScalarReductionOutputShape::new(output_type)))
     }
 
     pub(super) fn nunique_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<usize> {

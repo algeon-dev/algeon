@@ -93,6 +93,7 @@ fn main() {
         emit_runtime_search_path(runtime_dir);
     }
     println!("cargo:rustc-link-lib=dylib=cugraph");
+    println!("cargo:rustc-link-lib=dylib=cugraph_common");
     println!("cargo:rustc-link-lib=dylib=cugraph_c");
     emit_runtime_metadata(&contract.runtime_lib_dirs);
     emit_native_include_metadata(&contract.native_include_dirs);

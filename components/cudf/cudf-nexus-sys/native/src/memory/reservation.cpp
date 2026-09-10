@@ -419,7 +419,7 @@ void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
       try {
         std::scoped_lock lock{current_resource_route_mutex_};
         auto record = std::make_shared<current_resource_allocation_record>(
-          current_resource_allocation_record{current_resource_route, bytes, alignment, stream});
+          current_resource_allocation_record{current_resource_route, bytes, alignment});
         auto const insertion = current_resource_routes_by_pointer_.emplace(result, std::move(record));
         if (!insertion.second) {
           throw std::runtime_error{"duplicate current-resource routed pointer"};
@@ -486,16 +486,10 @@ void reservation_aware_resource_adaptor::do_deallocate(void* ptr,
   auto current_resource_route = current_resource_route_for_deallocation(ptr);
   if (current_resource_route != nullptr) {
     if (current_resource_route->route->routes_to_manager_upstream) {
-      upstream_.deallocate(current_resource_route->allocation_stream,
-                           ptr,
-                           current_resource_route->bytes,
-                           current_resource_route->alignment);
+      upstream_.deallocate(stream, ptr, current_resource_route->bytes, current_resource_route->alignment);
     } else {
       current_resource_route->route->target_owner->mr->deallocate(
-        current_resource_route->allocation_stream,
-        ptr,
-        current_resource_route->bytes,
-        current_resource_route->alignment);
+        stream, ptr, current_resource_route->bytes, current_resource_route->alignment);
     }
     return;
   }
@@ -614,7 +608,12 @@ cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_han
     auto* adaptor = manager_state->owner->reservation_adaptor;
     std::string attach_error;
     bool const routes_to_manager_upstream =
-      resource_state.owner->mr.get() == manager_state->owner->mr.get();
+      resource_state.current_resource_route_uses_manager_upstream;
+    if (routes_to_manager_upstream &&
+        resource_state.owner.get() != manager_state->owner.get()) {
+      set_error("current-resource route declares manager-upstream ownership for a different resource owner");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
     auto route = adaptor->attach_current_resource_route(
       cudf_stream_view_from_handle(stream),
       resource_state.owner,

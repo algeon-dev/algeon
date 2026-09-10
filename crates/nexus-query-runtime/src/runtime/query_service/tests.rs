@@ -6,8 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride;
-
 use super::{admission::AdmissionTicket, *};
 use crate::{
     observability::{

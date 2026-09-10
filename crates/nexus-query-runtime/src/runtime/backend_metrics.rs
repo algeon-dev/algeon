@@ -323,8 +323,8 @@ impl BackendTelemetryMetricsSnapshot {
 pub struct BackendAdmissionMetricsSnapshot {
     pub active_attempts: u64,
     pub live_grant_bytes: u64,
-    pub live_reserved_bytes: u64,
-    pub max_live_reserved_bytes: u64,
+    pub resident_owner_bytes: u64,
+    pub max_resident_owner_bytes: u64,
     /// Evictable cache residency from the device ledger's current snapshot.
     pub cache_evictable_resident_bytes: u64,
     /// Pinned cache residency from the device ledger's current snapshot.
@@ -336,8 +336,8 @@ impl BackendAdmissionMetricsSnapshot {
     const EMPTY: Self = Self {
         active_attempts: 0,
         live_grant_bytes: 0,
-        live_reserved_bytes: 0,
-        max_live_reserved_bytes: 0,
+        resident_owner_bytes: 0,
+        max_resident_owner_bytes: 0,
         cache_evictable_resident_bytes: 0,
         cache_pinned_in_use_bytes: 0,
         health: BackendAdmissionHealth::Open,
@@ -429,23 +429,23 @@ impl BackendMetricsSnapshot {
                     );
                 }
             },
-            BackendMetric::admission_live_reserved_bytes => {
+            BackendMetric::admission_resident_owner_bytes => {
                 for device in self.devices.iter().flatten() {
                     push_scalar_sample(
                         &mut samples,
                         descriptor,
                         device_attributes(descriptor, device.device_ordinal),
-                        device.admission.live_reserved_bytes,
+                        device.admission.resident_owner_bytes,
                     );
                 }
             },
-            BackendMetric::admission_max_live_reserved_bytes => {
+            BackendMetric::admission_max_resident_owner_bytes => {
                 for device in self.devices.iter().flatten() {
                     push_scalar_sample(
                         &mut samples,
                         descriptor,
                         device_attributes(descriptor, device.device_ordinal),
-                        device.admission.max_live_reserved_bytes,
+                        device.admission.max_resident_owner_bytes,
                     );
                 }
             },
@@ -811,9 +811,9 @@ impl DeviceMetricsState {
         self.ledger_sequence = snapshot.sequence;
         self.admission.active_attempts = u64::try_from(snapshot.active_attempts).unwrap_or(u64::MAX);
         self.admission.live_grant_bytes = snapshot.live_grants_bytes;
-        self.admission.live_reserved_bytes = snapshot.live_reserved_bytes;
-        self.admission.max_live_reserved_bytes =
-            self.admission.max_live_reserved_bytes.max(snapshot.live_reserved_bytes);
+        self.admission.resident_owner_bytes = snapshot.resident_owner_bytes;
+        self.admission.max_resident_owner_bytes =
+            self.admission.max_resident_owner_bytes.max(snapshot.resident_owner_bytes);
         // Sealed reports, admission TSV, and backend descriptors all project
         // this exact ledger transition; resident caches do not own a second
         // gauge.
@@ -1050,7 +1050,7 @@ mod tests {
         sequence: u64,
         active_attempts: usize,
         live_grants_bytes: u64,
-        live_reserved_bytes: u64,
+        resident_owner_bytes: u64,
         cache_resident_bytes: u64,
     ) -> LedgerTransition {
         LedgerTransition {
@@ -1064,7 +1064,7 @@ mod tests {
                 active_attempts,
                 live_grants_bytes,
                 frozen_resident_bytes: 0,
-                live_reserved_bytes,
+                resident_owner_bytes,
                 root_streams_available: 4,
                 auxiliary_streams_available: 4,
                 root_worker_slots_available: 4,
@@ -1128,8 +1128,8 @@ mod tests {
         assert_eq!(device.ledger_sequence, 11);
         assert_eq!(device.admission.active_attempts, 1);
         assert_eq!(device.admission.live_grant_bytes, 200);
-        assert_eq!(device.admission.live_reserved_bytes, 450);
-        assert_eq!(device.admission.max_live_reserved_bytes, 450);
+        assert_eq!(device.admission.resident_owner_bytes, 450);
+        assert_eq!(device.admission.max_resident_owner_bytes, 450);
         assert_eq!(device.admission.cache_evictable_resident_bytes, 777);
         assert_eq!(device.admission.cache_pinned_in_use_bytes, 777);
     }

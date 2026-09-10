@@ -2,14 +2,14 @@ use std::sync::Arc;
 #[cfg(feature = "bench-support")]
 use std::sync::atomic::AtomicBool;
 
-use nexus_query_engine::admission::QueryPlanCapabilityProof;
+use nexus_query_engine::admission::AttemptCapabilityEvidence;
 
 #[cfg(feature = "bench-support")]
 use super::QueryHandle;
 use super::{
-    GraphAdmissionModelAsk, NativeExecutionMetricsCapture, NativeMetricsCapture, NexusNativeExecutionConfig,
-    QueryAdmissionSource, QueryAdmissionTicket, QueryId, RuntimeObservationConfig, RuntimeObservationOwner,
-    RuntimeTraceId, TaskContext, query_admission_ticket_from_task_context,
+    NativeExecutionMetricsCapture, NativeMetricsCapture, NexusNativeExecutionConfig, QueryAdmissionSource,
+    QueryAdmissionTicket, QueryId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId, TaskContext,
+    query_admission_ticket_from_task_context,
 };
 use crate::attempt::NexusAttemptExtension;
 
@@ -54,26 +54,9 @@ impl NexusNativeExecutionConfig {
         self
     }
 
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
-        &self,
-        graph_model_ask: Option<GraphAdmissionModelAsk>,
-        fragment_proofs: Vec<QueryPlanCapabilityProof>,
-    ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
-        self.new_plan_query_admission_ticket_with_fragment_proofs(fragment_proofs, graph_model_ask.as_ref())
-    }
-
     pub(crate) fn new_plan_query_admission_ticket_with_fragment_requirements(
         &self,
-        fragment_proofs: Vec<QueryPlanCapabilityProof>,
-    ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
-        self.new_plan_query_admission_ticket_with_fragment_proofs(fragment_proofs, None)
-    }
-
-    fn new_plan_query_admission_ticket_with_fragment_proofs(
-        &self,
-        fragment_proofs: Vec<QueryPlanCapabilityProof>,
-        graph_model_ask: Option<&GraphAdmissionModelAsk>,
+        fragment_evidence_items: Vec<AttemptCapabilityEvidence>,
     ) -> nexus_query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
         if self.query_service_handle.is_some() {
             return Ok(None);
@@ -81,20 +64,15 @@ impl NexusNativeExecutionConfig {
         let Some(source) = self.query_admission_source.clone() else {
             return Ok(None);
         };
-        let mut fragment_proofs = fragment_proofs.into_iter();
-        let Some(first_proof) = fragment_proofs.next() else {
+        if fragment_evidence_items.is_empty() {
             return Ok(None);
-        };
-        let mut attempt_capability_proof = QueryPlanCapabilityProof::combine(first_proof, fragment_proofs)?;
-        if let Some(graph_model_ask) = graph_model_ask {
-            attempt_capability_proof =
-                attempt_capability_proof.with_graph_memory_admission_evidence(graph_model_ask.cold_model_evidence())?;
         }
+        let attempt_capability_evidence = AttemptCapabilityEvidence::aggregate(fragment_evidence_items);
         let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
         let observation = self.new_runtime_observation(observation_capture.as_ref());
-        Ok(Some(QueryAdmissionTicket::new_with_capability_proof_and_observation(
+        Ok(Some(QueryAdmissionTicket::new_with_capability_evidence_and_observation(
             source,
-            Some(attempt_capability_proof),
+            Some(attempt_capability_evidence),
             observation,
             observation_capture,
         )))
@@ -117,13 +95,11 @@ impl NexusNativeExecutionConfig {
     #[cfg(feature = "cugraph")]
     pub(crate) fn with_graph_aware_plan_query_admission_ticket(
         mut self,
-        graph_model_ask: Option<GraphAdmissionModelAsk>,
-        fragment_proofs: Vec<QueryPlanCapabilityProof>,
+        fragment_evidence_items: Vec<AttemptCapabilityEvidence>,
     ) -> nexus_query_engine::error::Result<Self> {
-        if let Some(ticket) = self.new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
-            graph_model_ask,
-            fragment_proofs,
-        )? {
+        if let Some(ticket) =
+            self.new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)?
+        {
             self.query_admission_ticket = Some(ticket);
         }
         Ok(self)
@@ -141,7 +117,7 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Drops a planner-time ticket before a frontend resolves metadata that
-    /// participates in its immutable admission proof.
+    /// participates in its immutable admission evidence.
     #[cfg(feature = "cugraph")]
     pub(crate) fn without_query_admission_ticket(mut self) -> Self {
         self.query_admission_ticket = None;

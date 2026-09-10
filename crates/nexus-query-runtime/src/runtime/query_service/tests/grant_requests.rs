@@ -1,5 +1,5 @@
 #[test]
-fn attempt_requirement_hint_does_not_select_grant_for_one_admission() {
+fn attempt_requirement_admits_with_the_ledgers_configured_default_grant() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
@@ -8,9 +8,7 @@ fn attempt_requirement_hint_does_not_select_grant_for_one_admission() {
     .unwrap();
 
     let handle = service
-        .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(1024, Some(1536))),
-        )
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("requirement should admit");
     assert_eq!(handle.device_budget_bytes(), 512);
@@ -26,15 +24,11 @@ fn admission_without_observation_mints_one_identity_per_committed_grant() {
     .unwrap();
 
     let first = service
-        .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))),
-        )
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("first request admits");
     let second = service
-        .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))),
-        )
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("second request admits");
 
@@ -92,21 +86,19 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 fn eager_device_entries_share_capability_requirement_for_fit_grant_and_execution() {
     let service = AdmissionTestController::new(QueryExecutionConfig::default(), QueueBounds::default())
         .expect("synthetic admission service");
-    let proof = explicit_sink_capability_proof();
-    let resolved_proof = proof.requirement_for_device(0).expect("non-sort proof resolves on a synthetic ordinal");
+    let evidence = explicit_sink_capability_evidence();
     let admitted = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()),
+        )
         .expect("submission succeeds")
         .expect("the exact entry fits the synthetic ledger");
 
     assert_eq!(
         admitted.handle.lifetime.admitted_device_requirement_for_test(admitted.handle.device_ordinal()),
-        Some(resolved_proof.as_requirement()),
+        Some(&evidence),
     );
-    let proof =
-        admitted.handle.lifetime.admitted_attempt_proof_for_test().expect("submitted admission carries its proof");
-    assert_eq!(proof.selected_device(), admitted.handle.device_ordinal());
-    assert_eq!(proof.grant_identity(), admitted.handle.grant_identity().expect("grant identity"));
+    assert_eq!(admitted.handle.lifetime.admitted_capability_evidence_for_test(), Some(&evidence),);
     drop(admitted);
 }
 
@@ -120,9 +112,7 @@ fn explicit_cap_above_device_capacity_is_rejected_before_enqueue() {
     .unwrap();
 
     let error = service
-        .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_query_cap_bytes(2048),
-        )
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(2048))
         .expect_err("cap exceeding every eligible device must reject");
     assert_eq!(error.code(), QueryErrorCode::QueryBudgetUnavailable);
     assert_eq!(error.fact_value("reason"), Some("query_cap_exceeds_resident_capacity"));
@@ -130,7 +120,9 @@ fn explicit_cap_above_device_capacity_is_rejected_before_enqueue() {
 }
 
 #[test]
-fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_queueing() {
+fn plan_capability_evidence_missing_from_exact_device_profile_is_rejected_before_queueing() {
+    use nexus_query_planning::admission::ExecutionCapability;
+
     use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
     let service = AdmissionTestController::new_with_device_capabilities(
@@ -139,17 +131,17 @@ fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_qu
         DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
     )
     .unwrap();
+    let mut evidence = explicit_sink_capability_evidence();
+    evidence.required_capabilities = vec![ExecutionCapability::new("unavailable")];
     let error = service
-        .enqueue_admission_with_request(
-            QueryAdmissionRequest::new().with_query_plan_capability_proof(explicit_sink_capability_proof()),
-        )
+        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
         .expect_err("an unavailable device capability must reject locally");
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
     assert_eq!(
         error.fact_value("required_capabilities"),
-        Some("materialization:query_engine_explicit_sink_materialization_reservation")
+        Some("unavailable")
     );
     assert_eq!(error.fact_value("configured_device_count"), Some("1"));
     assert_eq!(error.fact_value("compatible_device_count"), Some("0"));
@@ -157,32 +149,29 @@ fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_qu
 }
 
 #[test]
-fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does_not_become_execution_evidence() {
+fn submitted_plan_evidence_survives_admission_while_internal_placement_requirement_does_not_become_execution_evidence()
+{
     let service = AdmissionTestController::new(QueryExecutionConfig::default(), QueueBounds::default()).unwrap();
-    let proof = explicit_sink_capability_proof();
+    let evidence = explicit_sink_capability_evidence();
     let submitted = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()))
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()),
+        )
         .unwrap()
-        .expect("submitted proof admits on an all-modeled test profile");
-    assert_eq!(
-        submitted.handle.lifetime.admitted_attempt_proof_for_test().map(|proof| proof.submitted_capability_evidence()),
-        Some(proof.as_requirement()),
-    );
+        .expect("submitted evidence admits on an all-modeled test profile");
+    assert_eq!(submitted.handle.lifetime.admitted_capability_evidence_for_test(), Some(&evidence),);
     drop(submitted);
 
     let placement_only = service
-        .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(128, Some(128))),
-        )
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement()))
         .unwrap()
         .expect("internal placement requirement admits");
-    assert!(placement_only.handle.lifetime.admitted_attempt_proof_for_test().is_none());
+    assert!(placement_only.handle.lifetime.admitted_capability_evidence_for_test().is_none());
 }
 
-fn explicit_sink_capability_proof() -> nexus_query_planning::admission::QueryPlanCapabilityProof {
+fn explicit_sink_capability_evidence() -> AttemptRequirement {
     let plan = explicit_sink_plan("input");
-    nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
-        .expect("an explicit host sink must expose a capability requirement")
+    AttemptRequirement::for_query_plan(&plan)
 }
 
 fn explicit_sink_plan(input_name: &str) -> nexus_query_planning::plan::QueryPlan {
@@ -201,24 +190,19 @@ fn explicit_sink_plan(input_name: &str) -> nexus_query_planning::plan::QueryPlan
 }
 
 fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptRequirement) {
-    use nexus_query_planning::capability::{ContractQuality, ReservationRequirement};
+    use nexus_query_planning::admission::ExecutionCapability;
 
-    use crate::runtime::{DeviceCapabilities, DeviceCapability, ReservationKind};
+    use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
-    let capability = DeviceCapability::new(ReservationKind::OperatorOutput, "test_operator_contract");
+    let capability = DeviceCapability::new("test_operator");
     let service = AdmissionTestController::new_with_device_capabilities(
         QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         DeviceCapabilities::only([capability]),
     )
     .unwrap();
-    let mut attempt_requirement = requirement(128, Some(128));
-    attempt_requirement.required_capabilities = vec![ReservationRequirement::modeled(
-        ReservationKind::OperatorOutput,
-        "test_operator",
-        "test_operator_contract",
-        ContractQuality::CapabilityProof,
-    )];
+    let mut attempt_requirement = requirement();
+    attempt_requirement.required_capabilities = vec![ExecutionCapability::new("test_operator")];
     (service, attempt_requirement)
 }
 
@@ -232,15 +216,17 @@ fn assert_explicit_requirement_required(error: &QueryError) {
 fn restricted_capability_profile_rejects_missing_blocking_try_and_queued_requirements() {
     let (service, compatible_requirement) = restricted_capability_service_and_requirement();
 
-    assert_explicit_requirement_required(&service.admit_query().expect_err("blocking admission requires a proof"));
-    assert_explicit_requirement_required(&service.try_admit_query().expect_err("try admission requires a proof"));
-    assert_explicit_requirement_required(&service.enqueue_admission().expect_err("queued admission requires a proof"));
+    assert_explicit_requirement_required(&service.admit_query().expect_err("blocking admission requires a evidence"));
+    assert_explicit_requirement_required(&service.try_admit_query().expect_err("try admission requires a evidence"));
+    assert_explicit_requirement_required(
+        &service.enqueue_admission().expect_err("queued admission requires a evidence"),
+    );
     assert_eq!(service.queued_len(), 0);
 
     let admitted = service
         .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(compatible_requirement))
         .unwrap()
-        .expect("an explicit compatible capability proof admits");
+        .expect("an explicit compatible capability evidence admits");
     assert_eq!(admitted.device_ordinal(), 0);
 }
 
@@ -248,7 +234,7 @@ fn restricted_capability_profile_rejects_missing_blocking_try_and_queued_require
 async fn restricted_capability_profile_rejects_missing_async_requirement() {
     let (service, _) = restricted_capability_service_and_requirement();
 
-    let error = service.admit_async().await.expect_err("async admission requires a proof");
+    let error = service.admit_async().await.expect_err("async admission requires a evidence");
 
     assert_explicit_requirement_required(&error);
     assert_eq!(service.queued_len(), 0);

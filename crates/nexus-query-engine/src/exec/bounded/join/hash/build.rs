@@ -1,17 +1,15 @@
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, BoundedRootHashJoinBuildState, DataFrame, ExecutionOverrides,
-    GpuDataFrame, GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, NodeId, QueryError, ReservationKind,
-    ResidentGpuFrame, Result, bounded_join_request, execution_overrides, lower_null_equality,
-    prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame, probe_side,
-    projected_input_columns, state::validate_root_hash_join,
+    BoundedExecutionAttempt, BoundedRootHashJoinBuildState, DataFrame, ExecutionOverrides, GpuDataFrame,
+    GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, QueryError, ResidentGpuFrame, Result, execution_overrides,
+    lower_null_equality, prepare_bounded_join_side_input_from_resident_frame,
+    prepare_bounded_join_side_input_from_shared_frame, probe_side, projected_input_columns,
+    state::validate_root_hash_join,
 };
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     node: &JoinNode,
     input: GpuDataFrame,
-    input_reservation: &ActiveReservation,
 ) -> Result<BoundedRootHashJoinBuildState> {
     validate_root_hash_join(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
@@ -30,30 +28,12 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
-    let build = prepare_bounded_join_side_input_from_shared_frame(
-        execution,
-        input,
-        input_reservation,
-        build_columns,
-        build_side,
-        node_id,
-        build_side,
-    )?;
+    let build = prepare_bounded_join_side_input_from_shared_frame(execution, input, build_columns, build_side)?;
     let build_keys_unique = single_key_build_is_unique(&build.frame, build_keys, &overrides);
     let hash_options =
         cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
-    let (hash_join, hash_table_reservation, hash_table_bytes) = reserve_and_build_bounded_hash_join(
-        execution,
-        node_id,
-        node,
-        &build.frame,
-        build_keys,
-        hash_options,
-        build_side,
-        &overrides,
-        "join_hash_table",
-        true,
-    )?;
+    let (hash_join, hash_table_bytes) =
+        build_bounded_hash_join(execution, node, &build.frame, build_keys, hash_options, build_side, &overrides, true)?;
     Ok(BoundedRootHashJoinBuildState {
         build_side,
         probe_side: probe_side(build_side),
@@ -63,7 +43,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
         right_columns,
         build,
         hash_join,
-        hash_table_reservation,
         hash_table_bytes,
         left_indices_from_probe: build_side == JoinSide::Right,
         build_keys_unique,
@@ -73,7 +52,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     node: &JoinNode,
     input: ResidentGpuFrame,
 ) -> Result<BoundedRootHashJoinBuildState> {
@@ -94,29 +72,12 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_reside
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
-    let build = prepare_bounded_join_side_input_from_resident_frame(
-        execution,
-        input,
-        build_columns,
-        build_side,
-        node_id,
-        build_side,
-    )?;
+    let build = prepare_bounded_join_side_input_from_resident_frame(execution, input, build_columns, build_side)?;
     let build_keys_unique = single_key_build_is_unique(&build.frame, build_keys, &overrides);
     let hash_options =
         cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
-    let (hash_join, hash_table_reservation, hash_table_bytes) = reserve_and_build_bounded_hash_join(
-        execution,
-        node_id,
-        node,
-        &build.frame,
-        build_keys,
-        hash_options,
-        build_side,
-        &overrides,
-        "join_hash_table",
-        true,
-    )?;
+    let (hash_join, hash_table_bytes) =
+        build_bounded_hash_join(execution, node, &build.frame, build_keys, hash_options, build_side, &overrides, true)?;
     Ok(BoundedRootHashJoinBuildState {
         build_side,
         probe_side: probe_side(build_side),
@@ -126,7 +87,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_reside
         right_columns,
         build,
         hash_join,
-        hash_table_reservation,
         hash_table_bytes,
         left_indices_from_probe: build_side == JoinSide::Right,
         build_keys_unique,
@@ -148,42 +108,19 @@ fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], override
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
 )]
-pub(in crate::exec::bounded::join) fn reserve_and_build_bounded_hash_join(
+pub(in crate::exec::bounded::join) fn build_bounded_hash_join(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     node: &JoinNode,
     build: &DataFrame,
     build_keys: &[String],
     hash_options: cudf::DataFrameHashJoinOptions,
     build_side: JoinSide,
     overrides: &ExecutionOverrides<'_>,
-    hash_table_memory_boundary: &'static str,
     record_hash_join_metrics: bool,
-) -> Result<(GpuHashJoinBuildHandle, ActiveReservation, u64)> {
-    let hash_table_reservation_bytes = build
-        .with_execution(overrides)
-        .hash_join_pre_build_reservation_size_bytes(build_keys, hash_options)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.hash_table_reservation",
-                "failed to size bounded native reusable hash join build",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", build_side)
-        })?;
-    let hash_table_reservation = execution.try_reserve(bounded_join_request(
-        ReservationKind::HashTable,
-        hash_table_memory_boundary,
-        hash_table_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    ))?;
+) -> Result<(GpuHashJoinBuildHandle, u64)> {
     let hash_join = match build.with_execution(overrides).build_hash_join(build_keys, hash_options) {
         Ok(hash_join) => hash_join,
         Err(error) => {
-            execution.release(hash_table_reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.build_hash_join",
                 "failed to build bounded native reusable hash join",
@@ -197,7 +134,6 @@ pub(in crate::exec::bounded::join) fn reserve_and_build_bounded_hash_join(
     let hash_join = match GpuHashJoinBuildHandle::new(execution.context(), hash_join, node.spec.null_equality) {
         Ok(hash_join) => hash_join,
         Err(error) => {
-            execution.release(hash_table_reservation);
             return Err(error
                 .with_fact("join_type", node.spec.join_type)
                 .with_fact("key_count", node.spec.keys.len())
@@ -209,5 +145,5 @@ pub(in crate::exec::bounded::join) fn reserve_and_build_bounded_hash_join(
         execution.metrics_mut().record_hash_join_build();
         execution.metrics_mut().record_hash_join_hash_table_bytes(hash_table_bytes);
     }
-    Ok((hash_join, hash_table_reservation, hash_table_bytes))
+    Ok((hash_join, hash_table_bytes))
 }

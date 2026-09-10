@@ -108,7 +108,7 @@ impl PartitionedJoinOutputSummary {
     }
 
     pub(super) fn observe_concatenated_output(&mut self, output: &ResidentGpuFrame) {
-        self.output_bytes = self.output_bytes.max(output.reservation.bytes());
+        self.output_bytes = self.output_bytes.max(output.device_bytes());
     }
 }
 
@@ -136,8 +136,8 @@ where
     };
     record_partitioned_join_selection(plan, original, execution.metrics_mut());
     let partitioned = partition_join_sides(execution, plan, left, right)?;
-    let left_partitioned_bytes = partitioned.left.reservation.bytes();
-    let right_partitioned_bytes = partitioned.right.reservation.bytes();
+    let left_partitioned_bytes = partitioned.left.device_bytes();
+    let right_partitioned_bytes = partitioned.right.device_bytes();
     record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics_mut());
 
     let mut outputs = Vec::with_capacity(plan.partition_count);
@@ -159,18 +159,13 @@ where
                 }
             },
             Err(error) => {
-                release_partitioned_join_driver_state(
-                    execution,
-                    Some(left_partitioned),
-                    Some(right_partitioned),
-                    outputs,
-                );
+                release_partitioned_join_driver_state(Some(left_partitioned), Some(right_partitioned), outputs);
                 return Err(error);
             },
         }
     }
-    release_partitioned_join_side(execution, left_partitioned);
-    release_partitioned_join_side(execution, right_partitioned);
+    release_partitioned_join_side(left_partitioned);
+    release_partitioned_join_side(right_partitioned);
     Ok(PartitionedJoinBufferedOutput { outputs, original, summary })
 }
 
@@ -396,7 +391,7 @@ where
         ) {
             Ok(mut child_outputs) => outputs.append(&mut child_outputs),
             Err(error) => {
-                release_partitioned_join_partition_outputs(execution, outputs);
+                release_partitioned_join_partition_outputs(outputs);
                 return Err(error);
             },
         }
@@ -434,9 +429,9 @@ where
         let child = match repartitioned_join_child_work(work, &retry_left, &retry_right, partition) {
             Ok(child) => child,
             Err(error) => {
-                release_partitioned_join_partition_outputs(execution, outputs);
-                release_partitioned_join_side(execution, retry_left);
-                release_partitioned_join_side(execution, retry_right);
+                release_partitioned_join_partition_outputs(outputs);
+                release_partitioned_join_side(retry_left);
+                release_partitioned_join_side(retry_right);
                 return Err(error);
             },
         };
@@ -452,15 +447,15 @@ where
         ) {
             Ok(mut partition_outputs) => outputs.append(&mut partition_outputs),
             Err(error) => {
-                release_partitioned_join_partition_outputs(execution, outputs);
-                release_partitioned_join_side(execution, retry_left);
-                release_partitioned_join_side(execution, retry_right);
+                release_partitioned_join_partition_outputs(outputs);
+                release_partitioned_join_side(retry_left);
+                release_partitioned_join_side(retry_right);
                 return Err(error);
             },
         }
     }
-    release_partitioned_join_side(execution, retry_left);
-    release_partitioned_join_side(execution, retry_right);
+    release_partitioned_join_side(retry_left);
+    release_partitioned_join_side(retry_right);
     Ok(outputs)
 }
 
@@ -473,7 +468,6 @@ fn repartition_partitioned_join_work(
 ) -> Result<PartitionedJoinSides> {
     let left = slice_partition_join_side_range(
         execution,
-        plan.node_id,
         JoinSide::Left,
         plan.node.spec.build_side,
         left_partitioned,
@@ -482,7 +476,6 @@ fn repartition_partitioned_join_work(
     )?;
     let right = match slice_partition_join_side_range(
         execution,
-        plan.node_id,
         JoinSide::Right,
         plan.node.spec.build_side,
         right_partitioned,
@@ -491,7 +484,7 @@ fn repartition_partitioned_join_work(
     ) {
         Ok(right) => right,
         Err(error) => {
-            release_bounded_join_side_frame(execution, left);
+            release_bounded_join_side_frame(left);
             return Err(error);
         },
     };
@@ -501,7 +494,6 @@ fn repartition_partitioned_join_work(
     let overrides = overrides_lease.overrides();
     let left_partitioned = match hash_partition_join_side(
         execution,
-        plan.node_id,
         JoinSide::Left,
         left,
         &left_keys,
@@ -510,13 +502,12 @@ fn repartition_partitioned_join_work(
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            release_bounded_join_side_frame(execution, right);
+            release_bounded_join_side_frame(right);
             return Err(error);
         },
     };
     let right_partitioned = match hash_partition_join_side(
         execution,
-        plan.node_id,
         JoinSide::Right,
         right,
         &right_keys,
@@ -525,7 +516,7 @@ fn repartition_partitioned_join_work(
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            release_partitioned_join_side(execution, left_partitioned);
+            release_partitioned_join_side(left_partitioned);
             return Err(error);
         },
     };
@@ -551,7 +542,6 @@ where
 {
     let left_part = slice_partition_join_side_range(
         execution,
-        plan.node_id,
         JoinSide::Left,
         plan.node.spec.build_side,
         left_partitioned,
@@ -560,7 +550,6 @@ where
     )?;
     let right_part = match slice_partition_join_side_range(
         execution,
-        plan.node_id,
         JoinSide::Right,
         plan.node.spec.build_side,
         right_partitioned,
@@ -569,7 +558,7 @@ where
     ) {
         Ok(partition) => partition,
         Err(error) => {
-            release_bounded_join_side_frame(execution, left_part);
+            release_bounded_join_side_frame(left_part);
             return Err(error);
         },
     };
@@ -716,18 +705,10 @@ pub(super) fn partition_join_sides(
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let left_partitioned = hash_partition_join_side(
-        execution,
-        plan.node_id,
-        JoinSide::Left,
-        left,
-        &left_keys,
-        plan.partition_count,
-        &overrides,
-    )?;
+    let left_partitioned =
+        hash_partition_join_side(execution, JoinSide::Left, left, &left_keys, plan.partition_count, &overrides)?;
     let right_partitioned = match hash_partition_join_side(
         execution,
-        plan.node_id,
         JoinSide::Right,
         right,
         &right_keys,
@@ -736,7 +717,7 @@ pub(super) fn partition_join_sides(
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            release_partitioned_join_side(execution, left_partitioned);
+            release_partitioned_join_side(left_partitioned);
             return Err(error);
         },
     };
@@ -850,29 +831,25 @@ pub(super) fn record_partitioned_join_operator_metrics(
     ));
 }
 
-fn release_partitioned_join_partition_outputs(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut outputs: Vec<PartitionedJoinPartitionOutput>,
-) {
+fn release_partitioned_join_partition_outputs(mut outputs: Vec<PartitionedJoinPartitionOutput>) {
     let mut frames = Vec::with_capacity(outputs.len());
     while let Some(output) = outputs.pop() {
         frames.push(output.frame);
     }
-    release_streamed_join_outputs_reverse(execution, frames);
+    release_streamed_join_outputs_reverse(frames);
 }
 
 fn release_partitioned_join_driver_state(
-    execution: &mut BoundedExecutionAttempt<'_>,
     left: Option<PartitionedJoinSide>,
     right: Option<PartitionedJoinSide>,
     outputs: Vec<ResidentGpuFrame>,
 ) {
-    release_streamed_join_outputs_reverse(execution, outputs);
+    release_streamed_join_outputs_reverse(outputs);
     if let Some(left) = left {
-        release_partitioned_join_side(execution, left);
+        release_partitioned_join_side(left);
     }
     if let Some(right) = right {
-        release_partitioned_join_side(execution, right);
+        release_partitioned_join_side(right);
     }
 }
 
@@ -900,7 +877,7 @@ mod tests {
 
     fn retryable_error_with_fact(key: &'static str, value: &'static str) -> QueryError {
         QueryError::new(
-            QueryErrorCode::MemoryReservationFailed,
+            QueryErrorCode::CudfResourceExhausted,
             "nexus_query_engine.bounded.join.partitioned_retry_test",
             "injected retryable partitioned join retry test error",
         )
@@ -980,11 +957,11 @@ mod tests {
     }
 
     #[test]
-    fn retry_error_evidence_records_bounded_retry_fact() {
+    fn retry_error_evidence_records_resource_exhaustion() {
         let error = retryable_error_with_fact("memory_boundary", "join_partition_right_side");
         let mut metrics = QueryMetrics::default();
 
         record_partitioned_join_retry_error(&error, &mut metrics);
-        assert_eq!(metrics.retry_reservation_failure_count, 1);
+        assert_eq!(metrics.retry_resource_exhausted_count, 1);
     }
 }

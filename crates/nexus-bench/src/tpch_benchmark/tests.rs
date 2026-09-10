@@ -221,9 +221,7 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     let header_fields = header.split('\t').collect::<Vec<_>>();
     assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
     assert_eq!(NativeTpchBenchmarkTsvRow::COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
-    assert!(
-        NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\t")
-    );
+    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
     assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains(
         "\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\t"
     ));
@@ -462,7 +460,7 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         outcome: Some(CandidateOutcomeKind::Selected),
         reason_code: None,
         unsupported_category: None,
-        capability_contract_rows: Vec::new(),
+        capability_decision_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         native_optimizer: Default::default(),
         edge_normalize_inserted: false,
@@ -486,7 +484,7 @@ fn not_supported_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         outcome: Some(CandidateOutcomeKind::NotSupported),
         reason_code: Some("native_bounded_join_unsupported".to_string()),
         unsupported_category: Some("operator_hashjoin".to_string()),
-        capability_contract_rows: Vec::new(),
+        capability_decision_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         native_optimizer: Default::default(),
         edge_normalize_inserted: false,
@@ -500,71 +498,13 @@ fn not_supported_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
     }
 }
 
-fn bounded_gate_row(
-    kind: nexus_query_engine::runtime::ReservationKind,
-    quality: nexus_query_engine::capability::ContractQuality,
-    unresolved_preflight_gap: Option<&'static str>,
-) -> nexus_query_engine::contract_report::CapabilityContractGateRow {
-    nexus_query_engine::contract_report::CapabilityContractGateRow {
-        execution_mode: nexus_query_engine::mode::CapabilityEnvelopeStatus::Admitted,
-        contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Edge,
-        gate_id: nexus_query_engine::contract_report::CapabilityContractGateId::Compiled(
-            nexus_query_engine::pipeline::ReservationGateId::new(kind as usize),
-        ),
-        owner: nexus_query_engine::contract_report::CapabilityContractOwner::Compiled(
-            nexus_query_engine::pipeline::ReservationGateOwner::SinkBoundary,
-        ),
-        reservation_kind: kind,
-        memory_boundary: kind.as_str(),
-        required_contract: match kind {
-            nexus_query_engine::runtime::ReservationKind::FinalSort => "final_sort_contract",
-            nexus_query_engine::runtime::ReservationKind::OperatorOutput => "aggregate_contract",
-            nexus_query_engine::runtime::ReservationKind::Materialization => {
-                "query_engine_explicit_sink_materialization_reservation"
-            },
-            nexus_query_engine::runtime::ReservationKind::SourceRead => "source_contract",
-            _ => "query_engine_test_contract",
-        },
-        contract_status: nexus_query_engine::capability::ContractStatus::Modeled,
-        contract_quality: quality,
-        unresolved_preflight_gap,
-    }
-}
-
-fn accepted_capability_contract_rows() -> Vec<nexus_query_engine::contract_report::CapabilityContractGateRow> {
-    vec![
-        bounded_gate_row(
-            nexus_query_engine::runtime::ReservationKind::SourceRead,
-            nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-            Some("libcudf_parquet_decoded_output_preflight_unavailable"),
-        ),
-        bounded_gate_row(
-            nexus_query_engine::runtime::ReservationKind::FinalSort,
-            nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-            Some("libcudf_final_sort_order_preflight_unavailable"),
-        ),
-        bounded_gate_row(
-            nexus_query_engine::runtime::ReservationKind::OperatorOutput,
-            nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-            Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
-        ),
-        bounded_gate_row(
-            nexus_query_engine::runtime::ReservationKind::Materialization,
-            nexus_query_engine::capability::ContractQuality::QueryEngineOwnedBoundary,
-            None,
-        ),
-    ]
-}
-
 fn accepted_capability_compiled_graphs() -> Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics> {
     vec![datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics {
         task_count: 3,
         edge_count: 2,
         barrier_count: 0,
         resource_count: 3,
-        gate_count: 4,
         sink_kind: "host_arrow_materialization".to_string(),
-        sink_gate_count: 1,
     }]
 }
 

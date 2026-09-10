@@ -1,11 +1,11 @@
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, GpuHashJoinBuildHandle, Instant, JoinNode,
-    JoinSide, Result, keyed_hash_join_capable, release_bounded_join_side_frame,
+    BoundedJoinSideFrame, GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, Result, keyed_hash_join_capable,
+    release_bounded_join_side_frame,
     stream::{proportional_join_stream_bytes, reusable_hash_join_stream_chunk_rows},
     unsupported_bounded_shape, validate_executable_join_subset,
 };
 
-// Reusable build artifact plus the reservation that keeps its hash table resident.
+// Reusable build artifact plus its observed native allocation.
 pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
     pub(in crate::exec::bounded::join::hash) build_side: JoinSide,
     pub(in crate::exec::bounded::join::hash) probe_side: JoinSide,
@@ -15,19 +15,17 @@ pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
     pub(in crate::exec::bounded::join::hash) right_columns: Vec<String>,
     pub(in crate::exec::bounded::join::hash) build: BoundedJoinSideFrame,
     pub(in crate::exec::bounded::join::hash) hash_join: GpuHashJoinBuildHandle,
-    pub(in crate::exec::bounded::join::hash) hash_table_reservation: ActiveReservation,
     pub(in crate::exec::bounded::join::hash) hash_table_bytes: u64,
     pub(in crate::exec::bounded::join::hash) left_indices_from_probe: bool,
     pub(in crate::exec::bounded::join::hash) build_keys_unique: bool,
     pub(in crate::exec::bounded::join::hash) timer: Instant,
 }
 
-// Probe indices and reservations captured before materializing root hash-join output.
+// Probe indices and observed allocation facts captured before materializing output.
 pub(in crate::exec::bounded) struct BoundedRootHashJoinProbeState {
     pub(in crate::exec::bounded::join::hash) build: BoundedRootHashJoinBuildState,
     pub(in crate::exec::bounded::join::hash) probe: BoundedJoinSideFrame,
     pub(in crate::exec::bounded::join::hash) indices: cudf::DataFrameHashJoinPairIndices,
-    pub(in crate::exec::bounded::join::hash) gather_map_reservation: ActiveReservation,
     pub(in crate::exec::bounded::join::hash) gather_map_bytes: u64,
     pub(in crate::exec::bounded::join::hash) output_reservation_bytes: u64,
     pub(in crate::exec::bounded::join::hash) minimum_output_reservation_bytes: u64,
@@ -54,23 +52,15 @@ impl BoundedRootHashJoinProbeState {
     }
 }
 
-pub(in crate::exec::bounded) fn release_bounded_root_hash_join_build_state(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    build: BoundedRootHashJoinBuildState,
-) {
-    let BoundedRootHashJoinBuildState { build: build_frame, hash_join: _, hash_table_reservation, .. } = build;
-    execution.release(hash_table_reservation);
-    release_bounded_join_side_frame(execution, build_frame);
+pub(in crate::exec::bounded) fn release_bounded_root_hash_join_build_state(build: BoundedRootHashJoinBuildState) {
+    let BoundedRootHashJoinBuildState { build: build_frame, .. } = build;
+    release_bounded_join_side_frame(build_frame);
 }
 
-pub(in crate::exec::bounded) fn release_bounded_root_hash_join_probe_state(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    probe: BoundedRootHashJoinProbeState,
-) {
-    let BoundedRootHashJoinProbeState { build, probe, indices: _, gather_map_reservation, .. } = probe;
-    execution.release(gather_map_reservation);
-    release_bounded_root_hash_join_build_state(execution, build);
-    release_bounded_join_side_frame(execution, probe);
+pub(in crate::exec::bounded) fn release_bounded_root_hash_join_probe_state(probe: BoundedRootHashJoinProbeState) {
+    let BoundedRootHashJoinProbeState { build, probe, .. } = probe;
+    release_bounded_root_hash_join_build_state(build);
+    release_bounded_join_side_frame(probe);
 }
 
 pub(in crate::exec::bounded::join::hash) fn validate_root_hash_join(node: &JoinNode) -> Result<()> {

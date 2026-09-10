@@ -139,8 +139,8 @@ impl QueryAdmission {
                 ledger_sequence = device.ledger_sequence,
                 active_attempts = device.admission.active_attempts,
                 live_grant_bytes = device.admission.live_grant_bytes,
-                live_reserved_bytes = device.admission.live_reserved_bytes,
-                max_live_reserved_bytes = device.admission.max_live_reserved_bytes,
+                resident_owner_bytes = device.admission.resident_owner_bytes,
+                max_resident_owner_bytes = device.admission.max_resident_owner_bytes,
                 cache_evictable_resident_bytes = device.admission.cache_evictable_resident_bytes,
                 cache_pinned_in_use_bytes = device.admission.cache_pinned_in_use_bytes,
                 admission_health = ?device.admission.health,
@@ -198,7 +198,7 @@ impl QueryAdmission {
 
                 output.push_str("\n[backend_device_admission]\n");
                 output.push_str(
-                    "device_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tlive_reserved_bytes\tmax_live_reserved_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n",
+                    "device_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tresident_owner_bytes\tmax_resident_owner_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n",
                 );
                 for device in snapshot.devices.iter().flatten() {
                     let _ = writeln!(
@@ -208,8 +208,8 @@ impl QueryAdmission {
                         device.ledger_sequence,
                         device.admission.active_attempts,
                         device.admission.live_grant_bytes,
-                        device.admission.live_reserved_bytes,
-                        device.admission.max_live_reserved_bytes,
+                        device.admission.resident_owner_bytes,
+                        device.admission.max_resident_owner_bytes,
                         device.admission.cache_evictable_resident_bytes,
                         device.admission.cache_pinned_in_use_bytes,
                         device.admission.health,
@@ -445,7 +445,7 @@ mod tests {
         let device = snapshot.device(0).expect("configured device must have one bounded metrics slot");
         assert_eq!(device.admission.active_attempts, 1);
         assert_eq!(device.admission.live_grant_bytes, HOLDER_QUERY_CAP_BYTES);
-        assert_eq!(device.admission.live_reserved_bytes, 16);
+        assert_eq!(device.admission.resident_owner_bytes, 16);
         // The default zero-cap profile creates no cache allocation domain, so
         // its ledger-backed cache projections remain byte-for-byte zero.
         assert_eq!(device.admission.cache_evictable_resident_bytes, 0);
@@ -464,11 +464,11 @@ mod tests {
         );
         assert!(
             payload.contains(
-                "[backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tlive_reserved_bytes\tmax_live_reserved_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n0\t"
+                "[backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tresident_owner_bytes\tmax_resident_owner_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n0\t"
             ),
             "{payload}"
         );
-        assert!(payload.contains("\t1\t536870912\t16\t65536\t0\t0\tOpen\n"), "{payload}");
+        assert!(payload.contains("\t1\t536870912\t16\t16\t0\t0\tOpen\n"), "{payload}");
         assert!(
             payload.contains(
                 "[backend_device_telemetry]\ndevice_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n0\tnone\tnone\tnone\tnone\t0\t0\t0\n"

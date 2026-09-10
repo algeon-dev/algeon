@@ -11,11 +11,9 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_nexus::cugraph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm};
 use nexus_query_engine::{
-    capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    contract_report::CapabilityContractReport,
-    mode::CapabilityEnvelopeStatus,
+    admission::{AttemptCapabilityEvidence, CUGRAPH_GRAPH_EXECUTION_CAPABILITY},
+    capability::{CapabilityDecision, NodeOperator},
     plan::{
-        GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
         GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
         GraphBetweennessCentralityParams, GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams,
         GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
@@ -184,37 +182,12 @@ fn registry_algorithms_admit_under_execution_capability_without_a_memory_veto() 
             "capability admission must be Satisfied for {}",
             entry.name,
         );
-        assert_eq!(
-            node.local_requirements.len(),
-            1,
-            "graph algorithms expose exactly one bounded reservation requirement; {} has {}",
-            entry.name,
-            node.local_requirements.len(),
-        );
-        let requirement = &node.local_requirements[0];
-        assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY);
-        assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT);
-        assert_eq!(requirement.status, ContractStatus::Modeled);
-        assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
-
-        let report = CapabilityContractReport::from_capability_analysis(&analysis)
-            .unwrap_or_else(|error| panic!("bounded report build failed for {}: {error}", entry.name));
-        assert_eq!(
-            report.execution_mode(),
-            CapabilityEnvelopeStatus::Admitted,
-            "execution capability must not depend on a lower-level memory estimate for {}",
-            entry.name,
-        );
-        assert!(
-            report.gate_rows().iter().any(|row| {
-                row.memory_boundary == GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
-                    && row.required_contract == GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
-                    && row.contract_status == ContractStatus::Modeled
-                    && row.contract_quality == ContractQuality::CapabilityProof
-            }),
-            "bounded report must carry the graph algorithm gate row for {}",
-            entry.name,
-        );
+        let mut evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
+        evidence.attest_cugraph_graph_execution_scope(&plan);
+        assert!(evidence.required_capabilities().contains(&CUGRAPH_GRAPH_EXECUTION_CAPABILITY));
+        evidence
+            .validate_covers_plan(&plan)
+            .unwrap_or_else(|error| panic!("graph capability evidence failed for {}: {error}", entry.name));
     }
 }
 

@@ -6,7 +6,6 @@
 //! adapter diagnostics. Treat those strings as stable diagnostic contracts:
 //! change them only with the same care as a report schema change.
 
-mod admitted_proof;
 mod allocator_correlation;
 mod attempt_domain;
 mod backend_close;
@@ -41,8 +40,6 @@ mod stream_cleanup;
 #[cfg(test)]
 mod tests;
 
-#[doc(hidden)]
-pub use admitted_proof::AdmittedAttemptProof;
 pub use attempt_domain::AttemptAllocationDomain;
 #[doc(hidden)]
 pub(crate) use attempt_domain::AttemptStreamProviderRoute;
@@ -103,7 +100,6 @@ pub use io_capability::{
 };
 pub use io_lifecycle::{IoLifecycle, IoLifecycleLease};
 pub use nexus_query_planning::execution_contracts::{
-    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
     BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryResourcePolicy,
     MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceChunkPlanningMode,
     SourceReadBoundary, SourceSchedulerPolicy,
@@ -123,7 +119,6 @@ pub use query_service::{
     AdmittedQueryContext, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryExecutionConfig,
     QueryHandle, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
 };
-pub use reservation::MemoryReservationRequest;
 #[doc(hidden)]
 pub use reservation::RetryFacts;
 pub use service_stream::{

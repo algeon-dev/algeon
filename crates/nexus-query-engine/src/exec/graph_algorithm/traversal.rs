@@ -12,7 +12,7 @@ pub(super) fn execute_bfs(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes } = inputs;
+    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs } = inputs;
     let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -283,13 +283,11 @@ pub(super) fn execute_bfs(
                 predicate_columns.metadata(),
                 target_metadata,
             ),
-            budget_observations: Vec::new(),
             cache_scope_peak_bytes: None,
         })
     };
     run_with_accounted_resident_cugraph_graph::<cugraph::Forward, _>(
         context,
-        graph_memory_limit_bytes,
         edges,
         options,
         resident_key,
@@ -1212,7 +1210,6 @@ fn empty_bfs_result(
             membership.target_rows,
             membership.valid_target_rows,
         ),
-        budget_observations: Vec::new(),
         cache_scope_peak_bytes: None,
     })
 }
@@ -1481,7 +1478,6 @@ pub(super) fn execute_sssp(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_sssp",
@@ -1530,7 +1526,6 @@ pub(super) fn execute_sssp(
                     source_vertex,
                     params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
                 ),
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },

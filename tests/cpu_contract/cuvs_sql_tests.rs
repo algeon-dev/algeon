@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use arrow::array::Array;
 use datafusion::{
     common::{DFSchema, config::Dialect, tree_node::TreeNodeRecursion},
     execution::{SessionStateBuilder, context::TaskContext},
@@ -539,10 +540,10 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
     let would_execute = valid[0].column(5).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
     #[cfg(feature = "cuvs")]
     {
-        assert!(!valid_column.value(0));
-        assert_eq!(error_code.value(0), "bounded_execution_unavailable");
-        assert!(!resolved_column.value(0));
-        assert!(!would_execute.value(0));
+        assert!(valid_column.value(0));
+        assert!(error_code.is_null(0));
+        assert!(resolved_column.value(0));
+        assert!(would_execute.value(0));
     }
     #[cfg(not(feature = "cuvs"))]
     {
@@ -555,9 +556,8 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
 
 #[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn unified_gpu_metadata_reports_bounded_cuvs_as_unavailable() {
-    let state = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().unwrap().build();
-    let ctx = SessionContext::new_with_state(state);
+async fn unified_gpu_metadata_reports_cuvs_as_available() {
+    let ctx = cuvs_context();
     let listed = ctx
         .sql(&format!(
             "SELECT available, unavailable_reason FROM {GPU_LIST_FUNCTIONS_FUNCTION}() WHERE function_name = 'cuvs_kmeans'"
@@ -569,8 +569,8 @@ async fn unified_gpu_metadata_reports_bounded_cuvs_as_unavailable() {
         .unwrap();
     let available = listed[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
     let reason = listed[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-    assert!(!available.value(0));
-    assert_eq!(reason.value(0), "bounded_execution_unavailable");
+    assert!(available.value(0));
+    assert!(reason.is_null(0));
 
     let call = serde_json::json!({
         "schema_version": 1,
@@ -590,9 +590,9 @@ async fn unified_gpu_metadata_reports_bounded_cuvs_as_unavailable() {
     let valid = validated[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
     let code = validated[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
     let would_execute = validated[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    assert!(!valid.value(0));
-    assert_eq!(code.value(0), "bounded_execution_unavailable");
-    assert!(!would_execute.value(0));
+    assert!(valid.value(0));
+    assert!(code.is_null(0));
+    assert!(would_execute.value(0));
 }
 
 #[tokio::test]
@@ -619,7 +619,7 @@ async fn unified_gpu_metadata_reports_cuvs_unavailability_before_relation_valida
     #[cfg(feature = "cuvs")]
     {
         assert!(!missing_valid.value(0));
-        assert_eq!(missing_code.value(0), "bounded_execution_unavailable");
+        assert_eq!(missing_code.value(0), "table_not_found");
         assert!(!missing_resolved.value(0));
     }
     #[cfg(not(feature = "cuvs"))]
@@ -776,8 +776,9 @@ impl ExecutionPlan for ExecuteCountingExec {
     }
 }
 
+#[cfg(feature = "cuvs")]
 #[tokio::test]
-async fn bounded_execution_rejects_before_any_child_execute() {
+async fn bounded_execution_defers_child_execution_until_the_stream_is_polled() {
     let ctx =
         fixtures::cuvs_context_with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
     let sql = format!(
@@ -802,25 +803,44 @@ async fn bounded_execution_rejects_before_any_child_execute() {
     let rebound = Arc::new(exec.clone())
         .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
         .expect("rebind counting children");
-    let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
-        Ok(_) => panic!("bounded cuVS execution must reject before creating a result stream"),
-        Err(error) => error,
-    };
-    let typed = error.find_nexus_error().expect("structured bounded cuVS rejection");
+    let _stream = rebound.execute(0, Arc::new(TaskContext::default())).expect("create bounded cuVS result stream");
+    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "creating the result stream must not consume its inputs");
+}
+
+#[cfg(not(feature = "cuvs"))]
+#[tokio::test]
+async fn execution_rejects_a_disabled_cuvs_feature_before_any_child_executes() {
+    let ctx =
+        fixtures::cuvs_context_with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
+    let sql = format!(
+        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             (SELECT * FROM dataset_vectors), \
+             (SELECT * FROM query_vectors), \
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let logical = logical_plan(&ctx, &sql).await;
+    let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
+    let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+    let execute_count = Arc::new(AtomicUsize::new(0));
+    let children = exec
+        .children()
+        .into_iter()
+        .map(|child| {
+            Arc::new(ExecuteCountingExec { input: Arc::clone(child), execute_count: Arc::clone(&execute_count) })
+                as Arc<dyn ExecutionPlan>
+        })
+        .collect();
+    let rebound = Arc::new(exec.clone())
+        .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .expect("rebind counting children");
+    let error = rebound.execute(0, Arc::new(TaskContext::default())).expect_err("disabled cuVS feature must reject");
+    let typed = error.find_nexus_error().expect("structured cuVS feature-disabled error");
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    #[cfg(feature = "cuvs")]
-    {
-        assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-        assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-        assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
-    }
-    #[cfg(not(feature = "cuvs"))]
-    {
-        assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
-        assert_eq!(typed.facts().get("required_feature"), Some("cuvs"));
-        assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-    }
-    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "bounded rejection must precede child execution");
+    assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
+    assert_eq!(typed.facts().get("required_feature"), Some("cuvs"));
+    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "feature rejection must precede child execution");
 }
 
 #[cfg(feature = "cugraph")]
@@ -857,7 +877,7 @@ async fn cugraph_reaches_cuvs_as_a_direct_gpu_resident_producer() {
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
-async fn cugraph_join_filter_projection_reaches_bounded_cuvs_rejection_before_child_execution() {
+async fn cugraph_join_filter_projection_builds_a_lazy_bounded_cuvs_stream() {
     let ctx = fixtures::cuvs_cugraph_native_context();
     let sql = format!(
         "WITH candidates AS (\
@@ -888,16 +908,8 @@ async fn cugraph_join_filter_projection_reaches_bounded_cuvs_rejection_before_ch
     let rebound = Arc::new(cuvs.clone())
         .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
         .expect("rebind counting children");
-    let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
-        Ok(_) => panic!("bounded cuVS execution must reject before touching relational cuGraph inputs"),
-        Err(error) => error,
-    };
-    let typed = error.find_nexus_error().expect("structured bounded cuVS rejection");
-    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
-    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "bounded rejection must precede child execution");
+    let _stream = rebound.execute(0, Arc::new(TaskContext::default())).expect("create bounded cuVS result stream");
+    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "creating the result stream must not consume its inputs");
 }
 
 async fn logical_plan(ctx: &SessionContext, sql: &str) -> LogicalPlan {

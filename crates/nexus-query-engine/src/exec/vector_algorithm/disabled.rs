@@ -11,22 +11,17 @@ pub(in crate::exec) fn vector_algorithm_execution_unavailable(
     node_id: NodeId,
     node: &crate::plan::VectorAlgorithmNode,
 ) -> QueryError {
-    let (reason, message) = if cfg!(feature = "cuvs") {
-        (
-            "lower_level_execution_contract_unavailable",
-            "cuVS vector execution is unavailable until lower-level device-output and stream contracts land",
-        )
-    } else {
-        ("cuvs_feature_disabled", "cuVS vector algorithm execution requires the cuvs Cargo feature")
-    };
-    QueryError::new(QueryErrorCode::UnsupportedOperator, "nexus_query_engine.vector_algorithm.execute", message)
-        .with_fact("node_id", node_id)
-        .with_fact("operator", "vector_algorithm")
-        .with_fact("algorithm", node.spec.algorithm.as_str())
-        .with_fact("reason", reason)
-        .with_fact("required_feature", "cuvs")
-        .with_fact("required_contract", crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
-        .with_fact("host_fallback", "disabled")
+    QueryError::new(
+        QueryErrorCode::UnsupportedOperator,
+        "nexus_query_engine.vector_algorithm.execute",
+        "cuVS vector algorithm execution requires the cuvs Cargo feature",
+    )
+    .with_fact("node_id", node_id)
+    .with_fact("operator", "vector_algorithm")
+    .with_fact("algorithm", node.spec.algorithm.as_str())
+    .with_fact("reason", "cuvs_feature_disabled")
+    .with_fact("required_feature", "cuvs")
+    .with_fact("host_fallback", "disabled")
 }
 
 #[cfg(test)]

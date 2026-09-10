@@ -17,7 +17,6 @@ use super::{
     },
     analyze_aggregate_strategies,
     edge::{analyze_input_edges, analyze_sink_edge, mark_shared_producer_edge_contracts},
-    graph::collect_requirements,
     invariant::analyze_invariants,
     model::CapabilityAnalysis,
     node::analyze_node,
@@ -41,7 +40,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     mark_shared_producer_edge_contracts(plan, &mut edges);
 
     let invariants = analyze_invariants(plan, &edges);
-    let requirements = collect_requirements(&nodes, &edges, &invariants);
     let aggregate_strategies = analyze_aggregate_strategies(plan);
     let root_join_admission = analyze_root_join_admission(plan, &nodes, &edges);
     let single_join_post_root_pipeline_admission =
@@ -89,7 +87,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         nodes,
         edges,
         invariants,
-        requirements,
         aggregate_strategies,
         root_join_admission,
         single_join_post_root_pipeline_admission,

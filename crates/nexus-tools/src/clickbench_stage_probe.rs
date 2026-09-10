@@ -98,7 +98,6 @@ struct ProbeVerdict {
     sealed_jsonl: Option<String>,
     live_dir: String,
     peak_vram_bytes_sample: Option<u64>,
-    reservation_live_peak_bytes: Option<u64>,
 }
 
 pub async fn run(args: Vec<String>) -> ToolResult<()> {
@@ -189,7 +188,7 @@ async fn probe_native_observed(
     let _ = watchdog.join();
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    let (result, metrics, sealed) = outcome.into_parts();
+    let (result, _, sealed) = outcome.into_parts();
     let cancelled = cancellation.is_cancelled();
     let mut completed = false;
     let mut output_rows = None;
@@ -246,7 +245,6 @@ async fn probe_native_observed(
         sealed_jsonl,
         live_dir: live_dir.display().to_string(),
         peak_vram_bytes_sample: None,
-        reservation_live_peak_bytes: Some(metrics.reservation_live_peak_bytes),
     })
 }
 
@@ -330,7 +328,6 @@ async fn probe_datafusion_collect(
         sealed_jsonl: None,
         live_dir: live_dir.display().to_string(),
         peak_vram_bytes_sample: None,
-        reservation_live_peak_bytes: None,
     })
 }
 

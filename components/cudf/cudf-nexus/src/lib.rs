@@ -258,10 +258,7 @@ pub use frame::{
         DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
         DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect, ParquetSourceReadPreflight,
     },
-    series::{
-        IntoSeries, ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput, ScalarReductionOutputShape,
-        Series, SeriesPreparedScalarReduction,
-    },
+    series::{IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series, SeriesPreparedScalarReduction},
 };
 // — High-level operations —
 pub use ops::Expr;
@@ -273,7 +270,7 @@ pub use ops::{
     join::{JoinType, MergeOptions},
     reduction::ReduceAgg,
     replace::FillPolicy,
-    sorting::{SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT, SortOptions, SortedOrderRadixPreflight},
+    sorting::SortOptions,
     stream_compaction::DuplicateKeepOption,
     strings::{
         REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, ReplaceWithBackrefsOutputSizePreflight,

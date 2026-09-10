@@ -80,10 +80,6 @@ name = "hash_join_destroy_provenance_gpu_exclusive"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "hash_join_metadata_preflight_cpu"
-required-features = ["test-hooks"]
-
-[[test]]
 name = "memory_resource_hooks_gpu_exclusive"
 required-features = ["test-hooks"]
 

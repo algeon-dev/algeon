@@ -1,6 +1,6 @@
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, CommittedPartial, GpuDataFrame, MemoryReservationRequest, NodeId,
-    ReservationKind, Result, final_sort_runtime_facts, observe_device_memory_bytes,
+    BoundedExecutionAttempt, CommittedPartial, GpuDataFrame, NodeId, Result, final_sort_runtime_facts,
+    observe_device_memory_bytes,
 };
 
 pub(super) fn reserve_final_sort_output_bytes(
@@ -9,26 +9,16 @@ pub(super) fn reserve_final_sort_output_bytes(
     output_bytes: u64,
     attempt: usize,
     max_attempts: usize,
-) -> Result<ActiveReservation> {
-    let output_request =
-        MemoryReservationRequest::new(ReservationKind::FinalSort, output_bytes, execution.reservations().budget())
-            .with_memory_boundary("final_sort_output")
-            .with_node_id(node_id)
-            .with_stage("final_sort")
-            .with_attempt(attempt, max_attempts)
-            .with_task_registration(
-                legacy_bounded_final_sort_task_id(node_id, attempt),
-                u32::try_from(attempt).unwrap_or(u32::MAX),
-                "final_sort",
-            );
-    execution.try_reserve(output_request)
+) -> Result<u64> {
+    let _ = (execution, node_id, attempt, max_attempts);
+    Ok(output_bytes)
 }
 
 pub(super) fn finalize_final_sort_output_reservation(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     frame: GpuDataFrame,
-    mut reservation: ActiveReservation,
+    _estimated_output_bytes: u64,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<CommittedPartial> {
@@ -36,27 +26,5 @@ pub(super) fn finalize_final_sort_output_reservation(
         final_sort_runtime_facts("final_sort_output", node_id, attempt, max_attempts, execution.metrics_mut(), error)
     })?;
 
-    if output_bytes > reservation.bytes() {
-        let grow_request = MemoryReservationRequest::new(
-            ReservationKind::FinalSort,
-            output_bytes - reservation.bytes(),
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("final_sort_output")
-        .with_node_id(node_id)
-        .with_stage("final_sort")
-        .with_attempt(attempt, max_attempts)
-        .with_task_registration(
-            legacy_bounded_final_sort_task_id(node_id, attempt),
-            u32::try_from(attempt).unwrap_or(u32::MAX),
-            "final_sort",
-        );
-        execution.try_grow(&mut reservation, grow_request)?;
-    }
-
-    Ok(CommittedPartial { frame, reservation })
-}
-
-fn legacy_bounded_final_sort_task_id(node_id: NodeId, attempt: usize) -> String {
-    format!("legacy_bounded.final_sort.node{node_id}.attempt{attempt}")
+    Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
 }

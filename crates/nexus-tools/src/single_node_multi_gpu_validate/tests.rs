@@ -835,9 +835,9 @@ fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands()
     ];
 
     for (query_label, json) in profiles {
-        let profile = RunProfile::parse_bytes(json.as_bytes()).expect("isolated P6 profile must remain parseable");
+        let profile = RunProfile::parse_bytes(json.as_bytes()).expect("isolated profile must remain parseable");
         let [device] = profile.backend.device_profiles.as_slice() else {
-            panic!("isolated P6 profile must use exactly one device");
+            panic!("isolated profile must use exactly one device");
         };
         assert_eq!(profile.scenario_requirements(), Default::default());
         assert!(profile.graph_claim_calibration.is_some());
@@ -851,13 +851,13 @@ fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands()
         assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
         assert_eq!(profile.scheduling.concurrency, 1);
         assert_eq!(profile.scheduling.max_rounds, Some(1));
-        let calibration = profile.vram_calibration.expect("P6 must declare a calibration band");
+        let calibration = profile.vram_calibration.expect("profile must declare a calibration band");
         assert_eq!(calibration.max_underclaim_bytes, 67_108_864);
         assert_eq!(calibration.max_observed_to_claim_ratio_milli, 1_000);
         assert_eq!(calibration.max_overclaim_bytes, 67_108_864);
         assert_eq!(calibration.max_claim_to_observed_ratio_milli, 1_000);
 
-        let selected = select_queries(&profile.workloads).expect("isolated P6 workload label must resolve");
+        let selected = select_queries(&profile.workloads).expect("isolated workload label must resolve");
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].label, query_label);
         assert!(selected[0].graph);
@@ -866,7 +866,7 @@ fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands()
             PathBuf::from("/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet")
         );
         let plan = ArrivalPlan::plan(&profile.scheduling, selected.len(), profile.session.shared_session_count)
-            .expect("isolated P6 profile must plan its one measured attempt");
+            .expect("isolated profile must plan its one measured attempt");
         assert_eq!(plan.arrivals.len(), 1);
     }
 }
@@ -2418,7 +2418,7 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
             managed_capacity_bytes: device.capacity_bytes,
             live_grants_bytes: device.capacity_bytes,
             live_grant_ids: vec![1],
-            live_reserved_bytes: 0,
+            resident_owner_bytes: 0,
             cache_evictable_resident_bytes: 0,
             cache_pinned_in_use_bytes: 0,
             cache_physical_current_bytes: None,
@@ -2766,7 +2766,7 @@ fn composed_qualification_measurement(
             managed_capacity_bytes: schedule.grant_bytes,
             live_grants_bytes: schedule.grant_bytes,
             live_grant_ids: vec![schedule.grant_id],
-            live_reserved_bytes: schedule.grant_bytes,
+            resident_owner_bytes: schedule.grant_bytes,
             cache_evictable_resident_bytes: 0,
             cache_pinned_in_use_bytes: 0,
             cache_physical_current_bytes: None,
@@ -2970,7 +2970,7 @@ fn measured_occupancy(peak_active_query_jobs: usize) -> DeviceOccupancyPeaks {
         peak_active_attempts: 2,
         peak_active_query_jobs,
         peak_live_grants_bytes: 2 * 1024 * 1024,
-        peak_live_reserved_bytes: 4 * 1024 * 1024,
+        peak_resident_owner_bytes: 4 * 1024 * 1024,
         allocation_failure_count: 0,
         min_root_streams_available: 6,
         min_root_worker_slots_available: 1,

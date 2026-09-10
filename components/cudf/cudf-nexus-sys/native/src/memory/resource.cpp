@@ -685,6 +685,44 @@ cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_memory_resource_effective_device_memory(
+  cudf_memory_resource_handle handle, void* cuda_stream, size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY
+  {
+    auto& owner = memory_resource_owner_from_handle(handle);
+    if (owner.budget_tracker != nullptr) {
+      auto const usage = owner.budget_tracker->usage();
+      if (usage.current_aligned_bytes > usage.allocation_limit_bytes) {
+        throw cudf::logic_error{"budget-tracking aligned charge exceeds its limit"};
+      }
+      *out = static_cast<size_t>(usage.allocation_limit_bytes -
+                                 usage.current_aligned_bytes);
+      return CUDF_SUCCESS;
+    }
+    if (owner.query_domain != nullptr) {
+      *out = owner.query_domain->resource->effective_device_memory();
+      return CUDF_SUCCESS;
+    }
+    if (owner.reservation_adaptor != nullptr) {
+      auto const available = owner.reservation_adaptor->query_domain_effective_device_memory(
+        rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(cuda_stream)});
+      if (!available.has_value()) {
+        set_error("memory resource stream has no query-domain allocation cap");
+        return CUDF_ERROR_UNSUPPORTED;
+      }
+      *out = *available;
+      return CUDF_SUCCESS;
+    }
+    set_error("memory resource does not expose a hard allocation cap");
+    return CUDF_ERROR_UNSUPPORTED;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_memory_resource_pool_usage(cudf_memory_resource_handle handle,
                                               cudf_memory_pool_usage_t* out)
 {

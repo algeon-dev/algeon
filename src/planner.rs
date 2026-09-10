@@ -16,7 +16,7 @@
 
 use datafusion::physical_plan::ExecutionPlan;
 pub use nexus_query_engine::{
-    contract_report::{CapabilityContractGateRow, CapabilityContractReport},
+    contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::StatisticalAggregateExecutionMode,
     optimizer::{NativeOptimizerDiagnostics, NativeOptimizerOptions},
     plan::NativePlanCostOptions,

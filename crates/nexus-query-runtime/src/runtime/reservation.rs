@@ -1,10 +1,9 @@
 use nexus_query_planning::error::QueryError;
-pub use nexus_query_planning::execution_contracts::MemoryReservationRequest;
 
 /// Retry/resume facts attached to bounded retry failures.
 ///
 /// These fields document what bounded execution can safely retry after a
-/// reservation denial or retryable `CudfResourceExhausted` failure: the retry
+/// retryable resource-exhaustion failure: the retry
 /// action, resume boundary, already-committed chunks/partials, and merge fan-in.
 /// The fact keys emitted by
 /// [`Self::attach_to_error`] are stable diagnostics used by tests and higher
@@ -118,12 +117,12 @@ impl RetryFacts {
 
 #[cfg(test)]
 mod tests {
+    use nexus_query_planning::error::{QueryError, QueryErrorCode};
+
     use super::*;
-    use crate::runtime::ReservationKind;
 
     #[test]
     fn retry_facts_attach_stable_resume_and_merge_context() {
-        let request = MemoryReservationRequest::new(ReservationKind::FinalMerge, 2048, 1024);
         let error = RetryFacts::new()
             .with_retry_action("reduce_merge_fan_in")
             .with_resume_boundary("final_merge")
@@ -131,7 +130,11 @@ mod tests {
             .with_committed_partials(8)
             .with_merge_level(1)
             .with_merge_fan_in(2)
-            .attach_to_error(request.denied_error(1024));
+            .attach_to_error(QueryError::new(
+                QueryErrorCode::CudfResourceExhausted,
+                "nexus_query_engine.test",
+                "allocation failed",
+            ));
 
         assert_eq!(error.fact_value("retry_action"), Some("reduce_merge_fan_in"));
         assert_eq!(error.fact_value("resume_boundary"), Some("final_merge"));

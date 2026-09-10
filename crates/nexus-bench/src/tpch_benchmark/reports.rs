@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics;
-use nexus_query_engine::{contract_report::CapabilityContractGateRow, harness::max_option as max_optional_usize};
+use nexus_query_engine::{contract_report::CapabilityDecisionRow, harness::max_option as max_optional_usize};
 
 use super::*;
 
@@ -9,14 +9,14 @@ mod formatting;
 
 use formatting::*;
 
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tcapability_contract_rows\tcapability_compiled_graphs\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\tmax_task_reservation_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
 const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "planning_outcome",
     "bounded_status",
     "reason_code",
     "unsupported_category",
-    "capability_contract_rows",
+    "capability_decision_rows",
     "capability_compiled_graphs",
     "native_candidate_shape_family",
     "post_native_execution_path",
@@ -64,14 +64,8 @@ const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "read_columns",
     "resident_dataframe_peak_bytes",
     "allocator_high_water_bytes",
-    "reservation_requested_bytes",
-    "reservation_granted_bytes",
-    "reservation_live_peak_bytes",
-    "reservation_denied_count",
-    "max_task_reservation_bytes",
     "max_task_observed_peak_bytes",
     "max_task_retained_bytes",
-    "graph_reservation_rows",
     "graph_runtime_rows",
     "task_operator_rows",
     "task_runtime_rows",
@@ -96,8 +90,6 @@ const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "task_high_water_rows",
     "peak_memory_operator_class",
     "peak_memory_operator_class_bytes",
-    "task_reservation_operator_class",
-    "task_reservation_operator_class_bytes",
     "runtime_operator_class",
     "runtime_operator_class_ms",
     "source_predicate_pushdown_status",
@@ -131,7 +123,6 @@ const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "aggregate_encoded_key_partial_elapsed_ns",
     "retry_count",
     "retry_resource_exhausted_count",
-    "retry_reservation_failure_count",
     "hash_join_build_count",
     "filtered_join_build_count",
     "one_shot_join_count",
@@ -222,7 +213,7 @@ impl NativeTpchBenchmarkReport {
 pub(super) struct NativeTpchBenchmarkRow {
     pub(super) query_id: String,
     pub(super) planning_outcome: Option<CandidateOutcomeKind>,
-    pub(super) capability_contract_rows: Vec<CapabilityContractGateRow>,
+    pub(super) capability_decision_rows: Vec<CapabilityDecisionRow>,
     pub(super) capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     pub(super) reason_code: Option<String>,
     pub(super) unsupported_category: Option<String>,
@@ -260,7 +251,7 @@ impl NativeTpchBenchmarkRow {
         Self {
             query_id: query_id.to_string(),
             planning_outcome: planning_row.outcome,
-            capability_contract_rows: planning_row.capability_contract_rows,
+            capability_decision_rows: planning_row.capability_decision_rows,
             capability_compiled_graphs: planning_row.capability_compiled_graphs,
             reason_code: planning_row.reason_code,
             unsupported_category: planning_row.unsupported_category,
@@ -298,7 +289,7 @@ impl NativeTpchBenchmarkRow {
         Self {
             query_id: query_id.to_string(),
             planning_outcome: None,
-            capability_contract_rows: Vec::new(),
+            capability_decision_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
             reason_code: Some("physical_planning_failed".to_string()),
             unsupported_category: Some("planning".to_string()),
@@ -371,7 +362,7 @@ impl NativeTpchBenchmarkRow {
         Self {
             query_id: query_id.to_string(),
             planning_outcome: planning_row.outcome,
-            capability_contract_rows: planning_row.capability_contract_rows,
+            capability_decision_rows: planning_row.capability_decision_rows,
             capability_compiled_graphs: planning_row.capability_compiled_graphs,
             reason_code: planning_row.reason_code,
             unsupported_category: planning_row.unsupported_category,
@@ -415,7 +406,6 @@ impl NativeTpchBenchmarkRow {
     fn fields(&self) -> Vec<String> {
         let task_high_water_summaries = task_high_water_summaries(&self.metrics);
         let peak_memory = dominant_peak_memory_class(&task_high_water_summaries);
-        let task_reservation = dominant_task_reservation_class(&task_high_water_summaries);
         let runtime = dominant_runtime_operator_class(self, &task_high_water_summaries);
         let fields = [
             self.query_id.clone(),
@@ -423,7 +413,7 @@ impl NativeTpchBenchmarkRow {
             bounded_status(self).to_string(),
             optional_text(self.reason_code.as_deref(), "none"),
             optional_text(self.unsupported_category.as_deref(), "none"),
-            format_capability_contract_rows(&self.capability_contract_rows),
+            format_capability_decision_rows(&self.capability_decision_rows),
             format_capability_compiled_graphs(&self.capability_compiled_graphs),
             optional_text(self.native_candidate_shape_family.as_deref(), "none"),
             self.final_disposition.map_or("none", FinalPlanDisposition::as_str).to_string(),
@@ -471,14 +461,8 @@ impl NativeTpchBenchmarkRow {
             self.metrics.read_columns.to_string(),
             optional_usize_text_none(self.metrics.resident_dataframe_peak_bytes),
             optional_usize_text_none(self.metrics.allocator_high_water_bytes),
-            self.metrics.reservation_requested_bytes.to_string(),
-            self.metrics.reservation_granted_bytes.to_string(),
-            self.metrics.reservation_live_peak_bytes.to_string(),
-            self.metrics.reservation_denied_count.to_string(),
-            self.metrics.max_task_reservation_bytes.to_string(),
             optional_usize_text_none(self.metrics.max_task_observed_peak_bytes),
             optional_usize_text_none(self.metrics.max_task_retained_bytes),
-            format_graph_reservation_rows(&self.metrics.graph_reservation_rows),
             format_graph_runtime_rows(&self.metrics.graph_runtime_rows),
             format_task_operator_rows(&self.metrics.task_operator_rows),
             format_task_runtime_rows(&self.metrics.task_runtime_rows),
@@ -503,8 +487,6 @@ impl NativeTpchBenchmarkRow {
             format_task_high_water_rows(&task_high_water_summaries),
             peak_memory.0.to_string(),
             peak_memory.1.to_string(),
-            task_reservation.0.to_string(),
-            task_reservation.1.to_string(),
             runtime.0.to_string(),
             optional_f64_text(runtime.1),
             self.source_predicate_pushdown_status.clone(),
@@ -538,7 +520,6 @@ impl NativeTpchBenchmarkRow {
             self.metrics.aggregate_encoded_key_partial_elapsed_ns().to_string(),
             self.metrics.retry_count.to_string(),
             self.metrics.retry_resource_exhausted_count.to_string(),
-            self.metrics.retry_reservation_failure_count.to_string(),
             self.metrics.hash_join_build_count.to_string(),
             self.metrics.filtered_join_build_count.to_string(),
             self.metrics.one_shot_join_count.to_string(),
@@ -582,8 +563,6 @@ impl TsvRow for NativeTpchBenchmarkTsvRow<'_> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TaskHighWaterSummary {
     task_count: usize,
-    max_task_reservation_bytes: usize,
-    reservation_live_peak_bytes: usize,
     max_observed_peak_bytes: Option<usize>,
     max_retained_bytes: Option<usize>,
 }
@@ -591,24 +570,11 @@ struct TaskHighWaterSummary {
 impl TaskHighWaterSummary {
     fn merge_operator_row(&mut self, row: &NativeTaskOperatorMetricRow) {
         self.task_count = self.task_count.saturating_add(row.task_count);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
         self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
         self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
     }
 
-    fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow, query_reservation_live_peak_bytes: usize) {
-        let task_reservation_bytes = if row.compiled_task_id.starts_with("legacy_bounded.") {
-            row.reservation_live_peak_bytes.min(query_reservation_live_peak_bytes)
-        } else {
-            row.reservation_requested_bytes.max(row.reservation_granted_bytes)
-        };
-        self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(task_reservation_bytes);
-        let reservation_live_peak_bytes = if row.compiled_task_id.starts_with("legacy_bounded.") {
-            row.reservation_live_peak_bytes.min(query_reservation_live_peak_bytes)
-        } else {
-            row.reservation_live_peak_bytes
-        };
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(reservation_live_peak_bytes);
+    fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow) {
         self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
         self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
     }
@@ -616,7 +582,6 @@ impl TaskHighWaterSummary {
     fn merge_synthetic_high_water(&mut self, task_count: usize, bytes: Option<usize>) {
         self.task_count = self.task_count.saturating_add(task_count);
         if let Some(bytes) = bytes {
-            self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(bytes);
             self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, Some(bytes));
             self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, Some(bytes));
         }
@@ -624,11 +589,9 @@ impl TaskHighWaterSummary {
 
     fn to_stable_kv_row(self, class: &str) -> String {
         format!(
-            "operator_class={},task_count={},max_task_reservation_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            "operator_class={},task_count={},max_observed_peak_bytes={},max_retained_bytes={}",
             class,
             self.task_count,
-            self.max_task_reservation_bytes,
-            self.reservation_live_peak_bytes,
             optional_usize_text_none(self.max_observed_peak_bytes),
             optional_usize_text_none(self.max_retained_bytes),
         )
@@ -654,7 +617,7 @@ fn task_high_water_summaries(
     }
     for row in &metrics.task_runtime_rows {
         if let Some(class) = task_operator_class(&row.operator_kind) {
-            summaries.entry(class).or_default().merge_runtime_row(row, metrics.reservation_live_peak_bytes);
+            summaries.entry(class).or_default().merge_runtime_row(row);
         }
     }
 
@@ -705,11 +668,7 @@ fn format_task_high_water_rows(summaries: &BTreeMap<&'static str, TaskHighWaterS
 }
 
 fn dominant_peak_memory_class(summaries: &BTreeMap<&'static str, TaskHighWaterSummary>) -> (&'static str, usize) {
-    dominant_task_class_by(summaries, |summary| summary.reservation_live_peak_bytes)
-}
-
-fn dominant_task_reservation_class(summaries: &BTreeMap<&'static str, TaskHighWaterSummary>) -> (&'static str, usize) {
-    dominant_task_class_by(summaries, |summary| summary.max_task_reservation_bytes)
+    dominant_task_class_by(summaries, |summary| summary.max_observed_peak_bytes.unwrap_or(0))
 }
 
 fn dominant_task_class_by(

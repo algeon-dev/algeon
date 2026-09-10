@@ -30,7 +30,7 @@ pub(super) use plan::{BoundedPlan, BoundedUnaryStage};
 use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection};
 pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
 use sizing::{
-    partial_aggregate_upper_bound_violation_error, partial_aggregate_work_reservation_upper_bound_bytes,
+    partial_aggregate_work_reservation_upper_bound_bytes,
     statistical_partial_aggregate_work_reservation_upper_bound_bytes,
 };
 pub(in crate::exec::bounded) use source_adjacent::execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks;
@@ -259,9 +259,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
         execution,
         node_id,
         "compiled_aggregate",
-        "compiled_aggregate_output",
         input,
-        input_reserved_bytes,
         true,
         |context, input, token, metrics| {
             execute_aggregate_with_budget_for_node(
@@ -286,9 +284,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_fra
     output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
 ) -> Result<ResidentGpuFrame> {
-    let input_reserved_bytes = input.reservation.bytes();
-    let input_reservation = input.reservation;
-    let result = execute_compiled_bounded_aggregate_from_frame(
+    let input_reserved_bytes = input.device_bytes();
+    execute_compiled_bounded_aggregate_from_frame(
         execution,
         node_id,
         aggregate,
@@ -296,9 +293,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_fra
         output_schema,
         input.frame,
         input_reserved_bytes,
-    );
-    execution.release(input_reservation);
-    result
+    )
 }
 
 fn execute_compiled_bounded_exact_host_aggregate_from_frame(
@@ -311,32 +306,16 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     input_reserved_bytes: u64,
 ) -> Result<ResidentGpuFrame> {
     let stage = "compiled_exact_host_welford_aggregate";
-    let mut work_reservation = match execution.try_reserve_work(
-        MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            input_reserved_bytes,
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary(stage)
-        .with_node_id(node_id)
-        .with_stage(stage)
-        .with_attempt(1, 1),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            return Err(error);
-        },
-    };
+    let _ = input_reserved_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&work_reservation),
+        execution.device_budget_bytes(),
         stage,
         "nexus_query_engine.bounded.aggregate.exact_host_welford.budget_token",
         "failed to create bounded exact host-Welford aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -351,7 +330,6 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     ) {
         Ok(prepared) => prepared,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -364,64 +342,18 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     ) {
         Ok(input) => input,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let exact_input_bytes = match observe_device_memory_bytes(&exact_input, execution.metrics_mut()) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            execution.release(work_reservation);
-            return Err(error.with_fact_if_absent("node_id", node_id));
-        },
-    };
-    let work_request = MemoryReservationRequest::new(
-        ReservationKind::OperatorOutput,
-        exact_input_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary(stage)
-    .with_node_id(node_id)
-    .with_stage(stage)
-    .with_attempt(1, 1);
-    if exact_input_bytes > work_reservation.bytes() {
-        let delta = exact_input_bytes.saturating_sub(work_reservation.bytes());
-        if let Err(error) = execution.try_grow(&mut work_reservation, work_request.clone().with_requested_bytes(delta))
-        {
-            execution.release(work_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed_with_request(&mut work_reservation, exact_input_bytes, work_request);
-    }
-
-    let input_preflight_request = MemoryReservationRequest::new(
-        ReservationKind::Materialization,
-        exact_input_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("host_welford_input_materialization_preflight")
-    .with_node_id(node_id)
-    .with_stage(stage)
-    .with_attempt(1, 1);
-    let input_preflight = match execution.try_reserve_work(input_preflight_request) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(work_reservation);
-            return Err(error);
-        },
-    };
+    observe_device_memory_bytes(&exact_input, execution.metrics_mut())
+        .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     let batch =
         match materialize_datafusion_exact_host_aggregate_input(execution.context(), exact_input, exact_input_schema) {
             Ok(batch) => batch,
             Err(error) => {
-                execution.release(input_preflight);
-                execution.release(work_reservation);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
-    execution.release(input_preflight);
-    execution.release(work_reservation);
 
     let output_batch = execute_datafusion_exact_host_aggregate_batch(
         execution.context(),
@@ -432,42 +364,22 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         execution.metrics_mut(),
         None,
     )?;
-    let output_upload_bytes = record_batch_memory_size(&output_batch) as u64;
-    let output_upload_request = MemoryReservationRequest::new(
-        ReservationKind::OperatorOutput,
-        output_upload_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("host_welford_output_upload_reservation")
-    .with_node_id(node_id)
-    .with_stage(stage)
-    .with_attempt(1, 1);
-    let mut output_reservation = execution.try_reserve_work(output_upload_request.clone())?;
+    let _ = record_batch_memory_size(&output_batch);
     let frame = match upload_datafusion_exact_host_aggregate_output(execution.context(), &output_batch)
         .map(GpuDataFrame::new)
     {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(output_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
     let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(output_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_resident_request = output_upload_request.clone().with_requested_bytes(output_bytes);
-    if let Err(error) =
-        execution.reconcile_work_reservation_to_output(&mut output_reservation, output_bytes, &output_resident_request)
-    {
-        execution.release(output_reservation);
-        return Err(error);
-    }
-    let output_reservation = execution.transfer(output_reservation, output_resident_request);
-    Ok(ResidentGpuFrame { frame, reservation: output_reservation })
+    Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_from_empty_input(
@@ -485,9 +397,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_fr
         "compiled_aggregate_empty_input",
         "compiled_aggregate_empty_input",
     )?;
-    let input_reserved_bytes = input.reservation.bytes();
-    let input_reservation = input.reservation;
-    let result = execute_compiled_bounded_aggregate_from_frame(
+    let input_reserved_bytes = input.device_bytes();
+    execute_compiled_bounded_aggregate_from_frame(
         execution,
         node_id,
         aggregate,
@@ -495,9 +406,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_fr
         output_schema,
         input.frame,
         input_reserved_bytes,
-    );
-    execution.release(input_reservation);
-    result
+    )
 }
 
 fn empty_resident_frame_for_schema(
@@ -533,30 +442,17 @@ fn empty_resident_frame_for_schema(
     })?;
     let frame = GpuDataFrame::new(frame);
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
-    let reservation = execution.try_reserve(
-        MemoryReservationRequest::new(reservation_kind, output_bytes, execution.reservations().budget())
-            .with_memory_boundary(memory_boundary)
-            .with_node_id(node_id)
-            .with_stage(stage),
-    )?;
-    Ok(ResidentGpuFrame { frame, reservation })
+    let _ = (reservation_kind, memory_boundary, stage);
+    Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
-pub(in crate::exec::bounded::aggregate) fn release_partials_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut partials: Vec<CommittedPartial>,
-) {
-    while let Some(partial) = partials.pop() {
-        execution.release(partial.reservation);
-    }
+pub(in crate::exec::bounded::aggregate) fn release_partials_reverse(mut partials: Vec<CommittedPartial>) {
+    while partials.pop().is_some() {}
 }
 
-pub(in crate::exec::bounded::aggregate) fn release_nested_partials_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut partitions: Vec<Vec<CommittedPartial>>,
-) {
+pub(in crate::exec::bounded::aggregate) fn release_nested_partials_reverse(mut partitions: Vec<Vec<CommittedPartial>>) {
     while let Some(partition) = partitions.pop() {
-        release_partials_reverse(execution, partition);
+        release_partials_reverse(partition);
     }
 }
 

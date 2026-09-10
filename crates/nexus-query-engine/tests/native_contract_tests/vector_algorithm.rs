@@ -3,21 +3,15 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use nexus_query_engine::{
     admission::{bounded_pipeline_admission, bounded_pipeline_rejection_projection},
-    capability::{
-        CapabilityDecision, ContractQuality, ContractStatus, EdgeConsumer, EdgeContractKind, InputRole, NodeOperator,
-        VectorInputRole,
-    },
-    contract_report::CapabilityContractReport,
+    capability::CapabilityDecision,
     exec::preflight_query_plan,
     expr::{ColumnRef, Expr},
-    mode::CapabilityEnvelopeStatus,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     plan::{
         CUVS_OPERATION_REGISTRY, CuvsOperation, CuvsOutputContract, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
-        JoinType, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY,
-        VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams, VectorRelationBinding,
-        VectorRowIdBinding, canonicalize_cuvs_options, vector_brute_force_knn_output_schema,
+        JoinType, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams,
+        VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams,
+        VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options, vector_brute_force_knn_output_schema,
         vector_kmeans_output_schema, vector_pca_output_schema,
     },
     source::{GpuResidentSource, SourceNode},
@@ -407,38 +401,6 @@ fn relation_initialized_kmeans_accepts_row_index_only_for_initial_centroids() {
 }
 
 #[test]
-fn vector_capability_has_typed_edges_without_a_lower_level_memory_veto() {
-    let plan = knn_plan(false);
-    let analysis = plan.capability_analysis();
-    let capability = analysis.nodes.iter().find(|node| node.node_id == plan.root_id()).unwrap();
-    assert_eq!(capability.operator, NodeOperator::VectorAlgorithm { algorithm: VectorAlgorithm::BruteForceKnn });
-    assert_eq!(capability.executable, CapabilityDecision::Satisfied);
-    assert_eq!(capability.local_requirements.len(), 1);
-    let requirement = &capability.local_requirements[0];
-    assert_eq!(requirement.memory_boundary, VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY);
-    assert_eq!(requirement.required_contract, VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT);
-    assert_eq!(requirement.status, ContractStatus::Modeled);
-    assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
-
-    let vector_edges =
-        analysis.edges.iter().filter(|edge| edge.consumer == EdgeConsumer::Node(plan.root_id())).collect::<Vec<_>>();
-    assert_eq!(vector_edges.len(), 2);
-    for (edge, role) in vector_edges.iter().zip([VectorInputRole::Dataset, VectorInputRole::Queries]) {
-        assert_eq!(edge.input_role, InputRole::VectorAlgorithmInput { role });
-        assert!(edge.contract_kinds.contains(&EdgeContractKind::VectorAlgorithmInput { role }));
-    }
-
-    let report = CapabilityContractReport::from_capability_analysis(&analysis).unwrap();
-    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
-    assert!(report.gate_rows().iter().any(|row| {
-        row.memory_boundary == VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY
-            && row.required_contract == VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT
-            && row.contract_status == ContractStatus::Modeled
-            && row.contract_quality == ContractQuality::CapabilityProof
-    }));
-}
-
-#[test]
 fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
     let plan = pca_plan_with_schema(
         Arc::new(Schema::new(vec![
@@ -466,10 +428,8 @@ fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker
             .expect("bounded rejection projection should be constructible")
             .expect("vector plan should have a bounded rejection");
         assert_eq!(projection.reason, "root_join_admission_requires_sink_root_join");
-        assert_ne!(
-            projection.facts.get("required_contract").map(String::as_str),
-            Some(VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
-        );
+        assert!(!projection.facts.contains_key("memory_boundary"));
+        assert!(!projection.facts.contains_key("required_contract"));
     }
 }
 

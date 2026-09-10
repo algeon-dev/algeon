@@ -40,7 +40,7 @@ impl DeviceQuarantineInjection {
         self.newly_quarantined
     }
 }
-use nexus_query_planning::admission::{AttemptRequirement, QueryPlanCapabilityProof};
+use nexus_query_planning::admission::AttemptRequirement;
 
 use crate::{
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
@@ -347,17 +347,15 @@ pub struct QueryAdmissionRequest {
     /// Explicit immutable query cap. When absent, the selected device resolves
     /// its configured default inside the admission transaction.
     requested_query_cap_bytes: Option<u64>,
-    /// Opaque capability proof emitted by planning.
+    /// Opaque capability evidence emitted by planning.
     ///
     /// Request callers provide lifecycle and correlation metadata only;
     /// raw floors, working-set hints, placement choices, and capability sets are not a public
     /// admission input.  When absent, admission uses empty evidence only when
     /// every installed profile accepts every modeled capability.
     pub(in crate::runtime::query_service) attempt_requirement: Option<AttemptRequirement>,
-    #[cfg(any(test, feature = "test-hooks"))]
-    test_placement_requirement: Option<AttemptRequirement>,
-    /// Public proof retained for diagnostic inspection until submission.
-    planned_capability_proof: Option<QueryPlanCapabilityProof>,
+    /// Public evidence retained for diagnostic inspection until submission.
+    planned_capability_evidence: Option<AttemptRequirement>,
     /// Caller-provided bound for queueing this attempt. The service combines it
     /// with its configured queue bound, choosing the earlier instant.
     pub queue_deadline: Option<Instant>,
@@ -428,32 +426,20 @@ impl QueryAdmissionRequest {
         self.requested_query_cap_bytes
     }
 
-    /// Borrows the engine-issued capability proof, if planning attached one.
-    /// This is diagnostic/read-only and cannot manufacture a new proof.
-    pub fn planned_capability_proof(&self) -> Option<&QueryPlanCapabilityProof> {
-        self.planned_capability_proof.as_ref()
+    /// Borrows the engine-issued capability evidence, if planning attached one.
+    /// This is diagnostic/read-only and cannot manufacture a new evidence.
+    pub fn planned_capability_evidence(&self) -> Option<&AttemptRequirement> {
+        self.planned_capability_evidence.as_ref()
     }
 
-    /// Attaches an opaque proof computed by capability-first planning.
+    /// Attaches an opaque evidence computed by capability-first planning.
     ///
-    /// A public request may prove required device capabilities, but it cannot
-    /// carry a model byte target into grant selection. The installed device
-    /// profile therefore remains the sole authority for the immutable grant.
-    pub fn with_query_plan_capability_proof(mut self, proof: QueryPlanCapabilityProof) -> Self {
-        self.planned_capability_proof = Some(proof);
-        self
-    }
-
-    /// Crate-test constructor for an explicit placement requirement.
-    ///
-    /// This sizes an admission only; it is intentionally not an execution
-    /// plan proof and therefore cannot authorize a later-built plan.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_test_placement_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
-        AttemptRequirement::empty()
-            .with_test_placement_overlay(attempt_requirement.clone())
-            .expect("test placement evidence is finite");
-        self.test_placement_requirement = Some(attempt_requirement);
+    /// A public request may prove required device capabilities and plan
+    /// scope, but it cannot carry a model byte target into grant selection.
+    /// The installed device profile therefore remains the sole authority for
+    /// the immutable grant.
+    pub fn with_query_plan_capability_evidence(mut self, evidence: AttemptRequirement) -> Self {
+        self.planned_capability_evidence = Some(evidence);
         self
     }
 
@@ -468,43 +454,15 @@ impl QueryAdmissionRequest {
     }
 
     pub(in crate::runtime::query_service) fn resolved_attempt_requirement(&self) -> Option<AttemptRequirement> {
-        let requirement = self
-            .planned_capability_proof
-            .as_ref()
-            .map(|proof| proof.as_requirement().clone())
-            .or_else(|| self.attempt_requirement.clone());
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(test_placement_requirement) = &self.test_placement_requirement {
-            return requirement
-                .map(|requirement| {
-                    requirement
-                        .with_test_placement_overlay(test_placement_requirement.clone())
-                        .expect("test placement evidence is finite")
-                })
-                .or_else(|| Some(test_placement_requirement.clone()));
-        }
-        requirement
+        self.planned_capability_evidence.clone().or_else(|| self.attempt_requirement.clone())
     }
 
-    pub(in crate::runtime::query_service::service) fn apply_test_placement_overlay(
-        &self,
-        requirement: AttemptRequirement,
-    ) -> AttemptRequirement {
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(test_placement_requirement) = &self.test_placement_requirement {
-            return requirement
-                .with_test_placement_overlay(test_placement_requirement.clone())
-                .expect("test placement evidence is finite");
-        }
-        requirement
-    }
-
-    /// Returns the proof that was actually submitted by planning for the
+    /// Returns the evidence that was actually submitted by planning for the
     /// execution-time coverage check.  Internal requirements still size and
-    /// place an admission, but must not impersonate a proof for an arbitrary
+    /// place an admission, but must not impersonate a evidence for an arbitrary
     /// later-built plan.
     pub(in crate::runtime::query_service) fn submitted_plan_capability_evidence(&self) -> Option<AttemptRequirement> {
-        self.planned_capability_proof.as_ref().map(|proof| proof.as_requirement().clone())
+        self.planned_capability_evidence.clone()
     }
 
     /// Sets an attempt-bound queue deadline.
@@ -596,86 +554,22 @@ mod tests {
     use super::*;
     use crate::observability::RuntimeObservationConfig;
 
-    fn explicit_sink_capability_proof() -> QueryPlanCapabilityProof {
+    fn explicit_sink_capability_evidence() -> AttemptRequirement {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
         let plan = builder.finish_with_host_sink(source);
-        QueryPlanCapabilityProof::for_query_plan(&plan)
-            .expect("an explicit host sink must expose a capability requirement")
+        AttemptRequirement::for_query_plan(&plan)
     }
 
     #[test]
-    fn public_capability_attachment_retains_only_an_engine_issued_proof() {
-        let proof = explicit_sink_capability_proof();
-        let request = QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone());
+    fn public_capability_attachment_retains_only_an_engine_issued_evidence() {
+        let evidence = explicit_sink_capability_evidence();
+        let request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone());
 
-        assert_eq!(request.planned_capability_proof(), Some(&proof));
-        assert_eq!(request.resolved_attempt_requirement(), Some(proof.into_requirement()));
+        assert_eq!(request.planned_capability_evidence(), Some(&evidence));
+        assert_eq!(request.resolved_attempt_requirement(), Some(evidence));
         assert!(request.submitted_plan_capability_evidence().is_some());
-    }
-
-    #[cfg(test)]
-    #[test]
-    fn explicit_test_placement_requirement_retains_working_set_hint_without_submitted_proof() {
-        let request = QueryAdmissionRequest::new().with_test_placement_requirement(AttemptRequirement::from_parts(
-            0,
-            0,
-            Some(4096),
-            nexus_query_planning::admission::EstimateQuality::Modeled,
-            Vec::new(),
-        ));
-        let evidence = request.resolved_attempt_requirement().expect("test evidence is retained");
-
-        assert_eq!(evidence.soft_working_set_hint_bytes(), Some(4096));
-        assert_eq!(evidence.estimate_quality(), nexus_query_planning::admission::EstimateQuality::Modeled);
-        assert!(request.submitted_plan_capability_evidence().is_none());
-    }
-
-    #[test]
-    fn test_placement_overlay_is_independent_of_proof_attachment_order() {
-        let proof = explicit_sink_capability_proof();
-        let original_proof = proof.clone();
-        let placement = AttemptRequirement::from_parts(
-            0,
-            0,
-            Some(4096),
-            nexus_query_planning::admission::EstimateQuality::Measured,
-            Vec::new(),
-        );
-
-        let proof_first = QueryAdmissionRequest::new()
-            .with_query_plan_capability_proof(proof.clone())
-            .with_test_placement_requirement(placement.clone());
-        let placement_first = QueryAdmissionRequest::new()
-            .with_test_placement_requirement(placement)
-            .with_query_plan_capability_proof(proof);
-
-        assert_eq!(proof_first.resolved_attempt_requirement(), placement_first.resolved_attempt_requirement());
-        assert_eq!(
-            proof_first.submitted_plan_capability_evidence(),
-            placement_first.submitted_plan_capability_evidence()
-        );
-        assert_eq!(proof_first.planned_capability_proof(), Some(&original_proof));
-        assert_eq!(placement_first.planned_capability_proof(), Some(&original_proof));
-        assert_eq!(proof_first.submitted_plan_capability_evidence(), Some(original_proof.as_requirement().clone()));
-    }
-
-    #[test]
-    fn test_placement_overlay_preserves_plan_scope_and_capability_evidence() {
-        let proof = explicit_sink_capability_proof();
-        let before = proof.clone();
-        let request = QueryAdmissionRequest::new()
-            .with_query_plan_capability_proof(proof)
-            .with_test_placement_requirement(AttemptRequirement::from_parts(
-                0,
-                0,
-                Some(4096),
-                nexus_query_planning::admission::EstimateQuality::Measured,
-                Vec::new(),
-            ));
-        assert_eq!(request.planned_capability_proof(), Some(&before));
-        assert_eq!(request.submitted_plan_capability_evidence(), Some(before.as_requirement().clone()));
     }
 
     #[test]

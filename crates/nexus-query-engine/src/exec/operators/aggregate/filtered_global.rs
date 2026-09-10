@@ -34,7 +34,6 @@ pub(super) struct FilteredGlobalSegmentRuntimeStats {
     pub(super) state_rows_merged: u64,
     pub(super) observed_temporary_peak_bytes: u64,
     pub(super) observed_retained_peak_bytes: u64,
-    pub(super) unresolved_contracts: BTreeSet<String>,
 }
 
 impl FilteredSegmentRuntimeStats for FilteredGlobalSegmentRuntimeStats {
@@ -44,10 +43,6 @@ impl FilteredSegmentRuntimeStats for FilteredGlobalSegmentRuntimeStats {
 
     fn observed_retained_peak_bytes_mut(&mut self) -> &mut u64 {
         &mut self.observed_retained_peak_bytes
-    }
-
-    fn unresolved_contracts_mut(&mut self) -> &mut BTreeSet<String> {
-        &mut self.unresolved_contracts
     }
 }
 
@@ -414,9 +409,6 @@ pub(super) fn record_filtered_global_segmented_failure(
     elapsed: Duration,
 ) {
     add_segmented_failure_error_facts(&mut decision.decision.facts, &mut stats, error);
-    if stats.unresolved_contracts.is_empty() {
-        stats.unresolved_contracts.insert("filtered_global_segmented_failure_budget_report_unavailable".to_string());
-    }
     decision.decision.facts.insert("filtered_global_segmented_failure", "true".to_string());
     add_segmented_runtime_facts(&mut decision.decision.facts, stats.state_rows_merged, stats);
     record_grouped_aggregate_strategy_decision(
@@ -988,14 +980,6 @@ fn add_segmented_runtime_facts(
     facts.insert("filtered_global_max_segment_rows", stats.max_segment_rows.to_string());
     facts.insert("filtered_global_observed_temporary_peak_bytes", stats.observed_temporary_peak_bytes.to_string());
     facts.insert("filtered_global_observed_retained_peak_bytes", stats.observed_retained_peak_bytes.to_string());
-    facts.insert(
-        "filtered_input_lower_level_unresolved_contracts",
-        if stats.unresolved_contracts.is_empty() {
-            "none".to_string()
-        } else {
-            stats.unresolved_contracts.into_iter().collect::<Vec<_>>().join("|")
-        },
-    );
 }
 
 #[derive(Debug, Clone, Copy)]

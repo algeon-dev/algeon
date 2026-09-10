@@ -40,10 +40,6 @@ impl QueryOutputMode {
 /// crossed the device-to-host boundary; GPU-resident output remains bound to
 /// its originating runtime and must be materialized explicitly if a caller
 /// needs Arrow.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "boxing the GPU payload would change the public variant construction and pattern-matching contract"
-)]
 pub enum QueryOutput {
     /// GPU-resident result bound to its originating runtime/device.
     GpuResident(GpuResultHandle),

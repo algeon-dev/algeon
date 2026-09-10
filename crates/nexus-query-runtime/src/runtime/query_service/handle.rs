@@ -110,7 +110,7 @@ pub(super) struct QueryHandleLifetime {
     attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
     attempt_stream_provider_route: Mutex<Option<Arc<AttemptStreamProviderRoute>>>,
     envelope: Mutex<Option<super::service::transaction::AdmissionEnvelope>>,
-    admitted_attempt_proof: Option<Arc<crate::runtime::AdmittedAttemptProof>>,
+    admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
     #[cfg(test)]
@@ -129,8 +129,8 @@ impl QueryHandleLifetime {
 
     #[cfg(test)]
     #[doc(hidden)]
-    pub fn admitted_attempt_proof_for_test(&self) -> Option<&crate::runtime::AdmittedAttemptProof> {
-        self.admitted_attempt_proof.as_deref()
+    pub fn admitted_capability_evidence_for_test(&self) -> Option<&AttemptRequirement> {
+        self.admitted_capability_evidence.as_deref()
     }
 
     #[expect(
@@ -144,7 +144,7 @@ impl QueryHandleLifetime {
         attempt_id: crate::observability::AttemptId,
         completion: QueryCompletion,
         envelope: super::service::transaction::AdmissionEnvelope,
-        admitted_attempt_proof: Option<Arc<crate::runtime::AdmittedAttemptProof>>,
+        admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
         admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
         compatible_devices: Vec<usize>,
     ) -> Arc<Self> {
@@ -187,7 +187,7 @@ impl QueryHandleLifetime {
                 attempt_auxiliary_slots,
                 attempt_stream_provider_route: Mutex::new(None),
                 envelope: Mutex::new(Some(envelope)),
-                admitted_attempt_proof,
+                admitted_capability_evidence,
                 #[cfg(test)]
                 release_commit_gate: Mutex::new(None),
                 #[cfg(test)]
@@ -763,7 +763,7 @@ impl QueryHandleReportCommit {
         // snapshot or a second event store.
         let frozen_resident_commit = if terminal_outcome == RuntimeTerminalOutcome::Succeeded
             && evidence == CleanupEvidence::Completed
-            && self.memory_grant.as_ref().is_some_and(|grant| grant.live_reserved_bytes() > 0)
+            && self.memory_grant.as_ref().is_some_and(|grant| grant.published_resident_owner_count() > 0)
         {
             Some(self.freeze_published_resident_domain())
         } else {
@@ -989,25 +989,12 @@ impl QueryHandleReportCommit {
         };
         let registry_aligned_bytes =
             live.iter().try_fold(0u64, |total, allocation| total.checked_add(allocation.aligned_bytes));
-        // The published output owner's retained charge bounds what it can
-        // legitimately own. A registry that still holds more requested bytes
-        // than the owner ever retained contains an allocation nothing
-        // published owns, which is a leak rather than a resident result.
-        //
-        // Known limitation: the owner's charge is a byte total, not its
-        // buffer set, so an equal-sized leak that displaces a released owner
-        // allocation is not detectable here. Distinguishing those needs
-        // pointer-level owner attestation, which requires the published
-        // owner's buffer set at freeze time.
-        let owner_charged_bytes = grant.live_reserved_bytes();
-        let attestation_failure = if usage.current_bytes == 0 || usage.current_aligned_bytes == 0 {
-            Some("a resident output owner must retain at least one live allocation")
-        } else if live.is_empty() {
-            Some("the frozen allocation registry holds no allocation for the published output owner")
-        } else if registry_aligned_bytes != Some(usage.current_aligned_bytes) {
+        let owner_allocations = grant.published_resident_allocation_pointers();
+        let unowned_allocation = live.iter().find(|allocation| !owner_allocations.contains(&allocation.device_pointer));
+        let attestation_failure = if registry_aligned_bytes != Some(usage.current_aligned_bytes) {
             Some("frozen domain usage does not match its own allocation registry")
-        } else if usage.current_bytes > owner_charged_bytes {
-            Some("frozen domain retains allocations no published output owner accounts for")
+        } else if unowned_allocation.is_some() {
+            Some("frozen domain retains a backing allocation no published output owner identifies")
         } else if usage.current_aligned_bytes > grant.budget_bytes() {
             Some("frozen resident bytes exceed the immutable query cap")
         } else {
@@ -1024,7 +1011,8 @@ impl QueryHandleReportCommit {
             .with_fact("current_aligned_bytes", usage.current_aligned_bytes)
             .with_fact("registry_allocations", live.len() as u64)
             .with_fact("registry_aligned_bytes", registry_aligned_bytes.unwrap_or(u64::MAX))
-            .with_fact("owner_charged_bytes", owner_charged_bytes)
+            .with_fact("published_owner_allocations", owner_allocations.len() as u64)
+            .with_fact("first_unowned_allocation", unowned_allocation.map_or(0, |allocation| allocation.device_pointer))
             .with_fact("query_cap_bytes", grant.budget_bytes());
             return FrozenResidentCommit::Failed { error, usage: Some(usage) };
         }
@@ -1214,7 +1202,7 @@ impl QueryHandleReportCommit {
             evidence.ledger_sequence = AttemptEvidenceField::device_snapshot(snapshot.sequence);
             evidence.ledger_sample_ns = AttemptEvidenceField::device_snapshot(sampled_ns);
             evidence.live_grants_bytes = AttemptEvidenceField::device_snapshot(snapshot.live_grants_bytes);
-            evidence.live_reserved_bytes = AttemptEvidenceField::device_snapshot(snapshot.live_reserved_bytes);
+            evidence.resident_owner_bytes = AttemptEvidenceField::device_snapshot(snapshot.resident_owner_bytes);
             evidence.protected_slot = AttemptEvidenceField::device_snapshot(snapshot.protected_slot);
             evidence.protected_reserve_bytes = AttemptEvidenceField::device_snapshot(snapshot.protected_reserve_bytes);
             evidence.cache_evictable_resident_bytes =
@@ -1402,10 +1390,14 @@ impl QueryHandleRelease {
             let activity_tail_slot = Arc::clone(&activity_tail);
             let installed = root_context.install_root_stream_cleanup_completion(
                 move |outcome| {
-                    // The root cleanup fence also covers every provider stream
-                    // joined back into it. Detach those members before the
-                    // terminal usage sample decides whether capacity is safe
-                    // to reuse.
+                    let outcome = if stream_provider_route
+                        .as_ref()
+                        .is_some_and(|route| route.synchronize_auxiliary_for_teardown().is_err())
+                    {
+                        crate::runtime::service_stream::StreamCleanupOutcome::StreamSynchronizationFailed
+                    } else {
+                        outcome
+                    };
                     drop_recovering(stream_provider_route, "attempt stream provider route");
                     *activity_tail_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = commit.run(
                         external_completion,
@@ -1998,7 +1990,7 @@ impl QueryHandle {
             grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
             attempt_allocation_domain: Some(attempt_allocation_domain),
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
-            admitted_attempt_proof: self.lifetime.admitted_attempt_proof.clone(),
+            admitted_capability_evidence: self.lifetime.admitted_capability_evidence.clone(),
             attempt_member_lease: Some(attempt_member_lease),
             attempt_stream_provider_route: Some(Arc::clone(&attempt_stream_provider_route)),
             attempt_stream_provider_alias: None,
@@ -2020,7 +2012,6 @@ impl QueryHandle {
             statistical_aggregate_execution_mode: service.config.statistical_aggregate_execution_mode,
             aggregate_strategy_execution_options: service.config.aggregate_strategy_execution_options,
             source_chunk_planning_options: service.config.source_chunk_planning_options,
-            graph_memory_calibration_override: service.config.graph_memory_calibration_override,
             stream_lease_guard: Some(stream_lease_guard),
             auxiliary_stream_permit_guard: None,
             query_service_admitted: true,

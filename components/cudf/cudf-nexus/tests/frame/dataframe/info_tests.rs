@@ -1,4 +1,12 @@
 //! Integration tests for DataFrame metadata snapshots via `info()`.
+use std::{collections::BTreeSet, sync::Arc};
+
+use arrow::{
+    array::{ArrayRef, Int32Array, ListArray},
+    buffer::{OffsetBuffer, ScalarBuffer},
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use cudf::{
     DataFrame, DataType, Series, TypeId,
     frame::dataframe::{DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail},
@@ -30,6 +38,49 @@ fn sample_info_frame() -> DataFrame {
     let names = crate::common::series("names", &["ab", "cde", ""]).unwrap();
 
     DataFrame::from_series([("ids", ids), ("maybe", maybe), ("names", names)]).unwrap()
+}
+
+#[test]
+fn backing_allocations_preserve_shared_column_identity() {
+    let frame = sample_info_frame();
+    let selected = frame.select(["names", "ids"]).unwrap();
+    let source = frame.backing_allocation_pointers().unwrap().into_iter().collect::<BTreeSet<_>>();
+    let output = selected.backing_allocation_pointers().unwrap().into_iter().collect::<BTreeSet<_>>();
+
+    assert!(!output.is_empty());
+    assert!(output.is_subset(&source));
+}
+
+#[test]
+fn backing_allocations_identify_fresh_sliced_output() {
+    let frame = sample_info_frame();
+    let sliced = frame.slice(1, 1).unwrap();
+    let source = frame.backing_allocation_pointers().unwrap().into_iter().collect::<BTreeSet<_>>();
+    let output = sliced.backing_allocation_pointers().unwrap().into_iter().collect::<BTreeSet<_>>();
+
+    assert!(!output.is_empty());
+    assert!(output.is_disjoint(&source));
+}
+
+#[test]
+fn backing_allocations_include_nested_children_once() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Int32, false));
+    let values = Arc::new(Int32Array::from(vec![1, 2, 3]));
+    let lists = ListArray::new(Arc::clone(&item), OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])), values, None);
+    let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::List(item), false)]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(lists) as ArrayRef]).unwrap();
+    let frame = DataFrame::from_record_batch(&sample_runtime(), &batch).unwrap();
+    let pointers = frame.backing_allocation_pointers().unwrap();
+
+    assert!(pointers.len() >= 2);
+    assert_eq!(pointers.iter().copied().collect::<BTreeSet<_>>().len(), pointers.len());
+}
+
+#[test]
+fn backing_allocations_are_empty_for_allocation_free_output() {
+    let frame = sample_runtime().empty_dataframe();
+
+    assert!(frame.backing_allocation_pointers().unwrap().is_empty());
 }
 
 #[test]

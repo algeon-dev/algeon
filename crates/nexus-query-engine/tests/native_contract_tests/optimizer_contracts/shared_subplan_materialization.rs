@@ -285,7 +285,6 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
     assert_eq!(candidate.filtered_aggregate_memory_shape, "streaming_filtered_state_not_applied");
     assert_eq!(candidate.filtered_aggregate_estimation_input_rows, Some(10_000_000));
     assert!(candidate.filtered_aggregate_estimated_materialization_bytes.unwrap_or(0) > 0);
-    assert_eq!(candidate.filtered_aggregate_memory_threshold_policy, "runtime_budget/2");
     assert_eq!(
         candidate.rejected_reason,
         Some(
@@ -480,7 +479,6 @@ fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
     assert!(candidate.filtered_aggregate_estimated_materialization_bytes.unwrap_or(0) > 0);
     assert_eq!(candidate.filtered_aggregate_memory_budget_bytes, None);
     assert_eq!(candidate.filtered_aggregate_memory_threshold_bytes, None);
-    assert_eq!(candidate.filtered_aggregate_memory_threshold_policy, "runtime_budget/2");
 
     let aggregates = result
         .plan

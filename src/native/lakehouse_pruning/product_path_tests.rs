@@ -32,7 +32,7 @@ use datafusion::{
 };
 use futures::{StreamExt, stream::BoxStream};
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::AttemptCapabilityEvidence,
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::local_parquet_source,
     plan::{NodeId, QueryPlan, QueryPlanBuilder},
@@ -244,12 +244,7 @@ fn admission_execution_config(backend: &InstalledTestGpuBackend, plan: &QueryPla
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ticket = QueryAdmissionTicket::new(
-        source.clone(),
-        Some(
-            QueryPlanCapabilityProof::for_query_plan(plan).expect("unresolved host plan must issue a capability proof"),
-        ),
-    );
+    let ticket = QueryAdmissionTicket::new(source.clone(), Some(AttemptCapabilityEvidence::for_query_plan(plan)));
     NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(ticket)
@@ -405,19 +400,17 @@ async fn native_host_rejects_combined_admission_ticket_before_grant() {
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-combined", &bytes).await;
     let (plan, _) = prunable_query_plan("s3://host-combined/table/data.parquet", bytes.len(), false);
     let (other_plan, _) = prunable_query_plan("s3://other-combined/table/data.parquet", bytes.len(), true);
-    let combined_proof = QueryPlanCapabilityProof::combine(
-        QueryPlanCapabilityProof::for_query_plan(&plan).expect("host plan must issue a capability proof"),
-        [QueryPlanCapabilityProof::for_query_plan(&other_plan)
-            .expect("other native plan must issue a capability proof")],
-    )
-    .expect("distinct native plans must combine into one aggregate proof");
-    let expected_combined_proof = combined_proof.clone();
+    let combined_evidence = AttemptCapabilityEvidence::aggregate([
+        AttemptCapabilityEvidence::for_query_plan(&plan),
+        AttemptCapabilityEvidence::for_query_plan(&other_plan),
+    ]);
+    let expected_combined_evidence = combined_evidence.clone();
     let source = backend
         .optimizer_config()
         .native_execution_config()
         .query_admission_source()
         .expect("installed backend must provide admission authority");
-    let ticket = QueryAdmissionTicket::new(source.clone(), Some(combined_proof));
+    let ticket = QueryAdmissionTicket::new(source.clone(), Some(combined_evidence));
     let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(source)
         .with_existing_query_admission_ticket(Arc::clone(&ticket))
@@ -431,12 +424,12 @@ async fn native_host_rejects_combined_admission_ticket_before_grant() {
 
     let error = result.expect_err("a combined ticket must not be rebound to one host fragment");
     let native = error.find_nexus_error().expect("ticket mismatch remains structured");
-    assert_eq!(native.operation(), "datafusion_nexus.native_exec.admission_proof");
-    assert_eq!(native.fact_value("reason"), Some("native_host_admission_proof_scope_mismatch"));
-    assert_eq!(native.fact_value("ticket_proof_scope"), Some("combined_or_different_native_plan"));
+    assert_eq!(native.operation(), "datafusion_nexus.native_exec.admission_evidence");
+    assert_eq!(native.fact_value("reason"), Some("native_host_admission_evidence_scope_mismatch"));
+    assert_eq!(native.fact_value("ticket_evidence_scope"), Some("combined_or_different_native_plan"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before ticket validation");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0, "mismatch must reject before grant");
-    assert_eq!(ticket.attempt_capability_proof_for_rebind(), Some(expected_combined_proof));
+    assert_eq!(ticket.attempt_capability_evidence_for_rebind(), Some(expected_combined_evidence));
     remove_fixture(dir);
 }
 

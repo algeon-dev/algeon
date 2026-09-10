@@ -59,9 +59,6 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(metrics.reservation_requested_bytes > 0);
-    assert!(metrics.reservation_granted_bytes > 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
@@ -73,33 +70,6 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "inner");
     assert_eq!(join_metrics.output_rows, 3);
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
-            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
-            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .all(|event| event.memory_boundary != "compiled_limit" && event.memory_boundary != "compiled_limit_output"),
-        "compiled Sort+Limit should execute as a fused final-sort boundary"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -184,13 +154,6 @@ fn bounded_native_query_fuses_compiled_sort_limit_with_topk() {
             .iter()
             .all(|event| event.operation != "nexus_query_engine.final_sort.prepare"),
         "selective compiled Sort+Limit should not full-sort before top-k"
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .all(|event| event.memory_boundary != "compiled_limit" && event.memory_boundary != "compiled_limit_output"),
-        "compiled Limit should pass through the fused final-sort output"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -298,7 +261,6 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
@@ -308,53 +270,6 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "left");
     assert_eq!(join_metrics.output_rows, 5);
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate")
-            .count(),
-        1
-    );
-    assert_eq!(
-        metrics
-            .reservation_events
-            .iter()
-            .filter(|event| {
-                event.outcome.as_str() == "applied"
-                    && event.action == MemoryReservationEventAction::Transfer
-                    && event.memory_boundary == "compiled_aggregate_output"
-            })
-            .count(),
-        1
-    );
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
-            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
-            (ReservationKind::OperatorOutput, "compiled_projection"),
-            (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
-            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::OperatorOutput, "compiled_projection"),
-            (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -499,40 +414,11 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed >= 13);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_window_output" }),
-        "rank window output must be a runtime-visible bounded reservation"
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_filter" }),
-        "rank filter must be a runtime-visible bounded stage"
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "final_sort"),
-        "final top-k must reserve through the final-sort boundary"
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "host_materialization"),
-        "host sink must reserve explicit host materialization"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -690,10 +576,6 @@ fn bounded_stddev_join_aggregate_uses_gpu_native_tolerant_statistical_contract()
                 .any(|(key, value)| key == "statistical_aggregate_tolerance_contract" && value == "float_tolerant")
             && decision.facts.iter().any(|(key, value)| key == "statistical_aggregate_ddof" && value == "stddev_samp:1")
     }));
-    assert!(metrics.reservation_events.iter().all(|event| {
-        event.memory_boundary != "host_welford_input_materialization_preflight"
-            && event.memory_boundary != "host_welford_output_upload_reservation"
-    }));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -712,24 +594,6 @@ fn bounded_stddev_join_aggregate_uses_exact_statistical_contract() {
         decision.facts.iter().any(|(key, value)| {
             key == "statistical_aggregate_execution_mode" && value == "datafusion_exact_host_welford"
         })
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.action == MemoryReservationEventAction::Reserve
-            && event.outcome.as_str() == "granted"
-            && event.reservation_kind == ReservationKind::Materialization
-            && event.memory_boundary == "host_welford_input_materialization_preflight"
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.action == MemoryReservationEventAction::Reserve
-            && event.outcome.as_str() == "granted"
-            && event.reservation_kind == ReservationKind::OperatorOutput
-            && event.memory_boundary == "host_welford_output_upload_reservation"
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.action == MemoryReservationEventAction::Transfer
-            && event.outcome.as_str() == "applied"
-            && event.reservation_kind == ReservationKind::OperatorOutput
-            && event.memory_boundary == "host_welford_output_upload_reservation"
     }));
 
     fs::remove_dir_all(dir).unwrap();

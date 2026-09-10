@@ -6,75 +6,23 @@ const LARGE_KEYED_JOIN_GATE_ENV: &str = "NEXUS_TPCH_BENCH_LARGE_KEYED_JOIN_GATE"
 const LARGE_KEYED_JOIN_GATE_QUERY_IDS_ENV: &str = "NEXUS_TPCH_BENCH_LARGE_KEYED_JOIN_GATE_QUERY_IDS";
 const LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
 const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
-const SF100_BOUNDED_RESERVATION_GATE_QUERY_IDS: &[&str] = &["q09", "q18", "q19"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LargeKeyedJoinStrategyGateSummary {
     pub(super) query_ids: Vec<String>,
     pub(super) large_partitioned_sites: usize,
     pub(super) large_fallback_one_shot_sites: usize,
     pub(super) large_reusable_sites: usize,
-    pub(super) reservation_denied_count: u64,
     pub(super) dynamic_filter_evidence: DynamicFilterGateEvidenceSummary,
 }
 
 impl LargeKeyedJoinStrategyGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] stage=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} reservation_denied_count={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
+            "[native_tpch_benchmark] stage=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.large_partitioned_sites,
             self.large_fallback_one_shot_sites,
             self.large_reusable_sites,
-            self.reservation_denied_count,
-            format_status_counts(&self.dynamic_filter_evidence.measured_reduction_statuses),
-            format_status_counts(&self.dynamic_filter_evidence.work_avoidance_statuses),
-            self.dynamic_filter_evidence.applied_without_work_avoidance_count,
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Sf100BoundedReservationGateSummary {
-    pub(super) query_ids: Vec<String>,
-    pub(super) reservation_denied_count: u64,
-    pub(super) reservation_live_peak_bytes: u64,
-    pub(super) device_budget_bytes: u64,
-    pub(super) dynamic_filter_evidence: DynamicFilterGateEvidenceSummary,
-}
-
-impl Sf100BoundedReservationGateSummary {
-    pub(super) fn progress_line(&self) -> String {
-        format!(
-            "[native_tpch_benchmark] stage=sf100_bounded_reservation_gate outcome=passed scope=q09_q18_q19_subset query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
-            self.query_ids.join(","),
-            self.reservation_denied_count,
-            self.reservation_live_peak_bytes,
-            self.device_budget_bytes,
-            format_status_counts(&self.dynamic_filter_evidence.measured_reduction_statuses),
-            format_status_counts(&self.dynamic_filter_evidence.work_avoidance_statuses),
-            self.dynamic_filter_evidence.applied_without_work_avoidance_count,
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Sf100FullReservationHealthGateSummary {
-    pub(super) query_ids: Vec<String>,
-    pub(super) reservation_denied_count: u64,
-    pub(super) reservation_live_peak_bytes: u64,
-    pub(super) device_budget_bytes: u64,
-    pub(super) dynamic_filter_evidence: DynamicFilterGateEvidenceSummary,
-}
-
-impl Sf100FullReservationHealthGateSummary {
-    pub(super) fn progress_line(&self) -> String {
-        format!(
-            "[native_tpch_benchmark] stage=sf100_full_reservation_health_gate outcome=passed scope=full_selected query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
-            self.query_ids.join(","),
-            self.reservation_denied_count,
-            self.reservation_live_peak_bytes,
-            self.device_budget_bytes,
             format_status_counts(&self.dynamic_filter_evidence.measured_reduction_statuses),
             format_status_counts(&self.dynamic_filter_evidence.work_avoidance_statuses),
             self.dynamic_filter_evidence.applied_without_work_avoidance_count,
@@ -134,11 +82,9 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
     let mut large_fallback_one_shot_sites = Vec::new();
     let mut large_reusable_sites = Vec::new();
     let mut unsupported_large_one_shot_sites = Vec::new();
-    let mut reservation_denied_count = 0_u64;
     let mut runtime_failures = Vec::new();
 
     for row in &rows {
-        reservation_denied_count = reservation_denied_count.saturating_add(row.reservation_denied_count);
         if row.runtime_outcome != "succeeded" {
             runtime_failures.push(format!("{}:{}", row.query_id, row.runtime_outcome));
         }
@@ -166,11 +112,6 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
             runtime_failures.join(",")
         )));
     }
-    if reservation_denied_count > 0 {
-        return Err(gate_error(format!(
-            "large keyed join strategy gate requires reservation_denied_count=0; observed {reservation_denied_count}"
-        )));
-    }
     if !large_reusable_sites.is_empty() {
         return Err(gate_error(format!(
             "large keyed join strategy gate found large reusable_hash_equi sites: {}",
@@ -194,178 +135,8 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
         large_partitioned_sites: large_partitioned_sites.len(),
         large_fallback_one_shot_sites: large_fallback_one_shot_sites.len(),
         large_reusable_sites: large_reusable_sites.len(),
-        reservation_denied_count,
         dynamic_filter_evidence: dynamic_filter_gate_evidence_summary(&rows),
     })
-}
-
-pub(super) fn validate_sf100_bounded_reservation_gate_for_config(
-    tsv: &str,
-    config: &NativeTpchBenchmarkConfig,
-) -> DataFusionResult<Option<Sf100BoundedReservationGateSummary>> {
-    let NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100) = config.dataset_mode else {
-        return Ok(None);
-    };
-    let device_budget_bytes = config.native_memory_policy.device_budget_bytes;
-    let query_ids = SF100_BOUNDED_RESERVATION_GATE_QUERY_IDS
-        .iter()
-        .filter(|query_id| config.query_ids.iter().any(|selected| selected == **query_id))
-        .map(|query_id| (*query_id).to_string())
-        .collect::<Vec<_>>();
-    if query_ids.is_empty() {
-        return Ok(None);
-    }
-    validate_sf100_bounded_reservation_gate_tsv(tsv, &query_ids, device_budget_bytes).map(Some)
-}
-
-pub(super) fn validate_sf100_bounded_reservation_gate_tsv(
-    tsv: &str,
-    query_ids: &[String],
-    device_budget_bytes: u64,
-) -> DataFusionResult<Sf100BoundedReservationGateSummary> {
-    let report = ParsedBenchmarkTsv::parse(tsv)?;
-    let rows = sf100_rows_for_query_ids(&report, query_ids, "selected no Q09/Q18/Q19 benchmark rows", "subset")?;
-    let (reservation_denied_count, reservation_live_peak_bytes) =
-        validate_sf100_reservation_health_rows(&rows, device_budget_bytes, "subset")?;
-
-    Ok(Sf100BoundedReservationGateSummary {
-        query_ids: rows.iter().map(|row| row.query_id.clone()).collect(),
-        reservation_denied_count,
-        reservation_live_peak_bytes,
-        device_budget_bytes,
-        dynamic_filter_evidence: dynamic_filter_gate_evidence_summary_refs(&rows),
-    })
-}
-
-pub(super) fn validate_sf100_full_reservation_health_gate_for_config(
-    tsv: &str,
-    config: &NativeTpchBenchmarkConfig,
-) -> DataFusionResult<Option<Sf100FullReservationHealthGateSummary>> {
-    let NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100) = config.dataset_mode else {
-        return Ok(None);
-    };
-    let device_budget_bytes = config.native_memory_policy.device_budget_bytes;
-    validate_sf100_full_reservation_health_gate_tsv(tsv, &config.query_ids, device_budget_bytes).map(Some)
-}
-
-pub(super) fn validate_sf100_full_reservation_health_gate_tsv(
-    tsv: &str,
-    query_ids: &[String],
-    device_budget_bytes: u64,
-) -> DataFusionResult<Sf100FullReservationHealthGateSummary> {
-    let report = ParsedBenchmarkTsv::parse(tsv)?;
-    let rows = sf100_rows_for_query_ids(&report, query_ids, "selected no benchmark rows", "full")?;
-    let (reservation_denied_count, reservation_live_peak_bytes) =
-        validate_sf100_reservation_health_rows(&rows, device_budget_bytes, "full")?;
-
-    Ok(Sf100FullReservationHealthGateSummary {
-        query_ids: rows.iter().map(|row| row.query_id.clone()).collect(),
-        reservation_denied_count,
-        reservation_live_peak_bytes,
-        device_budget_bytes,
-        dynamic_filter_evidence: dynamic_filter_gate_evidence_summary_refs(&rows),
-    })
-}
-
-fn sf100_rows_for_query_ids<'a>(
-    report: &'a ParsedBenchmarkTsv,
-    query_ids: &[String],
-    empty_message: &'static str,
-    gate_scope: &'static str,
-) -> DataFusionResult<Vec<&'a ParsedBenchmarkRow>> {
-    let wanted = query_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    let rows = report.rows.iter().filter(|row| wanted.contains(row.query_id.as_str())).collect::<Vec<_>>();
-    if rows.is_empty() {
-        return Err(sf100_gate_error(gate_scope, empty_message));
-    }
-    let observed = rows.iter().map(|row| row.query_id.as_str()).collect::<BTreeSet<_>>();
-    let missing = wanted.iter().filter(|query_id| !observed.contains(**query_id)).copied().collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(sf100_gate_error(gate_scope, format!("missing selected query rows: {}", missing.join(","))));
-    }
-    Ok(rows)
-}
-
-fn validate_sf100_reservation_health_rows(
-    rows: &[&ParsedBenchmarkRow],
-    device_budget_bytes: u64,
-    gate_scope: &'static str,
-) -> DataFusionResult<(u64, u64)> {
-    let mut runtime_failures = Vec::new();
-    let mut parity_failures = Vec::new();
-    let mut denial_failures = Vec::new();
-    let mut budget_failures = Vec::new();
-    let mut reservation_denied_count = 0_u64;
-    let mut reservation_live_peak_bytes = 0_u64;
-    for row in rows {
-        if row.runtime_outcome != "succeeded" {
-            runtime_failures.push(format!("{}:{}", row.query_id, row.runtime_outcome));
-        }
-        if row.cpu_runtime_started && row.parity_status != "matched" {
-            parity_failures.push(format!("{}:{}", row.query_id, row.parity_status));
-        }
-        reservation_denied_count = reservation_denied_count.saturating_add(row.reservation_denied_count);
-        reservation_live_peak_bytes = reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
-        if row.reservation_denied_count > 0 {
-            denial_failures.push(format!("{}:{}", row.query_id, row.reservation_denied_count));
-        }
-        if row.reservation_live_peak_bytes >= device_budget_bytes {
-            budget_failures.push(format!("{}:{}", row.query_id, row.reservation_live_peak_bytes));
-        }
-    }
-
-    if !runtime_failures.is_empty() {
-        return Err(sf100_gate_error(
-            gate_scope,
-            format!(
-                "requires native runtime success; failed_query_ids={} failures={}",
-                failed_query_ids(&runtime_failures),
-                runtime_failures.join(","),
-            ),
-        ));
-    }
-    if !parity_failures.is_empty() {
-        return Err(sf100_gate_error(
-            gate_scope,
-            format!(
-                "requires matched parity when CPU runtime starts; failed_query_ids={} failures={}",
-                failed_query_ids(&parity_failures),
-                parity_failures.join(","),
-            ),
-        ));
-    }
-    if !denial_failures.is_empty() {
-        return Err(sf100_gate_error(
-            gate_scope,
-            format!(
-                "requires reservation_denied_count=0; failed_query_ids={} denial_counts={} total={reservation_denied_count}",
-                failed_query_ids(&denial_failures),
-                denial_failures.join(","),
-            ),
-        ));
-    }
-    if !budget_failures.is_empty() {
-        return Err(sf100_gate_error(
-            gate_scope,
-            format!(
-                "requires reservation_live_peak_bytes below device budget; failed_query_ids={} peaks={} device_budget_bytes={device_budget_bytes}",
-                failed_query_ids(&budget_failures),
-                budget_failures.join(","),
-            ),
-        ));
-    }
-
-    Ok((reservation_denied_count, reservation_live_peak_bytes))
-}
-
-fn failed_query_ids(failures: &[String]) -> String {
-    failures
-        .iter()
-        .filter_map(|failure| failure.split_once(':').map(|(query_id, _)| query_id))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,8 +153,6 @@ impl ParsedBenchmarkTsv {
         let cpu_runtime_started_index = header_index(&header_fields, "cpu_runtime_started")?;
         let runtime_outcome_index = header_index(&header_fields, "runtime_outcome")?;
         let parity_status_index = header_index(&header_fields, "parity_status")?;
-        let reservation_live_peak_bytes_index = header_index(&header_fields, "reservation_live_peak_bytes")?;
-        let reservation_denied_count_index = header_index(&header_fields, "reservation_denied_count")?;
         let dynamic_filter_applied_count_index = header_index(&header_fields, "dynamic_filter_applied_count")?;
         let dynamic_filter_measured_reduction_status_index =
             header_index(&header_fields, "dynamic_filter_measured_reduction_status")?;
@@ -406,14 +175,6 @@ impl ParsedBenchmarkTsv {
                 cpu_runtime_started: parse_bool_field("cpu_runtime_started", fields[cpu_runtime_started_index])?,
                 runtime_outcome: fields[runtime_outcome_index].to_string(),
                 parity_status: fields[parity_status_index].to_string(),
-                reservation_live_peak_bytes: parse_u64_field(
-                    "reservation_live_peak_bytes",
-                    fields[reservation_live_peak_bytes_index],
-                )?,
-                reservation_denied_count: parse_u64_field(
-                    "reservation_denied_count",
-                    fields[reservation_denied_count_index],
-                )?,
                 dynamic_filter_applied_count: parse_u64_field(
                     "dynamic_filter_applied_count",
                     fields[dynamic_filter_applied_count_index],
@@ -457,8 +218,6 @@ struct ParsedBenchmarkRow {
     cpu_runtime_started: bool,
     runtime_outcome: String,
     parity_status: String,
-    reservation_live_peak_bytes: u64,
-    reservation_denied_count: u64,
     dynamic_filter_applied_count: u64,
     dynamic_filter_measured_reduction_status: String,
     dynamic_filter_work_avoidance_status: String,
@@ -573,14 +332,6 @@ fn dynamic_filter_gate_evidence_summary(rows: &[ParsedBenchmarkRow]) -> DynamicF
     summary
 }
 
-fn dynamic_filter_gate_evidence_summary_refs(rows: &[&ParsedBenchmarkRow]) -> DynamicFilterGateEvidenceSummary {
-    let mut summary = DynamicFilterGateEvidenceSummary::default();
-    for row in rows {
-        record_dynamic_filter_gate_evidence(&mut summary, row);
-    }
-    summary
-}
-
 fn record_dynamic_filter_gate_evidence(summary: &mut DynamicFilterGateEvidenceSummary, row: &ParsedBenchmarkRow) {
     *summary.measured_reduction_statuses.entry(row.dynamic_filter_measured_reduction_status.clone()).or_default() += 1;
     *summary.work_avoidance_statuses.entry(row.dynamic_filter_work_avoidance_status.clone()).or_default() += 1;
@@ -612,13 +363,4 @@ fn format_status_counts(counts: &BTreeMap<String, usize>) -> String {
 
 fn gate_error(message: impl Into<String>) -> DataFusionError {
     plan_error(format!("native TPC-H benchmark large keyed join strategy gate failed: {}", message.into()))
-}
-
-fn sf100_gate_error(gate_scope: &'static str, message: impl Into<String>) -> DataFusionError {
-    let gate_name = match gate_scope {
-        "subset" => "SF100 bounded reservation subset gate",
-        "full" => "SF100 full reservation health gate",
-        _ => "SF100 bounded reservation gate",
-    };
-    plan_error(format!("native TPC-H benchmark {gate_name} failed: {}", message.into()))
 }

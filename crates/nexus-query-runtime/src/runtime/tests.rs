@@ -31,7 +31,7 @@ fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
         active_attempts: 1,
         live_grants_bytes: 900,
         frozen_resident_bytes: 0,
-        live_reserved_bytes: 640,
+        resident_owner_bytes: 640,
         root_streams_available: 2,
         auxiliary_streams_available: 3,
         root_worker_slots_available: 1,
@@ -49,7 +49,7 @@ fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
             grant_id: 23,
             admission_request_id: crate::observability::AdmissionRequestId::new(29),
             grant_bytes: 900,
-            live_reserved_bytes: 640,
+            resident_owner_bytes: 640,
             frozen_resident_bytes: None,
         }],
     };
@@ -213,7 +213,7 @@ fn p6_snapshot_json_v1_golden(name: &str) -> Value {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/backend_snapshot_json_v1/gpu_backend_close_snapshot.json"
         )),
-        _ => panic!("missing P6 backend snapshot JSON v1 golden: {name}"),
+        _ => panic!("missing backend snapshot JSON v1 golden: {name}"),
     };
     serde_json::from_str(fixture).expect("versioned backend snapshot JSON golden is valid")
 }
@@ -224,7 +224,7 @@ fn p6_snapshot_json_v1_shapes_match_versioned_goldens() {
         assert_eq!(
             snapshot_json_shape(&value),
             p6_snapshot_json_v1_golden(name),
-            "P6 backend snapshot JSON v1 shape changed for {name}"
+            "backend snapshot JSON v1 shape changed for {name}"
         );
     }
 }

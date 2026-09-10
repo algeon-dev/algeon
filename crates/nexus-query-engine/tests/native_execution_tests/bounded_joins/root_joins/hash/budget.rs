@@ -56,18 +56,7 @@ fn bounded_native_query_does_not_split_join_leaf_from_source_estimate() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.retry_count, 0);
-    assert_eq!(metrics.retry_reservation_failure_count, 0);
     assert_eq!(metrics.source_chunks_retried, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.outcome.as_str() == "granted"
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.memory_boundary == "join_source_read"
-                && matches!(event.requested_bytes, 3_000_000 | 4_000_000)
-        }),
-        "the original join source chunks remain observable without estimate-driven retry splitting"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

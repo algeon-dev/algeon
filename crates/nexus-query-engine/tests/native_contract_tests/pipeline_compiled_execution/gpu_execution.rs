@@ -250,8 +250,17 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
     write_nonlinear_topk_contract_parquets();
 
     for (label, plan) in [
-        ("aggregate-over-join-subplan TopK", aggregate_over_join_subplan_topk_plan(true)),
-        ("resident grouped-aggregate TopK", resident_grouped_aggregate_input_post_join_aggregate_topk_plan(true)),
+        (
+            "aggregate-over-join-subplan TopK",
+            aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted, true),
+        ),
+        (
+            "resident grouped-aggregate TopK",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
+                true,
+            ),
+        ),
         ("resident grouped-aggregate subquery filter", resident_grouped_aggregate_subquery_filter_plan(true)),
     ] {
         let analysis = plan.capability_analysis();
@@ -308,7 +317,7 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
 }
 
 #[test]
-fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks() {
+fn observed_compiled_root_join_records_registered_tasks_without_reservation_events() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("nexus-query-engine-observed-compiled-root");
     let left_path = dir.join("left.parquet");
@@ -326,30 +335,11 @@ fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks(
     assert!(matches!(outcome.result(), Ok(QueryOutput::HostArrow(_))));
     let metrics = outcome.metrics();
     let snapshot = outcome.observation().expect("observed compiled execution seals evidence");
-    let typed_reservations = snapshot
-        .events()
-        .iter()
-        .filter_map(|event| match &event.payload {
-            nexus_query_engine::observability::RuntimeObservationPayload::Reservation(observation) => {
-                Some((&observation.task_attempt_id, &observation.task_kind, observation.charged_delta_bytes))
-            },
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    assert!(!typed_reservations.is_empty());
-    assert_eq!(metrics.reservation_events.len(), typed_reservations.len());
-    assert_eq!(typed_reservations.iter().map(|event| event.2).sum::<i128>(), 0);
-    assert_eq!(metrics.reservation_events.last().map(|event| event.current_reserved_bytes), Some(0));
-    assert!(typed_reservations.iter().all(|(attempt, kind, _)| attempt.is_none() || kind.is_some()));
+    assert!(snapshot.events().iter().all(|event| !matches!(
+        event.payload,
+        nexus_query_engine::observability::RuntimeObservationPayload::Reservation(_)
+    )));
     assert!(metrics.task_runtime_metrics.values().all(|task| task.operator_kind != "unknown"));
-    assert!(metrics.reservation_events.iter().all(|event| {
-        event.query_id.as_ref().is_some_and(|query_id| query_id == metrics.query_id())
-            && event
-                .compiled_task_id
-                .as_ref()
-                .is_none_or(|task_id| metrics.task_runtime_metrics.contains_key(task_id.as_str()))
-    }));
     assert!(snapshot.topology().any(|record| {
         matches!(record, nexus_query_engine::observability::RuntimeTopologyRecord::TaskDefinition(_))
     }));
@@ -385,16 +375,6 @@ fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks(
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(barriers.len(), pipeline.barriers().len());
     assert_eq!(sinks.len(), 1);
-    for record in snapshot.topology() {
-        let nexus_query_engine::observability::RuntimeTopologyRecord::ReservationGate(gate) = record else {
-            continue;
-        };
-        match gate.owner_kind.as_str() {
-            "barrier" => assert!(barriers.contains(&(gate.plan_execution_id.clone(), gate.owner_id.clone()))),
-            "sink" => assert!(sinks.contains(&(gate.plan_execution_id.clone(), gate.owner_id.clone()))),
-            _ => {},
-        }
-    }
 }
 
 #[test]
@@ -495,33 +475,17 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         .expect("GPU sink root join should be admitted");
     assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
     assert!(
-        admission.pipeline().gates().iter().all(|gate| {
-            gate.reservation_kind() != ReservationKind::Materialization
-                && gate.memory_boundary() != "host_materialization"
-                && gate.required_contract() != "query_engine_explicit_sink_materialization_reservation"
-        }),
-        "GPU sink compiled pipeline must not carry host materialization gates"
-    );
-    assert!(
         nexus_query_engine::admission::bounded_pipeline_rejection_projection(&plan)
             .expect("bounded rejection projection should not fail")
             .is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        nexus_query_engine::admission::bounded_join_modeled_facts(
-            &plan,
-            nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
-        )
-        .is_some(),
+        nexus_query_engine::admission::bounded_join_modeled_facts(&plan).is_some(),
         "GPU sink plans admitted by compiled execution must emit modeled bounded-join facts"
     );
     assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
-        )
-        .is_none(),
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none(),
         "GPU sink plans admitted by compiled execution must not emit unsupported bounded-join facts"
     );
     let mut passthrough_builder = QueryPlanBuilder::new();
@@ -530,20 +494,10 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         plan.output_schema().clone(),
     )));
     let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
-    let root_proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("GPU sink root must issue a proof");
-    let passthrough_consumer_proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&passthrough_plan)
-        .expect("GPU-resident passthrough must issue a composed consumer proof");
-    let composed_proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
-        &passthrough_plan,
-        passthrough_consumer_proof,
-        [ComposedGraphProducerCandidate::new(
-            Some("compiled_root_join".to_owned()),
-            Some("compiled_root_join".to_owned()),
-            Some(root_proof),
-        )],
-    )
-    .expect("GPU-resident passthrough must retain the producer occurrence in its composed proof");
-    let context = bounded_context_for_proofs(shared_runtime(runtime), [composed_proof]);
+    let root_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
+    let passthrough_evidence = AttemptCapabilityEvidence::for_query_plan(&passthrough_plan);
+    let composed_evidence = AttemptCapabilityEvidence::aggregate([root_evidence, passthrough_evidence]);
+    let context = bounded_context_for_evidence_items(shared_runtime(runtime), [composed_evidence]);
     let result = execute_query_plan(&context, &plan).expect("compiled GPU sink join should execute");
     let QueryOutput::GpuResident(handle) = result.output() else {
         panic!("GPU sink should keep the compiled output resident");
@@ -568,45 +522,6 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     assert_eq!(passthrough_batch.num_rows(), 2);
     assert_eq!(int32_values(passthrough_batch, 0), vec![Some(2), Some(4)]);
     assert_eq!(int32_values(passthrough_batch, 1), vec![Some(200), Some(400)]);
-}
-
-#[test]
-fn pipeline_validation_rejects_non_sink_edge_gate_on_sink_boundary() {
-    let plan = root_join_gpu_sink_data_plan(
-        Path::new("/tmp/compiled-gpu-sink-invalid-gate-left.parquet"),
-        Path::new("/tmp/compiled-gpu-sink-invalid-gate-right.parquet"),
-    );
-    let analysis = plan.capability_analysis();
-    let pipeline = compile_pipeline(&plan, &analysis).expect("GPU sink root join should compile");
-    let invalid_gate = ReservationGateId::new(pipeline.gates().len());
-    let mut gates = pipeline.gates().to_vec();
-    gates.push(ReservationGate::new(
-        invalid_gate,
-        ReservationGateOwner::SinkBoundary,
-        ReservationKind::ProbeSide,
-        ReservationRequirementScope::Edge,
-        "join_probe_side",
-        "query_engine_probe_side_source_reservation",
-        ContractStatus::Modeled,
-        ContractQuality::QueryEngineOwnedOrdering,
-    ));
-    let mut sink_gates = pipeline.sink().gates().to_vec();
-    sink_gates.push(invalid_gate);
-    let malformed = CompiledPipeline::new(
-        pipeline.tasks().to_vec(),
-        pipeline.edges().to_vec(),
-        pipeline.barriers().to_vec(),
-        pipeline.resources().to_vec(),
-        gates,
-        SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(sink_gates),
-    );
-
-    let error = malformed.validate().expect_err("unrelated edge gates must not attach to the sink boundary");
-
-    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("gate_owner"), Some("sink_boundary"));
-    assert_eq!(error.fact_value("requirement_scope"), Some("edge"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("probe_side"));
 }
 
 #[test]
@@ -712,7 +627,6 @@ fn single_sink_output_pipeline(
                 .with_upstream_tasks(task_ids.into_iter().collect()),
         ],
         resources,
-        vec![],
         SinkBoundary::new(kind, sink_input),
     )
 }
@@ -780,30 +694,10 @@ fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_r
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
     assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "compiled_aggregate_string_length_sizing"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::ChunkOperator
-    }));
 }
 
 fn assert_compiled_partial_aggregate_uses_work_reservation_transfer(metrics: &QueryMetrics) {
     assert!(metrics.partial_aggregate_count > 0);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "compiled_aggregate_partial_state_work"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::PartialState
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "compiled_aggregate_partial_state"
-            && event.action == MemoryReservationEventAction::Transfer
-            && event.reservation_kind == ReservationKind::PartialState
-    }));
-    assert!(!metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "compiled_aggregate_partial_state"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::PartialState
-    }));
 }
 
 fn assert_compiled_final_merge_uses_partitioned_strategy(metrics: &QueryMetrics) {
@@ -820,11 +714,6 @@ fn assert_compiled_final_merge_uses_partitioned_strategy(metrics: &QueryMetrics)
         Some("0"),
         "partitioned final merge should record a positive partition count"
     );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "compiled_partitioned_final_aggregate_merge"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::FinalMerge
-    }));
 }
 
 #[test]
@@ -844,11 +733,6 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let final_sort_gate =
-        runtime_visible_gate_for_task_kind(&pipeline, PipelineTaskKind::FinalSort, ReservationKind::FinalSort)
-            .expect("compiled final-sort task should retain its modeled reservation gate");
-    assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
-    assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
     let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("final-sort/limit graph should execute");
@@ -944,13 +828,6 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let upstream_join = plan
-        .nodes()
-        .iter()
-        .find_map(|node| {
-            matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_none()).then_some(node.id)
-        })
-        .expect("fixture should contain the upstream equi join");
     let residual_join = plan
         .nodes()
         .iter()
@@ -964,7 +841,6 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
         .expect("residual one-shot stream probe should execute through compiled path");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
     let metrics = result.metrics();
-    let upstream_join = upstream_join.to_string();
     let residual_join = residual_join.to_string();
 
     assert_eq!(batch.num_rows(), 1);
@@ -994,55 +870,6 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
     let one_shot_operator_rows =
         join_rows.iter().filter(|join| join.execution_strategy == "bounded_one_shot_equi_join").count();
     assert_eq!(metrics.one_shot_join_count, one_shot_operator_rows as u64);
-    let upstream_events = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| event.node_id.as_deref() == Some(upstream_join.as_str()))
-        .collect::<Vec<_>>();
-    assert!(
-        upstream_events
-            .iter()
-            .filter(|event| {
-                (event.memory_boundary == "join_output" || event.memory_boundary == "join_output_stream_chunk")
-                    && event.action == MemoryReservationEventAction::Reserve
-            })
-            .count()
-            >= 2,
-        "fixture must produce multiple upstream join output chunks: source_chunks_committed={}, source_rows={:?}, upstream_events={upstream_events:?}",
-        metrics.source_chunks_committed,
-        metrics.source_read_runtime_rows
-    );
-    assert!(
-        !metrics.reservation_events.iter().any(|event| {
-            event.node_id.as_deref() == Some(upstream_join.as_str())
-                && event.memory_boundary == "join_output_stream_concat"
-        }),
-        "upstream join output must stay streamed into the residual probe"
-    );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.node_id.as_deref() == Some(residual_join.as_str())
-            && event.memory_boundary == "join_residual_filter_output"
-    }));
-    let build_alias_acquires = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.node_id.as_deref() == Some(residual_join.as_str())
-                && event.memory_boundary == "join_build_side_stream_alias"
-                && event.action == MemoryReservationEventAction::AliasAcquire
-        })
-        .count();
-    let build_alias_releases = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.node_id.as_deref() == Some(residual_join.as_str())
-                && event.memory_boundary == "join_build_side_stream_alias"
-                && event.action == MemoryReservationEventAction::AliasRelease
-        })
-        .count();
-    assert!(build_alias_acquires > 0, "residual stream should alias the retained build side");
-    assert_eq!(build_alias_acquires, build_alias_releases);
 }
 
 #[test]
@@ -1118,26 +945,6 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
         1
     );
     assert_eq!(metrics.one_shot_join_count, 0);
-    let build_alias_acquires = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.node_id.as_deref() == Some(residual_join.as_str())
-                && event.memory_boundary == "join_build_side_stream_alias"
-                && event.action == MemoryReservationEventAction::AliasAcquire
-        })
-        .count();
-    let build_alias_releases = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.node_id.as_deref() == Some(residual_join.as_str())
-                && event.memory_boundary == "join_build_side_stream_alias"
-                && event.action == MemoryReservationEventAction::AliasRelease
-        })
-        .count();
-    assert!(build_alias_acquires > 0, "residual stream should alias the retained build side");
-    assert_eq!(build_alias_acquires, build_alias_releases);
 }
 
 #[test]
@@ -1211,26 +1018,6 @@ fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
         1
     );
     assert_eq!(metrics.one_shot_join_count, 0);
-    let build_alias_acquires = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.node_id.as_deref() == Some(residual_join.as_str())
-                && event.memory_boundary == "join_build_side_stream_alias"
-                && event.action == MemoryReservationEventAction::AliasAcquire
-        })
-        .count();
-    let build_alias_releases = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.node_id.as_deref() == Some(residual_join.as_str())
-                && event.memory_boundary == "join_build_side_stream_alias"
-                && event.action == MemoryReservationEventAction::AliasRelease
-        })
-        .count();
-    assert!(build_alias_acquires > 0, "residual stream should alias the retained build side");
-    assert_eq!(build_alias_acquires, build_alias_releases);
 }
 
 #[test]

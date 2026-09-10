@@ -50,9 +50,7 @@ ORDER BY function_name;
 
 `available=true` means the selected function is statically plannable. It does
 not reserve GPU memory, acquire runtime admission, inspect relation rows, or
-prove that an entire query is GPU-native. In particular, cuVS reports
-`bounded_execution_unavailable` for a bounded session until it has a
-lower-level peak-memory preflight contract.
+prove that an entire query is GPU-native.
 
 ## gpu_describe_function(function_name)
 

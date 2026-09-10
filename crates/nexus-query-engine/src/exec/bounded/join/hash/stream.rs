@@ -1,10 +1,9 @@
 use std::collections::VecDeque;
 
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedPartitionTargetPolicy,
-    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, ExecutionContext, Instant, JoinNode, JoinSide,
-    NodeId, QueryError, QueryMetrics, ResidentFrameStreamSource, ResidentGpuFrame, Result, execution_overrides,
-    join_side_output_upper_bound_bytes,
+    BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedPartitionTargetPolicy, BoundedRootHashJoinBuildState,
+    BoundedRootHashJoinProbeState, ExecutionContext, Instant, JoinNode, JoinSide, NodeId, QueryError, QueryMetrics,
+    ResidentFrameStreamSource, ResidentGpuFrame, Result, execution_overrides, join_side_output_upper_bound_bytes,
     materialize::{materialize_bounded_root_hash_join_index_slice, release_root_hash_join_stream_outputs},
     probe::reusable_hash_join_execution_strategy,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
@@ -22,7 +21,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     build: &BoundedRootHashJoinBuildState,
     probe: BoundedJoinSideFrame,
     indices: cudf::DataFrameHashJoinPairIndices,
-    gather_map_reservation: ActiveReservation,
     gather_map_bytes: u64,
     timer: Instant,
 ) -> Result<Vec<ResidentGpuFrame>> {
@@ -59,7 +57,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(gather_map_reservation);
             return Err(error);
         },
     };
@@ -73,7 +70,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(gather_map_reservation);
             return Err(error);
         },
     };
@@ -106,7 +102,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 }
             },
             Err(error) => {
-                execution.release(gather_map_reservation);
                 return Err(error);
             },
         }
@@ -145,8 +140,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 offset += take;
             },
             Err(error) => {
-                release_root_hash_join_stream_outputs(execution, outputs);
-                execution.release(gather_map_reservation);
+                release_root_hash_join_stream_outputs(outputs);
                 return Err(error);
             },
         }
@@ -176,7 +170,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             output_bytes: cumulative_output_bytes,
         },
     ));
-    execution.release(gather_map_reservation);
     Ok(outputs)
 }
 
@@ -189,7 +182,6 @@ pub(in crate::exec::bounded::join::hash) struct RootHashJoinMaterializeStreamSou
     pub(in crate::exec::bounded::join::hash) indices: Option<cudf::DataFrameHashJoinPairIndices>,
     pub(in crate::exec::bounded::join::hash) left_indices: Option<cudf::DataFrameJoinIndices>,
     pub(in crate::exec::bounded::join::hash) right_indices: Option<cudf::DataFrameJoinIndices>,
-    pub(in crate::exec::bounded::join::hash) gather_map_reservation: Option<ActiveReservation>,
     pub(in crate::exec::bounded::join::hash) gather_map_bytes: u64,
     pub(in crate::exec::bounded::join::hash) output_reservation_bytes: u64,
     pub(in crate::exec::bounded::join::hash) timer: Option<Instant>,
@@ -225,7 +217,6 @@ impl RootHashJoinMaterializeStreamSource {
             indices: Some(state.indices),
             left_indices: Some(left_indices),
             right_indices: Some(right_indices),
-            gather_map_reservation: Some(state.gather_map_reservation),
             gather_map_bytes: state.gather_map_bytes,
             output_reservation_bytes: state.output_reservation_bytes,
             pending_outputs: VecDeque::new(),
@@ -315,25 +306,19 @@ impl RootHashJoinMaterializeStreamSource {
                 },
             ));
         }
-        self.release_owned(execution);
+        self.release_owned();
     }
 
-    pub(in crate::exec::bounded::join::hash) fn release_owned(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        while let Some(output) = self.pending_outputs.pop_back() {
-            let ResidentGpuFrame { reservation, .. } = output;
-            execution.release(reservation);
-        }
+    pub(in crate::exec::bounded::join::hash) fn release_owned(&mut self) {
+        self.pending_outputs.clear();
         self.left_indices = None;
         self.right_indices = None;
         self.indices = None;
-        if let Some(reservation) = self.gather_map_reservation.take() {
-            execution.release(reservation);
-        }
         if let Some(probe) = self.probe.take() {
-            release_bounded_join_side_frame(execution, probe);
+            release_bounded_join_side_frame(probe);
         }
         if let Some(build) = self.build.take() {
-            release_bounded_root_hash_join_build_state(execution, build);
+            release_bounded_root_hash_join_build_state(build);
         }
     }
 }
@@ -377,8 +362,8 @@ impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
         }
     }
 
-    fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        self.release_owned(execution);
+    fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {
+        self.release_owned();
     }
 }
 
@@ -421,6 +406,6 @@ pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
 ) -> u64 {
     BoundedPartitionTargetPolicy::default().reusable_hash_join_stream_target_output_bytes(
         execution.context().memory_control_policy(),
-        execution.reservations().remaining_bytes(),
+        execution.device_budget_bytes(),
     )
 }

@@ -58,10 +58,14 @@ typedef enum cugraph_rs_destroy_status {
 
 cugraph_rs_runtime_resource_handle_t *
 cugraph_rs_runtime_resource_handle_create(void *cuda_stream,
-                                          void *device_memory_resource);
+                                          void *device_memory_resource,
+                                          void *memory_resource_owner);
 
 cugraph_resource_handle_t *cugraph_rs_runtime_resource_handle_get(
     cugraph_rs_runtime_resource_handle_t *handle);
+
+int32_t cugraph_rs_runtime_resource_handle_effective_device_memory(
+    cugraph_rs_runtime_resource_handle_t *handle, size_t *out);
 
 // Inspect CUDA's typed thread/context status after a failed cuGraph C API call.
 // This deliberately avoids classifying failures from human-readable messages.

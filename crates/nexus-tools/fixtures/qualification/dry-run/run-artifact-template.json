@@ -47,7 +47,7 @@
       }}}]},
       "time_series": {
         "maximum_cuda_nvml_sample_gap": {"nanoseconds": 1},
-        "device_rows": [{"device_ordinal": 0, "allocation_failure_count": 0, "live_grants_bytes": 80, "live_reserved_bytes": 40, "managed_capacity_bytes": 100}]
+        "device_rows": [{"device_ordinal": 0, "allocation_failure_count": 0, "live_grants_bytes": 80, "resident_owner_bytes": 40, "managed_capacity_bytes": 100}]
       }
     }
   }

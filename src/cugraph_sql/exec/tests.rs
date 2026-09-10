@@ -25,14 +25,9 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::AttemptCapabilityEvidence,
     expr::{Expr, SortExpr, SortSpec},
-    graph_memory::{
-        GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory_bounded_admission_evidence_for_plan,
-        graph_memory_estimates_for_plan,
-    },
     observability::RuntimeObservationConfig,
-    parquet_stats::{ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence},
     plan::{PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     runtime::ExecutionCancellation,
     source::{
@@ -47,16 +42,14 @@ use parquet::{
 
 use super::*;
 use crate::{
-    attempt::{AttemptOptions, NexusAttemptExtension},
+    attempt::AttemptOptions,
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
-        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
-        CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphPageRankParams,
-        CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
+        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource, CugraphGraphOptions,
+        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
+        CugraphTriangleCountAllParams,
         exec::{
-            admission::lowered_native_edge_plan,
             input::{StagedCugraphSource, execute_edge_source_to_gpu, stage_cugraph_inputs},
-            lowering::cugraph_side_input_name,
             residency::{graph_residency_matches_edge_schema, native_graph_spec_for_residency},
         },
         result_schema_for_params,
@@ -137,7 +130,7 @@ struct CountingExec {
 struct CountingGpuResidentProducer {
     input_name: String,
     ticket: Arc<crate::native_exec::admission::QueryAdmissionTicket>,
-    capability_proof: QueryPlanCapabilityProof,
+    capability_evidence: AttemptCapabilityEvidence,
     execute_count: Arc<AtomicUsize>,
     inner: EmptyExec,
 }
@@ -196,6 +189,10 @@ impl GpuResidentProducer for CountingGpuResidentProducer {
         &self.input_name
     }
 
+    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+        Ok(self.capability_evidence.clone())
+    }
+
     fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
         vec![Arc::clone(&self.ticket)]
     }
@@ -217,12 +214,8 @@ impl GpuResidentProducer for CountingGpuResidentProducer {
 }
 
 impl GraphExecutionPlan for CountingGpuResidentProducer {
-    fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof> {
-        Ok(self.capability_proof.clone())
-    }
-
-    fn graph_result_input_name(&self) -> &str {
-        &self.input_name
+    fn graph_execution_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+        Ok(self.capability_evidence.clone())
     }
 
     fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
@@ -400,141 +393,6 @@ fn edge_source_output_rows_rejects_inexact_datafusion_statistics() {
 
 fn native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     native_edge_source_with_root(row_group_rows, config, |_, source| source)
-}
-
-fn graph_ticket_proof(exec: &CugraphAlgoExec) -> nexus_query_engine::admission::QueryPlanCapabilityProof {
-    crate::native_exec::graph::GraphExecutionPlan::graph_execution_capability_proof(exec)
-        .expect("cuGraph fixture must issue an exact internal query-plan proof")
-}
-
-fn graph_ticket_after_metadata(exec: CugraphAlgoExec) -> CugraphAlgoExec {
-    let input_row_bounds =
-        CugraphInputRowBounds::from_execution_plans(exec.edge_source.as_ref(), &exec.predicate_sources)
-            .expect("prepared cuGraph plans should expose row-bound evidence");
-    exec.issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default(), None)
-        .expect("prepared cuGraph staging should mint one graph-aware admission ticket")
-        .0
-}
-
-fn graph_ticket_proof_for_native_source(
-    exec: &CugraphAlgoExec,
-) -> nexus_query_engine::admission::QueryPlanCapabilityProof {
-    let native = as_nexus_native_exec(exec.edge_source.as_ref()).expect("fixture must contain a native edge source");
-    let native_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(
-        &native.native_plan().clone_with_gpu_resident_sink(),
-    )
-    .expect("native edge fixture must have capability requirements");
-    nexus_query_engine::admission::QueryPlanCapabilityProof::combine(graph_ticket_proof(exec), [native_proof])
-        .expect("graph and native edge proofs must aggregate")
-}
-
-fn graph_ticket_proof_with_resident_edge_plan(
-    exec: &CugraphAlgoExec,
-    edge_plan: &QueryPlan,
-) -> nexus_query_engine::admission::QueryPlanCapabilityProof {
-    graph_ticket_plan_and_proof_with_resident_edge_plan(exec, edge_plan).1
-}
-
-fn graph_ticket_plan_and_proof_with_resident_edge_plan(
-    exec: &CugraphAlgoExec,
-    edge_plan: &QueryPlan,
-) -> (nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof) {
-    cugraph_execution_capability_proof_with_resident_input_plans(&exec.plan_definition(), Some(edge_plan), &[])
-        .expect("prepared graph fixture must issue a resident-input-bound proof")
-}
-
-fn production_string_parquet_plan(
-    path: &str,
-    schema: Arc<Schema>,
-    rows: u64,
-    payload_upper_bounds: &[u64],
-) -> QueryPlan {
-    assert_eq!(schema.fields().len(), payload_upper_bounds.len());
-    let payload_evidence = payload_upper_bounds
-        .iter()
-        .enumerate()
-        .map(|(index, bytes)| {
-            (
-                index,
-                ParquetVariableWidthPayloadEvidence::new(
-                    index,
-                    vec![0],
-                    *bytes,
-                    ParquetVariableWidthEncodingProof::PlainAndDictionary,
-                ),
-            )
-        })
-        .collect();
-    let uncompressed_bytes = payload_upper_bounds
-        .iter()
-        .copied()
-        .sum::<u64>()
-        .saturating_add(rows.saturating_add(1).saturating_mul(8).saturating_mul(payload_upper_bounds.len() as u64));
-    let file = LocalParquetFile::new(path)
-        .with_row_groups(vec![0])
-        .with_row_group_rows(vec![rows])
-        .with_row_group_bytes(vec![uncompressed_bytes])
-        .with_projected_row_group_bytes(vec![uncompressed_bytes], vec![uncompressed_bytes])
-        .with_variable_width_payload_evidence(payload_evidence);
-    let columns = schema.fields().iter().map(|field| field.name().clone()).collect();
-    let mut builder = nexus_query_engine::plan::QueryPlanBuilder::new();
-    let source = builder.add_source(nexus_query_engine::source::SourceNode::LocalParquet(
-        LocalParquetSource::from_files(vec![file], schema, columns),
-    ));
-    builder.finish_gpu_resident(source)
-}
-
-fn production_string_logical_proof(
-    graph_plan: &QueryPlan,
-    edge_plan: &QueryPlan,
-    predicate_plans: &[QueryPlan],
-) -> QueryPlanCapabilityProof {
-    let predicate_names = (0..predicate_plans.len()).map(cugraph_side_input_name).collect::<Vec<_>>();
-    let mut resident_inputs = vec![(CUGRAPH_EDGE_INPUT_NAME, edge_plan)];
-    resident_inputs.extend(predicate_names.iter().zip(predicate_plans).map(|(name, plan)| (name.as_str(), plan)));
-    let graph =
-        QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(graph_plan, resident_inputs)
-            .expect("production-shaped string inputs must bind to the graph plan")
-            .expect("logical graph plan must issue a capability proof");
-    let graph_evidence =
-        graph_memory_bounded_admission_evidence_for_plan(graph_plan, GraphMemoryCalibrationOverride::none(), None)
-            .expect("production-shaped logical graph plan must retain finite graph evidence");
-    let graph = graph
-        .with_graph_memory_admission_evidence(&graph_evidence)
-        .expect("graph evidence must bind before composing logical mapping producers");
-
-    QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
-        graph_plan,
-        graph,
-        CUGRAPH_EDGE_INPUT_NAME,
-        edge_plan,
-        predicate_names.iter().cloned().zip(predicate_plans),
-    )
-    .expect("production-shaped logical mapping schedule must resolve")
-    .expect("string logical mapping must materialize between its producers and graph")
-}
-
-fn production_dominant_owner_bytes(proof: &QueryPlanCapabilityProof) -> u64 {
-    proof.as_requirement().owner_terms.iter().map(|term| term.bytes()).max().unwrap_or(0)
-}
-
-fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
-    native_edge_source_with_root(row_group_rows, config, |builder, source| {
-        builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("src"), false, false)]), edge_schema())
-    })
-}
-
-fn filtered_native_edge_source(
-    row_group_rows: Vec<u64>,
-    config: &NexusNativeExecutionConfig,
-) -> Arc<dyn ExecutionPlan> {
-    native_edge_source_with_root(row_group_rows, config, |builder, source| {
-        builder.add_filter(
-            source,
-            Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
-            edge_schema(),
-        )
-    })
 }
 
 fn native_edge_source_with_root(
@@ -1184,279 +1042,6 @@ fn string_pagerank_subsumes_only_bounded_sorts() {
 }
 
 #[test]
-fn string_pagerank_large_bound_prices_one_graph_after_both_endpoint_lookups() {
-    let edge_rows = 54_957_455;
-    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-        spec: pagerank_utf8_spec().clone(),
-        edge_schema: string_edge_schema(),
-        predicate_schemas: Vec::new(),
-        predicate_row_upper_bounds: [].to_vec(),
-        result_options: CugraphResultPlanOptions::default().clone(),
-        edge_normalize_inserted: false,
-        edge_row_upper_bound: Some(edge_rows),
-        edge_vertex_upper_bound: None,
-    })
-    .expect("large string PageRank plan should build without materializing rows");
-
-    let endpoint_joins = plan
-        .nodes()
-        .iter()
-        .filter(|node| {
-            matches!(
-                &node.kind,
-                PlanNode::Join(_join)
-                    if node.output_schema().field_with_name("src").is_ok()
-                        && node.output_schema().field_with_name("dst").is_ok()
-            )
-        })
-        .count();
-    assert_eq!(endpoint_joins, 2, "logical mapping must retain both endpoint encoding joins");
-
-    let estimates = graph_memory_estimates_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
-        .expect("large string PageRank plan must remain priceable");
-    assert_eq!(estimates.len(), 1);
-    assert_eq!(estimates[0].estimate.input_edges, edge_rows);
-
-    let evidence =
-        graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
-            .expect("large string PageRank plan must produce one admission token");
-    assert!(evidence.cold_model_requested_bytes() > 0);
-
-    let edge_plan = production_string_parquet_plan(
-        "/tmp/production-string-pagerank.parquet",
-        string_edge_schema(),
-        edge_rows,
-        &[2_300_000_000, 2_406_637_611],
-    );
-    let proof = production_string_logical_proof(&plan, &edge_plan, &[]);
-    let dominant_owner = production_dominant_owner_bytes(&proof);
-    assert!(dominant_owner > 0 && dominant_owner < 1_u64 << 40);
-}
-
-#[test]
-fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final_sort() {
-    let rows = 70;
-    let spec = logical_string_spec(CugraphAlgorithm::Jaccard);
-    let pair_schema = Arc::new(Schema::new(vec![
-        Field::new("first", DataType::Utf8, false),
-        Field::new("second", DataType::Utf8, false),
-    ]));
-    let result_options = CugraphResultPlanOptions {
-        subsumed_top_k_sort: Some(SortSpec::new(vec![SortExpr::new(Expr::column("similarity"), true, false)])),
-        limit: Some(70),
-        ..Default::default()
-    };
-    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-        spec: spec.clone(),
-        edge_schema: string_edge_schema(),
-        predicate_schemas: vec![Arc::clone(&pair_schema)],
-        predicate_row_upper_bounds: [Some(rows)].to_vec(),
-        result_options: result_options.clone(),
-        edge_normalize_inserted: false,
-        edge_row_upper_bound: Some(rows),
-        edge_vertex_upper_bound: None,
-    })
-    .expect("70-edge/70-pair logical string Jaccard plan must build");
-    let source_bounds = plan
-        .nodes()
-        .iter()
-        .filter_map(|node| match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                nexus_query_engine::source::SourceNode::GpuResident(source) => {
-                    source.row_count_upper_bound.map(|bound| (source.input_name.as_str(), bound))
-                },
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let side_input_name = cugraph_side_input_name(0);
-    assert!(source_bounds.contains(&(CUGRAPH_EDGE_INPUT_NAME, rows)));
-    assert!(source_bounds.contains(&(side_input_name.as_str(), rows)));
-
-    let edge_plan = production_string_parquet_plan(
-        "/tmp/production-string-jaccard-edges.parquet",
-        string_edge_schema(),
-        rows,
-        &[2_300_000_000, 2_406_637_611],
-    );
-    let pair_plan = production_string_parquet_plan(
-        "/tmp/production-string-jaccard-pairs.parquet",
-        pair_schema,
-        rows,
-        &[2_100_000_000, 2_200_000_000],
-    );
-    let proof = production_string_logical_proof(&plan, &edge_plan, &[pair_plan]);
-    let resolved_proof = proof
-        .clone()
-        .requirement_for_device(0)
-        .expect("the device owner preflights must resolve the string mapping schedule");
-    let lifetimes = resolved_proof
-        .composed_consumer_owner_lifetimes_for_test(&plan)
-        .expect("the exact logical mapping scope must expose its structured schedule");
-    let lifetime =
-        |node_id, role| lifetimes.iter().find(|entry| entry.node_id == node_id && entry.role == role).copied().unwrap();
-    let codebook = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::Window(_))).unwrap();
-    let graph = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))).unwrap();
-    let PlanNode::GraphAlgorithm(graph_node) = &graph.kind else { unreachable!() };
-    let final_sort = plan.node(plan.root_id()).unwrap();
-    let PlanNode::Sort(sort) = &final_sort.kind else { panic!("the fixture must end after decode with a sort") };
-    let pair = lifetime(graph_node.inputs[1], "consumer_output");
-    let graph_output = lifetime(graph.id, "graph_output");
-    let graph_execution = lifetime(graph.id, "execution_workspace");
-    let codebook_values = lifetime(
-        match &codebook.kind {
-            PlanNode::Window(window) => window.input,
-            _ => unreachable!("the selected node is the codebook row-number window"),
-        },
-        "sort_output_frame",
-    );
-    let codebook_row_ids = lifetime(codebook.id, "consumer_output");
-    let decoded = lifetime(sort.input, "consumer_output");
-    let final_output = lifetime(final_sort.id, "retained_output");
-    let final_sort_peak = lifetimes
-        .iter()
-        .filter(|entry| entry.first_group <= final_output.first_group && final_output.first_group <= entry.last_group)
-        .map(|entry| entry.bytes)
-        .sum::<u64>();
-    assert_eq!(pair.last_group, graph_execution.first_group, "encoded pairs live through graph execution");
-    assert_eq!(pair.last_group, graph_output.first_group);
-    assert_eq!(
-        codebook_values.last_group, decoded.first_group,
-        "the shared codebook values live through the final decode join",
-    );
-    assert_eq!(codebook_row_ids.last_group, decoded.first_group);
-    assert!(
-        codebook_values.last_group < final_output.first_group,
-        "the codebook must retire before the final sort workspace",
-    );
-    assert_eq!(decoded.last_group, final_output.first_group);
-    assert_eq!((pair.bytes, pair.first_group, pair.last_group), (1_760, 11, 13));
-    assert_eq!(
-        (codebook_values.bytes, codebook_values.first_group, codebook_values.last_group),
-        (9_006_639_859, 6, 17)
-    );
-    assert_eq!((codebook_row_ids.bytes, codebook_row_ids.first_group, codebook_row_ids.last_group), (2_560, 7, 17));
-    assert_eq!(codebook_values.bytes + codebook_row_ids.bytes, 9_006_642_419);
-    assert_eq!((decoded.bytes, decoded.first_group, decoded.last_group), (18_013_277_878, 17, 18));
-    assert_eq!((final_output.bytes, final_output.first_group, final_output.last_group), (18_013_276_918, 18, 18));
-    assert_eq!(final_sort_peak, 36_026_557_597);
-    let dominant_owner = production_dominant_owner_bytes(&proof);
-
-    assert_eq!(dominant_owner, 18_013_280_358);
-}
-
-#[test]
-fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
-    let mut spec = bfs_utf8_spec();
-    {
-        let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
-        params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
-            CugraphTableReference::parse("sources").unwrap(),
-            "source_vertex",
-        ));
-        params.predicates.include_vertices =
-            Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("included").unwrap(), "included_vertex"));
-        params.predicates.target_vertices =
-            Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("targets").unwrap(), "target_vertex"));
-        params.predicates.include_edges = Some(CugraphGraphEdgePredicateTable::new(
-            CugraphTableReference::parse("included_edges").unwrap(),
-            "edge_src",
-            "edge_dst",
-            None::<String>,
-        ));
-    }
-    let predicate_schemas = vec![
-        Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Utf8, false)])),
-        Arc::new(Schema::new(vec![Field::new("included_vertex", DataType::Utf8, false)])),
-        Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)])),
-        Arc::new(Schema::new(vec![
-            Field::new("edge_src", DataType::Utf8, false),
-            Field::new("edge_dst", DataType::Utf8, false),
-        ])),
-    ];
-    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-        spec: spec.clone(),
-        edge_schema: string_edge_schema(),
-        predicate_schemas: predicate_schemas.clone(),
-        predicate_row_upper_bounds: [Some(54_957_455), Some(10_446_432), Some(10_446_432), Some(54_957_455)].to_vec(),
-        result_options: CugraphResultPlanOptions::default().clone(),
-        edge_normalize_inserted: false,
-        edge_row_upper_bound: Some(54_957_455),
-        edge_vertex_upper_bound: None,
-    })
-    .expect("production-shaped string BFS plan should build without materializing rows");
-
-    let domain = plan
-        .nodes()
-        .iter()
-        .find_map(|node| match &node.kind {
-            PlanNode::Union(union) if union.inputs.len() == 7 => Some(union),
-            _ => None,
-        })
-        .expect("BFS codebook must include two endpoints and five side-input vertex columns");
-    assert_eq!(domain.inputs.len(), 7);
-
-    let joins = plan
-        .nodes()
-        .iter()
-        .filter_map(|node| match &node.kind {
-            PlanNode::Join(join) => Some(join),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let encode_joins =
-        joins.iter().filter(|join| join.spec.keys.iter().any(|key| key.right.name() == "__vertex_id_str")).count();
-    let decode_joins =
-        joins.iter().filter(|join| join.spec.keys.iter().any(|key| key.right.name() == "__vertex_id")).count();
-    assert_eq!(encode_joins, 7, "every codebook domain column must be encoded");
-    assert_eq!(decode_joins, 2, "BFS vertex and predecessor must both decode through the shared codebook");
-
-    let edge_plan = production_string_parquet_plan(
-        "/tmp/production-string-bfs-edges.parquet",
-        string_edge_schema(),
-        54_957_455,
-        &[2_300_000_000, 2_406_637_611],
-    );
-    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
-    params.predicates.include_edges = None;
-    let admission_plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-        spec: spec.clone(),
-        edge_schema: string_edge_schema(),
-        predicate_schemas: predicate_schemas[..3].to_vec(),
-        predicate_row_upper_bounds: [Some(10_446_432), Some(10_446_432), Some(10_446_432)].to_vec(),
-        result_options: CugraphResultPlanOptions::default().clone(),
-        edge_normalize_inserted: false,
-        edge_row_upper_bound: Some(54_957_455),
-        edge_vertex_upper_bound: None,
-    })
-    .expect("production-shaped string BFS admission plan should build");
-    let predicate_plans = vec![
-        production_string_parquet_plan(
-            "/tmp/production-string-bfs-sources.parquet",
-            Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Utf8, false)])),
-            10_446_432,
-            &[500_000_000],
-        ),
-        production_string_parquet_plan(
-            "/tmp/production-string-bfs-included.parquet",
-            Arc::new(Schema::new(vec![Field::new("included_vertex", DataType::Utf8, false)])),
-            10_446_432,
-            &[500_000_000],
-        ),
-        production_string_parquet_plan(
-            "/tmp/production-string-bfs-targets.parquet",
-            Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)])),
-            10_446_432,
-            &[500_000_000],
-        ),
-    ];
-    let proof = production_string_logical_proof(&admission_plan, &edge_plan, &predicate_plans);
-    let dominant_owner = production_dominant_owner_bytes(&proof);
-    assert!(dominant_owner > 0 && dominant_owner < 1_u64 << 40);
-}
-
-#[test]
 fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts() {
     let pagerank = CugraphAlgoExec::try_new(
         pagerank_utf8_spec(),
@@ -1743,20 +1328,14 @@ async fn cugraph_producer_preparation_mints_one_post_hydration_ticket_for_host_a
         .native_execution_config
         .query_admission_ticket_id()
         .expect("post-hydration cuGraph producer must carry its graph-aware ticket");
-    let prepared_graph = crate::native_exec::graph::graph_execution_plan(prepared.as_ref())
-        .expect("prepared cuGraph execution must retain its frontend-neutral graph binding");
-    assert_eq!(
-        prepared_graph.graph_result_input_name(),
-        prepared_exec.gpu_result_input_name,
-        "the prepared graph scope and runtime result occurrence must remain bound to one input name",
-    );
+    assert!(crate::native_exec::graph::graph_execution_plan(prepared.as_ref()).is_some());
     let prepared_ticket = prepared_exec
         .native_execution_config
         .query_admission_ticket()
         .expect("prepared cuGraph occurrence must retain its graph-aware ticket");
     assert!(
-        prepared_ticket.attempt_capability_proof().is_some(),
-        "the prepared occurrence must retain one opaque graph proof for composed admission",
+        prepared_ticket.attempt_capability_evidence().is_some(),
+        "the prepared occurrence must retain one opaque graph evidence for composed admission",
     );
 
     let host_task_context =
@@ -1893,7 +1472,7 @@ fn direct_composed_consumer_plan(input_names: &[&str], schema: Arc<Schema>) -> Q
     builder.finish_with_host_sink(root)
 }
 
-fn direct_composed_graph_proof() -> (Arc<Schema>, QueryPlanCapabilityProof) {
+fn direct_composed_graph_evidence() -> (Arc<Schema>, AttemptCapabilityEvidence) {
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
@@ -1919,14 +1498,9 @@ fn direct_composed_graph_proof() -> (Arc<Schema>, QueryPlanCapabilityProof) {
     );
     let graph = builder.try_add_graph_algorithm(source, spec.clone()).expect("direct graph fixture must lower");
     let graph_plan = builder.finish_gpu_resident(graph);
-    let evidence =
-        graph_memory_bounded_admission_evidence_for_plan(&graph_plan, GraphMemoryCalibrationOverride::none(), None)
-            .expect("direct graph fixture must have finite graph evidence");
-    let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
-        .expect("direct graph fixture must issue a capability proof")
-        .with_graph_memory_admission_evidence(&evidence)
-        .expect("direct graph fixture must retain finite graph evidence");
-    (spec.output_schema, proof)
+    let mut evidence = AttemptCapabilityEvidence::for_query_plan(&graph_plan);
+    evidence.attest_cugraph_graph_execution_scope(&graph_plan);
+    (spec.output_schema, evidence)
 }
 
 fn direct_composed_admission_context_config(
@@ -1934,23 +1508,19 @@ fn direct_composed_admission_context_config(
     consumer_plan: &QueryPlan,
     children: &[Arc<dyn ExecutionPlan>],
 ) -> NexusNativeExecutionConfig {
-    let proof = crate::native_exec::composed_admission_capability_proof(consumer_plan, children)
-        .expect("direct composed fixture must issue one complete admission proof");
-    let required_floor = proof.required_floor_bytes_for(0).expect("direct composed proof floor must be finite");
+    let evidence = crate::native_exec::composed_admission_capability_evidence(consumer_plan, children)
+        .expect("direct composed fixture must issue one complete admission evidence");
     let admitted = backend
         .backend()
         .session_capability()
         .admit_query_with_request(
-            nexus_query_engine::runtime::QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()),
+            nexus_query_engine::runtime::QueryAdmissionRequest::new()
+                .with_query_plan_capability_evidence(evidence.clone()),
         )
-        .expect("direct composed proof must be admitted by the installed backend profile");
-    assert!(
-        admitted.device_budget_bytes() >= required_floor,
-        "direct composed admission grant must cover its proof floor"
-    );
+        .expect("direct composed evidence must be admitted by the installed backend profile");
     drop(admitted);
     backend_execution_config(backend)
-        .with_graph_aware_plan_query_admission_ticket(None, vec![proof])
+        .with_graph_aware_plan_query_admission_ticket(vec![evidence])
         .expect("direct composed fixture must mint one admission ticket")
 }
 
@@ -1960,7 +1530,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     register_graph_execution_plan_discovery(counting_graph_execution_plan);
     let backend = test_gpu_backend();
     let admission_source = admission_source(&backend);
-    let (schema, producer_proof) = direct_composed_graph_proof();
+    let (schema, producer_evidence) = direct_composed_graph_evidence();
     let consumer_host_plan = direct_composed_consumer_plan(&["producer_a", "producer_b"], Arc::clone(&schema));
     let consumer_gpu_plan = consumer_host_plan.clone_with_gpu_resident_sink();
     let execute_counts = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
@@ -1969,11 +1539,11 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
         .iter()
         .zip(&execute_counts)
         .map(|(input_name, execute_count)| {
-            let ticket = QueryAdmissionTicket::new(admission_source.clone(), Some(producer_proof.clone()));
+            let ticket = QueryAdmissionTicket::new(admission_source.clone(), Some(producer_evidence.clone()));
             Arc::new(CountingGpuResidentProducer {
                 input_name: (*input_name).to_string(),
                 ticket,
-                capability_proof: producer_proof.clone(),
+                capability_evidence: producer_evidence.clone(),
                 execute_count: Arc::clone(execute_count),
                 inner: EmptyExec::new(Arc::clone(&schema)),
             }) as Arc<dyn ExecutionPlan>
@@ -2009,7 +1579,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     .await
     {
         Err(error) => error,
-        Ok(_) => panic!("runtime producer order must not execute under a differently ordered admission proof"),
+        Ok(_) => panic!("runtime producer order must not execute under a differently ordered admission evidence"),
     };
     let wrong_order_nexus = wrong_order_error.find_nexus_error().expect("order rejection must remain structured");
     assert_eq!(
@@ -2043,7 +1613,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
         Ok(_) => panic!("a changed consumer scope must not execute admitted producers"),
     };
     let changed_scope_nexus = changed_scope_error.find_nexus_error().expect("scope rejection must remain structured");
-    assert_eq!(changed_scope_nexus.fact_value("reason"), Some("admitted_capability_evidence_mismatch"));
+    assert_eq!(changed_scope_nexus.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
     assert_eq!(execute_counts[0].load(Ordering::SeqCst), 0);
     assert_eq!(execute_counts[1].load(Ordering::SeqCst), 0);
 }
@@ -2319,50 +1889,6 @@ fn cugraph_pre_hydration_exec_leaves_backend_ticketless() {
 }
 
 #[test]
-fn cugraph_algo_exec_uses_cold_graph_model_as_immutable_grant_target() {
-    let min = 64 * 1024 * 1024;
-    let want = 2 * 1024 * 1024 * 1024_u64;
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
-            .expect("cuGraph exec should build before metadata hydration"),
-    );
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("graph model should derive opaque admission evidence")
-        .expect("known edge rows should produce graph model evidence");
-    let expected_proof = graph_ticket_proof(&exec)
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-        .expect("exact graph evidence must match the graph proof scope");
-
-    assert!(
-        model_ask.cold_model_requested_bytes() < want,
-        "small graph estimate should not default to the controller hint"
-    );
-    assert!(
-        model_ask.warm_model_requested_bytes() < model_ask.cold_model_requested_bytes(),
-        "warm model must omit graph construction bytes"
-    );
-    assert_eq!(
-        ticket.attempt_capability_proof(),
-        Some(&expected_proof),
-        "the ticket must carry the exact cuGraph execution proof"
-    );
-    assert_eq!(
-        ticket
-            .attempt_capability_proof()
-            .expect("cuGraph ticket retains its engine-issued proof")
-            .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)),
-        "the immutable grant target includes the canonical graph live-reservation minimum"
-    );
-}
-
-#[test]
 fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
     let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1);
     let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
@@ -2375,128 +1901,7 @@ fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
 
     let graph = crate::native_exec::graph::graph_execution_plan(plan)
         .expect("registered graph admission discovery should recognize cuGraph execution");
-    assert_eq!(graph.graph_result_input_name(), exec.gpu_result_input_name);
-    assert!(graph.graph_execution_capability_proof().is_ok());
-}
-
-#[test]
-fn cugraph_graph_model_ask_prefers_exact_edge_rows_over_configured_raw_edges() {
-    let min = 64 * 1024 * 1024;
-    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1);
-    let stale_config = config.clone().with_graph_memory_calibration_override(
-        nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::none().with_raw_input_edges(30_000),
-    );
-    let edge_source = memory_edge_source(300);
-
-    let exact_exec = CugraphAlgoExec::try_new(triangle_spec(), Arc::clone(&edge_source), vec![], None, None, config)
-        .expect("triangle exec should build");
-    let exact_ask =
-        exact_exec.graph_model_ask_bytes_for_admission_ticket().unwrap().expect("exact rows should produce graph ask");
-    let stale_exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, stale_config)
-        .expect("triangle exec with stale override should build");
-    let stale_override_ask = stale_exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .unwrap()
-        .expect("exact rows should win over stale override");
-
-    assert_eq!(stale_override_ask, exact_ask);
-    assert!(exact_ask.warm_model_requested_bytes() < exact_ask.cold_model_requested_bytes());
-}
-
-#[test]
-fn cugraph_raw_bfs_ticket_admits_with_the_owner_sort_workspace_preflight_bound() {
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config =
-        NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
-
-    let exec = CugraphAlgoExec::try_new(bfs_spec(), memory_edge_source(300), vec![], None, None, config)
-        .expect("raw BFS exec should build");
-    let ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("owner preflight must let raw BFS derive bounded admission evidence")
-        .expect("exact edge rows plus the owner bound must produce a raw-BFS ask");
-
-    assert!(ask.cold_model_requested_bytes() > 0);
-}
-
-#[test]
-fn cugraph_algo_exec_uses_native_edge_cold_model_as_immutable_grant_target() {
-    let min = 64 * 1024 * 1024;
-    let want = 2 * 1024 * 1024 * 1024_u64;
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
-    let edge_source = native_edge_source(vec![100, 200], &config);
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
-            .expect("cuGraph exec should build before metadata hydration"),
-    );
-    let expected_proof = graph_ticket_proof_for_native_source(&exec);
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("graph model should derive opaque admission evidence")
-        .expect("native edge-source rows should produce graph model evidence");
-    let expected_proof = expected_proof
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-        .expect("exact graph evidence must match the graph proof scope");
-
-    assert_eq!(
-        ticket.attempt_capability_proof(),
-        Some(&expected_proof),
-        "the graph ticket must also authorize the native edge fragment it executes"
-    );
-    assert!(
-        model_ask.cold_model_requested_bytes() < want,
-        "native edge-source graph estimate should not default to the controller hint"
-    );
-    assert_eq!(
-        ticket
-            .attempt_capability_proof()
-            .expect("the graph ticket retains its engine-issued proof")
-            .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES))
-    );
-}
-
-#[test]
-fn filtered_native_edge_ticket_defers_graph_pricing_to_the_retained_runtime_frame() {
-    let backend = test_gpu_backend();
-    let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(admission_source(&backend));
-    let edge_source = filtered_native_edge_source(vec![100_000_000], &config);
-    let native = as_nexus_native_exec(edge_source.as_ref()).expect("fixture must lower to one native edge producer");
-    let edge_plan = native.native_plan().clone_with_gpu_resident_sink();
-    let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
-        .expect("filtered native edge source must remain a valid graph producer");
-    let input_row_bounds =
-        CugraphInputRowBounds::from_execution_plans(exec.edge_source.as_ref(), &exec.predicate_sources)
-            .expect("native source metadata supplies its static producer bound");
-    let (exec, graph_plan) = exec
-        .issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default(), Some(&edge_plan))
-        .expect("eligible filtered producer must mint one deferred graph ticket");
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("one graph-aware ticket is issued");
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("the static graph shape must retain its cold model")
-        .expect("the bounded edge rows must produce cold graph evidence");
-    let graph = graph_ticket_proof_with_resident_edge_plan(&exec, &edge_plan)
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-        .expect("cold graph evidence must match the deferred graph scope");
-    let expected = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
-        &graph_plan,
-        graph,
-        CUGRAPH_EDGE_INPUT_NAME,
-        &edge_plan,
-        std::iter::empty(),
-    )
-    .expect("deferred graph contract must derive")
-    .expect("Source-Filter-GPU sink is eligible");
-
-    assert_eq!(ticket.attempt_capability_proof(), Some(&expected));
-    assert_eq!(expected.soft_working_set_hint_bytes(), Some(model_ask.cold_model_requested_bytes()));
+    assert!(graph.graph_execution_capability_evidence().is_ok());
 }
 
 #[test]
@@ -2530,7 +1935,7 @@ fn simple_directed_footer_omits_python_edge_normalization_through_native_edge_wr
 
     assert!(
         !exec.edge_normalize_inserted(),
-        "native lowering must retain the source-owned simple-directed proof through its edge wrapper"
+        "native lowering must retain the source-owned simple-directed evidence through its edge wrapper"
     );
 }
 
@@ -2667,64 +2072,6 @@ async fn cugraph_algo_exec_bypasses_graph_residency_for_logical_bfs_datafusion_p
 }
 
 #[tokio::test]
-async fn cugraph_algo_exec_uses_footer_rows_as_a_graph_admission_target() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("edges.parquet");
-    write_edge_parquet(&path);
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
-    let edge_source = datafusion_parquet_edge_source(&path).await;
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
-            .expect("cuGraph exec should build before metadata hydration"),
-    );
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("footer rows should derive graph admission evidence")
-        .expect("keyable local-Parquet source has exact graph rows");
-    assert_eq!(
-        ticket
-            .attempt_capability_proof()
-            .expect("cuGraph ticket retains its engine-issued proof")
-            .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)),
-        "the direct DataFusion scan shares the bounded graph live-reservation owner"
-    );
-}
-
-#[tokio::test]
-async fn cugraph_algo_exec_uses_footer_rows_for_cacheable_bfs_admission() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("edges.parquet");
-    write_edge_parquet(&path);
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
-    let edge_source = datafusion_parquet_edge_source(&path).await;
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(bfs_spec(), edge_source, vec![], None, None, config)
-            .expect("cuGraph BFS exec should build before metadata hydration"),
-    );
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("footer rows should derive graph admission evidence")
-        .expect("keyable local-Parquet source has exact graph rows");
-    assert_eq!(
-        ticket
-            .attempt_capability_proof()
-            .expect("cacheable BFS ticket retains its engine-issued proof")
-            .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)),
-        "the bounded graph live peak includes its prepared GPU edge frame"
-    );
-}
-
-#[tokio::test]
 async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_parquet_edge_source() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
@@ -2825,184 +2172,6 @@ async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
     );
 }
 
-#[tokio::test]
-async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_model_hint() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("edges.parquet");
-    write_edge_parquet_with_graph_vertex_upper_bound(&path, Some(3));
-
-    let backend = test_gpu_backend();
-    let state = backend
-        .backend()
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .unwrap()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
-        .unwrap()
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let invocation = attempt.invocation_context_for_test(&ctx).unwrap();
-
-    let plan = invocation
-        .sql(
-            "SELECT COUNT(*) AS vertices, SUM(x) AS sum_x, SUM(y) AS sum_y \
-             FROM cugraph_force_atlas2('citation_edges', 'src', 'dst', 'weight', \
-             '{\"max_iter\": 20, \"seed\": 7, \"barnes_hut_optimize\": true}')",
-        )
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    let exec = cugraph_exec_in_plan(plan).expect("installed backend plan should contain CugraphAlgoExec");
-    let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
-
-    let planner_ticket = invocation
-        .task_ctx()
-        .session_config()
-        .options()
-        .extensions
-        .get::<NexusAttemptExtension>()
-        .and_then(NexusAttemptExtension::bound_ticket);
-    assert!(
-        planner_ticket.is_none(),
-        "planning a footer-dependent graph root must not bind a stale pre-hydration ticket; hint={:?}",
-        planner_ticket
-            .as_ref()
-            .and_then(|ticket| ticket.attempt_capability_proof())
-            .and_then(nexus_query_engine::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes)
-    );
-    assert!(
-        exec.native_execution_config.query_admission_ticket().is_none(),
-        "footer-dependent graph tickets must not survive planning"
-    );
-
-    let (prepared, _staged) = exec.clone().prepare_staged_attempt(invocation.task_ctx()).await.unwrap();
-    assert_eq!(
-        prepared.graph_residency.as_ref().and_then(GraphResidencyDescriptor::graph_vertex_upper_bound),
-        Some(3),
-        "the runtime edge provenance must retain the same footer vertex bound that prices its admission ticket"
-    );
-    let model_ask = prepared
-        .graph_model_ask_bytes_for_admission_ticket()
-        .unwrap()
-        .expect("hydrated DataFusion Parquet edge source must retain exact graph model evidence");
-    let ticket = prepared
-        .native_execution_config
-        .query_admission_ticket()
-        .expect("metadata hydration must mint the graph-aware ticket");
-    let proof = ticket.attempt_capability_proof().expect("graph-aware ticket must retain its capability proof");
-
-    assert!(ticket.is_attempt_bound(), "the hydrated graph ticket must replace the attempt's deferred placeholder");
-    assert_eq!(edge_source_output_rows(prepared.edge_source.as_ref()).unwrap(), Some(3));
-    assert_eq!(
-        edge_source_graph_vertex_estimate(prepared.edge_source.as_ref()),
-        Some(GraphVertexEstimate::graph_metadata(3))
-    );
-    let source_plan = lowered_native_edge_plan(prepared.edge_source.as_ref())
-        .expect("metadata hydration must lower the DataFusion edge scan to its native source fragment")
-        .clone_with_gpu_resident_sink();
-    let source_proof =
-        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(
-            &source_plan,
-        )
-        .expect("the resolved native edge source must retain its materialized-output capability proof");
-    let (graph_plan, graph_proof) = graph_ticket_plan_and_proof_with_resident_edge_plan(&prepared, &source_plan);
-    let graph_proof = graph_proof
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-        .expect("exact graph evidence must match the graph proof scope");
-    let expected_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(
-        &graph_plan,
-        graph_proof,
-        CUGRAPH_EDGE_INPUT_NAME,
-        &source_plan,
-        [(CUGRAPH_EDGE_INPUT_NAME.to_owned(), source_proof)],
-    )
-    .expect("the graph root and resolved native edge source must compile one exact schedule")
-    .expect("the resolved native edge source must be eligible for graph composition");
-    assert_eq!(
-        proof, &expected_proof,
-        "the post-hydration ticket must retain the exact graph and resolved source proofs with phase-aware model evidence"
-    );
-}
-
-#[tokio::test]
-async fn installed_backend_string_pagerank_ticket_orders_source_mapping_and_graph_owners() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("string-edges.parquet");
-    write_string_edge_parquet(&path);
-
-    let backend = test_gpu_backend();
-    let state = backend
-        .backend()
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .unwrap()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
-        .unwrap()
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    ctx.register_parquet("string_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let invocation = attempt.invocation_context_for_test(&ctx).unwrap();
-    let plan = invocation
-        .sql(
-            "SELECT vertex, value FROM cugraph_pagerank(\
-             'string_edges', 'src', 'dst', NULL, '{\"alpha\": 0.85}')",
-        )
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    let exec = cugraph_exec_in_plan(plan).expect("installed backend plan should contain CugraphAlgoExec");
-    let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
-    let (prepared, _staged) = exec.clone().prepare_staged_attempt(invocation.task_ctx()).await.unwrap();
-    let ticket = prepared
-        .native_execution_config
-        .query_admission_ticket()
-        .expect("metadata hydration must mint the string graph ticket");
-    let proof = ticket.attempt_capability_proof().expect("string graph ticket must retain its capability proof");
-    let source_plan = lowered_native_edge_plan(prepared.edge_source.as_ref())
-        .expect("metadata hydration must lower the string edge scan")
-        .clone_with_gpu_resident_sink();
-    let model_ask = prepared
-        .graph_model_ask_bytes_for_admission_ticket()
-        .unwrap()
-        .expect("string PageRank must retain exact graph model evidence");
-    let (graph_plan, graph) = graph_ticket_plan_and_proof_with_resident_edge_plan(&prepared, &source_plan);
-    let graph = graph
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-        .expect("graph evidence must bind before the mapping schedule");
-    let independently_derived =
-        nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
-            &graph_plan,
-            graph,
-            CUGRAPH_EDGE_INPUT_NAME,
-            &source_plan,
-            std::iter::empty(),
-        )
-        .expect("string mapping schedule must be derivable")
-        .expect("string mapping must materialize between the source and graph");
-
-    assert_eq!(
-        proof.ordered_schedule_phase_group_counts_for_test(),
-        independently_derived.ordered_schedule_phase_group_counts_for_test(),
-        "the admitted proof must retain the phase shape derived from the exact native plan"
-    );
-    let (producer_phases, consumer_phase_groups) = proof
-        .ordered_schedule_phase_group_counts_for_test()
-        .expect("string PageRank must carry an ordered source-to-graph schedule");
-    assert_eq!(producer_phases, 1);
-    assert!(consumer_phase_groups > 2, "mapping operators must be priced in addition to graph phases");
-
-    let context = ticket
-        .acquire_context(invocation.task_ctx(), ExecutionCancellation::new())
-        .await
-        .expect("the exact string mapping schedule must resolve to an admission grant");
-    assert!(context.admission_facts().query_grant_bytes > 0);
-}
-
 /// This query aggregates the ForceAtlas2 output on the native side. Keep that
 /// exact terminal shape covered separately from ticket planning: a graph
 /// algorithm that runs successfully but cannot feed its following COUNT/SUM
@@ -3068,86 +2237,6 @@ async fn force_atlas2_count_and_coordinate_sums_execute_natively() {
     );
 }
 
-/// Host-only diagnostic for the qualification DBLP fixture.  It is deliberately
-/// ignored in normal unit runs because the full fixture is many GiB, but it
-/// follows the same backend-installed table-function route as the stress
-/// runner and proves that its immutable ticket retains the full graph model.
-#[tokio::test]
-#[ignore = "requires the canonical DBLP V12 fixture on the qualification host"]
-async fn qualification_dblp_force_atlas2_ticket_uses_full_footer_metadata() {
-    const DBLP_PARQUET_ROOT: &str = "/opt/dlami/nvme/fixture/data/demo-v12-footer-r1/citation_network/v1/parquet";
-    let backend = test_gpu_backend();
-    let state = backend
-        .backend()
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .unwrap()
-        .try_with_cugraph_sql(CugraphSqlConfig::default())
-        .unwrap()
-        .build();
-    let ctx = SessionContext::new_with_state(state);
-    nexus_workloads::graph::register_dblp_tables(&ctx, std::path::Path::new(DBLP_PARQUET_ROOT)).await.unwrap();
-    let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let invocation = attempt.invocation_context_for_test(&ctx).unwrap();
-
-    let plan = invocation
-        .sql(
-            "SELECT COUNT(*) AS vertices, SUM(x) AS sum_x, SUM(y) AS sum_y \
-             FROM cugraph_force_atlas2('edges_by_src', 'src', 'dst', 'weight', \
-             '{\"max_iter\": 200, \"seed\": 20260804, \"barnes_hut_optimize\": true}')",
-        )
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap();
-    let exec = cugraph_exec_in_plan(plan).expect("qualification query should contain CugraphAlgoExec");
-    assert!(
-        invocation
-            .task_ctx()
-            .session_config()
-            .options()
-            .extensions
-            .get::<NexusAttemptExtension>()
-            .and_then(NexusAttemptExtension::bound_ticket)
-            .is_none(),
-        "the qualification graph plan must defer admission until its footer evidence is hydrated"
-    );
-    let (prepared, _staged) = exec
-        .downcast_ref::<CugraphAlgoExec>()
-        .unwrap()
-        .clone()
-        .prepare_staged_attempt(invocation.task_ctx())
-        .await
-        .unwrap();
-    assert_eq!(
-        prepared.graph_residency.as_ref().and_then(GraphResidencyDescriptor::graph_vertex_upper_bound),
-        Some(4_894_081),
-        "the qualification runtime edge provenance must retain the exact source-bound vertex model"
-    );
-    let model_ask = prepared
-        .graph_model_ask_bytes_for_admission_ticket()
-        .unwrap()
-        .expect("full DBLP footer evidence must produce a graph model ask");
-    let ticket = prepared.native_execution_config.query_admission_ticket().unwrap();
-    let proof = ticket.attempt_capability_proof().unwrap();
-
-    assert!(ticket.is_attempt_bound(), "the qualification graph ticket must bind directly to its attempt");
-    assert_eq!(edge_source_output_rows(prepared.edge_source.as_ref()).unwrap(), Some(45_564_149));
-    assert_eq!(
-        edge_source_graph_vertex_estimate(prepared.edge_source.as_ref()),
-        Some(GraphVertexEstimate::graph_metadata(4_894_081))
-    );
-    assert_eq!(
-        proof.soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes()),
-        "the graph model owns the direct source upload's device lifetime"
-    );
-    assert!(
-        model_ask.cold_model_requested_bytes() > 424_258_722,
-        "full ForceAtlas2 admission model must dominate the failed source-stage-only grant"
-    );
-}
-
 #[tokio::test]
 async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_default_session_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -3177,7 +2266,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_defa
 
     assert!(
         exec.graph_residency.is_some(),
-        "the P6 runner uses the default session configuration, so its DBLP BFS path must remain cacheable"
+        "the multi-GPU runner uses the default session configuration, so its DBLP BFS path must remain cacheable"
     );
 }
 
@@ -3214,85 +2303,6 @@ fn graph_residency_schema_guard_rejects_descriptor_dtype_mismatch() {
 
     assert!(graph_residency_matches_edge_schema(descriptor, edge_schema().as_ref(), &spec));
     assert!(!graph_residency_matches_edge_schema(descriptor, &mismatched_schema, &spec));
-}
-
-#[test]
-fn cugraph_algo_exec_keeps_keyable_native_affinity_out_of_the_admission_ticket() {
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
-    let edge_source = native_graph_residency_edge_source(&config);
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(pagerank_spec(), edge_source, vec![], None, None, config)
-            .expect("cuGraph exec should build before metadata hydration"),
-    );
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("keyable native edge source should derive graph admission evidence")
-        .expect("exact native edge rows should produce graph model evidence");
-    let expected_proof = graph_ticket_proof_for_native_source(&exec)
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-        .expect("exact graph evidence must match the graph proof scope");
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-    assert_eq!(
-        ticket.attempt_capability_proof(),
-        Some(&expected_proof),
-        "cache affinity must not remove the native edge capability proof"
-    );
-}
-
-#[test]
-fn cugraph_algo_exec_uses_the_same_proof_for_unkeyable_edge_source() {
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(pagerank_spec(), memory_edge_source(100), vec![], None, None, config)
-            .expect("cuGraph exec should build before metadata hydration"),
-    );
-    let model_ask = exec
-        .graph_model_ask_bytes_for_admission_ticket()
-        .expect("unkeyable edge source should derive graph admission evidence")
-        .expect("exact in-memory edge rows should produce graph model evidence");
-    let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
-
-    assert_eq!(
-        ticket.attempt_capability_proof(),
-        Some(
-            &graph_ticket_proof(&exec)
-                .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-                .expect("exact graph evidence must match the graph proof scope"),
-        )
-    );
-}
-
-#[test]
-fn cugraph_algo_exec_aggregates_proof_for_non_light_native_edge_source() {
-    let min = 64 * 1024 * 1024;
-    let backend = test_gpu_backend();
-    let source = admission_source(&backend);
-    let config = NexusNativeExecutionConfig::bounded(min, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_graph_memory_calibration_override(
-            nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::none().with_raw_input_edges(300),
-        );
-    let edge_source = sorted_native_edge_source(vec![100, 200], &config);
-
-    let exec = graph_ticket_after_metadata(
-        CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
-            .expect("cuGraph exec should build before metadata hydration"),
-    );
-    let expected_proof = graph_ticket_proof_for_native_source(&exec);
-    let ticket =
-        exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should still mint a plan ticket");
-
-    assert_eq!(
-        ticket.attempt_capability_proof(),
-        Some(&expected_proof),
-        "native preprocessing must be covered by the ticket that executes it"
-    );
 }
 
 #[test]

@@ -25,37 +25,31 @@ use arrow::{
 };
 use cudf::DataFrame;
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
         execute_query_plan_with_gpu_inputs as execute_query_plan_with_gpu_inputs_direct,
         execute_query_plan_with_gpu_inputs_observed as execute_query_plan_with_gpu_inputs_observed_direct,
-        force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
-        force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test, materialize_gpu_result_to_host,
-        output::{QueryExecutionOutcome, QueryExecutionResult, QueryOutput},
+        materialize_gpu_result_to_host,
+        output::{QueryExecutionResult, QueryOutput},
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
         SortExpr, SortSpec,
     },
-    graph_memory::GraphMemoryCalibrationOverride,
-    metrics::{MemoryReservationEventAction, QueryMetrics},
+    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::{
-        PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
-        RuntimeTerminalOutcome,
-    },
+    observability::{RuntimeObservationConfig, RuntimeObservationOwner},
     plan::{
-        GraphEdgeBetweennessCentralityParams, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec,
-        JoinType, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
+        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode, ProjectionOutput,
+        QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
-        AdmittedQueryContext, BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy,
-        ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        KvikioCompatModeStatus, MemoryControlPolicy, MemorySpaceId, NvidiaFsProbeStatus, QueryAdmissionRequest,
-        QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind, SourceSchedulerPolicy,
+        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
+        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, KvikioCompatModeStatus,
+        MemoryControlPolicy, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
+        QueueBounds, SourceSchedulerPolicy,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
@@ -66,19 +60,12 @@ use nexus_query_engine::{
 };
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
-    exec::force_next_graph_statistics_optional_resource_exhausted_for_test,
-    graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
-    graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryModel,
-    graph_memory::GraphMemoryModelInput, graph_memory::GraphReservationOutcome, graph_memory::GraphSeedMode,
-    graph_memory::GraphVertexEstimate, graph_memory::GraphVertexEstimateSource,
-    graph_memory::graph_memory_bounded_admission_evidence_for_plan, graph_memory::graph_vertex_estimate_probe_bytes,
     plan::GraphAlgorithm, plan::GraphAlgorithmParams, plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams,
     plan::GraphBetweennessSeeds, plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs,
     plan::GraphConstructionOptions, plan::GraphConstructionPolicy, plan::GraphEdgeColumnBindings,
     plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
     plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
-    plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
-    plan::graph_residency_descriptor_for_edge_plan,
+    plan::GraphSimilarityParams, plan::GraphVertexPairInput, plan::graph_residency_descriptor_for_edge_plan,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -212,20 +199,6 @@ impl AdmittedPlanContext {
     fn finish(&self) {
         self.handle.finish();
     }
-
-    fn with_graph_memory_calibration_override(&self, override_: GraphMemoryCalibrationOverride) -> ExecutionContext {
-        self.context.context().with_graph_memory_calibration_override(override_)
-    }
-
-    fn execute_with_graph_memory_calibration_override(
-        &self,
-        plan: &QueryPlan,
-        gpu_inputs: &GpuResidentInputMap,
-        calibration_override: GraphMemoryCalibrationOverride,
-    ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
-        let context = self.with_graph_memory_calibration_override(calibration_override);
-        execute_query_plan_with_gpu_inputs_direct(&context, plan, gpu_inputs)
-    }
 }
 
 fn backend_context() -> BackendQueryContext {
@@ -310,45 +283,32 @@ impl BackendQueryContext {
     }
 
     fn admit_plan(&self, plan: &QueryPlan) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
-        self.admit_plan_with_graph_memory_calibration_override(plan, GraphMemoryCalibrationOverride::none())
+        nexus_query_engine::exec::preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
+        let evidence = capability_evidence_for_fixture_plan(plan)?;
+        self.admit_evidence(evidence)
     }
 
     fn admit_plan_for_compiled_executor_test(
         &self,
         plan: &QueryPlan,
     ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
-        let proof = capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
-            plan,
-            GraphMemoryCalibrationOverride::none(),
-        )?;
-        self.admit_proof(proof)
+        let evidence = capability_evidence_for_fixture_plan(plan)?;
+        self.admit_evidence(evidence)
     }
 
-    fn admit_plan_with_graph_memory_calibration_override(
+    fn admit_evidence(
         &self,
-        plan: &QueryPlan,
-        calibration_override: GraphMemoryCalibrationOverride,
+        evidence: nexus_query_engine::admission::AttemptCapabilityEvidence,
     ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
-        nexus_query_engine::exec::preflight_bounded_query_plan(
-            plan,
-            ExecutionBoundaryPolicy::default(),
-            self.policy.statistical_aggregate_execution_mode,
-        )?;
-        let proof =
-            capability_proof_for_fixture_plan_with_graph_memory_calibration_override(plan, calibration_override)?;
-        self.admit_proof(proof)
+        self.admit_evidence_with_observation(evidence, None)
     }
 
-    fn admit_proof(&self, proof: QueryPlanCapabilityProof) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
-        self.admit_proof_with_observation(proof, None)
-    }
-
-    fn admit_proof_with_observation(
+    fn admit_evidence_with_observation(
         &self,
-        proof: QueryPlanCapabilityProof,
+        evidence: nexus_query_engine::admission::AttemptCapabilityEvidence,
         observation: Option<RuntimeObservationOwner>,
     ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
-        let mut request = QueryAdmissionRequest::new().with_query_plan_capability_proof(proof);
+        let mut request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence);
         if let Some(bytes) = self.requested_bytes {
             request = request.with_query_cap_bytes(bytes);
         }
@@ -365,16 +325,9 @@ impl BackendQueryContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
-        nexus_query_engine::exec::preflight_bounded_query_plan(
-            plan,
-            ExecutionBoundaryPolicy::default(),
-            self.policy.statistical_aggregate_execution_mode,
-        )?;
-        let proof = capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
-            plan,
-            GraphMemoryCalibrationOverride::none(),
-        )?;
-        let admitted = self.admit_proof_with_observation(proof, Some(RuntimeObservationOwner::disabled()))?;
+        nexus_query_engine::exec::preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
+        let evidence = capability_evidence_for_fixture_plan(plan)?;
+        let admitted = self.admit_evidence_with_observation(evidence, Some(RuntimeObservationOwner::disabled()))?;
         let outcome = execute_query_plan_with_gpu_inputs_observed_direct(
             admitted.context.context(),
             plan,
@@ -390,61 +343,18 @@ impl BackendQueryContext {
         }
         result
     }
-
-    fn execute_admitted_observed(
-        &self,
-        plan: &QueryPlan,
-        gpu_inputs: &GpuResidentInputMap,
-        config: RuntimeObservationConfig,
-    ) -> QueryExecutionOutcome {
-        nexus_query_engine::exec::preflight_bounded_query_plan(
-            plan,
-            ExecutionBoundaryPolicy::default(),
-            self.policy.statistical_aggregate_execution_mode,
-        )
-        .expect("native fixture plan must pass execution preflight");
-        let proof = capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
-            plan,
-            GraphMemoryCalibrationOverride::none(),
-        )
-        .expect("native fixture plan must produce admission evidence");
-        let admitted = self
-            .admit_proof_with_observation(
-                proof,
-                Some(RuntimeObservationOwner::new("native-execution-test", None, config)),
-            )
-            .expect("native fixture plan must admit before observed execution");
-        let outcome =
-            execute_query_plan_with_gpu_inputs_observed_direct(admitted.context.context(), plan, gpu_inputs, config);
-        if outcome.result().is_err()
-            || outcome.result().is_ok_and(|output| !matches!(output, QueryOutput::GpuResident(_)))
-        {
-            admitted.finish();
-        }
-        outcome
-    }
 }
 
-fn capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
+fn capability_evidence_for_fixture_plan(
     plan: &QueryPlan,
-    calibration_override: GraphMemoryCalibrationOverride,
-) -> nexus_query_engine::error::Result<QueryPlanCapabilityProof> {
+) -> nexus_query_engine::error::Result<nexus_query_engine::admission::AttemptCapabilityEvidence> {
+    nexus_query_engine::exec::preflight_query_plan(plan)?;
+    let mut evidence = nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(plan);
     #[cfg(feature = "cugraph")]
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))) {
-        nexus_query_engine::exec::preflight_query_plan(plan)?;
-        let evidence = graph_memory_bounded_admission_evidence_for_plan(plan, calibration_override, None)?;
-        return QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(plan)
-            .ok_or_else(|| {
-                nexus_query_engine::error::QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "nexus_query_engine.native_execution_tests.proof",
-                    "graph fixture did not issue an exact cuGraph execution proof",
-                )
-            })?
-            .with_graph_memory_admission_evidence(&evidence);
+        evidence.attest_cugraph_graph_execution_scope(plan);
     }
-
-    QueryPlanCapabilityProof::for_query_plan_preflighted(plan)
+    Ok(evidence)
 }
 
 trait TestExecutionContext {
@@ -453,13 +363,6 @@ trait TestExecutionContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> nexus_query_engine::error::Result<QueryExecutionResult>;
-
-    fn execute_plan_observed(
-        &self,
-        plan: &QueryPlan,
-        gpu_inputs: &GpuResidentInputMap,
-        config: RuntimeObservationConfig,
-    ) -> QueryExecutionOutcome;
 }
 
 impl TestExecutionContext for AdmittedPlanContext {
@@ -470,15 +373,6 @@ impl TestExecutionContext for AdmittedPlanContext {
     ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
         execute_query_plan_with_gpu_inputs_direct(self.context.context(), plan, gpu_inputs)
     }
-
-    fn execute_plan_observed(
-        &self,
-        plan: &QueryPlan,
-        gpu_inputs: &GpuResidentInputMap,
-        config: RuntimeObservationConfig,
-    ) -> QueryExecutionOutcome {
-        execute_query_plan_with_gpu_inputs_observed_direct(self.context.context(), plan, gpu_inputs, config)
-    }
 }
 
 impl TestExecutionContext for BackendQueryContext {
@@ -488,15 +382,6 @@ impl TestExecutionContext for BackendQueryContext {
         gpu_inputs: &GpuResidentInputMap,
     ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
         self.execute_admitted(plan, gpu_inputs)
-    }
-
-    fn execute_plan_observed(
-        &self,
-        plan: &QueryPlan,
-        gpu_inputs: &GpuResidentInputMap,
-        config: RuntimeObservationConfig,
-    ) -> QueryExecutionOutcome {
-        self.execute_admitted_observed(plan, gpu_inputs, config)
     }
 }
 
@@ -513,15 +398,6 @@ fn execute_query_plan_with_gpu_inputs<C: TestExecutionContext + ?Sized>(
     gpu_inputs: &GpuResidentInputMap,
 ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
     context.execute_plan(plan, gpu_inputs)
-}
-
-fn execute_query_plan_with_gpu_inputs_observed<C: TestExecutionContext + ?Sized>(
-    context: &C,
-    plan: &QueryPlan,
-    gpu_inputs: &GpuResidentInputMap,
-    config: RuntimeObservationConfig,
-) -> QueryExecutionOutcome {
-    context.execute_plan_observed(plan, gpu_inputs, config)
 }
 
 #[path = "native_execution_tests/aggregate_execution.rs"]

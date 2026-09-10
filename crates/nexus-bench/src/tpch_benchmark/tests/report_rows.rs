@@ -10,7 +10,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let row = NativeTpchBenchmarkRow {
         query_id: "q01".to_string(),
         planning_outcome: Some(CandidateOutcomeKind::Selected),
-        capability_contract_rows: Vec::new(),
+        capability_decision_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         reason_code: None,
         unsupported_category: None,
@@ -54,11 +54,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             read_columns: 13,
             resident_dataframe_peak_bytes: Some(14),
             allocator_high_water_bytes: Some(15),
-            reservation_requested_bytes: 16,
-            reservation_granted_bytes: 17,
-            reservation_live_peak_bytes: 18,
-            reservation_denied_count: 19,
-            max_task_reservation_bytes: 64,
             max_task_observed_peak_bytes: Some(65),
             max_task_retained_bytes: Some(66),
             graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
@@ -90,21 +85,13 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 operator_kind: "source_read".to_string(),
                 task_count: 3,
                 elapsed_ns: 7_000_000,
-                reservation_requested_bytes: 0,
-                reservation_granted_bytes: 0,
-                reservation_released_bytes: 0,
-                reservation_live_peak_bytes: 64,
-                max_observed_peak_bytes: None,
+                max_observed_peak_bytes: Some(64),
                 max_retained_bytes: None,
             }],
             task_runtime_rows: vec![NativeTaskRuntimeMetricRow {
                 compiled_task_id: "t0".to_string(),
                 operator_kind: "source_read".to_string(),
                 elapsed_ns: 7_000_000,
-                reservation_requested_bytes: 64,
-                reservation_granted_bytes: 64,
-                reservation_released_bytes: 64,
-                reservation_live_peak_bytes: 64,
                 max_observed_peak_bytes: Some(65),
                 max_retained_bytes: Some(66),
             }],
@@ -127,7 +114,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             final_merge_max_fan_in: 43,
             retry_count: 44,
             retry_resource_exhausted_count: 43,
-            retry_reservation_failure_count: 44,
             hash_join_build_count: 51,
             filtered_join_build_count: 52,
             one_shot_join_count: 53,
@@ -160,7 +146,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 filtered_input_materialization_estimated_bytes: 0,
                 filtered_input_materialization_budget_bytes: 0,
                 filtered_input_materialization_threshold_bytes: 0,
-                filtered_input_lower_level_unresolved_contracts: "".to_string(),
                 filtered_global_rows_per_chunk: 0,
                 filtered_global_inputs_per_segment: 0,
                 filtered_global_segment_target_temporary_bytes: 0,
@@ -301,7 +286,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
     ));
-    assert!(text.contains("\t64\t65\t66\tnone\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,graph_peak_bytes=2048,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
+    assert!(text.contains("\t65\t66\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,graph_peak_bytes=2048,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,max_observed_peak_bytes=64,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let fields = lines.next().expect("benchmark report should contain a q01 row").split('\t').collect::<Vec<_>>();
@@ -310,9 +295,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert_eq!(fields.len(), header_fields.len());
     assert_eq!(fields[header_index(&header_fields, "post_native_execution_path")], "native");
     assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class")], "source");
-    assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class_bytes")], "64");
-    assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class")], "source");
-    assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class_bytes")], "64");
+    assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class_bytes")], "65");
     assert_eq!(fields[header_index(&header_fields, "runtime_operator_class")], "materialization");
     assert_eq!(fields[header_index(&header_fields, "runtime_operator_class_ms")], "13.000");
     assert_eq!(fields[header_index(&header_fields, "source_predicate_pushdown_status")], "reader_pushdown");
@@ -331,7 +314,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert_eq!(fields[header_index(&header_fields, "aggregate_encoded_key_partial_elapsed_ns")], "0");
     assert!(
         fields[header_index(&header_fields, "task_high_water_rows")]
-            .contains("operator_class=source,task_count=3,max_task_reservation_bytes=64")
+            .contains("operator_class=source,task_count=3,max_observed_peak_bytes=65,max_retained_bytes=66")
     );
     assert!(
         fields[header_index(&header_fields, "task_high_water_rows")]
@@ -351,10 +334,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     );
     assert!(
         fields[header_index(&header_fields, "aggregate_strategy_rows")].contains("filtered_grouped_rows_per_chunk=0")
-    );
-    assert!(
-        fields[header_index(&header_fields, "aggregate_strategy_rows")]
-            .contains("filtered_input_lower_level_unresolved_contracts=")
     );
     assert!(
         fields[header_index(&header_fields, "aggregate_strategy_rows")]
@@ -408,12 +387,12 @@ fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_co
 }
 
 #[test]
-fn benchmark_report_accepted_join_rows_emit_admission_contract_rows() {
+fn benchmark_report_accepted_join_rows_emit_compiled_graphs_without_decision_rows() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q15".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let mut planning = accepted_planning_row("q15");
     planning.native_candidate_shape_family = Some("sort_hash_join_input".to_string());
-    planning.capability_contract_rows = accepted_capability_contract_rows();
+    planning.capability_decision_rows = Vec::new();
     planning.capability_compiled_graphs = accepted_capability_compiled_graphs();
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
@@ -434,24 +413,10 @@ fn benchmark_report_accepted_join_rows_emit_admission_contract_rows() {
     let fields = row.split('\t').collect::<Vec<_>>();
     assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
 
-    let contract_rows_index = header_index(&header_fields, "capability_contract_rows");
+    let contract_rows_index = header_index(&header_fields, "capability_decision_rows");
     let graph_index = header_index(&header_fields, "capability_compiled_graphs");
     assert_eq!(fields[0], "q15");
-    assert!(fields[contract_rows_index].contains("execution_mode=bounded"));
-    assert!(fields[contract_rows_index].contains("contract_status=modeled"));
-    assert!(fields[contract_rows_index].contains("contract_quality=hard_budgeted_report_with_unresolved_preflight"));
-    assert!(
-        fields[contract_rows_index].contains("unresolved_preflight_gap=libcudf_final_sort_order_preflight_unavailable")
-    );
-    assert!(
-        fields[contract_rows_index]
-            .contains("unresolved_preflight_gap=libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-    );
-    assert!(!fields[contract_rows_index].contains("bounded_join_execution_family"));
-    assert!(!fields[contract_rows_index].contains("retry"));
-    assert!(!fields[contract_rows_index].contains("spill"));
-    assert!(!fields[contract_rows_index].contains("downgrade"));
-    assert!(!fields[contract_rows_index].contains("memory_history"));
+    assert_eq!(fields[contract_rows_index], "none");
     assert!(fields[graph_index].contains("sink_kind=host_arrow_materialization"));
     assert!(text.contains("\tmatched\t"));
 }

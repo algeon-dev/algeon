@@ -51,6 +51,9 @@ fn main() {
     if let Ok(path) = env::var("DEP_CUDF_RUST_RUNTIME_LIB_DIR") {
         runtime_dirs.insert(path);
     }
+    if let Ok(root) = env::var("DEP_CUDF_RUST_ROOT") {
+        insert_include_dir(&mut native_include_dirs, PathBuf::from(root).join("include"));
+    }
     insert_include_dirs_from_env_path_list(&mut native_include_dirs, "DEP_CUGRAPH_NATIVE_INCLUDE_DIRS");
     let mut native_link_dirs = Vec::new();
     insert_include_dirs_from_env_path_list(&mut native_link_dirs, "DEP_CUGRAPH_NATIVE_LINK_DIRS");
@@ -59,6 +62,7 @@ fn main() {
         "DEP_CUGRAPH_RUNTIME_LIB_DIRS",
         "DEP_CUGRAPH_NATIVE_INCLUDE_DIRS",
         "DEP_CUGRAPH_NATIVE_LINK_DIRS",
+        "DEP_CUDF_RUST_ROOT",
         "DEP_CUDF_RUST_RUNTIME_LIB_DIR",
         "CXX",
     ] {

@@ -58,7 +58,7 @@ pub(super) struct DeviceSeriesRow {
     pub(super) managed_capacity_bytes: u64,
     pub(super) live_grants_bytes: u64,
     pub(super) live_grant_ids: Vec<u64>,
-    pub(super) live_reserved_bytes: u64,
+    pub(super) resident_owner_bytes: u64,
     pub(super) cache_evictable_resident_bytes: u64,
     pub(super) cache_pinned_in_use_bytes: u64,
     /// Direct cuDF allocation-domain observation. It is `None` only when the
@@ -789,7 +789,7 @@ mod tests {
             managed_capacity_bytes: 1,
             live_grants_bytes: 0,
             live_grant_ids: Vec::new(),
-            live_reserved_bytes: 0,
+            resident_owner_bytes: 0,
             cache_evictable_resident_bytes: 0,
             cache_pinned_in_use_bytes: 0,
             cache_physical_current_bytes: None,

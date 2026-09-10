@@ -165,7 +165,7 @@ fn occupancy(peak_jobs: usize) -> BTreeMap<usize, DeviceOccupancyPeaks> {
             peak_active_attempts: 2,
             peak_active_query_jobs: peak_jobs,
             peak_live_grants_bytes: 2048,
-            peak_live_reserved_bytes: 4096,
+            peak_resident_owner_bytes: 4096,
             allocation_failure_count: 0,
             min_root_streams_available: 6,
             min_root_worker_slots_available: 1,
@@ -882,13 +882,9 @@ fn complete_graph_claim_row() -> GraphClaimCalibrationRow {
     GraphClaimCalibrationRow {
         node_id: "n7".to_string(),
         algorithm: "pagerank".to_string(),
-        model_requested_bytes: 4_096,
-        requested_bytes: 4_096,
-        budget_bytes: Some(8_192),
         execution_state: "algorithm_started".to_string(),
         measured_peak_bytes: Some(4_000),
-        measured_peak_provenance: "reservation_high_water".to_string(),
-        graph_model_error_ratio: Some("1.024".to_string()),
+        measured_peak_provenance: "cache_scope_high_water".to_string(),
     }
 }
 
@@ -947,46 +943,6 @@ fn graph_claim_calibration_rejects_missing_or_unmeasured_rows() {
     let unavailable_evidence = graph_claim_calibration_evidence(&[unavailable]);
     assert!(!unavailable_evidence.passes());
     assert_eq!(unavailable_evidence.attempts[0].reason, "graph_peak_measurement_unavailable");
-}
-
-#[test]
-fn graph_claim_calibration_accepts_only_the_exact_model_admission_denial_contract() {
-    let mut denied = attempt(1, 0, Some(3), Some(4), 0, 20, 20, SchedulePhase::Measurement);
-    denied.graph_workload = true;
-    denied.outcome = "failed".to_string();
-    denied.succeeded = false;
-    denied.failure = Some(AttemptFailureClass {
-        origin: "Native".to_string(),
-        code: "MemoryReservationFailed".to_string(),
-        status: "Temporary".to_string(),
-        operation: "Execution".to_string(),
-    });
-    denied.graph_claim_calibration = Some(GraphClaimCalibrationSnapshot {
-        truncated: false,
-        rows: vec![GraphClaimCalibrationRow {
-            model_requested_bytes: 9_000,
-            requested_bytes: 9_000,
-            budget_bytes: Some(8_000),
-            execution_state: "graph_memory_admission_denied".to_string(),
-            measured_peak_bytes: None,
-            measured_peak_provenance: "unavailable".to_string(),
-            graph_model_error_ratio: None,
-            ..complete_graph_claim_row()
-        }],
-        execution: Some(GraphClaimCalibrationExecution::NonPhysical(
-            GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
-        )),
-        execution_complete: true,
-    });
-
-    let evidence = graph_claim_calibration_evidence(&[denied.clone()]);
-    assert!(evidence.passes());
-    assert_eq!(evidence.attempts[0].reason, "complete");
-
-    denied.failure = None;
-    let mismatch = graph_claim_calibration_evidence(&[denied]);
-    assert!(!mismatch.passes());
-    assert_eq!(mismatch.attempts[0].reason, "graph_memory_admission_denied_failure_mismatch");
 }
 
 #[test]

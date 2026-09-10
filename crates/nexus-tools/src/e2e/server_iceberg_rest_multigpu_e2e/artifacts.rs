@@ -193,7 +193,7 @@ pub(super) fn write_summary(
                 "grant_id": parse_u64_field(row, "grant_id", "summary device ledger grant")?,
                 "admission_request_id": parse_u64_field(row, "admission_request_id", "summary device ledger grant")?,
                 "grant_bytes": parse_u64_field(row, "grant_bytes", "summary device ledger grant")?,
-                "live_reserved_bytes": parse_u64_field(row, "live_reserved_bytes", "summary device ledger grant")?,
+                "resident_owner_bytes": parse_u64_field(row, "resident_owner_bytes", "summary device ledger grant")?,
             }))
         })
         .collect::<E2eResult<Vec<_>>>()?;

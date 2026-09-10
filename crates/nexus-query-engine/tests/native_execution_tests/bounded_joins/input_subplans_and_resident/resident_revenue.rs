@@ -24,10 +24,7 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
-    assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan, ExecutionBoundaryPolicy::default())
-            .is_none()
-    );
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -35,16 +32,13 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
-    assert!(metrics.reservation_events.iter().any(|event| event.memory_boundary == "final_sort"));
     assert!(metrics.final_sort_time.as_nanos() > 0);
-    assert!(metrics.reservation_events.iter().any(|event| event.memory_boundary == "host_materialization"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

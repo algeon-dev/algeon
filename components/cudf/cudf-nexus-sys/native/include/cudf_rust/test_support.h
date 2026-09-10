@@ -98,6 +98,13 @@ cudf_status_t cudf_test_event_raw_record_call_count_for_stream_raw(uintptr_t str
 cudf_status_t cudf_test_event_last_raw_record_stream_raw(uintptr_t* out);
 cudf_status_t cudf_test_event_last_raw_record_event_raw(uintptr_t* out);
 
+void cudf_test_stream_synchronize_reset(void);
+void cudf_test_stream_block_synchronize(void);
+void cudf_test_stream_unblock_synchronize(void);
+void cudf_test_stream_fail_synchronize(void);
+void cudf_test_stream_allow_synchronize(void);
+cudf_status_t cudf_test_stream_synchronize_call_count(int32_t* out);
+
 cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle* out);
 cudf_status_t cudf_test_memory_resource_create_fail_first_allocation(
   cudf_memory_resource_handle upstream, cudf_memory_resource_handle* out);

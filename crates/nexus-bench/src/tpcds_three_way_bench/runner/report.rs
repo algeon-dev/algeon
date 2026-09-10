@@ -6,7 +6,7 @@ use super::*;
 
 pub(super) const TSV_HEADER: &str = concat!(
     "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
-    "\treservation_live_peak_bytes\treservation_denied_count\tretry_count\tnative_runtime_started\tfailure",
+    "\tretry_count\tnative_runtime_started\tfailure",
     "\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms",
     "\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms",
     "\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns",
@@ -15,7 +15,6 @@ pub(super) const TSV_HEADER: &str = concat!(
     "\taggregate_prepared_sort_groupby_elapsed_ns",
     "\taggregate_encoded_key_partial_elapsed_ns",
     "\truntime_operator_class\truntime_operator_class_ms\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes",
-    "\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes",
     "\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried",
     "\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped",
     "\tsource_read_prefetches_abandoned",
@@ -44,8 +43,6 @@ const TSV_COLUMNS: &[&str] = &[
     "output_batches",
     "output_rows",
     "output_bytes",
-    "reservation_live_peak_bytes",
-    "reservation_denied_count",
     "retry_count",
     "native_runtime_started",
     "failure",
@@ -69,8 +66,6 @@ const TSV_COLUMNS: &[&str] = &[
     "runtime_operator_class_ms",
     "peak_memory_operator_class",
     "peak_memory_operator_class_bytes",
-    "task_reservation_operator_class",
-    "task_reservation_operator_class_bytes",
     "source_chunks_planned",
     "source_chunks_attempted",
     "source_chunks_committed",
@@ -165,7 +160,7 @@ fn row_fields(
     outcome: &IterOutcome,
     engine: Engine,
 ) -> Vec<String> {
-    let p1 = P1BottleneckSummary::from_outcome(outcome);
+    let bottleneck = BottleneckSummary::from_outcome(outcome);
     let metrics = outcome.native_metrics.as_deref();
     let fields = vec![
         engine.as_str().to_string(),
@@ -178,8 +173,6 @@ fn row_fields(
         format_opt(outcome.output_batches),
         format_opt(outcome.output_rows),
         format_opt(outcome.output_bytes),
-        format_opt(outcome.reservation_live_peak_bytes),
-        format_opt(outcome.reservation_denied_count),
         format_opt(outcome.retry_count),
         outcome.native_runtime_started.to_string(),
         sanitize(outcome.failure.as_deref().unwrap_or("")),
@@ -199,12 +192,10 @@ fn row_fields(
         metric_field(metrics, |metrics| metrics.aggregate_exact_cardinality_probe_input_rows()),
         metric_field(metrics, |metrics| metrics.aggregate_prepared_sort_groupby_elapsed_ns()),
         metric_field(metrics, |metrics| metrics.aggregate_encoded_key_partial_elapsed_ns()),
-        p1.runtime_operator_class,
-        optional_f64_text(p1.runtime_operator_class_ms),
-        p1.peak_memory_operator_class,
-        p1.peak_memory_operator_class_bytes.to_string(),
-        p1.task_reservation_operator_class,
-        p1.task_reservation_operator_class_bytes.to_string(),
+        bottleneck.runtime_operator_class,
+        optional_f64_text(bottleneck.runtime_operator_class_ms),
+        bottleneck.peak_memory_operator_class,
+        bottleneck.peak_memory_operator_class_bytes.to_string(),
         metric_field(metrics, |metrics| metrics.source_chunks_planned),
         metric_field(metrics, |metrics| metrics.source_chunks_attempted),
         metric_field(metrics, |metrics| metrics.source_chunks_committed),
@@ -338,16 +329,14 @@ fn metric_duration_ms(metrics: Option<&MetricsSet>, name: &str) -> Option<f64> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct P1BottleneckSummary {
+struct BottleneckSummary {
     runtime_operator_class: String,
     runtime_operator_class_ms: Option<f64>,
     peak_memory_operator_class: String,
     peak_memory_operator_class_bytes: usize,
-    task_reservation_operator_class: String,
-    task_reservation_operator_class_bytes: usize,
 }
 
-impl P1BottleneckSummary {
+impl BottleneckSummary {
     fn from_outcome(outcome: &IterOutcome) -> Self {
         let Some(metrics) = outcome.native_metrics.as_deref() else {
             return Self {
@@ -355,16 +344,12 @@ impl P1BottleneckSummary {
                 runtime_operator_class_ms: None,
                 peak_memory_operator_class: "not_run".to_string(),
                 peak_memory_operator_class_bytes: 0,
-                task_reservation_operator_class: "not_run".to_string(),
-                task_reservation_operator_class_bytes: 0,
             };
         };
 
         let summaries = task_high_water_summaries(metrics);
         let (peak_memory_operator_class, peak_memory_operator_class_bytes) =
-            dominant_task_class_by(&summaries, |summary| summary.reservation_live_peak_bytes);
-        let (task_reservation_operator_class, task_reservation_operator_class_bytes) =
-            dominant_task_class_by(&summaries, |summary| summary.max_task_reservation_bytes);
+            dominant_task_class_by(&summaries, |summary| summary.max_observed_peak_bytes);
         let (runtime_operator_class, runtime_operator_class_ms) =
             dominant_runtime_operator_class(metrics, &outcome.timing_metrics, &summaries);
         Self {
@@ -372,8 +357,6 @@ impl P1BottleneckSummary {
             runtime_operator_class_ms,
             peak_memory_operator_class: peak_memory_operator_class.to_string(),
             peak_memory_operator_class_bytes,
-            task_reservation_operator_class: task_reservation_operator_class.to_string(),
-            task_reservation_operator_class_bytes,
         }
     }
 }
@@ -382,36 +365,27 @@ impl P1BottleneckSummary {
 struct TaskHighWaterSummary {
     task_count: usize,
     elapsed_ns: usize,
-    max_task_reservation_bytes: usize,
-    reservation_live_peak_bytes: usize,
+    max_observed_peak_bytes: usize,
+    max_retained_bytes: usize,
 }
 
 impl TaskHighWaterSummary {
     fn merge_operator_row(&mut self, row: &NativeTaskOperatorMetricRow) {
         self.task_count = self.task_count.saturating_add(row.task_count);
         self.elapsed_ns = self.elapsed_ns.saturating_add(row.elapsed_ns);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
+        self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(row.max_observed_peak_bytes.unwrap_or(0));
+        self.max_retained_bytes = self.max_retained_bytes.max(row.max_retained_bytes.unwrap_or(0));
     }
 
-    fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow, query_reservation_live_peak_bytes: usize) {
-        let task_reservation_bytes = if row.compiled_task_id.starts_with("legacy_bounded.") {
-            row.reservation_live_peak_bytes.min(query_reservation_live_peak_bytes)
-        } else {
-            row.reservation_requested_bytes.max(row.reservation_granted_bytes)
-        };
-        self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(task_reservation_bytes);
-        let reservation_live_peak_bytes = if row.compiled_task_id.starts_with("legacy_bounded.") {
-            row.reservation_live_peak_bytes.min(query_reservation_live_peak_bytes)
-        } else {
-            row.reservation_live_peak_bytes
-        };
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(reservation_live_peak_bytes);
+    fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow) {
+        self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(row.max_observed_peak_bytes.unwrap_or(0));
+        self.max_retained_bytes = self.max_retained_bytes.max(row.max_retained_bytes.unwrap_or(0));
     }
 
     fn merge_synthetic_high_water(&mut self, task_count: usize, bytes: Option<usize>) {
         self.task_count = self.task_count.saturating_add(task_count);
         if let Some(bytes) = bytes {
-            self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(bytes);
+            self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(bytes);
         }
     }
 }
@@ -435,7 +409,7 @@ fn task_high_water_summaries(
     }
     for row in &metrics.task_runtime_rows {
         if let Some(class) = task_operator_class(&row.operator_kind) {
-            summaries.entry(class).or_default().merge_runtime_row(row, metrics.reservation_live_peak_bytes);
+            summaries.entry(class).or_default().merge_runtime_row(row);
         }
     }
 
@@ -596,7 +570,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn p1_tsv_header_matches_row_field_count_for_cpu_rows() {
+    fn tsv_header_matches_row_field_count_for_cpu_rows() {
         let query = TPCDS_QUERIES.iter().find(|query| query.id == "q85").unwrap();
         let outcome = IterOutcome {
             wall: Some(Duration::from_millis(1)),
@@ -605,16 +579,14 @@ mod tests {
             output_batches: Some(1),
             output_rows: Some(2),
             output_bytes: Some(3),
-            reservation_live_peak_bytes: None,
-            reservation_denied_count: None,
             retry_count: None,
             native_runtime_started: false,
             native_metrics: None,
             timing_metrics: NativeTimingMetrics::default(),
             failure: None,
         };
-        let p1 = P1BottleneckSummary::from_outcome(&outcome);
-        assert_eq!(p1.runtime_operator_class, "not_run");
+        let bottleneck = BottleneckSummary::from_outcome(&outcome);
+        assert_eq!(bottleneck.runtime_operator_class, "not_run");
         assert_eq!(TSV_COLUMNS.join("\t"), TSV_HEADER);
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
         for removed in [
@@ -655,8 +627,6 @@ mod tests {
             output_batches: Some(1),
             output_rows: Some(2),
             output_bytes: Some(3),
-            reservation_live_peak_bytes: Some(4),
-            reservation_denied_count: Some(0),
             retry_count: Some(0),
             native_runtime_started: true,
             native_metrics: None,
@@ -689,8 +659,6 @@ mod tests {
             output_batches: None,
             output_rows: None,
             output_bytes: None,
-            reservation_live_peak_bytes: None,
-            reservation_denied_count: None,
             retry_count: None,
             native_runtime_started: false,
             native_metrics: None,
@@ -710,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn p1_task_operator_classes_cover_native_runtime_rows() {
+    fn task_operator_classes_cover_native_runtime_rows() {
         assert_eq!(task_operator_class("source_read"), Some("source"));
         assert_eq!(task_operator_class("join_probe"), Some("join"));
         assert_eq!(task_operator_class("aggregate"), Some("aggregate"));

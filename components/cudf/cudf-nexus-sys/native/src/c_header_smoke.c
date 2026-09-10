@@ -93,8 +93,6 @@ static int cudf_rust_c_header_smoke(void) {
   SMOKE_CHECK_FN(cudf_status_t, cudf_apply_boolean_mask_ex, cudf_table_view_handle, cudf_column_view_handle, cudf_table_handle*, cudf_exec_options_t const*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_filter_rows_by_predicate_ex, cudf_table_view_handle, cudf_row_predicate_node_t const*, int32_t, int32_t, cudf_table_handle*, cudf_exec_options_t const*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_gather_ex, cudf_table_view_handle, cudf_column_view_handle, cudf_out_of_bounds_policy_t, cudf_table_handle*, cudf_exec_options_t const*);
-  SMOKE_CHECK_FN(cudf_status_t, cudf_gather_fixed_width_dont_check_preflight, int64_t, uint64_t, cudf_gather_fixed_width_column_metadata_t const*, int32_t, int32_t, cudf_gather_fixed_width_dont_check_preflight_result_t*);
-  SMOKE_CHECK_FN(cudf_status_t, cudf_sorted_order_lexicographic_preflight, int64_t, cudf_type_id_t const*, int64_t const*, cudf_order_t const*, cudf_null_order_t const*, int32_t, int32_t, int32_t, cudf_sorted_order_lexicographic_preflight_result_t*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_scatter_ex, cudf_table_view_handle, cudf_column_view_handle, cudf_table_view_handle, cudf_table_handle*, cudf_exec_options_t const*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_unique_ex, cudf_table_view_handle, int const*, int, cudf_duplicate_keep_option_t, cudf_stream_compaction_null_equality_t, cudf_table_handle*, cudf_exec_options_t const*);
 

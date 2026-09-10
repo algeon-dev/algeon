@@ -31,7 +31,11 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let spec = int32_graph_spec(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -55,7 +59,6 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
     assert!(runtime_row.algorithm_metadata.contains("empty_result_reason=edge_source_empty"));
     assert!(runtime_row.algorithm_metadata.contains("empty_edge_input_policy=return_empty"));
     assert!(!runtime_row.algorithm_metadata.contains("graph_cache="));
-    assert!(result.metrics().graph_reservation_rows.is_empty());
     admitted.finish();
 }
 
@@ -69,7 +72,11 @@ fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
     let edge_batch = empty_int32_edges_batch(Arc::clone(&edge_schema));
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -117,7 +124,11 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let personalization = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
         "personalization",
         Arc::clone(&side_schema),
@@ -133,12 +144,13 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
         }),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan =
-        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PersonalizedPageRank));
+    let plan = builder
+        .finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PersonalizedPageRank));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert("edges".to_string(), graph_input_handle(&admitted, &runtime, Arc::clone(&edge_schema), &edge_batch));
+    gpu_inputs
+        .insert("edges".to_string(), graph_input_handle(&admitted, &runtime, Arc::clone(&edge_schema), &edge_batch));
     gpu_inputs.insert(
         "personalization".to_string(),
         graph_input_handle(&admitted, &runtime, Arc::clone(&side_schema), &side_batch),
@@ -184,7 +196,11 @@ fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
         RecordBatch::try_new(Arc::clone(&predicate_schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let predicate = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
         "include_vertices",
         Arc::clone(&predicate_schema),

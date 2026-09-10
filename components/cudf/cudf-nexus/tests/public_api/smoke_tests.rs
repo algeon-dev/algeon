@@ -56,13 +56,12 @@ fn query_memory_manager_surface_is_publicly_importable() {
 #[test]
 fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     use cudf::{
-        DataFrame, DataFrameHashJoin, DataFrameProjectedCrossJoinPlan,
+        DataFrame, DataFrameProjectedCrossJoinPlan,
         ops::join::{
-            FilteredJoinAllocationPreflight, FilteredJoinProbeAllocationPreflight, HashJoin,
-            HashJoinAllocationPreflight, HashJoinKeyMetadata, HashJoinOptions, HashJoinPreprocessingMode,
-            HashJoinStringOffsetWidth, JoinIndices, NullEquality, filtered_join_allocation_preflight_for_metadata,
-            filtered_join_probe_allocation_preflight, full_join_indices, full_join_indices_in,
-            hash_join_allocation_preflight_for_metadata, inner_join_indices, inner_join_indices_in, left_join_indices,
+            FilteredJoinAllocationPreflight, FilteredJoinProbeAllocationPreflight, HashJoin, HashJoinKeyMetadata,
+            HashJoinOptions, HashJoinPreprocessingMode, HashJoinStringOffsetWidth, JoinIndices, NullEquality,
+            filtered_join_allocation_preflight_for_metadata, filtered_join_probe_allocation_preflight,
+            full_join_indices, full_join_indices_in, inner_join_indices, inner_join_indices_in, left_join_indices,
             left_join_indices_in,
         },
     };
@@ -70,7 +69,6 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     let _options = HashJoinOptions::new().null_equality(NullEquality::Equal);
     let _: Option<HashJoin> = None;
     let _: Option<JoinIndices> = None;
-    let _: Option<HashJoinAllocationPreflight> = None;
     let _: Option<FilteredJoinAllocationPreflight> = None;
     let _: Option<FilteredJoinProbeAllocationPreflight> = None;
     let _: Option<DataFrameProjectedCrossJoinPlan> = None;
@@ -100,8 +98,6 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoin::device_allocated_size_bytes,
     );
     let _ = DataFrame::hash_join_pre_build_reservation_size_bytes::<[&str; 1], &str>;
-    let _ = DataFrame::hash_join_allocation_preflight::<[&str; 1], &str>;
-    let _ = DataFrameHashJoin::allocation_preflight;
     let _ = (
         HashJoinKeyMetadata::fixed_width,
         HashJoinKeyMetadata::string,
@@ -109,7 +105,6 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoinPreprocessingMode::for_keys,
         filtered_join_allocation_preflight_for_metadata,
         filtered_join_probe_allocation_preflight,
-        hash_join_allocation_preflight_for_metadata,
     );
     let _ = DataFrame::materialize_join_indices_reservation_size_bytes::<[&str; 1], &str>;
     let _ = DataFrame::projected_cross_join_plan;

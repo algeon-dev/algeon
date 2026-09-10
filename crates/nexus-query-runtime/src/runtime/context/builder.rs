@@ -13,7 +13,6 @@ use nexus_query_planning::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
-    graph_memory::GraphMemoryCalibrationOverride,
     mode::StatisticalAggregateExecutionMode,
 };
 
@@ -93,8 +92,6 @@ pub struct ExecutionContextBuilder {
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert policy for local-throughput source chunk planning.
     source_chunk_planning_options: SourceChunkPlanningOptions,
-    /// Optional graph calibration metadata supplied by fixture/config.
-    graph_memory_calibration_override: GraphMemoryCalibrationOverride,
 }
 
 /// Builder that owns a caller-supplied runtime observation session.
@@ -317,13 +314,6 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Supplies fixture/config graph calibration metadata.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
-        self.graph_memory_calibration_override = override_;
-        self
-    }
-
     /// Validates policies, constructs or records the runtime, and returns a context.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn build(self) -> Result<ExecutionContext> {
@@ -465,7 +455,7 @@ impl ExecutionContextBuilder {
                 grant_memory_domain: None,
                 attempt_allocation_domain: None,
                 attempt_auxiliary_slots: None,
-                admitted_attempt_proof: None,
+                admitted_capability_evidence: None,
                 attempt_member_lease: None,
                 attempt_stream_provider_route: None,
                 attempt_stream_provider_alias: None,
@@ -487,7 +477,6 @@ impl ExecutionContextBuilder {
                 statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
                 aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
                 source_chunk_planning_options: self.source_chunk_planning_options,
-                graph_memory_calibration_override: self.graph_memory_calibration_override,
                 stream_lease_guard: None,
                 auxiliary_stream_permit_guard: None,
                 query_service_admitted: false,
@@ -551,7 +540,7 @@ impl ExecutionContextBuilder {
             grant_memory_domain: None,
             attempt_allocation_domain: None,
             attempt_auxiliary_slots: None,
-            admitted_attempt_proof: None,
+            admitted_capability_evidence: None,
             attempt_member_lease: None,
             attempt_stream_provider_route: None,
             attempt_stream_provider_alias: None,
@@ -573,7 +562,6 @@ impl ExecutionContextBuilder {
             statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
-            graph_memory_calibration_override: self.graph_memory_calibration_override,
             stream_lease_guard: None,
             auxiliary_stream_permit_guard: None,
             query_service_admitted: false,

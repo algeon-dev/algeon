@@ -264,23 +264,22 @@ impl AdmissionTestWaiter {
     }
 }
 
-fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
-    use nexus_query_planning::admission::EstimateQuality;
-    AttemptRequirement {
-        configured_floor_bytes: floor,
-        capability_floor_raise_bytes: 0,
-        required_phase_floor_bytes: 0,
-        source_stage_bytes: None,
-        soft_working_set_hint_bytes: hint,
-        estimate_quality: EstimateQuality::Modeled,
-        required_capabilities: Vec::new(),
-        owner_terms: Vec::new(),
-        bound_derivation: None,
-        requires_composed_producer_binding: false,
-        attested_cugraph_graph_execution_scopes: Vec::new(),
-        reservation_shapes: Vec::new(),
-        deferred_resident_phases: Vec::new(),
-    }
+/// Placement-only test evidence carrying no capability or plan-scope facts.
+///
+/// Grant sizing is entirely ledger/device-profile driven; evidence carries no
+/// bytes at all, so this fixture exists only to give tests a concrete
+/// `AttemptRequirement` value to attach and to distinguish device entries.
+fn requirement() -> AttemptRequirement {
+    AttemptRequirement::empty()
+}
+
+/// Test evidence distinct from [`requirement`] by its required capability set,
+/// for tests asserting that per-device entries are not collapsed together.
+fn distinct_capability_requirement() -> AttemptRequirement {
+    AttemptRequirement::from_parts(
+        vec![nexus_query_planning::admission::ExecutionCapability::new("test_distinct_operator")],
+        Vec::new(),
+    )
 }
 
 fn observed_admission_events(owner: &RuntimeObservationOwner) -> Vec<(AdmissionRequestId, AdmissionLifecycleState)> {

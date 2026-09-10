@@ -7,7 +7,10 @@
 //! boundary before queue maintenance or direct placement begins; this module
 //! only reads the resulting ledger state.
 
-use nexus_query_planning::{admission::AttemptRequirement, capability::ReservationRequirement, error::Result};
+use nexus_query_planning::{
+    admission::{AttemptRequirement, ExecutionCapability},
+    error::Result,
+};
 
 #[cfg(test)]
 use super::DeviceResourceEnvelope;
@@ -28,7 +31,7 @@ pub struct PlacementRequest {
     /// Device capabilities that must be present before this request can enter
     /// capacity ranking. These are a safety predicate, not a placement hint.
     #[doc(hidden)]
-    pub required_capabilities: Vec<ReservationRequirement>,
+    pub required_capabilities: Vec<ExecutionCapability>,
 }
 
 impl PlacementRequest {
@@ -53,7 +56,7 @@ impl PlacementRequest {
     #[doc(hidden)]
     pub fn with_required_capabilities(
         mut self,
-        required_capabilities: impl IntoIterator<Item = ReservationRequirement>,
+        required_capabilities: impl IntoIterator<Item = ExecutionCapability>,
     ) -> Self {
         self.required_capabilities = required_capabilities.into_iter().collect();
         self
@@ -243,17 +246,17 @@ pub(crate) fn ordered_placement_candidate_snapshots(
 /// that no capacity or load signal may resurrect an incapable device.
 fn profile_supports_placement_request(
     profile: Option<&DeviceResourceProfile>,
-    required_capabilities: &[ReservationRequirement],
+    required_capabilities: &[ExecutionCapability],
 ) -> bool {
     profile.is_some_and(|profile| profile.device_capabilities.supports_all(required_capabilities))
 }
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_planning::capability::{ContractQuality, ReservationRequirement};
+    use nexus_query_planning::admission::ExecutionCapability;
 
     use super::*;
-    use crate::runtime::{DeviceCapabilities, DeviceCapability, ReservationKind};
+    use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
     fn candidate(
         ordinal: usize,
@@ -308,12 +311,7 @@ mod tests {
 
     #[test]
     fn capability_gate_excludes_incapable_profiles_before_placement_ranking() {
-        let requirement = ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            "test_operator",
-            "test_operator_contract",
-            ContractQuality::CapabilityProof,
-        );
+        let requirement = ExecutionCapability::new("test_operator");
         let incapable = /*OK*/DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 0,
             configured_limit_bytes: 1_000,
@@ -338,10 +336,7 @@ mod tests {
             source_work_per_attempt: 1,
             stream_pool_size: 2,
             worker_job_capacity: 2,
-            device_capabilities: DeviceCapabilities::only([DeviceCapability::new(
-                ReservationKind::OperatorOutput,
-                "test_operator_contract",
-            )]),
+            device_capabilities: DeviceCapabilities::only([DeviceCapability::new("test_operator")]),
             cache_cap_bytes: 0,
         })
         .unwrap();

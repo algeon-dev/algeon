@@ -1,12 +1,10 @@
 use super::{
-    ActiveReservation, CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode, LimitSpec,
-    MemoryReservationRequest, QueryError, QueryErrorCode, ReservationKind, ResidentFrameStreamPayload,
-    ResidentGpuFrame, Result, TopKLevelItem, commit_topk_merge_level, concat_committed_frames_with_token,
-    estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes, execute_limit_on_frame_with_token,
-    execute_limit_spec_with_token, execute_limit_with_token, final_sort_retry_facts, final_sort_rows_per_chunk,
-    final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
-    record_final_sort_retry_error, reduce_merge_fan_in, release_committed_partials, release_topk_level_items,
-    sort_topk_candidate_with_budget, topk_candidate_rows,
+    CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode, LimitSpec, QueryError,
+    QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, TopKLevelItem, commit_topk_merge_level,
+    concat_committed_frames_with_token, estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes,
+    execute_limit_on_frame_with_token, execute_limit_spec_with_token, execute_limit_with_token, final_sort_retry_facts,
+    final_sort_rows_per_chunk, final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
+    record_final_sort_retry_error, reduce_merge_fan_in, sort_topk_candidate_with_budget, topk_candidate_rows,
 };
 
 #[derive(Clone, Copy)]
@@ -50,19 +48,12 @@ impl FinalSortExecutor<'_, '_> {
             let output_reservation = match self.reserve_estimated_final_sort_output(0, initial_attempt) {
                 Ok(reservation) => reservation,
                 Err(error) => {
-                    self.execution.release(input.reservation);
                     return Err(error);
                 },
             };
-            let token = match self.final_sort_budget_token_including(
-                "final_sort_limit",
-                initial_attempt,
-                &output_reservation,
-            ) {
+            let token = match self.final_sort_budget_token("final_sort_limit", initial_attempt) {
                 Ok(token) => token,
                 Err(error) => {
-                    self.execution.release(output_reservation);
-                    self.execution.release(input.reservation);
                     return Err(error);
                 },
             };
@@ -75,12 +66,9 @@ impl FinalSortExecutor<'_, '_> {
             ) {
                 Ok(output) => output,
                 Err(error) => {
-                    self.execution.release(output_reservation);
-                    self.execution.release(input.reservation);
                     return Err(error);
                 },
             };
-            self.execution.release(input.reservation);
             return self.finalize_final_sort_output_reservation(output, output_reservation, initial_attempt);
         }
 
@@ -88,11 +76,11 @@ impl FinalSortExecutor<'_, '_> {
         if input_rows == 0 {
             return Ok(input);
         }
-        let bytes_per_row = estimated_bytes_per_row(input.reservation.bytes(), input_rows);
+        let bytes_per_row = estimated_bytes_per_row(input.device_bytes(), input_rows);
         let rows_per_chunk = final_sort_rows_per_chunk(
             input_rows,
             bytes_per_row,
-            self.execution.reservations().budget().saturating_sub(input.reservation.bytes()),
+            self.execution.device_budget_bytes().saturating_sub(input.device_bytes()),
         );
         let mut candidates = match self.initial_topk_candidates(
             &input,
@@ -102,13 +90,10 @@ impl FinalSortExecutor<'_, '_> {
             Ok(candidates) => candidates,
             Err(error) => {
                 record_final_sort_retry_error(&error, self.execution.metrics_mut());
-                self.execution.release(input.reservation);
                 return Err(final_sort_retry_facts("hierarchical_topk_initial_failed", self.execution.metrics_mut())
                     .attach_to_error(error));
             },
         };
-
-        self.execution.release(input.reservation);
 
         let mut merge_level = 1;
         while candidates.len() > 1 {
@@ -119,7 +104,7 @@ impl FinalSortExecutor<'_, '_> {
                 match self.topk_merge_level_attempt(&candidates, TopKMergeAttempt { keep_rows, merge_fan_in, attempt })
                 {
                     Ok(level_output) => {
-                        candidates = commit_topk_merge_level(self.execution, candidates, level_output);
+                        candidates = commit_topk_merge_level(candidates, level_output);
                         merge_level += 1;
                         break;
                     },
@@ -137,7 +122,6 @@ impl FinalSortExecutor<'_, '_> {
                             continue;
                         }
 
-                        release_committed_partials(self.execution, candidates);
                         return Err(final_sort_topk_retry_facts(
                             merge_level,
                             merge_fan_in,
@@ -146,7 +130,6 @@ impl FinalSortExecutor<'_, '_> {
                         .attach_to_error(error));
                     },
                     Err(error) => {
-                        release_committed_partials(self.execution, candidates);
                         return Err(error);
                     },
                 }
@@ -159,24 +142,20 @@ impl FinalSortExecutor<'_, '_> {
         }
 
         let output_reservation = match self.reserve_estimated_final_sort_output(
-            estimated_limited_output_bytes(candidate.reservation.bytes(), candidate.frame.num_rows(), limit.spec)?,
+            estimated_limited_output_bytes(candidate.device_bytes(), candidate.frame.num_rows(), limit.spec)?,
             self.max_attempts,
         ) {
             Ok(reservation) => reservation,
             Err(error) => {
-                self.execution.release(candidate.reservation);
                 return Err(error);
             },
         };
-        let token =
-            match self.final_sort_budget_token_including("final_sort_limit", self.max_attempts, &output_reservation) {
-                Ok(token) => token,
-                Err(error) => {
-                    self.execution.release(output_reservation);
-                    self.execution.release(candidate.reservation);
-                    return Err(error);
-                },
-            };
+        let token = match self.final_sort_budget_token("final_sort_limit", self.max_attempts) {
+            Ok(token) => token,
+            Err(error) => {
+                return Err(error);
+            },
+        };
         let output = match execute_limit_with_token(
             limit,
             candidate.frame,
@@ -186,7 +165,6 @@ impl FinalSortExecutor<'_, '_> {
         ) {
             Ok(output) => output,
             Err(error) => {
-                self.execution.release(output_reservation);
                 return Err(final_sort_runtime_facts(
                     "final_sort_limit",
                     self.node_id,
@@ -197,7 +175,6 @@ impl FinalSortExecutor<'_, '_> {
                 ));
             },
         };
-        self.execution.release(candidate.reservation);
         self.finalize_final_sort_output_reservation(output, output_reservation, self.max_attempts)
     }
 
@@ -224,7 +201,6 @@ impl FinalSortExecutor<'_, '_> {
             ) {
                 Ok(candidate) => candidates.push(candidate),
                 Err(error) => {
-                    release_committed_partials(self.execution, candidates);
                     return Err(error);
                 },
             }
@@ -258,8 +234,7 @@ impl FinalSortExecutor<'_, '_> {
             let mut input = match input {
                 Ok(input) => input,
                 Err(error) => {
-                    release_committed_partials(self.execution, candidates);
-                    inputs.release_remaining_frames(self.execution);
+                    inputs.release_remaining_frames();
                     return Err(error);
                 },
             };
@@ -267,8 +242,7 @@ impl FinalSortExecutor<'_, '_> {
             match self.topk_stream_frame_candidate_attempt(input, keep_rows, initial_attempt) {
                 Ok(candidate) => candidates.push(candidate),
                 Err(error) => {
-                    release_committed_partials(self.execution, candidates);
-                    inputs.release_remaining_frames(self.execution);
+                    inputs.release_remaining_frames();
                     return Err(final_sort_retry_facts(
                         "hierarchical_topk_stream_initial_failed",
                         self.execution.metrics_mut(),
@@ -296,7 +270,7 @@ impl FinalSortExecutor<'_, '_> {
                 match self.topk_merge_level_attempt(&candidates, TopKMergeAttempt { keep_rows, merge_fan_in, attempt })
                 {
                     Ok(level_output) => {
-                        candidates = commit_topk_merge_level(self.execution, candidates, level_output);
+                        candidates = commit_topk_merge_level(candidates, level_output);
                         merge_level += 1;
                         break;
                     },
@@ -314,7 +288,6 @@ impl FinalSortExecutor<'_, '_> {
                             continue;
                         }
 
-                        release_committed_partials(self.execution, candidates);
                         return Err(final_sort_topk_retry_facts(
                             merge_level,
                             merge_fan_in,
@@ -323,7 +296,6 @@ impl FinalSortExecutor<'_, '_> {
                         .attach_to_error(error));
                     },
                     Err(error) => {
-                        release_committed_partials(self.execution, candidates);
                         return Err(error);
                     },
                 }
@@ -347,7 +319,7 @@ impl FinalSortExecutor<'_, '_> {
         let mut first = match inputs.next_yielded_frame(self.execution) {
             Some(Ok(input)) => input,
             Some(Err(error)) => {
-                inputs.release_remaining_frames(self.execution);
+                inputs.release_remaining_frames();
                 return Err(error);
             },
             None => {
@@ -363,17 +335,14 @@ impl FinalSortExecutor<'_, '_> {
         let output_reservation = match self.reserve_estimated_final_sort_output(0, attempt) {
             Ok(reservation) => reservation,
             Err(error) => {
-                self.execution.release(first.reservation);
-                inputs.release_remaining_frames(self.execution);
+                inputs.release_remaining_frames();
                 return Err(error);
             },
         };
-        let token = match self.final_sort_budget_token_including("final_sort_limit", attempt, &output_reservation) {
+        let token = match self.final_sort_budget_token("final_sort_limit", attempt) {
             Ok(token) => token,
             Err(error) => {
-                self.execution.release(output_reservation);
-                self.execution.release(first.reservation);
-                inputs.release_remaining_frames(self.execution);
+                inputs.release_remaining_frames();
                 return Err(error);
             },
         };
@@ -386,48 +355,30 @@ impl FinalSortExecutor<'_, '_> {
         ) {
             Ok(output) => output,
             Err(error) => {
-                self.execution.release(output_reservation);
-                self.execution.release(first.reservation);
-                inputs.release_remaining_frames(self.execution);
+                inputs.release_remaining_frames();
                 return Err(error);
             },
         };
-        self.execution.release(first.reservation);
-        inputs.release_remaining_frames(self.execution);
+        inputs.release_remaining_frames();
         self.finalize_final_sort_output_reservation(output, output_reservation, attempt)
     }
 
     fn topk_slice_attempt(&mut self, input: &CommittedPartial, slice: TopKSliceAttempt) -> Result<CommittedPartial> {
         const BOUNDARY: &str = "final_sort_topk_chunk";
-        let requested_bytes = estimate_rows_bytes(slice.bytes_per_row, slice.length);
-        let request = MemoryReservationRequest::new(
-            ReservationKind::FinalSort,
-            requested_bytes,
-            self.execution.reservations().budget(),
-        )
-        .with_memory_boundary(BOUNDARY)
-        .with_node_id(self.node_id)
-        .with_stage("final_sort")
-        .with_attempt(slice.attempt, self.max_attempts);
-        let work_reservation = self.execution.try_reserve(request)?;
-
         let output_rows = slice.keep_rows.min(slice.length);
         let output_reservation = match self
             .reserve_estimated_final_sort_output(estimate_rows_bytes(slice.bytes_per_row, output_rows), slice.attempt)
         {
             Ok(reservation) => reservation,
             Err(error) => {
-                self.execution.release(work_reservation);
                 return Err(error);
             },
         };
         self.sort_and_limit_topk_candidate(
-            work_reservation,
             output_reservation,
             BOUNDARY,
             slice.attempt,
             slice.keep_rows,
-            None,
             TopKWorkTokenFailureMode::Direct,
             |work_token| {
                 input
@@ -463,75 +414,43 @@ impl FinalSortExecutor<'_, '_> {
         }
 
         const BOUNDARY: &str = "final_sort_topk_stream_chunk";
-        let bytes_per_row = estimated_bytes_per_row(input.reservation.bytes(), input_rows);
-        let requested_bytes = input.reservation.bytes();
-        let request = MemoryReservationRequest::new(
-            ReservationKind::FinalSort,
-            requested_bytes,
-            self.execution.reservations().budget(),
-        )
-        .with_memory_boundary(BOUNDARY)
-        .with_node_id(self.node_id)
-        .with_stage("final_sort")
-        .with_attempt(attempt, self.max_attempts);
-        let work_reservation = self.execution.try_reserve(request)?;
-
+        let bytes_per_row = estimated_bytes_per_row(input.device_bytes(), input_rows);
         let output_rows = keep_rows.min(input_rows);
         let output_reservation =
             match self.reserve_estimated_final_sort_output(estimate_rows_bytes(bytes_per_row, output_rows), attempt) {
                 Ok(reservation) => reservation,
                 Err(error) => {
-                    self.execution.release(work_reservation);
-                    self.execution.release(input.reservation);
                     return Err(error);
                 },
             };
-        let ResidentGpuFrame { frame, reservation: input_reservation } = input;
+        let ResidentGpuFrame { frame, .. } = input;
         self.sort_and_limit_topk_candidate(
-            work_reservation,
             output_reservation,
             BOUNDARY,
             attempt,
             keep_rows,
-            Some(input_reservation),
             TopKWorkTokenFailureMode::Direct,
             move |_work_token| Ok(frame),
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
-    )]
     fn sort_and_limit_topk_candidate(
         &mut self,
-        work_reservation: ActiveReservation,
-        output_reservation: ActiveReservation,
+        output_reservation: u64,
         memory_boundary: &'static str,
         attempt: usize,
         keep_rows: usize,
-        release_after_sort: Option<ActiveReservation>,
         work_token_failure_mode: TopKWorkTokenFailureMode,
         frame_for_sort: impl FnOnce(&ExecutionBudgetToken) -> Result<GpuDataFrame>,
     ) -> Result<CommittedPartial> {
         let sorted = {
-            let work_token = match self.final_sort_budget_token_including(memory_boundary, attempt, &work_reservation) {
+            let work_token = match self.final_sort_budget_token(memory_boundary, attempt) {
                 Ok(token) => token,
                 Err(error) => match work_token_failure_mode {
                     TopKWorkTokenFailureMode::Direct => {
-                        self.execution.release(output_reservation);
-                        self.execution.release(work_reservation);
-                        if let Some(reservation) = release_after_sort {
-                            self.execution.release(reservation);
-                        }
                         return Err(error);
                     },
                     TopKWorkTokenFailureMode::RuntimeFacts => {
-                        self.execution.release(work_reservation);
-                        self.execution.release(output_reservation);
-                        if let Some(reservation) = release_after_sort {
-                            self.execution.release(reservation);
-                        }
                         return Err(final_sort_runtime_facts(
                             memory_boundary,
                             self.node_id,
@@ -553,14 +472,9 @@ impl FinalSortExecutor<'_, '_> {
                 )
             })
         };
-        if let Some(reservation) = release_after_sort {
-            self.execution.release(reservation);
-        }
         let sorted = match sorted {
             Ok(frame) => frame,
             Err(error) => {
-                self.execution.release(work_reservation);
-                self.execution.release(output_reservation);
                 return Err(final_sort_runtime_facts(
                     memory_boundary,
                     self.node_id,
@@ -571,11 +485,9 @@ impl FinalSortExecutor<'_, '_> {
                 ));
             },
         };
-        let limit_token = match self.final_sort_budget_token_including(memory_boundary, attempt, &output_reservation) {
+        let limit_token = match self.final_sort_budget_token(memory_boundary, attempt) {
             Ok(token) => token,
             Err(error) => {
-                self.execution.release(work_reservation);
-                self.execution.release(output_reservation);
                 return Err(error);
             },
         };
@@ -588,8 +500,6 @@ impl FinalSortExecutor<'_, '_> {
         ) {
             Ok(frame) => frame,
             Err(error) => {
-                self.execution.release(work_reservation);
-                self.execution.release(output_reservation);
                 return Err(final_sort_runtime_facts(
                     memory_boundary,
                     self.node_id,
@@ -600,7 +510,6 @@ impl FinalSortExecutor<'_, '_> {
                 ));
             },
         };
-        self.execution.release(work_reservation);
         self.finalize_final_sort_output_reservation(frame, output_reservation, attempt)
     }
 
@@ -623,7 +532,6 @@ impl FinalSortExecutor<'_, '_> {
             ) {
                 Ok(candidate) => output.push(TopKLevelItem::Merged(Box::new(candidate))),
                 Err(error) => {
-                    release_topk_level_items(self.execution, output);
                     return Err(error);
                 },
             }
@@ -639,37 +547,23 @@ impl FinalSortExecutor<'_, '_> {
     ) -> Result<CommittedPartial> {
         debug_assert!(candidates.len() > 1);
         const BOUNDARY: &str = "final_sort_topk_merge";
-        let requested_bytes = candidates.iter().map(|candidate| candidate.reservation.bytes()).sum::<u64>();
+        let requested_bytes = candidates.iter().map(|candidate| candidate.device_bytes()).sum::<u64>();
         let candidate_rows = candidates.iter().map(|candidate| candidate.frame.num_rows()).sum::<usize>();
         let bytes_per_row = estimated_bytes_per_row(requested_bytes, candidate_rows);
-        let request = MemoryReservationRequest::new(
-            ReservationKind::FinalSort,
-            requested_bytes,
-            self.execution.reservations().budget(),
-        )
-        .with_memory_boundary(BOUNDARY)
-        .with_node_id(self.node_id)
-        .with_stage("final_sort")
-        .with_attempt(merge.attempt, self.max_attempts);
-        let merge_reservation = self.execution.try_reserve(request)?;
-
         let output_rows = merge.keep_rows.min(candidate_rows);
         let output_reservation = match self
             .reserve_estimated_final_sort_output(estimate_rows_bytes(bytes_per_row, output_rows), merge.attempt)
         {
             Ok(reservation) => reservation,
             Err(error) => {
-                self.execution.release(merge_reservation);
                 return Err(error);
             },
         };
         self.sort_and_limit_topk_candidate(
-            merge_reservation,
             output_reservation,
             BOUNDARY,
             merge.attempt,
             merge.keep_rows,
-            None,
             TopKWorkTokenFailureMode::RuntimeFacts,
             |work_token| {
                 concat_committed_frames_with_token(candidates, work_token, "nexus_query_engine.final_sort.topk_concat")
@@ -684,20 +578,17 @@ impl FinalSortExecutor<'_, '_> {
         attempt: usize,
     ) -> Result<CommittedPartial> {
         let output_reservation = match self.reserve_estimated_final_sort_output(
-            estimated_limited_output_bytes(candidate.reservation.bytes(), candidate.frame.num_rows(), limit.spec)?,
+            estimated_limited_output_bytes(candidate.device_bytes(), candidate.frame.num_rows(), limit.spec)?,
             attempt,
         ) {
             Ok(reservation) => reservation,
             Err(error) => {
-                self.execution.release(candidate.reservation);
                 return Err(error);
             },
         };
-        let token = match self.final_sort_budget_token_including("final_sort_limit", attempt, &output_reservation) {
+        let token = match self.final_sort_budget_token("final_sort_limit", attempt) {
             Ok(token) => token,
             Err(error) => {
-                self.execution.release(output_reservation);
-                self.execution.release(candidate.reservation);
                 return Err(error);
             },
         };
@@ -710,7 +601,6 @@ impl FinalSortExecutor<'_, '_> {
         ) {
             Ok(output) => output,
             Err(error) => {
-                self.execution.release(output_reservation);
                 return Err(final_sort_runtime_facts(
                     "final_sort_limit",
                     self.node_id,
@@ -721,7 +611,6 @@ impl FinalSortExecutor<'_, '_> {
                 ));
             },
         };
-        self.execution.release(candidate.reservation);
         self.finalize_final_sort_output_reservation(output, output_reservation, attempt)
     }
 }

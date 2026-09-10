@@ -214,7 +214,7 @@ fn test_to_optional_strings_without_nulls() {
 }
 
 #[test]
-fn test_to_optional_strings_on_numeric_returns_phase3_type_mismatch_error() {
+fn test_to_optional_strings_on_numeric_returns_type_mismatch_error() {
     let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
     let err = s.to_optional_strings().unwrap_err();
 

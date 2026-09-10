@@ -1,15 +1,14 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
     admission::{
-        ComposedProducerBindingDiagnostics, QueryPlanCapabilityProof,
         bounded_pipeline_admission_with_statistical_aggregate_mode,
         bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
     },
-    capability::ContractStatus,
-    contract_report::{CapabilityContractGateRow, CapabilityContractReport},
+    contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::CapabilityEnvelopeStatus,
     pipeline::CompiledPipeline,
-    plan::QueryPlan,
+    plan::{PlanNode, QueryPlan},
+    source::SourceNode,
 };
 
 use crate::{error::Error, native_exec::NexusNativeExecutionConfig, report::GpuCandidate};
@@ -24,11 +23,11 @@ pub const CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
 /// rows. It does not perform admission or pipeline scheduling itself.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NativeCapabilityContractDiagnostics {
-    /// Candidates accepted by the optimizer with capability gate rows attached.
+    /// Candidates accepted by the optimizer with capability reports attached.
     pub accepted_candidates: Vec<NativeCapabilityAcceptedCandidateDiagnostics>,
     /// Structurally supported candidates waiting for resident producer facts.
     pub deferred_candidates: Vec<NativeCapabilityDeferredCandidateDiagnostics>,
-    /// Candidates rejected before execution with their first blocking gate.
+    /// Candidates rejected before execution with their first blocking decision.
     pub rejected_candidates: Vec<NativeCapabilityRejectedCandidateDiagnostics>,
     /// Bounded non-join plans seen while compatibility reports cover compiled joins.
     pub non_join_bounded_plan_count: usize,
@@ -57,16 +56,14 @@ impl NativeCapabilityContractDiagnostics {
     }
 }
 
-/// Planner decision for a candidate whose composed proof awaits producer binding.
+/// Planner decision for a candidate whose composed evidence awaits producer binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeCapabilityDeferredCandidateDiagnostics {
     /// Optimizer candidate that reached the deferred capability stage.
     pub candidate: GpuCandidate,
     /// Stable stage that emitted this decision.
     pub planning_stage: String,
-    /// Owner-issued producer-binding facts.
-    pub binding: ComposedProducerBindingDiagnostics,
-    /// Gate-first report carrying the deferred status without a parallel event store.
+    /// Report carrying the deferred status without a parallel event store.
     pub report: CapabilityContractReport,
 }
 
@@ -75,19 +72,19 @@ pub struct NativeCapabilityDeferredCandidateDiagnostics {
 pub struct NativeCapabilityAcceptedCandidateDiagnostics {
     /// Optimizer candidate that produced these diagnostics.
     pub candidate: GpuCandidate,
-    /// Gate-first capability-contract report.
+    /// Capability report.
     pub report: CapabilityContractReport,
     /// Graph-size diagnostics for the compiled pipeline.
     pub compiled_graph: NativeCapabilityCompiledGraphDiagnostics,
 }
 
-/// First capability gate that blocked a rejected candidate.
+/// First capability decision that blocked a rejected candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeCapabilityRejectedCandidateDiagnostics {
     /// Optimizer candidate that was rejected.
     pub candidate: GpuCandidate,
-    /// First non-modeled contract row from capability analysis.
-    pub blocking_contract: CapabilityContractGateRow,
+    /// First rejected row from capability analysis.
+    pub blocking_contract: CapabilityDecisionRow,
 }
 
 /// Report-facing graph summary for a compiled capability envelope.
@@ -101,12 +98,8 @@ pub struct NativeCapabilityCompiledGraphDiagnostics {
     pub barrier_count: usize,
     /// Number of resident resources tracked by the graph.
     pub resource_count: usize,
-    /// Number of reservation gates attached to the graph.
-    pub gate_count: usize,
     /// Final sink boundary kind.
     pub sink_kind: String,
-    /// Reservation gates owned by the sink boundary.
-    pub sink_gate_count: usize,
 }
 
 impl NativeCapabilityCompiledGraphDiagnostics {
@@ -116,9 +109,7 @@ impl NativeCapabilityCompiledGraphDiagnostics {
             edge_count: pipeline.edges().len(),
             barrier_count: pipeline.barriers().len(),
             resource_count: pipeline.resources().len(),
-            gate_count: pipeline.gates().len(),
             sink_kind: pipeline.sink().kind().as_str().to_string(),
-            sink_gate_count: pipeline.sink().gates().len(),
         }
     }
 }
@@ -134,18 +125,18 @@ pub(super) fn accepted_plan_contract_diagnostics(
     if !plan.contains_join() {
         return Ok(non_join_capability_diagnostics());
     }
-    if let Some(binding) = composed_admission_producer_binding(plan) {
-        let gate = CapabilityContractGateRow::from_deferred_composed_producer_binding(0).map_err(|error| {
+    if composed_admission_requires_producer_binding(plan) {
+        let decision = CapabilityDecisionRow::deferred_composed_producer_binding(0).map_err(|error| {
             capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
         })?;
-        let report = CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Deferred, vec![gate]).map_err(
-            |error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)),
-        )?;
+        let report = CapabilityContractReport::from_decision_rows(CapabilityEnvelopeStatus::Deferred, vec![decision])
+            .map_err(|error| {
+            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
+        })?;
         return Ok(NativeCapabilityContractDiagnostics {
             deferred_candidates: vec![NativeCapabilityDeferredCandidateDiagnostics {
                 candidate,
                 planning_stage: "physical_optimizer".to_string(),
-                binding,
                 report: stamp_capability_report_correlation(report, execution_config),
             }],
             ..Default::default()
@@ -197,13 +188,13 @@ pub(super) fn capability_envelope_admission_is_rejected(
     }
 }
 
-fn composed_admission_producer_binding(plan: &QueryPlan) -> Option<ComposedProducerBindingDiagnostics> {
-    QueryPlanCapabilityProof::for_composed_consumer_plan(plan)
-        .and_then(|proof| proof.composed_producer_binding_diagnostics(plan))
-}
-
+/// A plan with a GPU-resident source is a composed consumer whose producer
+/// output is not yet available at this planning stage: the producer prepares
+/// and executes separately, after this physical-optimizer pass runs.
 fn composed_admission_requires_producer_binding(plan: &QueryPlan) -> bool {
-    composed_admission_producer_binding(plan).is_some()
+    plan.nodes().iter().any(
+        |node| matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_))),
+    )
 }
 
 pub(super) fn rejected_plan_contract_diagnostics(
@@ -233,26 +224,22 @@ pub(super) fn rejected_plan_contract_diagnostics(
 fn first_blocking_contract_row(
     plan: &QueryPlan,
     execution_config: &NexusNativeExecutionConfig,
-) -> DataFusionResult<Option<CapabilityContractGateRow>> {
+) -> DataFusionResult<Option<CapabilityDecisionRow>> {
     if let Some(projection) = bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
         plan,
         execution_config.statistical_aggregate_execution_mode(),
     )
     .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?
     {
-        return CapabilityContractGateRow::from_capability_rejection_projection(
-            CapabilityEnvelopeStatus::Rejected,
-            0,
-            &projection,
-        )
-        .map(Some)
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)));
+        return CapabilityDecisionRow::from_rejection_projection(0, &projection).map(Some).map_err(|error| {
+            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
+        });
     }
 
     let analysis = plan.capability_analysis();
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
-    Ok(report.gate_rows().iter().find(|row| row.contract_status != ContractStatus::Modeled).cloned())
+    Ok(report.decision_rows().first().cloned())
 }
 
 fn non_join_capability_diagnostics() -> NativeCapabilityContractDiagnostics {

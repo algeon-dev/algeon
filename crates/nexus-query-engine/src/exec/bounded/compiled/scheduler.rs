@@ -34,16 +34,6 @@ pub trait CompiledTaskExecutor {
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>>;
 
-    fn execute_task_attempt(
-        &mut self,
-        task: &PipelineTask,
-        state: &mut CompiledPipelineState<Self::Resource>,
-        _attempt_id: &crate::observability::TaskAttemptId,
-        _span_id: RuntimeSpanId,
-    ) -> Result<CompiledTaskOutput<Self::Resource>> {
-        self.execute_task(task, state)
-    }
-
     fn release_resource(&mut self, _resource: ResidentResourceId, _payload: Self::Resource) -> Result<()> {
         Ok(())
     }
@@ -58,14 +48,6 @@ pub trait CompiledTaskExecutor {
 
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
         Ok(CompiledSchedulingCycle)
-    }
-
-    fn live_reserved_bytes(&self) -> Option<u64> {
-        None
-    }
-
-    fn remaining_reserved_bytes(&self) -> Option<u64> {
-        None
     }
 }
 
@@ -157,7 +139,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
                     return Err(error);
                 },
             };
-            let task = match self.next_runnable_task(&state, executor, cycle) {
+            let task = match self.next_runnable_task(&state, cycle) {
                 Ok(task) => task,
                 Err(error) => {
                     cleanup_preserving_primary(
@@ -193,9 +175,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 );
                 return Err(error);
             }
-            let output = match catch_unwind(AssertUnwindSafe(|| {
-                executor.execute_task_attempt(task, &mut state, &attempt_id, task_span_id)
-            })) {
+            let output = match catch_unwind(AssertUnwindSafe(|| executor.execute_task(task, &mut state))) {
                 Ok(Ok(output)) => output,
                 Ok(Err(error)) => {
                     fail_task_lifecycle(&mut task_lifecycle, &error);
@@ -263,16 +243,11 @@ impl<'a> CompiledPipelineScheduler<'a> {
         Ok(state)
     }
 
-    fn next_runnable_task<E>(
+    fn next_runnable_task<T>(
         &self,
-        state: &CompiledPipelineState<E::Resource>,
-        executor: &E,
+        state: &CompiledPipelineState<T>,
         _cycle: CompiledSchedulingCycle,
-    ) -> Result<&'a PipelineTask>
-    where
-        E: CompiledTaskExecutor,
-    {
-        let live_reserved_bytes = executor.live_reserved_bytes().unwrap_or(0);
+    ) -> Result<&'a PipelineTask> {
         let ready_tasks = self
             .pipeline
             .tasks()
@@ -290,29 +265,22 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 .with_fact("pipeline_task_count", self.pipeline.tasks().len()));
         }
 
-        ready_tasks
-            .into_iter()
-            .min_by_key(|task| self.runnable_task_priority(task, state, live_reserved_bytes))
-            .ok_or_else(|| {
-                invalid("compiled pipeline has no runnable task before completion")
-                    .with_fact("completed_task_count", state.completed_task_count())
-                    .with_fact("pipeline_task_count", self.pipeline.tasks().len())
-            })
+        ready_tasks.into_iter().min_by_key(|task| self.runnable_task_priority(task, state)).ok_or_else(|| {
+            invalid("compiled pipeline has no runnable task before completion")
+                .with_fact("completed_task_count", state.completed_task_count())
+                .with_fact("pipeline_task_count", self.pipeline.tasks().len())
+        })
     }
 
-    fn runnable_task_priority<T>(
-        &self,
-        task: &PipelineTask,
-        state: &CompiledPipelineState<T>,
-        live_reserved_bytes: u64,
-    ) -> (u8, u8, u8, usize) {
+    fn runnable_task_priority<T>(&self, task: &PipelineTask, state: &CompiledPipelineState<T>) -> (u8, u8, u8, usize) {
         let build_priority = task.kind() == PipelineTaskKind::JoinBuild
             && self.prioritized_join_builds.contains(&task.id())
             || (self.has_completed_join_build_waiting_for_probe(state)
                 && self.task_feeds_incomplete_prioritized_join_build(task.id(), state));
         let build_rank = if build_priority { 0 } else { 1 };
-        let pressure_rank = if live_reserved_bytes > 0 { self.memory_pressure_task_rank(task, state) } else { 1 };
-        let operator_rank = if live_reserved_bytes > 0 { operator_class_rank(task.kind()) } else { 0 };
+        let has_live_resources = state.live_resource_count() > 0;
+        let pressure_rank = if has_live_resources { self.memory_pressure_task_rank(task, state) } else { 1 };
+        let operator_rank = if has_live_resources { operator_class_rank(task.kind()) } else { 0 };
         (build_rank, pressure_rank, operator_rank, task.id().index())
     }
 
@@ -849,7 +817,6 @@ mod tests {
                 vec![unary],
                 ResidentLifetime::BetweenTasks { producer: source },
             )],
-            vec![],
             SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, unary),
         )
     }

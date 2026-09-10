@@ -14,7 +14,7 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, Count, ExecutionPlanMe
 use nexus_query_engine::{
     error::QueryError,
     exec::output::{QueryExecutionOutcome, QueryOutput},
-    graph_memory::{GraphClaimCalibrationRow, GraphClaimExecutionState},
+    graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakRow},
     metrics::{JoinOperatorMetrics, QueryMetrics},
     observability::{AttemptId, QueryAttemptReport},
     runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
@@ -109,7 +109,7 @@ pub const SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedAttemptGraphClaimCalibrationSnapshot {
     attempt_id: AttemptId,
-    rows: Box<[GraphClaimCalibrationRow]>,
+    rows: Box<[GraphMeasuredPeakRow]>,
     truncated: bool,
     execution: Option<GraphClaimCalibrationExecution>,
     execution_complete: bool,
@@ -132,10 +132,6 @@ pub enum GraphClaimCalibrationNonPhysicalReason {
     /// engine-minted attempt id is retained when the request was attempt-bound
     /// so qualification can require that leader's physical peak evidence.
     BfsSingleflightFollower { leader_attempt_id: Option<AttemptId> },
-    /// The engine's graph-memory model denied the request before the graph
-    /// executor started. The retained row carries the exact typed state and
-    /// request-versus-budget evidence.
-    GraphMemoryAdmissionDenied,
 }
 
 impl SealedAttemptGraphClaimCalibrationSnapshot {
@@ -180,7 +176,7 @@ impl SealedAttemptGraphClaimCalibrationSnapshot {
     }
 
     /// Typed engine rows in execution observation order.
-    pub fn rows(&self) -> &[GraphClaimCalibrationRow] {
+    pub fn rows(&self) -> &[GraphMeasuredPeakRow] {
         &self.rows
     }
 
@@ -212,15 +208,15 @@ pub(crate) struct GraphClaimCalibrationCapture {
 
 #[derive(Debug, Default)]
 struct GraphClaimCalibrationCaptureState {
-    rows: Vec<GraphClaimCalibrationRow>,
+    rows: Vec<GraphMeasuredPeakRow>,
     truncated: bool,
     execution: Option<GraphClaimCalibrationExecution>,
     execution_complete: bool,
     sealed: bool,
 }
 
-struct CapturedGraphClaimCalibrationRows {
-    rows: Vec<GraphClaimCalibrationRow>,
+struct CapturedGraphMeasuredPeakRows {
+    rows: Vec<GraphMeasuredPeakRow>,
     truncated: bool,
     execution: Option<GraphClaimCalibrationExecution>,
     execution_complete: bool,
@@ -259,7 +255,7 @@ impl GraphClaimCalibrationCapture {
         }
     }
 
-    pub(crate) fn record(&self, rows: &[GraphClaimCalibrationRow]) {
+    pub(crate) fn record(&self, rows: &[GraphMeasuredPeakRow]) {
         if rows.is_empty() {
             return;
         }
@@ -274,7 +270,7 @@ impl GraphClaimCalibrationCapture {
         state.rows.extend(rows.iter().take(remaining).cloned());
     }
 
-    fn seal(&self) -> CapturedGraphClaimCalibrationRows {
+    fn seal(&self) -> CapturedGraphMeasuredPeakRows {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.sealed = true;
         let (row_execution, row_execution_complete) = graph_claim_execution_from_rows(&state.rows);
@@ -285,7 +281,7 @@ impl GraphClaimCalibrationCapture {
             Some(execution) => (Some(execution), state.execution_complete),
             None => (row_execution, row_execution_complete),
         };
-        CapturedGraphClaimCalibrationRows {
+        CapturedGraphMeasuredPeakRows {
             rows: state.rows.clone(),
             truncated: state.truncated,
             execution,
@@ -297,9 +293,7 @@ impl GraphClaimCalibrationCapture {
 /// Derives an attempt classification only from terminal states authored by the
 /// engine's graph-claim row. Pending or inconsistent rows never become a
 /// physical graph execution at the adapter boundary.
-fn graph_claim_execution_from_rows(
-    rows: &[GraphClaimCalibrationRow],
-) -> (Option<GraphClaimCalibrationExecution>, bool) {
+fn graph_claim_execution_from_rows(rows: &[GraphMeasuredPeakRow]) -> (Option<GraphClaimCalibrationExecution>, bool) {
     let mut execution = None;
     let mut complete = !rows.is_empty();
     for row in rows {
@@ -309,9 +303,6 @@ fn graph_claim_execution_from_rows(
                 continue;
             },
             GraphClaimExecutionState::AlgorithmStarted => GraphClaimCalibrationExecution::Physical,
-            GraphClaimExecutionState::GraphMemoryAdmissionDenied => GraphClaimCalibrationExecution::NonPhysical(
-                GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
-            ),
         };
         match execution.as_ref() {
             Some(existing) if existing == &row_execution => {},
@@ -592,124 +583,6 @@ impl NexusNativeMetrics {
         }
     }
 
-    fn record_graph_reservation_rows(&self, metrics: &QueryMetrics) {
-        for row in &metrics.graph_reservation_rows {
-            if !self.admit_metric_row(row) {
-                continue;
-            }
-            MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::Summary)
-                .with_new_label("node_id", row.node_id.clone())
-                .with_new_label("algorithm", row.algorithm.as_str().to_string())
-                .with_new_label("class", row.class.as_str().to_string())
-                .with_new_label("outcome", row.outcome.as_str().to_string())
-                .with_new_label(
-                    "raw_input_edges",
-                    row.raw_input_edges.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label("input_edges", row.input_edges.to_string())
-                .with_new_label("vertex_upper_bound", row.vertex_upper_bound.to_string())
-                .with_new_label("vertex_estimate", row.vertex_estimate.to_string())
-                .with_new_label("vertex_estimate_source", row.vertex_estimate_source.as_str().to_string())
-                .with_new_label("vertex_width_bytes", row.vertex_width_bytes.to_string())
-                .with_new_label(
-                    "weight_width_bytes",
-                    row.weight_width_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "pair_rows",
-                    row.pair_rows.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "pair_vertex_width_bytes",
-                    row.pair_vertex_width_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "pair_cardinality_source",
-                    row.pair_cardinality_source
-                        .map_or_else(|| "none".to_string(), |source| source.as_str().to_string()),
-                )
-                .with_new_label(
-                    "pair_cardinality_admission_mode",
-                    row.pair_cardinality_admission_mode
-                        .map_or_else(|| "none".to_string(), |mode| mode.as_str().to_string()),
-                )
-                .with_new_label("has_edge_id", row.has_edge_id.to_string())
-                .with_new_label("directed", row.directed.to_string())
-                .with_new_label("renumber", row.renumber.to_string())
-                .with_new_label("construction_policy", row.construction_policy.as_str().to_string())
-                .with_new_label("edge_normalize_inserted", row.edge_normalize_inserted.to_string())
-                .with_new_label("calibration_source", row.calibration_source.as_str().to_string())
-                .with_new_label(
-                    "seed_count",
-                    row.seed_count.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "seed_mode",
-                    row.seed_mode.map_or_else(|| "none".to_string(), |mode| mode.as_str().to_string()),
-                )
-                .with_new_label("data_dependent", row.data_dependent.to_string())
-                .with_new_label("model_requested_bytes", row.model_requested_bytes.to_string())
-                .with_new_label("requested_bytes", row.requested_bytes.to_string())
-                .with_new_label(
-                    "budget_bytes",
-                    row.budget_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_model_error_ratio",
-                    row.graph_model_error_ratio.map_or_else(|| "none".to_string(), |ratio| ratio.as_decimal_string()),
-                )
-                .with_new_label(
-                    "measured_peak_bytes",
-                    row.measured_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_exact_vertices",
-                    row.statistics
-                        .map_or_else(|| "none".to_string(), |statistics| statistics.exact_vertices.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_degree_max",
-                    row.statistics
-                        .and_then(|statistics| statistics.degree_max)
-                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_degree_p99",
-                    row.statistics
-                        .and_then(|statistics| statistics.degree_p99)
-                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_sum_min_degree_oriented",
-                    row.statistics
-                        .and_then(|statistics| statistics.sum_min_degree_oriented)
-                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_oriented_edge_count",
-                    row.statistics
-                        .and_then(|statistics| statistics.oriented_edge_count)
-                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_peak_chunk_min_degree_sum",
-                    row.statistics
-                        .and_then(|statistics| statistics.peak_chunk_min_degree_sum)
-                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label(
-                    "graph_statistics_sum_out_degree",
-                    row.statistics
-                        .and_then(|statistics| statistics.sum_out_degree)
-                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
-                )
-                .with_new_label("reason", row.reason.unwrap_or("none").to_string())
-                .global_counter(metric_name::native_graph_reservation_rows())
-                .add(1);
-        }
-    }
-
     fn record_task_operator_rows(&self, metrics: &QueryMetrics) {
         for row in metrics.task_operator_metrics.values() {
             if !self.admit_metric_row(row) {
@@ -720,10 +593,6 @@ impl NexusNativeMetrics {
                 .with_new_label("operator_kind", row.operator_kind.clone())
                 .with_new_label("task_count", row.task_count.to_string())
                 .with_new_label("elapsed_ns", row.elapsed_time.as_nanos().min(u128::from(u64::MAX)).to_string())
-                .with_new_label("reservation_requested_bytes", row.reservation_requested_bytes.to_string())
-                .with_new_label("reservation_granted_bytes", row.reservation_granted_bytes.to_string())
-                .with_new_label("reservation_released_bytes", row.reservation_released_bytes.to_string())
-                .with_new_label("reservation_live_peak_bytes", row.reservation_live_peak_bytes.to_string())
                 .with_new_label(
                     "max_observed_peak_bytes",
                     row.max_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
@@ -747,10 +616,6 @@ impl NexusNativeMetrics {
                 .with_new_label("compiled_task_id", row.compiled_task_id.clone())
                 .with_new_label("operator_kind", row.operator_kind.clone())
                 .with_new_label("elapsed_ns", row.elapsed_time.as_nanos().min(u128::from(u64::MAX)).to_string())
-                .with_new_label("reservation_requested_bytes", row.reservation_requested_bytes.to_string())
-                .with_new_label("reservation_granted_bytes", row.reservation_granted_bytes.to_string())
-                .with_new_label("reservation_released_bytes", row.reservation_released_bytes.to_string())
-                .with_new_label("reservation_live_peak_bytes", row.reservation_live_peak_bytes.to_string())
                 .with_new_label(
                     "max_observed_peak_bytes",
                     row.max_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
@@ -1104,10 +969,6 @@ impl NexusNativeMetrics {
                 .with_new_label(
                     "filtered_input_materialization_threshold_bytes",
                     aggregate_fact(facts, "filtered_input_materialization_threshold_bytes"),
-                )
-                .with_new_label(
-                    "filtered_input_lower_level_unresolved_contracts",
-                    aggregate_fact(facts, "filtered_input_lower_level_unresolved_contracts"),
                 )
                 .with_new_label(
                     "filtered_global_rows_per_chunk",
@@ -1518,7 +1379,7 @@ fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u6
 mod tests {
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use nexus_query_engine::{
-        graph_memory::{GraphClaimCalibrationRow, GraphClaimExecutionState, GraphMeasuredPeakProvenance},
+        graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphMeasuredPeakRow},
         metrics::QueryMetrics,
         observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
@@ -1530,20 +1391,11 @@ mod tests {
 
     use super::*;
 
-    fn calibration_row(index: usize, algorithm: GraphAlgorithm) -> GraphClaimCalibrationRow {
-        GraphClaimCalibrationRow {
-            query_id: None,
-            node_id: format!("n{index}"),
-            node_index: index,
-            algorithm,
-            model_requested_bytes: 1_024 + index as u64,
-            requested_bytes: 768 + index as u64,
-            budget_bytes: Some(2_048),
-            execution_state: GraphClaimExecutionState::AlgorithmStarted,
-            measured_peak_bytes: Some(512 + index as u64),
-            measured_peak_provenance: GraphMeasuredPeakProvenance::ReservationHighWater,
-            graph_model_error_ratio: None,
-        }
+    fn calibration_row(index: usize, algorithm: GraphAlgorithm) -> GraphMeasuredPeakRow {
+        let mut row = GraphMeasuredPeakRow::pending(None, format!("n{index}"), index, algorithm);
+        row.record_execution_state(GraphClaimExecutionState::AlgorithmStarted);
+        row.record_measured_peak(Some(512 + index as u64), GraphMeasuredPeakProvenance::CacheScopeHighWater);
+        row
     }
 
     #[test]
@@ -1567,7 +1419,7 @@ mod tests {
         assert!(snapshot.truncated());
         assert_eq!(snapshot.rows()[0].node_index, 0);
         assert_eq!(snapshot.rows()[0].algorithm, GraphAlgorithm::PageRank);
-        assert_eq!(snapshot.rows()[0].measured_peak_provenance, GraphMeasuredPeakProvenance::ReservationHighWater);
+        assert_eq!(snapshot.rows()[0].measured_peak_provenance, GraphMeasuredPeakProvenance::CacheScopeHighWater);
         assert_eq!(
             snapshot.rows()[SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS - 1].node_index,
             SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS - 1
@@ -1613,39 +1465,6 @@ mod tests {
 
         assert!(snapshot.execution_complete());
         assert!(matches!(snapshot.execution(), Some(GraphClaimCalibrationExecution::Physical)));
-    }
-
-    #[test]
-    fn sealed_graph_calibration_snapshot_rejects_conflicting_engine_row_states() {
-        let capture = GraphClaimCalibrationCapture::default();
-        let mut admission_denied = calibration_row(2, GraphAlgorithm::Bfs);
-        admission_denied.execution_state = GraphClaimExecutionState::GraphMemoryAdmissionDenied;
-        capture.record(&[calibration_row(1, GraphAlgorithm::Bfs), admission_denied]);
-
-        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(AttemptId::mint(), [capture]);
-
-        assert!(!snapshot.execution_complete());
-        assert!(matches!(snapshot.execution(), Some(GraphClaimCalibrationExecution::NonPhysical(_))));
-    }
-
-    #[test]
-    fn sealed_graph_calibration_snapshot_derives_model_admission_denial_from_engine_row() {
-        let capture = GraphClaimCalibrationCapture::default();
-        let mut denied = calibration_row(1, GraphAlgorithm::PageRank);
-        denied.execution_state = GraphClaimExecutionState::GraphMemoryAdmissionDenied;
-        denied.measured_peak_bytes = None;
-        denied.measured_peak_provenance = GraphMeasuredPeakProvenance::Unavailable;
-        capture.record(&[denied]);
-
-        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(AttemptId::mint(), [capture]);
-
-        assert!(snapshot.execution_complete());
-        assert_eq!(
-            snapshot.execution(),
-            Some(&GraphClaimCalibrationExecution::NonPhysical(
-                GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
-            ))
-        );
     }
 
     #[test]

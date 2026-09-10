@@ -280,6 +280,8 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 
   [[nodiscard]] cudf_memory_resource_usage_t usage(bool active, std::size_t active_members) const;
 
+  [[nodiscard]] std::size_t effective_device_memory() const;
+
   [[nodiscard]] cudf_memory_resource_usage_t member_usage(
     std::shared_ptr<query_domain_member_counters> const& member, bool attached) const;
 
@@ -552,6 +554,9 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   cudf_memory_resource_usage_t query_domain_member_usage(
     std::shared_ptr<query_domain_member_state> const& state);
 
+  [[nodiscard]] std::optional<std::size_t> query_domain_effective_device_memory(
+    rmm::cuda_stream_view stream);
+
   bool resize(std::shared_ptr<reservation_state> const& state,
               std::size_t limit_bytes,
               std::string& error);
@@ -658,6 +663,7 @@ struct memory_resource_owner {
   std::shared_ptr<rmm::mr::device_memory_resource> upstream;
   std::shared_ptr<rmm::mr::device_memory_resource> pool;
   std::shared_ptr<void> upstream_lifetime;
+  std::shared_ptr<query_domain_state> query_domain;
   // Reverse member destruction tears this down before its physical base.
   std::unique_ptr<rmm::mr::device_memory_resource> limiting_mr;
   std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit;
@@ -675,6 +681,7 @@ struct memory_resource_owner {
 struct memory_resource_handle_state {
   std::shared_ptr<memory_resource_owner> owner;
   bool non_owning_alias = false;
+  bool current_resource_route_uses_manager_upstream = false;
 };
 
 struct current_resource_route_state {
@@ -691,7 +698,6 @@ struct current_resource_allocation_record {
   std::shared_ptr<current_resource_route_state> route;
   std::size_t bytes     = 0;
   std::size_t alignment = 0;
-  rmm::cuda_stream_view allocation_stream;
 };
 
 struct device_memory_manager_state {

@@ -65,17 +65,17 @@ pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDa
     push_line(output, format_args!("# tpch_dataset_table_row_group_counts={}", metadata.table_row_group_counts()));
 }
 
-pub(super) fn format_capability_contract_rows(rows: &[CapabilityContractGateRow]) -> String {
+pub(super) fn format_capability_decision_rows(rows: &[CapabilityDecisionRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();
     }
 
     let mut rows = rows.iter().collect::<Vec<_>>();
     rows.sort_by(|left, right| {
-        left.gate_id
+        left.decision_id
             .to_string()
-            .cmp(&right.gate_id.to_string())
-            .then_with(|| left.reservation_kind.as_str().cmp(right.reservation_kind.as_str()))
+            .cmp(&right.decision_id.to_string())
+            .then_with(|| left.boundary.cmp(right.boundary))
             .then_with(|| left.owner.to_string().cmp(&right.owner.to_string()))
     });
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
@@ -88,28 +88,18 @@ pub(super) fn format_capability_compiled_graphs(graphs: &[NativeCapabilityCompil
 
     let mut graphs = graphs.iter().collect::<Vec<_>>();
     graphs.sort_by_key(|graph| {
-        (
-            graph.task_count,
-            graph.edge_count,
-            graph.barrier_count,
-            graph.resource_count,
-            graph.gate_count,
-            graph.sink_kind.clone(),
-            graph.sink_gate_count,
-        )
+        (graph.task_count, graph.edge_count, graph.barrier_count, graph.resource_count, graph.sink_kind.clone())
     });
     graphs
         .iter()
         .map(|graph| {
             format!(
-                "task_count={},edge_count={},barrier_count={},resource_count={},gate_count={},sink_kind={},sink_gate_count={}",
+                "task_count={},edge_count={},barrier_count={},resource_count={},sink_kind={}",
                 graph.task_count,
                 graph.edge_count,
                 graph.barrier_count,
                 graph.resource_count,
-                graph.gate_count,
                 stable_tsv_field(&graph.sink_kind),
-                graph.sink_gate_count,
             )
         })
         .collect::<Vec<_>>()
@@ -126,10 +116,6 @@ pub(super) fn format_aggregate_strategy_rows(rows: &[NativeAggregateStrategyMetr
 
 pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
     datafusion_nexus::native_report::format_native_graph_runtime_metric_rows(rows)
-}
-
-pub(super) fn format_graph_reservation_rows(rows: &[NativeGraphReservationMetricRow]) -> String {
-    datafusion_nexus::native_report::format_native_graph_reservation_metric_rows(rows)
 }
 
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {

@@ -40,6 +40,16 @@ impl AttemptStreamProviderRoute {
             )
         })
     }
+
+    pub(super) fn synchronize_auxiliary_for_teardown(&self) -> Result<()> {
+        self.registration.synchronize_auxiliary_for_teardown().map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.attempt_stream_provider.teardown",
+                "failed to drain an attempt auxiliary stream",
+                error,
+            )
+        })
+    }
 }
 
 impl AttemptAllocationDomain {

@@ -45,16 +45,6 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
     assert_eq!(semi_metrics.key_count, 0);
     assert_eq!(semi_metrics.output_rows, 2);
     assert!(semi_metrics.gather_map_bytes > 0);
-    assert_reservation_kind_subsequence(
-        semi.metrics(),
-        &[
-            ReservationKind::BuildSide,
-            ReservationKind::ProbeSide,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
-        ],
-    );
 
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded conditional join should return host output");
@@ -74,16 +64,6 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
     assert_eq!(anti_metrics.key_count, 0);
     assert_eq!(anti_metrics.output_rows, 2);
     assert!(anti_metrics.gather_map_bytes > 0);
-    assert_reservation_kind_subsequence(
-        anti.metrics(),
-        &[
-            ReservationKind::BuildSide,
-            ReservationKind::ProbeSide,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
-        ],
-    );
 
     fs::remove_dir_all(dir).unwrap();
 }

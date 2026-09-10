@@ -1,11 +1,9 @@
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState,
-    BoundedRootHashJoinProbeState, ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, JoinType, NodeId,
-    QueryError, QueryErrorCode, ReservationKind, ResidentGpuFrame, Result, bounded_join_request, execution_overrides,
-    join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
+    BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
+    ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, JoinType, NodeId, QueryError, ResidentGpuFrame,
+    Result, execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
     prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
-    reserve_full_join_size_preflight_workspace, state::validate_root_hash_join,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, state::validate_root_hash_join,
     stream::materialize_bounded_root_hash_join_probe_stream,
 };
 
@@ -15,44 +13,29 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
     node: &JoinNode,
     build: BoundedRootHashJoinBuildState,
     input: GpuDataFrame,
-    input_reservation: &ActiveReservation,
 ) -> Result<BoundedRootHashJoinProbeState> {
     validate_root_hash_join(node)?;
     let probe_columns = match build.probe_side {
         JoinSide::Left => &build.left_columns,
         JoinSide::Right => &build.right_columns,
     };
-    let probe = prepare_bounded_join_side_input_from_shared_frame(
-        execution,
-        input,
-        input_reservation,
-        probe_columns,
-        build.probe_side,
-        node_id,
-        build.build_side,
-    )?;
+    let probe = prepare_bounded_join_side_input_from_shared_frame(execution, input, probe_columns, build.probe_side)?;
     let probe_keys = match build.probe_side {
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let (probe, indices, gather_map_reservation, gather_map_bytes) =
-        if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
-            execute_bounded_root_hash_join_single_pass_inner_probe_indices(
-                execution, node_id, node, &build, probe, probe_keys, &overrides,
-            )?
-        } else {
-            execute_bounded_root_hash_join_multi_pass_probe_indices(
-                execution, node_id, node, &build, probe, probe_keys, &overrides,
-            )?
-        };
+    let (probe, indices, gather_map_bytes) = if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
+        execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, &build, probe, probe_keys, &overrides)?
+    } else {
+        execute_bounded_root_hash_join_multi_pass_probe_indices(node, &build, probe, probe_keys, &overrides)?
+    };
     let output_reservation_bounds =
         match root_hash_join_output_reservation_bounds(execution, node_id, node, &build, &probe, &indices) {
             Ok(bytes) => bytes,
             Err(error) => {
-                execution.release(gather_map_reservation);
-                release_bounded_join_side_frame(execution, probe);
+                release_bounded_join_side_frame(probe);
                 return Err(error);
             },
         };
@@ -60,7 +43,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
         build,
         probe,
         indices,
-        gather_map_reservation,
         gather_map_bytes,
         output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
         minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
@@ -68,64 +50,23 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
 }
 
 pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_single_pass_inner_probe_indices(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
     probe: BoundedJoinSideFrame,
     probe_keys: &[String],
     overrides: &ExecutionOverrides<'_>,
-) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, ActiveReservation, u64)> {
-    let output_size_upper_bound = usize::try_from(probe.rows).map_err(|_error| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.bounded.join.single_pass_probe",
-            "single-pass reusable hash join probe row upper bound exceeds platform usize range",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("probe_rows", probe.rows)
-    })?;
-    let gather_map_reservation_bytes = build
-        .hash_join
-        .hash_join()
-        .probe_gather_map_reservation_size_bytes(output_size_upper_bound)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.gather_map_reservation",
-                "failed to size bounded native reusable hash join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", build.build_side)
-            .with_fact("single_pass_probe", true)
-        })?;
-    let gather_map_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::GatherMap,
-        "join_gather_map",
-        gather_map_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_bounded_join_side_frame(execution, probe);
-            return Err(error);
-        },
-    };
+) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, u64)> {
     let indices = match build.hash_join.hash_join().inner_probe_in(&probe.frame, probe_keys, overrides) {
         Ok(indices) => indices,
         Err(error) => {
-            execution.release(gather_map_reservation);
-            release_bounded_join_side_frame(execution, probe);
+            release_bounded_join_side_frame(probe);
             return Err(join_index_error(error, node));
         },
     };
     let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(gather_map_reservation);
-            release_bounded_join_side_frame(execution, probe);
+            release_bounded_join_side_frame(probe);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.gather_map_bytes",
                 "failed to observe bounded native join gather-map memory",
@@ -134,95 +75,20 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_singl
             .with_fact("single_pass_probe", true));
         },
     };
-    if gather_map_bytes > gather_map_reservation.bytes() {
-        execution.release(gather_map_reservation);
-        release_bounded_join_side_frame(execution, probe);
-        return Err(QueryError::new(
-            QueryErrorCode::MemoryReservationFailed,
-            "nexus_query_engine.bounded.join.single_pass_probe",
-            "single-pass reusable hash join probe exceeded its reserved gather-map upper bound",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("reserved_bytes", gather_map_reservation_bytes)
-        .with_fact("observed_bytes", gather_map_bytes)
-        .with_fact("probe_rows", output_size_upper_bound));
-    }
-    Ok((probe, indices, gather_map_reservation, gather_map_bytes))
+    Ok((probe, indices, gather_map_bytes))
 }
 
 pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi_pass_probe_indices(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
     probe: BoundedJoinSideFrame,
     probe_keys: &[String],
     overrides: &ExecutionOverrides<'_>,
-) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, ActiveReservation, u64)> {
-    let left_join_output_rows =
-        match root_hash_join_left_probe_size_for_full_size_preflight(node, build, &probe, probe_keys, overrides) {
-            Ok(rows) => rows as u64,
-            Err(error) => {
-                release_bounded_join_side_frame(execution, probe);
-                return Err(error);
-            },
-        };
-    let full_size_preflight_workspace = match reserve_full_join_size_preflight_workspace(
-        execution,
-        node_id,
-        node,
-        build.build.rows,
-        left_join_output_rows,
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_bounded_join_side_frame(execution, probe);
-            return Err(error);
-        },
-    };
+) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, u64)> {
     let output_size = match root_hash_join_multi_pass_probe_size(node, build, &probe, probe_keys, overrides) {
-        Ok(output_size) => {
-            if let Some(reservation) = full_size_preflight_workspace {
-                execution.release(reservation);
-            }
-            output_size
-        },
+        Ok(output_size) => output_size,
         Err(error) => {
-            if let Some(reservation) = full_size_preflight_workspace {
-                execution.release(reservation);
-            }
-            release_bounded_join_side_frame(execution, probe);
-            return Err(error);
-        },
-    };
-    let gather_map_reservation_bytes = match build
-        .hash_join
-        .hash_join()
-        .probe_gather_map_reservation_size_bytes(output_size)
-        .map(|bytes| bytes as u64)
-    {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            release_bounded_join_side_frame(execution, probe);
-            return Err(QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.gather_map_reservation",
-                "failed to size bounded native reusable hash join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", build.build_side));
-        },
-    };
-    let gather_map_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::GatherMap,
-        "join_gather_map",
-        gather_map_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_bounded_join_side_frame(execution, probe);
+            release_bounded_join_side_frame(probe);
             return Err(error);
         },
     };
@@ -231,16 +97,14 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi
         {
             Ok(indices) => indices,
             Err(error) => {
-                execution.release(gather_map_reservation);
-                release_bounded_join_side_frame(execution, probe);
+                release_bounded_join_side_frame(probe);
                 return Err(error);
             },
         };
     let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(gather_map_reservation);
-            release_bounded_join_side_frame(execution, probe);
+            release_bounded_join_side_frame(probe);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.gather_map_bytes",
                 "failed to observe bounded native join gather-map memory",
@@ -248,24 +112,7 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi
             ));
         },
     };
-    Ok((probe, indices, gather_map_reservation, gather_map_bytes))
-}
-
-pub(in crate::exec::bounded::join::hash) fn root_hash_join_left_probe_size_for_full_size_preflight(
-    node: &JoinNode,
-    build: &BoundedRootHashJoinBuildState,
-    probe: &BoundedJoinSideFrame,
-    probe_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
-) -> Result<usize> {
-    if node.spec.join_type != JoinType::Full {
-        return Ok(0);
-    }
-    build
-        .hash_join
-        .hash_join()
-        .left_probe_size_in(&probe.frame, probe_keys, overrides)
-        .map_err(|error| join_index_error(error, node))
+    Ok((probe, indices, gather_map_bytes))
 }
 
 pub(in crate::exec::bounded::join::hash) fn root_hash_join_multi_pass_probe_size(
@@ -390,36 +237,23 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
         JoinSide::Left => &build.left_columns,
         JoinSide::Right => &build.right_columns,
     };
-    let probe = prepare_bounded_join_side_input_from_resident_frame(
-        execution,
-        input,
-        probe_columns,
-        build.probe_side,
-        node_id,
-        build.build_side,
-    )?;
+    let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, probe_columns, build.probe_side)?;
     let probe_keys = match build.probe_side {
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
     };
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let (probe, indices, gather_map_reservation, gather_map_bytes) =
-        if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
-            execute_bounded_root_hash_join_single_pass_inner_probe_indices(
-                execution, node_id, node, &build, probe, probe_keys, &overrides,
-            )?
-        } else {
-            execute_bounded_root_hash_join_multi_pass_probe_indices(
-                execution, node_id, node, &build, probe, probe_keys, &overrides,
-            )?
-        };
+    let (probe, indices, gather_map_bytes) = if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
+        execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, &build, probe, probe_keys, &overrides)?
+    } else {
+        execute_bounded_root_hash_join_multi_pass_probe_indices(node, &build, probe, probe_keys, &overrides)?
+    };
     let output_reservation_bounds =
         match root_hash_join_output_reservation_bounds(execution, node_id, node, &build, &probe, &indices) {
             Ok(bytes) => bytes,
             Err(error) => {
-                execution.release(gather_map_reservation);
-                release_bounded_join_side_frame(execution, probe);
+                release_bounded_join_side_frame(probe);
                 return Err(error);
             },
         };
@@ -427,7 +261,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
         build,
         probe,
         indices,
-        gather_map_reservation,
         gather_map_bytes,
         output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
         minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
@@ -446,14 +279,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
         JoinSide::Left => &build.left_columns,
         JoinSide::Right => &build.right_columns,
     };
-    let probe = prepare_bounded_join_side_input_from_resident_frame(
-        execution,
-        input,
-        probe_columns,
-        build.probe_side,
-        node_id,
-        build.build_side,
-    )?;
+    let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, probe_columns, build.probe_side)?;
     let probe_keys = match build.probe_side {
         JoinSide::Left => &build.left_keys,
         JoinSide::Right => &build.right_keys,
@@ -462,10 +288,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     if reusable_hash_join_single_pass_inner_probe_supported(node, build) {
-        let (probe, indices, gather_map_reservation, gather_map_bytes) =
-            execute_bounded_root_hash_join_single_pass_inner_probe_indices(
-                execution, node_id, node, build, probe, probe_keys, &overrides,
-            )?;
+        let (probe, indices, gather_map_bytes) =
+            execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, build, probe, probe_keys, &overrides)?;
         return materialize_bounded_root_hash_join_probe_stream(
             execution,
             node_id,
@@ -473,16 +297,13 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
             build,
             probe,
             indices,
-            gather_map_reservation,
             gather_map_bytes,
             timer,
         );
     }
 
-    let (probe, indices, gather_map_reservation, gather_map_bytes) =
-        execute_bounded_root_hash_join_multi_pass_probe_indices(
-            execution, node_id, node, build, probe, probe_keys, &overrides,
-        )?;
+    let (probe, indices, gather_map_bytes) =
+        execute_bounded_root_hash_join_multi_pass_probe_indices(node, build, probe, probe_keys, &overrides)?;
 
     materialize_bounded_root_hash_join_probe_stream(
         execution,
@@ -491,7 +312,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
         build,
         probe,
         indices,
-        gather_map_reservation,
         gather_map_bytes,
         timer,
     )

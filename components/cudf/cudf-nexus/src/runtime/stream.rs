@@ -108,6 +108,15 @@ impl AttemptStreamProviderRegistration {
         self.fork_streams.len()
     }
 
+    /// Drain every provider-owned auxiliary stream before the route and its
+    /// query-domain members are detached during attempt teardown.
+    pub fn synchronize_auxiliary_for_teardown(&self) -> Result<()> {
+        for stream in &self.fork_streams {
+            stream.synchronize_for_teardown("runtime::AttemptStreamProviderRegistration::teardown")?;
+        }
+        Ok(())
+    }
+
     /// Attach one additional live attempt-member stream as a valid fork parent.
     pub fn attach(&self, stream: &CudaStream) -> Result<AttemptStreamProviderAlias> {
         let operation = "runtime::AttemptStreamProviderRegistration::attach";
@@ -236,7 +245,8 @@ impl CudaStream {
     /// stream. Unlike normal execution, teardown must still attempt owner-device
     /// entry after the device has been marked unhealthy so it can either retire
     /// the resource safely or quarantine it.
-    pub(crate) fn synchronize_for_teardown(&self, operation: &'static str) -> Result<()> {
+    #[doc(hidden)]
+    pub fn synchronize_for_teardown(&self, operation: &'static str) -> Result<()> {
         let _entry = DeviceEntryGuard::enter_for_teardown(self.device(), operation)?;
         // SAFETY: the resource-retirement registry retains a clone of this
         // stream until after the fence has completed.

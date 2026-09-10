@@ -28,7 +28,7 @@ use crate::{
 /// Returns the immutable capabilities required before placement.
 pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
     requirement: &AttemptRequirement,
-) -> Vec<nexus_query_planning::capability::ReservationRequirement> {
+) -> Vec<nexus_query_planning::admission::ExecutionCapability> {
     requirement.required_capabilities.clone()
 }
 

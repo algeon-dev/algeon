@@ -1,14 +1,13 @@
 //! Query execution metrics and stable diagnostic event rows.
 //!
 //! Byte counters are device bytes unless the field name explicitly says host,
-//! Arrow, or Parquet compressed bytes. Cumulative reservation totals can exceed
-//! device memory; live-peak fields are instantaneous maxima.
+//! Arrow, or Parquet compressed bytes.
 
 use std::{collections::BTreeMap, time::Duration};
 
 use nexus_query_planning::{
     execution_contracts::{ExecutionBoundaryPolicy, MemoryControlPolicy},
-    graph_memory::GraphReservationReport,
+    graph_observation::GraphMeasuredPeakRow,
 };
 
 use crate::harness::max_option;
@@ -28,11 +27,9 @@ mod source_read;
 mod task;
 
 use correlation::inherited_query_id;
-#[doc(hidden)]
-pub use memory::ReservationProjectionLedgerHandle;
 pub use nexus_query_planning::{
     correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId},
-    execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
+    execution_contracts::{MemorySpaceId, ReservationKind},
 };
 
 pub use self::{
@@ -51,7 +48,6 @@ pub use self::{
     dynamic_filter::{DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot},
     graph::GraphAlgorithmRuntimeMetrics,
     join::{JoinOperatorMetrics, JoinStrategyDecisionMetrics},
-    memory::{MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome},
     operator::OperatorMetrics,
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::{BudgetedExecutionEvent, TaskOperatorMetrics, TaskRuntimeMetrics},
@@ -60,8 +56,6 @@ pub use self::{
 /// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
-    #[doc(hidden)]
-    pub reservation_projection_ledger: memory::ReservationProjectionLedger,
     /// Query-wide diagnostic correlation id.
     pub query_id: QueryId,
     /// Optional parent trace id.
@@ -72,12 +66,9 @@ pub struct QueryMetrics {
     pub operators: Vec<OperatorMetrics>,
     /// Graph algorithm runtime rows in observation order.
     pub graph_algorithm_runtime_rows: Vec<GraphAlgorithmRuntimeMetrics>,
-    /// Graph memory-tier reservation rows in observation order.
-    pub graph_reservation_rows: Vec<GraphReservationReport>,
-    /// Fixed-shape graph model-claim versus measured-peak calibration rows in
-    /// observation order. These are diagnostic projections and never form
-    /// admission evidence.
-    pub graph_claim_calibration_rows: Vec<nexus_query_planning::graph_memory::GraphClaimCalibrationRow>,
+    /// Fixed-shape measured graph-execution peak rows in observation order.
+    /// These are diagnostic projections and never form admission evidence.
+    pub graph_claim_calibration_rows: Vec<GraphMeasuredPeakRow>,
     /// Join-strategy diagnostics captured during planning/execution.
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
     /// Aggregate-strategy diagnostics captured during planning/execution.
@@ -102,16 +93,6 @@ pub struct QueryMetrics {
     pub resident_dataframe_peak_bytes: Option<u64>,
     /// cuDF allocator high-water bytes when reported by lower layers.
     pub allocator_high_water_bytes: Option<u64>,
-    /// Cumulative reservation bytes requested over the query lifetime.
-    pub reservation_requested_bytes: u64,
-    /// Cumulative reservation bytes granted over the query lifetime.
-    pub reservation_granted_bytes: u64,
-    /// Peak live reserved bytes observed at any instant.
-    pub reservation_live_peak_bytes: u64,
-    /// Count of denied reservation requests.
-    pub reservation_denied_count: u64,
-    /// Largest compiled-pipeline task reservation request granted or applied during this query.
-    pub max_task_reservation_bytes: u64,
     /// Largest lower-level budgeted cuDF peak reported by a task-like operation.
     pub max_task_observed_peak_bytes: Option<u64>,
     /// Largest retained byte count reported by a task-like lower-level cuDF operation.
@@ -126,12 +107,6 @@ pub struct QueryMetrics {
     pub plan_task_mapping_rows: Vec<PlanTaskMapping>,
     /// Optional frontend physical-plan shape used to annotate plan/task mapping rows.
     pub plan_task_mapping_datafusion_shape: Option<String>,
-    /// Exact memory reservation timeline events.
-    ///
-    /// These public rows are not bounded by runtime-observation retention
-    /// limits; dropping them would make the public totals and task projections
-    /// misleading when the separately retained trace is truncated.
-    pub reservation_events: Vec<MemoryReservationEvent>,
     /// Successful lower-level cuDF calls that returned an execution-budget report.
     ///
     /// Token-routed operations without a report-returning cuDF API may still attach budget failure
@@ -165,8 +140,6 @@ pub struct QueryMetrics {
     pub retry_count: u64,
     /// Retries caused by lower-level resource exhaustion.
     pub retry_resource_exhausted_count: u64,
-    /// Retries caused by reservation failure.
-    pub retry_reservation_failure_count: u64,
     /// Number of reusable cuDF hash-join artifacts built during this query.
     pub hash_join_build_count: u64,
     /// Number of reusable cuDF filtered-join artifacts built during this query.
@@ -321,9 +294,6 @@ impl QueryMetrics {
         let Some(query_id) = self.inherited_query_id() else {
             return;
         };
-        for event in &mut self.reservation_events {
-            event.query_id = Some(query_id.clone());
-        }
         for row in &mut self.budgeted_execution_events {
             row.query_id = Some(query_id.clone());
         }
@@ -357,9 +327,6 @@ impl QueryMetrics {
         for row in &mut self.graph_algorithm_runtime_rows {
             row.query_id = Some(query_id.clone());
         }
-        for row in &mut self.graph_reservation_rows {
-            row.query_id = Some(query_id.clone());
-        }
         for row in &mut self.graph_claim_calibration_rows {
             row.query_id = Some(query_id.clone());
         }
@@ -367,7 +334,6 @@ impl QueryMetrics {
 
     /// Merges another query metrics value into this one.
     pub fn merge_from(&mut self, mut other: QueryMetrics) {
-        self.merge_reservation_projection_ledger(&other);
         if !self.query_id.is_assigned() && other.query_id.is_assigned() {
             self.query_id = other.query_id.clone();
             self.stamp_existing_rows_with_query_id();
@@ -381,7 +347,6 @@ impl QueryMetrics {
         self.boundary.merge_from(other.boundary);
         self.operators.extend(other.operators);
         self.graph_algorithm_runtime_rows.extend(other.graph_algorithm_runtime_rows);
-        self.graph_reservation_rows.extend(other.graph_reservation_rows);
         self.graph_claim_calibration_rows.extend(other.graph_claim_calibration_rows);
         self.join_strategy_decisions.extend(other.join_strategy_decisions);
         self.aggregate_strategy_decisions.extend(other.aggregate_strategy_decisions);
@@ -393,12 +358,6 @@ impl QueryMetrics {
         self.resident_dataframe_peak_bytes =
             max_option(self.resident_dataframe_peak_bytes, other.resident_dataframe_peak_bytes);
         self.allocator_high_water_bytes = max_option(self.allocator_high_water_bytes, other.allocator_high_water_bytes);
-        self.reservation_requested_bytes =
-            self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
-        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
-        self.reservation_denied_count = self.reservation_denied_count.saturating_add(other.reservation_denied_count);
-        self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(other.max_task_reservation_bytes);
         self.max_task_observed_peak_bytes =
             max_option(self.max_task_observed_peak_bytes, other.max_task_observed_peak_bytes);
         self.max_task_retained_bytes = max_option(self.max_task_retained_bytes, other.max_task_retained_bytes);
@@ -419,7 +378,6 @@ impl QueryMetrics {
                 .or_insert_with(|| TaskRuntimeMetrics { compiled_task_id, ..Default::default() })
                 .merge_from(metrics);
         }
-        self.reservation_events.extend(other.reservation_events);
         self.budgeted_execution_events.extend(other.budgeted_execution_events);
         self.source_chunks_planned = self.source_chunks_planned.saturating_add(other.source_chunks_planned);
         self.source_chunks_attempted = self.source_chunks_attempted.saturating_add(other.source_chunks_attempted);
@@ -447,8 +405,6 @@ impl QueryMetrics {
         self.retry_count = self.retry_count.saturating_add(other.retry_count);
         self.retry_resource_exhausted_count =
             self.retry_resource_exhausted_count.saturating_add(other.retry_resource_exhausted_count);
-        self.retry_reservation_failure_count =
-            self.retry_reservation_failure_count.saturating_add(other.retry_reservation_failure_count);
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(other.filtered_join_build_count);
         self.one_shot_join_count = self.one_shot_join_count.saturating_add(other.one_shot_join_count);
@@ -528,21 +484,10 @@ fn optional_str(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
 
-fn optional_usize(value: Option<usize>) -> String {
-    value.map_or_else(|| "none".to_string(), |value| value.to_string())
-}
-
 fn optional_u64(value: Option<u64>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
 fn optional_i64(value: Option<i64>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
-}
-
-fn optional_row_groups(value: Option<&[usize]>) -> String {
-    value
-        .map(|row_groups| row_groups.iter().map(usize::to_string).collect::<Vec<_>>().join(","))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "none".to_string())
 }

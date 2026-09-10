@@ -43,20 +43,8 @@ fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
-    assert_reservation_kind_subsequence(
-        metrics,
-        &[
-            ReservationKind::BuildSide,
-            ReservationKind::ProbeSide,
-            ReservationKind::MixedSizeData,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
-        ],
-    );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "inner");
@@ -125,30 +113,8 @@ fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
     assert!(metrics.source_chunks_committed > 1);
-
-    let left_node_id = left.to_string();
-    let left_source_read_reserves = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-                && event.node_id.as_deref() == Some(left_node_id.as_str())
-        })
-        .count();
-    assert_eq!(left_source_read_reserves, 1);
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.node_id.as_deref() != Some(left_node_id.as_str())
-                || !matches!(event.memory_boundary.as_str(), "join_source_concat" | "join_source_concat_output")
-        }),
-        "chunked mixed residual join probe source should stream instead of concatenating all probe chunks"
-    );
 
     let mixed_join_output_rows = metrics
         .operators
@@ -221,30 +187,8 @@ fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
     assert!(metrics.source_chunks_committed > 1);
-
-    let right_node_id = right.to_string();
-    let right_source_read_reserves = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-                && event.node_id.as_deref() == Some(right_node_id.as_str())
-        })
-        .count();
-    assert_eq!(right_source_read_reserves, 1);
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.node_id.as_deref() != Some(right_node_id.as_str())
-                || !matches!(event.memory_boundary.as_str(), "join_source_concat" | "join_source_concat_output")
-        }),
-        "right-side mixed residual join probe source should stream instead of concatenating all probe chunks"
-    );
 
     let mixed_join_output_rows = metrics
         .operators
@@ -392,30 +336,12 @@ fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "full");
     assert_eq!(join_metrics.execution_strategy, "bounded_mixed_keyed_residual_join");
     assert_eq!(join_metrics.output_rows, 6);
     assert_eq!(join_metrics.mixed_size_data_bytes, metrics.mixed_join_size_data_bytes);
-    assert_eq!(
-        granted_reservation_requested_bytes(metrics, ReservationKind::GatherMap, "join_gather_map"),
-        cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(6).unwrap() as u64
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -481,10 +407,6 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
     };
     assert_eq!(int32_array(semi_batch, 0).values().as_ref(), &[25]);
     assert_bounded_mixed_left_only_join_metrics(semi.metrics(), "left_semi", 1);
-    assert_eq!(
-        granted_reservation_requested_bytes(semi.metrics(), ReservationKind::GatherMap, "join_gather_map"),
-        cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(1).unwrap() as u64
-    );
 
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded mixed join should return host output");
@@ -493,10 +415,6 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
     anti_rows.sort();
     assert_eq!(anti_rows, vec![10, 20, 30]);
     assert_bounded_mixed_left_only_join_metrics(anti.metrics(), "left_anti", 3);
-    assert_eq!(
-        granted_reservation_requested_bytes(anti.metrics(), ReservationKind::GatherMap, "join_gather_map"),
-        cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(3).unwrap() as u64
-    );
 
     fs::remove_dir_all(dir).unwrap();
 }

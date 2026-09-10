@@ -59,19 +59,18 @@ pub use runtime_observation::LogicalRetainedBytes;
 pub use runtime_observation::{
     AdmissionLifecycleState, AdmissionRequestId, BarrierDefinitionRow, CompiledEdgeRow, GpuJobLifecycleState,
     JobDefinitionRow, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow,
-    QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, ReservationGateRow, RuntimeAdmissionObservation,
-    RuntimeBarrierId, RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
+    QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeAdmissionObservation, RuntimeBarrierId,
+    RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
     RuntimeMeasurementQuality, RuntimeMeasurementScope, RuntimeMeasurementSource, RuntimeObservationClassLoss,
     RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest,
     RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecord, RuntimeObservationRecordClass,
     RuntimeOperatorStageKind, RuntimeOperatorStageObservation, RuntimeOperatorStageState, RuntimePipelineEdgeId,
-    RuntimePlanNodeId, RuntimeQueryId, RuntimeReservationAction, RuntimeReservationDisposition,
-    RuntimeReservationGateId, RuntimeReservationId, RuntimeReservationObservation, RuntimeResourceDomain,
-    RuntimeResourceId, RuntimeResourceMeasurementObservation, RuntimeResourceRow, RuntimeSinkId,
-    RuntimeSourceLocationId, RuntimeSourceReadObservation, RuntimeSpanId, RuntimeStreamLeaseObservation,
-    RuntimeStreamLeaseScope, RuntimeTaskLifecycleObservation, RuntimeTimelineEvent, RuntimeTopologyRecord,
-    RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow, SourceReadLifecycleState, StreamLeaseAcquisition,
-    StreamLeaseLifecycleState, TaskDefinitionRow, TaskLifecycleState, WorkerDefinitionRow,
+    RuntimePlanNodeId, RuntimeQueryId, RuntimeReservationAction, RuntimeReservationDisposition, RuntimeReservationId,
+    RuntimeReservationObservation, RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceMeasurementObservation,
+    RuntimeResourceRow, RuntimeSinkId, RuntimeSourceLocationId, RuntimeSourceReadObservation, RuntimeSpanId,
+    RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope, RuntimeTaskLifecycleObservation, RuntimeTimelineEvent,
+    RuntimeTopologyRecord, RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow, SourceReadLifecycleState,
+    StreamLeaseAcquisition, StreamLeaseLifecycleState, TaskDefinitionRow, TaskLifecycleState, WorkerDefinitionRow,
 };
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -84,7 +83,6 @@ pub fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservation
     let mut edges = BTreeSet::new();
     let mut barriers = BTreeSet::new();
     let mut sinks = BTreeSet::new();
-    let mut gates = BTreeSet::new();
     let mut jobs = BTreeSet::new();
     let mut workers = BTreeSet::new();
     let mut resources = BTreeSet::new();
@@ -104,9 +102,6 @@ pub fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservation
             },
             RuntimeTopologyRecord::SinkDefinition(row) => {
                 sinks.insert((row.plan_execution_id.clone(), row.sink_id.clone()))
-            },
-            RuntimeTopologyRecord::ReservationGate(row) => {
-                gates.insert((row.plan_execution_id.clone(), row.gate_id.clone()))
             },
             RuntimeTopologyRecord::JobDefinition(row) => {
                 jobs.insert((row.plan_execution_id.clone(), row.job_id.clone()))
@@ -139,49 +134,14 @@ pub fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservation
                 for resource_id in &row.resource_ids {
                     assert!(resources.contains(&(Some(row.plan_execution_id.clone()), resource_id.clone())));
                 }
-                for gate_id in &row.gate_ids {
-                    assert!(gates.contains(&(row.plan_execution_id.clone(), gate_id.clone())));
-                }
             },
             RuntimeTopologyRecord::BarrierDefinition(row) => {
                 for task_id in row.upstream_task_ids.iter().chain(&row.downstream_task_ids) {
                     assert!(tasks.contains(&(row.plan_execution_id.clone(), task_id.clone())));
                 }
-                for gate_id in &row.gate_ids {
-                    assert!(gates.contains(&(row.plan_execution_id.clone(), gate_id.clone())));
-                }
             },
             RuntimeTopologyRecord::SinkDefinition(row) => {
                 assert!(tasks.contains(&(row.plan_execution_id.clone(), row.input_task_id.clone())));
-                for gate_id in &row.gate_ids {
-                    assert!(gates.contains(&(row.plan_execution_id.clone(), gate_id.clone())));
-                }
-            },
-            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "task" => {
-                assert!(
-                    tasks
-                        .iter()
-                        .any(|(plan, task)| { plan == &row.plan_execution_id && task.as_str() == row.owner_id })
-                );
-            },
-            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "edge" => {
-                assert!(
-                    edges
-                        .iter()
-                        .any(|(plan, edge)| { plan == &row.plan_execution_id && edge.as_str() == row.owner_id })
-                );
-            },
-            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "barrier" => {
-                assert!(
-                    barriers
-                        .iter()
-                        .any(|(plan, barrier)| { plan == &row.plan_execution_id && barrier.as_str() == row.owner_id })
-                );
-            },
-            RuntimeTopologyRecord::ReservationGate(row) if row.owner_kind == "sink" => {
-                assert!(
-                    sinks.iter().any(|(plan, sink)| plan == &row.plan_execution_id && sink.as_str() == row.owner_id)
-                );
             },
             RuntimeTopologyRecord::Resource(row) => {
                 if let Some(plan_execution_id) = &row.plan_execution_id {
@@ -194,7 +154,6 @@ pub fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObservation
                 }
             },
             RuntimeTopologyRecord::PlanNode(_)
-            | RuntimeTopologyRecord::ReservationGate(_)
             | RuntimeTopologyRecord::JobDefinition(_)
             | RuntimeTopologyRecord::WorkerDefinition(_) => {},
         }

@@ -58,22 +58,3 @@ pub(super) fn feature_disabled(operation: CuvsOperation) -> DataFusionError {
     .with_log_safe_fact("host_fallback", "disabled")
     .into()
 }
-
-pub(super) fn bounded_execution_unsupported(
-    operation: CuvsOperation,
-    execution_mode: impl ToString,
-) -> DataFusionError {
-    Error::new(
-        ErrorCode::UnsupportedOperator,
-        "datafusion_nexus.cuvs_sql.bounded_admission",
-        "bounded cuVS execution requires a lower-level peak-memory preflight contract",
-    )
-    .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
-    .with_log_safe_fact("operator", "vector_algorithm")
-    .with_log_safe_fact("execution_mode", execution_mode.to_string())
-    .with_log_safe_fact("reason", "blocked_lower_level_contract")
-    .with_log_safe_fact("memory_boundary", nexus_query_engine::plan::VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY)
-    .with_log_safe_fact("required_contract", nexus_query_engine::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
-    .with_log_safe_fact("host_fallback", "disabled")
-    .into()
-}

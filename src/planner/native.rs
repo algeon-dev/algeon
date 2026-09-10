@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
+    common::{Result as DataFusionResult, config::ConfigOptions},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::{admission::QueryPlanCapabilityProof, metrics::QueryId};
+use nexus_query_engine::{admission::AttemptCapabilityEvidence, metrics::QueryId};
 
 use super::{DataFusionCpuExecutionPolicy, FinalPlanDisposition, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
@@ -475,9 +475,9 @@ fn plan_query_admission_ticket_for_optimized_plan(
     if plan_contains_deferred_graph_admission(plan) {
         return Ok(None);
     }
-    let fragment_proofs = native_fragment_capability_proofs(plan)?;
+    let fragment_evidence_items = native_fragment_capability_evidences(plan)?;
     let ticket = native_execution_config
-        .new_plan_query_admission_ticket_with_fragment_requirements(fragment_proofs)
+        .new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)
         .map_err(|error| {
             datafusion::common::DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_optimizer.graph_ticket_ask",
@@ -491,7 +491,7 @@ fn plan_query_admission_ticket_for_optimized_plan(
     let ticket = match attempt {
         Some(extension) => QueryAdmissionTicket::new_attempt_bound(
             ticket.source(),
-            ticket.attempt_capability_proof_for_rebind(),
+            ticket.attempt_capability_evidence_for_rebind(),
             extension.ticket_binding(),
             ticket.metrics_capture(),
         ),
@@ -505,29 +505,29 @@ fn plan_contains_deferred_graph_admission(plan: &dyn ExecutionPlan) -> bool {
         || plan.children().iter().any(|child| plan_contains_deferred_graph_admission(child.as_ref()))
 }
 
-fn native_fragment_capability_proofs(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<QueryPlanCapabilityProof>> {
-    let mut proofs = Vec::new();
-    collect_native_fragment_capability_proofs(plan, false, &mut proofs)?;
-    Ok(proofs)
+fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<AttemptCapabilityEvidence>> {
+    let mut evidence_items = Vec::new();
+    collect_native_fragment_capability_evidences(plan, false, &mut evidence_items)?;
+    Ok(evidence_items)
 }
 
-fn collect_native_fragment_capability_proofs(
+fn collect_native_fragment_capability_evidences(
     plan: &dyn ExecutionPlan,
     executes_as_cugraph_input: bool,
-    proofs: &mut Vec<QueryPlanCapabilityProof>,
+    evidence_items: &mut Vec<AttemptCapabilityEvidence>,
 ) -> DataFusionResult<()> {
-    let graph_execution_proof =
-        graph_execution_plan(plan).map(GraphExecutionPlan::graph_execution_capability_proof).transpose()?;
-    let is_cugraph_execution = graph_execution_proof.is_some();
+    let graph_execution_evidence =
+        graph_execution_plan(plan).map(GraphExecutionPlan::graph_execution_capability_evidence).transpose()?;
+    let is_cugraph_execution = graph_execution_evidence.is_some();
     for child in plan.children() {
-        collect_native_fragment_capability_proofs(
+        collect_native_fragment_capability_evidences(
             child.as_ref(),
             executes_as_cugraph_input || is_cugraph_execution,
-            proofs,
+            evidence_items,
         )?;
     }
-    if let Some(proof) = graph_execution_proof {
-        proofs.push(proof);
+    if let Some(evidence) = graph_execution_evidence {
+        evidence_items.push(evidence);
         return Ok(());
     }
     if let Some(native_plan) = lowered_native_plan(plan) {
@@ -538,21 +538,15 @@ fn collect_native_fragment_capability_proofs(
         } else {
             native_plan
         };
-        proofs.push(native_plan_capability_proof(native_plan)?);
+        evidence_items.push(native_plan_capability_evidence(native_plan)?);
     }
     Ok(())
 }
 
-fn native_plan_capability_proof(
+fn native_plan_capability_evidence(
     native_plan: &nexus_query_engine::plan::QueryPlan,
-) -> DataFusionResult<QueryPlanCapabilityProof> {
-    QueryPlanCapabilityProof::for_query_plan_preflighted(native_plan).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.native_optimizer.admission_proof",
-            "native query-plan preflight failed before admission proof issuance",
-            error,
-        ))
-    })
+) -> DataFusionResult<AttemptCapabilityEvidence> {
+    Ok(AttemptCapabilityEvidence::for_query_plan(native_plan))
 }
 
 fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&nexus_query_engine::plan::QueryPlan> {
@@ -701,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_ticket_unions_capabilities_from_composed_native_fragments() {
+    fn planner_ticket_aggregates_scopes_from_composed_native_fragments() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let left = NexusNativeGpuProducerExec::try_new(
             "left",
@@ -724,26 +718,23 @@ mod tests {
         let union = builder.add_union(vec![left_source, right_source], Arc::clone(&schema));
         let consumer_plan = builder.finish_with_host_sink_schema(union, schema);
 
-        let left_proof = native_plan_capability_proof(left.native_plan()).expect("producer has capability proof");
-        let right_proof = native_plan_capability_proof(right.native_plan()).expect("producer has capability proof");
-        let consumer_proof = native_plan_capability_proof(&consumer_plan).expect("consumer has capability proof");
-        let unaggregated_capability_count = left_proof.required_capabilities().len()
-            + right_proof.required_capabilities().len()
-            + consumer_proof.required_capabilities().len();
-        assert!(!left_proof.required_capabilities().is_empty(), "producer must expose a capability requirement");
+        let left_evidence =
+            native_plan_capability_evidence(left.native_plan()).expect("producer has capability evidence");
+        let right_evidence =
+            native_plan_capability_evidence(right.native_plan()).expect("producer has capability evidence");
+        let consumer_evidence =
+            native_plan_capability_evidence(&consumer_plan).expect("consumer has capability evidence");
         let composed =
             NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
                 .unwrap();
-        let expected = QueryPlanCapabilityProof::combine(left_proof, [right_proof, consumer_proof]).unwrap();
+        let expected = AttemptCapabilityEvidence::aggregate([left_evidence, right_evidence, consumer_evidence]);
 
         let ticket = plan_query_admission_ticket_for_optimized_plan(&composed, &config, None).unwrap().unwrap();
 
-        assert_eq!(ticket.attempt_capability_proof(), Some(&expected));
-        assert!(
-            ticket.attempt_capability_proof().expect("planner ticket retains its proof").required_capabilities().len()
-                < unaggregated_capability_count,
-            "the repeated producer capability must be deduplicated"
-        );
+        assert_eq!(ticket.attempt_capability_evidence(), Some(&expected));
+        let evidence = ticket.attempt_capability_evidence().expect("planner ticket retains its evidence");
+        assert!(evidence.required_capabilities().is_empty());
+        assert_eq!(evidence.execution_scopes().len(), 3);
     }
 
     #[cfg(feature = "cugraph")]

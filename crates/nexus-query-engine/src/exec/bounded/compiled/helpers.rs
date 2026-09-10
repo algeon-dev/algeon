@@ -45,16 +45,6 @@ pub(super) fn single_input_resource(task: &PipelineTask) -> Result<ResidentResou
     Ok(task.input_resources()[0])
 }
 
-pub(super) fn task_diagnostic_resident_resource(task: &PipelineTask) -> Option<ResidentResourceId> {
-    if task.output_resources().len() == 1 {
-        Some(task.output_resources()[0])
-    } else if task.input_resources().len() == 1 {
-        Some(task.input_resources()[0])
-    } else {
-        None
-    }
-}
-
 pub(super) fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a JoinNode> {
     let node = plan.node(node_id).ok_or_else(|| {
         invalid("compiled join task references a missing plan node")
@@ -168,7 +158,7 @@ pub(super) fn measure_join_build_key_unique(
     let key_refs = key_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let token = execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().remaining_bytes(),
+        execution.device_budget_bytes(),
         "join_build_key_uniqueness_probe",
         "nexus_query_engine.bounded.join.build_key_uniqueness_probe.budget_token",
         "failed to create join build-key uniqueness probe budget token",

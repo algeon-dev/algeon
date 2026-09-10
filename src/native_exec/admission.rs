@@ -30,7 +30,7 @@ use futures::Stream;
 #[cfg(test)]
 use nexus_query_engine::metrics::QueryId;
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::AttemptCapabilityEvidence,
     attempt::{AttemptAdmissionBinding, AttemptCancellation, AttemptHandle},
     observability::{
         AttemptAdmissionFact, AttemptComposedScheduleProjection, RuntimeObservationConfig, RuntimeObservationOwner,
@@ -60,11 +60,6 @@ impl QueryAdmissionSource {
 
     pub fn backend_matches(&self, session: &GpuBackendSession) -> bool {
         self.session.same_backend(session)
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn max_device_total_memory_bytes(&self) -> u64 {
-        self.max_device_total_memory_bytes
     }
 
     pub(crate) fn same_backend(&self, other: &Self) -> bool {
@@ -151,16 +146,16 @@ pub(crate) struct QueryAdmissionTicket {
     source: Option<QueryAdmissionSource>,
     #[cfg(not(test))]
     source: QueryAdmissionSource,
-    /// Engine-issued proof for the native fragments this ticket may execute.
-    /// `None` is intentionally not an empty explicit proof: all-modeled
+    /// Engine-issued evidence for the native fragments this ticket may execute.
+    /// `None` is intentionally not an empty explicit evidence: all-modeled
     /// services may admit it for resource-only use, while exact profiles
     /// reject it and execution cannot use it to authorize a native plan.
-    attempt_capability_proof: Option<QueryPlanCapabilityProof>,
+    attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
     /// A composed root can resolve footer-bound child evidence only after its
     /// outer DataFusion stream has already selected this ticket. That one
     /// pre-admission replacement preserves the active stream's lifecycle
     /// ownership instead of admitting a second ticket for the same attempt.
-    rebound_capability_proof: OnceLock<QueryPlanCapabilityProof>,
+    rebound_capability_evidence: OnceLock<AttemptCapabilityEvidence>,
     observation_query_id: Option<RuntimeQueryId>,
     observation_trace_id: Option<RuntimeTraceId>,
     observation_config: RuntimeObservationConfig,
@@ -301,11 +296,11 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn new(
         source: QueryAdmissionSource,
-        attempt_capability_proof: Option<QueryPlanCapabilityProof>,
+        attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
     ) -> Arc<Self> {
-        Self::new_with_capability_proof_and_observation(
+        Self::new_with_capability_evidence_and_observation(
             source,
-            attempt_capability_proof,
+            attempt_capability_evidence,
             RuntimeObservationOwner::new(QueryId::mint(), None, RuntimeObservationConfig::native_execution()),
             None,
         )
@@ -314,15 +309,15 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn new_with_observation(
         source: QueryAdmissionSource,
-        attempt_capability_proof: Option<QueryPlanCapabilityProof>,
+        attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
         observation_owner: RuntimeObservationOwner,
     ) -> Arc<Self> {
-        Self::new_with_capability_proof_and_observation(source, attempt_capability_proof, observation_owner, None)
+        Self::new_with_capability_evidence_and_observation(source, attempt_capability_evidence, observation_owner, None)
     }
 
-    pub(crate) fn new_with_capability_proof_and_observation(
+    pub(crate) fn new_with_capability_evidence_and_observation(
         source: QueryAdmissionSource,
-        attempt_capability_proof: Option<QueryPlanCapabilityProof>,
+        attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
         observation: impl Into<NativeRuntimeObservation>,
         observation_capture: Option<NativeExecutionMetricsCapture>,
     ) -> Arc<Self> {
@@ -339,8 +334,8 @@ impl QueryAdmissionTicket {
             source: Some(source),
             #[cfg(not(test))]
             source,
-            attempt_capability_proof,
-            rebound_capability_proof: OnceLock::new(),
+            attempt_capability_evidence,
+            rebound_capability_evidence: OnceLock::new(),
             observation_query_id,
             observation_trace_id,
             observation_config,
@@ -370,8 +365,8 @@ impl QueryAdmissionTicket {
             attempt: None,
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
             source: None,
-            attempt_capability_proof: None,
-            rebound_capability_proof: OnceLock::new(),
+            attempt_capability_evidence: None,
+            rebound_capability_evidence: OnceLock::new(),
             observation_query_id,
             observation_trace_id,
             observation_config,
@@ -389,15 +384,15 @@ impl QueryAdmissionTicket {
     /// Creates a ticket bound to one explicit adapter invocation.
     pub(crate) fn new_attempt_bound(
         source: QueryAdmissionSource,
-        attempt_capability_proof: Option<QueryPlanCapabilityProof>,
+        attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
         binding: AttemptTicketBinding,
         _observation_capture: Option<NativeExecutionMetricsCapture>,
     ) -> Arc<Self> {
         let observation = binding.admission_binding.observation_handle();
         let observation_capture = Some(NativeExecutionMetricsCapture::coordinated(observation.clone()));
-        let mut ticket = Self::new_with_capability_proof_and_observation(
+        let mut ticket = Self::new_with_capability_evidence_and_observation(
             source,
-            attempt_capability_proof,
+            attempt_capability_evidence,
             NativeRuntimeObservation::Coordinated(observation),
             observation_capture,
         );
@@ -427,68 +422,71 @@ impl QueryAdmissionTicket {
         }
     }
 
-    pub(crate) fn attempt_capability_proof_for_rebind(&self) -> Option<QueryPlanCapabilityProof> {
-        self.current_capability_proof().cloned()
+    pub(crate) fn attempt_capability_evidence_for_rebind(&self) -> Option<AttemptCapabilityEvidence> {
+        self.current_capability_evidence().cloned()
     }
 
-    fn current_capability_proof(&self) -> Option<&QueryPlanCapabilityProof> {
-        self.rebound_capability_proof.get().or(self.attempt_capability_proof.as_ref())
+    fn current_capability_evidence(&self) -> Option<&AttemptCapabilityEvidence> {
+        self.rebound_capability_evidence.get().or(self.attempt_capability_evidence.as_ref())
     }
 
-    /// Replaces this ticket's proof exactly once before any admission request
+    /// Replaces this ticket's evidence exactly once before any admission request
     /// has started. The outer admission stream may already be alive, but it
     /// has not acquired a query-service handle yet; preserving that ticket is
     /// what keeps the eventual host-output cursor's resources alive to EOF.
-    pub(crate) fn rebind_capability_proof_before_admission(
+    pub(crate) fn rebind_capability_evidence_before_admission(
         &self,
-        proof: QueryPlanCapabilityProof,
+        evidence: AttemptCapabilityEvidence,
     ) -> nexus_query_engine::error::Result<()> {
         let state = self.lock_state()?;
         if !state.admitting.is_empty() || state.rounds.values().any(|round| round.handle.is_some()) {
             return Err(nexus_query_engine::error::QueryError::new(
                 nexus_query_engine::error::QueryErrorCode::InvalidPlan,
                 "datafusion_nexus.native_exec.admission_ticket",
-                "cannot replace a query admission capability proof after admission has started",
+                "cannot replace a query admission capability evidence after admission has started",
             )
-            .with_fact("reason", "capability_proof_rebind_after_admission"));
+            .with_fact("reason", "capability_evidence_rebind_after_admission"));
         }
-        match self.rebound_capability_proof.get() {
-            Some(existing) if existing == &proof => Ok(()),
+        match self.rebound_capability_evidence.get() {
+            Some(existing) if existing == &evidence => Ok(()),
             Some(_) => Err(nexus_query_engine::error::QueryError::new(
                 nexus_query_engine::error::QueryErrorCode::InvalidPlan,
                 "datafusion_nexus.native_exec.admission_ticket",
-                "one query admission ticket cannot carry conflicting composed capability proofs",
+                "one query admission ticket cannot carry conflicting composed capability evidence_items",
             )
-            .with_fact("reason", "conflicting_capability_proof_rebind")),
-            None => self.rebound_capability_proof.set(proof).map_err(|_| {
+            .with_fact("reason", "conflicting_capability_evidence_rebind")),
+            None => self.rebound_capability_evidence.set(evidence).map_err(|_| {
                 nexus_query_engine::error::QueryError::new(
                     nexus_query_engine::error::QueryErrorCode::Internal,
                     "datafusion_nexus.native_exec.admission_ticket",
-                    "query admission capability proof changed while rebinding the composed root",
+                    "query admission capability evidence changed while rebinding the composed root",
                 )
-                .with_fact("reason", "capability_proof_rebind_race")
+                .with_fact("reason", "capability_evidence_rebind_race")
             }),
         }
     }
 
-    /// Reissues an unused ticket with the complete post-preparation proof.
+    /// Reissues an unused ticket with the complete post-preparation evidence.
     ///
     /// Preparation is the last point at which a composed GPU island can learn
     /// its child metadata.  Preserve the attempt binding and observation
     /// identity when one exists; the caller is responsible for installing the
     /// returned ticket as the invocation's canonical ticket before admission.
-    pub(crate) fn rebind_with_source_and_capability_proof(
+    pub(crate) fn rebind_with_source_and_capability_evidence(
         &self,
         source: QueryAdmissionSource,
-        attempt_capability_proof: QueryPlanCapabilityProof,
+        attempt_capability_evidence: AttemptCapabilityEvidence,
     ) -> Arc<Self> {
         match &self.attempt {
-            Some(binding) => {
-                Self::new_attempt_bound(source, Some(attempt_capability_proof), binding.clone(), self.metrics_capture())
-            },
-            None => Self::new_with_capability_proof_and_observation(
+            Some(binding) => Self::new_attempt_bound(
                 source,
-                Some(attempt_capability_proof),
+                Some(attempt_capability_evidence),
+                binding.clone(),
+                self.metrics_capture(),
+            ),
+            None => Self::new_with_capability_evidence_and_observation(
+                source,
+                Some(attempt_capability_evidence),
                 self.new_observation(),
                 self.metrics_capture(),
             ),
@@ -564,8 +562,8 @@ impl QueryAdmissionTicket {
     }
 
     #[cfg(test)]
-    pub(crate) fn attempt_capability_proof(&self) -> Option<&QueryPlanCapabilityProof> {
-        self.current_capability_proof()
+    pub(crate) fn attempt_capability_evidence(&self) -> Option<&AttemptCapabilityEvidence> {
+        self.current_capability_evidence()
     }
 
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
@@ -735,8 +733,8 @@ impl QueryAdmissionTicket {
             observation: observation.clone(),
         };
         let request = QueryAdmissionRequest::new().with_execution_cancellation(cancellation.clone());
-        let request = match self.attempt_capability_proof_for_rebind() {
-            Some(proof) => request.with_query_plan_capability_proof(proof),
+        let request = match self.attempt_capability_evidence_for_rebind() {
+            Some(evidence) => request.with_query_plan_capability_evidence(evidence),
             None => request,
         };
         let request = if let Some(binding) = &self.attempt

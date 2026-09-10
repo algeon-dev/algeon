@@ -7,7 +7,6 @@ use crate::{
     core::{
         column::Column,
         error::{self, Result},
-        types::DataType,
     },
     frame::series::Series,
     internal::{hash::FastIndexMap, resolve::resolve_column_names, temp_table::TempTableView},
@@ -19,7 +18,7 @@ use crate::{
         stream_compaction::DuplicateKeepOption,
     },
     runtime::{
-        BudgetedExecutionOutcome, DeviceId, ExecutionBudgetToken, execution_context::ExecutionOverrides,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
         execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
@@ -27,63 +26,6 @@ use crate::{
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
 const PREPARED_SORT_MATERIALIZED_OUTPUT_RESERVATION_CONTRACT: &str =
     "prepared_sort_materialized_output_reservation_size_bytes";
-const PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str = "libcudf_sort_temporary_workspace_preflight_unavailable";
-
-fn sorted_order_context_facts(preflight: Option<sorting::SortedOrderPreflight>) -> Vec<(String, String)> {
-    if let Some(sorting::SortedOrderPreflight::Lexicographic(preflight)) = preflight {
-        return vec![
-            (
-                "sorted_order_preflight_contract".to_string(),
-                sorting::SORTED_ORDER_LEXICOGRAPHIC_PREFLIGHT_CONTRACT.to_string(),
-            ),
-            ("sorted_order_preflight_status".to_string(), "supported".to_string()),
-            (
-                "sorted_order_lexicographic_comparator_state_bytes".to_string(),
-                preflight.comparator_state_bytes().to_string(),
-            ),
-            (
-                "sorted_order_lexicographic_temporary_workspace_bytes".to_string(),
-                preflight.temporary_workspace_bytes().to_string(),
-            ),
-            (
-                "sorted_order_lexicographic_retained_order_bytes".to_string(),
-                preflight.retained_order_bytes().to_string(),
-            ),
-            (
-                "sorted_order_lexicographic_active_phase_peak_bytes".to_string(),
-                preflight.active_phase_peak_bytes().to_string(),
-            ),
-        ];
-    }
-    let preflight = preflight.and_then(|preflight| match preflight {
-        sorting::SortedOrderPreflight::Radix(preflight) => Some(preflight),
-        sorting::SortedOrderPreflight::Lexicographic(_) => None,
-    });
-    let mut facts = vec![
-        (
-            "sorted_order_radix_preflight_contract".to_string(),
-            sorting::SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT.to_string(),
-        ),
-        (
-            "sorted_order_radix_preflight_status".to_string(),
-            if preflight.is_some() { "supported" } else { "unresolved_unsupported_shape" }.to_string(),
-        ),
-    ];
-    if let Some(preflight) = preflight {
-        facts.extend([
-            ("sorted_order_radix_key_input_bytes".to_string(), preflight.key_input_bytes().to_string()),
-            ("sorted_order_radix_key_output_bytes".to_string(), preflight.key_output_bytes().to_string()),
-            ("sorted_order_radix_sequence_bytes".to_string(), preflight.sequence_bytes().to_string()),
-            (
-                "sorted_order_radix_temporary_workspace_bytes".to_string(),
-                preflight.temporary_workspace_bytes().to_string(),
-            ),
-            ("sorted_order_radix_retained_order_bytes".to_string(), preflight.retained_order_bytes().to_string()),
-            ("sorted_order_radix_active_phase_peak_bytes".to_string(), preflight.active_phase_peak_bytes().to_string()),
-        ]);
-    }
-    facts
-}
 
 fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
     if !df.contains(base) {
@@ -111,22 +53,16 @@ fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
 /// - materialize the sorted DataFrame by gathering the retained input.
 ///
 /// This contract covers the retained sorted-order column and the materialized
-/// gather output. Supported unstable radix and lexicographic paths also retain
-/// the exact libcudf owner preflight.
+/// gather output.
 #[derive(Debug, Clone)]
 pub struct DataFramePreparedSort {
     input: DataFrame,
     sorted_order: Series,
-    sorted_order_preflight: Option<sorting::SortedOrderPreflight>,
 }
 
 impl DataFramePreparedSort {
-    pub(crate) fn new(
-        input: DataFrame,
-        sorted_order: Series,
-        sorted_order_preflight: Option<sorting::SortedOrderPreflight>,
-    ) -> Self {
-        Self { input, sorted_order, sorted_order_preflight }
+    pub(crate) fn new(input: DataFrame, sorted_order: Series) -> Self {
+        Self { input, sorted_order }
     }
 
     /// Borrow the retained input DataFrame.
@@ -137,60 +73,6 @@ impl DataFramePreparedSort {
     /// Borrow the retained INT32 sorted-order gather map.
     pub fn sorted_order(&self) -> &Series {
         &self.sorted_order
-    }
-
-    /// Borrow the exact owner preflight for an unstable one-key radix sort.
-    pub fn sorted_order_radix_preflight(&self) -> Option<sorting::SortedOrderRadixPreflight> {
-        match self.sorted_order_preflight {
-            Some(sorting::SortedOrderPreflight::Radix(preflight)) => Some(preflight),
-            _ => None,
-        }
-    }
-
-    pub fn sorted_order_lexicographic_preflight(&self) -> Option<sorting::SortedOrderLexicographicPreflight> {
-        match self.sorted_order_preflight {
-            Some(sorting::SortedOrderPreflight::Lexicographic(preflight)) => Some(preflight),
-            _ => None,
-        }
-    }
-
-    pub fn sorted_order_preflight(&self) -> Option<sorting::SortedOrderPreflight> {
-        self.sorted_order_preflight
-    }
-
-    /// Query the owner preflight from explicit key metadata without creating a
-    /// column or executing a sort.
-    pub fn sorted_order_radix_preflight_for_metadata(
-        num_rows: usize,
-        key_type: DataType,
-        null_count: usize,
-        stable: bool,
-        key_order: sorting::Order,
-        device: DeviceId,
-    ) -> Result<sorting::SortedOrderRadixPreflight> {
-        sorting::sorted_order_radix_preflight(num_rows, key_type, null_count, stable, key_order, device)
-            .map_err(|error| error.reanchor("dataframe::prepared_sort::sorted_order_radix_preflight_for_metadata"))
-    }
-
-    pub fn sorted_order_lexicographic_preflight_for_metadata(
-        num_rows: usize,
-        key_types: &[DataType],
-        null_counts: &[usize],
-        stable: bool,
-        key_orders: &[sorting::Order],
-        null_precedence: &[sorting::NullOrder],
-        device: DeviceId,
-    ) -> Result<sorting::SortedOrderLexicographicPreflight> {
-        sorting::sorted_order_lexicographic_preflight(
-            num_rows,
-            key_types,
-            null_counts,
-            stable,
-            key_orders,
-            null_precedence,
-            device,
-        )
-        .map_err(|error| error.reanchor("dataframe::prepared_sort::sorted_order_lexicographic_preflight_for_metadata"))
     }
 
     /// Consume this wrapper and return the retained input and sorted-order map.
@@ -278,9 +160,7 @@ impl DataFramePreparedSort {
     ///
     /// The gathered output allocation is routed through the token's
     /// stream-bound reservation. The returned report records the retained
-    /// sorted-order bytes and exact materialized output bytes. Supported
-    /// unstable radix and lexicographic sorts also record the owner preflight;
-    /// other shapes retain the unresolved temporary-workspace contract.
+    /// sorted-order bytes and exact materialized output bytes.
     pub fn materialize_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
         let operation = "dataframe::prepared_sort::materialize_with_budget";
         let ctx = token.execution_overrides();
@@ -291,12 +171,8 @@ impl DataFramePreparedSort {
             .materialized_output_reservation_size_bytes_in(&ctx)
             .map_err(|error| token.annotate_error(error, operation))?;
         let output = self.materialize_in(&ctx).map_err(|error| token.annotate_error(error, operation))?;
-        let mut report =
+        let report =
             token.reservation_enforced_report().with_retained_bytes(retained_bytes).with_output_bytes(output_bytes);
-        report = report.with_context_facts(sorted_order_context_facts(self.sorted_order_preflight));
-        if self.sorted_order_preflight.is_none() {
-            report = report.with_unresolved_contract(PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP);
-        }
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
@@ -375,9 +251,8 @@ impl DataFrame {
     /// [`DataFramePreparedSort::materialize`].
     ///
     /// This contract covers the retained sorted-order bytes and the
-    /// materialized gather output sizing. Supported unstable radix and
-    /// lexicographic paths expose the libcudf owner preflight; other shapes
-    /// retain the unresolved temporary-workspace contract.
+    /// materialized gather output sizing, and retains the unresolved
+    /// libcudf sort temporary-workspace contract.
     pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
     where
         I: IntoIterator<Item = S>,
@@ -390,9 +265,7 @@ impl DataFrame {
     ///
     /// Sorted-order creation is routed through the token's stream-bound
     /// reservation. The returned report records the retained sorted-order
-    /// bytes and, for supported unstable radix and lexicographic paths, the
-    /// libcudf owner preflight. Other shapes retain the unresolved workspace
-    /// contract.
+    /// bytes and the unresolved libcudf sort temporary-workspace contract.
     pub fn prepare_sort_values_with_budget<I, S>(
         &self,
         by: I,
@@ -411,11 +284,7 @@ impl DataFrame {
         let retained_bytes = prepared
             .retained_sorted_order_device_allocated_size_bytes()
             .map_err(|error| token.annotate_error(error, operation))?;
-        let mut report = token.reservation_enforced_report().with_retained_bytes(retained_bytes);
-        report = report.with_context_facts(sorted_order_context_facts(prepared.sorted_order_preflight));
-        if prepared.sorted_order_preflight.is_none() {
-            report = report.with_unresolved_contract(PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP);
-        }
+        let report = token.reservation_enforced_report().with_retained_bytes(retained_bytes);
 
         Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
@@ -497,66 +366,6 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
         let (mut orders, mut null_orders) = options.resolve(by_refs.len(), operation)?;
 
-        let sorted_order_preflight = if !options.stable && by_refs.len() == 1 {
-            let (_, key_column) =
-                self.columns.get_index(key_indices[0]).expect("resolved sort key index remains valid");
-            let key_type = key_column.data_type().map_err(|error| error.reanchor(operation))?;
-            let null_count = key_column.null_count().map_err(|error| error.reanchor(operation))?;
-            if null_count == 0 && sorting::sorted_order_radix_key_supported(key_type.id()) {
-                Some(sorting::SortedOrderPreflight::Radix(
-                    sorting::sorted_order_radix_preflight(
-                        self.row_count,
-                        key_type,
-                        null_count,
-                        options.stable,
-                        orders[0],
-                        output_domain.device_id(),
-                    )
-                    .map_err(|error| error.reanchor(operation))?,
-                ))
-            } else {
-                Some(sorting::SortedOrderPreflight::Lexicographic(
-                    sorting::sorted_order_lexicographic_preflight(
-                        self.row_count,
-                        &[key_type],
-                        &[null_count],
-                        options.stable,
-                        &orders,
-                        null_orders.as_deref().expect("sort options always resolve null precedence"),
-                        output_domain.device_id(),
-                    )
-                    .map_err(|error| error.reanchor(operation))?,
-                ))
-            }
-        } else if !options.stable && by_refs.len() >= 2 {
-            let metadata = key_indices
-                .iter()
-                .map(|index| {
-                    let (_, column) = self.columns.get_index(*index).expect("resolved sort key index remains valid");
-                    Ok((
-                        column.data_type().map_err(|error| error.reanchor(operation))?,
-                        column.null_count().map_err(|error| error.reanchor(operation))?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let key_types = metadata.iter().map(|(data_type, _)| *data_type).collect::<Vec<_>>();
-            let null_counts = metadata.iter().map(|(_, null_count)| *null_count).collect::<Vec<_>>();
-            Some(sorting::SortedOrderPreflight::Lexicographic(
-                sorting::sorted_order_lexicographic_preflight(
-                    self.row_count,
-                    &key_types,
-                    &null_counts,
-                    options.stable,
-                    &orders,
-                    null_orders.as_deref().expect("sort options always resolve null precedence"),
-                    output_domain.device_id(),
-                )
-                .map_err(|error| error.reanchor(operation))?,
-            ))
-        } else {
-            None
-        };
-
         let stable_row_position = if options.stable {
             orders.push(sorting::Order::Ascending);
             if let Some(null_orders) = null_orders.as_mut() {
@@ -583,7 +392,7 @@ impl DataFrame {
         let sorted_order = Series::from_column(sorted_order)
             .map_err(|error| error.reanchor(operation).with_detail("resource", "sorted_order"))?;
 
-        Ok(DataFramePreparedSort::new(self.clone(), sorted_order, sorted_order_preflight))
+        Ok(DataFramePreparedSort::new(self.clone(), sorted_order))
     }
 
     fn sort_key_columns_in_domain(

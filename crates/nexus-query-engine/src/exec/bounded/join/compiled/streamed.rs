@@ -19,7 +19,7 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     let probe_side = probe_side(build_side);
     let build_rows = input.rows;
     let build_bytes = input.bytes;
-    release_bounded_join_side_frame(execution, input);
+    release_bounded_join_side_frame(input);
 
     let output = concatenate_streamed_hash_join_outputs(execution, node_id, outputs)?;
     record_streamed_one_shot_join_metrics(

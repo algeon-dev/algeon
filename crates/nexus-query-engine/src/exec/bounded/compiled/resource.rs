@@ -1,8 +1,7 @@
 use super::ResidentFrameStreamPayload;
 use crate::{
     exec::bounded::{
-        ActiveReservation, BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,
-        ResidentGpuFrame,
+        BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
     },
     plan::NodeId,
     runtime::resident::GpuDataFrame,
@@ -14,7 +13,7 @@ pub struct CompiledGpuResource {
     pub(super) payload: CompiledGpuResourcePayload,
 }
 
-// Payloads encode which tasks may consume a value and whether it owns a live reservation.
+// Payloads encode which tasks may consume a value and whether it owns resident storage.
 pub(super) enum CompiledGpuResourcePayload {
     ResidentFrame { frame: Box<ResidentGpuFrame>, applied_limit: Option<NodeId> },
     ResidentFrameStream(ResidentFrameStreamPayload),
@@ -86,23 +85,10 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
         match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.device_bytes(),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.live_reservation_bytes(),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
             CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => prefetch.reservation_bytes(),
-        }
-    }
-
-    pub(in crate::exec::bounded) fn reservation(&self) -> &ActiveReservation {
-        match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => &frame.reservation,
-            CompiledGpuResourcePayload::ResidentFrameStream(_) => {
-                unreachable!("resident frame streams do not expose a single reservation")
-            },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
-            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
-                unreachable!("deferred join leaf sources do not own a resident reservation")
-            },
         }
     }
 

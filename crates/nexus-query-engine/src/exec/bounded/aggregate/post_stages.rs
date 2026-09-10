@@ -2,14 +2,13 @@ use std::{sync::Arc, time::Instant};
 
 use super::{
     AggregateFunction, AggregateSpec, BoundedExecutionAttempt, BoundedPlan, BoundedUnaryStage, CommittedPartial,
-    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, MemoryReservationRequest, NodeId, QueryError, QueryMetrics,
-    ReservationKind, Result, RuntimeResourceFacts, aggregate_spec_has_avg, cast_count_output_columns_with_budget,
-    execute_aggregate_with_budget, execute_bounded_generic_unary_consuming_input_with_reservation_kind,
-    execute_filter_with_budget, execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
-    execute_limit, execute_projection_with_budget, execution_budget_token_for_boundary, execution_overrides,
-    final_global_aggregate_spec, final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget,
-    lower_final_aggregate_spec, observe_device_memory_bytes, projection_regexp_replace_work_reservation_bytes,
-    record_default_grouped_aggregate_strategy_decision, validate_aggregate_output_names,
+    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, NodeId, QueryError, QueryMetrics, Result,
+    RuntimeResourceFacts, aggregate_spec_has_avg, cast_count_output_columns_with_budget, execute_aggregate_with_budget,
+    execute_bounded_generic_unary_consuming_input, execute_filter_with_budget, execute_global_aggregate_with_budget,
+    execute_groupby_aggregate_with_budget_observed, execute_limit, execute_projection_with_budget,
+    execution_budget_token_for_boundary, execution_overrides, final_global_aggregate_spec,
+    final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, lower_final_aggregate_spec,
+    observe_device_memory_bytes, record_default_grouped_aggregate_strategy_decision, validate_aggregate_output_names,
 };
 use crate::capability::AggregateExecutionStage;
 
@@ -44,11 +43,9 @@ pub(in crate::exec::bounded) fn execute_standalone_limit(
         execution,
         node_id,
         "post_aggregate_limit",
-        "post_aggregate_limit_output",
         input,
         |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
         false,
-        None,
     )
 }
 
@@ -63,7 +60,6 @@ fn execute_post_final_stages(
                 execution,
                 *node_id,
                 "post_aggregate_filter",
-                "post_aggregate_filter_output",
                 input,
                 |context, input, token, metrics| {
                     execute_filter_with_budget(
@@ -75,18 +71,13 @@ fn execute_post_final_stages(
                     )
                 },
                 true,
-                None,
             )?,
             BoundedUnaryStage::Projection { node_id, node, output_schema } => {
                 debug_assert_eq!(node.output_schema().as_ref(), output_schema.as_ref());
-                let work_request_bytes =
-                    projection_regexp_replace_work_reservation_bytes(execution.context(), node, &input.frame)?
-                        .map(|preflight| preflight.max(input.reservation.bytes()));
                 execute_post_final_stage(
                     execution,
                     *node_id,
                     "post_aggregate_projection",
-                    "post_aggregate_projection_output",
                     input,
                     |context, input, token, metrics| {
                         execute_projection_with_budget(
@@ -98,7 +89,6 @@ fn execute_post_final_stages(
                         )
                     },
                     true,
-                    work_request_bytes,
                 )?
             },
         };
@@ -106,15 +96,10 @@ fn execute_post_final_stages(
     Ok(input)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
-)]
 fn execute_post_final_stage(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
-    output_boundary: &'static str,
     input: CommittedPartial,
     execute: impl FnOnce(
         &ExecutionContext,
@@ -123,19 +108,8 @@ fn execute_post_final_stage(
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
     use_budget_token: bool,
-    work_request_bytes: Option<u64>,
 ) -> Result<CommittedPartial> {
-    execute_bounded_generic_unary_consuming_input_with_reservation_kind(
-        execution,
-        node_id,
-        stage,
-        output_boundary,
-        input,
-        ReservationKind::FinalMerge,
-        use_budget_token,
-        work_request_bytes,
-        execute,
-    )
+    execute_bounded_generic_unary_consuming_input(execution, node_id, stage, input, use_budget_token, execute)
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
@@ -147,24 +121,10 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         return Ok(input);
     }
 
-    let request = MemoryReservationRequest::new(
-        ReservationKind::FinalMerge,
-        input.reservation.bytes(),
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("final_aggregate_projection")
-    .with_node_id(bounded.aggregate_id)
-    .with_stage("final_projection")
-    .with_task_registration(
-        legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"),
-        1,
-        "aggregate",
-    );
-    let work_reservation = execution.try_reserve(request)?;
     let expected_output_names =
         bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     let result = if aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
-        let token_budget = execution.reservations().available_bytes_including(&work_reservation);
+        let token_budget = execution.device_budget_bytes();
         let token = match execution_budget_token_for_boundary(
             execution.context(),
             token_budget,
@@ -174,8 +134,6 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         ) {
             Ok(token) => token,
             Err(error) => {
-                execution.release(work_reservation);
-                execution.release(input.reservation);
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_aggregate_projection",
                     stage: "final_projection",
@@ -209,11 +167,9 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         })
     })
     .map(GpuDataFrame::new);
-    execution.release(work_reservation);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(input.reservation);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "final_aggregate_projection",
                 stage: "final_projection",
@@ -227,7 +183,6 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         },
     };
 
-    execution.release(input.reservation);
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "final_aggregate_projection_output",
@@ -240,22 +195,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         }
         .attach_to(error)
     })?;
-    let output_request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, execution.reservations().budget())
-            .with_memory_boundary("final_aggregate_projection_output")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage("final_projection")
-            .with_task_registration(
-                legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"),
-                1,
-                "aggregate",
-            );
-    let output_reservation = execution.try_reserve(output_request)?;
-    Ok(CommittedPartial { frame, reservation: output_reservation })
-}
-
-fn legacy_bounded_final_merge_task_id(node_id: NodeId, stage: &str) -> String {
-    format!("legacy_bounded.final_merge.node{node_id}.{stage}")
+    Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(

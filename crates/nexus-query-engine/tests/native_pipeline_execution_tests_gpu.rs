@@ -21,10 +21,9 @@ use arrow::{
 };
 use nexus_query_engine::{
     admission::{
-        CompiledBoundedPipelineSupport, ComposedGraphProducerCandidate, QueryPlanCapabilityProof,
-        bounded_pipeline_admission, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+        AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, bounded_pipeline_admission,
+        compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     dynamic_filter::DynamicFilterProducer,
     error::Result,
     exec::{
@@ -36,24 +35,23 @@ use nexus_query_engine::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, GroupingSetsSpec,
         LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
-    metrics::{MemoryReservationEventAction, QueryMetrics},
+    metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
-        ReservationGateOwner, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
-        compile_pipeline,
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
+        ResidentResourceId, SinkBoundary, SinkBoundaryKind, compile_pipeline,
     },
     plan::{
         JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan,
         QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionContext, GdsDriverProbeStatus,
+        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
         GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, KvikioCompatModeStatus,
-        NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind,
+        NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
         resident::GpuResidentInputMap,
     },
     source::{
@@ -89,7 +87,8 @@ mod remaining_topologies;
 use fixtures_parquet::*;
 use fixtures_plans::*;
 use remaining_topologies::{
-    aggregate_over_join_subplan_topk_plan, resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+    AggregateOverJoinSubplanTopKVariant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
+    aggregate_over_join_subplan_topk_plan_inner, resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner,
     resident_grouped_aggregate_subquery_filter_plan,
 };
 
@@ -147,36 +146,24 @@ mod cudf {
         }
 
         pub(super) fn acquire_context_for_plan(self: &Arc<Self>, plan: &QueryPlan) -> Result<PipelineTestContext> {
-            nexus_query_engine::exec::preflight_bounded_query_plan(
-                plan,
-                ExecutionBoundaryPolicy::default(),
-                StatisticalAggregateExecutionMode::default(),
-            )?;
-            let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(plan)?;
-            self.acquire_context_with_proofs([proof])
+            nexus_query_engine::exec::preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+            let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
+            self.acquire_context_with_evidence_items([evidence])
         }
 
         pub(super) fn acquire_context_for_compiled_executor_test(
             self: &Arc<Self>,
             plan: &QueryPlan,
         ) -> Result<PipelineTestContext> {
-            let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(plan)?;
-            self.acquire_context_with_proofs([proof])
+            let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
+            self.acquire_context_with_evidence_items([evidence])
         }
 
-        pub(super) fn acquire_context_with_proofs(
+        pub(super) fn acquire_context_with_evidence_items(
             self: &Arc<Self>,
-            proofs: impl IntoIterator<Item = QueryPlanCapabilityProof>,
+            evidence_items: impl IntoIterator<Item = AttemptCapabilityEvidence>,
         ) -> Result<PipelineTestContext> {
-            let mut proofs = proofs.into_iter();
-            let first = proofs.next().ok_or_else(|| {
-                nexus_query_engine::error::QueryError::new(
-                    nexus_query_engine::error::QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.tests.pipeline_execution",
-                    "a pipeline execution context requires at least one exact query plan proof",
-                )
-            })?;
-            let proof = QueryPlanCapabilityProof::combine(first, proofs)?;
+            let evidence = AttemptCapabilityEvidence::aggregate(evidence_items);
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
             let handle = backend
@@ -184,7 +171,7 @@ mod cudf {
                 .expect("suite backend is installed")
                 .core
                 .session_capability()
-                .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))?;
+                .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))?;
             let context = handle.acquire_context()?;
             Ok(PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) })
         }
@@ -211,36 +198,6 @@ fn execute_query_plan(context: &PipelineTestContext, plan: &QueryPlan) -> Result
 
 type Int32Triple = (Option<i32>, Option<i32>, Option<i32>);
 type Int32Quad = (Option<i32>, Option<i32>, Option<i32>, Option<i32>);
-
-fn runtime_visible_gate_for_task_kind(
-    pipeline: &CompiledPipeline,
-    task_kind: PipelineTaskKind,
-    reservation_kind: ReservationKind,
-) -> Option<&ReservationGate> {
-    let task = pipeline.tasks().iter().find(|task| task.kind() == task_kind)?;
-    task.gates()
-        .iter()
-        .chain(
-            pipeline
-                .edges()
-                .iter()
-                .filter(|edge| edge.from() == task.id() || edge.to() == task.id())
-                .flat_map(|edge| edge.gates()),
-        )
-        .chain(
-            pipeline
-                .barriers()
-                .iter()
-                .filter(|barrier| {
-                    barrier.upstream_tasks().contains(&task.id()) || barrier.downstream_tasks().contains(&task.id())
-                })
-                .flat_map(|barrier| barrier.gates()),
-        )
-        .chain((pipeline.sink().input() == task.id()).then_some(pipeline.sink().gates()).into_iter().flatten())
-        .find_map(|gate_id| {
-            pipeline.gates().iter().find(|gate| gate.id() == *gate_id && gate.reservation_kind() == reservation_kind)
-        })
-}
 
 fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
     let array = batch.column(column).as_any().downcast_ref::<Int32Array>().unwrap();
@@ -327,11 +284,11 @@ fn compiled_executor_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> P
     runtime.acquire_context_for_compiled_executor_test(plan).unwrap()
 }
 
-fn bounded_context_for_proofs(
+fn bounded_context_for_evidence_items(
     runtime: Arc<cudf::Runtime>,
-    proofs: impl IntoIterator<Item = QueryPlanCapabilityProof>,
+    evidence_items: impl IntoIterator<Item = AttemptCapabilityEvidence>,
 ) -> PipelineTestContext {
-    runtime.acquire_context_with_proofs(proofs).unwrap()
+    runtime.acquire_context_with_evidence_items(evidence_items).unwrap()
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

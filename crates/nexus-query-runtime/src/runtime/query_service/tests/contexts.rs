@@ -8,13 +8,9 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     )
     .unwrap();
 
-    // An explicit working set pins the immutable grant for the domain-member
-    // assertions below.
-    let handle = service
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(8 * 1024 * 1024, Some(8 * 1024 * 1024))),
-        )
-        .unwrap();
+    // The device profile's configured default query limit pins the immutable
+    // grant for the domain-member assertions below.
+    let handle = service.admit_query().unwrap();
     let grant = handle.lifetime.memory_grant().unwrap();
     let admitted_context = handle.acquire_context().unwrap();
     let token = admitted_context
@@ -89,23 +85,6 @@ fn query_service_stream_runtimes_are_distinct_while_both_contexts_are_held() {
         "holding the first context should force the second stream-pool runtime"
     );
 }
-#[test]
-fn query_service_context_carries_graph_calibration_override() {
-    let graph_memory_calibration_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-    let config = QueryExecutionConfig {
-        graph_memory_calibration_override,
-        // Runtime-backed services contend for process-global governor claims in
-        // unit tests; optimistic claims can coexist across test cases.
-        ..QueryExecutionConfig::default()
-    };
-    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
-
-    let handle = service.admit_query().unwrap();
-    let admitted_context = handle.acquire_context().unwrap();
-
-    assert_eq!(admitted_context.context().graph_memory_calibration_override(), graph_memory_calibration_override);
-}
-
 #[test]
 fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotations() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
@@ -200,7 +179,7 @@ fn query_service_released_handle_rejects_context_acquisition() {
 }
 
 #[test]
-fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
+fn admitted_context_gate_rejects_missing_identity_and_scope_evidence() {
     let assert_quiescent = |service: &QueryService| {
         service
             .wait_for_stream_pools_idle(Duration::from_secs(10))
@@ -219,11 +198,10 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
     let admitted_fixture = |max_active_attempts_per_device| {
         let service = runtime_test_service(max_active_attempts_per_device, 8);
         let plan = explicit_sink_plan("input");
-        let proof = nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
-            .expect("the test plan must issue an execution capability proof");
+        let evidence = nexus_query_planning::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
         let handle = service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
-            .expect("proof-backed admission");
+            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+            .expect("evidence-backed admission");
         let admitted = handle.acquire_context().expect("service context");
         (service, plan, handle, admitted)
     };
@@ -233,76 +211,14 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
         admitted
             .context()
             .validate_admitted_plan_capabilities(&plan)
-            .expect("the immutable post-grant proof matches its context");
+            .expect("the admitted capability evidence matches its context");
         let changed_plan = explicit_sink_plan("different-input");
         let error = admitted
             .context()
             .validate_admitted_plan_capabilities(&changed_plan)
-            .expect_err("a changed plan must not reuse an admitted proof");
+            .expect_err("a changed plan must not reuse admitted evidence");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
-
-        drop(admitted);
-        handle.finish();
-        drop(handle);
-        assert_quiescent(&service);
-    }
-
-    {
-        let (service, plan, handle, admitted) = admitted_fixture(1);
-        let proof = admitted
-            .context()
-            .admitted_attempt_proof_for_test()
-            .expect("the acquired context carries the proof")
-            .clone();
-        let grant_identity = proof.grant_identity();
-        let mut wrong_generation = admitted.context().clone();
-        wrong_generation.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
-            proof.selected_device(),
-            crate::runtime::gpu::GrantIdentity { generation: grant_identity.generation + 1, ..grant_identity },
-        ))));
-        let error = wrong_generation
-            .validate_admitted_plan_capabilities(&plan)
-            .expect_err("a recycled grant generation must not pass the context gate");
-        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
-        drop(wrong_generation);
-
-        let mut wrong_attempt = admitted.context().clone();
-        wrong_attempt.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
-            proof.selected_device(),
-            crate::runtime::gpu::GrantIdentity {
-                attempt_id: crate::observability::AttemptId::mint(),
-                ..grant_identity
-            },
-        ))));
-        let error = wrong_attempt
-            .validate_admitted_plan_capabilities(&plan)
-            .expect_err("a different attempt identity must not pass the context gate");
-        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
-        drop(wrong_attempt);
-
-        drop(admitted);
-        handle.finish();
-        drop(handle);
-        assert_quiescent(&service);
-    }
-
-    {
-        let (service, plan, handle, admitted) = admitted_fixture(1);
-        let proof = admitted
-            .context()
-            .admitted_attempt_proof_for_test()
-            .expect("the acquired context carries the proof")
-            .clone();
-        let mut wrong_selected_device = admitted.context().clone();
-        wrong_selected_device.replace_admitted_attempt_proof_for_test(Some(Arc::new(
-            proof.with_identity_for_test(proof.selected_device() + 1, proof.grant_identity()),
-        )));
-        let error = wrong_selected_device
-            .validate_admitted_plan_capabilities(&plan)
-            .expect_err("a proof selected for another device must not pass the context gate");
-        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_device_mismatch"));
-        drop(wrong_selected_device);
 
         drop(admitted);
         handle.finish();
@@ -320,7 +236,7 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
         let error = wrong_domain
             .validate_admitted_plan_capabilities(&plan)
             .expect_err("a domain from another grant must not pass the context gate");
-        assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_domain_identity_mismatch"));
+        assert_eq!(error.fact_value("reason"), Some("admitted_allocation_domain_identity_mismatch"));
 
         drop(wrong_domain);
         drop(second_context);
@@ -335,12 +251,12 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
     let direct = ExecutionContext::builder().build().expect("direct context");
     direct
         .validate_admitted_plan_capabilities(&explicit_sink_plan("input"))
-        .expect("direct contexts remain unrestricted by service proofs");
+        .expect("direct contexts remain unrestricted by service evidence_items");
     drop(direct);
 }
 
 #[test]
-fn placement_only_service_context_fails_closed_without_post_grant_proof() {
+fn placement_only_service_context_fails_closed_without_plan_evidence() {
     let service = runtime_test_service(1, 8);
     let handle = service.admit_query().expect("placement-only admission");
     let context = handle.acquire_context().expect("placement-only context");
@@ -349,9 +265,9 @@ fn placement_only_service_context_fails_closed_without_post_grant_proof() {
     let error = context
         .context()
         .validate_admitted_plan_capabilities(&plan)
-        .expect_err("service execution requires post-grant proof evidence");
+        .expect_err("service execution requires admitted plan evidence");
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_missing"));
+    assert_eq!(error.fact_value("reason"), Some("admitted_capability_evidence_missing"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -814,22 +730,16 @@ fn acquired_service_stream_and_derived_runtime_hold_query_until_last_counted_dro
     drop(replacement);
 }
 #[test]
-fn cloned_memory_grant_and_live_reservation_hold_query_and_reject_post_finish_work() {
+fn cloned_memory_grant_and_resident_owner_hold_query_and_reject_post_finish_work() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
-    // The grant clamps to the request's soft working-set hint, exercising the
-    // immutable budget independent of the full candidate maximum.
-    let handle = service
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(8 * 1024 * 1024, Some(8 * 1024 * 1024))),
-        )
-        .unwrap();
+    // The grant budget is the device profile's configured default; sizing is
+    // ledger-owned and independent of any per-attempt evidence.
+    let handle = service.admit_query().unwrap();
     let admitted_context = handle.acquire_context().unwrap();
     let grant = admitted_context.context().memory_grant().unwrap().expect("service context carries a memory grant");
     let retained_grant = grant.clone();
-    let retained_reservation = retained_grant
-        .retain_live_reservation(1)
-        .expect("retention fits the immutable grant")
-        .expect("positive reservation is retained");
+    let retained_owner =
+        retained_grant.retain_resident_owner(1).expect("resident owner is recorded").expect("positive owner bytes");
     drop(grant);
     drop(admitted_context);
     handle.finish();
@@ -838,12 +748,9 @@ fn cloned_memory_grant_and_live_reservation_hold_query_and_reject_post_finish_wo
     assert!(service.try_admit_query().unwrap().is_none());
 
     drop(retained_grant);
-    assert!(
-        service.try_admit_query().unwrap().is_none(),
-        "the live reservation's cloned grant retains query admission"
-    );
+    assert!(service.try_admit_query().unwrap().is_none(), "the resident owner's cloned grant retains query admission");
 
-    drop(retained_reservation);
+    drop(retained_owner);
     let replacement = service.admit_query().expect("the final memory-grant anchor releases admission");
     drop(replacement);
 }

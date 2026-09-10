@@ -1,4 +1,4 @@
-//! Adapter exec-node tests moved in-crate by the P5 hidden-API repair.
+//! Adapter exec-node tests that require access to hidden APIs.
 //!
 //! These tests construct `NexusNativeExec`, `NexusNativeComposedExec`, and
 //! `NexusNativeGpuProducerExec` directly through their crate-private
@@ -42,9 +42,7 @@ use nexus_query_engine::{
     chunk::SourceChunkPlanningOptions,
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::QueryPlanBuilder,
-    runtime::{
-        BoundedJoinReservationContract, ExecutionCancellation, LakehouseCacheFillConfig, SourceChunkPlanningMode,
-    },
+    runtime::{ExecutionCancellation, LakehouseCacheFillConfig, SourceChunkPlanningMode},
     source::SourceNode,
 };
 use support_core::*;

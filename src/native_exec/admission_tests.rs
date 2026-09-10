@@ -21,7 +21,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::AttemptCapabilityEvidence,
     error::QueryErrorCode,
     observability::{
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
@@ -188,21 +188,21 @@ fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
         .expect("installed backend must provide admission authority")
 }
 
-fn explicit_sink_capability_proof() -> QueryPlanCapabilityProof {
+fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
     use arrow::datatypes::{DataType, Field, Schema};
 
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let plan = builder.finish_with_host_sink(source);
-    QueryPlanCapabilityProof::for_query_plan(&plan).expect("an explicit host sink must expose a capability requirement")
+    AttemptCapabilityEvidence::for_query_plan(&plan)
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_grant_for_successive_admission() {
     let backend = InstalledTestGpuBackend::new();
     let ticket = QueryAdmissionTicket::new(admission_source(&backend), None);
-    assert!(ticket.attempt_capability_proof().is_none());
+    assert!(ticket.attempt_capability_evidence().is_none());
 
     let context = ticket
         .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
@@ -377,7 +377,8 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
 
 #[tokio::test(flavor = "current_thread")]
 async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_before_admission() {
-    let unavailable = explicit_sink_capability_proof();
+    let mut unavailable = explicit_sink_capability_evidence();
+    unavailable.required_capabilities = vec![nexus_query_engine::admission::ExecutionCapability::new("unavailable")];
     let backend = InstalledTestGpuBackend::with_config(
         NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
         NexusGpuDeviceProfile::new(0)
@@ -394,7 +395,7 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
         .expect("fragment requirements aggregate into a ticket")
         .expect("configured admission source creates a ticket");
 
-    assert_eq!(ticket.attempt_capability_proof(), Some(&unavailable));
+    assert_eq!(ticket.attempt_capability_evidence(), Some(&unavailable));
     let error = ticket
         .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
         .await
@@ -402,10 +403,7 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
-    assert_eq!(
-        error.fact_value("required_capabilities"),
-        Some("materialization:query_engine_explicit_sink_materialization_reservation")
-    );
+    assert_eq!(error.fact_value("required_capabilities"), Some("unavailable"));
     assert_eq!(error.fact_value("configured_device_count"), Some("1"));
     assert_eq!(error.fact_value("compatible_device_count"), Some("0"));
     assert_eq!(

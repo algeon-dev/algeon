@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use super::rewrite;
 use crate::{
     admission::canonical_execution_scope_fingerprint,
-    graph_memory::query_plan_hard_row_upper_bound,
-    plan::{NodeId, PlanFacts, PlanNode, QueryPlan, ResultSink, SchemaBehavior},
+    plan::{
+        NodeId, PlanFacts, PlanNode, QueryPlan, ResultSink, SchemaBehavior, row_bounds::query_plan_hard_row_upper_bound,
+    },
     source::{GpuResidentSource, SourceNode},
 };
 

@@ -19,9 +19,6 @@ use crate::{
     },
 };
 
-const DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP: &str =
-    "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable";
-
 /// One item accepted by [`DataFrame::with_columns`](super::DataFrame::with_columns).
 ///
 /// This models the two supported ways to provide computed columns:
@@ -328,10 +325,7 @@ impl DataFrame {
                     ("expression_active_phase_peak_bytes", preflight.active_phase_peak_bytes().to_string()),
                 ]);
             },
-            Err(error) if error.code() == ErrorCode::UnsupportedOperation => {
-                report = report
-                    .with_unresolved_contract(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP);
-            },
+            Err(error) if error.code() == ErrorCode::UnsupportedOperation => {},
             Err(error) => return Err(annotate_dataframe_budget_execution_error(error, token, operation)),
         }
 
@@ -486,8 +480,7 @@ impl DataFrame {
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
-            .with_output_rows(output.num_rows())
-            .with_unresolved_contract(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP);
+            .with_output_rows(output.num_rows());
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
 

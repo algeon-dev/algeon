@@ -5,6 +5,8 @@
 // borrowed pointer as the RAFT device_resource expected by handle_t.
 #include "memory_resource_compat.hpp"
 
+#include <cudf_rust/memory_resource.h>
+#include <cugraph/detail/effective_device_memory.hpp>
 #include <cugraph_c/algorithms.h>
 #include <cugraph_c/array.h>
 #include <cugraph_c/graph.h>
@@ -18,6 +20,7 @@
 
 #include <memory>
 #include <new>
+#include <stdexcept>
 
 // algorithms.h provides the opaque layout-result type through the tree API,
 // but intentionally omits the layout header because the upstream headers
@@ -46,20 +49,52 @@ cugraph_rs_destroy_status_t typed_cuda_destroy_status(int32_t *cuda_status) {
 struct cugraph_rs_runtime_resource_handle {
   std::unique_ptr<raft::handle_t> raft_handle;
   cugraph_resource_handle_t *cugraph_handle{nullptr};
+  bool effective_memory_provider_registered{false};
 
   cugraph_rs_runtime_resource_handle(void *cuda_stream,
-                                     void *device_memory_resource) {
+                                     void *device_memory_resource,
+                                     void *memory_resource_owner) {
     auto stream =
         rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(cuda_stream)};
     auto *mr = reinterpret_cast<rmm::mr::device_memory_resource *>(
         device_memory_resource);
+    auto owner = reinterpret_cast<cudf_memory_resource_handle>(
+        memory_resource_owner);
     // Borrow the cudf-owned resource; this wrapper does not take ownership.
     raft_handle = std::make_unique<raft::handle_t>(
         stream, std::shared_ptr<rmm::cuda_stream_pool>{},
         raft::mr::device_resource{rmm::mr::any_device_resource_from_raw(mr)});
-    cugraph_handle = cugraph_create_resource_handle(raft_handle.get());
-    if (cugraph_handle == nullptr) {
-      throw std::bad_alloc{};
+    size_t available = 0;
+    auto const effective_memory_status =
+        cudf_memory_resource_effective_device_memory(owner, cuda_stream,
+                                                     &available);
+    if (effective_memory_status == CUDF_SUCCESS) {
+      cugraph::detail::register_effective_device_memory_provider(
+          *raft_handle, [owner, cuda_stream]() {
+            size_t current_available = 0;
+            auto const status = cudf_memory_resource_effective_device_memory(
+                owner, cuda_stream, &current_available);
+            if (status != CUDF_SUCCESS) {
+              throw std::runtime_error{
+                  "invalid query-domain usage while sizing cuGraph work"};
+            }
+            return current_available;
+          });
+      effective_memory_provider_registered = true;
+    } else if (effective_memory_status != CUDF_ERROR_UNSUPPORTED) {
+      throw std::runtime_error{
+          "invalid query-domain usage while creating a cuGraph handle"};
+    }
+    try {
+      cugraph_handle = cugraph_create_resource_handle(raft_handle.get());
+      if (cugraph_handle == nullptr) { throw std::bad_alloc{}; }
+    } catch (...) {
+      cugraph::detail::unregister_effective_device_memory_provider(
+          *raft_handle);
+      cugraph::detail::release_effective_device_memory_registration(
+          *raft_handle);
+      effective_memory_provider_registered = false;
+      throw;
     }
   }
 
@@ -67,6 +102,19 @@ struct cugraph_rs_runtime_resource_handle {
     if (cugraph_handle != nullptr) {
       cugraph_free_resource_handle(cugraph_handle);
       cugraph_handle = nullptr;
+    }
+    if (effective_memory_provider_registered) {
+      if (!cugraph::detail::unregister_effective_device_memory_provider(
+              *raft_handle)) {
+        throw std::runtime_error{
+            "cuGraph effective-memory provider registration was lost"};
+      }
+      if (!cugraph::detail::release_effective_device_memory_registration(
+              *raft_handle)) {
+        throw std::runtime_error{
+            "cuGraph effective-memory provider registration could not be released"};
+      }
+      effective_memory_provider_registered = false;
     }
     raft_handle.reset();
   }
@@ -76,16 +124,31 @@ struct cugraph_rs_runtime_resource_handle {
 
 extern "C" cugraph_rs_runtime_resource_handle_t *
 cugraph_rs_runtime_resource_handle_create(void *cuda_stream,
-                                          void *device_memory_resource) {
-  if ((cuda_stream == nullptr) || (device_memory_resource == nullptr)) {
+                                          void *device_memory_resource,
+                                          void *memory_resource_owner) {
+  if ((cuda_stream == nullptr) || (device_memory_resource == nullptr) ||
+      (memory_resource_owner == nullptr)) {
     return nullptr;
   }
 
   try {
-    return new cugraph_rs_runtime_resource_handle(cuda_stream,
-                                                  device_memory_resource);
+    return new cugraph_rs_runtime_resource_handle(
+        cuda_stream, device_memory_resource, memory_resource_owner);
   } catch (...) {
     return nullptr;
+  }
+}
+
+extern "C" int32_t cugraph_rs_runtime_resource_handle_effective_device_memory(
+    cugraph_rs_runtime_resource_handle_t *handle, size_t *out) {
+  if (handle == nullptr || out == nullptr || handle->raft_handle == nullptr) {
+    return 1;
+  }
+  try {
+    *out = cugraph::detail::effective_device_memory(*handle->raft_handle);
+    return 0;
+  } catch (...) {
+    return 2;
   }
 }
 

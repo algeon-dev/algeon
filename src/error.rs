@@ -568,11 +568,7 @@ impl Error {
                 collision_keys.push(key);
                 continue;
             }
-            if native_fact_is_log_safe(key) {
-                error.facts.insert_log_safe(key, value.to_string());
-            } else {
-                error.facts.insert(key, value.to_string());
-            }
+            error.facts.insert(key, value.to_string());
         }
         if !collision_keys.is_empty() {
             error.facts.insert_log_safe(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));
@@ -672,22 +668,6 @@ impl Error {
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
-}
-
-fn native_fact_is_log_safe(key: &str) -> bool {
-    matches!(
-        key,
-        "max_compatible_managed_capacity_bytes"
-            | "minimum_compatible_required_floor_bytes"
-            | "minimum_compatible_configured_floor_bytes"
-            | "minimum_compatible_required_phase_floor_bytes"
-            | "minimum_compatible_capability_floor_raise_bytes"
-            | "minimum_compatible_owner_term_count"
-            | "minimum_compatible_owner_term_bytes"
-            | "minimum_compatible_dominant_owner_bytes"
-            | "minimum_compatible_dominant_owner"
-            | "minimum_compatible_dominant_owner_role"
-    )
 }
 
 impl fmt::Display for Error {
@@ -1084,43 +1064,6 @@ mod tests {
     }
 
     #[test]
-    fn impossible_admission_facts_are_bounded_for_api_observability() {
-        let native = nexus_query_engine::error::QueryError::new(
-            nexus_query_engine::error::QueryErrorCode::ServiceOverloaded,
-            "nexus_query_engine.query_service.admission",
-            "no compatible device can satisfy the attempt required floor",
-        )
-        .with_fact("max_compatible_managed_capacity_bytes", 101_492_260_864_u64)
-        .with_fact("minimum_compatible_required_floor_bytes", 4_918_766_690_098_841_543_u64)
-        .with_fact("minimum_compatible_required_phase_floor_bytes", 4_918_766_690_098_841_543_u64)
-        .with_fact("minimum_compatible_dominant_owner_bytes", 1_034_659_300_617_477_892_u64)
-        .with_fact("minimum_compatible_dominant_owner", "consumer")
-        .with_fact("minimum_compatible_dominant_owner_role", "consumer_workspace")
-        .with_fact("minimum_compatible_dominant_owner_occurrence", "composed:private-table")
-        .with_fact("path", "/private/customer/edges.parquet");
-        let adapter = Error::from_native(
-            "datafusion_nexus.native_exec.context",
-            "failed to acquire backend query-service nexus native execution context",
-            native,
-        );
-        let projection = adapter.facts().log_safe_projection();
-        let rendered = projection.rendered().expect("admission diagnostics must reach API logs");
-
-        for expected in [
-            "max_compatible_managed_capacity_bytes=101492260864",
-            "minimum_compatible_required_floor_bytes=4918766690098841543",
-            "minimum_compatible_required_phase_floor_bytes=4918766690098841543",
-            "minimum_compatible_dominant_owner_bytes=1034659300617477892",
-            "minimum_compatible_dominant_owner=consumer",
-            "minimum_compatible_dominant_owner_role=consumer_workspace",
-        ] {
-            assert!(rendered.contains(expected), "{rendered}");
-        }
-        assert!(!rendered.contains("private-table"), "{rendered}");
-        assert!(!rendered.contains("/private/customer"), "{rendered}");
-    }
-
-    #[test]
     fn blocking_native_diagnostics_reach_display_without_unrelated_facts() {
         let native = nexus_query_engine::error::QueryError::new(
             nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
@@ -1133,7 +1076,7 @@ mod tests {
         .with_fact("path", "/private/customer.parquet")
         .with_fact("literal", "secret");
         let adapter = Error::from_native_with_blocking_diagnostics(
-            "datafusion_nexus.native_composed.admission_proof",
+            "datafusion_nexus.native_composed.admission_evidence",
             "failed to derive the complete engine-owned composed admission bound",
             native,
         );

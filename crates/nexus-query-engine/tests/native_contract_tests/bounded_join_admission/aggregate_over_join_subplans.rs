@@ -13,16 +13,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
-    let facts = BoundedJoinReservationContract.facts(ExecutionBoundaryPolicy::default());
-    assert_eq!(
-        facts
-            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
-            .map(String::as_str),
-        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
-    );
-    assert_eq!(facts.get("bounded_join_execution_families"), None);
-
+    assert!(unsupported_facts(&plan).is_none());
     let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
     );
@@ -58,21 +49,16 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
             "{variant:?}"
         );
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).expect(
+        let facts = unsupported_facts(&plan).expect(
             "unsupported aggregate-over-join-subplan aggregate-over-join subplan inputs shape should produce facts",
         );
-        assert_eq!(
-            facts
-                .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
-                .map(String::as_str),
-            Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
-        );
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
+        assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_subplan_inputs");
+        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
     }
 }
 
 #[test]
-fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_uses_capability_proof() {
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_uses_capability_evidence() {
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
     let analysis = plan.capability_analysis();

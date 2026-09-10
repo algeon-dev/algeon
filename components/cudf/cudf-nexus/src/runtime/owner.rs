@@ -56,11 +56,6 @@ fn annotate_runtime_budget_execution_error(
     }
 }
 
-const RUNTIME_SCALAR_TO_SERIES_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
-    "libcudf_scalar_to_series_temporary_workspace_preflight_unavailable";
-const RUNTIME_DECIMAL_SCALED_NULLS_BUDGETED_CAST_CONTRACT_GAP: &str =
-    "libcudf_decimal_scaled_nulls_budgeted_cast_preflight_unavailable";
-
 fn budgeted_runtime_for_operation(
     runtime: &Runtime,
     token: &ExecutionBudgetToken,
@@ -76,17 +71,13 @@ fn budgeted_series_report(
     token: &ExecutionBudgetToken,
     rows: usize,
     operation: &'static str,
-    unresolved_contract: Option<&'static str>,
 ) -> Result<ExecutionBudgetReport> {
     let output_bytes = series.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
-    let mut report = token
+    let report = token
         .reservation_enforced_report()
         .with_retained_bytes(output_bytes)
         .with_output_bytes(output_bytes)
         .with_output_rows(rows);
-    if let Some(unresolved_contract) = unresolved_contract {
-        report = report.with_unresolved_contract(unresolved_contract);
-    }
     Ok(report)
 }
 
@@ -733,16 +724,11 @@ impl Runtime {
     ) -> Result<BudgetedExecutionOutcome<Series>> {
         let operation = "runtime::nulls_with_budget";
         let dtype = dtype.into();
-        let unresolved_contract = if dtype.id().is_decimal() && dtype.scale() != 0 {
-            Some(RUNTIME_DECIMAL_SCALED_NULLS_BUDGETED_CAST_CONTRACT_GAP)
-        } else {
-            None
-        };
         let budgeted_runtime = budgeted_runtime_for_operation(self, token, operation)?;
         let series = budgeted_runtime
             .nulls(dtype, len)
             .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let report = budgeted_series_report(&series, token, len, operation, unresolved_contract)?;
+        let report = budgeted_series_report(&series, token, len, operation)?;
         Ok(BudgetedExecutionOutcome::new(series, report))
     }
 
@@ -787,7 +773,7 @@ impl Runtime {
             .column_from_scalar(scalar, size)
             .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
         let series = Series::from_column(column).map_err(|error| error.reanchor(operation))?;
-        let report = budgeted_series_report(&series, token, size, operation, None)?;
+        let report = budgeted_series_report(&series, token, size, operation)?;
         Ok(BudgetedExecutionOutcome::new(series, report))
     }
 
@@ -813,13 +799,7 @@ impl Runtime {
         let series = budgeted_runtime
             .series_from_scalar(&scalar, len)
             .map_err(|error| annotate_runtime_budget_execution_error(error, token, operation))?;
-        let report = budgeted_series_report(
-            &series,
-            token,
-            len,
-            operation,
-            Some(RUNTIME_SCALAR_TO_SERIES_TEMPORARY_WORKSPACE_CONTRACT_GAP),
-        )?;
+        let report = budgeted_series_report(&series, token, len, operation)?;
         Ok(BudgetedExecutionOutcome::new(series, report))
     }
 

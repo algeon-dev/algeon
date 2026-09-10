@@ -407,12 +407,12 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
             allocation_counts.entry(ordinal).or_default().push(count);
         }
         let live_grants = row.get("live_grants_bytes").and_then(Value::as_u64);
-        let live_reserved = row.get("live_reserved_bytes").and_then(Value::as_u64);
+        let resident_owner = row.get("resident_owner_bytes").and_then(Value::as_u64);
         let managed_capacity = row.get("managed_capacity_bytes").and_then(Value::as_u64);
         if live_grants
-            .zip(live_reserved)
+            .zip(resident_owner)
             .zip(managed_capacity)
-            .is_none_or(|((grants, reserved), capacity)| reserved > grants || grants > capacity)
+            .is_none_or(|((grants, owners), capacity)| owners > grants || grants > capacity)
         {
             failures.push(format!("{} contains an invalid ledger byte snapshot", path.display()));
         }
@@ -740,7 +740,7 @@ mod tests {
                     "gpu_utilization_pct": 80, "memory_utilization_pct": 80,
                     "cuda_free_bytes": 20, "nvml_used_bytes": 80, "active_attempts": 1,
                     "managed_capacity_bytes": 100, "live_grants_bytes": 80,
-                    "live_grant_ids": [device_ordinal + 1], "live_reserved_bytes": 40,
+                    "live_grant_ids": [device_ordinal + 1], "resident_owner_bytes": 40,
                     "cache_evictable_resident_bytes": 0, "cache_pinned_in_use_bytes": 0,
                     "cache_physical_current_bytes": null, "cache_physical_peak_bytes": null,
                     "allocation_failure_count": 0, "ledger_sequence": second,

@@ -109,8 +109,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     .with_fact("plan_node_id", node_id)
                     .with_fact("pipeline_task_kind", task.kind().as_str()));
             };
-            let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = *frame;
-            let input_reserved_bytes = input_reservation.bytes();
+            let ResidentGpuFrame { frame: input_frame, device_bytes: input_reserved_bytes } = *frame;
             let result = execute_compiled_bounded_aggregate_from_frame(
                 &mut self.execution,
                 node_id,
@@ -127,7 +126,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 input_frame,
                 input_reserved_bytes,
             );
-            self.execution.release(input_reservation);
             match result {
                 Ok(output) => Ok(output),
                 Err(error) => Err(error),
@@ -218,9 +216,7 @@ impl CompiledGpuTaskExecutor<'_> {
             &mut self.execution,
             node_id,
             "compiled_window",
-            "compiled_window_output",
             input_payload.clone_frame(),
-            input_payload.reservation_bytes(),
             false,
             |context, input, _token, metrics| {
                 crate::exec::operators::execute_window(context, window, &input_schema, input, &output_schema, metrics)

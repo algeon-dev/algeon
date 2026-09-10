@@ -24,7 +24,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     );
     assert!(
         analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-        "q02 should be admitted by the capability proof:\n{native_plan}"
+        "q02 should be admitted by the capability contract:\n{native_plan}"
     );
     let optimized_q2 = nexus_query_engine::optimizer::optimize_query_plan(native_plan.clone(), &Default::default());
     assert!(
@@ -39,11 +39,8 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
         optimized_q2.plan
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
-    )
-    .expect("q02 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
+        .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q15 = items.iter().find(|item| item.query_id == "q15").expect("TPC-H workload should include q15");
@@ -73,11 +70,8 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",
         optimized_q15.plan
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
-    )
-    .expect("q15 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
+        .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q18 = items.iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
@@ -93,11 +87,8 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
             .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
-    )
-    .expect("q18 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
+        .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q20 = items.iter().find(|item| item.query_id == "q20").expect("TPC-H workload should include q20");
@@ -111,11 +102,8 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         native_plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        nexus_query_engine::runtime::ExecutionBoundaryPolicy::default(),
-    )
-    .expect("q20 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
+        .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     fs::remove_dir_all(dir).unwrap();
@@ -464,13 +452,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         "lowered q11",
         nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate,
     );
-    assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
-            plan,
-            nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
-        )
-        .is_none()
-    );
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(plan).is_none());
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
     assert!(

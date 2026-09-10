@@ -113,12 +113,11 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input
     assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.partial_aggregate_count, 2);
     assert_eq!(metrics.final_merge_attempts, 1);
-    assert_budgeted_success_event_with_contract(
+    assert_budgeted_success_event_with_boundary(
         metrics,
         "nexus_query_engine.global_aggregate.null_output",
         1,
         "final_aggregate_merge",
-        None,
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -156,12 +155,11 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty
     assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.partial_aggregate_count, 1);
     assert_eq!(metrics.final_merge_attempts, 0);
-    assert_budgeted_success_event_with_contract(
+    assert_budgeted_success_event_with_boundary(
         metrics,
         "nexus_query_engine.global_aggregate.null_output",
         1,
         "chunk_operator",
-        None,
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {

@@ -2,25 +2,22 @@
 //!
 //! Inspects edge contracts plus producer/consumer node facts to verify
 //! invariants that span more than a single node — for example, "build side of
-//! this join must dominate the resident-resource reservation gate."
+//! this join must dominate its resident build resource."
 
 use super::{
-    ColumnQualifier, Expr, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, ReservationKind, SourceNode,
+    ColumnQualifier, Expr, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan,
     edge::{edge_consumer_fact, node_operator_fact},
     graph::{
         GraphScheduleProof, collect_reachable_node_ids, collect_reachable_node_ids_from, consumer_nodes_for_reachable,
         peel_projection_chain_for_capability, reachable_join_count_from_sink,
     },
     model::{
-        BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS, CapabilityDecision, ContractQuality, EdgeConsumer,
-        EdgeContract, InvariantId, ProducedProperty, ReservationRequirement, ResidentResource, ScheduleConstraint,
-        SubgraphInvariant, SubgraphInvariantKind,
+        CapabilityDecision, EdgeConsumer, EdgeContract, InvariantId, ProducedProperty, ResidentResource,
+        ScheduleConstraint, SubgraphInvariant, SubgraphInvariantKind,
     },
     node::produced_properties,
     shape::{
-        FinalRollupWidthClass, OutputLineage, RollupRankTopKAfterAggregateJoinPushdownShape,
-        RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
-        closed_multi_join_subgraph_structure_decision, expression_lineage_for_input,
+        OutputLineage, closed_multi_join_subgraph_structure_decision, expression_lineage_for_input,
         hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
         keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision,
         mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision,
@@ -30,35 +27,6 @@ use super::{
         root_topk_join_aggregate_shape_decision,
     },
 };
-use crate::{plan::WindowFunction, source::LocalParquetSource};
-
-/// Policy for blocking rollup/rank/top-k full-scan capability guards.
-///
-/// The guard rejects fact-sized full scans until exact blocking-stage contracts
-/// model the aggregate, rank/window, and optional final top-k stages. Keep this
-/// policy internal until those contracts produce stable operator guidance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BlockingRollupRankFullScanPolicy {
-    large_source_bytes_threshold: u64,
-}
-
-impl BlockingRollupRankFullScanPolicy {
-    const DEFAULT_LARGE_SOURCE_BYTES_THRESHOLD: u64 = 512 << 20;
-
-    fn large_source_bytes_threshold(self) -> u64 {
-        self.large_source_bytes_threshold
-    }
-
-    fn is_large_source(self, selected_bytes: u64) -> bool {
-        selected_bytes >= self.large_source_bytes_threshold
-    }
-}
-
-impl Default for BlockingRollupRankFullScanPolicy {
-    fn default() -> Self {
-        Self { large_source_bytes_threshold: Self::DEFAULT_LARGE_SOURCE_BYTES_THRESHOLD }
-    }
-}
 
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
     let mut invariants = Vec::new();
@@ -79,7 +47,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 ResidentResource::JoinBuildInput { join_id: node.id, input: build_input },
                 ResidentResource::JoinProbeInput { join_id: node.id, input: probe_input },
             ],
-            reservation_requirements: Vec::new(),
             decision,
         });
         if join.spec.residual_predicate.is_some() {
@@ -91,7 +58,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 nodes: vec![join.inputs[0], join.inputs[1], node.id],
                 required_schedule: ScheduleConstraint::None,
                 required_resources: Vec::new(),
-                reservation_requirements: Vec::new(),
                 decision,
             });
         }
@@ -110,7 +76,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_root_full_sort_join_aggregate_post_root_stage_order_invariant(plan, &mut invariants);
     append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(plan, &mut invariants);
     append_statistical_join_final_sort_exactness_invariant(plan, &mut invariants);
-    append_blocking_rollup_rank_full_scan_invariant(plan, &mut invariants);
 
     if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
         let invariant_id = InvariantId(invariants.len());
@@ -124,7 +89,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 .collect(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
-            reservation_requirements: Vec::new(),
             decision: solve_topological_build_probe_schedule_invariant(plan),
         });
         let invariant_id = InvariantId(invariants.len());
@@ -134,7 +98,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
             nodes: collect_reachable_node_ids(plan).map(|nodes| nodes.into_iter().collect()).unwrap_or_default(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
-            reservation_requirements: Vec::new(),
             decision: solve_resident_lifetime_invariant(plan, edges),
         });
     }
@@ -151,7 +114,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 .unwrap_or_else(|_| vec![root_join_id]),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
-            reservation_requirements: Vec::new(),
             decision: CapabilityDecision::Satisfied,
         });
     }
@@ -182,26 +144,6 @@ fn append_statistical_join_final_sort_exactness_invariant(plan: &QueryPlan, inva
         nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.final_sort_id)],
-        reservation_requirements: vec![
-            ReservationRequirement::modeled(
-                ReservationKind::CapabilityContract,
-                "datafusion_exact_host_welford_input_materialization",
-                "host_welford_input_materialization_preflight",
-                ContractQuality::QueryEngineOwnedBoundary,
-            ),
-            ReservationRequirement::modeled(
-                ReservationKind::CapabilityContract,
-                "datafusion_exact_host_welford_output_upload",
-                "host_welford_output_upload_reservation",
-                ContractQuality::QueryEngineOwnedBoundary,
-            ),
-            ReservationRequirement::modeled(
-                ReservationKind::CapabilityContract,
-                "final_full_sort_output_cardinality",
-                "final_full_sort_output_cardinality_bound",
-                ContractQuality::CapabilityProof,
-            ),
-        ],
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -239,294 +181,6 @@ fn statistical_join_final_sort_exactness_shape(plan: &QueryPlan) -> Option<Stati
     Some(StatisticalJoinFinalSortExactnessShape { aggregate_ids, join_ids, final_sort_id })
 }
 
-#[derive(Debug, Clone, Copy)]
-struct BlockingRollupRankTopKFullScanShape {
-    aggregate_id: NodeId,
-    grouping_key_count: usize,
-    grouping_set_count: usize,
-    window_id: NodeId,
-    rank_function_count: usize,
-    rank_sort_id: Option<NodeId>,
-    rank_filter_id: Option<NodeId>,
-    final_topk_sort_id: Option<NodeId>,
-    final_topk_limit_id: Option<NodeId>,
-    final_topk_fetch: Option<usize>,
-    large_source_id: NodeId,
-    large_source_selected_bytes: u64,
-    large_source_threshold_bytes: u64,
-    large_source_total_bytes: Option<u64>,
-    large_source_selected_row_groups: Option<usize>,
-    large_source_total_row_groups: Option<usize>,
-    large_source_file_count: usize,
-    large_source_read_column_count: usize,
-    source_count: usize,
-    join_count: usize,
-}
-
-fn append_blocking_rollup_rank_full_scan_invariant(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
-    let Some(shape) = blocking_rollup_rank_full_scan_shape(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    let mut nodes = vec![shape.large_source_id, shape.aggregate_id, shape.window_id];
-    if let Some(rank_sort_id) = shape.rank_sort_id {
-        nodes.push(rank_sort_id);
-    }
-    if let Some(rank_filter_id) = shape.rank_filter_id {
-        nodes.push(rank_filter_id);
-    }
-    if let Some(final_topk_sort_id) = shape.final_topk_sort_id {
-        nodes.push(final_topk_sort_id);
-    }
-    if let Some(final_topk_limit_id) = shape.final_topk_limit_id {
-        nodes.push(final_topk_limit_id);
-    }
-    let mut required_resources =
-        vec![ResidentResource::NodeOutput(shape.aggregate_id), ResidentResource::NodeOutput(shape.window_id)];
-    if let Some(rank_sort_id) = shape.rank_sort_id {
-        required_resources.push(ResidentResource::NodeOutput(rank_sort_id));
-    }
-    if let Some(final_topk_sort_id) = shape.final_topk_sort_id {
-        required_resources.push(ResidentResource::NodeOutput(final_topk_sort_id));
-    }
-    invariants.push(SubgraphInvariant {
-        invariant_id,
-        kind: SubgraphInvariantKind::BlockingRollupRankTopKFullScan,
-        nodes,
-        required_schedule: ScheduleConstraint::Barrier,
-        required_resources,
-        reservation_requirements: Vec::new(),
-        decision: CapabilityDecision::rejected(
-            BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS,
-            [
-                ("aggregate_id", shape.aggregate_id.to_string()),
-                ("grouping_key_count", shape.grouping_key_count.to_string()),
-                ("grouping_set_count", shape.grouping_set_count.to_string()),
-                ("window_id", shape.window_id.to_string()),
-                ("rank_function_count", shape.rank_function_count.to_string()),
-                ("rank_sort_id", optional_node_fact(shape.rank_sort_id)),
-                ("rank_filter_id", optional_node_fact(shape.rank_filter_id)),
-                ("final_topk_sort_id", optional_node_fact(shape.final_topk_sort_id)),
-                ("final_topk_limit_id", optional_node_fact(shape.final_topk_limit_id)),
-                ("final_topk_fetch", optional_usize_fact(shape.final_topk_fetch)),
-                ("large_source_id", shape.large_source_id.to_string()),
-                ("large_source_selected_bytes", shape.large_source_selected_bytes.to_string()),
-                ("large_source_total_bytes", optional_u64_fact(shape.large_source_total_bytes)),
-                ("large_source_selected_row_groups", optional_usize_fact(shape.large_source_selected_row_groups)),
-                ("large_source_total_row_groups", optional_usize_fact(shape.large_source_total_row_groups)),
-                ("large_source_threshold_bytes", shape.large_source_threshold_bytes.to_string()),
-                ("large_source_file_count", shape.large_source_file_count.to_string()),
-                ("large_source_read_column_count", shape.large_source_read_column_count.to_string()),
-                ("source_count", shape.source_count.to_string()),
-                ("join_count", shape.join_count.to_string()),
-                ("required_remediation", "source_reduction_or_exact_blocking_stage_preflight".to_string()),
-                (
-                    "unmodeled_contracts",
-                    "aggregate_contract;rank_sort_contract;window_contract;optional_final_topk_contract".to_string(),
-                ),
-            ],
-        ),
-    });
-}
-
-fn blocking_rollup_rank_full_scan_shape(plan: &QueryPlan) -> Option<BlockingRollupRankTopKFullScanShape> {
-    let policy = BlockingRollupRankFullScanPolicy::default();
-    let reachable = collect_reachable_node_ids(plan).ok()?;
-    let mut source_count = 0;
-    let mut join_count = 0;
-    let mut grouping_aggregates = Vec::new();
-    let mut rank_windows = Vec::new();
-    let mut final_topks = Vec::new();
-    let mut filters = Vec::new();
-    let mut large_sources = Vec::new();
-
-    for node_id in &reachable {
-        let node = plan.node(*node_id)?;
-        match &node.kind {
-            PlanNode::Source(source) => {
-                source_count += 1;
-                let SourceNode::LocalParquet(source) = source.as_ref() else {
-                    continue;
-                };
-                let Some(source_size) = blocking_rollup_rank_topk_source_size(source) else {
-                    continue;
-                };
-                if !policy.is_large_source(source_size.selected_bytes) {
-                    continue;
-                }
-                large_sources.push((*node_id, source_size, source.file_count(), source.read_column_count()));
-            },
-            PlanNode::Join(_) => join_count += 1,
-            PlanNode::Aggregate(aggregate) => {
-                if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
-                    grouping_aggregates.push((
-                        *node_id,
-                        aggregate.spec.group_exprs.len(),
-                        grouping_sets.groups.len(),
-                        grouping_set_input_sources_reduced_by_prior_aggregate(plan, aggregate.input),
-                    ));
-                }
-            },
-            PlanNode::Window(window) => {
-                let rank_function_count = window
-                    .spec
-                    .functions
-                    .iter()
-                    .filter(|function| matches!(function, WindowFunction::Rank { .. }))
-                    .count();
-                if rank_function_count > 0 {
-                    rank_windows.push((*node_id, rank_function_count));
-                }
-            },
-            PlanNode::Limit(limit) => {
-                if let Some(fetch) = limit.spec.fetch
-                    && matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_)))
-                {
-                    final_topks.push((limit.input, *node_id, fetch));
-                }
-            },
-            PlanNode::Filter(filter) => filters.push((*node_id, filter.input)),
-            PlanNode::Projection(_)
-            | PlanNode::Sort(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {},
-        }
-    }
-
-    if join_count == 0 {
-        return None;
-    }
-
-    let mut selected = None;
-    for (window_id, rank_function_count) in &rank_windows {
-        let window_inputs = collect_reachable_node_ids_from(plan, *window_id).ok()?;
-        let rank_sort_id = match plan.node(*window_id).map(|node| &node.kind) {
-            Some(PlanNode::Window(window))
-                if matches!(plan.node(window.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) =>
-            {
-                Some(window.input)
-            },
-            _ => None,
-        };
-        let rank_filter_id = filters.iter().find_map(|(filter_id, filter_input)| {
-            collect_reachable_node_ids_from(plan, *filter_input)
-                .ok()
-                .is_some_and(|filter_inputs| filter_inputs.contains(window_id))
-                .then_some(*filter_id)
-        });
-        let final_topk = final_topks.iter().copied().find(|(_, final_limit_id, _)| {
-            collect_reachable_node_ids_from(plan, *final_limit_id)
-                .ok()
-                .is_some_and(|topk_inputs| topk_inputs.contains(window_id))
-        });
-        for (aggregate_id, grouping_key_count, grouping_set_count, reduced_source_ids) in &grouping_aggregates {
-            if !window_inputs.contains(aggregate_id) {
-                continue;
-            }
-            let aggregate_inputs = collect_reachable_node_ids_from(plan, *aggregate_id).ok()?;
-            for (large_source_id, source_size, large_source_file_count, large_source_read_column_count) in
-                &large_sources
-            {
-                if !aggregate_inputs.contains(large_source_id) {
-                    continue;
-                }
-                if reduced_source_ids.contains(large_source_id) {
-                    continue;
-                }
-                if selected.is_none_or(|shape: BlockingRollupRankTopKFullScanShape| {
-                    source_size.selected_bytes > shape.large_source_selected_bytes
-                }) {
-                    selected = Some(BlockingRollupRankTopKFullScanShape {
-                        aggregate_id: *aggregate_id,
-                        grouping_key_count: *grouping_key_count,
-                        grouping_set_count: *grouping_set_count,
-                        window_id: *window_id,
-                        rank_function_count: *rank_function_count,
-                        rank_sort_id,
-                        rank_filter_id,
-                        final_topk_sort_id: final_topk.map(|(sort_id, _, _)| sort_id),
-                        final_topk_limit_id: final_topk.map(|(_, limit_id, _)| limit_id),
-                        final_topk_fetch: final_topk.map(|(_, _, fetch)| fetch),
-                        large_source_id: *large_source_id,
-                        large_source_selected_bytes: source_size.selected_bytes,
-                        large_source_threshold_bytes: policy.large_source_bytes_threshold(),
-                        large_source_total_bytes: source_size.total_bytes,
-                        large_source_selected_row_groups: source_size.selected_row_groups,
-                        large_source_total_row_groups: source_size.total_row_groups,
-                        large_source_file_count: *large_source_file_count,
-                        large_source_read_column_count: *large_source_read_column_count,
-                        source_count,
-                        join_count,
-                    });
-                }
-            }
-        }
-    }
-
-    let shape = selected?;
-    Some(BlockingRollupRankTopKFullScanShape { source_count, join_count, ..shape })
-}
-
-fn grouping_set_input_sources_reduced_by_prior_aggregate(
-    plan: &QueryPlan,
-    input: NodeId,
-) -> std::collections::BTreeSet<NodeId> {
-    let Some(aggregate_inputs) = collect_reachable_node_ids_from(plan, input).ok() else {
-        return std::collections::BTreeSet::new();
-    };
-    aggregate_inputs
-        .iter()
-        .filter_map(|node_id| plan.node(*node_id))
-        .filter_map(|node| match &node.kind {
-            PlanNode::Aggregate(prior) if prior.spec.grouping_sets.is_none() => {
-                collect_reachable_node_ids_from(plan, prior.input).ok()
-            },
-            _ => None,
-        })
-        .flatten()
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BlockingRollupRankTopKSourceSize {
-    selected_bytes: u64,
-    total_bytes: Option<u64>,
-    selected_row_groups: Option<usize>,
-    total_row_groups: Option<usize>,
-}
-
-fn blocking_rollup_rank_topk_source_size(source: &LocalParquetSource) -> Option<BlockingRollupRankTopKSourceSize> {
-    if let Some(stats) = source.diagnostics.selected_row_group_stats.as_ref() {
-        let selected_bytes = stats.selected_source_bytes()?;
-        return Some(BlockingRollupRankTopKSourceSize {
-            selected_bytes,
-            total_bytes: stats.total_source_bytes(),
-            selected_row_groups: Some(stats.selected_row_groups),
-            total_row_groups: Some(stats.total_row_groups),
-        });
-    }
-    source.diagnostics.known_bytes.map(|known_bytes| BlockingRollupRankTopKSourceSize {
-        selected_bytes: known_bytes,
-        total_bytes: Some(known_bytes),
-        selected_row_groups: source.diagnostics.selected_row_groups,
-        total_row_groups: None,
-    })
-}
-
-fn optional_u64_fact(value: Option<u64>) -> String {
-    value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
-}
-
-fn optional_usize_fact(value: Option<usize>) -> String {
-    value.map_or_else(|| "unknown".to_string(), |value| value.to_string())
-}
-
-fn optional_node_fact(value: Option<NodeId>) -> String {
-    value.map_or_else(|| "absent".to_string(), |value| value.to_string())
-}
-
 pub(super) fn append_shared_resident_subplan_invariants(
     plan: &QueryPlan,
     edges: &[EdgeContract],
@@ -549,7 +203,6 @@ pub(super) fn append_shared_resident_subplan_invariants(
             nodes,
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(producer)],
-            reservation_requirements: Vec::new(),
             decision: solve_shared_resident_subplan_invariant(plan, edges, producer, &consumers),
         });
     }
@@ -581,7 +234,6 @@ pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariant
             nodes: vec![shared_producer, aggregate.input, node.id],
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(shared_producer)],
-            reservation_requirements: Vec::new(),
             decision: solve_aggregate_derives_from_shared_producer_invariant(plan, shared_producer, node.id),
         });
     }
@@ -608,7 +260,6 @@ pub(super) fn append_projection_transparent_residency_invariants(
             nodes: vec![peeled_producer, node.id],
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(peeled_producer)],
-            reservation_requirements: Vec::new(),
             decision: solve_projection_transparent_residency_invariant(plan, peeled_producer, node.id),
         });
     }
@@ -638,7 +289,6 @@ pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
             nodes: invariant_nodes,
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(peeled_producer)],
-            reservation_requirements: Vec::new(),
             decision: solve_resident_unary_chain_preserves_residency_invariant(plan, peeled_producer, &chain_ids),
         });
     }
@@ -656,7 +306,6 @@ pub(super) fn append_final_barrier_order_invariants(plan: &QueryPlan, invariants
             nodes: vec![sort.input, node.id],
             required_schedule: ScheduleConstraint::Barrier,
             required_resources: vec![ResidentResource::NodeOutput(sort.input)],
-            reservation_requirements: Vec::new(),
             decision: solve_final_barrier_order_invariant(plan, node.id, sort.input),
         });
     }
@@ -683,7 +332,6 @@ pub(super) fn append_limit_bounded_projection_invariants(plan: &QueryPlan, invar
             nodes: vec![projection.input, projection_node.id],
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(projection.input)],
-            reservation_requirements: Vec::new(),
             decision: solve_limit_bounded_projection_invariant(plan, projection.input, projection_node.id),
         });
     }
@@ -768,7 +416,6 @@ pub(super) fn append_mixed_residual_post_root_stage_order_invariant(
         ],
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -792,7 +439,6 @@ pub(super) fn append_hash_join_resident_grouped_aggregate_topk_post_root_stage_o
         nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -832,23 +478,8 @@ pub(super) fn append_rollup_rank_topk_after_aggregate_join_pushdown_post_root_st
         nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: rollup_rank_topk_after_aggregate_join_pushdown_subcontract_requirements(&shape),
         decision: CapabilityDecision::Satisfied,
     });
-}
-
-fn rollup_rank_topk_after_aggregate_join_pushdown_subcontract_requirements(
-    shape: &RollupRankTopKAfterAggregateJoinPushdownShape,
-) -> Vec<ReservationRequirement> {
-    match shape.final_rollup_width {
-        FinalRollupWidthClass::Narrow => Vec::new(),
-        FinalRollupWidthClass::Wide => vec![ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "rollup_rank_topk_wide_final_rollup_subcontract",
-            "rollup_rank_topk_wide_final_rollup_subcontract",
-            ContractQuality::CapabilityProof,
-        )],
-    }
 }
 
 pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(
@@ -873,7 +504,6 @@ pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage
         },
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }
@@ -904,88 +534,8 @@ pub(super) fn append_root_topk_join_aggregate_post_root_stage_order_invariant(
         },
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: root_topk_join_aggregate_subcontract_requirements(&shape),
         decision: CapabilityDecision::Satisfied,
     });
-}
-
-fn root_topk_join_aggregate_subcontract_requirements(
-    shape: &RootTopKJoinAggregateShape,
-) -> Vec<ReservationRequirement> {
-    let mut requirements = Vec::new();
-    if shape.sort_fetch_hash_join_input_subcontract {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_sort_fetch_hash_join_input_subcontract",
-            "root_topk_sort_fetch_hash_join_input_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if shape.sort_fetch_hash_join_aggregate_subcontract {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
-            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.distinct_aggregate_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_distinct_aggregate_subcontract",
-            "root_topk_distinct_aggregate_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.keyed_filtered_semi_join_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_keyed_filtered_semi_join_subcontract",
-            "root_topk_keyed_filtered_semi_join_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.null_filtered_left_join_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_null_filtered_left_join_fan_in_subcontract",
-            "root_topk_null_filtered_left_join_fan_in_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.keyless_or_cross_join_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_keyless_or_cross_join_subcontract",
-            "root_topk_keyless_or_cross_join_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.window_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_window_subcontract",
-            "root_topk_window_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.window_full_outer_join_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_window_full_outer_join_subcontract",
-            "root_topk_window_full_outer_join_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    if !shape.keyless_outer_cross_window_join_ids.is_empty() {
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_topk_keyless_outer_cross_window_subcontract",
-            "root_topk_keyless_outer_cross_window_subcontract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-    requirements
 }
 
 pub(super) fn append_root_full_sort_join_aggregate_post_root_stage_order_invariant(
@@ -1007,36 +557,8 @@ pub(super) fn append_root_full_sort_join_aggregate_post_root_stage_order_invaria
         },
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: root_full_sort_join_aggregate_subcontract_requirements(&shape),
         decision: CapabilityDecision::Satisfied,
     });
-}
-
-fn root_full_sort_join_aggregate_subcontract_requirements(
-    shape: &RootFullSortJoinAggregateShape,
-) -> Vec<ReservationRequirement> {
-    match shape.subcontract {
-        RootFullSortJoinAggregateSubcontract::KeyedHashGroupedAggregate => Vec::new(),
-        RootFullSortJoinAggregateSubcontract::KeylessOrCrossJoin => vec![ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_full_sort_keyless_or_cross_join_subcontract",
-            "root_full_sort_keyless_or_cross_join_subcontract",
-            ContractQuality::CapabilityProof,
-        )],
-        RootFullSortJoinAggregateSubcontract::RepeatedProjectionFanout => vec![ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_full_sort_repeated_projection_fanout_subcontract",
-            "root_full_sort_repeated_projection_fanout_subcontract",
-            ContractQuality::CapabilityProof,
-        )],
-        RootFullSortJoinAggregateSubcontract::SharedAggregateFanout => vec![ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            "root_full_sort_shared_aggregate_fanout_subcontract",
-            "root_full_sort_shared_aggregate_fanout_subcontract",
-            ContractQuality::CapabilityProof,
-        )],
-        RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout => Vec::new(),
-    }
 }
 
 pub(super) fn append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(
@@ -1061,7 +583,6 @@ pub(super) fn append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_
         nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
-        reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
 }

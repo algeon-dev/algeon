@@ -45,19 +45,6 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 2);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(metrics.reservation_requested_bytes > 0);
-    assert!(metrics.reservation_granted_bytes > 0);
-    assert_reservation_kind_subsequence(
-        metrics,
-        &[
-            ReservationKind::BuildSide,
-            ReservationKind::ProbeSide,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
-        ],
-    );
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);
     let join_metrics =
@@ -125,17 +112,6 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert_reservation_kind_subsequence(
-        metrics,
-        &[
-            ReservationKind::BuildSide,
-            ReservationKind::ProbeSide,
-            ReservationKind::GatherMap,
-            ReservationKind::JoinOutput,
-            ReservationKind::Materialization,
-        ],
-    );
     assert_eq!(metrics.hash_join_build_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -217,20 +193,6 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "full");
@@ -240,10 +202,6 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
     assert_eq!(join_metrics.hash_table_bytes, 0);
     assert_eq!(join_metrics.mixed_size_data_bytes, metrics.mixed_join_size_data_bytes);
     assert_eq!(join_metrics.output_rows, 6);
-    assert_eq!(
-        granted_reservation_requested_bytes(metrics, ReservationKind::GatherMap, "join_gather_map"),
-        cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(6).unwrap() as u64
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -300,7 +258,6 @@ fn bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "left");
@@ -360,7 +317,6 @@ fn bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "left");
@@ -400,7 +356,6 @@ fn bounded_native_query_null_extends_keyless_predicate_free_full_join_when_left_
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "full");

@@ -24,50 +24,6 @@ typedef enum {
   CUDF_NULL_ORDER_BEFORE = 1,
 } cudf_null_order_t;
 
-/// Allocation components for the unstable one-key radix sorted-order path.
-///
-/// All fields are requested bytes. `key_input_bytes` is zero for integral and
-/// chrono keys and the transformed float-pair input for floating keys.
-/// `active_phase_peak_bytes` is the checked sum of the five components, which
-/// are co-resident during execution.
-typedef struct cudf_sorted_order_radix_preflight_result_t {
-  uint64_t key_input_bytes;
-  uint64_t key_output_bytes;
-  uint64_t sequence_bytes;
-  uint64_t temporary_workspace_bytes;
-  uint64_t retained_order_bytes;
-  uint64_t active_phase_peak_bytes;
-} cudf_sorted_order_radix_preflight_result_t;
-
-typedef struct cudf_sorted_order_lexicographic_preflight_result_t {
-  uint64_t comparator_state_bytes;
-  uint64_t temporary_workspace_bytes;
-  uint64_t retained_order_bytes;
-  uint64_t active_phase_peak_bytes;
-} cudf_sorted_order_lexicographic_preflight_result_t;
-
-/// Metadata-only owner preflight for unstable lexicographic sorted order.
-///
-/// Every metadata array has `key_count` entries. The function supports two or
-/// more non-nested relational keys and performs no device allocation.
-
-/// Metadata-only preflight for the unstable one-key radix sorted-order path.
-///
-/// `key_type` uses the `cudf_type_id_t` discriminants. The selected candidate
-/// device is activated only for the CUB temporary-storage query and restored
-/// before return. No stream, memory resource, column, or device allocation is
-/// required.
-cudf_status_t cudf_sorted_order_radix_preflight(
-    int64_t num_rows, cudf_type_id_t key_type, int64_t null_count,
-    int32_t key_count, int32_t stable, cudf_order_t key_order, int32_t device,
-    cudf_sorted_order_radix_preflight_result_t *out);
-
-cudf_status_t cudf_sorted_order_lexicographic_preflight(
-    int64_t num_rows, cudf_type_id_t const *key_types,
-    int64_t const *null_counts, cudf_order_t const *key_orders,
-    cudf_null_order_t const *null_precedence, int32_t key_count, int32_t stable,
-    int32_t device, cudf_sorted_order_lexicographic_preflight_result_t *out);
-
 /// Sort with explicit execution context.
 ///
 /// `column_order` and `null_precedence` are arrays of size `num_keys`

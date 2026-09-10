@@ -120,11 +120,11 @@ impl CompiledGpuTaskExecutor<'_> {
                         .map(CompiledGpuResource::new)
                 },
                 SourceNode::GpuResident(source) => {
-                    execute_bounded_generic_gpu_resident_source(&mut self.execution, source, node_id, &self.gpu_inputs)
+                    execute_bounded_generic_gpu_resident_source(&mut self.execution, source, &self.gpu_inputs)
                         .map(CompiledGpuResource::new)
                 },
                 SourceNode::LiteralBatch(source) => {
-                    execute_bounded_generic_literal_batch_source(&mut self.execution, source, node_id)
+                    execute_bounded_generic_literal_batch_source(&mut self.execution, source)
                         .map(CompiledGpuResource::new)
                 },
             },

@@ -11,44 +11,17 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
             if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&row.query_id.as_str())
                 && row.final_disposition == Some(FinalPlanDisposition::Native)
             {
-                assert!(
-                    !row.capability_contract_rows.is_empty(),
-                    "{} accepted bounded join row should expose admission contract gates",
-                    row.query_id
-                );
+                assert!(row.capability_decision_rows.is_empty());
                 assert!(
                     !row.capability_compiled_graphs.is_empty(),
                     "{} accepted bounded join row should expose compiled graph diagnostics",
                     row.query_id
                 );
-                assert!(
-                    row.capability_contract_rows.iter().all(|gate| {
-                        gate.execution_mode == CapabilityEnvelopeStatus::Admitted
-                            && gate.contract_status == ContractStatus::Modeled
-                    }),
-                    "{} accepted bounded gates should be modeled bounded rows",
-                    row.query_id
-                );
-                assert!(
-                    row.capability_contract_rows
-                        .iter()
-                        .any(|gate| gate.reservation_kind == ReservationKind::Materialization),
-                    "{} accepted bounded gates should include host materialization",
-                    row.query_id
-                );
-                assert!(
-                    row.capability_contract_rows
-                        .iter()
-                        .map(|gate| gate.to_stable_kv_row())
-                        .all(|rendered| admission_contract_row_is_family_path_free(&rendered)),
-                    "{} admission contract rows should not preserve family/path vocabulary",
-                    row.query_id
-                );
             } else {
                 if row.final_disposition == Some(FinalPlanDisposition::Native) {
                     assert!(
-                        row.capability_contract_rows.is_empty(),
-                        "{} non-join accepted row is outside the current bounded join gate report surface",
+                        row.capability_decision_rows.is_empty(),
+                        "{} accepted rows must not emit non-admitted capability decisions",
                         row.query_id
                     );
                     assert!(row.capability_compiled_graphs.is_empty());
@@ -72,7 +45,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                 row.query_id
             );
             assert!(
-                row.capability_contract_rows
+                row.capability_decision_rows
                     .iter()
                     .map(|gate| gate.to_stable_kv_row())
                     .all(|rendered| admission_contract_row_is_family_path_free(&rendered)),
@@ -129,7 +102,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
 fn assert_row_rejection_diagnostics_are_family_free(
     row: &datafusion_nexus::native_report::NativeDataFusionPlanningRow,
 ) {
-    for gate in &row.capability_contract_rows {
+    for gate in &row.capability_decision_rows {
         assert_no_legacy_rejection_terms(row.query_id.as_str(), &gate.to_stable_kv_row());
     }
     for graph in &row.capability_compiled_graphs {

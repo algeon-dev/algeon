@@ -161,10 +161,6 @@ pub struct NativeTpcdsParityRow {
     pub comparison_mode: ParityComparisonMode,
     /// DuckDB oracle output and CPU parity summary.
     pub duckdb_output: NativeTpcdsParityExternalOutputSummary,
-    /// Native reservation live peak in device bytes.
-    pub native_reservation_live_peak_bytes: Option<usize>,
-    /// Number of native reservation denials recorded during runtime.
-    pub native_reservation_denied_count: Option<usize>,
     /// Number of native retry attempts recorded during runtime.
     pub native_retry_count: Option<usize>,
     /// CPU planning/runtime or native planning/runtime failure detail.
@@ -202,8 +198,6 @@ impl TsvRow for NativeTpcdsParityRow {
             format_optional_usize(self.duckdb_output.output_rows),
             format_optional_usize(self.duckdb_output.output_batches),
             self.duckdb_output.output_fingerprint.as_deref().unwrap_or("none").to_string(),
-            format_optional_usize(self.native_reservation_live_peak_bytes),
-            format_optional_usize(self.native_reservation_denied_count),
             format_optional_usize(self.native_retry_count),
             self.native_runtime_failure.as_deref().map(stable_tsv_field).unwrap_or_else(|| "none".to_string()),
         ]
@@ -412,15 +406,13 @@ mod tests {
             native_output_fingerprint: None,
             comparison_mode: ParityComparisonMode::NotApplicable,
             duckdb_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
-            native_reservation_live_peak_bytes: None,
-            native_reservation_denied_count: None,
             native_retry_count: None,
             native_runtime_failure: None,
         };
         assert_eq!(row.fields().len(), NativeTpcdsParityRow::COLUMNS.len());
         assert_eq!(
             row.to_tsv_line(),
-            "q01\tsucceeded\tsucceeded\tnot_supported\tunsupported_operator\toperator_join\tdatafusion\t0\t0\tfalse\tnot_started\tnative_rejected\tnone\t0\tnone\t0\tnone\tnone\tnone\tnot_applicable\tnot_configured\tnot_compared\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone"
+            "q01\tsucceeded\tsucceeded\tnot_supported\tunsupported_operator\toperator_join\tdatafusion\t0\t0\tfalse\tnot_started\tnative_rejected\tnone\t0\tnone\t0\tnone\tnone\tnone\tnot_applicable\tnot_configured\tnot_compared\tnone\tnone\tnone\tnone\tnone\tnone"
         );
     }
 }
@@ -642,8 +634,6 @@ fn parity_row_for_item(
         native_output_fingerprint: native_fingerprint,
         comparison_mode,
         duckdb_output,
-        native_reservation_live_peak_bytes: native_metrics_summary.as_ref().map(|m| m.reservation_live_peak_bytes),
-        native_reservation_denied_count: native_metrics_summary.as_ref().map(|m| m.reservation_denied_count),
         native_retry_count: native_metrics_summary.as_ref().map(|m| m.retry_count),
         native_runtime_failure: cpu_runtime_failure.or(native_failure),
     }
@@ -719,21 +709,29 @@ fn planning_outcome_diagnostics(
     accepted: bool,
 ) -> (Option<CandidateOutcomeKind>, Option<String>, Option<String>) {
     if accepted {
-        if let Some(crate::report::CandidateOutcome::Deferred { producer_binding, .. }) = diagnostics
+        if diagnostics
             .report
             .outcomes()
             .iter()
-            .find(|outcome| matches!(outcome, crate::report::CandidateOutcome::Deferred { .. }))
+            .any(|outcome| matches!(outcome, crate::report::CandidateOutcome::Deferred { .. }))
         {
-            return (Some(CandidateOutcomeKind::Deferred), Some(producer_binding.reason_code().to_string()), None);
+            return (
+                Some(CandidateOutcomeKind::Deferred),
+                Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
+                None,
+            );
         }
         return (Some(CandidateOutcomeKind::Selected), None, None);
     }
     for outcome in diagnostics.report.outcomes() {
         match outcome {
             crate::report::CandidateOutcome::Selected { .. } => {},
-            crate::report::CandidateOutcome::Deferred { producer_binding, .. } => {
-                return (Some(CandidateOutcomeKind::Deferred), Some(producer_binding.reason_code().to_string()), None);
+            crate::report::CandidateOutcome::Deferred { .. } => {
+                return (
+                    Some(CandidateOutcomeKind::Deferred),
+                    Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
+                    None,
+                );
             },
             crate::report::CandidateOutcome::NotSupported { candidate, capability_reason } => {
                 return (

@@ -18,16 +18,14 @@ use arrow::{
 use cudf::{DataType as CudfDataType, TypeId};
 use nexus_query_engine::{
     capability::{
-        AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, ContractQuality, ContractStatus,
-        EdgeConsumer, EdgeContractKind, InputRole, KeyedHashJoinStrategyOptions, NodeOperator, OrderingRequirement,
-        RequiredProperty, ReservationRequirementScope, ResidualRequirement, ResultSinkKind, ScheduleConstraint,
-        SharedProducerIdentity, SourceFormatCapability, SubgraphInvariantKind, aggregate_strategy_capability_decision,
+        AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, EdgeContractKind,
+        KeyedHashJoinStrategyOptions, NodeOperator, SharedProducerIdentity, SourceFormatCapability,
+        SubgraphInvariantKind, aggregate_strategy_capability_decision,
     },
     chunk::{
         SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel, plan_local_parquet_source_chunks,
         plan_local_parquet_source_chunks_with_metadata_cache,
     },
-    contract_report::{CapabilityContractOwner, CapabilityContractReport},
     datatypes::{
         cudf_dtype_from_arrow_type, is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
         is_supported_list_carry_type,
@@ -38,16 +36,14 @@ use nexus_query_engine::{
         LiteralValue, SortExpr, SortSpec,
     },
     metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryId, QueryMetrics, TraceId},
-    mode::CapabilityEnvelopeStatus,
     optimizer::NativeOptimizerOptions,
     plan::{
         DataPlacement, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode,
         ProjectionOutput, QueryPlanBuilder, ResultSink, SchemaBehavior, WindowFunction, WindowSpec,
     },
     runtime::{
-        BoundedJoinReservationContract, BoundedJoinReservationStatus, BuildMaterializationBoundary,
-        ExecutionBoundaryPolicy, ExecutionCancellation, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId,
-        ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceReadBoundary,
+        BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionCancellation, MemoryControlPolicy,
+        MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceReadBoundary,
         SourceSchedulerPolicy,
     },
     source::{
@@ -143,8 +139,6 @@ mod graph_algorithm;
 mod optimizer_contracts;
 #[path = "native_contract_tests/partial_aggregate_sizing.rs"]
 mod partial_aggregate_sizing;
-#[path = "native_contract_tests/pipeline_compiler.rs"]
-mod pipeline_compiler;
 #[path = "native_contract_tests/plan_contracts.rs"]
 mod plan_contracts;
 #[path = "native_contract_tests/preference_contracts.rs"]
@@ -221,40 +215,6 @@ fn query_error_correlation_stamping_replaces_existing_correlation_facts() {
 }
 
 #[test]
-fn memory_reservation_failure_is_temporary_resource_exhaustion() {
-    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 1024, 512)
-        .with_memory_boundary("source_chunk_read")
-        .with_node_id("n0")
-        .with_stage("source_read")
-        .with_chunk_index(3)
-        .with_file_index(1)
-        .with_path("/tmp/input.parquet")
-        .with_row_groups(vec![4, 5])
-        .with_attempt(2, 4);
-
-    let error = request.denied_error(256);
-
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(error.code().as_str(), "memory_reservation_failed");
-    assert_eq!(error.kind(), QueryErrorKind::ResourceExhausted);
-    assert_eq!(error.status(), QueryErrorStatus::Temporary);
-    assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    assert_eq!(error.fact_value("requested_bytes"), Some("1024"));
-    assert_eq!(error.fact_value("granted_bytes"), Some("256"));
-    assert_eq!(error.fact_value("budget_bytes"), Some("512"));
-    assert_eq!(error.fact_value("node_id"), Some("n0"));
-    assert_eq!(error.fact_value("chunk_index"), Some("3"));
-    assert_eq!(error.fact_value("file_index"), Some("1"));
-    assert_eq!(error.fact_value("path"), Some("/tmp/input.parquet"));
-    assert_eq!(error.fact_value("row_group_indexes"), Some("4,5"));
-    assert_eq!(error.fact_value("row_group_count"), Some("2"));
-    assert_eq!(error.fact_value("attempt"), Some("2"));
-    assert_eq!(error.fact_value("max_attempts"), Some("4"));
-    assert_eq!(error.fact_value("memory_space"), None);
-}
-
-#[test]
 fn source_storage_error_codes_have_stable_policy() {
     let cases = [
         (QueryErrorCode::SourceAccessDenied, "source_access_denied", QueryErrorStatus::Permanent),
@@ -271,18 +231,12 @@ fn source_storage_error_codes_have_stable_policy() {
 }
 
 #[test]
-fn memory_space_id_display_and_request_defaults_are_stable() {
+fn memory_space_id_display_is_stable() {
     let device_zero = MemorySpaceId::Device { device_ordinal: 0 };
     let device_one = MemorySpaceId::Device { device_ordinal: 1 };
 
     assert_eq!(device_zero.to_string(), "GPU:0");
     assert_eq!(device_one.to_string(), "GPU:1");
-
-    let default_request = MemoryReservationRequest::new(ReservationKind::SourceRead, 1024, 4096);
-    assert_eq!(default_request.memory_space, device_zero);
-
-    let explicit_request = default_request.with_memory_space(device_one);
-    assert_eq!(explicit_request.memory_space, device_one);
 }
 
 #[test]
@@ -308,7 +262,6 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(ReservationKind::ProbeSide.as_str(), "probe_side");
     assert_eq!(ReservationKind::HashTable.as_str(), "hash_table");
     assert_eq!(ReservationKind::FilteredProbeState.as_str(), "filtered_probe_state");
-    assert_eq!(ReservationKind::MixedSizeData.as_str(), "mixed_size_data");
     assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
     assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
     assert_eq!(ReservationKind::PartialState.as_str(), "partial_state");

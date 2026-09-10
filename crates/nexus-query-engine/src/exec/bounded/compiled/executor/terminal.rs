@@ -7,17 +7,12 @@ use super::{
 };
 use crate::{
     error::Result,
-    exec::{
-        ActiveReservation,
-        bounded::{
-            ResidentGpuFrame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
-            execute_bounded_generic_union, materialize_bounded_frame_to_host,
-            materialize_bounded_join_leaf_local_parquet_source_stream, release_reservations_reverse,
-        },
+    exec::bounded::{
+        ResidentGpuFrame, execute_bounded_generic_unary_from_frame, execute_bounded_generic_union,
+        materialize_bounded_frame_to_host, materialize_bounded_join_leaf_local_parquet_source_stream,
     },
     pipeline::{PipelineTask, ResidentResourceId, SinkBoundaryKind},
     plan::{NodeId, PlanNode, ResultSink},
-    runtime::{MemoryReservationRequest, ReservationKind},
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -41,14 +36,11 @@ impl CompiledGpuTaskExecutor<'_> {
         }
 
         let input_payload = state.resource_payload(input)?;
-        let frame = execute_bounded_generic_unary_from_frame_with_reservation_kind(
+        let frame = execute_bounded_generic_unary_from_frame(
             &mut self.execution,
             node_id,
             "compiled_limit",
-            "compiled_limit_output",
             input_payload.clone_frame(),
-            input_payload.reservation_bytes(),
-            ReservationKind::FinalSort,
             false,
             |context, input, _token, metrics| crate::exec::operators::execute_limit(context, limit, input, metrics),
         )
@@ -96,10 +88,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.union_payload_ref_to_inputs(task, node_id, *resource, payload, &mut inputs)
             };
             if let Err(error) = result {
-                release_reservations_reverse(
-                    &mut self.execution,
-                    inputs.into_iter().map(|input| input.reservation).collect(),
-                );
                 return Err(error);
             }
         }
@@ -153,17 +141,11 @@ impl CompiledGpuTaskExecutor<'_> {
     ) -> Result<()> {
         match &payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                inputs.push(ResidentGpuFrame {
-                    frame: frame.frame.clone(),
-                    reservation: self.union_alias_reservation(node_id, &frame.reservation),
-                });
+                inputs.push(ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() });
             },
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                 for frame in stream.frames() {
-                    inputs.push(ResidentGpuFrame {
-                        frame: frame.frame.clone(),
-                        reservation: self.union_alias_reservation(node_id, &frame.reservation),
-                    });
+                    inputs.push(ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() });
                 }
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
@@ -180,21 +162,6 @@ impl CompiledGpuTaskExecutor<'_> {
             },
         }
         Ok(())
-    }
-
-    pub(super) fn union_alias_reservation(&mut self, node_id: NodeId, source: &ActiveReservation) -> ActiveReservation {
-        self.execution.alias_reservation(
-            source,
-            MemoryReservationRequest::new(
-                ReservationKind::OperatorOutput,
-                source.bytes(),
-                self.execution.reservations().budget(),
-            )
-            .with_memory_boundary("compiled_union_input_alias")
-            .with_node_id(node_id)
-            .with_stage("compiled_union_input_alias")
-            .with_attempt(1, 1),
-        )
     }
 
     pub(super) fn execute_sink_materialize_task(

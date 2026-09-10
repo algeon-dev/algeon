@@ -9,7 +9,7 @@ pub(super) fn execute_force_atlas2(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes } = inputs;
+    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs } = inputs;
     let crate::plan::GraphAlgorithmParams::ForceAtlas2(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -37,7 +37,6 @@ pub(super) fn execute_force_atlas2(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_force_atlas2",
@@ -80,7 +79,6 @@ pub(super) fn execute_force_atlas2(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },

@@ -15,7 +15,7 @@ does not depend on `nexus-query-engine` execution.
   snapshot and sealed attempt evidence.
 
 Runtime consumes the planning proof and refines deferred evidence inside the
-same immutable grant. It does not define another proof model, scheduler ledger,
+same immutable grant. It does not define another sizing model, scheduler ledger,
 grant, observation store, or error taxonomy.
 
 ## Validation

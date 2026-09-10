@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     capability::EdgeConsumer,
-    contract_report::{CapabilityContractOwner, CapabilityContractReport},
+    contract_report::{CapabilityContractReport, CapabilityDecisionOwner},
     correlation::{CompiledTaskId, PlanNodeId, QueryId},
     error::{QueryError, QueryErrorCode, triage_code_for_query_error},
 };
@@ -261,12 +261,11 @@ impl CapabilityContractReport {
         }
         let query_id = self.query_id().cloned();
         let signals = self
-            .gate_rows()
+            .decision_rows()
             .iter()
             .enumerate()
-            .filter(|(_, row)| row.contract_status.as_str() != "modeled")
             .map(|(index, row)| {
-                let mut evidence = TriageEvidenceRef::new("bounded_contract_report.gate_rows").with_row_index(index);
+                let mut evidence = TriageEvidenceRef::new("capability_report.decision_rows").with_row_index(index);
                 if let Some(query_id) = query_id.clone() {
                     evidence = evidence.with_query_id(query_id);
                 }
@@ -276,7 +275,7 @@ impl CapabilityContractReport {
                 TriageSignal::new(
                     TriageSeverity::Warning,
                     TriageCode::CapabilityEnvelopeRejected,
-                    format!("capability gate {} is {}", row.gate_id, row.contract_status.as_str()),
+                    format!("capability decision {} is {}", row.decision_id, row.status.as_str()),
                 )
                 .with_evidence(evidence)
             })
@@ -285,15 +284,13 @@ impl CapabilityContractReport {
     }
 }
 
-fn capability_owner_plan_node_id(owner: &CapabilityContractOwner) -> Option<PlanNodeId> {
+fn capability_owner_plan_node_id(owner: &CapabilityDecisionOwner) -> Option<PlanNodeId> {
     match owner {
-        CapabilityContractOwner::CapabilityNode(node) => Some((*node).into()),
-        CapabilityContractOwner::CapabilityEdge { producer, consumer } => match consumer {
+        CapabilityDecisionOwner::Node(node) => Some((*node).into()),
+        CapabilityDecisionOwner::Edge { producer, consumer } => match consumer {
             EdgeConsumer::Node(node) => Some((*node).into()),
             EdgeConsumer::Sink(_) => Some((*producer).into()),
         },
-        CapabilityContractOwner::Compiled(_)
-        | CapabilityContractOwner::CapabilitySubgraph(_)
-        | CapabilityContractOwner::CapabilityAdmission(_) => None,
+        CapabilityDecisionOwner::Subgraph(_) | CapabilityDecisionOwner::Admission(_) => None,
     }
 }

@@ -14,33 +14,17 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
         lowered_keys.key_columns.truncate(aggregate.spec.group_exprs.len());
     }
     let partition_count = partitioned_aggregate_partition_count(execution.context(), input_reserved_bytes);
-    let mut partition_reservation = match execution.try_reserve_work(
-        MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            input_reserved_bytes,
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("compiled_aggregate_hash_partition")
-        .with_node_id(node_id)
-        .with_stage("compiled_aggregate_hash_partition"),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            return Err(error);
-        },
-    };
     let frame = input.into_frame();
     let partitioned = {
         let token = match execution_budget_token_for_boundary(
             execution.context(),
-            execution.reservations().available_bytes_including(&partition_reservation),
+            execution.device_budget_bytes(),
             "compiled_aggregate_hash_partition",
             "nexus_query_engine.bounded.aggregate.compiled_partitioned_hash.budget_token",
             "failed to create bounded native compiled partitioned aggregate budget token",
         ) {
             Ok(token) => token,
             Err(error) => {
-                execution.release(partition_reservation);
                 return Err(error);
             },
         };
@@ -86,7 +70,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     let partitioned = match partitioned {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            execution.release(partition_reservation);
             return Err(error);
         },
     };
@@ -95,26 +78,10 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(partition_reservation);
             return Err(error);
         },
     };
-    if partitioned_bytes > partition_reservation.bytes() {
-        let grow_request = MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            partitioned_bytes.saturating_sub(partition_reservation.bytes()),
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("compiled_aggregate_hash_partition")
-        .with_node_id(node_id)
-        .with_stage("compiled_aggregate_hash_partition");
-        if let Err(error) = execution.try_grow(&mut partition_reservation, grow_request) {
-            execution.release(partition_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed(&mut partition_reservation, partitioned_bytes);
-    }
+    let _ = partitioned_bytes;
 
     let mut partials = Vec::with_capacity(partition_count);
     for partition in 0..partition_count {
@@ -122,8 +89,7 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             match slice_compiled_aggregate_partition(execution, node_id, &partitioned_frame, &offsets, partition) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    release_partials_reverse(execution, partials);
-                    execution.release(partition_reservation);
+                    release_partials_reverse(partials);
                     return Err(error);
                 },
             };
@@ -137,13 +103,11 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
         ) {
             Ok(partial) => partials.push(partial),
             Err(error) => {
-                release_partials_reverse(execution, partials);
-                execution.release(partition_reservation);
+                release_partials_reverse(partials);
                 return Err(error);
             },
         }
     }
-    execution.release(partition_reservation);
 
     execute_compiled_bounded_final_aggregate_merge(execution, node_id, aggregate, input_schema, output_schema, partials)
 }
@@ -182,13 +146,7 @@ fn slice_compiled_aggregate_partition(
     })?;
     let gpu = GpuDataFrame::new(sliced);
     let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
-    let reservation = execution.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, bytes, execution.reservations().budget())
-            .with_memory_boundary("compiled_aggregate_partition")
-            .with_node_id(node_id)
-            .with_stage("compiled_aggregate_partition"),
-    )?;
-    Ok(ResidentGpuFrame { frame: gpu, reservation })
+    Ok(ResidentGpuFrame::with_device_bytes(gpu, bytes))
 }
 
 pub(super) fn should_partition_compiled_grouped_aggregate(

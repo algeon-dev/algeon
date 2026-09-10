@@ -46,7 +46,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
@@ -62,34 +61,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     assert!(join_metrics[1].residual_predicate);
     assert_eq!(join_metrics[1].output_rows, 3);
     assert!(join_metrics[1].gather_map_bytes > 0);
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::OperatorOutput, "join_filtered_build_key_deduplicate"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "compiled_projection"),
-            (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
-            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

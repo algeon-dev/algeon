@@ -44,12 +44,11 @@ for the shared list, describe, validate, and execute workflow. The detailed
 column and request schemas are in the
 [GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
 
-## Execution availability
+## Execution
 
-`gpu_validate_call` validates schemas and options; it is not a GPU-memory
-preflight. Until cuVS provides a bounded peak-memory preflight, the server
-rejects `cuvs_*` calls before relation children run with structured
-`unsupported_operator`; there is no CPU fallback or unadmitted GPU mode.
+`gpu_validate_call` validates schemas and options without scanning relations or
+executing GPU work. At runtime, `cuvs_*` calls use the admitted query memory
+domain, and its allocator enforces the configured cap.
 
 cuVS SQL also has no persistent cross-statement cache for brute-force indexes,
 KMeans models, PCA transforms, or result relations. Each call creates the

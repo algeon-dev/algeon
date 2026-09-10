@@ -15,7 +15,7 @@ use tokio::time;
 use crate::{
     observability::{AdmissionLifecycleState, AdmissionRequestId, RuntimeObservationHandle},
     runtime::{
-        AdmittedAttemptProof, ExecutionCancellation,
+        ExecutionCancellation,
         backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
         backend_lifecycle::ObservationPermit,
     },
@@ -70,14 +70,10 @@ impl QueryService {
                 .with_fact("reason", "injected_pending_preflight_failure"));
             }
         }
-        let proof = request.planned_capability_proof();
-        self.resolve_device_admission_entries_with(candidate_ordinals, |ordinal| match proof {
-            Some(proof) => (|| {
-                let resolved_proof = proof.requirement_for_device(ordinal)?;
-                let requirement = request.apply_test_placement_overlay(resolved_proof.as_requirement().clone());
-                Ok(DeviceAdmissionEntry { requirement })
-            })(),
-            None => Ok(DeviceAdmissionEntry { requirement: base_requirement.clone() }),
+        let evidence = request.planned_capability_evidence();
+        self.resolve_device_admission_entries_with(candidate_ordinals, |_ordinal| {
+            let requirement = evidence.cloned().unwrap_or_else(|| base_requirement.clone());
+            Ok(DeviceAdmissionEntry { requirement })
         })
     }
 
@@ -1075,9 +1071,7 @@ impl QueryService {
                 return Err(primary);
             },
         };
-        let admitted_attempt_proof =
-            AdmittedAttemptProof::from_post_grant(submitted_plan_capability_evidence, envelope.memory_grant())
-                .map(Arc::new);
+        let admitted_capability_evidence = submitted_plan_capability_evidence.map(Arc::new);
         envelope.register_allocator_domain_attempt(attempt_id);
         if let Err(error) =
             execution_cancellation.check("nexus_query_engine.query_service.admission_transaction.publish")
@@ -1199,7 +1193,7 @@ impl QueryService {
                 attempt_id,
                 completion,
                 envelope,
-                admitted_attempt_proof.clone(),
+                admitted_capability_evidence,
                 admitted_device_requirements,
                 admitted_compatible_devices,
             ),

@@ -53,21 +53,6 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     assert_eq!(semi.metrics().filtered_join_build_count, 1);
     assert_eq!(semi.metrics().filtered_join_hash_table_bytes, semi_metrics.hash_table_bytes);
     assert_eq!(semi.metrics().filtered_join_probe_state_bytes, semi_metrics.filtered_probe_state_bytes);
-    assert_granted_reservation_trace(
-        semi.metrics(),
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::OperatorOutput, "join_filtered_build_key_deduplicate"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
 
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded filtered join should return host output");
@@ -94,21 +79,6 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     assert_eq!(anti.metrics().filtered_join_build_count, 1);
     assert_eq!(anti.metrics().filtered_join_hash_table_bytes, anti_metrics.hash_table_bytes);
     assert_eq!(anti.metrics().filtered_join_probe_state_bytes, anti_metrics.filtered_probe_state_bytes);
-    assert_granted_reservation_trace(
-        anti.metrics(),
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::OperatorOutput, "join_filtered_build_key_deduplicate"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -132,7 +102,6 @@ fn bounded_native_query_executes_empty_root_filtered_left_semi_join_with_zero_ga
     );
 
     assert_empty_bounded_filtered_join_result(&result, "left_semi");
-    assert_zero_byte_gather_map_reservation(result.metrics());
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -155,6 +124,5 @@ fn bounded_native_query_executes_empty_root_filtered_left_anti_join_with_zero_ga
     );
 
     assert_empty_bounded_filtered_join_result(&result, "left_anti");
-    assert_zero_byte_gather_map_reservation(result.metrics());
     fs::remove_dir_all(dir).unwrap();
 }

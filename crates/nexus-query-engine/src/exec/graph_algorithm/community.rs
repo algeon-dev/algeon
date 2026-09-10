@@ -26,7 +26,6 @@ pub(super) fn execute_louvain(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_louvain",
@@ -42,7 +41,6 @@ pub(super) fn execute_louvain(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -72,7 +70,6 @@ pub(super) fn execute_leiden(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_leiden",
@@ -92,7 +89,6 @@ pub(super) fn execute_leiden(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -122,7 +118,6 @@ pub(super) fn execute_ecg(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_ecg",
@@ -142,7 +137,6 @@ pub(super) fn execute_ecg(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -172,7 +166,6 @@ pub(super) fn execute_spectral_modularity_maximization(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_spectral_modularity_maximization",
@@ -195,7 +188,6 @@ pub(super) fn execute_spectral_modularity_maximization(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },

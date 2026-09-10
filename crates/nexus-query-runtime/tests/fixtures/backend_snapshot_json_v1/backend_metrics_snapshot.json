@@ -49,8 +49,8 @@
                 "cache_pinned_in_use_bytes": "number",
                 "health": "string",
                 "live_grant_bytes": "number",
-                "live_reserved_bytes": "number",
-                "max_live_reserved_bytes": "number"
+                "resident_owner_bytes": "number",
+                "max_resident_owner_bytes": "number"
               },
               "type": "object"
             },

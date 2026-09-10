@@ -45,7 +45,7 @@ use nexus_query_engine::{
 };
 pub use nexus_query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
-    graph_memory::GraphClaimCalibrationRow,
+    graph_observation::GraphMeasuredPeakRow,
     observability::{
         AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext,
         QueryAttemptReport, RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
@@ -452,12 +452,6 @@ impl NexusAttempt {
         SessionContext::new_with_state(self.invocation_state(ctx.state()))
     }
 
-    #[cfg(test)]
-    pub(crate) fn invocation_context_for_test(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext> {
-        let _ = self.state.handle.record_planning_started();
-        Ok(self.invocation_context(ctx))
-    }
-
     fn cancelled_error(&self, operation: &'static str) -> DataFusionError {
         let error = self.cancellation().check(operation).expect_err("cancellation was checked after it was requested");
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -618,7 +612,7 @@ impl NexusAttempt {
                 let donor = admission.ticket();
                 QueryAdmissionTicket::new_attempt_bound(
                     donor.source(),
-                    donor.attempt_capability_proof_for_rebind(),
+                    donor.attempt_capability_evidence_for_rebind(),
                     AttemptTicketBinding {
                         handle: self.state.handle.clone(),
                         admission_rejection: self.state.admission_rejection.clone(),
