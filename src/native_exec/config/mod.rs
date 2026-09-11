@@ -4,7 +4,7 @@
 //! admission supplies the installed runtime, allocator, streams, and worker
 //! executor when execution acquires the native query context.
 
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 
 use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
@@ -16,7 +16,7 @@ use nexus_query_engine::{
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
         AdmittedQueryContext, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, IoLifecycle,
-        LakehouseCacheFillConfig, MemoryControlPolicy, QueryHandle, SourceChunkPlanningMode, SourceSchedulerPolicy,
+        LakehouseCacheFillConfig, MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
         SourceStorageProfile,
     },
 };
@@ -53,8 +53,6 @@ pub struct NexusNativeExecutionConfig {
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) source_storage_profiles: Vec<SourceStorageProfile>,
-    pub(super) query_service_handle: Option<Arc<QueryHandle>>,
-    pub(super) query_admission_facts_recorded: Option<Arc<AtomicBool>>,
     pub(super) query_admission_source: Option<QueryAdmissionSource>,
     pub(super) query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
     pub(super) query_id: Option<QueryId>,
@@ -147,8 +145,6 @@ impl NexusNativeExecutionConfig {
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             source_storage_profiles: Vec::new(),
-            query_service_handle: None,
-            query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
             query_id: None,

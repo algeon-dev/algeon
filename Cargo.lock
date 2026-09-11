@@ -3949,6 +3949,7 @@ dependencies = [
  "nexus-workloads",
  "object_store",
  "parquet",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

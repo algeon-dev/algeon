@@ -871,27 +871,68 @@ mod tests {
 
     #[test]
     fn adapter_kind_to_flight_code_contract_matches_consumer_documentation() {
-        let cases = [
-            (ErrorCode::Cancelled, Code::Cancelled),
-            (ErrorCode::ObjectNotFound, Code::NotFound),
-            (ErrorCode::SourceAccessDenied, Code::PermissionDenied),
-            (ErrorCode::SourceUnauthenticated, Code::Unauthenticated),
-            (ErrorCode::InvalidRequest, Code::InvalidArgument),
-            (ErrorCode::DataFusionPlanning, Code::InvalidArgument),
-            (ErrorCode::UnsupportedOperator, Code::Unimplemented),
-            (ErrorCode::ServiceOverloaded, Code::ResourceExhausted),
-            (ErrorCode::SizeOverflow, Code::ResourceExhausted),
-            (ErrorCode::HostMaterializationLimitExceeded, Code::ResourceExhausted),
-            (ErrorCode::HostStagingLimitExceeded, Code::ResourceExhausted),
-            (ErrorCode::AlgorithmDidNotConverge, Code::FailedPrecondition),
-            (ErrorCode::CudfDependencyFailure, Code::Internal),
-            (ErrorCode::CudfInvariantViolation, Code::Internal),
-            (ErrorCode::Internal, Code::Internal),
-        ];
+        // This match is an independent statement of the mapping contract, not
+        // a call into `adapter_error_to_status`: it must keep failing the same
+        // way production code would if the two ever diverge. `ErrorKind` is
+        // `#[non_exhaustive]` from another crate, so the catch-all panics
+        // instead of silently defaulting an unmapped kind to some code.
+        fn expected_flight_code(code: ErrorCode) -> Code {
+            if code == ErrorCode::AlgorithmDidNotConverge {
+                return Code::FailedPrecondition;
+            }
+            match code.kind() {
+                ErrorKind::Cancelled => Code::Cancelled,
+                ErrorKind::NotFound => Code::NotFound,
+                ErrorKind::PermissionDenied => Code::PermissionDenied,
+                ErrorKind::Unauthenticated => Code::Unauthenticated,
+                ErrorKind::InvalidInput | ErrorKind::Planning => Code::InvalidArgument,
+                ErrorKind::Unsupported => Code::Unimplemented,
+                ErrorKind::ResourceExhausted => Code::ResourceExhausted,
+                ErrorKind::Execution
+                | ErrorKind::DependencyFailure
+                | ErrorKind::InvariantViolation
+                | ErrorKind::Internal => Code::Internal,
+                other => panic!("{code}: no Flight/gRPC status mapping documented for ErrorKind {other}"),
+            }
+        }
 
-        for (error_code, expected_flight_code) in cases {
+        for &error_code in ErrorCode::ALL {
             let error = Error::new(error_code, TEST_OPERATION, "Flight mapping contract");
-            assert_eq!(adapter_error_to_status(&error).code(), expected_flight_code, "{error_code}");
+            let status = adapter_error_to_status(&error);
+
+            assert_eq!(
+                status.code(),
+                expected_flight_code(error_code),
+                "unexpected Flight status code for {error_code}"
+            );
+
+            let metadata = status.metadata();
+            let get = |key: &'static str| {
+                metadata
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{error_code}: {key} trailer metadata must be present"))
+                    .to_str()
+                    .unwrap_or_else(|_| panic!("{error_code}: {key} trailer metadata must be ASCII"))
+            };
+            assert_eq!(
+                get(ERROR_CODE_METADATA_KEY),
+                error_code.as_str(),
+                "unexpected {ERROR_CODE_METADATA_KEY} for {error_code}"
+            );
+            assert_eq!(
+                get(ERROR_KIND_METADATA_KEY),
+                error_code.kind().as_str(),
+                "unexpected {ERROR_KIND_METADATA_KEY} for {error_code}"
+            );
+            assert_eq!(
+                get(ERROR_STATUS_METADATA_KEY),
+                error_code.status().as_str(),
+                "unexpected {ERROR_STATUS_METADATA_KEY} for {error_code}"
+            );
+            assert!(
+                !get(ERROR_OPERATION_METADATA_KEY).is_empty(),
+                "{error_code}: {ERROR_OPERATION_METADATA_KEY} trailer metadata must be non-empty"
+            );
         }
     }
 

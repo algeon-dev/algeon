@@ -8,29 +8,19 @@ use crate::{
     native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
 };
 
-#[test]
-fn execution_context_requires_gpu_backend_before_resolving_cuda_state() {
-    let error = NexusNativeExecutionConfig::bounded_default()
-        .with_query_id("query-config")
-        .with_trace_id("trace-config")
-        .execution_context()
-        .unwrap_err();
-
-    assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
-    assert_eq!(error.fact_value("reason"), Some("gpu_backend_required"));
-    assert_eq!(error.fact_value("query_id"), Some("query-config"));
-    assert_eq!(error.fact_value("trace_id"), Some("trace-config"));
-}
-
 #[tokio::test]
 async fn async_execution_context_requires_gpu_backend_before_resolving_cuda_state() {
     let error = NexusNativeExecutionConfig::bounded(1024, 512, 1, 1, 1)
+        .with_query_id("query-config")
+        .with_trace_id("trace-config")
         .execution_context_async(Arc::new(TaskContext::default()))
         .await
         .unwrap_err();
 
     assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
     assert_eq!(error.fact_value("reason"), Some("gpu_backend_required"));
+    assert_eq!(error.fact_value("query_id"), Some("query-config"));
+    assert_eq!(error.fact_value("trace_id"), Some("trace-config"));
 }
 
 #[test]

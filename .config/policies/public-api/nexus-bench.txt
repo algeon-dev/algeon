@@ -204,12 +204,10 @@ pub fn nexus_bench::iceberg_tpch_benchmark::set_iteration_report_elapsed_ms(&mut
 pub fn nexus_bench::iceberg_tpch_benchmark::validate_full_sf1_staged_s3_gate_for_config(&nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport, &nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig) -> core::result::Result<core::option::Option<nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary>, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn nexus_bench::iceberg_tpch_benchmark::write_benchmark_tsv_header(&mut impl core::io::write::Write) -> core::io::error::Result<()>
 pub fn nexus_bench::iceberg_tpch_benchmark::write_benchmark_tsv_row(&mut impl core::io::write::Write, &nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow) -> core::io::error::Result<()>
+pub mod nexus_bench::query_service_goodput
+pub async fn nexus_bench::query_service_goodput::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod nexus_bench::query_service_iceberg_stress
 pub async fn nexus_bench::query_service_iceberg_stress::run() -> datafusion_common::error::Result<()>
-pub mod nexus_bench::query_service_tpcds_stress
-pub async fn nexus_bench::query_service_tpcds_stress::run() -> datafusion_common::error::Result<()>
-pub mod nexus_bench::query_service_tpch_stress
-pub async fn nexus_bench::query_service_tpch_stress::run() -> datafusion_common::error::Result<()>
 pub mod nexus_bench::report_metadata
 pub trait nexus_bench::report_metadata::ReportDatasetMetadataExt
 pub fn nexus_bench::report_metadata::ReportDatasetMetadataExt::to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::dataset::WorkloadDatasetMetadata

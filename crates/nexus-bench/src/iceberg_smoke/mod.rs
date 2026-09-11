@@ -19,6 +19,10 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig,
+        NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile,
+    },
     capability::CapabilityReason,
     error::{Error, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
@@ -52,12 +56,12 @@ use datafusion_nexus::{
         resolve_table_format_parquet_source_with_metadata,
     },
 };
-use futures::future::BoxFuture;
+use futures::{TryStreamExt, future::BoxFuture};
 use iceberg::{TableIdent, io::FileIO, table::StaticTable};
 use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::{
     mode::StatisticalAggregateExecutionMode,
-    runtime::{MemoryControlPolicy, QueryExecutionConfig, SourceSchedulerPolicy},
+    runtime::{MemoryControlPolicy, SourceSchedulerPolicy},
     source::ParquetReadStrategy,
 };
 use nexus_workloads::{
@@ -66,12 +70,9 @@ use nexus_workloads::{
 };
 use object_store::aws::AmazonS3Builder;
 
-use crate::{
-    gpu_backend::GpuBackendOwner,
-    report_workload::{
-        tpcds::tpcds_native_report_session_config,
-        tpch::{tpch_report_session_config, tpch_tuned_cpu_session_config},
-    },
+use crate::report_workload::{
+    tpcds::tpcds_native_report_session_config,
+    tpch::{tpch_report_session_config, tpch_tuned_cpu_session_config},
 };
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;

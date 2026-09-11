@@ -1425,38 +1425,6 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
     drop(uploaded);
 }
 
-#[tokio::test]
-async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_upload() {
-    let backend = test_gpu_backend();
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let config = backend_execution_config(&backend).with_query_service_handle(Arc::new(
-        backend.admit_query().expect("test query must be admitted by the backend"),
-    ));
-    let context_lease =
-        config.execution_context_async(Arc::clone(&task_context)).await.expect("backend context builds");
-    let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
-    let staged_inputs = stage_cugraph_inputs(
-        &triangle_spec(),
-        memory_edge_source(16),
-        vec![],
-        Arc::clone(&task_context),
-        config.cancellation(),
-        1024 * 1024,
-    )
-    .await
-    .expect("host graph inputs should stage");
-
-    let error = match staged_inputs.upload(context_lease.context(), &mut graph_metrics, task_context).await {
-        Err(error) => error,
-        Ok(_) => panic!("an admitted upload without its exact graph plan must fail closed"),
-    };
-    let nexus = error.find_nexus_error().expect("missing admission plan remains structured");
-    assert_eq!(nexus.fact_value("reason"), Some("admission_graph_plan_missing"));
-}
-
 fn direct_composed_consumer_plan(input_names: &[&str], schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let inputs = input_names

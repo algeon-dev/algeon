@@ -19,15 +19,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use datafusion::{
-    physical_plan::{ExecutionPlan, collect},
-    prelude::SessionContext,
-};
+use datafusion::{common::DataFusionError, physical_plan::ExecutionPlan, prelude::SessionContext};
 use datafusion_nexus::{
+    backend::NexusGpuBackend,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig},
     planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
 };
+use futures::TryStreamExt;
 use nexus_bench::report_workload::clickbench::{
     clickbench_native_profile_settings_from_env, clickbench_report_session_config,
 };
@@ -108,7 +107,6 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     let config = parse_args(args)?;
     fs::create_dir_all(&config.artifact_dir)?;
     let profile = clickbench_native_profile_settings_from_env();
-    let backend = build_probe_backend(&profile)?;
     let (root, _metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
         WorkloadError::InvalidDataset(
             "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage fixture/clickbench/data".to_string(),
@@ -116,32 +114,44 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     })?;
 
     let mut verdicts = Vec::new();
-    for query_id in &config.query_ids {
-        let query_handle = Arc::new(backend.session().admit_query()?);
-        let verdict = match config.mode {
-            ProbeMode::NativeObserved => {
-                probe_native_observed(query_id, &root, &profile, &config, Arc::clone(&query_handle)).await?
-            },
-            ProbeMode::DatafusionCollect => {
-                probe_datafusion_collect(query_id, &root, &profile, &config, Arc::clone(&query_handle)).await?
-            },
-        };
-        let verdict_path = config.artifact_dir.join(format!("{query_id}.verdict.json"));
-        fs::write(&verdict_path, serde_json::to_vec_pretty(&verdict)?)?;
-        eprintln!(
-            "[clickbench-stage-probe] query={} completed={} cancelled={} last_stage={} elapsed_ms={}",
-            verdict.query_id,
-            verdict.completed,
-            verdict.cancelled,
-            verdict.last_active_stage.as_deref().unwrap_or("none"),
-            verdict.elapsed_ms
-        );
-        verdicts.push(verdict);
+    match config.mode {
+        ProbeMode::NativeObserved => {
+            let backend = build_probe_backend(&profile)?;
+            for query_id in &config.query_ids {
+                let query_handle = Arc::new(backend.session().admit_query()?);
+                let verdict =
+                    probe_native_observed(query_id, &root, &profile, &config, Arc::clone(&query_handle)).await?;
+                record_verdict(&config, &verdict)?;
+                verdicts.push(verdict);
+            }
+        },
+        ProbeMode::DatafusionCollect => {
+            let backend = build_probe_attempt_backend(&profile)?;
+            for query_id in &config.query_ids {
+                let verdict = probe_datafusion_collect(query_id, &root, &profile, &config, &backend).await?;
+                record_verdict(&config, &verdict)?;
+                verdicts.push(verdict);
+            }
+        },
     }
 
     let table_path = config.artifact_dir.join("verdict_table.json");
     fs::write(&table_path, serde_json::to_vec_pretty(&verdicts)?)?;
     print_tsv_summary(&verdicts)?;
+    Ok(())
+}
+
+fn record_verdict(config: &ProbeConfig, verdict: &ProbeVerdict) -> ToolResult<()> {
+    let verdict_path = config.artifact_dir.join(format!("{}.verdict.json", verdict.query_id));
+    fs::write(&verdict_path, serde_json::to_vec_pretty(verdict)?)?;
+    eprintln!(
+        "[clickbench-stage-probe] query={} completed={} cancelled={} last_stage={} elapsed_ms={}",
+        verdict.query_id,
+        verdict.completed,
+        verdict.cancelled,
+        verdict.last_active_stage.as_deref().unwrap_or("none"),
+        verdict.elapsed_ms
+    );
     Ok(())
 }
 
@@ -153,7 +163,7 @@ async fn probe_native_observed(
     query_handle: Arc<QueryHandle>,
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
-    let physical = plan_native_physical(query_id, root, sql, profile, Arc::clone(&query_handle)).await?;
+    let physical = plan_native_physical(query_id, root, sql, profile).await?;
     let native_plan = peel_native_query_plan(physical.as_ref())
         .ok_or_else(|| format!("query {query_id} did not lower to NexusNativeExec/NexusNativeComposedExec"))?;
 
@@ -253,10 +263,10 @@ async fn probe_datafusion_collect(
     root: &Path,
     profile: &nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
     config: &ProbeConfig,
-    query_handle: Arc<QueryHandle>,
+    backend: &NexusGpuBackend,
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
-    let physical = plan_native_physical(query_id, root, sql, profile, query_handle).await?;
+    let (ctx, physical) = plan_native_physical_for_attempt(query_id, root, sql, backend).await?;
     let query_dir = config.artifact_dir.join(query_id);
     let live_dir = query_dir.join("live");
     fs::create_dir_all(&live_dir)?;
@@ -286,8 +296,16 @@ async fn probe_datafusion_collect(
     });
 
     let started = Instant::now();
-    let ctx = SessionContext::new();
-    let result = collect(physical, ctx.task_ctx()).await;
+    let result = match backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions {
+        query_id: Some(query_id.to_string()),
+        ..datafusion_nexus::attempt::AttemptOptions::default()
+    }) {
+        Ok(attempt) => match attempt.execute_physical_plan(physical, &ctx) {
+            Ok(stream) => stream.try_collect::<Vec<_>>().await,
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(DataFusionError::from(error)),
+    };
     stop.store(true, Ordering::Release);
     let _ = watchdog.join();
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -336,7 +354,6 @@ async fn plan_native_physical(
     root: &Path,
     sql: &str,
     profile: &nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
-    query_handle: Arc<QueryHandle>,
 ) -> ToolResult<Arc<dyn ExecutionPlan>> {
     let layout = discover_clickbench_layout(root)?;
     let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
@@ -348,8 +365,7 @@ async fn plan_native_physical(
             profile.min_retry_chunk_row_groups,
         )
         .with_source_chunk_planning_mode(profile.source_chunk_planning_mode)
-        .with_query_id(query_id)
-        .with_query_service_handle(query_handle),
+        .with_query_id(query_id),
     );
 
     let state = datafusion::execution::SessionStateBuilder::new()
@@ -362,6 +378,52 @@ async fn plan_native_physical(
     let framed = format!("-- query_id={query_id}\n{sql}");
     let df = ctx.sql(&framed).await?;
     Ok(df.create_physical_plan().await?)
+}
+
+/// Plans through the given backend's own installed native rule so the
+/// resulting physical plan's admission ticket donor is bound to that
+/// backend's device ledger, matching whatever backend later begins the
+/// executing attempt.
+async fn plan_native_physical_for_attempt(
+    query_id: &str,
+    root: &Path,
+    sql: &str,
+    backend: &NexusGpuBackend,
+) -> ToolResult<(SessionContext, Arc<dyn ExecutionPlan>)> {
+    let layout = discover_clickbench_layout(root)?;
+    let builder = backend.install_on(
+        datafusion::execution::SessionStateBuilder::new()
+            .with_config(clickbench_report_session_config())
+            .with_default_features(),
+    )?;
+    let ctx = SessionContext::new_with_state(builder.build());
+    register_clickbench_table(&ctx, &layout).await?;
+    let framed = format!("-- query_id={query_id}\n{sql}");
+    let df = ctx.sql(&framed).await?;
+    let physical = df.create_physical_plan().await?;
+    Ok((ctx, physical))
+}
+
+fn build_probe_attempt_backend(
+    profile: &nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
+) -> ToolResult<NexusGpuBackend> {
+    let execution_config = NexusNativeExecutionConfig::bounded(
+        profile.device_budget_bytes,
+        profile.max_source_chunk_bytes,
+        profile.max_row_groups_per_chunk,
+        profile.max_retry_attempts,
+        profile.min_retry_chunk_row_groups,
+    )
+    .with_source_chunk_planning_mode(profile.source_chunk_planning_mode);
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
+    let device = GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
+            .with_max_active_attempts(1)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
+    Ok(NexusGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device]).build()?)
 }
 
 fn build_probe_backend(

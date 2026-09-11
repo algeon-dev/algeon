@@ -114,6 +114,7 @@ const CANCEL_RESULT_CANCELLING: i32 = 2;
 
 include!("server_flight_sql_tests/support.rs");
 include!("server_flight_sql_tests/smoke.rs");
+include!("server_flight_sql_tests/admission.rs");
 include!("server_flight_sql_tests/query_stats.rs");
 include!("server_flight_sql_tests/ddl.rs");
 include!("server_flight_sql_tests/errors.rs");

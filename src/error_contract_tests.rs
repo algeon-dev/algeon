@@ -95,7 +95,13 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
 
 #[test]
 fn every_adapter_code_has_the_expected_retry_status() {
-    assert_eq!(ADAPTER_STATUS_CASES.len(), 43, "update the complete adapter status policy table");
+    let mapped_codes = ADAPTER_STATUS_CASES.iter().map(|(code, _)| *code).collect::<HashSet<_>>();
+    let all_codes = ErrorCode::ALL.iter().copied().collect::<HashSet<_>>();
+    assert_eq!(mapped_codes.len(), ADAPTER_STATUS_CASES.len(), "adapter status policy table contains duplicate codes");
+    assert_eq!(
+        mapped_codes, all_codes,
+        "adapter status policy table must cover every ErrorCode::ALL variant exactly once"
+    );
 
     for &(code, expected_status) in ADAPTER_STATUS_CASES {
         let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");

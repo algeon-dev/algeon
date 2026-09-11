@@ -48,6 +48,7 @@ cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 futures = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
 aws-config = { workspace = true, optional = true }
@@ -121,11 +122,7 @@ name = "native_tpch_execution_report"
 test = false
 
 [[bin]]
-name = "query_service_tpcds_stress"
-test = false
-
-[[bin]]
-name = "query_service_tpch_stress"
+name = "query_service_goodput"
 test = false
 
 [[bin]]

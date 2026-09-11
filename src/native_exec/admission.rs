@@ -79,16 +79,6 @@ pub(crate) struct QueryAdmissionFacts {
 }
 
 impl QueryAdmissionFacts {
-    pub(crate) fn from_query_handle(handle: &QueryHandle) -> Self {
-        Self {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait: handle.admission_wait(),
-            admission_wait_fact: handle.admission_wait_fact(),
-            device_ordinal: handle.device_ordinal(),
-            query_grant_bytes: handle.device_budget_bytes(),
-        }
-    }
-
     fn from_handle(handle: &TicketQueryHandle) -> Self {
         Self {
             admission_sequence: handle.admission_sequence(),

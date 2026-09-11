@@ -618,37 +618,29 @@ impl QueryService {
         Ok(None)
     }
 
+    /// Reports the device the waiter was placed on but could not obtain a
+    /// grant from.
+    ///
+    /// The facts are scoped to that one selected device: a fleet-wide
+    /// projection would also report devices this waiter was never eligible
+    /// for, and `admissible_query_cap_bytes` does not consult device health,
+    /// so a closed device would advertise spare capacity it can never issue.
     pub(in crate::runtime::query_service) fn memory_grant_wait_timeout_error(
         &self,
+        device_ordinal: usize,
         requested_query_cap_bytes: Option<u64>,
         queued_queries: usize,
     ) -> QueryError {
         let mut error =
             service_overloaded_error("memory_grant_wait_timeout", queued_queries, self.inner.queue_bounds.max_waiters)
                 .with_fact("requested_query_cap_bytes", requested_query_cap_bytes.unwrap_or_default());
-        if let Ok(snapshots) = self.device_ledger_snapshots() {
-            let resident = snapshots
-                .iter()
-                .map(|snapshot| format!("{}:{}", snapshot.device_ordinal, snapshot.frozen_resident_bytes))
-                .collect::<Vec<_>>()
-                .join(",");
-            let live_grants = snapshots
-                .iter()
-                .map(|snapshot| format!("{}:{}", snapshot.device_ordinal, snapshot.live_grants_bytes))
-                .collect::<Vec<_>>()
-                .join(",");
-            let admissible_caps = snapshots
-                .iter()
-                .map(|snapshot| {
-                    let cap = snapshot.admissible_query_cap_bytes(requested_query_cap_bytes).unwrap_or_default();
-                    format!("{}:{}", snapshot.device_ordinal, cap)
-                })
-                .collect::<Vec<_>>()
-                .join(",");
+        if let Ok(snapshot) = self.ledger_for_ordinal(device_ordinal).and_then(|ledger| ledger.snapshot()) {
+            let ordinal = snapshot.device_ordinal;
+            let cap = snapshot.admissible_query_cap_bytes(requested_query_cap_bytes).unwrap_or_default();
             error = error
-                .with_fact("device_frozen_resident_bytes", resident)
-                .with_fact("device_live_grants_bytes", live_grants)
-                .with_fact("device_admissible_query_cap_bytes", admissible_caps);
+                .with_fact("device_frozen_resident_bytes", format!("{ordinal}:{}", snapshot.frozen_resident_bytes))
+                .with_fact("device_live_grants_bytes", format!("{ordinal}:{}", snapshot.live_grants_bytes))
+                .with_fact("device_admissible_query_cap_bytes", format!("{ordinal}:{cap}"));
         }
         error
     }

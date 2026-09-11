@@ -5,8 +5,7 @@
 //! orchestration and application support; it does not re-export workloads.
 
 pub mod clickbench_benchmark;
-pub mod query_service_tpcds_stress;
-pub mod query_service_tpch_stress;
+pub mod query_service_goodput;
 pub mod report_metadata;
 pub mod report_workload;
 pub mod tpcds_three_way_bench;

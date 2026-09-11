@@ -36,10 +36,15 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250) },
     );
-    let device = |device_ordinal, max_active_attempts| {
+    // Concurrency needs a query cap that leaves room for `max_active_attempts`
+    // simultaneous grants: the ledger equation is what binds, so a
+    // device-sized default limit would cap every device at one active attempt
+    // no matter what `max_active_attempts` says.
+    let device = |device_ordinal, max_active_attempts: usize| {
         GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(device_ordinal)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_CAPACITY_BYTES })
+                .with_default_query_limit_bytes(DEVICE_CAPACITY_BYTES / max_active_attempts as u64)
                 .with_max_active_attempts(max_active_attempts)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
                     max_active_attempts.saturating_mul(3),
@@ -64,7 +69,14 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
         session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().expect("second query admits");
     let third =
         session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().expect("third query admits");
-    assert_eq!((first.device_ordinal(), second.device_ordinal(), third.device_ordinal()), (1, 0, 0));
+    // Least-loaded placement decides the visiting order; the contract here is
+    // how many attempts each device ends up holding, not which one is picked
+    // first while both are idle.
+    let mut placed = [0usize; 2];
+    for handle in [&first, &second, &third] {
+        placed[handle.device_ordinal()] += 1;
+    }
+    assert_eq!(placed, [2, 1], "device 0 holds its cap of two and device 1 holds its cap of one");
     assert!(
         session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().is_none(),
         "the device-1 cap remains one instead of inheriting device 0's cap of two",

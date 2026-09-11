@@ -353,6 +353,22 @@ it is incomplete. The TPC-DS report emits one row per attempted query, so its
 TSV distinguishes attempted, matched, and failed query IDs rather than
 converting an unavailable fixture into a passed Rust test.
 
+Sustained-load measurement is a second explicit acceptance run. The
+`query_service_goodput` binary replays a seeded open-loop arrival trace against
+one backend and reports goodput, the outcome taxonomy, latency percentiles, and
+per-attempt allocator peaks. It runs in two modes: `calibrate` freezes each
+item's single-flight median latency and output fingerprint into a calibration
+file, and `measure` compares a configuration against that frozen file and
+refuses to run if the live GPU or dataset differs from the calibrated one.
+
+```bash
+crates/nexus-bench/scripts/run_goodput_matrix.sh calibrate g1
+```
+
+The driver script pins every factor that is not the one being compared, records
+the source, GPU, and native-library identity next to the results, and writes one
+summary row per comparison group.
+
 Python-cuGraph comparisons are similarly provisioned acceptance coverage. They
 are explicit tools commands, not Cargo test targets, and must run only on a
 host with Python cuGraph installed:

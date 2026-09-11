@@ -670,6 +670,7 @@ pub datafusion_nexus::error::ErrorCode::UnsupportedExpression
 pub datafusion_nexus::error::ErrorCode::UnsupportedOperator
 pub datafusion_nexus::error::ErrorCode::UnsupportedType
 impl datafusion_nexus::error::ErrorCode
+pub const datafusion_nexus::error::ErrorCode::ALL: &'static [Self]
 pub const fn datafusion_nexus::error::ErrorCode::as_str(self) -> &'static str
 pub const fn datafusion_nexus::error::ErrorCode::kind(self) -> datafusion_nexus::error::ErrorKind
 pub const fn datafusion_nexus::error::ErrorCode::status(self) -> datafusion_nexus::error::ErrorStatus

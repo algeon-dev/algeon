@@ -7,11 +7,15 @@ use std::{
 use arrow::{array::Array, record_batch::RecordBatch};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
-    execution::{SessionStateBuilder, context::TaskContext},
-    physical_plan::collect,
+    execution::SessionStateBuilder,
     prelude::SessionContext,
 };
 use datafusion_nexus::{
+    attempt::AttemptOptions,
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig,
+        NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile, NexusGpuQueuePolicy,
+    },
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
@@ -33,6 +37,7 @@ use datafusion_nexus::{
         },
     },
 };
+use futures::TryStreamExt;
 use nexus_query_engine::{
     error::QueryError,
     runtime::{GpuBackendSession, QueryExecutionConfig, QueueBounds},
@@ -422,29 +427,53 @@ async fn planned_table_row_count(config: &ResolvedGlueTableConfig) -> DataFusion
         .try_fold(0u64, |total, count| count.map(|count| total.saturating_add(count))))
 }
 
-async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataFusionResult<StressRun> {
-    let backend = GpuBackendOwner::build(
-        config.service_config(),
-        config.queue_bounds(),
-        vec![GpuBackendOwner::device_config(
-            0,
-            config.default_query_limit_bytes.max(1),
-            config.max_active_attempts_per_device,
-            1,
-        )],
+fn build_stress_backend(config: &StressConfig) -> DataFusionResult<NexusGpuBackend> {
+    let source_storage_profile =
+        source_access_policy_to_native_source_storage_profile(config.table.catalog_config.source_access_policy());
+    let execution_config = NexusNativeExecutionConfig::bounded(
+        config.default_query_limit_bytes.max(1),
+        config.max_source_chunk_bytes,
+        config.max_row_groups_per_chunk,
+        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
     )
-    .map_err(native_error)?;
-    let service = backend.session();
+    .with_source_storage_profile(source_storage_profile);
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
+    let max_active_attempts = config.max_active_attempts_per_device;
+    let stream_pool_size = max_active_attempts.saturating_mul(2).max(max_active_attempts);
+    let device_profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: config.default_query_limit_bytes.max(1) })
+        .with_max_active_attempts(max_active_attempts)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(
+            stream_pool_size,
+            max_active_attempts,
+            max_active_attempts,
+        ));
+    let device_config = NexusGpuDeviceConfig::new(device_profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let queue_bounds = config.queue_bounds();
+    let queue_policy = NexusGpuQueuePolicy::default()
+        .with_max_queued_attempts(queue_bounds.max_waiters)
+        .with_max_queue_wait(queue_bounds.max_wait);
+    NexusGpuBackend::builder()
+        .with_optimizer_config(optimizer_config)
+        .devices([device_config])
+        .queue_policy(queue_policy)
+        .build()
+        .map_err(|error| DataFusionError::External(Box::new(error)))
+}
+
+async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataFusionResult<StressRun> {
+    let backend = build_stress_backend(config)?;
     let requests = build_requests(config);
     let barrier = Arc::new(Barrier::new(requests.len().max(1)));
     let mut tasks = Vec::with_capacity(requests.len());
     for request in requests {
         let config = config.clone();
-        let service = service.clone();
+        let backend = backend.clone();
         let barrier = Arc::clone(&barrier);
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
-            run_native_request(&config, service, request, expected_count).await
+            run_native_request(&config, &backend, request, expected_count).await
         }));
     }
     let mut rows = Vec::with_capacity(tasks.len());
@@ -452,24 +481,23 @@ async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataF
         rows.push(task.await.map_err(|error| plan_error(format!("query service Iceberg task join failed: {error}")))??);
     }
     rows.sort_by_key(|row| row.request_index);
-    let effective_active_max = service.gpu_execution_query_report().map_err(native_error)?.peak_active_query_jobs;
-    backend.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
+    let effective_active_max = backend
+        .gpu_execution_query_report()
+        .map_err(|error| DataFusionError::External(Box::new(error)))?
+        .peak_active_query_jobs;
+    backend.close_and_wait(Duration::from_secs(30)).map_err(|error| DataFusionError::External(Box::new(error)))?;
     Ok(StressRun { rows, effective_active_max })
 }
 
 async fn run_native_request(
     config: &StressConfig,
-    service: GpuBackendSession,
+    backend: &NexusGpuBackend,
     request: StressRequest,
     expected_count: Option<u64>,
 ) -> DataFusionResult<StressRow> {
     let total_started = Instant::now();
-    let service_for_admission = service.clone();
-    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query())
-        .await
-        .map_err(|error| plan_error(format!("query service admission task join failed: {error}")))?
-    {
-        Ok(handle) => Arc::new(handle),
+    let attempt = match backend.begin_attempt(AttemptOptions::default()) {
+        Ok(attempt) => attempt,
         Err(error) => {
             return Ok(failure_row(
                 &request,
@@ -482,14 +510,23 @@ async fn run_native_request(
                 "not_run",
                 expected_count,
                 None,
-                StructuredFailure::from_query_error(&error),
+                StructuredFailure::from_adapter_error(&error),
             ));
         },
     };
-    let admission_sequence = Some(handle.admission_sequence());
-    let admission_wait_ms = Some(duration_ms(handle.admission_wait()));
     let native_started = Instant::now();
-    match collect_native_with_handle(config, Arc::clone(&handle)).await {
+    let completion = attempt.completion();
+    let outcome = collect_native_with_attempt(config, backend, &attempt).await;
+    // A plan that is never executed (rejected before `execute_physical_plan`)
+    // leaves the attempt's owner un-taken, so it only commits its terminal
+    // report once `attempt` itself drops here; an executed plan already
+    // sealed at stream EOF inside `collect_native_with_attempt`, making this
+    // drop a no-op for that path.
+    drop(attempt);
+    let report = completion.await;
+    let admission_sequence = report.admission.as_ref().map(|admission| admission.admission_sequence);
+    let admission_wait_ms = report.admission.as_ref().map(|admission| admission.admission_wait_ns as f64 / 1_000_000.0);
+    match outcome {
         Ok(NativeCollectOutcome::Succeeded { planning_row, measurement }) => {
             let count_status = match (expected_count, measurement.count_value) {
                 (Some(expected), Some(actual)) if expected == actual => "matched",
@@ -548,13 +585,12 @@ async fn run_native_request(
     }
 }
 
-async fn collect_native_with_handle(
+async fn collect_native_with_attempt(
     config: &StressConfig,
-    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
+    backend: &NexusGpuBackend,
+    attempt: &datafusion_nexus::attempt::NexusAttempt,
 ) -> DataFusionResult<NativeCollectOutcome> {
-    let optimizer_config = NexusNativeOptimizerConfig::default()
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded_default().with_query_service_handle(handle));
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
         .with_nexus_native_rule(Arc::clone(&native_rule))
@@ -564,8 +600,7 @@ async fn collect_native_with_handle(
         .map_err(DataFusionError::from)?
         .with_catalog_type("glue");
     ctx.register_table(config.table_alias.as_str(), Arc::new(provider))?;
-    let df = ctx.sql(&config.sql).await?;
-    let plan = df.create_physical_plan().await?;
+    let plan = attempt.plan_sql(&ctx, &config.sql).await?;
     let planning_report =
         NativeDataFusionPlanningReport::from_retained_rule("iceberg_count", Arc::clone(&plan), &native_rule);
     let planning_row = select_planning_row(planning_report.rows)?;
@@ -582,7 +617,8 @@ async fn collect_native_with_handle(
             planning_row.final_disposition.map_or("none", FinalPlanDisposition::as_str),
         )));
     }
-    let batches = match collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await {
+    let stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx)?;
+    let batches = match stream.try_collect::<Vec<_>>().await {
         Ok(batches) => batches,
         Err(error) => return Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error }),
     };
