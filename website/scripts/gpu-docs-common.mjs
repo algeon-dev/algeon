@@ -117,17 +117,16 @@ export function renderFunctionPage({
   spec,
   title,
   reference,
-  useThisWhen,
-  quickstartSql,
-  relationInputs,
-  scalarArgumentsAndOptions,
-  outputSchema,
+  quickstart,
+  inputs,
+  argumentsAndOptions,
+  output,
   examples,
-  limitations,
+  limits,
   validation,
 }) {
-  // 'Use this when' and 'Quickstart' are optional; providers omit them by
-  // passing null. All other sections are part of the fixed page contract.
+  // Page order is fixed: purpose, minimal call, inputs, arguments and
+  // options, output, optional long-form examples, limits, validation.
   const parts = [
     '---',
     `title: ${title}`,
@@ -143,41 +142,43 @@ export function renderFunctionPage({
   ];
   if (reference != null) parts.push('', reference);
   parts.push('', prose(spec.summary));
-  const headings = [];
-  if (useThisWhen != null) {
-    parts.push('', '## Use this when', '', prose(useThisWhen));
-    headings.push('Use this when');
-  }
-  parts.push('', '## Signature', '', sqlBlock(spec.signature));
-  headings.push('Signature');
-  if (quickstartSql != null) {
-    parts.push('', '## Quickstart', '', sqlBlock(quickstartSql));
-    headings.push('Quickstart');
-  }
+  const headings = ['Signature', 'Quickstart', 'Inputs', 'Arguments and options', 'Output'];
   parts.push(
     '',
-    '## Relation inputs',
+    '## Signature',
     '',
-    relationInputs,
+    sqlBlock(spec.signature),
     '',
-    '## Scalar arguments & JSON options',
+    '## Quickstart',
     '',
-    scalarArgumentsAndOptions,
+    quickstartBlock(quickstart),
     '',
-    '## Output schema',
+    '## Inputs',
     '',
-    outputSchema,
+    inputs,
+    '',
+    '## Arguments and options',
+    '',
+    argumentsAndOptions,
+    '',
+    '## Output',
+    '',
+    output,
   );
-  headings.push('Relation inputs', 'Scalar arguments & JSON options', 'Output schema');
   if (examples) {
     parts.push('', '## Examples', '', examples);
     headings.push('Examples');
   }
-  parts.push('', '## Limitations & lifecycle', '', limitations, '', '## Validate before running', '', validation);
-  headings.push('Limitations & lifecycle', 'Validate before running');
+  parts.push('', '## Limits', '', limits, '', '## Validate the call', '', validation);
+  headings.push('Limits', 'Validate the call');
   const page = parts.join('\n');
   assertPageContract(spec.function_name, page, headings);
   return page;
+}
+
+function quickstartBlock({ prerequisite, sql }) {
+  if (typeof prerequisite !== 'string' || prerequisite.trim() === '') throw new Error('generated page has no Quickstart prerequisite');
+  return [prerequisite, '', sqlBlock(sql)].join('\n');
 }
 
 export function assertPageContract(functionName, page, headings) {

@@ -336,20 +336,34 @@ function optionTable(options) {
     ]));
 }
 
-function renderRelations(spec) {
+function renderInputs(spec) {
+  const contract = vertexIdContract(spec);
+  const logicalEndpointTypes = contract.logical_string_endpoint_types;
+  const supportsLogicalStrings = logicalEndpointTypes.length > 0;
+  const vertexIdLink = '[Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function)';
+  const parts = [];
   if (spec.relation_roles.length === 1) {
-    return 'The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.';
+    parts.push(`${code('table_name')} must be a registered edge table or view (the ${code('edges')} role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.`);
+  } else {
+    parts.push(
+      `${code('table_name')} must be a registered edge table or view (the ${code('edges')} role); optional relations are named by their side-input table options. Parenthesized subqueries are not accepted, and metadata validation resolves the same registered names.`,
+      '',
+      table(['Role', 'Required', 'Contract'], spec.relation_roles.map(role => [
+        code(role.name),
+        role.required === false ? 'no' : 'yes',
+        cell(role.description),
+      ])),
+    );
   }
-  const rows = spec.relation_roles.map(role => [
-    code(role.name),
-    role.required === false ? 'no' : 'yes',
-    cell(role.description),
-  ]);
-  return [
-    'The first positional argument names the registered edge table or view. Optional relations are named by their side-input table options. Parenthesized relation subqueries are not accepted; metadata validation resolves the same registered names.',
-    '',
-    table(['Role', 'Required', 'Contract'], rows),
-  ].join('\n');
+  const dtypes = supportsLogicalStrings
+    ? `Endpoint columns accept numeric ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs or logical string ${renderTypeList(logicalEndpointTypes)} vertex IDs; string vertex-identity outputs are canonicalized to ${code(contract.logical_string_output_type)} (native mapping ${code(contract.native_logical_mapping_type)}) while scores, distances, counts, coordinates, and opaque labels stay numeric.`
+    : `Endpoint columns accept ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs only; logical string endpoints are not supported${contract.numeric_endpoint_types.length === 1 && contract.numeric_endpoint_types[0] === 'Int32' ? ' (legacy Int32-only contract)' : ''}.`;
+  parts.push('', `${dtypes} The shared vertex-ID contract is summarized in ${vertexIdLink}; the concrete call-specific schema comes from ${code(contract.call_specific_authority)}.`);
+  if (supportsLogicalStrings) {
+    const limitations = logicalStringSideInputLimitations(spec, contract);
+    parts.push('', 'Logical string side-input limitations:', '', limitations.length > 0 ? limitations.map(limitation => `- ${prose(limitation)}`).join('\n') : '- No additional logical string side-input limitation is declared.');
+  }
+  return parts.join('\n');
 }
 
 function renderTypeList(types) {
@@ -371,38 +385,6 @@ function logicalStringSideInputLimitations(spec, contract) {
   return [...new Set(limitations)];
 }
 
-function renderVertexIdTypes(spec) {
-  const contract = vertexIdContract(spec);
-  const logicalEndpointTypes = contract.logical_string_endpoint_types;
-  const supportsLogicalStrings = logicalEndpointTypes.length > 0;
-  const sideInputLimitations = logicalStringSideInputLimitations(spec, contract);
-  const rows = [
-    [
-      'Numeric edge endpoints',
-      renderTypeList(contract.numeric_endpoint_types),
-      supportsLogicalStrings ? 'The numeric output schema is used for numeric calls.' : 'Vertex identity output columns remain numeric.',
-    ],
-    [
-      'Logical string edge endpoints',
-      supportsLogicalStrings ? renderTypeList(logicalEndpointTypes) : 'Not supported',
-      supportsLogicalStrings ? `Vertex identity columns are canonicalized to ${code(contract.logical_string_output_type)}; scores, distances, counts, coordinates, and opaque labels remain numeric.` : 'No canonical string output is declared.',
-    ],
-  ];
-  const parts = [
-    '## Vertex ID types',
-    '',
-    'The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.',
-    '',
-    table(['Domain', 'Accepted endpoint inputs', 'Output contract'], rows),
-  ];
-  if (supportsLogicalStrings) {
-    parts.push('', `The native mapping type is ${code(contract.native_logical_mapping_type)}. ${contract.call_specific_authority === 'gpu_validate_call' ? 'Call-specific output schemas come from `gpu_validate_call`.' : `Call-specific output schemas are authoritative under ${code(contract.call_specific_authority)}.`}`);
-    parts.push('', 'Logical string side-input limitations:', '', sideInputLimitations.length > 0 ? sideInputLimitations.map(limitation => `- ${prose(limitation)}`).join('\n') : '- No additional logical string side-input limitation is declared.');
-  } else if (contract.numeric_endpoint_types.length === 1 && contract.numeric_endpoint_types[0] === 'Int32') {
-    parts.push('', 'This is a legacy Int32-only vertex-ID contract; logical string endpoints are not supported.');
-  }
-  return parts.join('\n');
-}
 
 function renderLimitations(spec) {
   const limitations = spec.limitations.filter(limitation => !limitation.startsWith('dry-run'));
@@ -481,7 +463,7 @@ function renderSchemas(spec) {
       code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
     ]));
   });
-  blocks.push('These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.');
+  blocks.push('These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.');
   return blocks.join('\n\n');
 }
 
@@ -491,21 +473,45 @@ function firstExample(spec) {
   return { ...example, call: example.call || example.call_json };
 }
 
+function quickstartPrerequisite(spec, example) {
+  const options = example.call.options || {};
+  const edges = example.call.relations?.edges?.table;
+  if (typeof edges !== 'string' || edges.length === 0) throw new Error(`${spec.function_name}: example call names no edges table`);
+  let sentence = `The call below expects a registered edge table or view ${code(edges)} with endpoint columns ${code(options.src_col ?? 'src')} and ${code(options.dst_col ?? 'dst')}`;
+  if (typeof options.weight_col === 'string') sentence += ` and weight column ${code(options.weight_col)}`;
+  const sideInputs = [];
+  for (const [name, option] of Object.entries(spec.options_schema.algorithm_options || {})) {
+    if (!option.side_input || typeof options[name] !== 'string') continue;
+    const columnOptions = option.side_input.column_option ? [option.side_input.column_option] : (option.side_input.column_options || []);
+    const columns = columnOptions.map(columnOption => options[columnOption]).filter(value => typeof value === 'string');
+    sideInputs.push(`${code(options[name])} (the ${code(option.side_input.role)} side input${columns.length ? ` with columns ${columns.map(code).join(', ')}` : ''})`);
+  }
+  if (sideInputs.length > 0) sentence += `, plus the registered relation${sideInputs.length > 1 ? 's' : ''} ${sideInputs.join(' and ')}`;
+  if (options.source_vertex !== undefined && options.source_vertex !== null) {
+    sentence += `, and starts from source vertex ${code(JSON.stringify(options.source_vertex))}`;
+  }
+  return `${sentence}. Substitute your own registered relations.`;
+}
+
 function renderPage(spec) {
   const title = displayName(spec);
   const example = firstExample(spec);
+  if (typeof example.execution_sql !== 'string' || example.execution_sql.trim() === '') {
+    throw new Error(`${spec.function_name}: examples_json must contain execution_sql for the quickstart`);
+  }
   const documentation = documentationFor(spec.function_name);
   const officialDocsUrl = `${OFFICIAL_DOCS_ROOT}${documentation.officialPath}`;
-  const page = renderFunctionPage({
+  return renderFunctionPage({
     generator: 'website/scripts/gen-cugraph-docs.mjs',
     spec,
     title,
     reference: `Official cuGraph reference: [${documentation.officialApi}](${officialDocsUrl})`,
-    relationInputs: renderRelations(spec),
-    scalarArgumentsAndOptions: renderArguments(spec),
-    outputSchema: renderSchemas(spec),
+    quickstart: { prerequisite: quickstartPrerequisite(spec, example), sql: `${example.execution_sql.trim().replace(/;$/, '')};` },
+    inputs: renderInputs(spec),
+    argumentsAndOptions: renderArguments(spec),
+    output: renderSchemas(spec),
     examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),
-    limitations: renderLimitations(spec),
+    limits: renderLimitations(spec),
     validation: validationBlock({
       functionName: spec.function_name,
       call: example.call,
@@ -513,9 +519,6 @@ function renderPage(spec) {
       intro: 'Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:',
     }),
   });
-  const marker = '## Scalar arguments & JSON options';
-  if (!page.includes(marker)) throw new Error(`${spec.function_name}: generated page is missing scalar-argument insertion point`);
-  return page.replace(marker, `${renderVertexIdTypes(spec)}\n\n${marker}`);
 }
 
 function renderCheatsheet(specs) {

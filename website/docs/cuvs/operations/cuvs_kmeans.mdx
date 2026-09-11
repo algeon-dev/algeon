@@ -20,6 +20,8 @@ cuvs_kmeans((input relation subquery), options_json)
 
 ## Quickstart
 
+The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
+
 ```sql
 SELECT id, cluster_id
 FROM cuvs_kmeans(
@@ -29,17 +31,15 @@ FROM cuvs_kmeans(
 ORDER BY row_ordinal;
 ```
 
-## Relation inputs
+## Inputs
 
-Every execution relation argument is a parenthesized `SELECT` subquery. The planner retains that relation as a real logical and physical child; a bare table identifier or quoted table-name string is rejected. Metadata validation instead uses a registered named table or view in its relation envelope.
+Each relation argument is a parenthesized `SELECT` subquery that the planner keeps as a real child; metadata validation resolves a registered table or view for the same role instead. See [Vector Inputs](../vector-inputs.mdx) for the relation identity rules and the ID, dense-vector type, null, finite-value, and runtime-dimension contract.
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
 | `input` | yes | `table` | Dense-vector rows consumed by the fit-and-transform operation. |
 
-See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null, finite-value, and runtime-dimension contract.
-
-## Scalar arguments & JSON options
+## Arguments and options
 
 ### Scalar SQL arguments
 
@@ -70,7 +70,7 @@ See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null
 
 Choose exactly one dense-vector binding shape.
 
-## Output schema
+## Output
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
@@ -80,7 +80,7 @@ Choose exactly one dense-vector binding shape.
 
 **Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 
-## Limitations & lifecycle
+## Limits
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
@@ -88,14 +88,14 @@ Choose exactly one dense-vector binding shape.
 - The evaluated input must be non-empty and n_clusters must not exceed its row count.
 - cluster_id values are query-local labels. Do not attach permanent business meaning to their numeric values.
 
-## Validate before running
+## Validate the call
 
 Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cuvs_kmeans',
-  '{"options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8},"relations":{"input":{"table":"input_vectors"}},"schema_version":1}'
+  '{"schema_version":1,"relations":{"input":{"table":"input_vectors"}},"options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}}'
 );
 ```
 

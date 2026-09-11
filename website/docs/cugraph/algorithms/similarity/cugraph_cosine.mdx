@@ -20,27 +20,26 @@ Compare the neighbor vectors of explicit vertex pairs using cosine similarity, w
 cugraph_cosine(table_name, src_col, dst_col, weight_col, options_json)
 ```
 
-## Relation inputs
+## Quickstart
 
-The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
+The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`, plus the registered relation `candidate_pairs` (the `vertex_pairs` side input with columns `first`, `second`). Substitute your own registered relations.
 
-## Vertex ID types
+```sql
+SELECT * FROM cugraph_cosine('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}');
+```
 
-The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+## Inputs
 
-| Domain | Accepted endpoint inputs | Output contract |
-| --- | --- | --- |
-| Numeric edge endpoints | `Int32`, `Int64` | The numeric output schema is used for numeric calls. |
-| Logical string edge endpoints | `Utf8`, `LargeUtf8`, `Utf8View` | Vertex identity columns are canonicalized to `Utf8`; scores, distances, counts, coordinates, and opaque labels remain numeric. |
+`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
 
-The native mapping type is `Int64`. Call-specific output schemas come from `gpu_validate_call`.
+Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
 Logical string side-input limitations:
 
 - edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
 - candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column
 
-## Scalar arguments & JSON options
+## Arguments and options
 
 ### Positional scalar arguments
 
@@ -62,7 +61,7 @@ Logical string side-input limitations:
 
 This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
-## Output schema
+## Output
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
@@ -70,7 +69,7 @@ This function requires `directed=false` (undirected/symmetric graph); all other 
 | `second` | `Int64\|Utf8` | no | Second vertex from the explicit candidate-pair relation. |
 | `similarity` | `Float64` | no | Similarity coefficient for the explicit candidate pair. |
 
-These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -78,7 +77,7 @@ import Examples from '../../_examples/cugraph_cosine.mdx';
 
 <Examples />
 
-## Limitations & lifecycle
+## Limits
 
 - similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed
 - options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col
@@ -89,7 +88,7 @@ import Examples from '../../_examples/cugraph_cosine.mdx';
 - providing weight_col selects weighted similarity; omitting it selects unit-weight similarity
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
-## Validate before running
+## Validate the call
 
 Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 

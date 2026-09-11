@@ -6,9 +6,14 @@ description: Understand error ownership, DataFusion and Flight boundaries, retry
 
 # Error Handling Design
 
-Nexus keeps an error typed at the layer that owns the failure and converts it
-only when crossing a real boundary. Applications should make decisions from
-typed fields, never from formatted error text.
+Every failure Nexus returns carries a stable machine-readable `code`, a
+coarse `kind`, and a `status` that says whether the condition is permanent,
+temporary, or persistent, in addition to a human-readable message. An
+application can find that identity inside any `DataFusionError` it receives,
+or read it from gRPC metadata over Flight SQL, and should make decisions from
+those typed fields, never from formatted error text. Nexus keeps an error
+typed at the layer that owns the failure and converts it only when crossing a
+real boundary.
 
 The typical native-execution path is:
 

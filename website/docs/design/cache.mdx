@@ -57,12 +57,39 @@ profile has `cache_cap_bytes > 0`, it installs one
 graph cache subdomains that share it. A zero cap creates none of these
 resources.
 
-`cache_cap_bytes` is a ceiling, not an eagerly allocated reservation. Actual
-resident bytes are charged to the device ledger and must fit both the cache
-cap and currently free managed capacity. They are outside an attempt's
-immutable grant, but they reduce the headroom available to future grants. See
-[Admission & Memory Governance](./admission.mdx) for the full capacity
-equation.
+`cache_cap_bytes` is a ceiling, not an eagerly allocated reservation. The
+ledger tracks four byte quantities on each device, and the two accounting
+checks use them differently:
+
+| Quantity | What it counts |
+| --- | --- |
+| `live_grants` | Immutable grants of active or cleaning attempts. |
+| `frozen_resident` | Published GPU-resident query outputs that outlived their attempt. |
+| `cache_evictable` + `cache_pinned` | Decoded source frames and parked graphs in the shared cache domain. |
+
+Query admission uses only the first two:
+
+~~~text
+active_attempts + 1 <= max_active_attempts
+frozen_resident + live_grants + query_cap <= managed_capacity
+~~~
+
+Cache retention is a separate check made when the cache tries to keep a new
+object. It must fit the cache cap and the capacity not already claimed by
+grants, frozen outputs, and existing cache charges:
+
+~~~text
+cache_evictable + cache_pinned + new_bytes <= cache_cap_bytes
+managed_capacity - (live_grants + frozen_resident + cache_evictable + cache_pinned) >= new_bytes
+~~~
+
+So a full cache never blocks a new grant on the ledger; it can only make its
+own retention fail, and the object then stays attempt-owned and is released
+with the attempt. Physically, cache bytes and grant bytes do share the device,
+so a large resident cache leaves less real memory for an attempt's
+allocations inside its cap. See
+[Admission & Memory Governance](./admission.mdx#device-profiles-and-grants)
+for the grant side.
 
 Both GPU caches use the same residency lifecycle:
 

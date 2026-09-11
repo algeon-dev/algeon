@@ -8,21 +8,34 @@ description: Schema reference for discovering installed cuGraph and cuVS SQL fun
 
 # GPU Function Catalog API
 
-The unified GPU function catalog lets humans and agents discover every
-SQL-visible GPU function and dry-run a call without reading server source. It
-contains installed cuGraph and cuVS families; filter by `provider` for a
-provider-specific view.
+Three SQL table functions describe every cuGraph and cuVS function installed
+in a session, so a person or an agent can find, understand, and check a call
+without reading server source:
+
+- `gpu_list_functions()` lists which functions are installed and whether each
+  one is executable in this build and session.
+- `gpu_describe_function(name)` returns one function's contract: signature,
+  relation roles, option schema, result schemas, examples, and limitations.
+- `gpu_validate_call(name, call_json)` checks a concrete call against the
+  schema of the named tables or views and the function's options. This is
+  static validation, a dry run: it reads no data and runs nothing on the GPU.
+
+The catalog is one list across providers; filter by `provider` for the
+cuGraph or cuVS subset. cuVS functions (`cuvs_brute_force_knn`, `cuvs_kmeans`,
+`cuvs_pca`) are executable when the build enables the `cuvs` feature;
+otherwise they are listed with `available=false` and
+`unavailable_reason='required_feature_disabled'`.
 
 For the task-oriented list, describe, validate, and execute workflow, use
 [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx).
 This page is the detailed API reference for the metadata functions and their
 response schemas.
 
-Execution syntax remains provider-specific: cuGraph execution consumes a
-registered edge table/view name in its positional contract, while cuVS
-execution consumes parenthesized relation-valued subqueries. Metadata dry-run
-validation consistently uses registered named tables or views in its relation
-envelope and never evaluates arbitrary SQL from JSON.
+Execution syntax is provider-specific: a cuGraph function takes a registered
+edge table or view name as a positional argument, while a cuVS function takes
+parenthesized relation-valued subqueries. Validation is provider-neutral: the
+`call_json` envelope names registered tables or views by role and never
+evaluates SQL text embedded in JSON.
 
 ## gpu_list_functions
 
@@ -48,9 +61,9 @@ ORDER BY function_name;
 | `summary` | `Utf8` | no | Short human-readable description. |
 | `relation_roles_json` | `Utf8` | no | Ordered relation-role definitions as valid JSON. |
 
-`available=true` means the selected function is statically plannable. It does
-not reserve GPU memory, acquire runtime admission, inspect relation rows, or
-prove that an entire query is GPU-native.
+`available=true` means the selected function can be planned for GPU
+execution. It does not reserve GPU memory, acquire runtime admission, inspect
+relation rows, or prove that an entire query runs on the GPU.
 
 ## gpu_describe_function(function_name)
 
@@ -137,10 +150,12 @@ validate provider-owned relation bindings, columns, dtypes, dimensions,
 conditional arguments, and option values; apply defaults; and derive a concrete
 output schema when possible.
 
-**Does Not:** scan relation rows, materialize Parquet, construct graphs, launch
-CUDA, allocate device memory, acquire query admission, or prove runtime facts
-such as source-vertex existence, vector uniformity, or evaluated relation
-cardinality.
+**Does Not:** read any data or run anything on the GPU. It does not scan
+relation rows, materialize Parquet, construct graphs, launch CUDA, allocate
+device memory, acquire query admission, or prove runtime facts such as
+source-vertex existence, vector uniformity, or evaluated relation cardinality.
+Memory is decided at execution: an admitted call runs inside its granted cap
+and fails with an allocation error if it exceeds it.
 
 `would_execute_gpu` is scoped to one selected function call. To check whether a
 whole query's planned path stays on the GPU, use

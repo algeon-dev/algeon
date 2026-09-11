@@ -180,11 +180,11 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         let headings = [
             "## Signature",
             "## Quickstart",
-            "## Relation inputs",
-            "## Scalar arguments & JSON options",
-            "## Output schema",
-            "## Limitations & lifecycle",
-            "## Validate before running",
+            "## Inputs",
+            "## Arguments and options",
+            "## Output",
+            "## Limits",
+            "## Validate the call",
         ];
         let mut previous_heading = 0;
         for heading in headings {

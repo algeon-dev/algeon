@@ -17,7 +17,8 @@ understand its execution and reuse boundaries.
 
 ## Graph input and call shape
 
-Every algorithm follows one positional shape:
+Most functions share this positional shape; the ones that need extra inputs
+add them, so treat each function page's signature as authoritative:
 
 ```sql
 cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json]]])
@@ -29,8 +30,9 @@ cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json
   depends on the function's **Weight column** entry in the cheat sheet below.
 - **`options_json`** — a JSON string of algorithm and graph options.
 
-A few functions take extra positional arguments (for example, `cugraph_bfs`
-takes a source vertex); see each function's page for its exact signature.
+For example, `cugraph_bfs` and `cugraph_sssp` take a source vertex as their
+second argument, and `cugraph_personalized_pagerank` requires all five
+arguments.
 
 The relation name must resolve to a table or view registered in the session.
 That relation can be backed by the session's configured sources, including

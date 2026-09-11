@@ -12,10 +12,27 @@ CPU delegate when native type admission does not select acceleration. A
 `NoDataFusionCpu` final-plan requirement instead rejects a completed plan that
 retains DataFusion CPU execution.
 
-This page covers column representation. Operator and function support is
-documented separately in [Native SQL Support](./native-sql-support.mdx), and
-the exact physical plan should be checked with
+This page covers column representation: which Arrow types the GPU execution
+path (Nexus's "native" path) can hold, and what it can do with each. Operator
+and function support is documented separately in
+[Native SQL Support](./native-sql-support.mdx), and the exact physical plan
+should be checked with
 [`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
+
+Two levels of support appear below:
+
+- **Full support**: the column can be used anywhere the operator allows: in
+  expressions, predicates, join keys, grouping keys, sort keys, and aggregate
+  or window inputs.
+- **Carry support** (also written "carry/projection"): the column can be read
+  from a source, selected, aliased, kept through row selection, `UNION ALL`,
+  and the non-key side of a join or aggregation, and returned unchanged. It
+  does not mean the column can be used in an expression, a join key, a
+  grouping key, a sort key, or an aggregate input. A candidate that uses a
+  carry-only column in one of those positions keeps the DataFusion baseline.
+
+The carry matrices further down list exactly which types are carry-only and
+what the output schema preserves for each.
 
 ## Native relational columns
 
@@ -26,7 +43,8 @@ The native engine has a cuDF representation for these Arrow data types:
 - Unsigned integers: `UInt8`, `UInt16`, `UInt32`, `UInt64`
 - Floating point: `Float32`, `Float64`
 - `Decimal128` with valid Arrow decimal precision and scale
-- Carry-only `Decimal32` and `Decimal64` with valid Arrow decimal precision and scale
+- `Decimal32` and `Decimal64` with valid Arrow decimal precision and scale
+  (carry support only)
 - Strings: `Utf8`, `LargeUtf8`, `Utf8View`
 - `Date32`, `Date64`
 - `Time32` and `Time64` at their Arrow-supported resolutions
@@ -45,8 +63,11 @@ precision and scale pair passes Arrow's validator:
 
 Carry paths preserve raw values, nulls, logical width, precision, and scale
 through scans, projections, aliases, row selection, `UNION ALL`, and non-key
-payloads. Without an external Arrow schema, untyped cuDF Decimal32/64 output
-retains the canonical `Decimal128(38, S)` mapping. Narrow decimals are rejected
+payloads (columns that ride along beside a join or grouping key without being
+one). "Schema-aware output" means the Arrow schema Nexus was given for the
+query; when that schema is present the narrow type is returned as declared.
+Without an external Arrow schema, untyped cuDF Decimal32/64 output retains the
+canonical `Decimal128(38, S)` mapping. Narrow decimals are rejected
 by local capability analysis in expressions, predicates, literals, comparisons,
 casts, join or grouping keys, sort keys, partitions, aggregate inputs, and
 window inputs.

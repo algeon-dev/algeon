@@ -47,8 +47,9 @@ With `normalized: false` the score is a raw count: over one million shortest
 citation chains inside this subgraph pass through the *Deep learning in neural
 networks* survey and through R-CNN. These are the brokers between AI
 subfields — surveys and boundary-crossing architectures — a different signal
-than citation volume: none of them is the most-cited paper in the view. The
-exact call over the 164k-edge subgraph returns in well under a second.
+than citation volume: none of them is the most-cited paper in the view. In
+this run the exact call over the 164k-edge subgraph returned in well under a
+second on the [capture host](../demo-dataset.mdx).
 
 On the full graph, pass a deterministic sample size instead — execution uses
 the first `k` distinct graph vertices in stable order and refuses `k` larger

@@ -10,10 +10,12 @@ description: Find installed GPU SQL functions, inspect their contracts, validate
 
 Use this guide before adding a cuGraph or cuVS function to a query. It follows
 the same sequence for embedded sessions and Flight SQL: list what this build
-can run, inspect one contract, validate the call without executing it, then
-check the complete query before production use.
+can run, inspect one function's contract, validate the call statically (no
+data is read and nothing runs on the GPU), execute it, then check the complete
+query before production use.
 
-For every returned column, JSON schema, and validation-envelope rule, see the
+This page shows the workflow only. For every returned column, JSON schema, and
+validation-envelope rule, see the
 [GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
 
 ## 1. List installed functions
@@ -28,10 +30,11 @@ WHERE provider IN ('cugraph', 'cuvs')
 ORDER BY function_name;
 ~~~
 
-Availability is static planning availability for that function. It does not
-reserve GPU memory, inspect relation rows, or prove that a surrounding query is
-fully GPU-native. Runtime admission and the query-domain allocator enforce the
-configured memory cap when a cuVS call executes.
+`available=true` means the function can be planned for GPU execution in this
+build and session; cuVS functions require the `cuvs` feature. It does not
+reserve GPU memory, inspect relation rows, or prove that a surrounding query
+runs entirely on the GPU. Memory is decided at execution: the call runs inside
+its granted cap and fails with an allocation error if it exceeds it.
 
 ## 2. Describe the selected function
 
@@ -65,9 +68,11 @@ FROM gpu_validate_call(
 );
 ~~~
 
-Validation resolves named tables or views only. It does not scan rows, run a
-subquery, allocate GPU memory, or start a CUDA kernel. Register a derived
-relation as a temporary view when it needs metadata validation.
+This is static validation: it checks the named tables' or views' schemas and
+the options, reads no data, and runs nothing on the GPU (no rows scanned, no
+subquery run, no device memory allocated, no kernel launched). Only registered
+tables or views resolve; register a derived relation as a temporary view when
+it needs validation.
 
 ## 4. Execute with the provider's relation syntax
 

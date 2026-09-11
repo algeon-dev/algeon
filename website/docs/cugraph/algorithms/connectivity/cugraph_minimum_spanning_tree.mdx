@@ -20,22 +20,21 @@ Select a minimum-total-weight acyclic edge set, producing a spanning tree for a 
 cugraph_minimum_spanning_tree(table_name, src_col, dst_col, weight_col [, options_json])
 ```
 
-## Relation inputs
+## Quickstart
 
-The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
+The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst` and weight column `weight`. Substitute your own registered relations.
 
-## Vertex ID types
+```sql
+SELECT * FROM cugraph_minimum_spanning_tree('target_edges', 'src', 'dst', 'weight');
+```
 
-The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+## Inputs
 
-| Domain | Accepted endpoint inputs | Output contract |
-| --- | --- | --- |
-| Numeric edge endpoints | `Int32` | Vertex identity output columns remain numeric. |
-| Logical string edge endpoints | Not supported | No canonical string output is declared. |
+`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
 
-This is a legacy Int32-only vertex-ID contract; logical string endpoints are not supported.
+Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
-## Scalar arguments & JSON options
+## Arguments and options
 
 ### Positional scalar arguments
 
@@ -53,14 +52,14 @@ _This function has no algorithm-specific options._
 
 This function builds an undirected graph by default (`directed=false`); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
-## Output schema
+## Output
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
 | `src` | `Int64` | no | Source vertex of an edge selected for the minimum spanning tree. |
 | `dst` | `Int64` | no | Destination vertex of an edge selected for the minimum spanning tree. |
 
-These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -68,12 +67,12 @@ import Examples from '../../_examples/cugraph_minimum_spanning_tree.mdx';
 
 <Examples />
 
-## Limitations & lifecycle
+## Limits
 
 - cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
-## Validate before running
+## Validate the call
 
 Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 

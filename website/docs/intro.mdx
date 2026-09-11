@@ -1,33 +1,44 @@
 ---
 sidebar_position: 1
 sidebar_label: Overview
-title: Home
+title: DataFusion Nexus
 slug: /
-description: A GPU query engine for Apache DataFusion that combines cuDF relational execution with a SQL-facing contract for specialized GPU algorithms over lakehouse data.
+description: An experimental GPU query engine for Apache DataFusion that runs supported SQL on cuDF and exposes graph and vector algorithms as SQL table functions.
 ---
 
 import {ArchitectureDiagram} from '@site/src/components/design/Diagram';
 
 # Welcome to DataFusion Nexus
 
-**DataFusion Nexus** is an experimental GPU query engine built on
-[Apache DataFusion](https://datafusion.apache.org/). It evaluates relational
-physical-plan candidates and selectively executes supported workloads on
-[cuDF](https://docs.rapids.ai/api/cudf/stable/), while preserving DataFusion
-execution as the baseline when GPU execution is not selected.
+**DataFusion Nexus** is an experimental GPU query engine for
+[Apache DataFusion](https://datafusion.apache.org/). It runs supported SQL
+operations on [cuDF](https://docs.rapids.ai/api/cudf/stable/) and exposes
+[cuGraph](https://docs.rapids.ai/api/cugraph/stable/) and
+[cuVS](https://docs.nvidia.com/cuvs/home) algorithms as SQL table functions
+that compose with ordinary joins, filters, and aggregations. You can embed it
+in a Rust application or connect through Arrow Flight SQL.
 
-Nexus also exposes specialized GPU algorithms through SQL table functions,
-allowing results from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/),
-[cuVS](https://docs.nvidia.com/cuvs/home) to be composed with standard
-relational operations such as joins, filters, and aggregations. The two
-families have different execution readiness (see [Current
-limitations](#current-limitations)). Data can be read directly from local
-Parquet files or remote Iceberg tables.
+GPU execution is opt-in per query: plans, or parts of plans, that Nexus does
+not select for GPU execution stay on the normal DataFusion CPU path with the
+same results. Once GPU execution starts, a failure is returned as a structured
+error and is not re-run on CPU. Selection normally replaces a
+[whole candidate](./design/native-lowering.mdx#selection-fallback-and-mixed-execution)
+(with one certified
+[mixed exception](./reference/glossary.md#planning-and-lowering)), and each
+run executes inside a fixed GPU memory
+[grant](./design/admission.mdx#device-profiles-and-grants).
 
-Designed to integrate into existing architectures, Nexus provides structured,
-machine-readable planning decisions, capabilities, and errors, enabling both
-applications and AI agents to reason about queries before and after execution.
+## Where to start
 
+- **Build, then run a first query.** Follow
+  [Build & Test](./build/overview.md), then either embed Nexus in a
+  [DataFusion session](./integration/datafusion-session.mdx) or start the
+  [Flight SQL server](./integration/flight-sql-server.mdx) and connect with an
+  ADBC client.
+- **See what SQL is supported.** Relational coverage is mapped in
+  [Native SQL Support](./reference/native-sql-support.mdx); the table
+  functions are documented in the [cuGraph SQL API](./cugraph/overview.mdx)
+  and [cuVS SQL API](./cuvs/overview.mdx).
 
 To learn why we built DataFusion Nexus, read
 [DataFusion Nexus: Specialized GPU Algorithms, Now in SQL](/blog/introducing-datafusion-nexus).
@@ -35,108 +46,62 @@ To learn why we built DataFusion Nexus, read
 ## Architecture at a glance
 
 <ArchitectureDiagram
-  caption={<>Nexus selects supported whole relational candidates for in-process
-  cuDF execution, while specialized SQL algorithm calls enter explicit GPU
-  islands; a non-selected relational candidate falls back to DataFusion CPU
-  execution under the same Arrow result contract. KvikIO streams Parquet from
-  local disk or S3-compatible object storage into the GPU, and Iceberg metadata
-  comes from REST or Glue catalogs. Arrow batches return through the caller's
-  original interface.</>}
+  caption={<>A query enters through the interface you already use; the
+  DataFusion optimizer rule decides which parts run on the GPU in the same
+  process, and results return to that interface as ordinary Arrow batches.
+  The lower arrows show where table data comes from: local Parquet files or
+  Iceberg tables in object storage.</>}
 />
 
 ## Features
 
-- **DataFusion-native GPU execution.** Nexus lowers supported physical-plan
-  candidates to a DataFusion-independent cuDF IR. Rewrites normally replace a
-  complete candidate; explicitly supported mixed plans can keep a DataFusion
-  CPU boundary. Unsupported or cost-rejected candidates retain their executable
-  DataFusion plan, and callers can require a final plan with no CPU execution.
-- **Graph SQL and GPU function discovery.** `cugraph_*` table functions run
-  PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over relations and
-  return ordinary rows. The shared
-  [GPU function catalog](./guides/gpu-function-discovery.mdx) lists the cuGraph
-  and cuVS families installed in a session, describes their contracts, validates
-  calls, and reports whether each function is executable.
-- **Parquet and Iceberg sources.** Native scans read local and S3-compatible
+- **GPU execution behind DataFusion APIs.** Supported physical plans run on
+  cuDF without changing your SQL, DataFrame code, or result format. You can
+  require that a plan contain no CPU execution and have it rejected otherwise.
+- **Graph and vector algorithms in SQL.** `cugraph_*` table functions run
+  PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over relations;
+  `cuvs_*` functions run exact kNN, KMeans, and PCA over vector columns. Both
+  return ordinary rows.
+- **Function discovery and validation.** The
+  [GPU function catalog](./guides/gpu-function-discovery.mdx) lists the
+  functions installed in a session, describes each contract, validates a call
+  before execution, and reports whether each function is executable.
+- **Parquet and Iceberg sources.** GPU scans read local and S3-compatible
   Parquet, including Iceberg tables resolved through REST and Glue catalogs.
-  Remote reads use cuDF's KvikIO-backed S3 data source; unsupported native
-  Iceberg scans keep their executable CPU delegate. Remote catalogs are
-  read-only, with an optional mutable local workspace for views and scratch
-  tables.
-- **Structured planning diagnostics.** Planning reports record candidate
-  outcomes and the completed-plan disposition.
-  [`nexus_explain_coverage`](./integration/gpu-coverage-validation.mdx) and
-  Flight SQL `EXPLAIN GPU` expose the same coverage evidence and remedies.
-  Errors retain typed identities at the DataFusion boundary.
-- **Bounded per-device execution.** Every native attempt requires an immutable
-  GPU memory grant and capability evidence for the exact executable plan.
-  The query allocation domain enforces the configured cap.
+  Remote catalogs are read-only, with an optional local workspace for views and
+  scratch tables.
+- **Answers before and after execution.**
+  [`nexus_explain_coverage`](./integration/gpu-coverage-validation.mdx)
+  (or `EXPLAIN GPU` over Flight SQL) tells you which parts of a query will run
+  on the GPU and why the rest will not; errors carry stable machine-readable
+  codes.
 
 ## Current limitations
 
-- **Capability-gated native SQL.** Native cuDF execution supports a subset of
-  DataFusion operators, expressions, and Arrow types. Unsupported or
-  cost-rejected candidates retain their DataFusion plan, but failures after GPU
-  execution starts do not replay on CPU. See
+- **A subset of SQL runs on the GPU.** Unsupported operators, expressions, and
+  Arrow types stay on the DataFusion path. See
   [Native SQL Support](./reference/native-sql-support.mdx) and
   [Data Type Support](./reference/data-type-support.md).
-- **Single-device query execution.** Independent queries can be scheduled
-  across configured GPUs, but each query runs on one GPU; there is no cross-GPU
-  exchange.
-- **No disk or host-memory spilling.** Native execution runs entirely inside
-  an attempt's immutable device-memory grant
-  ([Admission & Memory Governance](./design/admission.mdx)); there is no
-  spilling of execution state to host memory or disk in the style of
-  [cuCascade](https://github.com/NVIDIA/cuCascade). Work that cannot fit its
-  grant fails with a structured error instead of degrading.
-- **Specialized GPU coverage is uneven.** cuGraph and the documented cuVS SQL
-  operations execute on the GPU; unsupported types, options, and algorithms
-  remain structured planning errors.
-- **Native file scans are Parquet-only.** Native scans support local and
-  S3-compatible Parquet. Iceberg position deletes are supported when their scan
-  is otherwise admissible; equality deletes, delete vectors, non-Parquet files,
-  and other source types remain on the DataFusion path.
-
-## Repository layout
-
-- `datafusion-nexus` — the DataFusion-facing adapter: optimizer rule, table
-  functions, Iceberg integration, and reports.
-- `nexus-query-planning` — the DataFusion-free native IR, optimizer,
-  capability, proof, admission contracts, and compiled pipeline.
-- `nexus-query-runtime` — attempt lifecycle, query service, device ledger,
-  immutable grants, caches, observation, and metrics.
-- `nexus-query-engine` — native GPU execution and the compatible public facade
-  over planning and runtime.
-- `nexus-workloads` — adapter-neutral TPC-H, TPC-DS, and ClickBench
-  catalogs, fixtures, dataset discovery, and DataFusion registration.
-- `nexus-iceberg` — DataFusion-independent Iceberg resolution and
-  scan-fact types shared by the adapter and source integrations.
-- `nexus-bench` — benchmark, report, triage, and stress binaries.
-- `nexus-tools` — developer and operator tools, including local
-  end-to-end runners.
-- `nexus-examples` — runnable embedded-backend examples.
-- `nexus-server` — the Arrow Flight SQL service and server configuration.
-
-The maintained Rust integration layers are first-class components of this
-repository: `components/cudf` is the Rust/libcudf boundary,
-`components/cuvs` provides vector-search bindings, and `components/cugraph` is
-the Rust/libcugraph boundary behind the `cugraph_*` SQL functions. Their native
-sources are the root-pinned submodules under the same directories.
+- **One GPU per query.** Independent queries can be spread across configured
+  GPUs, but a single query never spans devices.
+- **No spilling.** Each query runs inside the GPU memory cap it is granted;
+  exceeding it returns an allocation error instead of spilling to host memory
+  or disk in the style of [cuCascade](https://github.com/NVIDIA/cuCascade).
+- **Algorithm coverage is fixed.** Only the documented cuGraph and cuVS
+  functions are available; unsupported types, options, and algorithms return
+  structured planning errors. The cuVS surface is still growing, and the
+  [cuOpt SQL API](./cuopt/overview.mdx) is work in progress.
+- **GPU file scans are Parquet-only.** Iceberg position deletes are supported
+  when their scan is otherwise supported; equality deletes, delete vectors,
+  non-Parquet files, and other source types stay on the DataFusion path.
 
 ## Next steps
 
+- [Integrating Nexus](./integration/overview.mdx) — choose between an
+  embedded session and the Flight SQL server, then follow the common flow.
 - [Discover & Validate GPU Functions](./guides/gpu-function-discovery.mdx) —
-  inspect the installed function families and their current execution
-  capabilities.
-- [Design](./design/index.mdx) — the integration surfaces, execution boundary, and
-  diagnostic contracts.
-- [Integrating Nexus](./integration/overview.mdx) — embedded Rust setup, Flight SQL
-  server startup, client connection, and server configuration.
-- [cuGraph SQL API](./cugraph/overview.mdx) — discover and call the
-  `cugraph_*` table functions.
-- [Build & Test](./build/overview.md) — source builds, Docker packaging,
-  CUDA/compiler prerequisites, environment, upstream native libraries, and the
-  verified test surface.
-- [Reference](./reference/index.md) — support boundaries, benchmark evidence,
-  and native execution contracts.
-- [Guides](./guides/index.md) — local end-to-end operational flows.
+  inspect the installed function families and their execution status.
+- [Design](./design/index.mdx) — how Nexus fits into DataFusion, the crate
+  layout, and the diagnostic contracts.
+- [Reference](./reference/index.md) — support boundaries, benchmarks, and the
+  glossary.

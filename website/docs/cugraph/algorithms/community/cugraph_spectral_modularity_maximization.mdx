@@ -20,22 +20,21 @@ Partition vertices by embedding the graph with leading modularity eigenvectors a
 cugraph_spectral_modularity_maximization(table_name [, src_col, dst_col [, weight_col [, options_json]]])
 ```
 
-## Relation inputs
+## Quickstart
 
-The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
+The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`. Substitute your own registered relations.
 
-## Vertex ID types
+```sql
+SELECT * FROM cugraph_spectral_modularity_maximization('target_edges');
+```
 
-The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+## Inputs
 
-| Domain | Accepted endpoint inputs | Output contract |
-| --- | --- | --- |
-| Numeric edge endpoints | `Int32` | Vertex identity output columns remain numeric. |
-| Logical string edge endpoints | Not supported | No canonical string output is declared. |
+`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
 
-This is a legacy Int32-only vertex-ID contract; logical string endpoints are not supported.
+Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
-## Scalar arguments & JSON options
+## Arguments and options
 
 ### Positional scalar arguments
 
@@ -49,26 +48,26 @@ This is a legacy Int32-only vertex-ID contract; logical string endpoints are not
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `evs_max_iterations` | `UInt32` | `500` | min 1; max 2147483647 |  |
-| `evs_tolerance` | `Float64` | `0.01` | min 0 |  |
-| `k_means_max_iterations` | `UInt32` | `100` | min 1; max 2147483647 |  |
-| `k_means_tolerance` | `Float64` | `0.001` | min 0 |  |
-| `n_clusters` | `UInt32` | `2` | min 1 |  |
-| `n_eigenvectors` | `UInt32` | `2` | min 1 |  |
-| `seed` | `UInt64` | `0` |  |  |
+| `evs_max_iterations` | `UInt32` | `500` | min 1; max 2147483647 | Maximum eigenvalue-solver iterations. |
+| `evs_tolerance` | `Float64` | `0.01` | min 0 | Convergence tolerance for the eigenvalue solver. Smaller values compute a more accurate embedding at higher cost. |
+| `k_means_max_iterations` | `UInt32` | `100` | min 1; max 2147483647 | Maximum k-means iterations. |
+| `k_means_tolerance` | `Float64` | `0.001` | min 0 | Convergence tolerance for the k-means stage. |
+| `n_clusters` | `UInt32` | `2` | min 1 | Number of clusters the k-means stage assigns. |
+| `n_eigenvectors` | `UInt32` | `2` | min 1 | Number of leading eigenvectors computed for the spectral embedding that k-means clusters. |
+| `seed` | `UInt64` | `0` |  | Seed for the random initialization (Lanczos start vector and k-means centroid seeding). It does not make the partition bit-identical across runs; same-seed replays may land in a different but equally valid assignment. |
 
 ### Graph construction options
 
 This function builds an undirected graph by default (`directed=false`); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
-## Output schema
+## Output
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
 | `vertex` | `Int64` | no | Vertex assigned to a spectral clustering partition. |
 | `partition` | `Int64` | no | Cluster identifier assigned by spectral modularity maximization. |
 
-These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -76,12 +75,12 @@ import Examples from '../../_examples/cugraph_spectral_modularity_maximization.m
 
 <Examples />
 
-## Limitations & lifecycle
+## Limits
 
 - cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
-## Validate before running
+## Validate the call
 
 Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 

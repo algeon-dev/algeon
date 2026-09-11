@@ -26,8 +26,8 @@ recursively as described in [Building from Source](../build/from-source.md#1-clo
 then point the application at the root package. The component crates are
 resolved through the root workspace.
 
-The root crate has no default features. Add `cugraph` for graph SQL, `iceberg`
-for Iceberg sources, `cuvs` for cuVS bindings, and `nvml` for optional device
+The root crate has no default features. Add `cugraph` for graph SQL, `cuvs`
+for vector SQL, `iceberg` for Iceberg sources, and `nvml` for optional device
 diagnostics. Omit all of them for relational cuDF execution only.
 
 ## Build one backend
@@ -61,11 +61,11 @@ active attempt; add explicit limits only when your deployment requires them.
 Only one live backend may exist in a process. Clone and share this backend
 across every session and frontend instead of building another one.
 
-## Add cuGraph SQL
+## Add cuGraph and cuVS SQL
 
 `install_on` installs backend-bound native rules and coverage. It does not
-install cuGraph SQL or cuVS SQL. To enable cuGraph SQL table functions on the
-session, chain `try_with_cugraph_sql(config)`:
+install cuGraph SQL or cuVS SQL. To enable the `cugraph_*` table functions on
+the session, chain `try_with_cugraph_sql(config)`:
 
 ```rust
 use datafusion_nexus::{
@@ -81,20 +81,19 @@ let state = backend
 let ctx = SessionContext::new_with_state(state);
 ```
 
-cuGraph SQL functions dynamically resolve the backend's admission and native
-execution configuration from session state when executed. To add cuVS SQL, chain
-`try_with_cuvs_sql()` in the same manner.
-
-:::note[cuVS execution]
-The `cuvs` feature supplies native bindings and runs cuVS operations inside the
-backend-managed query memory domain. See
+cuGraph SQL functions resolve the backend's admission and native execution
+configuration from session state when executed. To add the `cuvs_*` functions,
+chain `try_with_cuvs_sql()` in the same manner; it takes no configuration. The
+functions execute only when the crate was built with the `cuvs` feature. See
 [cuVS execution](../cuvs/overview.mdx#execution).
-:::
 
 ## Execute one attempt per query
 
-For application-owned endpoints, create an attempt before planning and retain
-its completion report:
+For application-owned endpoints, create an attempt before planning, take its
+completion receiver before running the query, and read the report whether or
+not the query succeeded. The snippet assumes an `orders` table is already
+registered in `ctx`, for example with `CREATE EXTERNAL TABLE ... STORED AS
+PARQUET` or `register_parquet`:
 
 ```rust
 use datafusion_nexus::attempt::{AttemptOptions, QueryAttemptReport};
@@ -105,18 +104,24 @@ let attempt = backend.begin_attempt(AttemptOptions {
     query_id: Some("request-42".to_owned()),
     ..Default::default()
 })?;
+let completion = attempt.completion();
 
-let stream = attempt
-    .sql(&ctx, "SELECT SUM(amount) FROM orders")
-    .await?;
-let batches = stream.try_collect::<Vec<_>>().await?;
-let report: Arc<QueryAttemptReport> = attempt.completion().await;
+let result = async {
+    let stream = attempt.sql(&ctx, "SELECT SUM(amount) FROM orders").await?;
+    stream.try_collect::<Vec<_>>().await
+}
+.await;
+
+let report: Arc<QueryAttemptReport> = completion.await;
+let batches = result?;
 ```
 
 The attempt clones the session into invocation-local planning state. Its report
 records the final disposition, admission grant, timing, and terminal outcome.
-Completion seals on stream EOF, error, cancellation, or drop, so keep the
-completion handle even when execution fails.
+Completion seals on stream EOF, error, cancellation, or drop. Taking the
+receiver before planning and awaiting it after the result is what keeps the
+report available on the error path; returning early with `?` on the stream
+would drop the attempt and route the report to the abandoned-report queue.
 
 Frameworks may own this boundary for you. The Nexus Flight SQL server, for
 example, begins the attempt while issuing a statement ticket and carries it
@@ -126,7 +131,8 @@ query invocation.
 ## Admission configuration
 
 Device capacity belongs to profiles; shared queue behavior belongs to
-`NexusGpuQueuePolicy`:
+`NexusGpuQueuePolicy`. This fragment replaces the backend construction shown
+above:
 
 ```rust
 use datafusion_nexus::backend::{
@@ -141,7 +147,7 @@ let device = NexusGpuDeviceConfig::new(
         })
         .with_backend_reserve_bytes(512 * 1024 * 1024)
         .with_default_query_limit_bytes(512 * 1024 * 1024)
-        .with_max_active_attempts(10)
+        .with_max_active_attempts(10),
     GpuMemoryOwnership::WholeDeviceExclusive,
 );
 let backend = NexusGpuBackend::builder()

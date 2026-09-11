@@ -5,8 +5,12 @@ description: Build and run the nexus-server Flight SQL endpoint, then connect wi
 
 # Flight SQL Server
 
-The standalone server lives in `crates/nexus-server`. Run it when clients need
-a remote Arrow Flight SQL endpoint instead of an embedded Rust API.
+Run the standalone server when clients need a remote Arrow Flight SQL
+endpoint instead of an embedded Rust API. It builds one shared GPU backend,
+installs the cuVS SQL functions on every session (and the cuGraph functions
+when [enabled in its configuration](./configuration.mdx#gpu-sql-functions)),
+and serves ordinary Arrow results to any ADBC or Flight SQL client. The server
+lives in `crates/nexus-server`.
 
 ## Build and start
 
@@ -135,6 +139,9 @@ arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 
 Flight SQL accepts ordinary DataFusion `SET` statements, but rejects
 `SET datafusion_nexus.*`; server resource policy comes from `ServerConfig`.
-Native execution requires a CUDA-capable host and the runtime libraries for the
-enabled Cargo features. Unsupported GPU operators fail closed rather than
-falling back to the CPU.
+GPU execution requires a CUDA-capable host and the runtime libraries for the
+enabled Cargo features. Plans the server does not select for GPU execution stay
+in DataFusion; a failure after GPU execution starts is returned as a structured
+error and is not replayed on CPU. Use `EXPLAIN GPU` (see
+[GPU Coverage Validation](./gpu-coverage-validation.mdx)) to see which parts of
+a query will run on the GPU.

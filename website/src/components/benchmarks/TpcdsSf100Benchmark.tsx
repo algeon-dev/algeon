@@ -404,13 +404,6 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
           </Tabs>
         </div>
       </section>
-      <p className={styles.chartCaption}>
-        Full interactive Plotly report:{' '}
-        <a href="/benchmarks/tpcds_sf100_cpu_gpu.html" target="_blank" rel="noreferrer">
-          tpcds_sf100_cpu_gpu.html
-        </a>
-        .
-      </p>
     </div>
   );
 }

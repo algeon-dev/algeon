@@ -6,13 +6,16 @@ description: Inspect the exact planned GPU and DataFusion execution domains for 
 
 # GPU Coverage Validation
 
-`nexus_explain_coverage` answers a plan-time question: what execution domains
-does this exact SQL query use after physical planning? It plans the query but
-does not execute it or acquire a GPU admission grant.
+`nexus_explain_coverage` tells you, before running a query, which parts of it
+will execute on the GPU and which will stay on the DataFusion CPU path, with a
+stable reason and remedy for each part that was not selected. It plans the
+query exactly as execution would, but does not execute it and does not wait
+for GPU execution capacity.
 
-The answer is not a runtime guarantee. GPU admission, device memory, native
-runtime errors, and cuGraph input checks still happen at execution time. Read
-the returned `runtime_caveats` whenever the final plan contains GPU work.
+The answer is not a runtime guarantee. Waiting for GPU capacity, the memory
+cap for the run, GPU runtime errors, and cuGraph input checks still happen at
+execution time. Read the returned `runtime_caveats` whenever the final plan
+contains GPU work.
 
 ## SQL surface
 

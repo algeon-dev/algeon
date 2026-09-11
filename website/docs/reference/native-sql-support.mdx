@@ -8,9 +8,11 @@ description: Native cuDF support boundaries for relational SQL operators, expres
 
 Nexus selects supported whole relational DataFusion physical-plan candidates
 for cuDF execution. Support is capability-first: every operator, expression,
-type, source, and bounded-memory contract must be admitted for the exact
-physical candidate. This page is a practical map, not a substitute for
-validating a production query with
+type, and source in the exact physical candidate must have a native kernel
+with matching semantics. Memory is not a support criterion; an admitted query
+runs inside its granted cap and fails with a typed allocation error if it
+exceeds it. This page is a practical map, not a substitute for validating a
+production query with
 [`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
 
 ## Relational plan shapes
@@ -21,7 +23,7 @@ validating a production query with
 | Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. |
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
 | Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. |
-| Joins | Equi joins and admitted residual/keyless forms for inner, outer, semi, anti, mark, and cross joins. Build side, output projection, key types, residual expressions, and bounded reservation evidence can narrow an otherwise supported join kind. |
+| Joins | Equi joins and admitted residual/keyless forms for inner, outer, semi, anti, mark, and cross joins. Build side, output projection, key types, and residual expressions can narrow an otherwise supported join kind. |
 | Graph | cuGraph table functions are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the function-level contract. |
 
 When a relational candidate is not supported, or an enabled cost rule does not
@@ -47,22 +49,14 @@ The supported DataFusion scalar-function names are:
 | Nulls | `nullif` for compatible native types. |
 | Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
 
-Exact dtype rules still apply. In particular, timezone-aware timestamps, the
-supported [basic-list carry matrix](./data-type-support.md#basic-list-carry-matrix),
-and the positive-width numeric
-[`FixedSizeList<T, D>` matrix](./data-type-support.md#numeric-fixed-size-list-carry-matrix)
-are carry/projection types rather than general scalar or key types. The
-[narrow-decimal carry matrix](./data-type-support.md#narrow-decimal-carry-matrix)
-follows the same boundary: schema-aware output preserves `Decimal32(P, S)` or
-`Decimal64(P, S)`, including raw values, nulls, precision, and scale, with 4- or
-8-byte raw values respectively. Without an external Arrow schema, untyped
-cuDF Decimal32/64 output retains the canonical `Decimal128(38, S)` mapping.
-Narrow decimals are rejected by local capability analysis in expressions,
-predicates, literals, comparisons, casts, join or grouping keys, sort keys,
-partitions, aggregate inputs, and window inputs. A carried `FixedSizeList`
-retains its declared dimension, child field, and nullability; each non-null row
-must have that dimension. Lists remain invalid as expression values, keys,
-grouping or sort values, partitions, aggregate inputs, and window inputs.
+Exact dtype rules still apply and are owned by
+[Data Type Support](./data-type-support.md). In short: timezone-aware
+timestamps, the [basic-list carry matrix](./data-type-support.md#basic-list-carry-matrix),
+the numeric [`FixedSizeList<T, D>` matrix](./data-type-support.md#numeric-fixed-size-list-carry-matrix),
+and the [narrow-decimal carry matrix](./data-type-support.md#narrow-decimal-carry-matrix)
+are carry types: they can be selected and returned unchanged but are not valid
+expression values, keys, sort or partition values, or aggregate and window
+inputs. Each matrix on that page states what the output schema preserves.
 
 ## Aggregates
 
