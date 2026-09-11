@@ -48,6 +48,88 @@ pub(super) fn join_limit_projection_plan() -> QueryPlan {
     builder.finish_with_host_sink(projection)
 }
 
+/// Two joins sharing one filtered dimension scan, under an aggregate and limit.
+///
+/// This is the TPC-DS q32/q38/q87/q92/q97 shape: a `date_dim`-style scan is
+/// filtered once and fanned out to several join branches. A deferrable Parquet
+/// read hands the filter a source stream and the filter re-stages it, so the
+/// shared resource reaches the joins as a source stream whose producer is the
+/// filter rather than the scan.
+fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("d", DataType::Int32, false),
+        Field::new("v", DataType::Int32, true),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("d", DataType::Int32, false),
+        Field::new("year", DataType::Int32, false),
+    ]));
+    let joined_schema = Arc::new(Schema::new(vec![
+        Field::new("d", DataType::Int32, false),
+        Field::new("v", DataType::Int32, true),
+    ]));
+    let grouped_schema = Arc::new(Schema::new(vec![
+        Field::new("d", DataType::Int32, false),
+        Field::new("total", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let dimension = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/shared-filtered-dimension.parquet",
+        Arc::clone(&dim_schema),
+        vec!["d".into(), "year".into()],
+    )));
+    let filtered_dimension = builder.add_filter(
+        dimension,
+        Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(2000))),
+        Arc::clone(&dim_schema),
+    );
+    let join_against_dimension = |builder: &mut QueryPlanBuilder, path: &str| {
+        let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            path,
+            Arc::clone(&fact_schema),
+            vec!["d".into(), "v".into()],
+        )));
+        builder.add_join(
+            fact,
+            filtered_dimension,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "d", "d"), "d"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&joined_schema),
+        )
+    };
+    let store_sales = join_against_dimension(&mut builder, "/tmp/shared-filtered-store-sales.parquet");
+    let web_sales = join_against_dimension(&mut builder, "/tmp/shared-filtered-web-sales.parquet");
+    let combined = builder.add_join(
+        store_sales,
+        web_sales,
+        JoinSpec::new(JoinType::Inner, vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "d", "d"), "d"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&joined_schema),
+    );
+    let grouped = builder.add_aggregate(
+        combined,
+        AggregateSpec::new(
+            vec![Expr::column("d")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+        ),
+        Arc::clone(&grouped_schema),
+    );
+    let limit = builder.add_limit(grouped, LimitSpec::fetch(100), Arc::clone(&grouped_schema));
+    builder.finish_with_host_sink(limit)
+}
+
 #[test]
 fn composed_pipeline_admits_projection_over_join_limit() {
     let plan = join_limit_projection_plan();
@@ -64,4 +146,15 @@ fn composed_pipeline_admits_projection_over_join_limit() {
         .find(|task| task.kind() == nexus_query_engine::pipeline::PipelineTaskKind::Limit)
         .expect("one limit task");
     assert_eq!(limit_task.accepted_input_form(), nexus_query_engine::pipeline::AcceptedInputForm::Frame);
+}
+
+#[test]
+fn composed_pipeline_admits_a_filtered_source_scan_shared_by_several_joins() {
+    // A bare shared scan was always admitted; the same scan with a filter above
+    // it must be too, because the filter only re-stages the scan's stream.
+    let plan = shared_filtered_dimension_fan_out_plan();
+    let admission = bounded_pipeline_admission(&plan)
+        .unwrap()
+        .expect("a filtered dimension scan shared by several joins should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::ComposedPipeline);
 }

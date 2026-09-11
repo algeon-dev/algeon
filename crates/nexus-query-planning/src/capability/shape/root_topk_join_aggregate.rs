@@ -747,8 +747,12 @@ fn require_supported_root_topk_join(
         // are proven executable by `join_node_execution_capability`, so the top-k
         // envelope keys on the left-only output invariant instead of repeating a
         // per-strategy join-type rule that silently excluded the residual form.
+        //
+        // `LeftMark` groups with `LeftSemi` rather than behind
+        // `allow_left_output_bounded_join`: it keeps one output row per left row,
+        // so it never widens the bounded row set the way `LeftAnti` can.
         Some(JoinExecutionCapability::KeyedFilteredSemiAnti | JoinExecutionCapability::KeyedResidualMixed)
-            if (join.spec.join_type == JoinType::LeftSemi
+            if (matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftMark)
                 || (allow_left_output_bounded_join && join.spec.join_type == JoinType::LeftAnti))
                 && join.spec.build_side == JoinSide::Right
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>

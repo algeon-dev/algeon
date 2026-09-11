@@ -305,6 +305,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSmallExact,
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSourceAdjacentFilters,
         RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput,
+        RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
         let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
@@ -550,6 +551,7 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             | RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput
+            | RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput
             | RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput
             | RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput
             | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSmallExact
