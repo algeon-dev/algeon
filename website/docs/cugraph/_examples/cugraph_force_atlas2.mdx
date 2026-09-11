@@ -53,8 +53,9 @@ members):
 <CitationEgoGraph />
 
 `seed` fixes the initial placement, but the parallel layout itself is not
-bit-reproducible — expect slightly different (equally valid) coordinates on
-each run. If downstream queries must agree on positions, snapshot into the
+bit-reproducible — expect different (equally valid) coordinates on each run;
+on larger graphs individual vertices may land far apart. If downstream queries
+must agree on positions, snapshot into the
 mutable `datafusion.public` workspace with `CREATE TABLE … AS`; that does not
 write back to the Iceberg source catalog.
 

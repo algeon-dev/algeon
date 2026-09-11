@@ -103,7 +103,13 @@ pub struct GraphSpectralClusteringParams {
     pub k_means_tolerance: f64,
     /// k-means maximum iteration count. Must be in `[1, i32::MAX]`.
     pub k_means_max_iterations: u32,
-    /// RNG seed. Default 0 gives a deterministic run.
+    /// RNG seed. Default 0.
+    ///
+    /// The seed only fixes the random initialization (Lanczos start vector
+    /// and k-means centroid seeding). It does not make the partition
+    /// bit-identical across runs: GPU parallel reductions inside k-means
+    /// accumulate in scheduling order, so same-seed replays may land in a
+    /// different but equally valid community assignment.
     pub seed: u64,
 }
 

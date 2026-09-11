@@ -29,7 +29,8 @@ pub enum ParityComparator {
     /// community count, and modularity relative to the oracle baseline.
     ///
     /// Unlike [`Self::PartitionEquivalence`], this intentionally does not
-    /// require a byte-identical partition across cuGraph builds.
+    /// require a byte-identical partition across cuGraph builds or across
+    /// same-seed replays on the same build.
     PartitionQuality,
     /// Seeded random output; sequence + grouping must match plus the
     /// distribution baseline.
@@ -435,8 +436,14 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/spectral_modularity_maximization__default.json"),
-        comparator: ParityComparator::PartitionEquivalence,
-        tolerance: ParityTolerance::exact(),
+        // Spectral clustering runs k-means over a Lanczos embedding. A
+        // fixed seed makes the random initialization repeatable, but GPU
+        // parallel reductions accumulate in scheduling order, so
+        // same-seed replays may choose an equally valid partition. Keep
+        // the Python result as a modularity baseline instead of requiring
+        // its exact set-of-sets partition.
+        comparator: ParityComparator::PartitionQuality,
+        tolerance: ParityTolerance { abs: 5.0e-2, rel: 0.0 },
     },
     ParitySpec {
         label: "force_atlas2/karate@default",

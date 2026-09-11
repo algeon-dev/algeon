@@ -1732,7 +1732,13 @@ pub struct CugraphSpectralClusteringParams {
     pub k_means_tolerance: f64,
     /// k-means maximum iteration count. Must be in `[1, i32::MAX]`.
     pub k_means_max_iterations: u32,
-    /// RNG seed. Default 0 gives a deterministic run.
+    /// RNG seed. Default 0.
+    ///
+    /// The seed only fixes the random initialization (Lanczos start vector
+    /// and k-means centroid seeding). It does not make the partition
+    /// bit-identical across runs: GPU parallel reductions inside k-means
+    /// accumulate in scheduling order, so same-seed replays may land in a
+    /// different but equally valid community assignment.
     pub seed: u64,
 }
 
@@ -1784,7 +1790,12 @@ pub struct CugraphForceAtlas2Params {
     pub gravity: f64,
     /// Whether cuGraph should print convergence info.
     pub verbose: bool,
-    /// RNG seed for deterministic layout runs.
+    /// RNG seed for the random initial positions.
+    ///
+    /// The seed does not make runs reproducible: the parallel force
+    /// iteration accumulates in scheduling-dependent order, so reruns may
+    /// place individual vertices far apart. Compare layouts structurally,
+    /// not coordinate-by-coordinate.
     pub seed: u64,
     /// Optional relation containing per-vertex layout attributes.
     pub vertex_attributes: Option<CugraphForceAtlas2VertexAttributesTable>,

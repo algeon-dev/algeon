@@ -38,8 +38,9 @@ impl fmt::Display for GraphLayoutRequirement {
 /// Parameters for ForceAtlas2 graph layout.
 ///
 /// Mirrors `cugraph::layout::ForceAtlas2Params` without the `cugraph` crate's
-/// newtype wrappers and adds a deterministic RNG seed used to create the cuGraph
-/// `RngState` for each execution.
+/// newtype wrappers and adds the RNG seed used to create the cuGraph
+/// `RngState` for each execution. The seed fixes the initial positions only;
+/// it does not make layouts reproducible across runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphForceAtlas2Params {
     /// Maximum number of iterations. Must be in `[1, i32::MAX]`.
@@ -72,7 +73,12 @@ pub struct GraphForceAtlas2Params {
     pub gravity: f64,
     /// Whether cuGraph should print convergence info.
     pub verbose: bool,
-    /// RNG seed for deterministic layout runs.
+    /// RNG seed for the random initial positions.
+    ///
+    /// The seed does not make runs reproducible: the parallel force
+    /// iteration accumulates in scheduling-dependent order, so reruns may
+    /// place individual vertices far apart. Compare layouts structurally,
+    /// not coordinate-by-coordinate.
     pub seed: u64,
     /// Optional per-vertex radius, mobility, and mass relation.
     pub vertex_attributes: Option<GraphForceAtlas2VertexAttributesInput>,
@@ -147,7 +153,7 @@ impl GraphForceAtlas2InitialPositionsInput {
 impl Default for GraphForceAtlas2Params {
     fn default() -> Self {
         // Matches cugraph::layout::ForceAtlas2Params::default(), plus a
-        // deterministic seed for the required cuGraph RNG state.
+        // fixed seed for the required cuGraph RNG state.
         Self {
             max_iter: 500,
             outbound_attraction_distribution: false,
