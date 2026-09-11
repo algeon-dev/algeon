@@ -82,6 +82,7 @@ source_identity() {
 POLICY_SCRIPTS=(
   scripts/ci/tests/check_cpu_packaging_tests.sh
   scripts/ci/check_iceberg_leaf_dependency.sh
+  scripts/ci/check_workspace_root_include.sh
   scripts/build/check_build_support.sh
   scripts/ci/tests/check_dependency_direction_tests.sh
   scripts/ci/tests/check_native_sources_tests.sh
