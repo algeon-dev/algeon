@@ -1,0 +1,290 @@
+use std::error::Error as StdError;
+
+use super::{Error, ErrorCode};
+
+pub(super) const CATALOG_BACKEND_OP: &str = "algeon_datafusion.iceberg.catalog_backend";
+
+fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCatalogErrorFacts>) -> ErrorCode {
+    // The typed kind is the strongest evidence and is never overridden by
+    // flattened wrapper text. Structured transport detail (AWS facts) only
+    // decides when the kind is generic.
+    match source.kind() {
+        iceberg::ErrorKind::TableNotFound | iceberg::ErrorKind::NamespaceNotFound => {
+            return ErrorCode::SourceObjectNotFound;
+        },
+        _ => {},
+    }
+    if let Some(aws_facts) = aws_facts {
+        if matches!(
+            aws_facts.error_code,
+            Some("ExpiredTokenException" | "InvalidAccessKeyId" | "UnrecognizedClientException")
+        ) || matches!(aws_facts.detail, Some("http_401" | "missing_credentials"))
+        {
+            return ErrorCode::SourceUnauthenticated;
+        }
+        if matches!(aws_facts.error_code, Some("AccessDeniedException" | "SignatureDoesNotMatch"))
+            || matches!(aws_facts.detail, Some("http_403" | "access_denied"))
+        {
+            return ErrorCode::SourceAccessDenied;
+        }
+        if matches!(aws_facts.error_code, Some("EntityNotFoundException")) {
+            return ErrorCode::SourceObjectNotFound;
+        }
+    }
+    match source.kind() {
+        iceberg::ErrorKind::TableNotFound | iceberg::ErrorKind::NamespaceNotFound => ErrorCode::ObjectNotFound,
+        _ if source.retryable() => ErrorCode::SourceTemporaryFailure,
+        _ => ErrorCode::CudfDependencyFailure,
+    }
+}
+
+pub(crate) fn classify_iceberg_scan_error(source: &iceberg::Error) -> ErrorCode {
+    let aws_facts = AwsCatalogErrorFacts::from_error(source);
+    let code = catalog_backend_error_code(source, aws_facts.as_ref());
+    if code != ErrorCode::CudfDependencyFailure {
+        return code;
+    }
+    find_source_error::<opendal::Error>(source)
+        .map(classify_opendal_scan_error)
+        .unwrap_or(ErrorCode::SourceDependencyFailure)
+}
+
+pub(crate) fn classify_opendal_scan_error(source: &opendal::Error) -> ErrorCode {
+    if let Some(aws_facts) = AwsCatalogErrorFacts::from_error(source) {
+        if matches!(
+            aws_facts.error_code,
+            Some("ExpiredTokenException" | "InvalidAccessKeyId" | "UnrecognizedClientException")
+        ) || matches!(aws_facts.detail, Some("http_401" | "missing_credentials"))
+        {
+            return ErrorCode::SourceUnauthenticated;
+        }
+        if matches!(aws_facts.error_code, Some("AccessDeniedException" | "SignatureDoesNotMatch"))
+            || matches!(aws_facts.detail, Some("http_403" | "access_denied"))
+        {
+            return ErrorCode::SourceAccessDenied;
+        }
+    }
+    match source.kind() {
+        opendal::ErrorKind::NotFound => ErrorCode::SourceObjectNotFound,
+        opendal::ErrorKind::PermissionDenied => ErrorCode::SourceAccessDenied,
+        opendal::ErrorKind::RateLimited => ErrorCode::SourceTemporaryFailure,
+        _ if source.is_temporary() => ErrorCode::SourceTemporaryFailure,
+        _ => ErrorCode::SourceDependencyFailure,
+    }
+}
+
+pub(crate) fn apply_opendal_scan_error_facts(mut error: Error, source: &opendal::Error) -> Error {
+    error = error
+        .with_fact("opendal_error_kind", source.kind().into_static())
+        .with_fact("opendal_temporary", source.is_temporary())
+        .with_fact("opendal_persistent", source.is_persistent());
+    if let Some(aws_facts) = AwsCatalogErrorFacts::from_error(source) {
+        error = aws_facts.apply(error);
+    }
+    error
+}
+
+pub(crate) fn apply_iceberg_catalog_error_facts(mut error: Error, source: &iceberg::Error) -> Error {
+    error = error
+        .with_fact("iceberg_error_kind", source.kind().into_static())
+        .with_fact("iceberg_retryable", source.retryable());
+    let opendal = find_source_error::<opendal::Error>(source);
+    if let Some(opendal) = opendal {
+        error = apply_opendal_scan_error_facts(error, opendal);
+    } else if let Some(aws_facts) = AwsCatalogErrorFacts::from_error(source) {
+        error = aws_facts.apply(error);
+    }
+    error
+}
+
+fn find_source_error<'a, E>(mut source: &'a (dyn StdError + 'static)) -> Option<&'a E>
+where E: StdError + 'static {
+    for _ in 0..32 {
+        if let Some(source) = source.downcast_ref::<E>() {
+            return Some(source);
+        }
+        source = source.source()?;
+    }
+    None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwsCatalogErrorFacts {
+    error_code: Option<&'static str>,
+    request_id: Option<String>,
+    http_status: Option<&'static str>,
+    retryable: Option<&'static str>,
+    detail: Option<&'static str>,
+}
+
+impl AwsCatalogErrorFacts {
+    fn from_error(source: &(dyn StdError + 'static)) -> Option<Self> {
+        let text = error_chain_text(source);
+        // iceberg-catalog-glue flattens SDK errors with anyhow!("aws sdk error: {error:?}");
+        // classify the rendered markers because the typed SDK error is no longer in the chain.
+        let error_code = aws_error_code_fact(&text);
+        let detail = aws_error_detail_fact(&text, error_code);
+        let facts = Self {
+            error_code,
+            request_id: aws_request_id_fact(&text),
+            http_status: aws_http_status_fact(&text),
+            retryable: aws_retryable_fact(&text),
+            detail,
+        };
+        (facts.error_code.is_some()
+            || facts.request_id.is_some()
+            || facts.http_status.is_some()
+            || facts.retryable.is_some()
+            || facts.detail.is_some())
+        .then_some(facts)
+    }
+
+    fn apply(self, mut error: Error) -> Error {
+        if let Some(error_code) = self.error_code {
+            error = error.with_fact("aws_error_code", error_code);
+        }
+        if let Some(request_id) = self.request_id {
+            error = error.with_fact("aws_request_id", request_id);
+        }
+        if let Some(http_status) = self.http_status {
+            error = error.with_fact("aws_http_status", http_status);
+        }
+        if let Some(retryable) = self.retryable {
+            error = error.with_fact("aws_retryable", retryable);
+        }
+        if let Some(detail) = self.detail {
+            error = error.with_fact("aws_error_detail", detail);
+        }
+        error
+    }
+}
+
+/// Maximum source-chain layers rendered for AWS transport-detail extraction.
+///
+/// Catalog backends flatten typed SDK errors into text, so extraction must
+/// see past generic wrappers — but an unbounded foreign chain must not
+/// dictate adapter work. Matches the crate's other foreign-error budgets.
+const MAX_AWS_FACT_CHAIN_DEPTH: usize = 32;
+/// Maximum bytes retained from the chain. AWS markers are short SDK codes;
+/// the cap only truncates extreme foreign payloads, never the markers.
+const MAX_AWS_FACT_CHAIN_BYTES: usize = 16_384;
+
+fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
+    let mut text = bounded_layer_text(&source.to_string(), MAX_AWS_FACT_CHAIN_BYTES);
+    let mut current = source.source();
+    for _ in 0..MAX_AWS_FACT_CHAIN_DEPTH {
+        let Some(layer) = current else { break };
+        if text.len() >= MAX_AWS_FACT_CHAIN_BYTES {
+            break;
+        }
+        text.push_str(": ");
+        let remaining = MAX_AWS_FACT_CHAIN_BYTES.saturating_sub(text.len());
+        text.push_str(&bounded_layer_text(&layer.to_string(), remaining));
+        current = layer.source();
+    }
+    text
+}
+
+fn bounded_layer_text(layer: &str, max_bytes: usize) -> String {
+    if layer.len() <= max_bytes {
+        return layer.to_string();
+    }
+    let mut end = max_bytes;
+    while !layer.is_char_boundary(end) {
+        end -= 1;
+    }
+    layer[..end].to_string()
+}
+
+fn aws_error_code_fact(text: &str) -> Option<&'static str> {
+    if contains_any(text, &["ExpiredTokenException", "ExpiredToken"]) {
+        Some("ExpiredTokenException")
+    } else if text.contains("InvalidAccessKeyId") {
+        Some("InvalidAccessKeyId")
+    } else if text.contains("UnrecognizedClientException") {
+        Some("UnrecognizedClientException")
+    } else if text.contains("AccessDeniedException") || text.contains("AccessDenied") {
+        Some("AccessDeniedException")
+    } else if text.contains("SignatureDoesNotMatch") {
+        Some("SignatureDoesNotMatch")
+    } else if text.contains("EntityNotFoundException") {
+        Some("EntityNotFoundException")
+    } else {
+        None
+    }
+}
+
+fn aws_error_detail_fact(text: &str, error_code: Option<&'static str>) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    match error_code {
+        Some("ExpiredTokenException") => return Some("expired_token"),
+        Some("InvalidAccessKeyId") => return Some("invalid_access_key"),
+        Some("UnrecognizedClientException") => return Some("invalid_client"),
+        Some("AccessDeniedException") => return Some("access_denied"),
+        Some("SignatureDoesNotMatch") => return Some("signature_mismatch"),
+        Some("EntityNotFoundException") => return Some("not_found"),
+        _ => {},
+    }
+    if contains_any(&lower, &["401 unauthorized", "status code: 401", "status: 401", "http 401"]) {
+        Some("http_401")
+    } else if contains_any(&lower, &["403 forbidden", "status code: 403", "status: 403", "http 403"]) {
+        Some("http_403")
+    } else if contains_any(&lower, &["no credentials", "missing credentials", "could not load credentials"]) {
+        Some("missing_credentials")
+    } else {
+        None
+    }
+}
+
+fn aws_request_id_fact(text: &str) -> Option<String> {
+    extract_quoted_marker(text, "aws_request_id\": \"")
+        .or_else(|| extract_quoted_marker(text, "aws_request_id: \""))
+        .or_else(|| extract_quoted_marker(text, "x-amz-request-id\": \""))
+        .or_else(|| extract_value_after(text, "request id: "))
+}
+
+fn aws_http_status_fact(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if contains_any(&lower, &["status code: 401", "status: 401", "http 401", "401 unauthorized"]) {
+        Some("401")
+    } else if contains_any(&lower, &["status code: 403", "status: 403", "http 403", "403 forbidden"]) {
+        Some("403")
+    } else if contains_any(&lower, &["status code: 404", "status: 404", "http 404", "404 not found"]) {
+        Some("404")
+    } else {
+        None
+    }
+}
+
+fn aws_retryable_fact(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("retryable: true") {
+        Some("true")
+    } else if lower.contains("retryable: false") {
+        Some("false")
+    } else {
+        None
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn extract_quoted_marker(text: &str, marker: &str) -> Option<String> {
+    let start = text.find(marker)? + marker.len();
+    let value = &text[start..];
+    let end = value.find('"')?;
+    let value = &value[..end];
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn extract_value_after(text: &str, marker: &str) -> Option<String> {
+    let start = text.to_ascii_lowercase().find(marker)? + marker.len();
+    let value = text[start..]
+        .split(|ch: char| ch == ',' || ch == ')' || ch == '}' || ch.is_whitespace())
+        .next()
+        .expect("splitting a string always yields one item")
+        .trim_matches('"');
+    (!value.is_empty()).then(|| value.to_string())
+}

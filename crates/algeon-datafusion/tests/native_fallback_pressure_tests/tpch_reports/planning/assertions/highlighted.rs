@@ -1,0 +1,74 @@
+use super::*;
+
+pub(super) fn assert_highlighted_planning_rows_and_tsv(
+    report: &NativeDataFusionPlanningReport,
+    metadata_fingerprint: &str,
+) {
+    for query_id in ["q07", "q11", "q15", "q17", "q21", "q22"] {
+        let row = planning_replacement_row(report, query_id);
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected));
+        assert_eq!(row.reason_code, None);
+        assert_eq!(row.unsupported_category, None);
+        if row.final_disposition == Some(FinalPlanDisposition::Native) {
+            assert_eq!(row.post_native_plan_root, "AlgeonNativeExec");
+        } else {
+            assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
+        }
+        assert!(!row.rejected_before_execution, "{query_id} should be replaced by native execution");
+        assert!(
+            row.capability_decision_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
+                admission_contract_row_is_family_path_free(&rendered)
+                    && admission_contract_row_excludes_adaptive_terms(&rendered)
+            }),
+            "{query_id} should not expose retired family/path facts"
+        );
+    }
+
+    let q15 = planning_replacement_row(report, "q15");
+    if q15.final_disposition == Some(FinalPlanDisposition::Native) {
+        assert!(
+            q15.capability_compiled_graphs.iter().any(|graph| graph.resource_count > 0),
+            "q15 resident/shared-subplan row should expose compiled graph resources"
+        );
+    }
+
+    let rejected_query_ids = tpch_query_ids()
+        .filter(|query_id| {
+            planning_replacement_row(report, query_id).outcome == Some(CandidateOutcomeKind::NotSupported)
+        })
+        .collect::<Vec<_>>();
+    assert!(rejected_query_ids.is_empty(), "all TPC-H replacement rows should now be native-admitted");
+
+    let text = report.to_tsv();
+    assert!(text.starts_with("# workload=tpch\n"));
+    assert!(text.contains("# workload=tpch\n"));
+    assert!(text.contains("# dataset_scale_factor=tiny\n"));
+    assert!(text.contains(&format!("# dataset_metadata_fingerprint={metadata_fingerprint}\n")));
+    assert!(text.contains("# dataset_content_fingerprint=not_computed\n"));
+    assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
+    assert!(
+        text.contains(
+            "capability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted"
+        )
+    );
+    assert!(!text.contains("contract_status="));
+    assert!(!text.contains("contract_quality="));
+    assert!(!text.contains("bounded_join_reservation_facts"));
+    assert!(!text.contains("bounded_join_execution_family="));
+    assert!(!text.contains("memory_history"));
+    assert!(!text.contains("spill"));
+    assert!(!text.contains("downgrade"));
+    assert!(text.contains("q01\t"));
+    assert!(text.contains("q06\t"));
+    assert!(text.contains("q22\t"));
+    assert!(text.contains("\tselected\t"));
+}
+
+fn admission_contract_row_excludes_adaptive_terms(rendered: &str) -> bool {
+    !rendered.contains("retry")
+        && !rendered.contains("spill")
+        && !rendered.contains("downgrade")
+        && !rendered.contains("memory_history")
+        && !rendered.contains("memory-history")
+        && !rendered.contains("memory history")
+}

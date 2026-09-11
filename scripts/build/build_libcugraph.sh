@@ -31,7 +31,7 @@ install_dir="${CUGRAPH_INSTALL_DIR:-${repo_root}/target/native/cugraph-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
 default_cuvs_install_dir="${repo_root}/target/native/cuvs-install"
 cuvs_install_dir="${CUVS_INSTALL_DIR:-${default_cuvs_install_dir}}"
-cuda_architectures="$(nexus_cuda_architectures)"
+cuda_architectures="$(algeon_cuda_architectures)"
 
 if [[ ! -x "${upstream_build}" ]]; then
     echo "error: upstream cuGraph build script '${upstream_build}' not found." >&2
@@ -53,7 +53,7 @@ if [[ -d "${default_cuvs_install_dir}" ]]; then
 fi
 
 if [[ "${cuvs_install_dir}" == "${default_cuvs_install_dir}" ]]; then
-    cuvs_source_revision_path="${cuvs_install_dir}/share/cuvs-nexus/source-revision"
+    cuvs_source_revision_path="${cuvs_install_dir}/share/algeon-cuvs/source-revision"
     if [[ ! -f "${cuvs_source_revision_path}" ]]; then
         echo "error: default cuVS install '${cuvs_install_dir}' is missing '${cuvs_source_revision_path#"${cuvs_install_dir}"/}'." >&2
         echo "Rebuild/install the pinned cuVS source, or select a compatible external CUVS_INSTALL_DIR." >&2
@@ -93,13 +93,13 @@ case "${cuvs_library_path}" in
         ;;
 esac
 
-nexus_cuda_require_contract \
+algeon_cuda_require_contract \
     "cuDF" "${cudf_install_dir}" "${cuda_architectures}" \
     "bash scripts/build/build_libcudf.sh"
-nexus_cuda_require_contract \
+algeon_cuda_require_contract \
     "cuVS" "${cuvs_install_dir}" "${cuda_architectures}" \
     "bash scripts/build/build_libcuvs.sh"
-nexus_cuda_require_matching_contracts \
+algeon_cuda_require_matching_contracts \
     "cuDF" "${cudf_install_dir}" "cuVS" "${cuvs_install_dir}" \
     "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh"
 
@@ -265,14 +265,14 @@ if [[ "${#ambient_cuvs_paths[@]}" == "1" ]]; then
     fi
 fi
 
-metadata_path="${build_dir}/cugraph-nexus-native-contract.env"
+metadata_path="${build_dir}/cugraph-native-contract.env"
 printf '%s\n' \
     "CUVS_INSTALL_DIR=${cuvs_install_dir}" \
     "CUVS_LIBRARY_PATH=${cuvs_library_path}" \
     "CUVS_RUNTIME_LIB_DIR=${cuvs_runtime_lib_dir}" >"${metadata_path}"
 
-architecture_contract="$(nexus_cuda_write_contract "${build_dir}" "${cugraph_library}" "${cuda_architectures}")"
-nexus_cuda_require_matching_contracts \
+architecture_contract="$(algeon_cuda_write_contract "${build_dir}" "${cugraph_library}" "${cuda_architectures}")"
+algeon_cuda_require_matching_contracts \
     "cuDF" "${cudf_install_dir}" "cuGraph" "${build_dir}" \
     "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh && bash scripts/build/build_libcugraph.sh"
 
@@ -295,8 +295,8 @@ with open(sys.argv[1], "rb") as source:
     print(tomllib.load(source)["workspace"]["package"]["version"])
 PY
 )"
-install -d --mode=0755 "${install_dir}/share/cugraph-nexus"
-printf '%s\n' "${crate_version}" >"${install_dir}/share/cugraph-nexus/crate-version"
+install -d --mode=0755 "${install_dir}/share/algeon-cugraph"
+printf '%s\n' "${crate_version}" >"${install_dir}/share/algeon-cugraph/crate-version"
 for required in \
     "lib/libcugraph.so" \
     "lib/libcugraph_common.so" \
@@ -304,18 +304,18 @@ for required in \
     "include/cugraph_c/algorithms.h" \
     "include/raft/core/handle.hpp" \
     "include/dlpack/dlpack.h" \
-    "share/cugraph-nexus/crate-version"; do
+    "share/algeon-cugraph/crate-version"; do
     [[ -f "${install_dir}/${required}" ]] || {
         echo "error: canonical cuGraph install is missing ${required}" >&2
         exit 1
     }
 done
-nexus_cuda_write_contract \
+algeon_cuda_write_contract \
     "${install_dir}" "${install_dir}/lib/libcugraph.so" "${cuda_architectures}" >/dev/null
 
 echo "libcugraph native build OK: rmm/rapids_logger=${cudf_install_dir}, cuVS=${cuvs_install_dir}"
 echo "canonical cuGraph prefix: ${install_dir}"
 echo "resolved libcuvs: ${cuvs_library_path}"
 echo "native contract metadata: ${metadata_path}"
-echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"
+echo "CUDA architectures: requested=${cuda_architectures}, real=$(algeon_cuda_read_contract_value "${architecture_contract}" real)"
 echo "libraries: $(cd "${build_dir}" && ls libcugraph*.so 2>/dev/null | tr '\n' ' ')"

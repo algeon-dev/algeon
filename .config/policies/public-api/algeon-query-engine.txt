@@ -1,0 +1,127 @@
+pub mod query_engine
+pub use query_engine::admission
+pub use query_engine::attempt
+pub use query_engine::backend
+pub use query_engine::capability
+pub use query_engine::contract_report
+pub use query_engine::dynamic_filter
+pub use query_engine::error
+pub use query_engine::expr
+pub use query_engine::graph_observation
+pub use query_engine::metrics
+pub use query_engine::mode
+pub use query_engine::naming
+pub use query_engine::observability
+pub use query_engine::optimizer
+pub use query_engine::parquet_stats
+pub use query_engine::pipeline
+pub use query_engine::plan
+pub use query_engine::runtime
+pub use query_engine::source
+pub use query_engine::triage
+pub mod query_engine::chunk
+pub use query_engine::chunk::LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK
+pub use query_engine::chunk::LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES
+pub use query_engine::chunk::SourceChunk
+pub use query_engine::chunk::SourceChunkBatch
+pub use query_engine::chunk::SourceChunkPlan
+pub use query_engine::chunk::SourceChunkPlanningOptions
+pub use query_engine::chunk::SourceChunkPlanningPolicy
+pub use query_engine::chunk::SourceChunkRowPositionRange
+pub use query_engine::chunk::SourceMetadataCache
+pub use query_engine::chunk::SourceTaskMemoryModel
+pub use query_engine::chunk::annotate_source_chunk_batching_reasons
+pub use query_engine::chunk::local_parquet_source_has_exact_read_preflight
+pub use query_engine::chunk::plan_local_parquet_source_chunks
+pub use query_engine::chunk::plan_local_parquet_source_chunks_with_execution_context
+pub use query_engine::chunk::plan_local_parquet_source_chunks_with_metadata_cache
+pub use query_engine::chunk::plan_source_chunk_batches
+pub use query_engine::chunk::plan_source_chunk_batches_with_row_cap
+pub mod query_engine::datatypes
+pub use query_engine::datatypes::arrow_decimal_scale_to_cudf_scale
+pub use query_engine::datatypes::arrow_field_metadata_matches_except_parquet_field_id
+pub use query_engine::datatypes::arrow_fixed_width_byte_size
+pub use query_engine::datatypes::diagnostic_arrow_type
+pub use query_engine::datatypes::is_arrow_fixed_width
+pub use query_engine::datatypes::is_narrow_decimal_carry_type
+pub use query_engine::datatypes::is_supported_arrow_cast
+pub use query_engine::datatypes::is_supported_arrow_implicit_cast
+pub use query_engine::datatypes::is_supported_list_carry_type
+pub use query_engine::datatypes::is_supported_numeric_widening_cast
+pub use query_engine::datatypes::is_timestamp_with_timezone
+pub fn query_engine::datatypes::cudf_dtype_from_arrow_type(&arrow_schema::datatype::DataType) -> core::option::Option<cudf::core::types::DataType>
+pub fn query_engine::datatypes::is_supported_arrow_type(&arrow_schema::datatype::DataType) -> bool
+pub fn query_engine::datatypes::timestamp_unit_to_cudf_resolution(&arrow_schema::datatype::TimeUnit) -> cudf::core::types::TimestampResolution
+pub mod query_engine::dimension_pruning
+pub struct query_engine::dimension_pruning::LocalDimensionPruningResolver
+impl query_planning::optimizer::dimension_pruning::resolver::LocalParquetPruningResolver for query_engine::dimension_pruning::LocalDimensionPruningResolver
+pub fn query_engine::dimension_pruning::LocalDimensionPruningResolver::dimension_key_filter(&self, &query_planning::source::parquet::LocalParquetSource, &str, &query_planning::expr::Expr, &[usize]) -> core::option::Option<core::option::Option<query_planning::optimizer::dimension_pruning::key_filter::DimensionKeyFilter>>
+pub fn query_engine::dimension_pruning::LocalDimensionPruningResolver::dimension_scan_admitted(&self, &query_planning::source::parquet::LocalParquetSource, u64) -> bool
+pub fn query_engine::dimension_pruning::LocalDimensionPruningResolver::filtered_i64_expr_range(&self, &query_planning::source::parquet::LocalParquetSource, &query_planning::expr::Expr, core::option::Option<&query_planning::expr::Expr>, &[usize]) -> core::option::Option<core::option::Option<query_planning::optimizer::dimension_pruning::key_filter::KeyRange>>
+pub fn query_engine::dimension_pruning::LocalDimensionPruningResolver::target_row_group_key_ranges(&self, &query_planning::source::parquet::LocalParquetSource, usize) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<query_planning::optimizer::dimension_pruning::key_filter::KeyRange>>>>
+pub const fn query_engine::dimension_pruning::local_dimension_pruning_resolver() -> &'static query_engine::dimension_pruning::LocalDimensionPruningResolver
+pub mod query_engine::exec
+pub mod query_engine::exec::output
+pub enum query_engine::exec::output::QueryOutput
+pub query_engine::exec::output::QueryOutput::GpuResident(query_runtime::runtime::resident::GpuResultHandle)
+pub query_engine::exec::output::QueryOutput::HostArrow(arrow_array::record_batch::RecordBatch)
+impl query_engine::exec::output::QueryOutput
+pub fn query_engine::exec::output::QueryOutput::as_gpu_resident(&self) -> core::option::Option<&query_runtime::runtime::resident::GpuResultHandle>
+pub fn query_engine::exec::output::QueryOutput::as_host_arrow(&self) -> core::option::Option<&arrow_array::record_batch::RecordBatch>
+pub fn query_engine::exec::output::QueryOutput::mode(&self) -> query_engine::exec::output::QueryOutputMode
+pub enum query_engine::exec::output::QueryOutputMode
+pub query_engine::exec::output::QueryOutputMode::GpuResident
+pub query_engine::exec::output::QueryOutputMode::MaterializeToHost
+impl query_engine::exec::output::QueryOutputMode
+pub const fn query_engine::exec::output::QueryOutputMode::as_str(self) -> &'static str
+pub fn query_engine::exec::output::QueryOutputMode::for_sink(&query_planning::plan::sink::ResultSink) -> Self
+pub struct query_engine::exec::output::QueryExecutionOutcome
+impl query_engine::exec::output::QueryExecutionOutcome
+pub fn query_engine::exec::output::QueryExecutionOutcome::into_parts(self) -> (core::result::Result<query_engine::exec::output::QueryOutput, query_planning::error::QueryError>, query_runtime::metrics::QueryMetrics, core::option::Option<query_runtime::observability::recorder::SealedRuntimeObservationSnapshot>)
+pub const fn query_engine::exec::output::QueryExecutionOutcome::metrics(&self) -> &query_runtime::metrics::QueryMetrics
+pub const fn query_engine::exec::output::QueryExecutionOutcome::observation(&self) -> core::option::Option<&query_runtime::observability::recorder::SealedRuntimeObservationSnapshot>
+pub fn query_engine::exec::output::QueryExecutionOutcome::result(&self) -> core::result::Result<&query_engine::exec::output::QueryOutput, &query_planning::error::QueryError>
+pub struct query_engine::exec::output::QueryExecutionResult
+impl query_engine::exec::output::QueryExecutionResult
+pub fn query_engine::exec::output::QueryExecutionResult::into_parts(self) -> (query_engine::exec::output::QueryOutput, query_runtime::metrics::QueryMetrics)
+pub fn query_engine::exec::output::QueryExecutionResult::metrics(&self) -> &query_runtime::metrics::QueryMetrics
+pub fn query_engine::exec::output::QueryExecutionResult::new(query_engine::exec::output::QueryOutput, query_runtime::metrics::QueryMetrics) -> Self
+pub fn query_engine::exec::output::QueryExecutionResult::output(&self) -> &query_engine::exec::output::QueryOutput
+pub struct query_engine::exec::QueryExecutionRequest<'a>
+impl<'a> query_engine::exec::QueryExecutionRequest<'a>
+pub const fn query_engine::exec::QueryExecutionRequest<'a>::new(&'a query_planning::plan::core::QueryPlan) -> Self
+pub const fn query_engine::exec::QueryExecutionRequest<'a>::with_bounded_admission(self, &'a query_planning::admission::bounded::BoundedPipelineAdmission) -> Self
+pub const fn query_engine::exec::QueryExecutionRequest<'a>::with_gpu_inputs(self, &'a query_runtime::runtime::resident::GpuResidentInputMap) -> Self
+pub fn query_engine::exec::execute_query_plan(&query_runtime::runtime::context::ExecutionContext, query_engine::exec::QueryExecutionRequest<'_>) -> query_engine::exec::output::QueryExecutionOutcome
+pub fn query_engine::exec::materialize_gpu_result_to_host(query_runtime::runtime::resident::GpuResultHandle, &mut query_runtime::metrics::QueryMetrics) -> query_planning::error::Result<arrow_array::record_batch::RecordBatch>
+pub fn query_engine::exec::preflight_bounded_query_plan(&query_planning::plan::core::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode) -> query_planning::error::Result<core::option::Option<query_planning::admission::bounded::BoundedPipelineAdmission>>
+pub fn query_engine::exec::preflight_query_plan(&query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
+pub mod query_engine::harness
+pub use query_engine::harness::StableFnv1a64
+pub mod query_engine::native_error
+pub use query_engine::native_error::cudf_budget_exhaustion
+pub use query_engine::native_error::cudf_query_error
+pub use query_engine::native_error::cudf_query_error_with_budget_details
+pub use query_engine::native_error::cudf_query_error_without_source
+pub use query_engine::native_error::cudf_query_error_without_source_with_budget_details
+pub use query_engine::native_error::query_error_code_for_cudf_error
+pub fn query_engine::native_error::cudf_interop_query_error<E>(&'static str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, E) -> query_planning::error::QueryError where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub fn query_engine::native_error::cuvs_query_error(&'static str, impl core::convert::Into<alloc::string::String>, cuvs::error::Error) -> query_planning::error::QueryError
+pub fn query_engine::native_error::query_error_code_for_cuvs_error(&cuvs::error::Error) -> query_planning::error::QueryErrorCode
+pub mod query_engine::rapids_backend
+pub struct query_engine::rapids_backend::RapidsBackend
+impl query_planning::backend::BackendCapabilities for query_engine::rapids_backend::RapidsBackend
+pub fn query_engine::rapids_backend::RapidsBackend::aggregate_output_names(&self, &query_planning::expr::AggregateSpec, query_planning::backend::AggregateBinding) -> query_planning::error::Result<alloc::vec::Vec<alloc::string::String>>
+pub fn query_engine::rapids_backend::RapidsBackend::binary_output_type(&self, query_planning::expr::BinaryOp, &arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> query_planning::error::Result<arrow_schema::datatype::DataType>
+pub fn query_engine::rapids_backend::RapidsBackend::check_expression(&self, &query_planning::expr::Expr, query_planning::backend::ExpressionUse) -> query_planning::error::Result<()>
+pub fn query_engine::rapids_backend::RapidsBackend::check_projection_output(&self, &query_planning::plan::nodes::ProjectionOutput) -> query_planning::error::Result<()>
+pub fn query_engine::rapids_backend::RapidsBackend::supports_type(&self, &arrow_schema::datatype::DataType) -> bool
+pub const fn query_engine::rapids_backend::rapids_analysis_context() -> query_planning::backend::AnalysisContext<'static>
+pub const fn query_engine::rapids_backend::rapids_backend() -> &'static query_engine::rapids_backend::RapidsBackend
+pub mod query_engine::shadow
+pub struct query_engine::shadow::NativeShadowEstimate
+pub query_engine::shadow::NativeShadowEstimate::collection_elapsed_ns: u64
+pub query_engine::shadow::NativeShadowEstimate::frontend_outputs: alloc::vec::Vec<serde_json::value::Value>
+pub query_engine::shadow::NativeShadowEstimate::pipeline: query_planning::pipeline::shadow::ShadowPipelineEstimate
+pub fn query_engine::shadow::estimate_compiled_pipeline(&query_planning::plan::core::QueryPlan, &query_planning::pipeline::model::CompiledPipeline) -> query_planning::error::Result<query_engine::shadow::NativeShadowEstimate>
+pub fn query_engine::shadow::frontend_output_records(&query_planning::plan::core::QueryPlan) -> alloc::vec::Vec<serde_json::value::Value>

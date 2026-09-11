@@ -1,10 +1,10 @@
 # cuVS component
 
-`components/cuvs` is the DataFusion Nexus Rust vector integration component
+`components/cuvs` is the Algeon Rust vector integration component
 built around [`libcuvs`](https://github.com/rapidsai/cuvs). It is part of the
 root Cargo workspace, not a second repository or workspace.
 Its main direction is to make cuVS usable as part of backend services and query execution systems for
-[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cuvs). It focuses on safe Rust APIs for GPU vector
+[Algeon](https://github.com/algeon-dev/algeon/tree/main/components/cuvs). It focuses on safe Rust APIs for GPU vector
 search and clustering while keeping ownership, memory movement, execution context, synchronization, and interop
 behavior explicit enough for service-side integration.
 
@@ -18,8 +18,8 @@ behavior explicit enough for service-side integration.
 
 ## Workspace
 
-- `components/cuvs/cuvs-nexus/` - the safe public Rust API crate, published as `cuvs-nexus` (import `cuvs`).
-- `components/cuvs/cuvs-nexus-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
+- `components/cuvs/algeon-cuvs/` - the safe public Rust API crate, published as `cuvs` (import `cuvs`).
+- `components/cuvs/algeon-cuvs-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
 - `components/cuvs/cuvs/` - the pinned official [cuVS](https://github.com/rapidsai/cuvs) source submodule used to build the native libraries.
 - `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` - root-owned native build entry points.
 - `scripts/dev/bindings.sh cuvs` - root-owned checked-binding maintenance.
@@ -32,9 +32,9 @@ the only source, lockfile, and full-gate authorities.
 ## validation
 
 ```bash
-cargo clippy -p cuvs-nexus -p cuvs-nexus-sys --all-targets --all-features -- -D warnings
+cargo clippy -p cuvs -p cuvs-sys --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cuvs-nexus) | package(cuvs-nexus-sys)'
+cargo nt -E 'package(cuvs) | package(cuvs-sys)'
 ```
 
 Use `scripts/dev/bindings.sh cuvs --check` for checked bindings and

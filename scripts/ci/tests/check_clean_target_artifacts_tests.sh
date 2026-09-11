@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 SCRIPT="${ROOT}/scripts/dev/clean_target_artifacts.sh"
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-clean-target-tests.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-clean-target-tests.XXXXXX")
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 mkdir -p "${tmp_dir}/bin" "${tmp_dir}/cargo-target/debug/deps"

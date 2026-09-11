@@ -40,9 +40,9 @@
 #   --no-review                 skip the human-readable summary
 #   --dry-run                   print the resolved env + command without running
 #
-# Dataset auto-detection order: --parquet-dir, $NEXUS_PARQUET_DIR,
+# Dataset auto-detection order: --parquet-dir, $ALGEON_PARQUET_DIR,
 # /scratch/<tpch|tpcds>/sf<scale>/parquet, then the in-repo fixture root.
-# Set NEXUS_BENCH_ONE_NO_ENV=1 to skip sourcing env.sh.
+# Set ALGEON_BENCH_ONE_NO_ENV=1 to skip sourcing env.sh.
 
 set -euo pipefail
 
@@ -149,10 +149,10 @@ normalize_scale() {
     raw="${raw#sf}"
     printf '%s' "${raw}"
 }
-SCALE="$(normalize_scale "$(pick NEXUS_BENCH_ONE_SCALE "${SCALE_FLAG}" 1)")"
-WARMUPS="$(pick NEXUS_BENCH_ONE_WARMUPS "${WARMUPS_FLAG}" 0)"
-ITERATIONS="$(pick NEXUS_BENCH_ONE_ITERATIONS "${ITERATIONS_FLAG}" 1)"
-ENGINE="$(pick NEXUS_TPCDS_BENCH_ENGINE "${ENGINE_FLAG}" native_gpu)"
+SCALE="$(normalize_scale "$(pick ALGEON_BENCH_ONE_SCALE "${SCALE_FLAG}" 1)")"
+WARMUPS="$(pick ALGEON_BENCH_ONE_WARMUPS "${WARMUPS_FLAG}" 0)"
+ITERATIONS="$(pick ALGEON_BENCH_ONE_ITERATIONS "${ITERATIONS_FLAG}" 1)"
+ENGINE="$(pick ALGEON_TPCDS_BENCH_ENGINE "${ENGINE_FLAG}" native_gpu)"
 
 if [[ "${SCALE}" != "1" && "${SCALE}" != "10" && "${SCALE}" != "100" ]]; then
     echo "ERROR: --scale must be 1, 10, or 100 (sf1/sf10/sf100 also accepted); got '${SCALE}'" >&2
@@ -203,7 +203,7 @@ QUERIES="$(normalize_queries "${WORKLOAD}" "${QUERIES_RAW}")"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-if [[ "${NEXUS_BENCH_ONE_NO_ENV:-0}" != "1" && -f "${REPO_ROOT}/env.sh" ]]; then
+if [[ "${ALGEON_BENCH_ONE_NO_ENV:-0}" != "1" && -f "${REPO_ROOT}/env.sh" ]]; then
     # Provides CUDA_HOME, CC/CXX, and the checkout-local native lib paths.
     # shellcheck disable=SC1091
     source "${REPO_ROOT}/env.sh"
@@ -216,8 +216,8 @@ resolve_parquet_dir() {
         printf '%s' "${PARQUET_DIR_FLAG}"
         return
     fi
-    if [[ -n "${NEXUS_PARQUET_DIR:-}" ]]; then
-        printf '%s' "${NEXUS_PARQUET_DIR}"
+    if [[ -n "${ALGEON_PARQUET_DIR:-}" ]]; then
+        printf '%s' "${ALGEON_PARQUET_DIR}"
         return
     fi
     local scratch="/scratch/${workload}/sf${scale}/parquet"
@@ -264,26 +264,26 @@ if ! compgen -G "${PARQUET_DIR}/*.parquet" > /dev/null; then
     echo "ERROR: no *.parquet files in ${PARQUET_DIR}" >&2
     exit 1
 fi
-export NEXUS_PARQUET_DIR="${PARQUET_DIR}"
+export ALGEON_PARQUET_DIR="${PARQUET_DIR}"
 
 if [[ "${WORKLOAD}" == "tpch" ]]; then
     BIN="native_tpch_benchmark"
-    export NEXUS_TPCH_BENCH_QUERY_IDS="${QUERIES}"
-    export NEXUS_TPCH_BENCH_DATASET_MODE="sf${SCALE}_external"
-    export NEXUS_TPCH_SCALE_FACTOR="${NEXUS_TPCH_SCALE_FACTOR:-sf${SCALE}}"
-    export NEXUS_TPCH_GENERATION_COMMAND="${NEXUS_TPCH_GENERATION_COMMAND:-fixture/fixture.sh tpch generate --scale ${SCALE}}"
-    export NEXUS_TPCH_BENCH_WARMUPS="${WARMUPS}"
-    export NEXUS_TPCH_BENCH_ITERATIONS="${ITERATIONS}"
+    export ALGEON_TPCH_BENCH_QUERY_IDS="${QUERIES}"
+    export ALGEON_TPCH_BENCH_DATASET_MODE="sf${SCALE}_external"
+    export ALGEON_TPCH_SCALE_FACTOR="${ALGEON_TPCH_SCALE_FACTOR:-sf${SCALE}}"
+    export ALGEON_TPCH_GENERATION_COMMAND="${ALGEON_TPCH_GENERATION_COMMAND:-fixture/fixture.sh tpch generate --scale ${SCALE}}"
+    export ALGEON_TPCH_BENCH_WARMUPS="${WARMUPS}"
+    export ALGEON_TPCH_BENCH_ITERATIONS="${ITERATIONS}"
     NEEDS_LOCK=1
 else
     case "${ENGINE}" in
         native_gpu) BIN="tpcds_three_way_bench"; NEEDS_LOCK=1 ;;
         cpu_datafusion | cost_declined_datafusion) BIN="tpcds_three_way_bench"; NEEDS_LOCK=0 ;;
     esac
-    export NEXUS_TPCDS_BENCH_ENGINE="${ENGINE}"
-    export NEXUS_TPCDS_BENCH_QUERIES="${QUERIES}"
-    export NEXUS_TPCDS_BENCH_WARMUPS="${WARMUPS}"
-    export NEXUS_TPCDS_BENCH_ITERATIONS="${ITERATIONS}"
+    export ALGEON_TPCDS_BENCH_ENGINE="${ENGINE}"
+    export ALGEON_TPCDS_BENCH_QUERIES="${QUERIES}"
+    export ALGEON_TPCDS_BENCH_WARMUPS="${WARMUPS}"
+    export ALGEON_TPCDS_BENCH_ITERATIONS="${ITERATIONS}"
 fi
 
 STAMP="$(date +%Y%m%dT%H%M%S)"
@@ -302,9 +302,9 @@ STDERR_LOG="${TSV_OUT}.stderr.log"
 # Benchmarks always default to the release profile: dev-profile timings are
 # meaningless for tuning. --dev opts back into a fast-compile debug build.
 if [[ "${DEV_PROFILE}" -eq 1 ]]; then
-    CMD=(cargo run -p nexus-bench --all-features --bin "${BIN}")
+    CMD=(cargo run -p bench --all-features --bin "${BIN}")
 else
-    CMD=(cargo run --release -p nexus-bench --all-features --bin "${BIN}")
+    CMD=(cargo run --release -p bench --all-features --bin "${BIN}")
 fi
 if [[ "${NEEDS_LOCK}" -eq 1 ]]; then
     CMD=(flock /tmp/cudf-gpu.lock "${CMD[@]}")
@@ -318,7 +318,7 @@ fi
 echo "workload:       ${WORKLOAD} (bin: ${BIN})"
 echo "profile:        ${PROFILE}"
 echo "queries:        ${QUERIES}"
-echo "parquet:        ${NEXUS_PARQUET_DIR}"
+echo "parquet:        ${ALGEON_PARQUET_DIR}"
 echo "warmups/iters:  ${WARMUPS}/${ITERATIONS}"
 if [[ "${WORKLOAD}" == "tpcds" ]]; then
     echo "engine:         ${ENGINE}"
@@ -336,7 +336,7 @@ review_command() {
         if [[ "${NO_PRETTY}" -eq 1 ]]; then
             args+=(--pretty never)
         fi
-        printf '  %q' "${REVIEW_PY}" "${REPO_ROOT}/crates/nexus-bench/tools/tpch_bench_review.py"
+        printf '  %q' "${REVIEW_PY}" "${REPO_ROOT}/crates/bench/tools/tpch_bench_review.py"
         if [[ "${#args[@]}" -gt 0 ]]; then
             printf ' %q' "${args[@]}"
         fi
@@ -346,26 +346,26 @@ review_command() {
         printf '  grep -v %s %s | cut -f1-6,9,11-13 | column -t\n' "'^#'" "${TSV_OUT}"
         printf '  # CPU-vs-GPU compare needs a second engine TSV:\n'
         printf '  python3 %q --gpu-tsv <gpu.tsv> --cpu-tsv <cpu.tsv>\n' \
-            "${REPO_ROOT}/crates/nexus-bench/tools/tpcds_cpu_gpu_compare.py"
+            "${REPO_ROOT}/crates/bench/tools/tpcds_cpu_gpu_compare.py"
     fi
 }
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "[dry-run] environment this run would export:"
     if [[ "${WORKLOAD}" == "tpch" ]]; then
-        echo "  NEXUS_PARQUET_DIR=${NEXUS_PARQUET_DIR}"
-        echo "  NEXUS_TPCH_BENCH_QUERY_IDS=${QUERIES}"
-        echo "  NEXUS_TPCH_BENCH_DATASET_MODE=sf${SCALE}_external"
-        echo "  NEXUS_TPCH_SCALE_FACTOR=${NEXUS_TPCH_SCALE_FACTOR}"
-        echo "  NEXUS_TPCH_GENERATION_COMMAND=${NEXUS_TPCH_GENERATION_COMMAND}"
-        echo "  NEXUS_TPCH_BENCH_WARMUPS=${WARMUPS}"
-        echo "  NEXUS_TPCH_BENCH_ITERATIONS=${ITERATIONS}"
+        echo "  ALGEON_PARQUET_DIR=${ALGEON_PARQUET_DIR}"
+        echo "  ALGEON_TPCH_BENCH_QUERY_IDS=${QUERIES}"
+        echo "  ALGEON_TPCH_BENCH_DATASET_MODE=sf${SCALE}_external"
+        echo "  ALGEON_TPCH_SCALE_FACTOR=${ALGEON_TPCH_SCALE_FACTOR}"
+        echo "  ALGEON_TPCH_GENERATION_COMMAND=${ALGEON_TPCH_GENERATION_COMMAND}"
+        echo "  ALGEON_TPCH_BENCH_WARMUPS=${WARMUPS}"
+        echo "  ALGEON_TPCH_BENCH_ITERATIONS=${ITERATIONS}"
     else
-        echo "  NEXUS_PARQUET_DIR=${NEXUS_PARQUET_DIR}"
-        echo "  NEXUS_TPCDS_BENCH_ENGINE=${ENGINE}"
-        echo "  NEXUS_TPCDS_BENCH_QUERIES=${QUERIES}"
-        echo "  NEXUS_TPCDS_BENCH_WARMUPS=${WARMUPS}"
-        echo "  NEXUS_TPCDS_BENCH_ITERATIONS=${ITERATIONS}"
+        echo "  ALGEON_PARQUET_DIR=${ALGEON_PARQUET_DIR}"
+        echo "  ALGEON_TPCDS_BENCH_ENGINE=${ENGINE}"
+        echo "  ALGEON_TPCDS_BENCH_QUERIES=${QUERIES}"
+        echo "  ALGEON_TPCDS_BENCH_WARMUPS=${WARMUPS}"
+        echo "  ALGEON_TPCDS_BENCH_ITERATIONS=${ITERATIONS}"
     fi
     echo "[dry-run] command:"
     printf '  %q' "${CMD[@]}"
@@ -402,7 +402,7 @@ if [[ "${NO_REVIEW}" -eq 0 ]]; then
         if [[ "${NO_PRETTY}" -eq 1 ]]; then
             review_args+=(--pretty never)
         fi
-        "${REVIEW_PY}" "${REPO_ROOT}/crates/nexus-bench/tools/tpch_bench_review.py" "${review_args[@]:+${review_args[@]}}" "${TSV_OUT}"
+        "${REVIEW_PY}" "${REPO_ROOT}/crates/bench/tools/tpch_bench_review.py" "${review_args[@]:+${review_args[@]}}" "${TSV_OUT}"
     else
         echo "--- compact summary (key columns) ---"
         grep '^#' "${TSV_OUT}" || true
@@ -413,7 +413,7 @@ if [[ "${NO_REVIEW}" -eq 0 ]]; then
         fi
         echo ""
         echo "For a CPU-vs-GPU comparison, re-run with --engine cpu_datafusion, then:"
-        echo "  python3 crates/nexus-bench/tools/tpcds_cpu_gpu_compare.py --gpu-tsv <gpu.tsv> --cpu-tsv <cpu.tsv>"
+        echo "  python3 crates/bench/tools/tpcds_cpu_gpu_compare.py --gpu-tsv <gpu.tsv> --cpu-tsv <cpu.tsv>"
     fi
 fi
 

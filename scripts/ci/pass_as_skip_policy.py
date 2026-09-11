@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CANONICAL_TEST_ROOTS = (ROOT / "tests", ROOT / "crates", ROOT / "src")
+CANONICAL_TEST_ROOTS = (ROOT / "crates",)
 RULES = {
     "optional_gpu_runtime": re.compile(
         r"let\s+Ok\s*\([^)]*runtime[^)]*\)\s*=\s*cudf::Runtime::new\s*\(\s*\)\s*else\s*\{\s*return\s*;\s*\}",

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 slug: /cugraph
-description: SQL-visible cuGraph graph algorithms over DataFusion Nexus SQL sessions.
+description: SQL-visible cuGraph graph algorithms over Algeon SQL sessions.
 ---
 
 # cuGraph SQL API
 
-DataFusion Nexus exposes NVIDIA RAPIDS **cuGraph** algorithms as SQL table
+Algeon exposes NVIDIA RAPIDS **cuGraph** algorithms as SQL table
 functions over DataFusion SQL sessions, whether the session is embedded in a
 Rust process or served remotely through Flight SQL. Each `cugraph_*` function
 reads an edge relation, builds a GPU graph, runs an algorithm, and returns rows
@@ -40,7 +40,7 @@ arguments.
 
 The relation name must resolve to a table or view registered in the session.
 That relation can be backed by the session's configured sources, including
-Parquet and Iceberg. See [Integrating Nexus](../integration/overview.mdx) for
+Parquet and Iceberg. See [Integrating Algeon](../integration/overview.mdx) for
 source and session setup, and
 [Graph Inputs and Construction](./graph-options.mdx) for vertex-ID contracts,
 directedness, vertex renumbering, and edge normalization.

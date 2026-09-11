@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 sidebar_label: Docker
-description: Build the DataFusion Nexus Flight SQL server image from locally built native artifacts and smoke-test Flight SQL.
+description: Build the Algeon Flight SQL server image from locally built native artifacts and smoke-test Flight SQL.
 ---
 
 # Building with Docker
@@ -22,7 +22,7 @@ it cannot create their cuDF, cuVS, or cuGraph artifacts itself.
 The image build has two phases:
 
 1. `docker/stage-docker-payload.sh` runs on the host. It builds
-   `datafusion_nexus_server`, stages the binary, copies the locally built
+   `algeon_server`, stages the binary, copies the locally built
    forked cuDF/RMM libraries, then adds cuVS and cuGraph libraries for the
    selected features. cuGraph always brings its cuVS runtime dependency.
    It also bundles optional KvikIO/nvCOMP libraries when they are present.
@@ -41,7 +41,7 @@ Complete [Building from Source](./from-source.md) first for the features you
 want to package. The default full image expects these root-owned artifacts:
 
 ```text
-datafusion-nexus/
+algeon/
 ├── target/native/cudf-install/lib/libcudf.so
 ├── target/native/cudf-install/lib/librmm.so
 ├── target/native/cudf-install/lib/libcudf_rust.so
@@ -51,10 +51,10 @@ datafusion-nexus/
 
 The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim;
 `docker/stage-docker-payload.sh` stages both automatically. Docker consumes the
-three matching install prefixes under `NEXUS_NATIVE_DIR`; the cuGraph CMake
+three matching install prefixes under `ALGEON_NATIVE_DIR`; the cuGraph CMake
 build tree is only an intermediate used while producing `cugraph-install`.
 
-The lean `FEATURES=iceberg,nvml` image omits cuVS and cuGraph, so it
+The lean `FEATURES=nvml` image omits cuVS and cuGraph, so it
 needs neither optional native artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
@@ -68,12 +68,12 @@ need to cover additional deployment GPUs.
 
 ## Build the image
 
-From the `datafusion-nexus` checkout:
+From the `algeon` checkout:
 
 ```bash
-cd "$NEXUS_ROOT"
+cd "$ALGEON_ROOT"
 
-# Full image: Flight SQL server + Iceberg + cuVS/cuGraph SQL + NVML diagnostics.
+# Current image: Flight SQL server + cuVS/cuGraph SQL + NVML diagnostics.
 bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
@@ -82,11 +82,15 @@ For a smaller cuDF-only server image, omit both `cugraph` and `cuvs` when
 staging the payload:
 
 ```bash
-FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh
+FEATURES=nvml bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
 
-For this lean image, set `NEXUS_SERVER_CUGRAPH_ENABLED=false` when using direct
+Iceberg remains a supported source design, but release images wait for the
+upstream iceberg-rust 0.12 release and its compatibility validation. Until
+then, the staging defaults intentionally omit the `iceberg` feature.
+
+For this lean image, set `ALGEON_SERVER_CUGRAPH_ENABLED=false` when using direct
 `docker run` or before using `docker/run.sh`. A server built without the
 `cugraph` feature exposes the frontend but returns a structured
 `required_feature_disabled` error when cuGraph execution is requested.
@@ -122,7 +126,7 @@ For the minimal no-catalog server, run the image directly:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v4
+  docker run --rm --gpus all -p 50051:50051 algeon-server:x86-64-v4
 ```
 
 Startup is eager: CUDA/RMM admission initializes before the Flight SQL port is
@@ -130,13 +134,13 @@ opened. The server is ready when logs include:
 
 ```text
 query admission controller initialized
-starting datafusion-nexus Flight SQL server
+starting Algeon Flight SQL server
 ```
 
-The image has a TCP healthcheck for `NEXUS_SERVER_BIND`:
+The image has a TCP healthcheck for `ALGEON_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=datafusion-nexus-server:x86-64-v4
+docker ps --filter ancestor=algeon-server:x86-64-v4
 ```
 
 ### Local fixture launcher
@@ -144,7 +148,7 @@ docker ps --filter ancestor=datafusion-nexus-server:x86-64-v4
 `docker/run.sh` is a convenience launcher for local demo runs. It uses
 host networking, enables cuGraph SQL by default, sets bounded native memory
 knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
-`datafusion-nexus-server:x86-64-v4`; set `NEXUS_SERVER_IMAGE` explicitly for a
+`algeon-server:x86-64-v4`; set `ALGEON_SERVER_IMAGE` explicitly for a
 different repository or tag:
 
 ```bash
@@ -162,7 +166,7 @@ environment. Use `docker/run.sh` when you want the local REST catalog defaults
 and the cuGraph SQL surface enabled. For a lean image, run:
 
 ```bash
-NEXUS_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
+ALGEON_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
 ```
 
 ## Smoke-test Flight SQL
@@ -170,7 +174,7 @@ NEXUS_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
 With the container running on `127.0.0.1:50051`, use the repo client:
 
 ```bash
-cargo run -p nexus-tools --all-features -- \
+cargo run -p tools --all-features -- \
   flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
 ```
 
@@ -181,10 +185,10 @@ one
 1
 ```
 
-For a full image launched with `NEXUS_SERVER_CUGRAPH_ENABLED=true`:
+For a full image launched with `ALGEON_SERVER_CUGRAPH_ENABLED=true`:
 
 ```bash
-cargo run -p nexus-tools --all-features -- \
+cargo run -p tools --all-features -- \
   flight-sql-query http://127.0.0.1:50051 \
   "SELECT COUNT(*) AS algorithms FROM gpu_list_functions() WHERE provider = 'cugraph'"
 ```
@@ -199,7 +203,7 @@ algorithms
 ## Troubleshooting
 
 - `docker/stage-docker-payload.sh` cannot find `libcudf.so`, `librmm.so`, or
-  `libcugraph.so`: finish the source build first, or set `NEXUS_NATIVE_DIR` to
+  `libcugraph.so`: finish the source build first, or set `ALGEON_NATIVE_DIR` to
   the root containing the three matching install prefixes.
 - The container starts but the first GPU query fails with
   `cudaErrorNoKernelImageForDevice`: rebuild the forked native libraries with
@@ -209,4 +213,4 @@ algorithms
   args, keeping both on the same CUDA minor.
 - `docker/run.sh` starts a server with `iceberg_enabled=true`: this is expected
   for that wrapper. Direct `docker run` leaves Iceberg disabled unless you pass
-  `NEXUS_ICEBERG_*` variables.
+  `ALGEON_ICEBERG_*` variables.

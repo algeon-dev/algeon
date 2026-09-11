@@ -1,0 +1,114 @@
+[package]
+name = "algeon-cudf-sys"
+description = "libcudf FFI component for Algeon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = ["crates-io"]
+license-file = "../../../LICENSE"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-cudf-sys"
+keywords = ["cuda", "cudf", "ffi", "gpu", "rapids"]
+build = "build.rs"
+links = "cudf_rust"
+autotests = false
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[lints]
+workspace = true
+
+[lib]
+name = "cudf_sys"
+
+[package.metadata.bindgen-cli]
+version = "0.73.2"
+
+[features]
+default = []
+test-hooks = []
+
+[build-dependencies]
+cmake.workspace = true
+rapids-build-support.workspace = true
+
+[dev-dependencies]
+static_assertions.workspace = true
+
+[[test]]
+name = "native_abi_contract_cpu"
+
+[[test]]
+name = "stream_provider_contract_cpu"
+
+[[test]]
+name = "bindings_contract_cpu"
+
+[[test]]
+name = "memory_manager_static_partition_contract_gpu"
+
+[[test]]
+name = "memory_manager_old_options_abi_contract_gpu"
+
+[[test]]
+name = "build_link_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "column_contract_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "current_resource_invariant_contract_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "execution_context_contract_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "ffi_multi_device_gpu_exclusive"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "ffi_regressions_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "fingerprint_matrix_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "handle_destroy_provenance_contract_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "hash_join_destroy_provenance_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "memory_resource_hooks_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "metadata_size_hooks_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "prepared_import_contract_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "profiler_api_contract_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "source_contract_support_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "thread_contract_tests_gpu"
+required-features = ["test-hooks"]

@@ -82,7 +82,7 @@ source_identity() {
 POLICY_SCRIPTS=(
   scripts/ci/tests/check_cpu_packaging_tests.sh
   scripts/ci/check_iceberg_leaf_dependency.sh
-  scripts/ci/check_workspace_root_include.sh
+  scripts/ci/check_single_brand.sh
   scripts/build/check_build_support.sh
   scripts/ci/tests/check_dependency_direction_tests.sh
   scripts/ci/tests/check_native_sources_tests.sh
@@ -124,12 +124,12 @@ doctests() {
 # --locked --keep-going) split into package shards with their own target
 # directories. The union check fails closed when a workspace member has no shard.
 FEATURE_ISOLATION_SHARDS=(
-  "nexus-tools"
-  "datafusion-nexus nexus-workloads datafusion-facade-consumer rapids-interop"
-  "nexus-query-runtime nexus-query-planning"
-  "nexus-query-engine cudf-nexus cudf-nexus-sys nexus-build-support"
-  "nexus-iceberg nexus-server cugraph-nexus-sys"
-  "nexus-examples nexus-bench cugraph-nexus cuvs-nexus cuvs-nexus-sys"
+  "tools"
+  "algeon-datafusion workloads datafusion-facade-consumer algeon-interop"
+  "algeon-query-runtime algeon-query-planning"
+  "algeon-query-engine algeon-cudf algeon-cudf-sys algeon-build-support"
+  "iceberg-catalog algeon-server algeon-cugraph-sys"
+  "examples bench algeon-cugraph algeon-cuvs algeon-cuvs-sys"
 )
 
 feature_isolation() {
@@ -172,7 +172,7 @@ feature_isolation() {
 
 if [[ "${mode}" == full ]]; then
   PHASES=(gate rustfmt native-sources checked-bindings policy-scripts tests doctests clippy rustdoc
-    public-api-surface feature-isolation msrv native-free component-packages)
+    public-api-surface feature-isolation msrv native-free publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
 fi
@@ -222,7 +222,7 @@ if [[ "${mode}" == full ]]; then
   CARGO_TARGET_DIR="${ROOT}/target/check-all/msrv" \
     run msrv cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
   DOCS_RS=1 run native-free cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &
-  run component-packages bash scripts/ci/check_component_packages.sh &
+  run publication-policy python3 scripts/ci/check_workspace_publication.py &
 else
   run cpu-tests cargo nt -E 'not group(gpu) & not group(gpu-exclusive)' &
 fi

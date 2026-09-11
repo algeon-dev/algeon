@@ -1,0 +1,46 @@
+[package]
+name = "algeon-cudf"
+description = "Safe libcudf execution component for Algeon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = ["crates-io"]
+license-file = "../../../LICENSE"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-cudf"
+readme = "../README.md"
+keywords = ["cuda", "cudf", "dataframe", "gpu", "rapids"]
+autoexamples = false
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[lints]
+workspace = true
+
+[lib]
+name = "cudf"
+
+[dependencies]
+cudf-sys.workspace = true
+rapids-interop.workspace = true
+ahash.workspace = true
+arrow = { workspace = true, features = ["ffi"] }
+bitflags.workspace = true
+csv.workspace = true
+indexmap.workspace = true
+parquet.workspace = true
+smallvec.workspace = true
+strum.workspace = true
+typed-builder.workspace = true
+
+
+[dev-dependencies]
+cudf-sys = { workspace = true, features = ["test-hooks"] }
+indexmap = { workspace = true, features = ["serde"] }
+parquet = { workspace = true, features = ["arrow"] }
+static_assertions.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

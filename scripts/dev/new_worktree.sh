@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create an isolated datafusion-nexus worktree, including native sources and
+# Create an isolated algeon-datafusion worktree, including native sources and
 # build/install directories.
 #
 # Usage:
@@ -9,7 +9,7 @@
 #   [base-ref] branch/sha to fork from (default: main)
 #
 # Result:
-#   - worktree at ../datafusion-nexus-wt-<name>
+#   - worktree at ../algeon-wt-<name>
 #   - new branch wt/<name> tracking the base ref
 #   - recursive native-source submodules at their pinned revisions
 #   - isolated CARGO_TARGET_DIR and native artifacts under the worktree
@@ -34,7 +34,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 parent_dir="$(dirname "$repo_root")"
 
-worktree_path="$parent_dir/datafusion-nexus-wt-$name"
+worktree_path="$parent_dir/algeon-wt-$name"
 branch="wt/$name"
 target_dir="$worktree_path/target"
 
@@ -59,7 +59,7 @@ export CARGO_TARGET_DIR
 
 # Native selectors default to this worktree's target/native/ prefixes; clearing
 # them keeps the main checkout's libraries out and the build fingerprint stable.
-unset NEXUS_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \\
+unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \\
   CUVS_INSTALL_DIR CUVS_ROOT CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
 
 # Tag the shell so you can see which worktree you're in.

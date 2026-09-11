@@ -3,9 +3,9 @@
 # checked-in snapshot without an explicit, reviewed snapshot update.
 #
 # This replaces three `trybuild`-based compile_fail/pass fixture suites
-# (tests/datafusion_public_api_boundary.rs,
-# crates/nexus-query-engine/tests/public_api_boundary.rs,
-# crates/nexus-bench/tests/bench_public_api_boundary.rs), which built a
+# (crates/algeon-datafusion/tests/datafusion_public_api_boundary.rs,
+# crates/algeon-query-engine/tests/public_api_boundary.rs,
+# crates/bench/tests/bench_public_api_boundary.rs), which built a
 # complete second copy of the dependency graph per binary (trybuild 1.0.118
 # hardcodes its own CARGO_TARGET_DIR; see its src/cargo.rs). `cargo public-api`
 # instead runs `cargo doc --output-format=json` in the workspace's ordinary
@@ -48,14 +48,13 @@ TOOLCHAIN_FILE="${SNAPSHOT_DIR}/TOOLCHAIN.txt"
 
 # crate name -> snapshot file basename
 CRATES=(
-  "datafusion-nexus"
-  "nexus-query-engine"
-  "nexus-query-planning"
-  "nexus-query-runtime"
-  "nexus-bench"
-  "nexus-server"
-  "cudf-nexus"
-  "cugraph-nexus"
+  "algeon-datafusion"
+  "algeon-query-engine"
+  "algeon-query-planning"
+  "algeon-query-runtime"
+  "bench"
+  "algeon-cudf"
+  "algeon-cugraph"
 )
 
 current_toolchain_identity() {
@@ -116,7 +115,7 @@ if ! command -v cargo-public-api >/dev/null 2>&1; then
 fi
 
 status=0
-work_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-public-api.XXXXXX")
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-public-api.XXXXXX")
 trap 'rm -rf "${work_dir}"' EXIT
 
 current_identity=$(current_toolchain_identity) || exit 2
@@ -192,8 +191,8 @@ if [[ "${PUBLIC_API_SKIP_NATIVE_COMPONENT_POLICY:-0}" != "1" ]]; then
 fi
 
 if [[ "${PUBLIC_API_SKIP_FACADE_POLICY:-0}" != "1" ]]; then
-  ledger="${SNAPSHOT_DIR}/datafusion-nexus-engine-types.tsv"
-  if ! python3 scripts/ci/check_public_api_facade.py "${SNAPSHOT_DIR}/datafusion-nexus.txt" "${ledger}"; then
+  ledger="${SNAPSHOT_DIR}/algeon-datafusion-engine-types.tsv"
+  if ! python3 scripts/ci/check_public_api_facade.py "${SNAPSHOT_DIR}/algeon-datafusion.txt" "${ledger}"; then
     status=1
   fi
   if ! bash scripts/ci/check_public_api_facade_consumer.sh; then
@@ -204,7 +203,7 @@ fi
 # `cargo public-api` omits `#[doc(hidden)]` items, so hidden cross-crate
 # feature contracts are license-checked against a per-symbol ledger instead.
 if [[ "${PUBLIC_API_SKIP_HIDDEN_POLICY:-0}" != "1" ]]; then
-  if ! python3 scripts/ci/check_public_api_hidden.py "${SNAPSHOT_DIR}/datafusion-nexus-hidden.tsv"; then
+  if ! python3 scripts/ci/check_public_api_hidden.py "${SNAPSHOT_DIR}/algeon-datafusion-hidden.tsv"; then
     status=1
   fi
 fi

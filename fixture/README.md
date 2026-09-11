@@ -42,9 +42,9 @@ fixture/fixture.sh tpch generate --scale 1 --scale 10 --force
 fixture/fixture.sh tpcds generate --scale 1 --scale 10 --force
 
 # Generate raw and optimized layouts on any chosen fast local filesystem.
-export NEXUS_FIXTURE_ROOT=/mnt/fast/datafusion-nexus-fixtures
-fixture/tpc-h/generate.py --scale 1 --scale 10 --variant both --out-root "$NEXUS_FIXTURE_ROOT/tpch" --force
-fixture/tpc-ds/generate.py --scale 1 --scale 10 --variant both --out-root "$NEXUS_FIXTURE_ROOT/tpcds" --force
+export ALGEON_FIXTURE_ROOT=/mnt/fast/algeon-fixtures
+fixture/tpc-h/generate.py --scale 1 --scale 10 --variant both --out-root "$ALGEON_FIXTURE_ROOT/tpch" --force
+fixture/tpc-ds/generate.py --scale 1 --scale 10 --variant both --out-root "$ALGEON_FIXTURE_ROOT/tpcds" --force
 ```
 
 Both scripts drive `tpcgen-cli`, then rewrite the final files as one Parquet
@@ -100,7 +100,7 @@ while the fixture metadata is live.
 
 To refresh the smaller cuGraph parity corpus and its optional Python oracle,
 run `fixture/graph/prepare.sh --oracle`. It uses
-`NEXUS_CUGRAPH_PYTHON` when set, otherwise the repository virtual environment
+`ALGEON_CUGRAPH_PYTHON` when set, otherwise the repository virtual environment
 or `python3`.
 
 `graph/rmat_generate.py` generates a deterministic synthetic R-MAT
@@ -132,15 +132,15 @@ Point each workload-local data directory at fast storage with a symlink, or
 generate/download directly into it:
 
 ```bash
-export NEXUS_FIXTURE_ROOT=/mnt/fast/datafusion-nexus-fixtures
-ln -s "$NEXUS_FIXTURE_ROOT/tpch"       fixture/tpc-h/data
-ln -s "$NEXUS_FIXTURE_ROOT/tpcds"      fixture/tpc-ds/data
-ln -s "$NEXUS_FIXTURE_ROOT/clickbench" fixture/clickbench/data
-ln -s "$NEXUS_FIXTURE_ROOT/demo"       fixture/graph/demo
-ln -s "$NEXUS_FIXTURE_ROOT/synthetic"  fixture/graph/synthetic
+export ALGEON_FIXTURE_ROOT=/mnt/fast/algeon-fixtures
+ln -s "$ALGEON_FIXTURE_ROOT/tpch"       fixture/tpc-h/data
+ln -s "$ALGEON_FIXTURE_ROOT/tpcds"      fixture/tpc-ds/data
+ln -s "$ALGEON_FIXTURE_ROOT/clickbench" fixture/clickbench/data
+ln -s "$ALGEON_FIXTURE_ROOT/demo"       fixture/graph/demo
+ln -s "$ALGEON_FIXTURE_ROOT/synthetic"  fixture/graph/synthetic
 ```
 
-For an explicit external fixture, set `NEXUS_PARQUET_DIR` to its Parquet root.
+For an explicit external fixture, set `ALGEON_PARQUET_DIR` to its Parquet root.
 It is intentionally workload-neutral because one process executes one
 workload at a time; the workload validates the expected layout. The in-repo
 directories above remain the implicit local defaults.

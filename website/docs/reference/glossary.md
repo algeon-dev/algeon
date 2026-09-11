@@ -1,11 +1,11 @@
 ---
 sidebar_position: 6
-description: One-line definitions of Nexus-specific terms, each linking to the page that owns the full contract.
+description: One-line definitions of Algeon-specific terms, each linking to the page that owns the full contract.
 ---
 
 # Glossary
 
-Nexus-specific vocabulary, one or two lines per term. Each entry links to the
+Algeon-specific vocabulary, one or two lines per term. Each entry links to the
 page that owns the full contract; that page stays authoritative when the two
 disagree. Standard DataFusion, Arrow, and SQL terms are intentionally not
 defined here.
@@ -17,7 +17,7 @@ defined here.
   receives a structured outcome in the
   [`PlanningReport`](../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
 - **Whole relational candidate** — relational selection replaces a complete
-  candidate or none of it; Nexus does not extract arbitrary fragments. The one
+  candidate or none of it; Algeon does not extract arbitrary fragments. The one
   narrow exception is the
   [certified mixed boundary](../design/native-lowering.mdx#selection-fallback-and-mixed-execution).
 - **Lowering** — translating a recognized candidate into the engine's
@@ -47,7 +47,7 @@ defined here.
 - **Execution domain** — which runtime executes each part of the completed
   plan: GPU-native fragments and islands versus DataFusion CPU operators. This
   is what
-  [`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx)
+  [`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx)
   reports before execution.
 
 ## Admission and runtime

@@ -15,7 +15,7 @@ Developer maintenance helpers under `dev/` include
 `bindings.sh` (the single checked-in cuDF/cuGraph/cuVS bindings entry) and
 `clean_target_artifacts.sh` (report / mold-temp / `cargo clean`). Cleanup is
 never an implicit side effect of a test command. Root CI checks keep native
-source registry and component package archive failures separate in the full
+source registry and workspace publication-policy failures separate in the full
 gate.
 
 `ci/nextest_gpu_lock.sh` is the nextest run-wrapper that every test runs

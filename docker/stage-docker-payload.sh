@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Build datafusion_nexus_server and stage every runtime artifact the Docker
+# Build algeon_server and stage every runtime artifact the Docker
 # image needs into docker/dist/.
 #
 # WHY THIS SCRIPT EXISTS
 # ----------------------
-# datafusion-nexus links against FORKED RAPIDS C++ libraries (cuDF, cuGraph,
+# algeon-datafusion links against FORKED RAPIDS C++ libraries (cuDF, cuGraph,
 # RMM, cuVS) that are built from the pinned monorepo sources. They are NOT the
 # stock libraries shipped in the official `rapidsai/*` or `nvidia/cuda` images,
 # so the image cannot pull them from a base layer — we must bundle the exact
 # `.so` files this binary was linked against. This script collects them.
 #
 # It stages, into docker/dist/:
-#   bin/datafusion_nexus_server        the compiled server
-#   lib/libcudf_rust*.so               cudf-nexus-sys CMake FFI bridges (OUT_DIR)
-#   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf-nexus
-#   lib/libcugraph*.so                 forked RAPIDS C++ libs from cugraph-nexus
+#   bin/algeon_server        the compiled server
+#   lib/libcudf_rust*.so               cudf-sys CMake FFI bridges (OUT_DIR)
+#   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf
+#   lib/libcugraph*.so                 forked RAPIDS C++ libs from cugraph
 #   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
 #
 # The CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc, ...) are NOT
@@ -29,8 +29,8 @@
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/stage-docker-payload.sh                  # iceberg,cugraph,cuvs,nvml (full)
-#   FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh # lean cudf-only (~1/3 size)
+#   bash docker/stage-docker-payload.sh                  # cugraph,cuvs,nvml
+#   FEATURES=nvml bash docker/stage-docker-payload.sh    # lean cudf-only (~1/3 size)
 #   NO_STRIP=1 bash docker/stage-docker-payload.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh    # reuse only verified canonical artifact
 #
@@ -54,7 +54,7 @@ DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" normalize-features \
-    --features "${FEATURES:-iceberg,cugraph,cuvs,nvml}")"
+    --features "${FEATURES:-cugraph,cuvs,nvml}")"
 
 eval "$(python3 "$POLICY_HELPER" describe)"
 
@@ -63,10 +63,10 @@ case "${SKIP_CARGO_BUILD-0}" in
     *) echo "ERROR: SKIP_CARGO_BUILD must be 0 or 1, got '${SKIP_CARGO_BUILD}'." >&2; exit 2 ;;
 esac
 
-NEXUS_NATIVE_DIR="${NEXUS_NATIVE_DIR:-$REPO_ROOT/target/native}"
-CUDF_INSTALL_DIR="$NEXUS_NATIVE_DIR/cudf-install"
-CUVS_INSTALL_DIR="$NEXUS_NATIVE_DIR/cuvs-install"
-CUGRAPH_INSTALL_DIR="$NEXUS_NATIVE_DIR/cugraph-install"
+ALGEON_NATIVE_DIR="${ALGEON_NATIVE_DIR:-$REPO_ROOT/target/native}"
+CUDF_INSTALL_DIR="$ALGEON_NATIVE_DIR/cudf-install"
+CUVS_INSTALL_DIR="$ALGEON_NATIVE_DIR/cuvs-install"
+CUGRAPH_INSTALL_DIR="$ALGEON_NATIVE_DIR/cugraph-install"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
 RUNTIME_LIB_DIR="/app/lib"
@@ -79,7 +79,7 @@ want_cuvs_runtime=0
 [[ $want_cugraph -eq 1 || $want_cuvs -eq 1 ]] && want_cuvs_runtime=1
 
 echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs)"
-echo "==> NEXUS_NATIVE_DIR    : $NEXUS_NATIVE_DIR"
+echo "==> ALGEON_NATIVE_DIR    : $ALGEON_NATIVE_DIR"
 
 cd "$REPO_ROOT"
 
@@ -88,16 +88,16 @@ cd "$REPO_ROOT"
 # an isolated cwd/CARGO_HOME, and supplies the policy target + rustflags on the
 # command line.
 CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
-BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/datafusion_nexus_server"
+BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/algeon_server"
 BUILD_RECORD="$BINARY.build-record.json"
 
 if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
-    echo "==> Building canonical datafusion_nexus_server artifact ..."
+    echo "==> Building canonical algeon_server artifact ..."
     python3 "$POLICY_HELPER" build \
         --features "$FEATURES" \
         --target-root "$CPU_PACKAGE_TARGET_ROOT" \
-        --manifest "$REPO_ROOT/crates/nexus-server/Cargo.toml" \
-        --explicit-env "NEXUS_NATIVE_DIR=$NEXUS_NATIVE_DIR"
+        --manifest "$REPO_ROOT/crates/algeon-server/Cargo.toml" \
+        --explicit-env "ALGEON_NATIVE_DIR=$ALGEON_NATIVE_DIR"
 else
     echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
     python3 "$POLICY_HELPER" verify-build \
@@ -115,10 +115,10 @@ rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/bin" "$DIST_DIR/lib"
 
 # ── 3. Stage the binary ─────────────────────────────────────────────────────
-cp "$BINARY" "$DIST_DIR/bin/datafusion_nexus_server"
+cp "$BINARY" "$DIST_DIR/bin/algeon_server"
 
-# ── 4. Locate + stage cudf-nexus-sys runtime shared objects ───────────────────────
-# They live in the cudf-nexus-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
+# ── 4. Locate + stage cudf-sys runtime shared objects ───────────────────────
+# They live in the cudf-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
 RUNPATH=$(patchelf --print-rpath "$BINARY" 2>/dev/null \
     || readelf -d "$BINARY" 2>/dev/null \
         | awk -F'[][]+' '/\(RUNPATH\)|\(RPATH\)/{print $3}' \
@@ -131,7 +131,7 @@ for dir in "${RPATH_DIRS[@]+"${RPATH_DIRS[@]}"}"; do
 done
 if [[ -z "$CUDF_RUST_SO" ]]; then
     CUDF_RUST_SO=$(find "$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/build" \
-        -name libcudf_rust.so -path "*/cudf-nexus-sys-*/out/lib/*" 2>/dev/null \
+        -name libcudf_rust.so -path "*/cudf-sys-*/out/lib/*" 2>/dev/null \
         | head -1)
 fi
 [[ -n "$CUDF_RUST_SO" ]] || { echo "ERROR: cannot locate libcudf_rust.so." >&2; exit 1; }
@@ -162,7 +162,7 @@ copy_lib() {
 }
 
 CUDF_LIB="$CUDF_INSTALL_DIR/lib"
-[[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found — build cudf-nexus first." >&2; exit 1; }
+[[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found — build cudf first." >&2; exit 1; }
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
@@ -203,7 +203,7 @@ resolve_needed_realpath() {
 if [[ $want_cugraph -eq 1 ]]; then
     CUGRAPH_LIB="$CUGRAPH_INSTALL_DIR/lib"
     [[ -d "$CUGRAPH_LIB" ]] || {
-        echo "ERROR: $CUGRAPH_LIB not found — build cugraph-nexus first." >&2
+        echo "ERROR: $CUGRAPH_LIB not found — build cugraph first." >&2
         exit 1
     }
     GRAPH_CUVS_REALPATH=$(resolve_needed_realpath "$CUGRAPH_LIB/libcugraph.so" libcuvs) || {
@@ -265,7 +265,7 @@ HAVE_STRIP=0;    command -v strip    >/dev/null 2>&1 && HAVE_STRIP=1
 
 if [[ "${NO_STRIP:-0}" != "1" && $HAVE_STRIP -eq 1 ]]; then
     echo "==> Stripping staged artifacts ..."
-    strip "$DIST_DIR/bin/datafusion_nexus_server" 2>/dev/null || true
+    strip "$DIST_DIR/bin/algeon_server" 2>/dev/null || true
     for so in "$DIST_DIR"/lib/*.so*; do
         [[ -f "$so" && ! -L "$so" ]] && strip --strip-unneeded "$so" 2>/dev/null || true
     done
@@ -273,7 +273,7 @@ fi
 
 if [[ $HAVE_PATCHELF -eq 1 ]]; then
     echo "==> Rewriting RUNPATHs -> $RUNTIME_LIB_DIR (binary), \$ORIGIN (libs)"
-    patchelf --set-rpath "$RUNTIME_LIB_DIR" "$DIST_DIR/bin/datafusion_nexus_server"
+    patchelf --set-rpath "$RUNTIME_LIB_DIR" "$DIST_DIR/bin/algeon_server"
     for so in "$DIST_DIR"/lib/*.so*; do
         [[ -f "$so" && ! -L "$so" ]] && patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
     done
@@ -439,7 +439,7 @@ echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"
     printf '    %-46s %s\n' "$f" "$(du -h "$f" 2>/dev/null | cut -f1)"
   done )
 echo ""
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-datafusion-nexus-server}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-algeon-server}"
 IMAGE_TAG="$IMAGE_REPOSITORY:$CPU_BASELINE"
 echo "==> SUCCESS: staging and validation passed."
 echo "==> NEXT: bash docker/build-image.sh  ($IMAGE_TAG)"

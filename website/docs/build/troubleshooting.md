@@ -47,7 +47,7 @@ simply to run it (or the bootstrap alone) with the canonical cuDF build cache
 intact:
 
 ```bash
-cd "$NEXUS_ROOT" && bash scripts/build/build_libcugraph.sh
+cd "$ALGEON_ROOT" && bash scripts/build/build_libcugraph.sh
 # or just the prefix-completion step:
 bash scripts/build/bootstrap_cudf_install.sh
 ```
@@ -57,7 +57,7 @@ bootstrap nothing to install from — rebuild libcudf first (keeping
 `target/native/cudf-build`), then re-run the bootstrap:
 
 ```bash
-cd "$NEXUS_ROOT" && bash scripts/build/build_libcudf.sh
+cd "$ALGEON_ROOT" && bash scripts/build/build_libcudf.sh
 ```
 
 ## Native build rejects a CUDA architecture contract
@@ -93,9 +93,9 @@ cuVS, and cuGraph in that order. The build helpers then confirm the three
 layers agree. For deeper inspection, list each `.so`:
 
 ```bash
-for so in "$NEXUS_ROOT"/target/native/cudf-install/lib/libcudf.so \
-          "$NEXUS_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
-          "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph.so; do
+for so in "$ALGEON_ROOT"/target/native/cudf-install/lib/libcudf.so \
+          "$ALGEON_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
+          "$ALGEON_ROOT"/target/native/cugraph-build/libcugraph.so; do
   echo "== $so =="
   cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+[a-z]?' | sort | uniq -c
 done

@@ -1,24 +1,28 @@
 ---
 sidebar_position: 1
 sidebar_label: Overview
-title: DataFusion Nexus
+title: Algeon
 slug: /
-description: An experimental GPU query engine for Apache DataFusion that runs supported SQL on cuDF and exposes graph and vector algorithms as SQL table functions.
+description: Specialized GPU algorithms, composed through SQL. Apache DataFusion is the first integration.
 ---
 
 import {ArchitectureDiagram} from '@site/src/components/design/Diagram';
 
-# Welcome to DataFusion Nexus
+# Welcome to Algeon
 
-**DataFusion Nexus** is an experimental GPU query engine for
-[Apache DataFusion](https://datafusion.apache.org/). It runs supported SQL
-operations on [cuDF](https://docs.rapids.ai/api/cudf/stable/) and exposes
+**Algeon** brings specialized GPU algorithms into composable SQL workflows
+over open data. [Apache DataFusion](https://datafusion.apache.org/) is the
+first integration: supported SQL operations run on
+[cuDF](https://docs.rapids.ai/api/cudf/stable/), while
 [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) and
-[cuVS](https://docs.nvidia.com/cuvs/home) algorithms as SQL table functions
-that compose with ordinary joins, filters, and aggregations. You can embed it
-in a Rust application or connect through Arrow Flight SQL.
+[cuVS](https://docs.nvidia.com/cuvs/home) algorithms appear as SQL table
+functions that compose with joins, filters, and aggregations. You can embed the
+DataFusion adapter in a Rust application or connect through Arrow Flight SQL.
 
-GPU execution is opt-in per query: plans, or parts of plans, that Nexus does
+DuckDB is the next narrow adapter direction and Spark is a longer-term
+direction; neither is supported today.
+
+GPU execution is opt-in per query: plans, or parts of plans, that Algeon does
 not select for GPU execution stay on the normal DataFusion CPU path with the
 same results. Once GPU execution starts, a failure is returned as a structured
 error and is not re-run on CPU. Selection normally replaces a
@@ -31,7 +35,7 @@ run executes inside a fixed GPU memory
 ## Where to start
 
 - **Build, then run a first query.** Follow
-  [Build & Test](./build/overview.md), then either embed Nexus in a
+  [Build & Test](./build/overview.md), then either embed Algeon in a
   [DataFusion session](./integration/datafusion-session.mdx) or start the
   [Flight SQL server](./integration/flight-sql-server.mdx) and connect with an
   ADBC client.
@@ -40,8 +44,7 @@ run executes inside a fixed GPU memory
   functions are documented in the [cuGraph SQL API](./cugraph/overview.mdx)
   and [cuVS SQL API](./cuvs/overview.mdx).
 
-To learn why we built DataFusion Nexus, read
-[DataFusion Nexus: Specialized GPU Algorithms, Now in SQL](/blog/introducing-datafusion-nexus).
+To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon).
 
 ## Architecture at a glance
 
@@ -50,7 +53,7 @@ To learn why we built DataFusion Nexus, read
   DataFusion optimizer rule decides which parts run on the GPU in the same
   process, and results return to that interface as ordinary Arrow batches.
   The lower arrows show where table data comes from: local Parquet files or
-  Iceberg tables in object storage.</>}
+  Parquet in object storage.</>}
 />
 
 ## Features
@@ -66,12 +69,12 @@ To learn why we built DataFusion Nexus, read
   [GPU function catalog](./guides/gpu-function-discovery.mdx) lists the
   functions installed in a session, describes each contract, validates a call
   before execution, and reports whether each function is executable.
-- **Parquet and Iceberg sources.** GPU scans read local and S3-compatible
-  Parquet, including Iceberg tables resolved through REST and Glue catalogs.
-  Remote catalogs are read-only, with an optional local workspace for views and
-  scratch tables.
+- **Parquet sources.** GPU scans read local and S3-compatible Parquet. Remote
+  sources are read-only, with an optional local workspace for views and scratch
+  tables. Iceberg is not supported in this release; see
+  [Iceberg support](./integration/overview.mdx#iceberg-support).
 - **Answers before and after execution.**
-  [`nexus_explain_coverage`](./integration/gpu-coverage-validation.mdx)
+  [`algeon_explain_coverage`](./integration/gpu-coverage-validation.mdx)
   (or `EXPLAIN GPU` over Flight SQL) tells you which parts of a query will run
   on the GPU and why the rest will not; errors carry stable machine-readable
   codes.
@@ -97,11 +100,11 @@ To learn why we built DataFusion Nexus, read
 
 ## Next steps
 
-- [Integrating Nexus](./integration/overview.mdx) — choose between an
+- [Integrating Algeon](./integration/overview.mdx) — choose between an
   embedded session and the Flight SQL server, then follow the common flow.
 - [Discover & Validate GPU Functions](./guides/gpu-function-discovery.mdx) —
   inspect the installed function families and their execution status.
-- [Design](./design/index.mdx) — how Nexus fits into DataFusion, the crate
+- [Design](./design/index.mdx) — how Algeon fits into DataFusion, the crate
   layout, and the diagnostic contracts.
 - [Reference](./reference/index.md) — support boundaries, benchmarks, and the
   glossary.

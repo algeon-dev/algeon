@@ -22,8 +22,8 @@ REST_ENDPOINT="${REST_ENDPOINT:-http://localhost:8181}"
 S3_ENDPOINT="${S3_ENDPOINT:-http://localhost:9000}"
 WAREHOUSE="${WAREHOUSE:-s3://lakehouse/warehouse}"
 STAGING_PREFIX="${STAGING_PREFIX:-}"
-S3_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-nexusadmin}"
-S3_SECRET_KEY="${RUSTFS_SECRET_KEY:-nexusadmin}"
+S3_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-algeonadmin}"
+S3_SECRET_KEY="${RUSTFS_SECRET_KEY:-algeonadmin}"
 S3_REGION="${S3_REGION:-us-east-1}"
 if [[ "${S3_ENDPOINT}" == https://* ]]; then
   S3_SSL_ENABLED="${S3_SSL_ENABLED:-true}"
@@ -309,7 +309,7 @@ stage_table_specs_for_add_files() {
       container_source="/data/${source}"
       dest="${staging_prefix%/}/${table}/"
       copy_args=("${container_source}/" "${dest}" "--recursive")
-      marker="${dest%/}/_NEXUS_LOAD_COMPLETE"
+      marker="${dest%/}/_ALGEON_LOAD_COMPLETE"
       if [[ "${RELOAD}" == "1" ]]; then
         echo "[iceberg-rest-load] refreshing staged parquet prefix -> ${dest}"
         aws_cli_for_loader s3 rm "${dest}" --recursive >/dev/null

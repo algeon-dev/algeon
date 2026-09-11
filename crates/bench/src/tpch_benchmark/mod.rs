@@ -1,0 +1,79 @@
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use algeon_datafusion::{
+    error::{DataFusionErrorExt, Error as AdapterError},
+    native_exec::AlgeonNativeExecutionConfig,
+    native_report::{
+        CandidateOutcomeKind, FinalPlanDisposition, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
+        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome,
+        NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
+        NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    },
+    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    session::AlgeonSessionStateBuilderExt,
+};
+use arrow::{record_batch::RecordBatch, util::display::array_value_to_string};
+use datafusion::{
+    common::{DataFusionError, Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
+    execution::{SessionStateBuilder, context::TaskContext},
+    physical_plan::{ExecutionPlan, collect, metrics::MetricsSet},
+    prelude::{SessionConfig, SessionContext},
+};
+use workloads::tpch::{
+    ALGEON_PARQUET_DIR_ENV, ALGEON_TPCH_GENERATION_COMMAND_ENV, ALGEON_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES,
+    TPCH_TABLES, TpchDatasetMetadata, TpchQuery, TpchTableLayout, WorkloadError, default_tpch_dataset_with_fingerprint,
+    describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, register_tpch_table_layout,
+};
+
+use crate::report_workload::tpch::tpch_report_session_config;
+
+mod case_runner;
+mod config;
+mod dataset;
+mod errors;
+mod execution;
+mod provenance;
+mod reports;
+mod strategy_gate;
+mod validation;
+
+use case_runner::*;
+use config::*;
+use errors::*;
+use provenance::*;
+use reports::*;
+
+/// Run the native TPC-H benchmark end to end from environment configuration,
+/// print the TSV report to stdout, and enforce the strategy gates.
+pub async fn run_main() -> DataFusionResult<()> {
+    let config = NativeTpchBenchmarkConfig::from_env()?;
+    let work_dir = unique_temp_dir("algeon-datafusion-native-tpch-benchmark");
+    let report = run_native_tpch_benchmark(&config, &work_dir).await?;
+    let text = report.to_tsv();
+    print!("{text}");
+    let large_keyed_gate_result = strategy_gate::validate_large_keyed_join_strategy_gate_from_env(&text);
+    fs::remove_dir_all(work_dir).ok();
+    match large_keyed_gate_result {
+        Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
+        Ok(None) => {},
+        Err(error) => {
+            eprintln!("[native_tpch_benchmark] stage=large_keyed_join_strategy_gate outcome=failed error={error}");
+            return Err(error);
+        },
+    }
+    Ok(())
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(test)]
+mod tests;

@@ -20,7 +20,7 @@ pass_through = [
   "PKG_CONFIG_SYSROOT_DIR",
 ]
 explicit_inputs = [
-  "NEXUS_NATIVE_DIR",
+  "ALGEON_NATIVE_DIR",
 ]
 
 [clean_environment.fixed_build_environment]

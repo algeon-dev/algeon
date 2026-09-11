@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "${ROOT}"
 
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-pass-as-skip.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-pass-as-skip.XXXXXX")
 trap 'rm -rf "${tmp_dir}"' EXIT
 mkdir -p "${tmp_dir}/tests"
 printf 'fn test() { let Ok(runtime) = cudf::Runtime::new() else { return; }; }\n' >"${tmp_dir}/tests/bad.rs"

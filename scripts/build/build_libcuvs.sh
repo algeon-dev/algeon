@@ -7,7 +7,7 @@ source_dir="${repo_root}/components/cuvs/cuvs"
 build_dir="${CUVS_CPP_BUILD_DIR:-${repo_root}/target/native/cuvs-build}"
 install_dir="${CUVS_INSTALL_DIR:-${repo_root}/target/native/cuvs-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
-cuda_architectures="$(nexus_cuda_architectures)"
+cuda_architectures="$(algeon_cuda_architectures)"
 (cd "${repo_root}" && scripts/ci/check_native_sources.sh cuvs)
 
 [[ -f "${source_dir}/VERSION" ]] || {
@@ -52,7 +52,7 @@ done
     echo "Run scripts/build/bootstrap_cudf_install.sh for that prefix, then retry." >&2
     exit 1
 }
-nexus_cuda_require_contract \
+algeon_cuda_require_contract \
     "cuDF" "${cudf_install_dir}" "${cuda_architectures}" \
     "bash scripts/build/build_libcudf.sh"
 
@@ -143,7 +143,7 @@ for library in "${lib_dir}/libcuvs.so" "${lib_dir}/libcuvs_c.so"; do
     patchelf --set-rpath "\$ORIGIN:${cudf_lib_dir}" "${library}"
 done
 
-marker_dir="${install_dir}/share/cuvs-nexus"
+marker_dir="${install_dir}/share/algeon-cuvs"
 mkdir -p "${marker_dir}"
 printf '%s\n' "${source_revision}" >"${marker_dir}/source-revision"
 printf '%s\n' "${native_version}" >"${marker_dir}/native-version"
@@ -175,13 +175,13 @@ for library in "${lib_dir}/libcuvs.so" "${lib_dir}/libcuvs_c.so"; do
     fi
 done
 
-architecture_contract="$(nexus_cuda_write_contract "${install_dir}" "${canonical_cuvs}" "${cuda_architectures}")"
-nexus_cuda_require_matching_contracts \
+architecture_contract="$(algeon_cuda_write_contract "${install_dir}" "${canonical_cuvs}" "${cuda_architectures}")"
+algeon_cuda_require_matching_contracts \
     "cuDF" "${cudf_install_dir}" "cuVS" "${install_dir}" \
     "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh"
 
 echo "canonical cuVS prefix ready: ${install_dir}"
 echo "source revision: ${source_revision}"
 echo "native version: ${native_version}"
-echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"
+echo "CUDA architectures: requested=${cuda_architectures}, real=$(algeon_cuda_read_contract_value "${architecture_contract}" real)"
 echo "Cargo: CUVS_ROOT=${install_dir} cargo check --workspace --all-targets --all-features"

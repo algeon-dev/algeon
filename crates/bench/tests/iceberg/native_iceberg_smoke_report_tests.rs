@@ -1,0 +1,535 @@
+use std::collections::HashMap;
+
+use algeon_datafusion::{
+    native_report::{
+        CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionExecutionMetrics,
+        NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow,
+    },
+    table_format::{
+        TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
+        TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature,
+        TableFormatUnsupportedFeatureCode,
+        iceberg::{SourceAccessPolicy, catalog::GlueCatalogConfig},
+        resolve_table_format_parquet_source,
+    },
+};
+use bench::iceberg_smoke::{
+    self as native_iceberg_smoke_report, CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture,
+    ObjectStoreStagingMode, ObjectStoreStagingStatus, ObjectStoreStagingSummary, SmokeQueryExecutionMode,
+    StagedObjectStoreDataFile,
+};
+
+#[test]
+fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_config() {
+    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    let IcebergNativeSmokeFixture::GlueS3 { catalog_config, database, table, .. } = &config.fixture else {
+        panic!("expected glue_s3 fixture");
+    };
+    assert_eq!(catalog_config.profile.as_deref(), Some("local-dev"));
+    assert_eq!(database, "tpch_sf1");
+    assert_eq!(table, "lineitem");
+    assert_eq!(catalog_config.catalog_id.as_deref(), None);
+    assert_eq!(catalog_config.region, "us-east-1");
+    assert_eq!(config.table_alias, "lineitem");
+    assert_eq!(config.sql, "select count(*) as row_count from lineitem");
+    assert_eq!(config.fixture.credential_source(), "aws_profile_env");
+    assert_eq!(config.object_store_staging, ObjectStoreStagingMode::Required);
+    assert_eq!(config.tpch_query_ids, vec!["q01", "q03", "q06", "q10"]);
+    assert_eq!(config.tpch_scale_factor, "sf1");
+    assert!(config.tpcds_query_ids.is_empty());
+    assert_eq!(config.tpcds_scale_factor, "sf1");
+    assert_eq!(config.custom_workload, None);
+    assert_eq!(config.custom_query_file, None);
+    assert!(!config.stream_tsv_rows);
+    assert!(!config.continue_on_query_error);
+    assert_eq!(config.execution_mode, SmokeQueryExecutionMode::NativeAndCpuBaseline);
+    assert_eq!(native_iceberg_smoke_report::tpch_glue_table_name("orders", &config.tpch_scale_factor), "orders");
+}
+
+#[test]
+fn local_metadata_mode_requires_metadata_location_and_parses_table_ident() {
+    let env = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "local_metadata"),
+        ("ALGEON_ICEBERG_METADATA_LOCATION", "/tmp/table/metadata/v1.metadata.json"),
+        ("ALGEON_ICEBERG_TABLE_IDENT", "local_db.local_table"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    let IcebergNativeSmokeFixture::LocalMetadata { metadata_location, table_ident } = &config.fixture else {
+        panic!("expected local_metadata fixture");
+    };
+    assert_eq!(metadata_location, "/tmp/table/metadata/v1.metadata.json");
+    assert_eq!(table_ident, &vec!["local_db".to_string(), "local_table".to_string()]);
+    assert_eq!(config.table_alias, "local_table");
+    assert!(config.tpch_query_ids.is_empty());
+    assert!(config.tpcds_query_ids.is_empty());
+}
+
+#[test]
+fn explicit_glue_table_keeps_single_table_count_smoke_by_default() {
+    let env = HashMap::from([
+        ("AWS_PROFILE", "local-dev"),
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_GLUE_TABLE", "lineitem"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert!(config.tpcds_query_ids.is_empty());
+    assert_eq!(config.table_alias, "lineitem");
+    assert_eq!(config.sql, "select count(*) as row_count from lineitem");
+}
+
+#[test]
+fn glue_s3_fixture_accepts_local_moto_and_rustfs_endpoints() {
+    let env = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_GLUE_URI", "http://localhost:5001"),
+        ("ALGEON_ICEBERG_S3_ENDPOINT", "http://localhost:9000"),
+        ("ALGEON_ICEBERG_S3_REGION", "us-east-1"),
+        ("ALGEON_ICEBERG_S3_PATH_STYLE", "true"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    let IcebergNativeSmokeFixture::GlueS3 { catalog_config, .. } = &config.fixture else {
+        panic!("expected glue_s3 fixture");
+    };
+    let expected = GlueCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+        .with_uri("http://localhost:5001")
+        .with_source_access_policy(SourceAccessPolicy::s3_custom_endpoint(
+            "http://localhost:9000",
+            Some("us-east-1".to_string()),
+            Some(true),
+        ));
+    assert_eq!(catalog_config, &expected);
+}
+
+#[test]
+fn tpcds_query_ids_select_tpcds_all_table_smoke_mode() {
+    let env = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
+        ("ALGEON_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert_eq!(config.tpcds_query_ids, vec!["q03", "q42"]);
+    assert_eq!(config.tpcds_scale_factor, "sf10");
+    assert_eq!(config.custom_workload, None);
+    assert_eq!(config.custom_query_file, None);
+    assert_eq!(
+        native_iceberg_smoke_report::tpcds_glue_table_name("store_sales", &config.tpcds_scale_factor),
+        "store_sales"
+    );
+    assert_eq!(config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor), "tpcds_sf10_all_tables");
+}
+
+#[test]
+fn rest_s3_tpcds_query_ids_rewrite_tables_within_rest_namespace() {
+    let env = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "rest_s3"),
+        ("ALGEON_ICEBERG_NAMESPACE", "tpcds_sf10"),
+        ("ALGEON_ICEBERG_TPCDS_SCALE_FACTOR", "sf10"),
+        ("ALGEON_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03,q42"),
+        ("ALGEON_ICEBERG_SMOKE_EXECUTION_MODE", "native_only"),
+        ("ALGEON_ICEBERG_SMOKE_STREAM_TSV", "1"),
+        ("ALGEON_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR", "true"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert_eq!(config.tpcds_query_ids, vec!["q03", "q42"]);
+    assert_eq!(config.tpcds_scale_factor, "sf10");
+    assert_eq!(config.execution_mode, SmokeQueryExecutionMode::NativeOnly);
+    assert!(config.stream_tsv_rows);
+    assert!(config.continue_on_query_error);
+    let rewritten = config.fixture.with_tpcds_table("store_sales", &config.tpcds_scale_factor).unwrap();
+    let IcebergNativeSmokeFixture::RestS3 { namespace, table, .. } = rewritten else {
+        panic!("expected rest_s3 fixture");
+    };
+    assert_eq!(namespace, "tpcds_sf10");
+    assert_eq!(table, "store_sales");
+}
+
+#[test]
+fn tpch_and_tpcds_query_sets_are_mutually_exclusive() {
+    let env = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_SMOKE_QUERY_IDS", "q06"),
+        ("ALGEON_ICEBERG_TPCDS_SMOKE_QUERY_IDS", "q03"),
+    ]);
+    let error = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string()))
+        .expect_err("mixed workload query ids should fail");
+
+    assert!(error.to_string().contains("mutually exclusive"));
+}
+
+#[test]
+fn custom_query_file_selects_all_table_custom_mode() {
+    let env = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_CUSTOM_WORKLOAD", "tpcds"),
+        ("ALGEON_ICEBERG_CUSTOM_QUERY_FILE", "custom_tpcds_probe.json"),
+    ]);
+    let config = IcebergNativeSmokeConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
+
+    assert!(config.tpch_query_ids.is_empty());
+    assert!(config.tpcds_query_ids.is_empty());
+    assert_eq!(config.custom_workload, Some(CustomWorkload::Tpcds));
+    assert_eq!(config.custom_query_file.as_deref(), Some(std::path::Path::new("custom_tpcds_probe.json")));
+}
+
+#[test]
+fn custom_query_file_requires_workload_and_is_mutually_exclusive_with_builtins() {
+    let missing_workload = HashMap::from([("ALGEON_ICEBERG_CUSTOM_QUERY_FILE", "custom_tpcds_probe.json")]);
+    let error =
+        IcebergNativeSmokeConfig::from_env_get(|name| missing_workload.get(name).map(|value| value.to_string()))
+            .expect_err("custom query file without workload should fail");
+    assert!(error.to_string().contains("ALGEON_ICEBERG_CUSTOM_WORKLOAD"));
+
+    let mixed = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_QUERY_IDS", "q06"),
+        ("ALGEON_ICEBERG_CUSTOM_WORKLOAD", "tpch"),
+        ("ALGEON_ICEBERG_CUSTOM_QUERY_FILE", "custom_tpch_probe.json"),
+    ]);
+    let error = IcebergNativeSmokeConfig::from_env_get(|name| mixed.get(name).map(|value| value.to_string()))
+        .expect_err("custom query file and built-in query ids should fail");
+    assert!(error.to_string().contains("mutually exclusive"));
+}
+
+#[test]
+fn object_store_staging_mode_env_accepts_disabled_and_required_aliases() {
+    let disabled = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_SMOKE_OBJECT_STORE_STAGING", "disabled"),
+    ]);
+    let disabled_config =
+        IcebergNativeSmokeConfig::from_env_get(|name| disabled.get(name).map(|value| value.to_string())).unwrap();
+    assert_eq!(disabled_config.object_store_staging, ObjectStoreStagingMode::Disabled);
+
+    let required = HashMap::from([
+        ("ALGEON_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("ALGEON_ICEBERG_SMOKE_OBJECT_STORE_STAGING", "1"),
+    ]);
+    let required_config =
+        IcebergNativeSmokeConfig::from_env_get(|name| required.get(name).map(|value| value.to_string())).unwrap();
+    assert_eq!(required_config.object_store_staging, ObjectStoreStagingMode::Required);
+}
+
+#[test]
+fn staged_object_store_files_rewrite_to_local_native_scan_without_dropping_other_rejections() {
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "s3-data-file",
+                "s3://bucket/table/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(2048),
+        )
+        .with_unsupported_feature(TableFormatUnsupportedFeature::for_file(
+            TableFormatUnsupportedFeatureCode::IcebergObjectStoreReadUnsupported,
+            "s3-data-file",
+            "S3 source requires staging or native object-store read support",
+        ))
+        .with_unsupported_feature(TableFormatUnsupportedFeature::new(
+            TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported,
+            "residual predicate remains unsupported",
+        ));
+
+    let staged = native_iceberg_smoke_report::rewrite_scan_plan_for_staged_object_store_files(
+        plan,
+        &[StagedObjectStoreDataFile {
+            id: "s3-data-file".to_string(),
+            local_path: "/tmp/staged-data-0001.parquet".into(),
+            staged_bytes: 1234,
+        }],
+    );
+
+    assert_eq!(staged.data_files[0].location, "/tmp/staged-data-0001.parquet");
+    assert_eq!(staged.data_files[0].read_capability, TableFormatReadCapability::local_file_system());
+    assert_eq!(staged.data_files[0].size_bytes, Some(1234));
+    assert_eq!(staged.rejected_feature_codes(), vec!["iceberg_residual_predicate_unsupported"]);
+    assert!(!staged.is_native_admissible());
+}
+
+#[test]
+fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("123")
+        .with_catalog_type("local")
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(1024)
+            .with_row_count(7)
+            .with_resolved_parquet_source(
+                resolve_table_format_parquet_source(
+                    "/tmp/iceberg/data-0001.parquet",
+                    &TableFormatReadCapability::local_file_system(),
+                    &TableFormatParquetReadStrategyConfig::default(),
+                )
+                .unwrap(),
+            ),
+        );
+    let diagnostics = plan.diagnostics();
+    let mut row = native_iceberg_smoke_report::IcebergNativeSmokeReportRow::new(
+        "iceberg_smoke".to_string(),
+        "local_metadata".to_string(),
+        "local".to_string(),
+        "local_db.local_table".to_string(),
+        "select count(*) as row_count from local_table".to_string(),
+        diagnostics,
+        Some(CandidateOutcomeKind::Selected),
+        None,
+        Some(FinalPlanDisposition::Native),
+        ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::NotNeeded),
+        Some(7),
+        "not_applicable".to_string(),
+    );
+    row.native_runtime_started = true;
+    row.native_runtime_outcome = algeon_datafusion::native_report::NativeDataFusionRuntimeOutcome::Succeeded;
+    row.native_output_rows = Some(1);
+    row.native_output_batches = Some(1);
+    row.native_count_value = Some(7);
+    row.record_native_metrics(NativeDataFusionExecutionMetrics {
+        source_read_runtime_rows: vec![NativeSourceReadRuntimeMetricRow {
+            source_node_id: "source-0".to_string(),
+            read_kind: "chunk".to_string(),
+            read_strategy: "remote_direct".to_string(),
+            parquet_read_input_kind: "remote_path".to_string(),
+            remote_read_mode: "require_kvikio".to_string(),
+            parquet_read_backend: "cudf_sys_kvikio_remote_datasource".to_string(),
+            remote_backend_build_status: "kvikio_remote_io_enabled".to_string(),
+            remote_read_bytes: Some(2048),
+            remote_read_range_count: Some(3),
+            device_read_support: "supported".to_string(),
+            parquet_pruning_input_row_groups: Some(5),
+            parquet_row_groups_after_stats_filter: Some(5),
+            parquet_row_groups_after_bloom_filter: Some(2),
+            parquet_bloom_pruning_status: "bloom_pruned".to_string(),
+            ..Default::default()
+        }],
+        lakehouse_cache_fill_event_snapshot_rows: vec![NativeLakehouseCacheFillEventMetricRow {
+            outcome: "completed".to_string(),
+            bytes: Some(4096),
+            elapsed_ns: 9_000_000,
+            cache_path_hash: "cache123".to_string(),
+            stable_id_hash: "stable456".to_string(),
+            file_index: Some(0),
+            error_code: "none".to_string(),
+            error_kind: "none".to_string(),
+            error_status: "none".to_string(),
+            error_operation: "none".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    row.finalize_count_parity_if_needed();
+    let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row.clone()] };
+
+    let tsv = report.to_tsv();
+    let mut lines = tsv.lines();
+    let header = lines.next().expect("header line");
+    let row_line = lines.next().expect("row line");
+    let expected_columns = [
+        "query_id",
+        "fixture_mode",
+        "catalog_type",
+        "table_ident",
+        "sql",
+        "table_format",
+        "snapshot_id",
+        "planned_data_file_count",
+        "planned_delete_file_count",
+        "planned_bytes",
+        "admitted_native_source_file_count",
+        "rejected_feature_list",
+        "native_source_read_capability",
+        "source_read_strategy",
+        "credential_mode",
+        "lakehouse_cache_status",
+        "lakehouse_cache_read_mode",
+        "lakehouse_cache_fill_mode",
+        "direct_device_read_disposition",
+        "object_store_staging_mode",
+        "object_store_staging_status",
+        "staged_data_file_count",
+        "staged_bytes",
+        "native_planning_outcome",
+        "native_reason_code",
+        "final_disposition",
+        "cpu_arrow_reader_fallback",
+        "native_runtime_started",
+        "native_runtime_outcome",
+        "native_runtime_elapsed_ms",
+        "native_output_rows",
+        "native_output_batches",
+        "native_source_read_runtime_rows",
+        "lakehouse_cache_fill_event_snapshot_rows",
+        "expected_count",
+        "native_count_value",
+        "cpu_runtime_started",
+        "cpu_runtime_outcome",
+        "cpu_runtime_elapsed_ms",
+        "cpu_output_rows",
+        "cpu_output_batches",
+        "cpu_output_fingerprint",
+        "native_output_fingerprint",
+        "comparison_mode",
+        "parity_status",
+        "parity_detail",
+        "credential_source",
+    ];
+    assert_eq!(header, expected_columns.join("\t"));
+    assert_eq!(row_line.split('\t').count(), expected_columns.len());
+    assert!(tsv.contains("\tnative_source_read_capability\t"));
+    assert!(tsv.contains("\tsource_read_strategy\t"));
+    assert!(tsv.contains("\tcredential_mode\t"));
+    assert!(tsv.contains("\tlakehouse_cache_status\t"));
+    assert!(tsv.contains("\tlakehouse_cache_read_mode\t"));
+    assert!(tsv.contains("\tlakehouse_cache_fill_mode\t"));
+    assert!(tsv.contains("\tdirect_device_read_disposition\t"));
+    assert!(tsv.contains("\tobject_store_staging_mode\t"));
+    assert!(tsv.contains("\tobject_store_staging_status\t"));
+    assert!(tsv.contains("\tcpu_arrow_reader_fallback\t"));
+    assert!(tsv.contains("\tnative_runtime_elapsed_ms\t"));
+    assert!(tsv.contains("\tcpu_runtime_started\t"));
+    assert!(tsv.contains("\tcpu_runtime_elapsed_ms\t"));
+    assert!(tsv.contains("\tcpu_output_fingerprint\t"));
+    assert!(tsv.contains("\tcomparison_mode\t"));
+    assert!(tsv.contains("\tparity_status\t"));
+    assert!(tsv.contains("\tnative_source_read_runtime_rows\t"));
+    assert!(tsv.contains("\tlakehouse_cache_fill_event_snapshot_rows\t"));
+    assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("remote_read_bytes=2048"));
+    assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("parquet_bloom_pruning_status=bloom_pruned"));
+    assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("outcome=completed"));
+    assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("bytes=4096"));
+    assert_eq!(tsv_field(&tsv, "source_read_strategy"), "local_kvikio");
+    assert_eq!(tsv_field(&tsv, "credential_mode"), "none");
+    assert_eq!(tsv_field(&tsv, "lakehouse_cache_status"), "disabled");
+    assert_eq!(tsv_field(&tsv, "lakehouse_cache_read_mode"), "disabled");
+    assert_eq!(tsv_field(&tsv, "lakehouse_cache_fill_mode"), "disabled");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "auto");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "not_needed");
+    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "selected");
+    assert_eq!(tsv_field(&tsv, "final_disposition"), "native");
+    assert_eq!(tsv_field(&tsv, "cpu_runtime_started"), "false");
+    assert_eq!(tsv_field(&tsv, "cpu_runtime_outcome"), "not_started");
+    assert_eq!(tsv_field(&tsv, "comparison_mode"), "not_applicable");
+    assert!(tsv.contains("\tmatched\t"));
+
+    let mut writer = FlushCountingWriter::default();
+    native_iceberg_smoke_report::write_smoke_tsv_header(&mut writer).unwrap();
+    native_iceberg_smoke_report::write_smoke_tsv_row(&mut writer, &row).unwrap();
+    assert_eq!(writer.flushes, 2);
+    let streamed = String::from_utf8(writer.bytes).unwrap();
+    assert_eq!(streamed, tsv);
+}
+
+#[test]
+fn report_tsv_records_direct_s3_as_remote_direct_native_without_staging() {
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("123")
+        .with_catalog_type("aws_glue")
+        .with_data_file(
+            TableFormatDataFile::new(
+                "s3-data-0001",
+                "s3://bucket/table/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(1024)
+            .with_resolved_parquet_source(
+                resolve_table_format_parquet_source(
+                    "s3://bucket/table/data-0001.parquet",
+                    &TableFormatReadCapability::object_store("s3"),
+                    &TableFormatParquetReadStrategyConfig::default(),
+                )
+                .unwrap(),
+            ),
+        );
+    let row = native_iceberg_smoke_report::IcebergNativeSmokeReportRow::new(
+        "iceberg_smoke".to_string(),
+        "glue_s3".to_string(),
+        "aws_glue".to_string(),
+        "tpch_sf1.lineitem".to_string(),
+        "select count(*) as row_count from lineitem".to_string(),
+        plan.diagnostics(),
+        Some(CandidateOutcomeKind::Selected),
+        None,
+        Some(FinalPlanDisposition::Native),
+        ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Disabled, ObjectStoreStagingStatus::DirectNative),
+        None,
+        "aws_profile_env".to_string(),
+    );
+    let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row] };
+
+    let tsv = report.to_tsv();
+    assert_eq!(tsv_field(&tsv, "native_source_read_capability"), "object_store:s3");
+    assert_eq!(tsv_field(&tsv, "source_read_strategy"), "remote_direct");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "disabled");
+    assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "direct_s3_native");
+    assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "selected");
+    assert!(!tsv.contains("staged_local"));
+}
+
+#[test]
+fn direct_s3_scan_plan_produces_cpu_baseline_listing_url_without_staging() {
+    let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "s3-data-0001",
+                "s3://bucket/table/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(1024),
+        )
+        .with_data_file(TableFormatDataFile::new(
+            "gs-data-0001",
+            "gs://bucket/table/data-0001.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("gs"),
+        ));
+
+    let urls = native_iceberg_smoke_report::cpu_baseline_listing_urls_from_scan_plan(&plan).unwrap();
+
+    assert_eq!(urls.len(), 1);
+    assert_eq!(urls[0].as_str(), "s3://bucket/table/data-0001.parquet");
+    assert_eq!(urls[0].object_store().as_str(), "s3://bucket/");
+}
+
+fn tsv_field<'a>(tsv: &'a str, column: &str) -> &'a str {
+    let mut lines = tsv.lines();
+    let header = lines.next().expect("header line").split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("data row").split('\t').collect::<Vec<_>>();
+    let index = header.iter().position(|field| *field == column).expect("column present");
+    row[index]
+}
+
+#[derive(Default)]
+struct FlushCountingWriter {
+    bytes: Vec<u8>,
+    flushes: usize,
+}
+
+impl std::io::Write for FlushCountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}

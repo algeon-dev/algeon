@@ -18,7 +18,7 @@
   margin: 0.85rem 0 0;
   font-size: 0.8rem;
   line-height: 1.6;
-  color: var(--nx-dg-fg-muted);
+  color: var(--ag-dg-fg-muted);
   text-wrap: pretty;
 }
 
@@ -41,9 +41,9 @@
 .panel {
   margin-top: 0.9rem;
   padding: 0.8rem 0.95rem;
-  border: 1px solid var(--nx-dg-border);
+  border: 1px solid var(--ag-dg-border);
   border-radius: 8px;
-  background: var(--nx-dg-surface);
+  background: var(--ag-dg-surface);
 }
 
 .panelHead {
@@ -62,16 +62,16 @@
 }
 
 .panelName {
-  font-family: var(--nx-dg-mono);
+  font-family: var(--ag-dg-mono);
   font-size: 0.85rem;
   font-weight: 600;
-  color: var(--nx-dg-fg);
+  color: var(--ag-dg-fg);
 }
 
 .panelSub {
-  font-family: var(--nx-dg-mono);
+  font-family: var(--ag-dg-mono);
   font-size: 0.7rem;
-  color: var(--nx-dg-fg-subtle);
+  color: var(--ag-dg-fg-subtle);
 }
 
 .panelBody {
@@ -79,7 +79,7 @@
   min-height: 3.6em;
   font-size: 0.8rem;
   line-height: 1.65;
-  color: var(--nx-dg-fg-muted);
+  color: var(--ag-dg-fg-muted);
   text-wrap: pretty;
 }
 .panelBody code {

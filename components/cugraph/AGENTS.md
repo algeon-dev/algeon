@@ -13,12 +13,12 @@
 
 `components/cugraph` provides service-facing Rust graph APIs over libcugraph.
 SQL planning, runtime admission, and query execution follow the root
-`datafusion-nexus` ownership map.
+`algeon-datafusion` ownership map.
 
 - Safe graph, algorithm, result, and cuDF interop APIs belong in
-  `cugraph-nexus/`; bindgen and native contract resolution belong in
-  `cugraph-nexus-sys/`.
-- `cudf-nexus`, `rapids-interop`, and `cuvs-nexus` are root-workspace component
+  `cugraph/`; bindgen and native contract resolution belong in
+  `cugraph-sys/`.
+- `cudf`, `rapids-interop`, and `cuvs` are root-workspace component
   dependencies. `components/cugraph/cugraph/` is the pinned native source; the
   default cuVS prefix is `target/native/cuvs-install`, while an explicitly
   selected compatible external prefix is supported.
@@ -29,7 +29,7 @@ SQL planning, runtime admission, and query execution follow the root
 
 - cuDF, cuGraph, and compatible cuVS 26.06.x must resolve one RMM runtime. The
   default root cuVS prefix requires its pinned source marker; an explicitly
-  selected external prefix may omit that Nexus marker. Never accept a private
+  selected external prefix may omit that Algeon marker. Never accept a private
   `_deps` RMM or libcuvs copy.
 - Resolve the native cuGraph contract from exactly one source: the formal CMake
   export or all three explicit include, link, and runtime path lists.
@@ -54,10 +54,10 @@ CUVS_INSTALL_DIR="$PWD/target/native/cuvs-install" \
 CUGRAPH_CMAKE_BUILD_DIR="$PWD/target/native/cugraph-build" \
 scripts/build/build_libcugraph.sh
 
-cargo clippy -p cugraph-nexus -p cugraph-nexus-sys \
+cargo clippy -p cugraph -p cugraph-sys \
   --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cugraph-nexus) | package(cugraph-nexus-sys)'
+cargo nt -E 'package(cugraph) | package(cugraph-sys)'
 ```
 
 Run focused checks first, then broaden validation with the change's blast
@@ -80,8 +80,8 @@ native work.
 
 ## Public contracts
 
-- Preserve package/import identities: `cugraph-nexus` imports as `cugraph`,
-  `cugraph-nexus-sys` imports as `cugraph_sys`, and the sys crate keeps
+- Preserve package/import identities: `cugraph` imports as `cugraph`,
+  `cugraph-sys` imports as `cugraph_sys`, and the sys crate keeps
   `links = "cugraph"`.
 - Preserve `DEP_CUGRAPH_*` native include, link, and runtime metadata for
   downstream consumers.

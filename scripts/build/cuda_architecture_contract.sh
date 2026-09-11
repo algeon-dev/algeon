@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-NEXUS_CUDA_ARCHITECTURE_CONTRACT_RELATIVE_PATH="share/nexus-native/cuda-architectures.env"
+ALGEON_CUDA_ARCHITECTURE_CONTRACT_RELATIVE_PATH="share/algeon-native/cuda-architectures.env"
 
-nexus_cuda_architectures() {
+algeon_cuda_architectures() {
     if [[ -n "${CUDF_CMAKE_CUDA_ARCHITECTURES:-}" ]]; then
         echo "error: CUDF_CMAKE_CUDA_ARCHITECTURES is no longer a supported public selector." >&2
         echo "Set CMAKE_CUDA_ARCHITECTURES once for the complete cuDF -> cuVS -> cuGraph build." >&2
@@ -15,16 +15,16 @@ nexus_cuda_architectures() {
     esac
 }
 
-nexus_cuda_contract_path() {
-    printf '%s/%s\n' "$1" "${NEXUS_CUDA_ARCHITECTURE_CONTRACT_RELATIVE_PATH}"
+algeon_cuda_contract_path() {
+    printf '%s/%s\n' "$1" "${ALGEON_CUDA_ARCHITECTURE_CONTRACT_RELATIVE_PATH}"
 }
 
 # Real cubin architecture token grammar, shared with build_support.rs's
 # parse_real_cuda_architectures: digits plus an optional single lowercase
 # suffix letter (`120a` architecture-specific, `100f` family-specific).
-NEXUS_CUDA_REAL_ARCHITECTURE_PATTERN='[0-9]+[a-z]?'
+ALGEON_CUDA_REAL_ARCHITECTURE_PATTERN='[0-9]+[a-z]?'
 
-nexus_cuda_real_architectures() {
+algeon_cuda_real_architectures() {
     local library="$1"
     local cuda_toolkit_root="${CUDAToolkit_ROOT:-${CUDA_HOME:-${CUDA_PATH:-/usr/local/cuda}}}"
     local cuobjdump="${cuda_toolkit_root}/bin/cuobjdump"
@@ -44,7 +44,7 @@ nexus_cuda_real_architectures() {
     local architectures
     # Large primary-library cubin groups are build targets; small groups can be embedded dependency stubs.
     architectures="$("${cuobjdump}" --list-elf "${library}" \
-        | sed -n -E "s/.*[.]sm_(${NEXUS_CUDA_REAL_ARCHITECTURE_PATTERN})[.]cubin.*/\\1/p" \
+        | sed -n -E "s/.*[.]sm_(${ALGEON_CUDA_REAL_ARCHITECTURE_PATTERN})[.]cubin.*/\\1/p" \
         | LC_ALL=C sort \
         | uniq -c \
         | awk '{ count[$2] = $1; if ($1 > max) max = $1 } END { for (arch in count) if (count[arch] * 2 >= max) print arch }' \
@@ -57,7 +57,7 @@ nexus_cuda_real_architectures() {
     printf '%s\n' "${architectures}"
 }
 
-nexus_cuda_write_contract() {
+algeon_cuda_write_contract() {
     local root="$1"
     local library="$2"
     local requested="$3"
@@ -66,9 +66,9 @@ nexus_cuda_write_contract() {
     local contract_tmp
     local real_architectures
 
-    contract_path="$(nexus_cuda_contract_path "${root}")"
+    contract_path="$(algeon_cuda_contract_path "${root}")"
     contract_dir="$(dirname -- "${contract_path}")"
-    real_architectures="$(nexus_cuda_real_architectures "${library}")"
+    real_architectures="$(algeon_cuda_real_architectures "${library}")"
     mkdir -p -- "${contract_dir}"
     contract_tmp="$(mktemp "${contract_path}.tmp.XXXXXX")"
     printf '%s\n' \
@@ -79,7 +79,7 @@ nexus_cuda_write_contract() {
     printf '%s\n' "${contract_path}"
 }
 
-nexus_cuda_read_contract_value() {
+algeon_cuda_read_contract_value() {
     local contract_path="$1"
     local key="$2"
     local value
@@ -92,7 +92,7 @@ nexus_cuda_read_contract_value() {
     printf '%s\n' "${value}"
 }
 
-nexus_cuda_require_contract() {
+algeon_cuda_require_contract() {
     local component="$1"
     local root="$2"
     local requested="$3"
@@ -100,13 +100,13 @@ nexus_cuda_require_contract() {
     local contract_path
     local installed_requested
 
-    contract_path="$(nexus_cuda_contract_path "${root}")"
+    contract_path="$(algeon_cuda_contract_path "${root}")"
     if [[ ! -f "${contract_path}" ]]; then
         echo "error: ${component} is missing its CUDA architecture contract '${contract_path}'." >&2
         echo "Run with CMAKE_CUDA_ARCHITECTURES='${requested}': ${rebuild_command}" >&2
         return 1
     fi
-    installed_requested="$(nexus_cuda_read_contract_value "${contract_path}" requested)"
+    installed_requested="$(algeon_cuda_read_contract_value "${contract_path}" requested)"
     if [[ "${installed_requested}" != "${requested}" ]]; then
         echo "error: ${component} was built for CMAKE_CUDA_ARCHITECTURES='${installed_requested}'," >&2
         echo "but this build requested '${requested}'." >&2
@@ -115,7 +115,7 @@ nexus_cuda_require_contract() {
     fi
 }
 
-nexus_cuda_require_matching_contracts() {
+algeon_cuda_require_matching_contracts() {
     local left_component="$1"
     local left_root="$2"
     local right_component="$3"
@@ -126,10 +126,10 @@ nexus_cuda_require_matching_contracts() {
     local left_real
     local right_real
 
-    left_contract="$(nexus_cuda_contract_path "${left_root}")"
-    right_contract="$(nexus_cuda_contract_path "${right_root}")"
-    left_real="$(nexus_cuda_read_contract_value "${left_contract}" real)"
-    right_real="$(nexus_cuda_read_contract_value "${right_contract}" real)"
+    left_contract="$(algeon_cuda_contract_path "${left_root}")"
+    right_contract="$(algeon_cuda_contract_path "${right_root}")"
+    left_real="$(algeon_cuda_read_contract_value "${left_contract}" real)"
+    right_real="$(algeon_cuda_read_contract_value "${right_contract}" real)"
     if [[ "${left_real}" != "${right_real}" ]]; then
         echo "error: ${left_component} contains full-kernel real CUDA cubins '${left_real}'," >&2
         echo "but ${right_component} contains '${right_real}'." >&2

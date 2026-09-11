@@ -18,7 +18,7 @@ rustc-ice-*.txt
 
 # Build settings
 env.sh
-
+mise.toml
 *.log
 .DS_Store
 
@@ -53,7 +53,7 @@ __pycache__/
 /fixture/graph/dblp.v12.json
 /fixture/graph/cugraph/bfs_predicate_numeric/
 /fixture/graph/cugraph/bfs_predicate_utf8/
-/crates/nexus-bench/calibration/*.tsv
+/crates/bench/calibration/*.tsv
 
 # agent config
 .codex

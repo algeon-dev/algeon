@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "description": "Local cuGraph datasets and reference outputs prepared from the root-managed cuGraph gitlink.",
-  "source_repo": "https://github.com/DataFusion-Nexus/cugraph",
+  "source_repo": "https://github.com/algeon-dev/cugraph",
   "source_repo_path": "components/cugraph/cugraph",
   "source_revision": "a73ed2dd01543410cea7c0e41dc3b97d23fd1630",
   "license": "Apache-2.0",

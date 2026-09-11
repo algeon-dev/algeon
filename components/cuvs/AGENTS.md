@@ -3,7 +3,7 @@
 ## Working principles
 
 - Fix the owning runtime, interop, FFI, or native-discovery contract instead of
-  hiding a failure in an algorithm wrapper. Extend `cudf-nexus` or
+  hiding a failure in an algorithm wrapper. Extend `cudf` or
   `rapids-interop` when the missing ownership or execution primitive belongs
   there.
 - Keep changes scoped. Preserve unrelated worktree edits and avoid
@@ -13,13 +13,13 @@
 ## Project boundaries
 
 `components/cuvs` is the runtime-bound Rust integration for the scoped cuVS
-surface used by DataFusion Nexus. SQL planning, runtime admission, and query
-execution follow the root `datafusion-nexus` ownership map.
+surface used by Algeon. SQL planning, runtime admission, and query
+execution follow the root `algeon-datafusion` ownership map.
 
 - Safe algorithm, tensor, ownership, and completion APIs belong in
-  `cuvs-nexus/`; raw generated C bindings and native discovery belong in
-  `cuvs-nexus-sys/`.
-- `cudf-nexus` and `rapids-interop` are root-workspace component dependencies.
+  `cuvs/`; raw generated C bindings and native discovery belong in
+  `cuvs-sys/`.
+- `cudf` and `rapids-interop` are root-workspace component dependencies.
   The pinned official cuVS source is `components/cuvs/cuvs`.
 - The canonical install defaults are `target/native/cuvs-install` and the
   shared `target/native/cudf-install`; override them only with explicit
@@ -49,10 +49,10 @@ execution follow the root `datafusion-nexus` ownership map.
 ## Build and test
 
 ```bash
-cargo clippy -p cuvs-nexus -p cuvs-nexus-sys \
+cargo clippy -p cuvs -p cuvs-sys \
   --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cuvs-nexus) | package(cuvs-nexus-sys)'
+cargo nt -E 'package(cuvs) | package(cuvs-sys)'
 
 # Native-free workspace and checked-binding contracts
 DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked \
@@ -82,8 +82,8 @@ validation.
 
 ## Public contracts
 
-- Preserve package/import identities: `cuvs-nexus` imports as `cuvs`,
-  `cuvs-nexus-sys` imports as `cuvs_sys`, and the sys crate keeps
+- Preserve package/import identities: `cuvs` imports as `cuvs`,
+  `cuvs-sys` imports as `cuvs_sys`, and the sys crate keeps
   `links = "cuvs_c"`.
 - Preserve `CuvsResources` execution-binding identity and the ownership and
   completion semantics of `PreparedTensorLease`,

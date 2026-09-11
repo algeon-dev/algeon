@@ -7,7 +7,7 @@ SQL on `:50051`.
 
 ## Why this image is unusual
 
-datafusion-nexus links **forked, locally built** RAPIDS C++ libraries — a
+algeon-datafusion links **forked, locally built** RAPIDS C++ libraries — a
 modified cuDF, cuGraph, RMM and cuVS. The `.so` files in the public
 `rapidsai/*` and `nvidia/cuda` images are the *stock* upstream builds and are
 **ABI-incompatible** with this binary. So the image cannot install RAPIDS from a
@@ -19,7 +19,7 @@ The split:
 |---|---|---|
 | Forked cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-install` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
 | Canonical cuVS `.so` | root `target/native/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
-| `libcudf_rust*.so` FFI bridges | cudf-nexus-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
+| `libcudf_rust*.so` FFI bridges | cudf-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, …) | official `nvidia/cuda:*-runtime` | **harvested** in-Dockerfile via `ldd` |
 | `libgomp1`, `libbrotli1`, `ca-certificates`, `tini` | Ubuntu apt | installed in final stage |
 
@@ -28,8 +28,8 @@ The split:
 ```bash
 # 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
-bash docker/stage-docker-payload.sh                         # full: iceberg,cugraph,cuvs,nvml
-FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh    # lean: cuDF only, ~3x smaller image
+bash docker/stage-docker-payload.sh                         # cugraph,cuvs,nvml
+FEATURES=nvml bash docker/stage-docker-payload.sh            # lean: cuDF only, ~3x smaller image
 FEATURES=cuvs bash docker/stage-docker-payload.sh             # cuVS without cuGraph
 SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh       # reuse only hash-verified canonical artifact
 
@@ -50,7 +50,7 @@ the build record and canonical artifact still match the selected policy.
 Prerequisites: the forked libs must already be built —
 `target/native/cudf-install/lib/libcudf.so`,
 `target/native/cuvs-install/lib/libcuvs.so`, and (for cugraph)
-`target/native/cugraph-install/lib/libcugraph.so`. Set `NEXUS_NATIVE_DIR` when
+`target/native/cugraph-install/lib/libcugraph.so`. Set `ALGEON_NATIVE_DIR` when
 the matching `cudf-install`, `cuvs-install`, and `cugraph-install` prefixes live
 under a different native root. cuGraph must have been configured against that
 root's cuVS prefix. `readelf` and `ldd` are mandatory
@@ -78,7 +78,7 @@ mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
 
 | Build | Forked libs | Harvested CUDA | ≈ Final image |
 |---|---|---|---|
-| **lean** (`iceberg,nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
+| **lean** (`nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
 | **full** (`+cugraph,+cuvs`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
 
 When `strip` is available, staged artifacts are stripped
@@ -94,7 +94,7 @@ library** because of how each fork was compiled:
   120** plus PTX. Portable across Turing → Blackwell, and JIT-able beyond.
 - **cuGraph / cuVS** — currently built for **sm_120 (Blackwell) ONLY**, no PTX.
   **cuGraph queries will fail on any non-Blackwell GPU.** This is a build-time
-  setting in `cugraph-nexus` (`CMAKE_CUDA_ARCHITECTURES`), not something the
+  setting in `cugraph` (`CMAKE_CUDA_ARCHITECTURES`), not something the
   Dockerfile can fix. To make the cuGraph image portable, rebuild the forked
   cuGraph with a multi-arch list before `build.sh`, e.g.:
   ```bash
@@ -127,28 +127,28 @@ the staged binary and image labels remain verifiable.
 ## Run
 
 ```bash
-docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v4
+docker run --rm --gpus all -p 50051:50051 algeon-server:x86-64-v4
 ```
 
 `docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
 bounded resource profile, cuGraph) and forwards host AWS credentials. The complete,
 code-verified env-var reference lives in the Dockerfile header. It defaults to
-the default `:x86-64-v4` tag; set `NEXUS_SERVER_IMAGE` explicitly to use a
+the default `:x86-64-v4` tag; set `ALGEON_SERVER_IMAGE` explicitly to use a
 different repository or tag. Highlights:
 
-- `NEXUS_SERVER_BIND` (default `0.0.0.0:50051`), `NEXUS_SERVER_LOG`,
-  `NEXUS_SERVER_GPU_DEVICES`.
+- `ALGEON_SERVER_BIND` (default `0.0.0.0:50051`), `ALGEON_SERVER_LOG`,
+  `ALGEON_SERVER_GPU_DEVICES`.
 - Native memory: automatic bounded capacity is resolved per selected GPU;
-  set the three explicit `NEXUS_SERVER_NATIVE_*` profile knobs together only
+  set the three explicit `ALGEON_SERVER_NATIVE_*` profile knobs together only
   for a fixed experiment.
-- Iceberg: `NEXUS_ICEBERG_CATALOG_KIND` (`glue`|`rest`) + `NEXUS_ICEBERG_*`,
+- Iceberg: `ALGEON_ICEBERG_CATALOG_KIND` (`glue`|`rest`) + `ALGEON_ICEBERG_*`,
   `AWS_DEFAULT_REGION` (**required** for KvikIO S3).
-- cuGraph: `NEXUS_SERVER_CUGRAPH_ENABLED=true` requires an image built with
+- cuGraph: `ALGEON_SERVER_CUGRAPH_ENABLED=true` requires an image built with
   `cugraph`; set it to `false` for a lean image.
 
 Startup is **eager**: the server initializes CUDA/RMM before binding, so a
 missing or incompatible GPU fails fast. Readiness is signalled by the log line
-`query admission controller initialized` followed by `starting datafusion-nexus
+`query admission controller initialized` followed by `starting algeon-datafusion
 Flight SQL server`, after which `:50051` accepts connections. The built-in
 `HEALTHCHECK` TCP-probes that port (the port only opens after CUDA init).
 

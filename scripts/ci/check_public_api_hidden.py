@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Fail closed on unclassified `#[doc(hidden)] pub` surface in datafusion-nexus.
+"""Fail closed on unclassified `#[doc(hidden)] pub` surface in algeon-datafusion.
 
 `cargo public-api` omits `#[doc(hidden)]` items, so the snapshot gate in
 ``check_public_api_surface.sh`` cannot see them. This check closes that gap for
-the root adapter crate: every `#[doc(hidden)]`-attributed `pub` item in
-``src/`` must resolve to exactly one entry in
-``.config/policies/public-api/datafusion-nexus-hidden.tsv`` naming its
+the DataFusion adapter crate: every `#[doc(hidden)]`-attributed `pub` item in
+``crates/algeon-datafusion/src/`` must resolve to exactly one entry in
+``.config/policies/public-api/algeon-datafusion-hidden.tsv`` naming its
 feature contract, owner, consumer, and removal condition. Module entries cover
 unattributed children inside that module; anything else fails.
 
@@ -24,11 +24,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-DEFAULT_LEDGER = ROOT / ".config" / "policies" / "public-api" / "datafusion-nexus-hidden.tsv"
+SRC = ROOT / "crates" / "algeon-datafusion" / "src"
+DEFAULT_LEDGER = ROOT / ".config" / "policies" / "public-api" / "algeon-datafusion-hidden.tsv"
 
 HEADER = ["symbol", "feature", "owner", "consumer", "removal_condition"]
-ALLOWED_FEATURES = {"server-internal", "bench-support", "qualification"}
+ALLOWED_FEATURES = {"server", "bench-support", "qualification"}
 
 ATTR_RE = re.compile(r"^#\[(?P<body>[^\]]*)\]\s*$")
 CFG_FEATURE_RE = re.compile(r'feature\s*=\s*"(?P<feature>[^"]+)"')
@@ -46,8 +46,8 @@ def module_path_for_file(path: Path) -> list[str]:
     if parts[-1] == "mod":
         parts = parts[:-1]
     if parts == ["lib"]:
-        return ["datafusion_nexus"]
-    return ["datafusion_nexus", *parts]
+        return ["algeon_datafusion"]
+    return ["algeon_datafusion", *parts]
 
 
 def features_in_cfg(body: str) -> set[str]:

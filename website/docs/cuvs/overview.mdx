@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 slug: /cuvs
-description: SQL-visible cuVS vector search and vector ML over DataFusion Nexus SQL sessions.
+description: SQL-visible cuVS vector search and vector ML over Algeon SQL sessions.
 ---
 
 # cuVS SQL API (WIP)
 
-DataFusion Nexus exposes NVIDIA RAPIDS
+Algeon exposes NVIDIA RAPIDS
 [**cuVS**](https://github.com/NVIDIA/cuvs) as SQL table functions over
 DataFusion SQL sessions — the same pattern already used by the
 [cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` function reads a
@@ -67,7 +67,7 @@ A `cuvs_*` call runs on the GPU when all of the following hold:
    `try_with_cuvs_sql()` as shown in
    [DataFusion Session](../integration/datafusion-session.mdx#add-cugraph-and-cuvs-sql),
    and the Flight SQL server installs it on every session it builds;
-3. a `NexusGpuBackend` is installed, because execution needs an admitted query
+3. a `AlgeonGpuBackend` is installed, because execution needs an admitted query
    memory domain.
 
 `gpu_validate_call` validates schemas and options without scanning relations or

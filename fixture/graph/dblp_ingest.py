@@ -3,7 +3,7 @@
 
 The upstream file (``dblp.v12.json``, ~12.5 GB) is a single JSON *array* with one
 paper object per line: line one is ``[``, every following line is ``,{...}``.  This
-script streams that file once and writes the DataFusion-Nexus graph-fixture layout so
+script streams that file once and writes the Algeon graph-fixture layout so
 cuGraph SQL UDFs can read only the necessary bytes into the GPU before the showcase
 enrichment JOIN back to rich paper metadata.
 
@@ -57,9 +57,9 @@ DEFAULT_BUCKET_WIDTH = 100_000_000  # AMiner ids reach ~3e9; keep bucket ids com
 
 DATASET_ID = "citation-network"
 DISPLAY_NAME = "DBLP / AMiner Citation Network V12"
-GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY = "nexus.graph.vertex_upper_bound.v1"
+GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY = "algeon.graph.vertex_upper_bound.v1"
 _GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY_BYTES = GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY.encode("ascii")
-GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY = "nexus.graph.simple_directed_edge_topology.v1"
+GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY = "algeon.graph.simple_directed_edge_topology.v1"
 _GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY_BYTES = GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY.encode("ascii")
 MULTI_GRAPH_SLICE_PARTITION = "source_hash_splitmix64_v1"
 MULTI_GRAPH_SLICE_SCHEMA_VERSION = 1
@@ -155,7 +155,7 @@ class DatasetSpec:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert DBLP/AMiner V12 citation JSON into DataFusion-Nexus pruning-friendly Parquet.",
+        description="Convert DBLP/AMiner V12 citation JSON into Algeon pruning-friendly Parquet.",
     )
     parser.add_argument(
         "--source-json",
@@ -1141,7 +1141,7 @@ def write_multi_graph_slices(
     counters = _new_multi_graph_slice_counters(slice_count)
     rowset_hashers = [hashlib.sha256() for _ in range(slice_count)]
     for index, rowset_hasher in enumerate(rowset_hashers):
-        rowset_hasher.update(b"datafusion-nexus.dblp.source-hash-edge-rowset.v1\\0")
+        rowset_hasher.update(b"algeon-datafusion.dblp.source-hash-edge-rowset.v1\\0")
         rowset_hasher.update(struct.pack(">QQQ", slice_count, index, args.edge_slice_seed))
 
     parquet_dir = root / "parquet"

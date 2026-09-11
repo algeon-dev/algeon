@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SUPPORT = ROOT / "components/cudf/nexus-build-support/src/lib.rs"
+SUPPORT = ROOT / "components/algeon-build-support/src/lib.rs"
 
 
 @dataclass(frozen=True)
@@ -29,10 +29,19 @@ class InclusionSite:
 
 
 SITES = (
-    InclusionSite("root", "build.rs", True, False, True, True, True, False),
+    InclusionSite(
+        "datafusion",
+        "crates/algeon-datafusion/build.rs",
+        True,
+        False,
+        True,
+        True,
+        True,
+        False,
+    ),
     InclusionSite(
         "engine",
-        "crates/nexus-query-engine/build.rs",
+        "crates/algeon-query-engine/build.rs",
         True,
         False,
         True,
@@ -42,7 +51,7 @@ SITES = (
     ),
     InclusionSite(
         "bench",
-        "crates/nexus-bench/build.rs",
+        "crates/bench/build.rs",
         True,
         True,
         True,
@@ -52,7 +61,7 @@ SITES = (
     ),
     InclusionSite(
         "examples",
-        "crates/nexus-examples/build.rs",
+        "crates/examples/build.rs",
         True,
         False,
         False,
@@ -62,10 +71,10 @@ SITES = (
     ),
     InclusionSite(
         "server",
-        "crates/nexus-server/build.rs",
+        "crates/algeon-server/build.rs",
         True,
         True,
-        True,
+        False,
         True,
         True,
         False,
@@ -306,55 +315,62 @@ def load_manifest(path: str) -> dict[str, object]:
 
 
 def assert_manifest_contract() -> None:
-    root = load_manifest("Cargo.toml")
-    workspace_dependencies = root["workspace"]["dependencies"]
+    workspace = load_manifest("Cargo.toml")
+    workspace_dependencies = workspace["workspace"]["dependencies"]
     assert workspace_dependencies["cuvs"] == {
-        "package": "cuvs-nexus",
-        "path": "components/cuvs/cuvs-nexus",
+        "package": "algeon-cuvs",
+        "path": "components/cuvs/algeon-cuvs",
         "version": "=0.1.0",
     }
     assert workspace_dependencies["cuvs-sys"] == {
-        "package": "cuvs-nexus-sys",
-        "path": "components/cuvs/cuvs-nexus-sys",
+        "package": "algeon-cuvs-sys",
+        "path": "components/cuvs/algeon-cuvs-sys",
         "version": "=0.1.0",
     }
-    assert root["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
-    assert "server" not in root["features"]
-    assert "server-cugraph" not in root["features"]
-    assert "server-cuvs" not in root["features"]
-    assert root["dependencies"]["cuvs"]["optional"] is True
-    assert root["dependencies"]["cuvs-sys"]["optional"] is True
+    adapter = load_manifest("crates/algeon-datafusion/Cargo.toml")
+    assert adapter["features"]["cuvs"] == [
+        "dep:cuvs",
+        "dep:cuvs-sys",
+        "query-engine/cuvs",
+    ]
+    assert "dep:arrow-flight" in adapter["features"]["server"]
+    assert "dep:tonic" in adapter["features"]["server"]
+    assert "server-cugraph" not in adapter["features"]
+    assert "server-cuvs" not in adapter["features"]
+    assert adapter["dependencies"]["cuvs"]["optional"] is True
+    assert adapter["dependencies"]["cuvs-sys"]["optional"] is True
 
-    server = load_manifest("crates/nexus-server/Cargo.toml")
-    assert "datafusion-nexus/cuvs" in server["features"]["cuvs"]
+    server = load_manifest("crates/algeon-server/Cargo.toml")
+    assert server["dependencies"]["algeon-datafusion"]["features"] == ["server"]
+    assert "algeon-datafusion/cuvs" in server["features"]["cuvs"]
     assert "dep:cuvs-sys" in server["features"]["cuvs"]
     assert server["dependencies"]["cuvs-sys"]["optional"] is True
 
-    engine = load_manifest("crates/nexus-query-engine/Cargo.toml")
+    engine = load_manifest("crates/algeon-query-engine/Cargo.toml")
     assert engine["features"]["cugraph"] == [
         "dep:cugraph",
         "dep:cugraph-sys",
-        "nexus-query-planning/cugraph",
-        "nexus-query-runtime/cugraph",
+        "query-planning/cugraph",
+        "query-runtime/cugraph",
     ]
     # cuVS is used by the engine alone. Neither planning nor runtime has a
     # `cuvs` feature to forward to any more: planning's only cuVS code was the
     # error projection, which now lives in the engine, and runtime's feature
     # never did anything but forward planning's.
     assert engine["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys"]
-    planning = load_manifest("crates/nexus-query-planning/Cargo.toml")
+    planning = load_manifest("crates/algeon-query-planning/Cargo.toml")
     assert "cuvs" not in planning["features"]
     assert "cuvs" not in planning.get("dependencies", {})
-    runtime = load_manifest("crates/nexus-query-runtime/Cargo.toml")
+    runtime = load_manifest("crates/algeon-query-runtime/Cargo.toml")
     assert "cuvs" not in runtime["features"]
     assert engine["dependencies"]["cuvs"]["optional"] is True
     assert engine["dependencies"]["cuvs-sys"]["optional"] is True
 
-    bench = load_manifest("crates/nexus-bench/Cargo.toml")
+    bench = load_manifest("crates/bench/Cargo.toml")
     assert "dep:cuvs-sys" in bench["features"]["cuvs"]
     assert bench["dependencies"]["cuvs-sys"]["optional"] is True
 
-    examples = load_manifest("crates/nexus-examples/Cargo.toml")
+    examples = load_manifest("crates/examples/Cargo.toml")
     assert "dep:cuvs-sys" in examples["features"]["cuvs"]
     assert examples["dependencies"]["cuvs-sys"]["optional"] is True
 
@@ -362,13 +378,13 @@ def assert_manifest_contract() -> None:
 def main() -> int:
     try:
         assert_manifest_contract()
-        with tempfile.TemporaryDirectory(prefix="datafusion-nexus-build-support-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="algeon-datafusion-build-support-") as temporary:
             temporary_path = Path(temporary)
-            support_rlib = temporary_path / "libnexus_build_support.rlib"
+            support_rlib = temporary_path / "librapids_build_support.rlib"
             compile_support = run(
                 [
                     "rustc", "--edition=2024", "-D", "warnings", "--crate-type=lib",
-                    "--crate-name", "nexus_build_support", str(SUPPORT), "-o", str(support_rlib),
+                    "--crate-name", "rapids_build_support", str(SUPPORT), "-o", str(support_rlib),
                 ]
             )
             require_success(compile_support, "build-support library compilation")
@@ -397,7 +413,7 @@ def main() -> int:
                         f"build_support_smoke_{site.name}",
                         str(ROOT / site.source),
                         "--extern",
-                        f"nexus_build_support={support_rlib}",
+                        f"rapids_build_support={support_rlib}",
                         "-o",
                         str(executable),
                     ]
@@ -406,10 +422,10 @@ def main() -> int:
                 executables[site.name] = executable
 
             scenarios = [
-                ("root-neither-direct", SITES[0], False, False, "direct", True, None),
-                ("root-cuvs-aggregate", SITES[0], False, True, "aggregate", True, None),
-                ("root-cugraph-aggregate", SITES[0], True, False, "aggregate", True, None),
-                ("root-combined-direct", SITES[0], True, True, "direct", True, None),
+                ("datafusion-neither-direct", SITES[0], False, False, "direct", True, None),
+                ("datafusion-cuvs-aggregate", SITES[0], False, True, "aggregate", True, None),
+                ("datafusion-cugraph-aggregate", SITES[0], True, False, "aggregate", True, None),
+                ("datafusion-combined-direct", SITES[0], True, True, "direct", True, None),
                 ("engine-neither-aggregate", SITES[1], False, False, "aggregate", True, None),
                 ("engine-cuvs-direct-no-logger", SITES[1], False, True, "direct", False, None),
                 ("engine-cugraph-aggregate-absorbed", SITES[1], True, False, "aggregate", False, "absorbed"),
@@ -440,7 +456,7 @@ def main() -> int:
                 missing_rmm=True,
             )
             missing_env["CARGO_FEATURE_CUGRAPH"] = "1"
-            missing = run([str(executables["root"])], env=missing_env)
+            missing = run([str(executables["datafusion"])], env=missing_env)
             if missing.returncode == 0 or "requires libcudf to ship a shared librmm.so" not in missing.stderr:
                 raise AssertionError(f"missing required RMM did not fail stably\n{missing.stdout}\n{missing.stderr}")
 
@@ -453,7 +469,7 @@ def main() -> int:
                 divergent_runtime_rmm=True,
             )
             divergent_env["CARGO_FEATURE_CUGRAPH"] = "1"
-            divergent = run([str(executables["root"])], env=divergent_env)
+            divergent = run([str(executables["datafusion"])], env=divergent_env)
             if divergent.returncode == 0 or "two divergent librmm.so builds" not in divergent.stderr:
                 raise AssertionError(f"divergent RMM did not hard fail stably\n{divergent.stdout}\n{divergent.stderr}")
 
@@ -467,7 +483,7 @@ def main() -> int:
                 graph_logger=True,
             )
             absorbed_env["CARGO_FEATURE_CUGRAPH"] = "1"
-            absorbed = run([str(executables["root"])], env=absorbed_env)
+            absorbed = run([str(executables["datafusion"])], env=absorbed_env)
             if absorbed.returncode == 0 or "two rapids_logger builds" not in absorbed.stderr:
                 raise AssertionError(
                     f"shared logger reachable in absorbed state did not hard fail stably\n{absorbed.stdout}\n{absorbed.stderr}"
@@ -482,7 +498,7 @@ def main() -> int:
                 missing_cuvs_c=True,
             )
             missing_c_api_env["CARGO_FEATURE_CUVS"] = "1"
-            missing_c_api = run([str(executables["root"])], env=missing_c_api_env)
+            missing_c_api = run([str(executables["datafusion"])], env=missing_c_api_env)
             if missing_c_api.returncode == 0 or "LIBCUVS_C_RUNTIME_LIB" not in missing_c_api.stderr:
                 raise AssertionError(
                     f"missing libcuvs_c did not fail stably\n{missing_c_api.stdout}\n{missing_c_api.stderr}"
@@ -498,7 +514,7 @@ def main() -> int:
             )
             divergent_cuvs_env["CARGO_FEATURE_CUGRAPH"] = "1"
             divergent_cuvs_env["CARGO_FEATURE_CUVS"] = "1"
-            divergent_cuvs = run([str(executables["root"])], env=divergent_cuvs_env)
+            divergent_cuvs = run([str(executables["datafusion"])], env=divergent_cuvs_env)
             if divergent_cuvs.returncode == 0 or "different canonical libcuvs.so files" not in divergent_cuvs.stderr:
                 raise AssertionError(
                     f"divergent cuVS identities did not hard fail\n{divergent_cuvs.stdout}\n{divergent_cuvs.stderr}"
@@ -513,7 +529,7 @@ def main() -> int:
                 private_graph_cuvs=True,
             )
             private_cuvs_env["CARGO_FEATURE_CUGRAPH"] = "1"
-            private_cuvs = run([str(executables["root"])], env=private_cuvs_env)
+            private_cuvs = run([str(executables["datafusion"])], env=private_cuvs_env)
             if private_cuvs.returncode == 0 or "private `_deps` build" not in private_cuvs.stderr:
                 raise AssertionError(
                     f"private cuGraph cuVS did not hard fail\n{private_cuvs.stdout}\n{private_cuvs.stderr}"

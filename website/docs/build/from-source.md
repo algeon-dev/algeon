@@ -6,7 +6,7 @@ description: Clone one recursive repository, configure one checkout-local enviro
 # Building from Source
 
 This is the complete source-build path. It starts with one recursive
-`datafusion-nexus` checkout and keeps every source, native build tree, install
+`algeon` checkout and keeps every source, native build tree, install
 prefix, Rust crate, and validation command inside that checkout.
 
 Before you start:
@@ -28,8 +28,8 @@ does not point at the cause are in [Troubleshooting](./troubleshooting.md).
 Clone the root repository recursively into any working directory:
 
 ```bash
-git clone --recurse-submodules https://github.com/DataFusion-Nexus/datafusion-nexus.git
-cd datafusion-nexus
+git clone --recurse-submodules https://github.com/algeon-dev/algeon.git
+cd algeon
 ```
 
 For an existing non-recursive clone, initialize it in place:
@@ -43,8 +43,8 @@ The root commit pins the exact native-source revisions as Git submodule
 gitlinks:
 
 ```text
-components/cudf/cudf/       # DataFusion-Nexus cuDF fork
-components/cugraph/cugraph/ # DataFusion-Nexus cuGraph fork
+components/cudf/cudf/       # Algeon cuDF fork
+components/cugraph/cugraph/ # Algeon cuGraph fork
 components/cuvs/cuvs/       # official RAPIDS cuVS (not a fork)
 ```
 
@@ -61,9 +61,9 @@ Run this block from the checkout root in every new shell used to build, test,
 run, or package the project:
 
 ```bash
-export NEXUS_ROOT="$(pwd -P)"
-test -f "$NEXUS_ROOT/Cargo.toml"
-test -f "$NEXUS_ROOT/.gitmodules"
+export ALGEON_ROOT="$(pwd -P)"
+test -f "$ALGEON_ROOT/Cargo.toml"
+test -f "$ALGEON_ROOT/.gitmodules"
 
 # CUDA toolkit. nvcc must be on PATH for CMake language detection.
 export CUDA_HOME=/usr/local/cuda
@@ -85,7 +85,7 @@ unset CUDF_CMAKE_CUDA_ARCHITECTURES
 # them keeps another checkout's libraries out and gives every shell the same
 # build fingerprint. Cargo-built binaries find the native libraries through
 # their rpath, so this block does not set LD_LIBRARY_PATH.
-unset NEXUS_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
+unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
   CUVS_INSTALL_DIR CUVS_ROOT CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
 ```
 
@@ -105,11 +105,11 @@ plain shell that never ran this block still builds with the same toolchain.
 Confirm that no selector escapes the checkout:
 
 ```bash
-env | sort | grep -E '^(NEXUS_ROOT|CMAKE_CUDA_ARCHITECTURES)='
-env | sort | grep -E '^(INSTALL_PREFIX|NEXUS_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
+env | sort | grep -E '^(ALGEON_ROOT|CMAKE_CUDA_ARCHITECTURES)='
+env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
 ```
 
-The first command must show `NEXUS_ROOT` at the checkout root and
+The first command must show `ALGEON_ROOT` at the checkout root and
 `CMAKE_CUDA_ARCHITECTURES` at the chosen target list. The second must print
 `clean`; if it prints `selector leaked`, rerun the block above from the
 current repository root. The build scripts and `scripts/check_all.sh` inherit
@@ -140,11 +140,11 @@ need. It then builds and installs the production Rust shim and its crate-version
 marker into the same prefix. Success looks like:
 
 ```bash
-ls "$NEXUS_ROOT"/target/native/cudf-install/lib/libcudf.so \
-   "$NEXUS_ROOT"/target/native/cudf-install/lib/librmm.so
-ls "$NEXUS_ROOT"/target/native/cudf-install/lib/libcudf_rust.so \
-   "$NEXUS_ROOT"/target/native/cudf-install/share/cudf_rust/{cargo-link.txt,crate-version}
-ls -d "$NEXUS_ROOT"/target/native/cudf-install/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
+ls "$ALGEON_ROOT"/target/native/cudf-install/lib/libcudf.so \
+   "$ALGEON_ROOT"/target/native/cudf-install/lib/librmm.so
+ls "$ALGEON_ROOT"/target/native/cudf-install/lib/libcudf_rust.so \
+   "$ALGEON_ROOT"/target/native/cudf-install/share/cudf_rust/{cargo-link.txt,crate-version}
+ls -d "$ALGEON_ROOT"/target/native/cudf-install/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
 ### Build cuVS
@@ -158,9 +158,9 @@ The script builds `components/cuvs/cuvs` against the RMM in
 `target/native/cuvs-install`. Success looks like:
 
 ```bash
-ls "$NEXUS_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
-   "$NEXUS_ROOT"/target/native/cuvs-install/lib/libcuvs_c.so \
-   "$NEXUS_ROOT"/target/native/cuvs-install/lib/cmake/cuvs/cuvs-config.cmake
+ls "$ALGEON_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
+   "$ALGEON_ROOT"/target/native/cuvs-install/lib/libcuvs_c.so \
+   "$ALGEON_ROOT"/target/native/cuvs-install/lib/cmake/cuvs/cuvs-config.cmake
 ```
 
 ### Build cuGraph
@@ -176,11 +176,11 @@ selected above, then installs the registry-consumer artifacts into
 resolves a private or different copy of either. Success looks like:
 
 ```bash
-ls "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph.so \
-   "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph_c.so
-ls "$NEXUS_ROOT"/target/native/cugraph-install/lib/libcugraph.so \
-   "$NEXUS_ROOT"/target/native/cugraph-install/include/cugraph_c/algorithms.h \
-   "$NEXUS_ROOT"/target/native/cugraph-install/share/cugraph-nexus/crate-version
+ls "$ALGEON_ROOT"/target/native/cugraph-build/libcugraph.so \
+   "$ALGEON_ROOT"/target/native/cugraph-build/libcugraph_c.so
+ls "$ALGEON_ROOT"/target/native/cugraph-install/lib/libcugraph.so \
+   "$ALGEON_ROOT"/target/native/cugraph-install/include/cugraph_c/algorithms.h \
+   "$ALGEON_ROOT"/target/native/cugraph-install/share/cugraph/crate-version
 ```
 
 On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
@@ -189,16 +189,16 @@ different upstream checkout bypasses that contract.
 
 ### Use the native stack from registry crates
 
-The three build scripts create a native root that registry-installed Nexus
+The three build scripts create a native root that registry-installed Algeon
 crates can consume without a source checkout inside Cargo's package archive:
 
 ```bash
-export NEXUS_NATIVE_DIR="$NEXUS_ROOT/target/native"
+export ALGEON_NATIVE_DIR="$ALGEON_ROOT/target/native"
 cargo build --all-features
 ```
 
-`NEXUS_NATIVE_DIR` must contain `cudf-install`, `cuvs-install`, and
-`cugraph-install` from the matching Nexus tag. The sys crates verify their
+`ALGEON_NATIVE_DIR` must contain `cudf-install`, `cuvs-install`, and
+`cugraph-install` from the matching Algeon tag. The sys crates verify their
 required library before invoking any native tool; the cuDF and cuGraph
 prefixes also carry a `crate-version` marker and are rejected when it differs
 from the Rust crate version. A registry build still needs `cmake` for cuVS
@@ -208,7 +208,7 @@ build cuDF or cuGraph with CMake.
 
 `CUDF_INSTALL_DIR`, `CUVS_ROOT`, `CUVS_INSTALL_DIR`, and the three
 `CUGRAPH_NATIVE_*` variables remain lower-level developer selectors. Prefer
-`NEXUS_NATIVE_DIR` when consuming the complete stack.
+`ALGEON_NATIVE_DIR` when consuming the complete stack.
 
 ## 4. Build the Rust workspace
 
@@ -224,9 +224,9 @@ workspace and lockfile. For a smaller edit loop, select a package while
 retaining the same feature contract:
 
 ```bash
-cargo build -p datafusion-nexus --all-features
-cargo build -p nexus-query-engine --all-features
-cargo build -p cudf-nexus --all-features
+cargo build -p algeon-datafusion --all-features
+cargo build -p query-engine --all-features
+cargo build -p cudf --all-features
 ```
 
 ## 5. Validate the checkout
@@ -263,8 +263,8 @@ set one only to point a step at a prefix outside the checkout.
 
 | Variable | Owner and purpose |
 | --- | --- |
-| `NEXUS_ROOT` | Root of the one recursive checkout. |
-| `NEXUS_NATIVE_DIR` | Root containing the three matching registry-consumer install prefixes. Defaults to `target/native`. |
+| `ALGEON_ROOT` | Root of the one recursive checkout. |
+| `ALGEON_NATIVE_DIR` | Root containing the three matching registry-consumer install prefixes. Defaults to `target/native`. |
 | `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, and cuGraph. Defaults to `NATIVE`. |
 | `CUDF_CPP_BUILD_DIR` | cuDF CMake cache. Defaults to `target/native/cudf-build`. |
 | `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. Defaults to `target/native/cudf-install`. |
@@ -276,7 +276,7 @@ set one only to point a step at a prefix outside the checkout.
 The native dependency relationship is:
 
 ```text
-cuDF/RMM → cuVS → cuGraph → DataFusion Nexus
+cuDF/RMM → cuVS → cuGraph → Algeon
 ```
 
 ### Choosing CUDA architectures
@@ -299,17 +299,17 @@ shared value to cuDF's upstream build interface internally.
 
 Each native script records the requested `CMAKE_CUDA_ARCHITECTURES` value
 verbatim, plus the full-kernel real cubin set it finds in the built library, at
-`share/nexus-native/cuda-architectures.env` under that layer's prefix. The
+`share/algeon-native/cuda-architectures.env` under that layer's prefix. The
 cuVS and cuGraph scripts read the upstream record before configuring and
 compare real cubin sets after building; small embedded dependency stub sets are
 not treated as targets. An explicitly selected external prefix is exempt,
-since nexus scripts did not build it and it carries no record. To inspect the
+since algeon scripts did not build it and it carries no record. To inspect the
 records:
 
 ```bash
-for root in "$NEXUS_ROOT"/target/native/{cudf,cuvs,cugraph}-install; do
+for root in "$ALGEON_ROOT"/target/native/{cudf,cuvs,cugraph}-install; do
   echo "== $root =="
-  cat "$root/share/nexus-native/cuda-architectures.env"
+  cat "$root/share/algeon-native/cuda-architectures.env"
 done
 ```
 

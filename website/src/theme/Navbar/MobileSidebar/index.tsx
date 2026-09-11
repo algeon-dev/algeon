@@ -100,7 +100,7 @@ function ColorModeMenuItem(): ReactNode {
         <span>
           {translate(
             {
-              id: 'nexus.mobileDrawer.colorMode',
+              id: 'algeon.mobileDrawer.colorMode',
               message: 'Theme: {mode}',
               description: 'Color mode row label in the mobile navbar drawer',
             },

@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-description: Build and run the nexus-server Flight SQL endpoint, then connect with ADBC or a CLI.
+description: Build and run the algeon-server Flight SQL endpoint, then connect with ADBC or a CLI.
 ---
 
 # Flight SQL Server
@@ -9,15 +9,16 @@ Run the standalone server when clients need a remote Arrow Flight SQL
 endpoint instead of an embedded Rust API. It builds one shared GPU backend,
 installs the cuVS SQL functions on every session (and the cuGraph functions
 when [enabled in its configuration](./configuration.mdx#gpu-sql-functions)),
-and serves ordinary Arrow results to any ADBC or Flight SQL client. The server
-lives in `crates/nexus-server`.
+and serves ordinary Arrow results to any ADBC or Flight SQL client. Its
+embeddable implementation and public API live in
+`algeon_datafusion::server`; `crates/algeon-server` is the private standalone launcher.
 
 ## Build and start
 
-Build the `nexus-server` package and its `datafusion_nexus_server` binary:
+Build the `server` package and its `algeon_server` binary:
 
 ```bash
-cargo build --release -p nexus-server --all-features --bin datafusion_nexus_server
+cargo build --release -p server --all-features --bin algeon_server
 ```
 
 Every selected GPU needs an explicit device profile. For a single-GPU local
@@ -29,12 +30,12 @@ device_ordinal = 0
 ```
 
 Then start the server on localhost. The development helper enables its local
-Iceberg defaults unless `NEXUS_RUN_SERVER_ICEBERG=0` is set:
+Iceberg defaults unless `ALGEON_RUN_SERVER_ICEBERG=0` is set:
 
 ```bash
-export NEXUS_SERVER_CONFIG_FILE="$PWD/server.toml"
-export NEXUS_SERVER_BIND=127.0.0.1:50051
-export NEXUS_RUN_SERVER_ICEBERG=0
+export ALGEON_SERVER_CONFIG_FILE="$PWD/server.toml"
+export ALGEON_SERVER_BIND=127.0.0.1:50051
+export ALGEON_RUN_SERVER_ICEBERG=0
 
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
@@ -42,7 +43,7 @@ flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 From another terminal, verify the endpoint with the repository client:
 
 ```bash
-cargo run -p nexus-tools --all-features -- \
+cargo run -p tools --all-features -- \
   flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
 ```
 
@@ -52,7 +53,7 @@ disabled by default, so keep this setup on a trusted local interface. See
 more GPUs.
 
 To keep ordinary SQL on DataFusion CPU while explicit cuGraph and cuVS calls
-run on GPU, set `NEXUS_SERVER_EXECUTION_MODE=functions_only` before startup.
+run on GPU, set `ALGEON_SERVER_EXECUTION_MODE=functions_only` before startup.
 The default is `native_preferred`; see
 [Execution mode](./configuration.mdx#execution-mode) for all three modes and
 their TOML equivalents.
@@ -68,27 +69,27 @@ fixture/fixture.sh iceberg rest load \
   --workload citation_network \
   --load-mode add-files
 
-export NEXUS_SERVER_CONFIG_FILE="$PWD/server.toml"
-export NEXUS_RUN_SERVER_ICEBERG=1
-export NEXUS_SERVER_CUGRAPH_ENABLED=true
-export NEXUS_SERVER_BIND=127.0.0.1:50051
+export ALGEON_SERVER_CONFIG_FILE="$PWD/server.toml"
+export ALGEON_RUN_SERVER_ICEBERG=1
+export ALGEON_SERVER_CUGRAPH_ENABLED=true
+export ALGEON_SERVER_BIND=127.0.0.1:50051
 export DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion
 export DATAFUSION_CATALOG_DEFAULT_SCHEMA=public
-export NEXUS_ICEBERG_CATALOG_KIND=rest
-export NEXUS_ICEBERG_CATALOG_NAME=lake
-export NEXUS_ICEBERG_NAMESPACE=citation_network
-export NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse
-export NEXUS_ICEBERG_REST_URI=http://localhost:8181
-export NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000
-export NEXUS_ICEBERG_S3_REGION=us-east-1
-export NEXUS_ICEBERG_S3_PATH_STYLE=true
-export NEXUS_ICEBERG_S3_ACCESS_KEY_ID=nexusadmin
-export NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=nexusadmin
-export NEXUS_SERVER_WORKSPACE_CATALOG=datafusion
-export NEXUS_SERVER_WORKSPACE_SCHEMA=public
-export NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake
-export NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
-export NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
+export ALGEON_ICEBERG_CATALOG_KIND=rest
+export ALGEON_ICEBERG_CATALOG_NAME=lake
+export ALGEON_ICEBERG_NAMESPACE=citation_network
+export ALGEON_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse
+export ALGEON_ICEBERG_REST_URI=http://localhost:8181
+export ALGEON_ICEBERG_S3_ENDPOINT=http://localhost:9000
+export ALGEON_ICEBERG_S3_REGION=us-east-1
+export ALGEON_ICEBERG_S3_PATH_STYLE=true
+export ALGEON_ICEBERG_S3_ACCESS_KEY_ID=algeonadmin
+export ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=algeonadmin
+export ALGEON_SERVER_WORKSPACE_CATALOG=datafusion
+export ALGEON_SERVER_WORKSPACE_SCHEMA=public
+export ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake
+export ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
+export ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
 
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
@@ -144,7 +145,7 @@ arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 ```
 
 Flight SQL accepts ordinary DataFusion `SET` statements, but rejects
-`SET datafusion_nexus.*`; server resource policy comes from `ServerConfig`.
+`SET algeon_datafusion.*`; server resource policy comes from `ServerConfig`.
 GPU execution requires a CUDA-capable host and the runtime libraries for the
 enabled Cargo features. In the default mode, relational candidates the server
 does not select for GPU execution stay in DataFusion; a failure after GPU

@@ -3,7 +3,7 @@ set -euo pipefail
 
 readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly check_script="${repo_root}/scripts/ci/check_dependency_direction.py"
-readonly test_root="$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-dependency-direction-tests.XXXXXX")"
+readonly test_root="$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-dependency-direction-tests.XXXXXX")"
 trap 'rm -rf "${test_root}"' EXIT
 
 mkdir -p "${test_root}/bin"
@@ -52,17 +52,17 @@ edge2_to = sys.argv[8] if len(sys.argv) > 8 else ""
 packages = []
 if layer_packages == "present":
     packages.extend([
-        ("nexus-query-planning", case_root / "crates/nexus-query-planning"),
-        ("nexus-query-runtime", case_root / "crates/nexus-query-runtime"),
+        ("algeon-query-planning", case_root / "crates/algeon-query-planning"),
+        ("algeon-query-runtime", case_root / "crates/algeon-query-runtime"),
     ])
 packages.extend([
-    ("nexus-query-engine", case_root / "crates/nexus-query-engine"),
-    ("cudf-nexus", case_root / "components/cudf/cudf-nexus"),
-    ("cudf-nexus-sys", case_root / "components/cudf/cudf-nexus-sys"),
-    ("cugraph-nexus", case_root / "components/cugraph/cugraph-nexus"),
-    ("cugraph-nexus-sys", case_root / "components/cugraph/cugraph-nexus-sys"),
-    ("cuvs-nexus", case_root / "components/cuvs/cuvs-nexus"),
-    ("cuvs-nexus-sys", case_root / "components/cuvs/cuvs-nexus-sys"),
+    ("algeon-query-engine", case_root / "crates/algeon-query-engine"),
+    ("algeon-cudf", case_root / "components/cudf/algeon-cudf"),
+    ("algeon-cudf-sys", case_root / "components/cudf/algeon-cudf-sys"),
+    ("algeon-cugraph", case_root / "components/cugraph/algeon-cugraph"),
+    ("algeon-cugraph-sys", case_root / "components/cugraph/algeon-cugraph-sys"),
+    ("algeon-cuvs", case_root / "components/cuvs/algeon-cuvs"),
+    ("algeon-cuvs-sys", case_root / "components/cuvs/algeon-cuvs-sys"),
     ("helper-crate", case_root / "helpers/helper-crate"),
 ])
 ids = {name: f"path+file:///{name}#0.1.0" for name, _ in packages}
@@ -74,29 +74,29 @@ for name, package_root in packages:
     (source_root / "lib.rs").write_text("pub fn clean() {}\n", encoding="utf-8")
 
 source_targets = {
-    "planning-runtime": [("nexus-query-planning", "src/lib.rs", "use nexus_query_runtime::Marker;\n")],
-    "planning-runtime-module": [("nexus-query-planning", "src/lib.rs", "use crate::{observability::Marker};\n")],
-    "planning-engine": [("nexus-query-planning", "src/lib.rs", "use nexus_query_engine::exec::Marker;\n")],
-    "runtime-engine": [("nexus-query-runtime", "src/lib.rs", "use nexus_query_engine::exec::Marker;\n")],
-    "component-engine": [("cudf-nexus", "src/lib.rs", "use nexus_query_engine::Marker;\n")],
-    "component-engine-root": [("cudf-nexus", "src/lib.rs", "use nexus_query_engine;\n")],
-    "planning-datafusion": [("nexus-query-planning", "src/lib.rs", "use datafusion::physical_plan::ExecutionPlan;\n")],
+    "planning-runtime": [("algeon-query-planning", "src/lib.rs", "use query_runtime::Marker;\n")],
+    "planning-runtime-module": [("algeon-query-planning", "src/lib.rs", "use crate::{observability::Marker};\n")],
+    "planning-engine": [("algeon-query-planning", "src/lib.rs", "use query_engine::exec::Marker;\n")],
+    "runtime-engine": [("algeon-query-runtime", "src/lib.rs", "use query_engine::exec::Marker;\n")],
+    "component-engine": [("algeon-cudf", "src/lib.rs", "use query_engine::Marker;\n")],
+    "component-engine-root": [("algeon-cudf", "src/lib.rs", "use query_engine;\n")],
+    "planning-datafusion": [("algeon-query-planning", "src/lib.rs", "use datafusion::physical_plan::ExecutionPlan;\n")],
     "planning-file-open": [
-        ("nexus-query-planning", "src/lib.rs", "pub fn open() { let _ = std::fs::File::open(\"x\"); }\n"),
+        ("algeon-query-planning", "src/lib.rs", "pub fn open() { let _ = std::fs::File::open(\"x\"); }\n"),
     ],
     "planning-parquet-reader": [
         (
-            "nexus-query-planning",
+            "algeon-query-planning",
             "src/lib.rs",
             "pub fn read(p: &std::path::Path) { let _ = SerializedFileReader::try_from(p); }\n",
         ),
     ],
     "planning-object-store": [
-        ("nexus-query-planning", "src/lib.rs", "pub type Store = object_store::path::Path;\n"),
+        ("algeon-query-planning", "src/lib.rs", "pub type Store = object_store::path::Path;\n"),
     ],
     "planning-io-non-code": [
         (
-            "nexus-query-planning",
+            "algeon-query-planning",
             "src/lib.rs",
             "// File::open and SerializedFileReader are not called here.\n"
             'pub const NOTE: &str = "std::fs::read";\n'
@@ -104,50 +104,50 @@ source_targets = {
         ),
     ],
     "runtime-file-open-allowed": [
-        ("nexus-query-runtime", "src/lib.rs", "pub fn open() { let _ = std::fs::File::open(\"x\"); }\n"),
+        ("algeon-query-runtime", "src/lib.rs", "pub fn open() { let _ = std::fs::File::open(\"x\"); }\n"),
     ],
-    "runtime-datafusion": [("nexus-query-runtime", "src/lib.rs", "extern crate datafusion_common;\n")],
+    "runtime-datafusion": [("algeon-query-runtime", "src/lib.rs", "extern crate datafusion_common;\n")],
     "observability-runtime-use": [
-        ("nexus-query-runtime", "src/observability/mod.rs", "use crate::runtime::ExecutionContext;\n"),
+        ("algeon-query-runtime", "src/observability/mod.rs", "use crate::runtime::ExecutionContext;\n"),
     ],
     "observability-runtime-qualified": [
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability/stage.rs",
             "pub fn stage(_context: &crate::runtime::ExecutionContext) {}\n",
         ),
     ],
     "observability-runtime-nested-use": [
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability/stage.rs",
             "use crate::{\n    observability::Marker,\n    runtime::{\n        ExecutionContext,\n    },\n};\n",
         ),
     ],
     "observability-runtime-super": [
-        ("nexus-query-runtime", "src/observability/mod.rs", "use super::runtime::ExecutionContext;\n"),
+        ("algeon-query-runtime", "src/observability/mod.rs", "use super::runtime::ExecutionContext;\n"),
     ],
     "observability-runtime-nested-super": [
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability/report/row.rs",
             "pub type Context = super::super::super::runtime::ExecutionContext;\n",
         ),
     ],
     "observability-file-runtime": [
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability.rs",
             "pub(crate) use crate::runtime::ExecutionContext as Context;\n",
         ),
     ],
     "runtime-observability-allowed": [
-        ("nexus-query-runtime", "src/observability/mod.rs", "pub struct RuntimeObservationHandle;\n"),
-        ("nexus-query-runtime", "src/runtime/context.rs", "use crate::observability::RuntimeObservationHandle;\n"),
+        ("algeon-query-runtime", "src/observability/mod.rs", "pub struct RuntimeObservationHandle;\n"),
+        ("algeon-query-runtime", "src/runtime/context.rs", "use crate::observability::RuntimeObservationHandle;\n"),
     ],
     "observability-runtime-non-code": [
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability/mod.rs",
             "// use crate::runtime::ExecutionContext;\n"
             "/* crate::runtime::ExecutionContext */\n"
@@ -155,23 +155,23 @@ source_targets = {
         ),
     ],
     "observability-inline-module": [
-        ("nexus-query-runtime", "src/observability/mod.rs", "mod runtime;\nmod stage;\n"),
-        ("nexus-query-runtime", "src/observability/runtime.rs", "pub struct Row;\n"),
+        ("algeon-query-runtime", "src/observability/mod.rs", "mod runtime;\nmod stage;\n"),
+        ("algeon-query-runtime", "src/observability/runtime.rs", "pub struct Row;\n"),
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability/stage.rs",
             "#[cfg(test)]\nmod tests {\n    use super::super::runtime::Row;\n}\n",
         ),
     ],
     "observability-path-module": [
-        ("nexus-query-runtime", "src/observability/mod.rs", "mod recorder;\nmod runtime;\n"),
-        ("nexus-query-runtime", "src/observability/runtime.rs", "pub struct Row;\n"),
+        ("algeon-query-runtime", "src/observability/mod.rs", "mod recorder;\nmod runtime;\n"),
+        ("algeon-query-runtime", "src/observability/runtime.rs", "pub struct Row;\n"),
         (
-            "nexus-query-runtime",
+            "algeon-query-runtime",
             "src/observability/recorder.rs",
             '#[cfg(test)]\n#[path = "recorder_tests.rs"]\nmod tests;\n',
         ),
-        ("nexus-query-runtime", "src/observability/recorder_tests.rs", "use super::super::runtime::Row;\n"),
+        ("algeon-query-runtime", "src/observability/recorder_tests.rs", "use super::super::runtime::Row;\n"),
     ],
 }
 for package_name, relative_path, contents in source_targets.get(source_case, []):
@@ -195,9 +195,9 @@ metadata_path.write_text(
                     "manifest_path": str(package_root / "Cargo.toml"),
                     "dependencies": (
                         [{"name": "datafusion-expr"}]
-                        if source_case == "planning-datafusion-cargo" and name == "nexus-query-planning"
+                        if source_case == "planning-datafusion-cargo" and name == "algeon-query-planning"
                         else [{"name": "datafusion-common"}]
-                        if source_case == "runtime-datafusion-cargo" and name == "nexus-query-runtime"
+                        if source_case == "runtime-datafusion-cargo" and name == "algeon-query-runtime"
                         else []
                     ),
                 }
@@ -247,11 +247,11 @@ run_case() {
 run_case clean 0 "dependency direction contracts OK" clean "" ""
 run_case missing-layers 1 "required workspace packages are missing" clean "" "" missing
 
-run_case graph-planning-runtime 1 "planning -> runtime" clean nexus-query-planning nexus-query-runtime
-run_case graph-planning-engine 1 "planning -> engine-exec" clean nexus-query-planning nexus-query-engine
-run_case graph-runtime-engine 1 "runtime -> engine-exec" clean nexus-query-runtime nexus-query-engine
-for component in cudf-nexus cudf-nexus-sys cugraph-nexus cugraph-nexus-sys cuvs-nexus cuvs-nexus-sys; do
-  run_case "graph-${component}-engine" 1 "component -> engine" clean "${component}" nexus-query-engine
+run_case graph-planning-runtime 1 "planning -> runtime" clean algeon-query-planning algeon-query-runtime
+run_case graph-planning-engine 1 "planning -> engine-exec" clean algeon-query-planning algeon-query-engine
+run_case graph-runtime-engine 1 "runtime -> engine-exec" clean algeon-query-runtime algeon-query-engine
+for component in algeon-cudf algeon-cudf-sys algeon-cugraph algeon-cugraph-sys algeon-cuvs algeon-cuvs-sys; do
+  run_case "graph-${component}-engine" 1 "component -> engine" clean "${component}" algeon-query-engine
 done
 
 run_case source-planning-runtime 1 "planning -> runtime" planning-runtime "" ""
@@ -288,15 +288,15 @@ run_case source-observability-path-module 0 "dependency direction contracts OK" 
 # that pulls in a component, DataFusion, or a native sys crate is the way this
 # coupling reappears, and no direct-edge rule sees it.
 run_case closure-planning-helper-only 0 "dependency direction contracts OK" clean \
-  nexus-query-planning helper-crate present
+  algeon-query-planning helper-crate present
 run_case closure-planning-transitive-component 1 \
-  "planning closure -> native component: nexus-query-planning resolves cudf-nexus" clean \
-  nexus-query-planning helper-crate present helper-crate cudf-nexus
+  "planning closure -> native component: algeon-query-planning resolves algeon-cudf" clean \
+  algeon-query-planning helper-crate present helper-crate algeon-cudf
 run_case closure-planning-transitive-sys 1 \
-  "planning closure -> native component: nexus-query-planning resolves cugraph-nexus-sys" clean \
-  nexus-query-planning helper-crate present helper-crate cugraph-nexus-sys
+  "planning closure -> native component: algeon-query-planning resolves algeon-cugraph-sys" clean \
+  algeon-query-planning helper-crate present helper-crate algeon-cugraph-sys
 run_case closure-planning-transitive-engine 1 \
-  "planning closure -> query layer: nexus-query-planning resolves nexus-query-engine" clean \
-  nexus-query-planning helper-crate present helper-crate nexus-query-engine
+  "planning closure -> query layer: algeon-query-planning resolves algeon-query-engine" clean \
+  algeon-query-planning helper-crate present helper-crate algeon-query-engine
 
 printf 'dependency direction fault-injection tests OK\n'

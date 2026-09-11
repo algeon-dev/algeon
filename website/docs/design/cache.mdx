@@ -1,18 +1,18 @@
 ---
 sidebar_position: 3
 slug: /design/cache
-description: How DataFusion Nexus caches lakehouse bytes, decoded GPU sources, and resident graphs.
+description: How Algeon caches lakehouse bytes, decoded GPU sources, and resident graphs.
 ---
 
 # Cache Design
 
-Nexus has two independent cache families. The lakehouse cache stores Parquet
+Algeon has two independent cache families. The lakehouse cache stores Parquet
 files on the local filesystem. The GPU-resident caches retain decoded source
 frames and cuGraph graphs in device memory across query attempts.
 
 | Cache | Storage | Enabled by | Lifetime |
 | --- | --- | --- | --- |
-| Lakehouse byte cache | Local filesystem | `NEXUS_LAKEHOUSE_CACHE_ROOT` | Across queries and server restarts |
+| Lakehouse byte cache | Local filesystem | `ALGEON_LAKEHOUSE_CACHE_ROOT` | Across queries and server restarts |
 | Decoded source cache | GPU memory | A nonzero device `cache_cap_bytes` | Across attempts, until query-service shutdown |
 | Resident graph cache | GPU memory | A nonzero device `cache_cap_bytes` and a stable graph key | Across attempts, until query-service shutdown |
 
@@ -22,17 +22,17 @@ cross-query caches.
 ## Lakehouse byte cache
 
 The cache root, read policy, and miss policy are independent controls. The root
-defines where entries live. `NEXUS_LAKEHOUSE_CACHE_READ` controls whether an
-existing hit may be used, and `NEXUS_LAKEHOUSE_CACHE_POLICY` controls whether a
+defines where entries live. `ALGEON_LAKEHOUSE_CACHE_READ` controls whether an
+existing hit may be used, and `ALGEON_LAKEHOUSE_CACHE_POLICY` controls whether a
 miss populates the cache:
 
-| `NEXUS_LAKEHOUSE_CACHE_POLICY` | Complete local hit | Miss |
+| `ALGEON_LAKEHOUSE_CACHE_POLICY` | Complete local hit | Miss |
 | --- | --- | --- |
 | `disabled` (default) | Read through the local KvikIO path | Read remotely; no fill |
 | `read_through` | Read through the local KvikIO path | Read remotely; fill in the background |
 | `fill_before_read` | Read through the local KvikIO path | Publish the complete local object first, then read it locally |
 
-`NEXUS_LAKEHOUSE_CACHE_READ=disabled` ignores hits and always reads remotely;
+`ALGEON_LAKEHOUSE_CACHE_READ=disabled` ignores hits and always reads remotely;
 combined with `read_through` it still warms the cache in the background.
 Setting only the cache root therefore uses existing hits without filling
 misses.
@@ -43,7 +43,7 @@ time, otherwise the plan is rejected as stale.
 
 Fills use a filesystem lock, write a temporary file, validate the byte count,
 and publish with an atomic rename. Readers hold sidecar pins so retention
-cleanup cannot remove an active file. `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is a
+cleanup cannot remove an active file. `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES` is a
 best-effort LRU target, not a reservation or hard quota, but it is required
 whenever a cache root is configured with a filling policy (`read_through` or
 `fill_before_read`). Blocking and background fills share service-wide
@@ -100,7 +100,7 @@ AttemptOwned -> Evictable <-> Pinned -> Destroyed
 The cache precharges the ledger before copying or building a resident object.
 A checkout moves the complete charge to `Pinned`; the final pin release moves
 it back to `Evictable`. Destruction releases the charge only after GPU-safe
-teardown. If teardown cannot be proven safe, Nexus retains the charge and
+teardown. If teardown cannot be proven safe, Algeon retains the charge and
 closes admission on that device rather than expose unowned device memory.
 
 ## Decoded source cache
@@ -153,10 +153,10 @@ execution falls back to the attempt-owned uncached path.
 The ledger is the byte authority. Its reports, admission TSV, sealed attempt
 evidence, and backend gauges project the same two fields:
 
-- `cache_evictable_resident_bytes` / `nexus.gpu.cache.evictable.resident`;
-- `cache_pinned_in_use_bytes` / `nexus.gpu.cache.pinned.in_use`.
+- `cache_evictable_resident_bytes` / `algeon.gpu.cache.evictable.resident`;
+- `cache_pinned_in_use_bytes` / `algeon.gpu.cache.pinned.in_use`.
 
-`NexusGpuBackend::device_cache_reports()` pairs those ledger values with the
+`AlgeonGpuBackend::device_cache_reports()` pairs those ledger values with the
 physical shared-domain usage and source/graph activity counters. Use it to
 diagnose allocator drift, not to make admission decisions.
 `device_cache_source_event_snapshots()` exposes bounded, fingerprinted source
@@ -171,12 +171,12 @@ entries before source entries, then releases the allocation-domain owner.
 
 | Change | Owning code |
 | --- | --- |
-| Lakehouse configuration and source resolution | `src/table_format/scan/config.rs`, `src/table_format/scan/source_resolution.rs` |
-| Lakehouse fill, publication, pins, and retention | `crates/nexus-query-engine/src/exec/source/lakehouse_cache/` |
-| Shared GPU allocation and residency lifecycle | `crates/nexus-query-runtime/src/runtime/cache/factory.rs`, `crates/nexus-query-runtime/src/runtime/cache/residency.rs` |
-| Decoded source identity and caching | `crates/nexus-query-runtime/src/runtime/source_identity/local_parquet.rs`, `crates/nexus-query-runtime/src/runtime/cache/local_parquet/mod.rs` |
-| Resident graph keys and caching | `crates/nexus-query-planning/src/plan/graph_algorithm/residency.rs`, `crates/nexus-query-runtime/src/runtime/cache/resident_graph.rs` |
-| Ledger capacity and cache metrics | `crates/nexus-query-runtime/src/runtime/gpu/ledger.rs`, `crates/nexus-query-runtime/src/metrics/backend_descriptor.rs`, `crates/nexus-query-runtime/src/runtime/backend_metrics.rs` |
+| Lakehouse configuration and source resolution | `crates/algeon-datafusion/src/table_format/scan/config.rs`, `crates/algeon-datafusion/src/table_format/scan/source_resolution.rs` |
+| Lakehouse fill, publication, pins, and retention | `crates/algeon-query-engine/src/exec/source/lakehouse_cache/` |
+| Shared GPU allocation and residency lifecycle | `crates/algeon-query-runtime/src/runtime/cache/factory.rs`, `crates/algeon-query-runtime/src/runtime/cache/residency.rs` |
+| Decoded source identity and caching | `crates/algeon-query-runtime/src/runtime/source_identity/local_parquet.rs`, `crates/algeon-query-runtime/src/runtime/cache/local_parquet/mod.rs` |
+| Resident graph keys and caching | `crates/algeon-query-planning/src/plan/graph_algorithm/residency.rs`, `crates/algeon-query-runtime/src/runtime/cache/resident_graph.rs` |
+| Ledger capacity and cache metrics | `crates/algeon-query-runtime/src/runtime/gpu/ledger.rs`, `crates/algeon-query-runtime/src/metrics/backend_descriptor.rs`, `crates/algeon-query-runtime/src/runtime/backend_metrics.rs` |
 
 Extend the existing owner-level tests when behavior changes. Do not add a
 second byte counter, a query-owned cache domain, or a fallback key that reuses

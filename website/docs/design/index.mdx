@@ -8,24 +8,25 @@ import {StackDiagram, SystemDiagram} from '@site/src/components/design/Diagram';
 
 # Design
 
-DataFusion Nexus is a **DataFusion-native integration layer**. DataFusion keeps
+This documentation covers Algeon's first integration, the
+**DataFusion adapter**. DataFusion keeps
 SQL parsing, logical planning, physical planning, catalogs, DataFrame APIs, and
-CPU execution. Nexus adds opt-in GPU execution on cuDF, SQL-visible cuGraph and
+CPU execution. Algeon adds opt-in GPU execution on cuDF, SQL-visible cuGraph and
 cuVS algorithms, Iceberg/lakehouse source handling, and structured diagnostics
 around that DataFusion session. Throughout these pages, **native** means
-Nexus's GPU execution path, as opposed to DataFusion's CPU operators.
+Algeon's GPU execution path, as opposed to DataFusion's CPU operators.
 
 - **For users:** the GPU path is an implementation detail behind ordinary
   DataFusion or Flight SQL APIs.
 - **For developers:** every native decision is local, reportable, and backed
   by an adapter or engine contract.
-- **Non-goals:** Nexus is not a separate SQL engine, does not accept external
+- **Non-goals:** Algeon is not a separate SQL engine, does not accept external
   serialized query plans, and does not run a single query across several GPUs.
 
 ## Read this if
 
 - **Backend integrator:** Start with [Integration surfaces](#integration-surfaces)
-  and [Session wiring](./native-lowering.mdx#session-wiring). Nexus fits
+  and [Session wiring](./native-lowering.mdx#session-wiring). Algeon fits
   inside your service boundary rather than replacing it.
 - **Flight SQL operator:** Read
   [Lakehouse and workspace boundary](#lakehouse-and-workspace-boundary), then
@@ -45,12 +46,12 @@ A query enters through a DataFusion API or the Flight SQL server and leaves as
 Arrow rows through that same interface. In between:
 
 1. **DataFusion plans.** SQL parsing, catalog resolution, logical and physical
-   planning are stock DataFusion. Nexus does not parse SQL; it works from the
+   planning are stock DataFusion. Algeon does not parse SQL; it works from the
    completed physical plan.
-2. **Nexus evaluates the plan as a GPU candidate.** A physical optimizer rule
+2. **Algeon evaluates the plan as a GPU candidate.** A physical optimizer rule
    recognizes whole relational plans whose operators, types, and semantics
    have an exact native mapping. Plans that are not selected stay on
-   DataFusion and execute on CPU as if Nexus were absent; the reason is
+   DataFusion and execute on CPU as if Algeon were absent; the reason is
    recorded in the [`PlanningReport`](./native-lowering.mdx). Every unified
    Iceberg scan keeps its executable CPU delegate alongside its native scan
    facts (the format-neutral description of the scan, such as files, schema,
@@ -80,7 +81,7 @@ use the same admission and allocation path.
 Three pages carry the details behind this flow:
 
 - [Native Lowering & Final Plans](./native-lowering.mdx) — the plan-time
-  boundary: candidate recognition, the `datafusion_nexus_native` rule,
+  boundary: candidate recognition, the `algeon_datafusion_native` rule,
   baseline preservation, final-plan requirements, and planning evidence.
 - [Admission & Memory Governance](./admission.mdx) — the runtime boundary:
   process-wide admission, per-device ledgers, immutable grants, and
@@ -91,42 +92,42 @@ Three pages carry the details behind this flow:
 ## Crates and ownership
 
 <StackDiagram
-  ariaLabel="DataFusion Nexus crate and RAPIDS layering"
+  ariaLabel="Algeon crate and RAPIDS layering"
   nodes={[
     {
       kind: 'upstream', name: 'DataFusion', note: 'SQL · planner · CPU operators', tone: 'plan',
       sub: 'datafusion',
-      detail: <>Nexus consumes DataFusion physical-plan and{" "}
+      detail: <>Algeon consumes DataFusion physical-plan and{" "}
         <code>ExecutionPlan</code> APIs. SQL parsing, catalog resolution, and
         CPU execution remain upstream behavior.</>,
     },
     {
-      kind: 'adapter', name: 'datafusion-nexus', note: 'rule wiring · lowering · wrappers · reports', tone: 'engine',
-      sub: 'src/',
+      kind: 'adapter', name: 'algeon-datafusion', note: 'rule wiring · lowering · wrappers · reports', tone: 'engine',
+      sub: 'crates/algeon-datafusion/src/',
       detail: <>Everything DataFusion-specific lives here:{" "}
-        <code>src/native/</code> for shape recognition and lowering,{" "}
-        <code>src/native_exec/</code> for wrappers,{" "}
-        <code>src/cugraph_sql/</code> and <code>src/cuvs_sql/</code> for the
-        SQL function families, <code>src/native_report/</code> for report
-        rows, and <code>src/error.rs</code> for adapter errors.</>,
+        <code>crates/algeon-datafusion/src/native/</code> for shape recognition and lowering,{" "}
+        <code>crates/algeon-datafusion/src/native_exec/</code> for wrappers,{" "}
+        <code>crates/algeon-datafusion/src/cugraph_sql/</code> and <code>crates/algeon-datafusion/src/cuvs_sql/</code> for the
+        SQL function families, <code>crates/algeon-datafusion/src/native_report/</code> for report
+        rows, and <code>crates/algeon-datafusion/src/error.rs</code> for adapter errors.</>,
     },
     {
-      kind: 'planning', name: 'nexus-query-planning', note: 'IR · optimizer · capability · proof', tone: 'plan',
-      sub: 'crates/nexus-query-planning',
+      kind: 'planning', name: 'query-planning', note: 'IR · optimizer · capability · proof', tone: 'plan',
+      sub: 'crates/algeon-query-planning',
       detail: <>The closed planning contract. It owns <code>QueryPlan</code>,
         expressions, source facts, capability analysis, proof diagnostics,
         and compiled pipelines. It has no DataFusion or execution dependency.</>,
     },
     {
-      kind: 'runtime', name: 'nexus-query-runtime', note: 'lifecycle · ledger · grant · observation', tone: 'engine',
-      sub: 'crates/nexus-query-runtime',
+      kind: 'runtime', name: 'query-runtime', note: 'lifecycle · ledger · grant · observation', tone: 'engine',
+      sub: 'crates/algeon-query-runtime',
       detail: <>The resource authority. It consumes planning contracts and owns
         the query service, attempt lifecycle, device placement, the single
         per-device ledger, immutable grants, caches, observations, and metrics.</>,
     },
     {
-      kind: 'engine', name: 'nexus-query-engine', note: 'execution · composition · public facade', tone: 'bridge',
-      sub: 'crates/nexus-query-engine',
+      kind: 'engine', name: 'query-engine', note: 'execution · composition · public facade', tone: 'bridge',
+      sub: 'crates/algeon-query-engine',
       detail: <>The native execution owner and compatible facade. It composes
         one planning result with one runtime grant, executes relational, graph,
         vector, and source work, and re-exports the established public paths.</>,
@@ -154,23 +155,23 @@ Three pages carry the details behind this flow:
 />
 
 The root workspace contains these crates. Default members are the adapter,
-`nexus-workloads`, and `nexus-query-engine`; the rest are built on request.
+`workloads`, and `query-engine`; the rest are built on request.
 
 | Crate | Path | Owns |
 | --- | --- | --- |
-| `datafusion-nexus` | `src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph and cuVS SQL functions, the GPU function catalog, Iceberg table providers, reports, and errors. The only crate that depends on DataFusion. |
-| `nexus-query-planning` | `crates/nexus-query-planning` | The native IR (`QueryPlan`), optimizer, capability analysis, proof diagnostics, admission contracts, and compiled pipeline. No DataFusion or execution dependency. |
-| `nexus-query-runtime` | `crates/nexus-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, GPU caches, observation, and metrics. |
-| `nexus-query-engine` | `crates/nexus-query-engine` | Native execution composition and the public facade that re-exports planning and runtime. |
-| `nexus-iceberg` | `crates/nexus-iceberg` | DataFusion-free Iceberg catalog, snapshot, and scan-candidate contracts. |
-| `nexus-workloads` | `crates/nexus-workloads` | Benchmark catalogs, fixtures, dataset discovery, and DataFusion registration. |
-| `nexus-server` | `crates/nexus-server` | The Arrow Flight SQL service: protocol handshake, cancellation, admission wiring, workspace, and diagnostics. |
-| `nexus-bench` | `crates/nexus-bench` | Benchmark, report, triage, and stress binaries. Non-default member. |
-| `nexus-tools` | `crates/nexus-tools` | Developer, operator, and explicit external-service E2E tools. Non-default member. |
-| `nexus-examples` | `crates/nexus-examples` | Runnable embedding examples. Non-default member. |
-| `cudf-nexus`, `cudf-nexus-sys`, `rapids-interop` | `components/cudf` | Safe Rust and FFI over libcudf and RMM, plus the shared RAPIDS interop types. |
-| `cugraph-nexus`, `cugraph-nexus-sys` | `components/cugraph` | Safe Rust and FFI over libcugraph. |
-| `cuvs-nexus`, `cuvs-nexus-sys` | `components/cuvs` | Safe Rust and FFI over libcuvs. |
+| `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph and cuVS SQL functions, the GPU function catalog, Iceberg table providers, reports, and errors. The only crate that depends on DataFusion. |
+| `query-planning` | `crates/algeon-query-planning` | The native IR (`QueryPlan`), optimizer, capability analysis, proof diagnostics, admission contracts, and compiled pipeline. No DataFusion or execution dependency. |
+| `query-runtime` | `crates/algeon-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, GPU caches, observation, and metrics. |
+| `query-engine` | `crates/algeon-query-engine` | Native execution composition and the public facade that re-exports planning and runtime. |
+| `iceberg-catalog` | `crates/iceberg-catalog` | DataFusion-free Iceberg catalog, snapshot, and scan-candidate contracts. |
+| `workloads` | `crates/workloads` | Benchmark catalogs, fixtures, dataset discovery, and DataFusion registration. |
+| `server` | `crates/algeon-server` | Private standalone binary/package shell for the Arrow Flight SQL service; implementation and library API belong to `algeon-datafusion::server`. |
+| `bench` | `crates/bench` | Benchmark, report, triage, and stress binaries. Non-default member. |
+| `tools` | `crates/tools` | Developer, operator, and explicit external-service E2E tools. Non-default member. |
+| `examples` | `crates/examples` | Runnable embedding examples. Non-default member. |
+| `cudf`, `cudf-sys`, `rapids-interop` | `components/cudf` | Safe Rust and FFI over libcudf and RMM, plus the shared RAPIDS interop types. |
+| `cugraph`, `cugraph-sys` | `components/cugraph` | Safe Rust and FFI over libcugraph. |
+| `cuvs`, `cuvs-sys` | `components/cuvs` | Safe Rust and FFI over libcuvs. |
 
 The three query crates are DataFusion-free for two reasons. DataFusion's
 `ExecutionPlan` is an open trait that changes with DataFusion releases, while
@@ -188,15 +189,15 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 
 | Surface | Use it when | Primary owner |
 | --- | --- | --- |
-| Embedded DataFusion backend | You already own the service API, auth, tenancy, and domain model. Install Nexus on a caller-owned `SessionStateBuilder`. | `src/session.rs`, `src/backend.rs` |
-| Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `crates/nexus-server/` |
-| cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `src/cugraph_sql/` |
-| cuVS SQL | You want exact kNN, KMeans, and PCA over vector columns as relations. | `src/cuvs_sql/` |
-| GPU function catalog | You want to list, describe, and validate the installed `cugraph_*` and `cuvs_*` functions before executing them. | `src/gpu_functions/` |
-| Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native scan facts while workspace views stay mutable. | `src/table_format/` |
-| Reports and errors | You need stable evidence for candidate selection, final plans, runtime, function validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
+| Embedded DataFusion backend | You already own the service API, auth, tenancy, and domain model. Install Algeon on a caller-owned `SessionStateBuilder`. | `crates/algeon-datafusion/src/session.rs`, `crates/algeon-datafusion/src/backend.rs` |
+| Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `crates/algeon-server/` |
+| cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `crates/algeon-datafusion/src/cugraph_sql/` |
+| cuVS SQL | You want exact kNN, KMeans, and PCA over vector columns as relations. | `crates/algeon-datafusion/src/cuvs_sql/` |
+| GPU function catalog | You want to list, describe, and validate the installed `cugraph_*` and `cuvs_*` functions before executing them. | `crates/algeon-datafusion/src/gpu_functions/` |
+| Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native scan facts while workspace views stay mutable. | `crates/algeon-datafusion/src/table_format/` |
+| Reports and errors | You need stable evidence for candidate selection, final plans, runtime, function validation, source access, and failures. | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/native_report/`, `crates/algeon-datafusion/src/error.rs` |
 
-The preferred embedded entry point is a process-scoped `NexusGpuBackend`. It
+The preferred embedded entry point is a process-scoped `AlgeonGpuBackend`. It
 installs the native optimizer and gives every installed session the same
 process-wide admission service and per-device memory ledger, so concurrent
 sessions draw from one GPU capacity authority
@@ -205,14 +206,14 @@ lines require the matching feature; omit them for a pure relational session.
 
 ```rust
 use datafusion::execution::SessionStateBuilder;
-use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
+use algeon_datafusion::{
+    backend::{GpuMemoryOwnership, AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile},
     cugraph_sql::CugraphSqlConfig,
-    session::NexusSessionStateBuilderExt,
+    session::AlgeonSessionStateBuilderExt,
 };
 
-let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
-let backend = NexusGpuBackend::builder()
+let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
+let backend = AlgeonGpuBackend::builder()
     .devices([device])
     .build()?;
 
@@ -242,8 +243,8 @@ plan after native selection. The full boundary is described in
 | `iceberg` | Iceberg catalogs and native scan integration. |
 | `nvml` | Optional NVML device diagnostics. |
 
-`nexus-server` exposes features with the same names and forwards them to the
-adapter and engine.
+`algeon-datafusion` exposes these DataFusion-specific features; the private
+`server` shell forwards them to the adapter and engine.
 
 ## Specialized GPU functions
 
@@ -282,7 +283,7 @@ ORDER BY value DESC;
     {
       id: 'udtf', lane: 'host', col: 0,
       kind: 'sql', name: 'cugraph_*()', note: ['table function', 'CugraphAlgoExec'], tone: 'plan',
-      sub: 'src/cugraph_sql/table_function.rs · src/cugraph_sql/exec/',
+      sub: 'crates/algeon-datafusion/src/cugraph_sql/table_function.rs · crates/algeon-datafusion/src/cugraph_sql/exec/',
       detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
         resolves the edge relation in the DataFusion catalog, creates the
         physical edge-source plan, and returns <code>CugraphAlgoExec</code>.
@@ -293,15 +294,15 @@ ORDER BY value DESC;
       kind: 'edge data', name: 'GpuDataFrame', note: 'native or imported', tone: 'gpu',
       sub: 'execute_edge_source_to_gpu',
       detail: <>If the edge source is already a native GPU plan
-        (<code>NexusNativeExec</code> or <code>NexusNativeComposedExec</code>),
+        (<code>AlgeonNativeExec</code> or <code>AlgeonNativeComposedExec</code>),
         its GPU-resident frame is handed forward without materializing host
-        Arrow. Otherwise DataFusion produces Arrow batches and Nexus imports
+        Arrow. Otherwise DataFusion produces Arrow batches and Algeon imports
         them into cuDF.</>,
     },
     {
       id: 'graph', lane: 'gpu', col: 2,
       kind: 'cuGraph', name: 'Graph<T>', note: ['prepared export', 'typed algorithm'], tone: 'graph',
-      sub: 'crates/nexus-query-engine/src/exec/graph_algorithm/',
+      sub: 'crates/algeon-query-engine/src/exec/graph_algorithm/',
       detail: <>The engine prepares a cuDF table export, binds a cuGraph{" "}
         <code>ResourceHandle</code> to a runtime on the same device and stream,
         builds a typed cuGraph graph, and runs the selected algorithm. Graph
@@ -346,10 +347,10 @@ lives in [cuGraph SQL API](../cugraph/overview.mdx).
 With `--features cuvs`, `cuvs_brute_force_knn`, `cuvs_kmeans`, and `cuvs_pca`
 run on the GPU once the session installs cuVS SQL (`try_with_cuvs_sql()`;
 the Flight SQL server installs it on every session it builds) and a
-`NexusGpuBackend` is present. They follow the cuGraph path with one
+`AlgeonGpuBackend` is present. They follow the cuGraph path with one
 difference: instead of an edge relation, they take vector relations that the
 adapter lowers to a `VectorAlgorithm` node, and the engine executes that node
-through the `cuvs-nexus` component inside the same admitted memory cap. Each
+through the `cuvs` component inside the same admitted memory cap. Each
 call builds the index, model, or transform it needs for that statement; there
 is no cross-statement cache of vector artifacts. See
 [cuVS SQL API](../cuvs/overview.mdx#execution) for the execution conditions
@@ -357,7 +358,7 @@ and function reference.
 
 ## Lakehouse and workspace boundary
 
-Iceberg catalogs are source catalogs. They are not the mutable workspace. Nexus
+Iceberg catalogs are source catalogs. They are not the mutable workspace. Algeon
 keeps these concerns separate:
 
 - Iceberg and Glue/REST metadata resolve to adapter-owned table providers and
@@ -367,11 +368,12 @@ keeps these concerns separate:
 - The Flight SQL server can expose a workspace overlay so users get short names
   without teaching a read-only Iceberg catalog to accept views.
 
-Set `NEXUS_ICEBERG_FOOTER_PRUNING=true` to let native object-store scans use
+Set `ALGEON_ICEBERG_FOOTER_PRUNING=true` to let native object-store scans use
 Parquet footers for safe static and dimension-derived row-group pruning before
 execution.
 
-Iceberg/Glue/S3 is feature-gated behind `--features iceberg`; tests must not
+Iceberg/Glue/S3 is designed behind `--features iceberg`; the feature is held
+out of the current release until iceberg-rust 0.12 is available and validated. Tests must not
 require a real AWS account.
 
 ## Where to change what
@@ -385,14 +387,14 @@ contract each one must keep stable.
 
 | If you are changing... | Home | Keep stable |
 | --- | --- | --- |
-| Which DataFusion physical shapes lower natively | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names, final-plan requirements |
-| Native IR, optimizer, capability, proof, or compiled-pipeline semantics | `crates/nexus-query-planning/src/{plan,expr,source,optimizer,capability,admission,pipeline}/` | One proof path and structured planning diagnostics; no family-name shortcuts |
-| Attempt lifecycle, device admission, grants, cache, observation, or metrics | `crates/nexus-query-runtime/src/{attempt,runtime,observability,metrics}/` | One ledger, immutable grants, and runtime observation projections |
-| Native execution semantics or planning/runtime composition | `crates/nexus-query-engine/src/exec/` | Engine execution contracts and facade compatibility |
-| cuGraph or cuVS SQL behavior | `src/cugraph_sql/`, `src/cuvs_sql/`, `src/gpu_functions/`, `crates/nexus-query-engine/src/exec/graph_algorithm/` | Metadata column order and validation output |
-| Iceberg/source behavior | `src/table_format/`, `crates/nexus-iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
+| Which DataFusion physical shapes lower natively | `crates/algeon-datafusion/src/native/normalize.rs`, `crates/algeon-datafusion/src/native/lowering/`, `crates/algeon-datafusion/src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names, final-plan requirements |
+| Native IR, optimizer, capability, proof, or compiled-pipeline semantics | `crates/algeon-query-planning/src/{plan,expr,source,optimizer,capability,admission,pipeline}/` | One proof path and structured planning diagnostics; no family-name shortcuts |
+| Attempt lifecycle, device admission, grants, cache, observation, or metrics | `crates/algeon-query-runtime/src/{attempt,runtime,observability,metrics}/` | One ledger, immutable grants, and runtime observation projections |
+| Native execution semantics or planning/runtime composition | `crates/algeon-query-engine/src/exec/` | Engine execution contracts and facade compatibility |
+| cuGraph or cuVS SQL behavior | `crates/algeon-datafusion/src/cugraph_sql/`, `crates/algeon-datafusion/src/cuvs_sql/`, `crates/algeon-datafusion/src/gpu_functions/`, `crates/algeon-query-engine/src/exec/graph_algorithm/` | Metadata column order and validation output |
+| Iceberg/source behavior | `crates/algeon-datafusion/src/table_format/`, `crates/iceberg-catalog-catalog/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | GPU memory, streams, source readers, or graph/vector interop | `components/cudf`, `components/cugraph`, `components/cuvs` | Component crate APIs and FFI error mapping |
-| Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics/`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
+| Public diagnostics | `crates/algeon-datafusion/src/native_report/schema.rs`, `crates/algeon-datafusion/src/native_exec/metrics/`, `crates/algeon-datafusion/src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 
 Cache-specific routing is on [Cache Design](./cache.mdx#where-to-change-cache-behavior);
 lowering extension steps are on

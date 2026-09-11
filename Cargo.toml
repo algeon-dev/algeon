@@ -1,54 +1,29 @@
-[package]
-name = "datafusion-nexus"
-autotests = false
-description = "DataFusion physical-plan adapter for native GPU execution."
-version = { workspace = true }
-edition = "2024"
-rust-version = { workspace = true }
-build = "build.rs"
-repository = "https://github.com/DataFusion-Nexus/datafusion-nexus"
-homepage = "https://datafusion.nexus"
-license = "Apache-2.0"
-documentation = "https://docs.rs/datafusion-nexus"
-keywords = ["sql", "datafusion", "gpu", "cuda", "rapids"]
-categories = ["database", "hardware-support"]
-readme = "README.md"
-# This package shares its directory with the workspace, so without an allowlist
-# `cargo package` sweeps in the RAPIDS submodules under `components/` — ~394 MB,
-# far past the crates.io limit.
-include = ["/src/**", "/tests/**", "/build.rs", "/README.md", "/LICENSE"]
-
-[package.metadata.docs.rs]
-default-target = "x86_64-unknown-linux-gnu"
-targets = []
-features = ["server-internal", "bench-support", "cugraph", "cuvs", "nvml"]
-
 [workspace]
 members = [
-  ".",
-  "crates/nexus-workloads",
-  "crates/nexus-iceberg",
-  "crates/nexus-query-engine",
-  "crates/nexus-query-planning",
-  "crates/nexus-query-runtime",
-  "crates/nexus-server",
-  "crates/nexus-bench",
-  "crates/nexus-tools",
-  "crates/nexus-examples",
+  "crates/algeon-datafusion",
+  "crates/workloads",
+  "crates/iceberg-catalog",
+  "crates/algeon-query-engine",
+  "crates/algeon-query-planning",
+  "crates/algeon-query-runtime",
+  "crates/algeon-server",
+  "crates/bench",
+  "crates/tools",
+  "crates/examples",
   "scripts/ci/fixtures/datafusion-facade-consumer",
-  "components/cudf/cudf-nexus",
-  "components/cudf/cudf-nexus-sys",
-  "components/cudf/nexus-build-support",
-  "components/cudf/rapids-interop",
-  "components/cugraph/cugraph-nexus",
-  "components/cugraph/cugraph-nexus-sys",
-  "components/cuvs/cuvs-nexus",
-  "components/cuvs/cuvs-nexus-sys",
+  "components/cudf/algeon-cudf",
+  "components/cudf/algeon-cudf-sys",
+  "components/algeon-build-support",
+  "components/algeon-interop",
+  "components/cugraph/algeon-cugraph",
+  "components/cugraph/algeon-cugraph-sys",
+  "components/cuvs/algeon-cuvs",
+  "components/cuvs/algeon-cuvs-sys",
 ]
 default-members = [
-  ".",
-  "crates/nexus-workloads",
-  "crates/nexus-query-engine",
+  "crates/algeon-datafusion",
+  "crates/workloads",
+  "crates/algeon-query-engine",
 ]
 resolver = "3"
 
@@ -57,8 +32,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
-repository = "https://github.com/DataFusion-Nexus/datafusion-nexus"
-homepage = "https://datafusion.nexus"
+repository = "https://github.com/algeon-dev/algeon"
+homepage = "https://algeon.dev"
 
 # Preserve file/line diagnostics while reducing dev/test artifact size and link time.
 [profile.dev]
@@ -66,12 +41,13 @@ debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
 [workspace.lints.rust]
-# The `iceberg` feature is withheld from the published manifests until
-# iceberg-rust ships a DataFusion 55 / Arrow 59 compatible release; crates.io
-# has only 0.10.1 (DataFusion 53.1 / Arrow 58). The `cfg(feature = "iceberg")`
-# sites stay in place as the restoration point, so rustc must treat the value
-# as known rather than report it as an unexpected cfg.
-# See docs/issue/2026-08-20-crates-io-release-readiness.md.
+# The `iceberg` feature is unbuildable and absent from every manifest. The
+# DataFusion integration left apache/iceberg-rust for apache/datafusion-iceberg
+# (iceberg-rust#3029, merged 2026-09-17), which already targets DataFusion 55
+# but is not on crates.io and still pins iceberg by git rev. The
+# `cfg(feature = "iceberg")` sites stay in place as the restoration point, so
+# rustc must treat the value as known rather than report it as an unexpected
+# cfg. See docs/issue/2026-08-20-crates-io-release-readiness.md.
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(feature, values("iceberg"))',
   'cfg(feature, values("iceberg-e2e", "server-iceberg-e2e"))',
@@ -98,25 +74,25 @@ uninhabited_references = "warn"
 
 drop_non_drop = "deny"
 
-[lints]
-workspace = true
-
 [workspace.dependencies]
-datafusion-nexus = { path = ".", version = "=0.1.0", default-features = false }
-nexus-workloads = { path = "crates/nexus-workloads" }
-nexus-query-engine = { path = "crates/nexus-query-engine", version = "=0.1.0", default-features = false }
-nexus-query-planning = { path = "crates/nexus-query-planning", version = "=0.1.0", default-features = false }
-nexus-query-runtime = { path = "crates/nexus-query-runtime", version = "=0.1.0", default-features = false }
-nexus-server = { path = "crates/nexus-server", version = "=0.1.0", default-features = false }
-nexus-iceberg = { path = "crates/nexus-iceberg", version = "=0.1.0", default-features = false }
-cudf = { package = "cudf-nexus", path = "components/cudf/cudf-nexus", version = "=0.1.0" }
-cudf-sys = { package = "cudf-nexus-sys", path = "components/cudf/cudf-nexus-sys", version = "=0.1.0" }
-cugraph = { package = "cugraph-nexus", path = "components/cugraph/cugraph-nexus", version = "=0.1.0" }
-cugraph-sys = { package = "cugraph-nexus-sys", path = "components/cugraph/cugraph-nexus-sys", version = "=0.1.0" }
-cuvs = { package = "cuvs-nexus", path = "components/cuvs/cuvs-nexus", version = "=0.1.0" }
-cuvs-sys = { package = "cuvs-nexus-sys", path = "components/cuvs/cuvs-nexus-sys", version = "=0.1.0" }
-nexus-build-support = { path = "components/cudf/nexus-build-support", version = "=0.1.0" }
-rapids-interop = { path = "components/cudf/rapids-interop", version = "=0.1.0" }
+# Published crate names carry the `algeon-` prefix because the bare RAPIDS
+# names are taken on crates.io: `cudf`/`cudf-sys` by a third party, and
+# `cuvs`/`cuvs-sys` by NVIDIA's own rapidsai/cuvs. The alias key stays bare so
+# Rust imports remain `use cudf::…` and `dep:` feature strings keep resolving.
+algeon-datafusion = { path = "crates/algeon-datafusion", version = "=0.1.0", default-features = false }
+workloads = { path = "crates/workloads" }
+query-engine = { package = "algeon-query-engine", path = "crates/algeon-query-engine", version = "=0.1.0", default-features = false }
+query-planning = { package = "algeon-query-planning", path = "crates/algeon-query-planning", version = "=0.1.0", default-features = false }
+query-runtime = { package = "algeon-query-runtime", path = "crates/algeon-query-runtime", version = "=0.1.0", default-features = false }
+iceberg-catalog = { path = "crates/iceberg-catalog", version = "=0.1.0", default-features = false }
+cudf = { package = "algeon-cudf", path = "components/cudf/algeon-cudf", version = "=0.1.0" }
+cudf-sys = { package = "algeon-cudf-sys", path = "components/cudf/algeon-cudf-sys", version = "=0.1.0" }
+cugraph = { package = "algeon-cugraph", path = "components/cugraph/algeon-cugraph", version = "=0.1.0" }
+cugraph-sys = { package = "algeon-cugraph-sys", path = "components/cugraph/algeon-cugraph-sys", version = "=0.1.0" }
+cuvs = { package = "algeon-cuvs", path = "components/cuvs/algeon-cuvs", version = "=0.1.0" }
+cuvs-sys = { package = "algeon-cuvs-sys", path = "components/cuvs/algeon-cuvs-sys", version = "=0.1.0" }
+rapids-build-support = { package = "algeon-build-support", path = "components/algeon-build-support", version = "=0.1.0" }
+rapids-interop = { package = "algeon-interop", path = "components/algeon-interop", version = "=0.1.0" }
 ahash = "0.8"
 anyhow = "1"
 arrow = { version = "59.2", default-features = false, features = ["ipc"] }
@@ -137,10 +113,14 @@ datafusion = "55.0"
 fnv = "1"
 futures = "0.3"
 getrandom = "0.4"
+# Only `iceberg-catalog` declares these, and it is private and unbuildable, so
+# they never reach a published manifest. `iceberg-datafusion` is deliberately
+# absent: apache/iceberg-rust#3228 deleted it from this repository on
+# 2026-09-17 after the integration moved to apache/datafusion-iceberg, so a git
+# dependency on it resolves against a path that no longer exists.
 iceberg = { git = "https://github.com/apache/iceberg-rust.git" }
 iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git" }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git" }
-iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git" }
 indexmap = "2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
@@ -162,79 +142,3 @@ tonic = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 typed-builder = "0.23"
-
-[features]
-default = []
-# Workspace-internal bridge for the companion Flight SQL frontend.
-server-internal = []
-# Application/test support surface; not part of the normal embedded/server report contract.
-bench-support = []
-# Controlled device-quarantine qualification for the multi-GPU validation tool.
-# Closes admission on one live device ledger.
-qualification = ["nexus-query-engine/qualification"]
-cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
-cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
-# Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
-nvml = ["nexus-query-engine/nvml"]
-
-[dependencies]
-arrow = { workspace = true }
-async-trait = { workspace = true }
-bytes = { workspace = true }
-cudf = { workspace = true }
-# Direct sys edges expose authoritative native library paths to build.rs.
-cudf-sys = { workspace = true }
-cugraph = { workspace = true, optional = true }
-cugraph-sys = { workspace = true, optional = true }
-cuvs = { workspace = true, optional = true }
-cuvs-sys = { workspace = true, optional = true }
-nexus-query-engine = { workspace = true }
-datafusion = { workspace = true }
-fnv = { workspace = true }
-futures = { workspace = true }
-object_store = { workspace = true, optional = true }
-opendal = { workspace = true, optional = true }
-parquet = { workspace = true, default-features = true }
-serde_json = { workspace = true }
-tempfile = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
-tracing = { workspace = true }
-
-[build-dependencies]
-nexus-build-support = { workspace = true }
-
-[dev-dependencies]
-# Test-only engine seams for owner-crate white-box tests.
-nexus-query-engine = { workspace = true, features = ["test-hooks"] }
-nexus-workloads = { workspace = true }
-hex = "0.4"
-proptest = "1.7"
-sha2 = { workspace = true }
-tempfile = { workspace = true }
-
-[[test]]
-name = "cugraph_tests_gpu"
-required-features = ["cugraph"]
-
-[[test]]
-name = "root_gpu_tests"
-
-[[test]]
-name = "p6_device_identity_tests_gpu_exclusive"
-required-features = ["nvml"]
-
-[[test]]
-name = "cpu_contract_tests"
-
-[[test]]
-name = "native_exec_tests"
-
-[[test]]
-name = "native_planning_tests"
-
-[[test]]
-name = "native_runtime_pruning_tests_gpu"
-
-[[test]]
-name = "native_tpcds_parity_tests_gpu"
-required-features = ["bench-support"]

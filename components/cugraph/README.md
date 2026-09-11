@@ -1,10 +1,10 @@
 # cuGraph component
 
-`components/cugraph` is the DataFusion Nexus Rust graph integration component
-built around [`libcugraph`](https://github.com/DataFusion-Nexus/cugraph). It is
+`components/cugraph` is the Algeon Rust graph integration component
+built around [`libcugraph`](https://github.com/algeon-dev/cugraph). It is
 part of the root Cargo workspace, not a second repository or workspace.
 It exists only to support the native backend of
-[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cugraph).
+[Algeon](https://github.com/algeon-dev/algeon/tree/main/components/cugraph).
 Its Rust package and import names are workspace contracts, not an external
 semantic-versioning or publication promise.
 
@@ -12,14 +12,14 @@ semantic-versioning or publication promise.
 
 - Runtime-bound graph ownership and algorithm execution.
 - Canonical prepared cuDF ingress and result egress with completion ordering.
-- Allocation preflight facts for bounded Nexus admission.
+- Allocation preflight facts for bounded Algeon admission.
 - Structured errors that preserve machine-readable native failure context.
 
 ## Workspace
 
-- `components/cugraph/cugraph-nexus/` - the internal safe execution crate, packaged as `cugraph-nexus` (import `cugraph`).
-- `components/cugraph/cugraph-nexus-sys/` - low-level FFI bindings around the cuGraph C API (import `cugraph_sys`).
-- `components/cugraph/cugraph/` - the pinned **[forked cuGraph](https://github.com/DataFusion-Nexus/cugraph)** source submodule used to build `libcugraph`.
+- `components/cugraph/algeon-cugraph/` - the internal safe execution crate, packaged as `cugraph` (import `cugraph`).
+- `components/cugraph/algeon-cugraph-sys/` - low-level FFI bindings around the cuGraph C API (import `cugraph_sys`).
+- `components/cugraph/cugraph/` - the pinned **[forked cuGraph](https://github.com/algeon-dev/cugraph)** source submodule used to build `libcugraph`.
 
 Native defaults are repo-relative: `target/native/cudf-install` and
 `target/native/cuvs-install` provide the shared cuDF/RMM and cuVS prefixes, and
@@ -29,11 +29,11 @@ Native defaults are repo-relative: `target/native/cudf-install` and
 ## validation
 
 ```bash
-cargo clippy -p cugraph-nexus -p cugraph-nexus-sys --all-targets --all-features -- -D warnings
+cargo clippy -p cugraph -p cugraph-sys --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cugraph-nexus) | package(cugraph-nexus-sys)'
+cargo nt -E 'package(cugraph) | package(cugraph-sys)'
 ```
 
-`cugraph-nexus-sys` intentionally generates bindings from the selected native
+`cugraph-sys` intentionally generates bindings from the selected native
 headers in `build.rs`; the selected headers and include paths are part of its
 package/native contract.

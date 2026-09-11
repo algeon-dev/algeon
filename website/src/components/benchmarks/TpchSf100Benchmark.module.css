@@ -175,8 +175,8 @@
 }
 
 [data-theme='dark'] .chartCard {
-  background: var(--nx-ayu-surface);
-  border-color: var(--nx-ayu-line);
+  background: var(--ag-ayu-surface);
+  border-color: var(--ag-ayu-line);
 }
 
 @media (max-width: 560px) {

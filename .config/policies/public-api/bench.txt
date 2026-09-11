@@ -1,0 +1,207 @@
+pub mod bench
+pub mod bench::clickbench_benchmark
+pub async fn bench::clickbench_benchmark::run_main() -> std::process::ExitCode
+pub mod bench::cugraph_admission_stress
+pub async fn bench::cugraph_admission_stress::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod bench::cugraph_sql_construction_report
+pub async fn bench::cugraph_sql_construction_report::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod bench::query_service_goodput
+pub async fn bench::query_service_goodput::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod bench::report_metadata
+pub trait bench::report_metadata::ReportDatasetMetadataExt
+pub fn bench::report_metadata::ReportDatasetMetadataExt::to_workload_dataset_metadata(&self) -> algeon_datafusion::native_report::dataset::WorkloadDatasetMetadata
+impl bench::report_metadata::ReportDatasetMetadataExt for workloads::clickbench::dataset::ClickbenchDatasetMetadata
+pub fn workloads::clickbench::dataset::ClickbenchDatasetMetadata::to_workload_dataset_metadata(&self) -> algeon_datafusion::native_report::dataset::WorkloadDatasetMetadata
+impl bench::report_metadata::ReportDatasetMetadataExt for workloads::tpcds::dataset::TpcdsDatasetMetadata
+pub fn workloads::tpcds::dataset::TpcdsDatasetMetadata::to_workload_dataset_metadata(&self) -> algeon_datafusion::native_report::dataset::WorkloadDatasetMetadata
+impl bench::report_metadata::ReportDatasetMetadataExt for workloads::tpch::dataset::TpchDatasetMetadata
+pub fn workloads::tpch::dataset::TpchDatasetMetadata::to_workload_dataset_metadata(&self) -> algeon_datafusion::native_report::dataset::WorkloadDatasetMetadata
+pub mod bench::report_workload
+pub mod bench::report_workload::clickbench
+pub enum bench::report_workload::clickbench::ClickbenchExecutionProgressEvent<'a>
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::elapsed_ms: u128
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::query_id: &'a str
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::query_index: usize
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::runtime_outcome: &'a str
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::total: usize
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted::query_id: &'a str
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted::query_index: usize
+pub bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted::total: usize
+pub struct bench::report_workload::clickbench::ClickbenchNativeProfileSettings
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::device_budget_bytes: u64
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::max_retry_attempts: usize
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::max_row_groups_per_chunk: usize
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::max_source_chunk_bytes: u64
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::min_retry_chunk_row_groups: usize
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::profile_name: &'static str
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::profile_source: &'static str
+pub bench::report_workload::clickbench::ClickbenchNativeProfileSettings::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV: &str
+pub const bench::report_workload::clickbench::ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
+pub const bench::report_workload::clickbench::CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64
+pub const bench::report_workload::clickbench::CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
+pub const bench::report_workload::clickbench::CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64
+pub const bench::report_workload::clickbench::CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE: &str
+pub const bench::report_workload::clickbench::CLICKBENCH_NATIVE_PROFILE_CUSTOM: &str
+pub const bench::report_workload::clickbench::CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT: &str
+pub async fn bench::report_workload::clickbench::clickbench_datafusion_execution_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::clickbench::clickbench_datafusion_execution_workload_items_filtered(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, core::option::Option<&[&str]>, core::option::Option<&mut dyn core::ops::function::FnMut(bench::report_workload::clickbench::ClickbenchExecutionProgressEvent<'_>)>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::clickbench::clickbench_datafusion_execution_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::clickbench::clickbench_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::clickbench::clickbench_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::clickbench::clickbench_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn bench::report_workload::clickbench::clickbench_native_optimizer_config() -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::clickbench::clickbench_native_optimizer_config_with_profile_settings(&bench::report_workload::clickbench::ClickbenchNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::clickbench::clickbench_native_profile_settings_from_env() -> bench::report_workload::clickbench::ClickbenchNativeProfileSettings
+pub fn bench::report_workload::clickbench::clickbench_native_profile_settings_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> bench::report_workload::clickbench::ClickbenchNativeProfileSettings
+pub fn bench::report_workload::clickbench::clickbench_report_session_config() -> datafusion_execution::config::SessionConfig
+pub fn bench::report_workload::clickbench::clickbench_tuned_cpu_session_config() -> datafusion_execution::config::SessionConfig
+pub mod bench::report_workload::tpcds
+pub enum bench::report_workload::tpcds::TpcdsExecutionProgressEvent<'a>
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::elapsed_ms: u128
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::query_id: &'a str
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::query_index: usize
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::runtime_outcome: &'a str
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::total: usize
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted::query_id: &'a str
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted::query_index: usize
+pub bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted::total: usize
+pub enum bench::report_workload::tpcds::TpcdsParityProgressEvent<'a>
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted::query_id: &'a str
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted::query_index: usize
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted::total: usize
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::query_id: &'a str
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::query_index: usize
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::row: &'a algeon_datafusion::native_report::tpcds_parity::report::NativeTpcdsParityRow
+pub bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::total: usize
+pub struct bench::report_workload::tpcds::TpcdsExternalEngineConfig
+pub bench::report_workload::tpcds::TpcdsExternalEngineConfig::binary: std::path::PathBuf
+pub struct bench::report_workload::tpcds::TpcdsExternalOracleConfig
+pub bench::report_workload::tpcds::TpcdsExternalOracleConfig::duckdb: core::option::Option<bench::report_workload::tpcds::TpcdsExternalEngineConfig>
+pub bench::report_workload::tpcds::TpcdsExternalOracleConfig::scratch_dir: std::path::PathBuf
+pub struct bench::report_workload::tpcds::TpcdsNativeProfileSettings
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::device_budget_bytes: u64
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::max_retry_attempts: usize
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::max_row_groups_per_chunk: usize
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::max_source_chunk_bytes: u64
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::min_retry_chunk_row_groups: usize
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::profile_name: &'static str
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::profile_source: &'static str
+pub bench::report_workload::tpcds::TpcdsNativeProfileSettings::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_PROFILE_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
+pub const bench::report_workload::tpcds::ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
+pub const bench::report_workload::tpcds::TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize
+pub const bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str
+pub const bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CUSTOM: &str
+pub const bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str
+pub const bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
+pub const bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64
+pub async fn bench::report_workload::tpcds::register_tpcds_tables_with_native_metadata(&datafusion::execution::context::SessionContext, &std::path::Path) -> workloads::error::WorkloadResult<()>
+pub async fn bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items_filtered(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, core::option::Option<&[&str]>, core::option::Option<&mut dyn core::ops::function::FnMut(bench::report_workload::tpcds::TpcdsExecutionProgressEvent<'_>)>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, query_runtime::runtime::backend_core::GpuDeviceMemoryLimit, core::option::Option<&[&str]>, core::option::Option<&mut dyn core::ops::function::FnMut(bench::report_workload::tpcds::TpcdsExecutionProgressEvent<'_>)>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config() -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(&bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config_with_profile_settings(&bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::tpcds::tpcds_native_cost_selection_options_from_env() -> query_planning::plan::preference::NativePlanCostOptions
+pub fn bench::report_workload::tpcds::tpcds_native_cost_selection_options_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> query_planning::plan::preference::NativePlanCostOptions
+pub fn bench::report_workload::tpcds::tpcds_native_optimizer_config() -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::tpcds::tpcds_native_optimizer_config_with_profile_settings(&bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::tpcds::tpcds_native_profile_settings_and_device_memory_limit_from_env() -> (bench::report_workload::tpcds::TpcdsNativeProfileSettings, query_runtime::runtime::backend_core::GpuDeviceMemoryLimit)
+pub fn bench::report_workload::tpcds::tpcds_native_profile_settings_from_env() -> bench::report_workload::tpcds::TpcdsNativeProfileSettings
+pub fn bench::report_workload::tpcds::tpcds_native_profile_settings_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> bench::report_workload::tpcds::TpcdsNativeProfileSettings
+pub fn bench::report_workload::tpcds::tpcds_native_report_session_config() -> datafusion_execution::config::SessionConfig
+pub async fn bench::report_workload::tpcds::tpcds_parity_report_rows_with_external_oracles(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>, core::option::Option<bench::report_workload::tpcds::TpcdsExternalOracleConfig>, algeon_datafusion::native_report::tpcds_parity::report::ParityFloatTolerance, core::option::Option<&mut dyn core::ops::function::FnMut(bench::report_workload::tpcds::TpcdsParityProgressEvent<'_>)>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::tpcds_parity::report::NativeTpcdsParityRow>>
+pub async fn bench::report_workload::tpcds::tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, query_runtime::runtime::backend_core::GpuDeviceMemoryLimit, core::option::Option<&[alloc::string::String]>, core::option::Option<bench::report_workload::tpcds::TpcdsExternalOracleConfig>, algeon_datafusion::native_report::tpcds_parity::report::ParityFloatTolerance, core::option::Option<&mut dyn core::ops::function::FnMut(bench::report_workload::tpcds::TpcdsParityProgressEvent<'_>)>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::tpcds_parity::report::NativeTpcdsParityRow>>
+pub async fn bench::report_workload::tpcds::tpcds_parity_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::tpcds_parity::report::NativeTpcdsParityWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_parity_workload_items_with_external_oracles(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>, core::option::Option<bench::report_workload::tpcds::TpcdsExternalOracleConfig>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::tpcds_parity::report::NativeTpcdsParityWorkloadItem>>
+pub async fn bench::report_workload::tpcds::tpcds_parity_workload_items_with_session_configs(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::tpcds_parity::report::NativeTpcdsParityWorkloadItem>>
+pub fn bench::report_workload::tpcds::tpcds_report_session_config() -> datafusion_execution::config::SessionConfig
+pub mod bench::report_workload::tpch
+pub enum bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
+pub bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::Accepted
+pub bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
+impl bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
+pub const fn bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::as_str(self) -> &'static str
+pub enum bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
+pub bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::Accepted
+pub bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::RejectedBeforeExecution
+impl bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
+pub const fn bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::as_str(self) -> &'static str
+pub enum bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
+pub bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::NativeQueryPlan
+impl bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
+pub const fn bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::as_str(self) -> &'static str
+pub enum bench::report_workload::tpch::AnalyticalOlapWorkloadClass
+pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::AggregateSortTopK
+pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::DecorrelatableSubquery
+pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::MultiJoinResidentPressure
+pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::SelfJoin
+pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::StarSchemaJoin
+impl bench::report_workload::tpch::AnalyticalOlapWorkloadClass
+pub const fn bench::report_workload::tpch::AnalyticalOlapWorkloadClass::as_str(self) -> &'static str
+pub struct bench::report_workload::tpch::AnalyticalOlapQuery
+pub bench::report_workload::tpch::AnalyticalOlapQuery::capability_first_admission: bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
+pub bench::report_workload::tpch::AnalyticalOlapQuery::current_admission: bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
+pub bench::report_workload::tpch::AnalyticalOlapQuery::expected_lowering: bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
+pub bench::report_workload::tpch::AnalyticalOlapQuery::id: &'static str
+pub bench::report_workload::tpch::AnalyticalOlapQuery::sql: &'static str
+pub bench::report_workload::tpch::AnalyticalOlapQuery::workload_class: bench::report_workload::tpch::AnalyticalOlapWorkloadClass
+pub const bench::report_workload::tpch::ANALYTICAL_OLAP_QUERIES: &[bench::report_workload::tpch::AnalyticalOlapQuery]
+pub const bench::report_workload::tpch::ANALYTICAL_OLAP_QUERY_COUNT: usize
+pub const bench::report_workload::tpch::TPCH_NATIVE_DEVICE_BUDGET_BYTES: u64
+pub async fn bench::report_workload::tpch::analytical_olap_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::tpch::analytical_olap_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::tpch::analytical_olap_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn bench::report_workload::tpch::analytical_olap_query_ids() -> impl core::iter::traits::iterator::Iterator<Item = &'static str>
+pub async fn bench::report_workload::tpch::tpch_datafusion_execution_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::tpch::tpch_datafusion_execution_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn bench::report_workload::tpch::tpch_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::tpch::tpch_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn bench::report_workload::tpch::tpch_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn bench::report_workload::tpch::tpch_native_optimizer_config() -> algeon_datafusion::planner::AlgeonNativeOptimizerConfig
+pub fn bench::report_workload::tpch::tpch_report_session_config() -> datafusion_execution::config::SessionConfig
+pub async fn bench::report_workload::tpch::tpch_scalar_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> workloads::error::WorkloadResult<alloc::vec::Vec<algeon_datafusion::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn bench::report_workload::tpch::tpch_tuned_cpu_session_config() -> datafusion_execution::config::SessionConfig
+pub enum bench::report_workload::RelationalExecutionSelection
+pub bench::report_workload::RelationalExecutionSelection::CpuBaseline
+pub bench::report_workload::RelationalExecutionSelection::Native
+pub bench::report_workload::RelationalExecutionSelection::Native::datafusion_cpu_execution_policy: algeon_datafusion::planner::DataFusionCpuExecutionPolicy
+impl bench::report_workload::RelationalExecutionSelection
+pub const fn bench::report_workload::RelationalExecutionSelection::as_str(self) -> &'static str
+pub fn bench::report_workload::RelationalExecutionSelection::configure_native_optimizer(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> core::option::Option<algeon_datafusion::planner::AlgeonNativeOptimizerConfig>
+pub const fn bench::report_workload::RelationalExecutionSelection::datafusion_cpu_execution_policy(self) -> core::option::Option<algeon_datafusion::planner::DataFusionCpuExecutionPolicy>
+pub const fn bench::report_workload::RelationalExecutionSelection::installs_native_rule(self) -> bool
+pub const fn bench::report_workload::RelationalExecutionSelection::native() -> Self
+pub const fn bench::report_workload::RelationalExecutionSelection::strict_native() -> Self
+pub mod bench::tpcds_three_way_bench
+pub async fn bench::tpcds_three_way_bench::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod bench::tpch_benchmark
+pub async fn bench::tpch_benchmark::run_main() -> datafusion_common::error::Result<()>

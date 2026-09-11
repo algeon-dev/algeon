@@ -7,7 +7,7 @@
     "start": "docusaurus start",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
-    "deploy": "wrangler pages deploy build --project-name=datafusion-nexus --branch=main",
+    "deploy": "wrangler pages deploy build --project-name=algeon --branch=main",
     "clear": "docusaurus clear",
     "serve": "docusaurus serve",
     "write-translations": "docusaurus write-translations",

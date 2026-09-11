@@ -1,0 +1,32 @@
+# Per-symbol allowlist for the root adapter's remaining `#[doc(hidden)] pub` surface.
+# `cargo public-api` omits hidden items, so scripts/ci/check_public_api_hidden.py
+# checks this ledger against the source instead of a snapshot. Module entries
+# cover unattributed children inside that module. No module-level wildcards:
+# every attributed hidden symbol has its own row with owner, consumer, and a
+# concrete removal condition.
+symbol	feature	owner	consumer	removal_condition
+algeon_datafusion::attempt::server_internal	server	root adapter attempt lifecycle	algeon_datafusion::server Flight service	Flight frontend stops driving attempt capture/render and uses public attempt reports
+algeon_datafusion::server_internal	server	root adapter facade	algeon_datafusion::server Flight service	same as algeon_datafusion::attempt::server_internal
+algeon_datafusion::native_exec::ServerInternalNativeMetricsCapture	server	root adapter native execution	algeon_datafusion::server Flight statement wiring	server stops attaching execution-local metrics capture to native configs
+algeon_datafusion::native_exec::ServerInternalNativeObservationActivityFactory	server	root adapter native execution	algeon_datafusion::server Flight statement wiring	server stops attaching observation activity factories to native configs
+algeon_datafusion::native_exec::config::with_cancellation_for_internal_consumer	server	root adapter native execution	algeon_datafusion::server Flight statement wiring	server stops propagating statement cancellation into native configs
+algeon_datafusion::native_exec::config::with_io_lifecycle_for_internal_consumer	server	root adapter native execution	algeon_datafusion::server Flight service wiring	server stops propagating IO lifecycle handles into native configs
+algeon_datafusion::native_exec::config::with_metrics_capture_for_internal_consumer	server	root adapter native execution	algeon_datafusion::server Flight statement wiring	server stops propagating metrics capture handles into native configs
+algeon_datafusion::error::from_native_for_internal_consumer	server	root adapter error boundary	algeon_datafusion::server error mapping	server stops translating engine QueryError at the Flight boundary
+algeon_datafusion::gpu_coverage::server_internal	server	root adapter GPU coverage	algeon_datafusion::server Flight EXPLAIN GPU	Flight SQL stops serving EXPLAIN GPU query plans
+algeon_datafusion::gpu_functions::server_internal	server	root adapter GPU function catalog	algeon_datafusion::server Flight metadata-domain classification	server stops branching metadata queries and admitted data queries
+algeon_datafusion::native_report::bench_support	bench-support	root adapter native reports	bench TPC-DS parity report	benchmark report package stops consuming parity comparison rows
+algeon_datafusion::native_exec::composed::native_plan_for_internal_consumer	bench-support	root adapter native execution	tools clickbench stage probe	stage probe stops reading composed consumer QueryPlans
+algeon_datafusion::native_exec::host::native_plan_for_internal_consumer	bench-support	root adapter native execution	tools clickbench stage probe	stage probe stops reading host QueryPlans
+algeon_datafusion::cugraph_sql::parity	bench-support	root adapter cuGraph SQL	cugraph parity tests and tools refresh_cugraph_oracle	oracle refresh workflow and registry-driven parity harness are deleted
+algeon_datafusion::cugraph_sql::parity::ParityComparator	bench-support	root adapter cuGraph SQL	cugraph parity compare harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParityTruthSource	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParityTolerance	bench-support	root adapter cuGraph SQL	cugraph parity compare harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParitySpec	bench-support	root adapter cuGraph SQL	cugraph parity harness and tools refresh_cugraph_oracle	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::CUGRAPH_PARITY_SPECS	bench-support	root adapter cuGraph SQL	cugraph parity harness and tools refresh_cugraph_oracle	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParityDataset	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParityReference	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParityManifest	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness and tools refresh_cugraph_oracle	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::ParityManifestError	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::RefCsvError	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness	same as algeon_datafusion::cugraph_sql::parity
+algeon_datafusion::cugraph_sql::parity::OracleLookup	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness and tools refresh_cugraph_oracle	same as algeon_datafusion::cugraph_sql::parity

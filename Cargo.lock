@@ -67,6 +67,205 @@ dependencies = [
 ]
 
 [[package]]
+name = "algeon-build-support"
+version = "0.1.0"
+
+[[package]]
+name = "algeon-cudf"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "algeon-cudf-sys",
+ "algeon-interop",
+ "arrow",
+ "bitflags 2.11.1",
+ "csv",
+ "indexmap 2.14.0",
+ "parquet",
+ "smallvec",
+ "static_assertions",
+ "strum 0.28.0",
+ "tempfile",
+ "tokio",
+ "typed-builder 0.23.2",
+]
+
+[[package]]
+name = "algeon-cudf-sys"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "cmake",
+ "static_assertions",
+]
+
+[[package]]
+name = "algeon-cugraph"
+version = "0.1.0"
+dependencies = [
+ "algeon-cudf",
+ "algeon-cudf-sys",
+ "algeon-cugraph-sys",
+ "algeon-interop",
+ "anyhow",
+ "cc",
+ "static_assertions",
+]
+
+[[package]]
+name = "algeon-cugraph-sys"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+]
+
+[[package]]
+name = "algeon-cuvs"
+version = "0.1.0"
+dependencies = [
+ "algeon-cudf",
+ "algeon-cuvs-sys",
+ "algeon-interop",
+ "arrow",
+ "static_assertions",
+]
+
+[[package]]
+name = "algeon-cuvs-sys"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "anyhow",
+ "cc",
+ "cmake-package",
+ "static_assertions",
+]
+
+[[package]]
+name = "algeon-datafusion"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "algeon-cudf",
+ "algeon-cudf-sys",
+ "algeon-cugraph",
+ "algeon-cugraph-sys",
+ "algeon-cuvs",
+ "algeon-cuvs-sys",
+ "algeon-query-engine",
+ "argon2",
+ "arrow",
+ "arrow-flight",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "dashmap",
+ "datafusion",
+ "fnv",
+ "futures",
+ "hex",
+ "object_store",
+ "opendal",
+ "parquet",
+ "proptest",
+ "prost",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "workloads",
+]
+
+[[package]]
+name = "algeon-interop"
+version = "0.1.0"
+dependencies = [
+ "static_assertions",
+]
+
+[[package]]
+name = "algeon-query-engine"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "algeon-cudf",
+ "algeon-cudf-sys",
+ "algeon-cugraph",
+ "algeon-cugraph-sys",
+ "algeon-cuvs",
+ "algeon-cuvs-sys",
+ "algeon-query-planning",
+ "algeon-query-runtime",
+ "arrow",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "fnv",
+ "futures",
+ "object_store",
+ "parquet",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "algeon-query-planning"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "blake3",
+ "fnv",
+ "parquet",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "algeon-query-runtime"
+version = "0.1.0"
+dependencies = [
+ "algeon-cudf",
+ "algeon-cudf-sys",
+ "algeon-cugraph",
+ "algeon-query-planning",
+ "arrow",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "fnv",
+ "futures",
+ "getrandom 0.4.2",
+ "nvml-wrapper",
+ "object_store",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "algeon-server"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "algeon-cudf-sys",
+ "algeon-cugraph-sys",
+ "algeon-cuvs-sys",
+ "algeon-datafusion",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1055,6 +1254,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bench"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "algeon-cudf",
+ "algeon-cudf-sys",
+ "algeon-cugraph",
+ "algeon-cugraph-sys",
+ "algeon-cuvs-sys",
+ "algeon-datafusion",
+ "algeon-query-engine",
+ "arrow",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "datafusion",
+ "futures",
+ "object_store",
+ "parquet",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "workloads",
+]
+
+[[package]]
 name = "bigdecimal"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1584,77 +1810,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf-nexus"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "arrow",
- "bitflags 2.11.1",
- "csv",
- "cudf-nexus-sys",
- "indexmap 2.14.0",
- "parquet",
- "rapids-interop",
- "smallvec",
- "static_assertions",
- "strum 0.28.0",
- "tempfile",
- "tokio",
- "typed-builder 0.23.2",
-]
-
-[[package]]
-name = "cudf-nexus-sys"
-version = "0.1.0"
-dependencies = [
- "cmake",
- "nexus-build-support",
- "static_assertions",
-]
-
-[[package]]
-name = "cugraph-nexus"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cc",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus-sys",
- "rapids-interop",
- "static_assertions",
-]
-
-[[package]]
-name = "cugraph-nexus-sys"
-version = "0.1.0"
-dependencies = [
- "nexus-build-support",
-]
-
-[[package]]
-name = "cuvs-nexus"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "cudf-nexus",
- "cuvs-nexus-sys",
- "rapids-interop",
- "static_assertions",
-]
-
-[[package]]
-name = "cuvs-nexus-sys"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cc",
- "cmake-package",
- "nexus-build-support",
- "static_assertions",
-]
-
-[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2086,7 +2241,7 @@ dependencies = [
 name = "datafusion-facade-consumer"
 version = "0.0.0"
 dependencies = [
- "datafusion-nexus",
+ "algeon-datafusion",
 ]
 
 [[package]]
@@ -2231,37 +2386,6 @@ dependencies = [
  "datafusion-doc",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "datafusion-nexus"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "bytes",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus",
- "cugraph-nexus-sys",
- "cuvs-nexus",
- "cuvs-nexus-sys",
- "datafusion",
- "fnv",
- "futures",
- "hex",
- "nexus-build-support",
- "nexus-query-engine",
- "nexus-workloads",
- "object_store",
- "opendal",
- "parquet",
- "proptest",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2629,6 +2753,33 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "examples"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "algeon-cudf-sys",
+ "algeon-cugraph-sys",
+ "algeon-cuvs-sys",
+ "algeon-datafusion",
+ "anyhow",
+ "arrow",
+ "arrow-json",
+ "axum",
+ "datafusion",
+ "futures",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "parquet",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3213,6 +3364,24 @@ dependencies = [
  "uuid",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "iceberg-catalog"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-glue",
+ "iceberg-catalog-rest",
+ "iceberg-storage-opendal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "typetag",
 ]
 
 [[package]]
@@ -3864,225 +4033,6 @@ name = "murmur3"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9252111cf132ba0929b6f8e030cac2a24b507f3a4d6db6fb2896f27b354c714b"
-
-[[package]]
-name = "nexus-bench"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus",
- "cugraph-nexus-sys",
- "cuvs-nexus-sys",
- "datafusion",
- "datafusion-nexus",
- "futures",
- "nexus-build-support",
- "nexus-query-engine",
- "nexus-workloads",
- "object_store",
- "parquet",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "nexus-build-support"
-version = "0.1.0"
-
-[[package]]
-name = "nexus-examples"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arrow",
- "arrow-json",
- "axum",
- "cudf-nexus-sys",
- "cugraph-nexus-sys",
- "cuvs-nexus-sys",
- "datafusion",
- "datafusion-nexus",
- "futures",
- "nexus-build-support",
- "nexus-server",
- "opentelemetry",
- "opentelemetry-proto",
- "parquet",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "nexus-iceberg"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "futures",
- "iceberg",
- "iceberg-catalog-glue",
- "iceberg-catalog-rest",
- "iceberg-storage-opendal",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "typetag",
-]
-
-[[package]]
-name = "nexus-query-engine"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "blake3",
- "bytes",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus",
- "cugraph-nexus-sys",
- "cuvs-nexus",
- "cuvs-nexus-sys",
- "fnv",
- "futures",
- "nexus-build-support",
- "nexus-query-planning",
- "nexus-query-runtime",
- "object_store",
- "parquet",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "nexus-query-planning"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "blake3",
- "fnv",
- "parquet",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "nexus-query-runtime"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "blake3",
- "bytes",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus",
- "fnv",
- "futures",
- "getrandom 0.4.2",
- "nexus-query-planning",
- "nvml-wrapper",
- "object_store",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "nexus-server"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "arrow",
- "arrow-flight",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus-sys",
- "cuvs-nexus-sys",
- "dashmap",
- "datafusion",
- "datafusion-nexus",
- "futures",
- "nexus-build-support",
- "nexus-query-engine",
- "parquet",
- "prost",
- "rand 0.10.1",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml",
- "tonic",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "nexus-tools"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-flight",
- "cudf-nexus",
- "cudf-nexus-sys",
- "cugraph-nexus-sys",
- "cuvs-nexus-sys",
- "datafusion",
- "datafusion-nexus",
- "futures",
- "nexus-bench",
- "nexus-build-support",
- "nexus-examples",
- "nexus-query-engine",
- "nexus-server",
- "nexus-workloads",
- "opentelemetry",
- "opentelemetry-proto",
- "parquet",
- "prost",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tonic",
- "url",
-]
-
-[[package]]
-name = "nexus-workloads"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "datafusion",
- "fnv",
- "parquet",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
-]
 
 [[package]]
 name = "nu-ansi-term"
@@ -4893,13 +4843,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
-]
-
-[[package]]
-name = "rapids-interop"
-version = "0.1.0"
-dependencies = [
- "static_assertions",
 ]
 
 [[package]]
@@ -6057,6 +6000,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tools"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "algeon-cudf",
+ "algeon-cudf-sys",
+ "algeon-cugraph-sys",
+ "algeon-cuvs-sys",
+ "algeon-datafusion",
+ "algeon-query-engine",
+ "arrow",
+ "arrow-flight",
+ "bench",
+ "datafusion",
+ "examples",
+ "futures",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "parquet",
+ "prost",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tonic",
+ "url",
+ "workloads",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6882,6 +6856,21 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workloads"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "fnv",
+ "parquet",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
