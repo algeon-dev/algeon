@@ -13,7 +13,7 @@ use crate::{
     attempt::NexusAttemptExtension,
     native_exec::{
         NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, admission::QueryAdmissionTicket,
-        composed_admission_capability_evidence,
+        composed_admission_capability_evidence, query_admission_ticket_from_task_context,
     },
 };
 
@@ -75,7 +75,7 @@ pub(super) fn cugraph_execution_config_after_staging(
     } else {
         execution_config
     };
-    let (execution_config, graph_execution_plan) = compile_cugraph_admission_ticket(
+    let (execution_config, graph_execution_plan, reused_invocation_ticket) = compile_cugraph_admission_ticket(
         spec,
         edge_source,
         predicate_sources,
@@ -84,8 +84,14 @@ pub(super) fn cugraph_execution_config_after_staging(
         edge_normalize_inserted,
         execution_config,
         exact_edge_source_gpu_plan,
+        task_context,
     )?;
-    Ok((bind_cugraph_ticket_to_attempt(execution_config, task_context)?, graph_execution_plan))
+    let execution_config = if reused_invocation_ticket {
+        execution_config
+    } else {
+        bind_cugraph_ticket_to_attempt(execution_config, task_context)?
+    };
+    Ok((execution_config, graph_execution_plan))
 }
 
 fn bind_cugraph_ticket_to_attempt(
@@ -104,7 +110,7 @@ fn bind_cugraph_ticket_to_attempt(
         attempt.ticket_binding(),
         ticket.metrics_capture(),
     );
-    attempt.bind_ticket(Arc::clone(&ticket));
+    attempt.bind_ticket(Arc::clone(&ticket))?;
     Ok(execution_config.with_existing_query_admission_ticket(ticket))
 }
 
@@ -118,7 +124,8 @@ fn compile_cugraph_admission_ticket(
     edge_normalize_inserted: bool,
     execution_config: NexusNativeExecutionConfig,
     exact_edge_source_gpu_plan: Option<&nexus_query_engine::plan::QueryPlan>,
-) -> Result<(NexusNativeExecutionConfig, nexus_query_engine::plan::QueryPlan)> {
+    task_context: &TaskContext,
+) -> Result<(NexusNativeExecutionConfig, nexus_query_engine::plan::QueryPlan, bool)> {
     let edge_row_upper_bound = if execution_config.query_admission_source().is_none() {
         None
     } else {
@@ -158,6 +165,56 @@ fn compile_cugraph_admission_ticket(
     for predicate_source in predicate_sources {
         collect_native_fragment_capability_evidences(predicate_source.as_ref(), &mut fragment_evidence_items)?;
     }
+    let ambient_ticket = query_admission_ticket_from_task_context(task_context).or_else(|| {
+        task_context
+            .session_config()
+            .options()
+            .extensions
+            .get::<NexusAttemptExtension>()
+            .and_then(NexusAttemptExtension::bound_ticket)
+    });
+    if let Some(ticket) = ambient_ticket {
+        if let Some(source) = execution_config.query_admission_source()
+            && !source.same_backend(&ticket.source())
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                "the graph occurrence and invocation admission ticket belong to different backends",
+            )
+            .with_log_safe_fact("reason", "graph_occurrence_admission_backend_mismatch")
+            .into());
+        }
+        let existing_evidence = ticket.attempt_capability_evidence_for_rebind();
+        let graph_is_covered = existing_evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.validate_covers_plan(&graph_execution_plan).is_ok());
+        let edge_is_covered = exact_edge_source_gpu_plan.is_none_or(|edge_plan| {
+            existing_evidence.as_ref().is_some_and(|evidence| {
+                if let Some(composed) = as_nexus_native_composed_exec(edge_source) {
+                    let occurrence_ids = composed
+                        .gpu_inputs()
+                        .iter()
+                        .filter_map(|input| crate::native_exec::gpu_resident_producer_input_name(input.as_ref()))
+                        .collect::<Vec<_>>();
+                    occurrence_ids.len() == composed.gpu_inputs().len()
+                        && evidence.validate_composed_occurrences(edge_plan, &occurrence_ids).is_ok()
+                } else {
+                    evidence.validate_covers_plan(edge_plan).is_ok()
+                }
+            })
+        });
+        if !graph_is_covered || !edge_is_covered {
+            ticket.extend_capability_evidence_before_admission(fragment_evidence_items).map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                    "failed to bind prepared graph evidence before invocation admission",
+                    error,
+                ))
+            })?;
+        }
+        return Ok((execution_config.with_existing_query_admission_ticket(ticket), graph_execution_plan, true));
+    }
     let execution_config =
         execution_config.with_graph_aware_plan_query_admission_ticket(fragment_evidence_items).map_err(|error| {
             DataFusionError::from(Error::from_native(
@@ -166,7 +223,7 @@ fn compile_cugraph_admission_ticket(
                 error,
             ))
         })?;
-    Ok((execution_config, graph_execution_plan))
+    Ok((execution_config, graph_execution_plan, false))
 }
 
 pub(super) fn validate_cugraph_graph_owner_preflight(

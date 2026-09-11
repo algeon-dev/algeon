@@ -172,13 +172,58 @@ Native execution policy is owned solely by the backend builder. Configure native
 DataFusion sessions carry standard DataFusion configuration only; native execution policy
 and graph input bounds cannot be altered via SQL `SET` or session extensions.
 
-## DataFusion fallback and GPU-only plans
+## Choose an execution mode
 
-By default, an unsupported or unselected whole relational candidate keeps its
-executable DataFusion plan. Add `with_no_datafusion_cpu_requirement()` to the
-backend builder to reject a completed plan that still contains DataFusion CPU
-execution. Nexus does not replan under a different policy, and a native runtime
-failure is never retried on CPU.
+Set `NexusGpuExecutionMode` on the shared backend before installing sessions:
+
+| Rust mode | Behavior | Use it when |
+| --- | --- | --- |
+| `NativePreferred` (default) | Select supported relational SQL for native GPU execution; retain DataFusion for unsupported or unselected candidates. Explicit GPU functions still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph and vector functions. |
+| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU; run explicit `cugraph_*` and `cuvs_*` functions on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
+| `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | You need to enforce a plan with no DataFusion CPU operators. |
+
+This replaces the backend construction above, using the same `device`:
+
+```rust
+use datafusion_nexus::planner::NexusGpuExecutionMode;
+
+let backend = NexusGpuBackend::builder()
+    .with_execution_mode(NexusGpuExecutionMode::FunctionsOnly)
+    .devices([device])
+    .build()?;
+```
+
+Install the required function families with the features and session methods
+shown [above](#add-cugraph-and-cuvs-sql). `FunctionsOnly` changes relational
+planning; it does not register functions or remove their GPU runtime and
+backend requirements. The Flight SQL equivalents are documented in
+[Configuration](./configuration.mdx#execution-mode).
+
+### Compose CPU and GPU work
+
+In `FunctionsOnly`, a CPU relation can feed a GPU function whose Arrow results
+return to CPU SQL. A GPU result can also pass through CPU SQL into another GPU
+function. cuGraph inputs remain registered table or view names; cuVS inputs
+remain parenthesized subqueries. Supported compositions share the same backend
+admission and immutable query grant.
+
+CPU-to-GPU input boundaries stage Arrow data in host memory before upload.
+The current staging path does not spill: cuGraph host input and output staging
+each default to a 1 GiB ceiling; cuVS host input staging has a cumulative 1 GiB ceiling
+across one operation's inputs. DataFusion's memory pool can impose a lower
+limit. These are host staging limits, separate from the GPU query cap; keep
+intermediate inputs bounded. See the runnable
+[execution modes example](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/crates/nexus-examples/src/bin/functions_only_modes.rs)
+for PageRank with CPU filtering and ordering.
+
+### DataFusion fallback and GPU-only plans
+
+An explicit GPU function has no CPU algorithm fallback. Unsupported function
+inputs, memory exhaustion, cancellation, and runtime failures remain errors;
+after GPU execution starts, Nexus never replays the query on CPU. See
+[Handling Errors](./handling-errors.mdx) for the structured error contract.
+`NativeRequired` checks the completed plan without replanning under a different
+policy; it does not make unsupported operations GPU-capable.
 
 Use [GPU Coverage Validation](./gpu-coverage-validation.mdx) to inspect the
 exact final disposition before execution. `validate_query(&ctx, sql)` is the

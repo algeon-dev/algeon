@@ -22,7 +22,7 @@ use cudf::{
 use nexus_query_planning::{
     error::{QueryError, Result},
     naming::is_datafusion_order_column_name,
-    plan::{GraphResidencyDescriptor, JoinNullEquality},
+    plan::{GraphResidencyDescriptor, JoinNullEquality, QueryPlan},
 };
 
 use crate::{
@@ -429,7 +429,14 @@ pub struct GpuResultHandle {
     retained_source_owners: Vec<ResidentOwnerLease>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
-    producer_execution_scope: Option<Arc<str>>,
+    producer_execution: Option<Arc<ProducerExecutionIdentity>>,
+}
+
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct ProducerExecutionIdentity {
+    scope: Arc<str>,
+    plan: Option<Arc<QueryPlan>>,
 }
 
 /// Query-neutral GPU allocation retained by the local-Parquet source cache.
@@ -608,7 +615,8 @@ impl GpuResultHandle {
             retained_source_owners,
             source_cache_pin,
             graph_residency,
-            producer_execution_scope,
+            producer_execution: producer_execution_scope
+                .map(|scope| Arc::new(ProducerExecutionIdentity { scope, plan: None })),
         })
     }
 
@@ -635,12 +643,12 @@ impl GpuResultHandle {
             retained_source_owners,
             source_cache_pin,
             graph_residency,
-            producer_execution_scope,
+            producer_execution,
         } = self;
         let mut frame = GpuDataFrame::new_with_residency(batch.into_frame(), resident_owner, source_cache_pin);
         frame.retained_source_owners = retained_source_owners;
         frame.graph_residency = graph_residency;
-        frame.producer_execution_scope = producer_execution_scope;
+        frame.producer_execution_scope = producer_execution.map(|identity| Arc::clone(&identity.scope));
         frame
     }
 
@@ -693,13 +701,39 @@ impl GpuResultHandle {
     /// follower's own admission evidence re-verifies before use.
     #[doc(hidden)]
     pub fn with_producer_execution_scope(mut self, scope: impl Into<Arc<str>>) -> Self {
-        self.producer_execution_scope = Some(scope.into());
+        self.producer_execution = Some(Arc::new(ProducerExecutionIdentity { scope: scope.into(), plan: None }));
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_producer_execution_plan(mut self, plan: QueryPlan) -> Self {
+        let scope = nexus_query_planning::admission::canonical_execution_scope_fingerprint(&plan).into();
+        self.producer_execution = Some(Arc::new(ProducerExecutionIdentity { scope, plan: Some(Arc::new(plan)) }));
+        self
+    }
+
+    /// Returns the opaque typed producer identity for an ownership transfer.
+    #[doc(hidden)]
+    pub fn producer_execution_identity(&self) -> Option<Arc<ProducerExecutionIdentity>> {
+        self.producer_execution.clone()
+    }
+
+    /// Attaches an opaque typed producer identity retained before a source
+    /// handle was consumed by a host transfer.
+    #[doc(hidden)]
+    pub fn with_producer_execution_identity(mut self, identity: Option<Arc<ProducerExecutionIdentity>>) -> Self {
+        self.producer_execution = identity;
         self
     }
 
     #[doc(hidden)]
     pub fn producer_execution_scope(&self) -> Option<&str> {
-        self.producer_execution_scope.as_deref()
+        self.producer_execution.as_ref().map(|identity| identity.scope.as_ref())
+    }
+
+    #[doc(hidden)]
+    pub fn producer_execution_plan(&self) -> Option<&QueryPlan> {
+        self.producer_execution.as_ref().and_then(|identity| identity.plan.as_deref())
     }
 
     /// Copies this attempt-owned source frame into the supplied cache-domain
@@ -807,7 +841,7 @@ impl GpuResultHandle {
             retained_source_owners,
             source_cache_pin,
             graph_residency,
-            producer_execution_scope: _,
+            producer_execution: _,
         } = self;
         let cursor = batch.into_host_batch_cursor(config).map_err(|error| {
             cudf_query_error(
@@ -944,7 +978,7 @@ impl GpuLocalParquetCachedResult {
             retained_source_owners: Vec::new(),
             source_cache_pin: Some(pin),
             graph_residency: None,
-            producer_execution_scope: None,
+            producer_execution: None,
         })
     }
 }

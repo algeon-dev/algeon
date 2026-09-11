@@ -26,7 +26,7 @@ impl NexusNativeExecutionConfig {
         if fragment_evidence_items.is_empty() {
             return Ok(None);
         }
-        let attempt_capability_evidence = AttemptCapabilityEvidence::aggregate(fragment_evidence_items);
+        let attempt_capability_evidence = AttemptCapabilityEvidence::aggregate(fragment_evidence_items)?;
         let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
         let observation = self.new_runtime_observation(observation_capture.as_ref());
         Ok(Some(QueryAdmissionTicket::new_with_capability_evidence_and_observation(

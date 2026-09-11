@@ -55,7 +55,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
                 Arc::clone(plan.output_schema()),
                 resident_owner,
             ) {
-                Ok(handle) => handle,
+                Ok(handle) => handle.with_producer_execution_plan(plan.clone()),
                 Err(error) => {
                     return Err(error);
                 },

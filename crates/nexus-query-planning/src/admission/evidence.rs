@@ -8,9 +8,9 @@
 //! truth that can only reject work the allocator would have admitted.
 
 use crate::{
-    admission::scope::{AttemptExecutionScope, AttemptProducerOccurrence},
+    admission::scope::{AttemptExecutionManifest, AttemptExecutionScope, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result},
-    plan::{QueryPlan, canonical_execution_scope_fingerprint},
+    plan::{DeferredGraphExecutionScopeIdentity, QueryPlan, canonical_execution_scope_fingerprint},
 };
 
 /// Immutable device execution capability required by an attempt.
@@ -43,17 +43,23 @@ pub const CUGRAPH_GRAPH_EXECUTION_CAPABILITY: ExecutionCapability = ExecutionCap
 pub struct AttestedCugraphGraphExecutionScope {
     #[doc(hidden)]
     pub execution_scope_fingerprint: String,
+    #[doc(hidden)]
+    pub deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
 }
 
 impl AttestedCugraphGraphExecutionScope {
     #[doc(hidden)]
     pub fn for_plan(plan: &QueryPlan) -> Self {
-        Self { execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan) }
+        Self {
+            execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
+            deferred_execution_scope_identity: None,
+        }
     }
 
     #[doc(hidden)]
     pub fn matches(&self, plan: &QueryPlan) -> bool {
         self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+            || self.deferred_execution_scope_identity.as_ref().is_some_and(|scope| scope.matches(plan))
     }
 }
 
@@ -69,6 +75,10 @@ pub struct AttemptCapabilityEvidence {
     /// Plan-scope and output-schema identity for each admitted fragment.
     #[doc(hidden)]
     pub execution_scopes: Vec<AttemptExecutionScope>,
+    /// GPU function occurrences and CPU dependency boundaries for this
+    /// DataFusion invocation.
+    #[doc(hidden)]
+    pub execution_manifest: Option<AttemptExecutionManifest>,
 }
 
 impl AttemptCapabilityEvidence {
@@ -84,6 +94,7 @@ impl AttemptCapabilityEvidence {
             required_capabilities: Vec::new(),
             attested_cugraph_graph_execution_scopes: Vec::new(),
             execution_scopes: vec![AttemptExecutionScope::for_query_plan(plan)],
+            execution_manifest: None,
         }
     }
 
@@ -92,7 +103,12 @@ impl AttemptCapabilityEvidence {
         required_capabilities: Vec<ExecutionCapability>,
         execution_scopes: Vec<AttemptExecutionScope>,
     ) -> Self {
-        Self { required_capabilities, attested_cugraph_graph_execution_scopes: Vec::new(), execution_scopes }
+        Self {
+            required_capabilities,
+            attested_cugraph_graph_execution_scopes: Vec::new(),
+            execution_scopes,
+            execution_manifest: None,
+        }
     }
 
     #[doc(hidden)]
@@ -106,6 +122,44 @@ impl AttemptCapabilityEvidence {
     }
 
     #[doc(hidden)]
+    pub fn execution_manifest(&self) -> Option<&AttemptExecutionManifest> {
+        self.execution_manifest.as_ref()
+    }
+
+    #[doc(hidden)]
+    pub fn deferred_graph_identity_for_scope(
+        &self,
+        execution_scope_fingerprint: &str,
+    ) -> Option<DeferredGraphExecutionScopeIdentity> {
+        self.attested_cugraph_graph_execution_scopes
+            .iter()
+            .find(|scope| scope.execution_scope_fingerprint == execution_scope_fingerprint)
+            .and_then(|scope| scope.deferred_execution_scope_identity.clone())
+    }
+
+    /// Removes invocation-owned occurrence ordering when deriving evidence for
+    /// one nested fragment. The outer invocation retains the sole manifest.
+    #[doc(hidden)]
+    pub fn without_execution_manifest(mut self) -> Self {
+        self.execution_manifest = None;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_execution_manifest(mut self, manifest: AttemptExecutionManifest) -> Result<Self> {
+        if self.execution_manifest.is_some() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.evidence",
+                "an admitted attempt has more than one execution manifest",
+            )
+            .with_fact("reason", "duplicate_execution_manifest"));
+        }
+        self.execution_manifest = Some(manifest);
+        Ok(self)
+    }
+
+    #[doc(hidden)]
     pub fn attest_cugraph_graph_execution_scope(&mut self, plan: &QueryPlan) {
         if !self.required_capabilities.contains(&CUGRAPH_GRAPH_EXECUTION_CAPABILITY) {
             self.required_capabilities.push(CUGRAPH_GRAPH_EXECUTION_CAPABILITY);
@@ -113,6 +167,21 @@ impl AttemptCapabilityEvidence {
         let scope = AttestedCugraphGraphExecutionScope::for_plan(plan);
         if !self.attested_cugraph_graph_execution_scopes.contains(&scope) {
             self.attested_cugraph_graph_execution_scopes.push(scope);
+        }
+    }
+
+    /// Attests a graph scope whose currently missing source cardinality facts
+    /// may be filled from this occurrence's staged Arrow inputs.
+    #[doc(hidden)]
+    pub fn attest_deferred_cugraph_graph_execution_scope(&mut self, plan: &QueryPlan) {
+        self.attest_cugraph_graph_execution_scope(plan);
+        let exact = canonical_execution_scope_fingerprint(plan);
+        if let Some(scope) = self
+            .attested_cugraph_graph_execution_scopes
+            .iter_mut()
+            .find(|scope| scope.execution_scope_fingerprint == exact)
+        {
+            scope.deferred_execution_scope_identity = Some(DeferredGraphExecutionScopeIdentity::for_plan(plan));
         }
     }
 
@@ -139,7 +208,7 @@ impl AttemptCapabilityEvidence {
     /// invocation. Capabilities are unioned because every fragment executes
     /// under the same attempt.
     #[doc(hidden)]
-    pub fn aggregate<I: IntoIterator<Item = Self>>(evidence: I) -> Self {
+    pub fn aggregate<I: IntoIterator<Item = Self>>(evidence: I) -> Result<Self> {
         let mut aggregate = Self::empty();
         for one in evidence {
             for capability in one.required_capabilities {
@@ -152,15 +221,84 @@ impl AttemptCapabilityEvidence {
                     aggregate.attested_cugraph_graph_execution_scopes.push(scope);
                 }
             }
-            aggregate.execution_scopes.extend(one.execution_scopes);
+            for scope in one.execution_scopes {
+                if !aggregate.execution_scopes.contains(&scope) {
+                    aggregate.execution_scopes.push(scope);
+                }
+            }
+            if let Some(manifest) = one.execution_manifest {
+                if aggregate.execution_manifest.is_some() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedPlanShape,
+                        "nexus_query_engine.admission.evidence",
+                        "an admitted attempt has more than one execution manifest",
+                    )
+                    .with_fact("reason", "duplicate_execution_manifest"));
+                }
+                aggregate.execution_manifest = Some(manifest);
+            }
         }
-        aggregate
+        Ok(aggregate)
     }
 
     #[doc(hidden)]
     pub fn producer_occurrence_scope_count_for_plan(&self, plan: &QueryPlan) -> usize {
         let execution_scope = canonical_execution_scope_fingerprint(plan);
         self.execution_scopes.iter().map(|scope| scope.producer_occurrence_scope_count(&execution_scope)).sum()
+    }
+
+    /// Validates the ordered producer occurrences of one composed native plan.
+    #[doc(hidden)]
+    pub fn validate_composed_occurrences(&self, plan: &QueryPlan, occurrence_ids: &[String]) -> Result<()> {
+        let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
+        let expected_schema =
+            crate::admission::log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
+        let matching = self
+            .execution_scopes
+            .iter()
+            .filter(|shape| shape.matches(plan) && shape.output_schema_fingerprint() == expected_schema)
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.evidence",
+                "the admitted capability evidence has no occurrence manifest for the native plan",
+            )
+            .with_fact("reason", "admitted_capability_scope_mismatch")
+            .with_fact("matching_shape_count", 0));
+        }
+        let scheduled = matching
+            .iter()
+            .map(|shape| {
+                shape.producer_occurrences().iter().map(|occurrence| occurrence.occurrence_id()).collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        if scheduled.iter().any(|candidate| candidate.as_slice() == occurrence_ids) {
+            return Ok(());
+        }
+        let Some(same_len) = scheduled.iter().find(|candidate| candidate.len() == occurrence_ids.len()) else {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.evidence",
+                "the runtime composed input count differs from the admitted capability manifest",
+            )
+            .with_fact("schedule_reason", "runtime_occurrence_count_mismatch")
+            .with_fact("scheduled_occurrence_count", scheduled.first().map_or(0, Vec::len))
+            .with_fact("runtime_occurrence_count", occurrence_ids.len()));
+        };
+        for (scheduled, runtime) in same_len.iter().zip(occurrence_ids) {
+            if *scheduled != runtime {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.admission.evidence",
+                    "the runtime composed input order differs from the admitted capability manifest",
+                )
+                .with_fact("schedule_reason", "runtime_occurrence_order_mismatch")
+                .with_fact("scheduled_occurrence_id", *scheduled)
+                .with_fact("runtime_occurrence_id", runtime));
+            }
+        }
+        Ok(())
     }
 
     /// Rejects execution of a plan the admitted evidence does not cover.
@@ -192,7 +330,8 @@ impl AttemptCapabilityEvidence {
             .iter()
             .map(|scope| scope.producer_occurrence_scope_count(&execution_scope))
             .sum::<usize>();
-        if scope_matches > 0 || occurrence_matches > 0 {
+        let manifest_matches = self.execution_manifest.as_ref().and_then(|manifest| manifest.occurrence_for_plan(plan));
+        if scope_matches > 0 || occurrence_matches > 0 || manifest_matches.is_some() {
             return Ok(());
         }
         Err(QueryError::new(

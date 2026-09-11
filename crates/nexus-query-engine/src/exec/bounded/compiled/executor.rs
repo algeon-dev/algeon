@@ -143,7 +143,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.plan.output_schema().clone(),
             resident_owner,
         ) {
-            Ok(handle) => handle,
+            Ok(handle) => handle.with_producer_execution_plan(self.plan.clone()),
             Err(error) => {
                 return Err(error
                     .with_fact_if_absent("sink_boundary_task_id", self.pipeline.sink().input())

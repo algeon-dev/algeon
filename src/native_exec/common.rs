@@ -123,7 +123,7 @@ pub(super) fn properties_with_equivalence(
     )))
 }
 
-pub(super) struct NativeHostOutputCursor {
+pub(crate) struct NativeHostOutputCursor {
     cursor: GpuHostBatchCursor,
     executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
@@ -136,7 +136,7 @@ pub(super) struct NativeHostOutputCursor {
 }
 
 impl NativeHostOutputCursor {
-    pub(super) fn new(
+    pub(crate) fn new(
         cursor: GpuHostBatchCursor,
         executor: GpuExecutorLease,
         observation: RuntimeObservationHandle,
@@ -321,7 +321,7 @@ impl RecordBatchStream for NativeHostOutputStream {
 
 /// Builds a bounded native host-output stream, charging at most the currently
 /// yielded Arrow chunk to DataFusion's host-side memory pool.
-pub(super) fn native_host_output_stream<F>(
+pub(crate) fn native_host_output_stream<F>(
     consumer_name: &'static str,
     schema: SchemaRef,
     task_context: Arc<TaskContext>,

@@ -1,6 +1,7 @@
 #[test]
 fn server_native_config_option_descriptors_cover_toml_and_env_keys() {
     let expected = [
+        ("native.execution_mode", NEXUS_SERVER_EXECUTION_MODE_ENV),
         ("native.max_source_chunk_bytes", NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV),
         ("native.max_row_groups_per_chunk", NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV),
         ("native.max_retry_attempts", NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV),
@@ -145,6 +146,28 @@ fn server_config_leaves_final_plan_unconstrained_by_default() {
         config.native_optimizer_config.datafusion_cpu_execution_policy(),
         DataFusionCpuExecutionPolicy::Allow
     );
+}
+
+#[test]
+fn server_config_maps_execution_mode_from_env_and_toml() {
+    let env = BTreeMap::from([(NEXUS_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string())]);
+    let config = server_config_with_default_device_profile(env).unwrap();
+    assert_eq!(config.native_optimizer_config.execution_mode().unwrap(), NexusGpuExecutionMode::FunctionsOnly);
+
+    let (_dir, env) = env_with_server_toml("[native]\nexecution_mode = \"native_required\"\n");
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    assert_eq!(config.native_optimizer_config.execution_mode().unwrap(), NexusGpuExecutionMode::NativeRequired);
+}
+
+#[test]
+fn server_config_rejects_conflicting_execution_mode_and_legacy_requirement() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string()),
+        (NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "no_datafusion_cpu".to_string()),
+    ]);
+    let error = server_config_with_default_device_profile(env).unwrap_err();
+    assert_eq!(error.code(), datafusion_nexus::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.fact_value("config_field"), Some(NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV));
 }
 
 #[test]

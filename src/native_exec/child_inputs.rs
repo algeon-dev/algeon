@@ -124,15 +124,7 @@ pub(crate) async fn stage_native_children(
             continue;
         }
         if contains_gpu_resident_producer(spec.plan.as_ref()) {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_nexus.native_multi_child.prepare",
-                "an ordinary Arrow child cannot hide a GPU-resident producer below a host execution wrapper",
-            )
-            .with_fact("input_role", spec.role)
-            .with_fact("child_name", spec.plan.name())
-            .with_log_safe_fact("reason", "gpu_producer_below_host_wrapper")
-            .into());
+            super::validate_host_wrapped_gpu_execution(spec.plan.as_ref(), task_context.as_ref())?;
         }
         let schema = Arc::new(spec.plan.schema().project(&spec.projection).map_err(DataFusionError::from)?);
         let partition_count = spec.plan.properties().output_partitioning().partition_count();
@@ -624,7 +616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn producer_hidden_below_host_wrapper_is_rejected() {
+    async fn producer_hidden_below_host_wrapper_without_manifest_is_rejected() {
         register_gpu_resident_producer_discovery(fake_producer_discovery);
         let producer = Arc::new(FakeProducerExec {
             inner: CountingExec::new(vec![batch(10, 1.0, 100)], Arc::new(AtomicUsize::new(0))),
@@ -645,6 +637,6 @@ mod tests {
         .await
         .unwrap_err();
         let typed = error.find_nexus_error().expect("structured wrapper rejection");
-        assert_eq!(typed.facts().get("reason"), Some("gpu_producer_below_host_wrapper"));
+        assert_eq!(typed.facts().get("reason"), Some("host_wrapped_gpu_occurrence_manifest_missing"));
     }
 }

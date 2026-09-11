@@ -211,7 +211,7 @@ mod cudf {
             self: &Arc<Self>,
             evidence_items: impl IntoIterator<Item = AttemptCapabilityEvidence>,
         ) -> Result<PipelineTestContext> {
-            let evidence = AttemptCapabilityEvidence::aggregate(evidence_items);
+            let evidence = AttemptCapabilityEvidence::aggregate(evidence_items)?;
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
             let handle = backend

@@ -24,7 +24,10 @@ pub use evidence::{
     CUGRAPH_GRAPH_EXECUTION_CAPABILITY, ExecutionCapability,
 };
 #[doc(hidden)]
-pub use scope::{AttemptExecutionScope, AttemptProducerOccurrence};
+pub use scope::{
+    AttemptExecutionBoundary, AttemptExecutionManifest, AttemptExecutionOccurrence, AttemptExecutionScope,
+    AttemptProducerOccurrence,
+};
 #[doc(hidden)]
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
@@ -33,4 +36,7 @@ pub use support::{
 #[doc(hidden)]
 pub use crate::capability::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 #[doc(hidden)]
-pub use crate::{plan::canonical_execution_scope_fingerprint, util::log_safe_fingerprint};
+pub use crate::{
+    plan::{DeferredGraphExecutionScopeIdentity, canonical_execution_scope_fingerprint},
+    util::log_safe_fingerprint,
+};

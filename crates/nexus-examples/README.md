@@ -179,6 +179,31 @@ same acquisition instructions instead of downloading the dataset automatically.
 
 ### Run
 
+#### GPU execution modes
+
+Embedded and server sessions use the same three modes. `native_preferred` is
+the default and keeps ordinary SQL eligible for native rewrite.
+`functions_only` leaves scans, filters, joins, aggregates, sorts, windows, and
+limits in DataFusion while explicit cuGraph and cuVS functions cross the GPU
+boundary. `native_required` rejects a completed plan that still contains
+DataFusion CPU execution.
+
+The `functions_only_modes` binary runs one PageRank query with CPU filter and
+sort operators around the GPU function. Select a mode without changing the
+SQL:
+
+```bash
+NEXUS_EXAMPLE_EXECUTION_MODE=functions_only \
+cargo run -p nexus-examples --all-features --bin functions_only_modes
+```
+
+Server deployments use `native.execution_mode` in TOML or
+`NEXUS_SERVER_EXECUTION_MODE`. GPU inputs and outputs use bounded Arrow staging
+with DataFusion memory accounting; staging does not spill. Unsupported
+capability, OOM, cancellation, and runtime failures remain structured errors,
+and a GPU function is not replayed as a CPU algorithm after GPU execution
+starts.
+
 The example consumes the normal Flight SQL server environment plus
 `EXAMPLE_REST_BIND`. `EXAMPLE_REST_BIND` is the bind address for this example's
 own axum HTTP API (`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the

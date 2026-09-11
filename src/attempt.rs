@@ -57,7 +57,7 @@ pub use crate::native_exec::{
 };
 use crate::{
     backend::NexusGpuBackend,
-    error::{DataFusionErrorExt, Error, Result},
+    error::{DataFusionErrorExt, Error, ErrorCode, Result},
     native_exec::{
         SealedAttemptMetricsTarget,
         admission::{
@@ -232,8 +232,21 @@ impl NexusAttemptExtension {
 
     /// Retain the planner-created ticket so every execution path in this
     /// invocation can bind it to its task context.
-    pub(crate) fn bind_ticket(&self, ticket: Arc<QueryAdmissionTicket>) {
-        *self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
+    pub(crate) fn bind_ticket(&self, ticket: Arc<QueryAdmissionTicket>) -> Result<()> {
+        let mut slot = self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match slot.as_ref() {
+            Some(existing) if Arc::ptr_eq(existing, &ticket) => Ok(()),
+            Some(_) => Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.attempt.bind_ticket",
+                "one invocation cannot replace its canonical GPU admission ticket",
+            )
+            .with_log_safe_fact("reason", "attempt_admission_ticket_conflict")),
+            None => {
+                *slot = Some(ticket);
+                Ok(())
+            },
+        }
     }
 
     /// Recover the opaque ticket from an invocation-local session config.

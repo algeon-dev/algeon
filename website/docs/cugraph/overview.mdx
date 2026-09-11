@@ -15,6 +15,10 @@ you can compose with ordinary SQL.
 This section helps you choose a graph function, provide its edge relation, and
 understand its execution and reuse boundaries.
 
+Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
+to keep scans and surrounding SQL on DataFusion CPU while graph algorithms run
+on GPU. The same page covers backend configuration and host staging limits.
+
 ## Graph input and call shape
 
 Most functions share this positional shape; the ones that need extra inputs

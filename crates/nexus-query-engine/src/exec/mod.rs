@@ -428,6 +428,7 @@ fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDat
         frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan)),
         Arc::clone(plan.output_schema()),
     )
+    .map(|handle| handle.with_producer_execution_plan(plan.clone()))
 }
 
 fn execute_node(

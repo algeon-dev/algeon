@@ -277,6 +277,7 @@ struct CompletedComposedAdmissionEvidence {
 struct PreparedProducerCapabilityEvidence {
     aggregate: AttemptCapabilityEvidence,
     output_scope: nexus_query_engine::admission::AttemptExecutionScope,
+    deferred_output_identity: Option<nexus_query_engine::plan::DeferredGraphExecutionScopeIdentity>,
 }
 
 fn prepared_producer_capability_evidence(
@@ -308,10 +309,19 @@ fn prepared_producer_capability_evidence(
         )
         .with_fact("reason", "composed_admission_producer_scope_missing")
     })?;
-    let mut evidence =
-        tickets.iter().filter_map(|ticket| ticket.attempt_capability_evidence_for_rebind()).collect::<Vec<_>>();
+    let deferred_output_identity =
+        output_evidence.deferred_graph_identity_for_scope(output_scope.execution_scope_fingerprint());
+    let mut evidence = tickets
+        .iter()
+        .filter_map(|ticket| ticket.attempt_capability_evidence_for_rebind())
+        .map(AttemptCapabilityEvidence::without_execution_manifest)
+        .collect::<Vec<_>>();
     evidence.push(output_evidence);
-    Ok(PreparedProducerCapabilityEvidence { aggregate: AttemptCapabilityEvidence::aggregate(evidence), output_scope })
+    Ok(PreparedProducerCapabilityEvidence {
+        aggregate: AttemptCapabilityEvidence::aggregate(evidence)?,
+        output_scope,
+        deferred_output_identity,
+    })
 }
 
 /// Issues the one engine-owned evidence for a prepared composed GPU island.
@@ -346,15 +356,18 @@ fn resolve_composed_admission_capability_evidence(
         })?;
         let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
         let producer_evidence = prepared_producer_capability_evidence(input.as_ref(), &tickets)?;
-        consumer_evidence.push_producer_occurrence(nexus_query_engine::admission::AttemptProducerOccurrence::new(
-            input_name,
-            producer_evidence.output_scope.execution_scope_fingerprint(),
-            producer_evidence.output_scope.output_schema_fingerprint(),
-        ))?;
+        consumer_evidence.push_producer_occurrence(
+            nexus_query_engine::admission::AttemptProducerOccurrence::new(
+                input_name,
+                producer_evidence.output_scope.execution_scope_fingerprint(),
+                producer_evidence.output_scope.output_schema_fingerprint(),
+            )
+            .with_deferred_graph_identity(producer_evidence.deferred_output_identity),
+        )?;
         evidence.push(producer_evidence.aggregate);
     }
     evidence.push(consumer_evidence);
-    Ok(AttemptCapabilityEvidence::aggregate(evidence))
+    AttemptCapabilityEvidence::aggregate(evidence)
 }
 
 fn prepared_composed_admission_error(
@@ -402,8 +415,6 @@ fn complete_composed_admission_evidence(
         }
     }
 
-    let complete_evidence = resolve_composed_admission_capability_evidence(consumer_plan, prepared_gpu_inputs)
-        .map_err(|error| prepared_composed_admission_error(error, consumer_plan, Some(&execution_config)))?;
     let canonical_ticket =
         query_admission_ticket_from_task_context(task_context).or_else(|| execution_config.query_admission_ticket());
     let source = execution_config
@@ -413,6 +424,8 @@ fn complete_composed_admission_evidence(
     let Some(source) = source else {
         // A direct composed caller without an admission authority remains
         // unchanged; the runtime context will reject it before producer work.
+        resolve_composed_admission_capability_evidence(consumer_plan, prepared_gpu_inputs)
+            .map_err(|error| prepared_composed_admission_error(error, consumer_plan, Some(&execution_config)))?;
         return Ok(CompletedComposedAdmissionEvidence { execution_config });
     };
     if producer_tickets.iter().any(|ticket| !source.same_backend(&ticket.source())) {
@@ -425,6 +438,39 @@ fn complete_composed_admission_evidence(
         .into());
     }
 
+    if let Some(active_ticket) = canonical_ticket.as_ref()
+        && !source.same_backend(&active_ticket.source())
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_composed.admission_evidence",
+            "the composed root and its active admission ticket belong to different backends",
+        )
+        .with_fact("reason", "composed_active_admission_backend_mismatch")
+        .into());
+    }
+
+    if let Some((active_ticket, active_evidence)) = canonical_ticket
+        .as_ref()
+        .and_then(|ticket| ticket.attempt_capability_evidence_for_rebind().map(|evidence| (ticket, evidence)))
+    {
+        let occurrence_ids = prepared_gpu_inputs
+            .iter()
+            .filter_map(|input| gpu_resident_producer_input_name(input.as_ref()))
+            .collect::<Vec<_>>();
+        if occurrence_ids.len() == prepared_gpu_inputs.len()
+            && active_evidence.validate_covers_plan(consumer_plan).is_ok()
+            && active_evidence.validate_composed_occurrences(consumer_plan, &occurrence_ids).is_ok()
+        {
+            return Ok(CompletedComposedAdmissionEvidence {
+                execution_config: execution_config.with_existing_query_admission_ticket(Arc::clone(active_ticket)),
+            });
+        }
+    }
+
+    let complete_evidence = resolve_composed_admission_capability_evidence(consumer_plan, prepared_gpu_inputs)
+        .map_err(|error| prepared_composed_admission_error(error, consumer_plan, Some(&execution_config)))?;
+
     // The admission stream has already selected its ambient ticket before a
     // footer-bound producer can finish preparation. Rebinding a new ticket
     // here would create a second query-service lifecycle whose release can
@@ -432,16 +478,7 @@ fn complete_composed_admission_evidence(
     // still-unadmitted ambient ticket in place; standalone callers retain the
     // replacement-ticket path because they have no active stream to preserve.
     if let Some(active_ticket) = canonical_ticket {
-        if !source.same_backend(&active_ticket.source()) {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_nexus.native_composed.admission_evidence",
-                "the composed root and its active admission ticket belong to different backends",
-            )
-            .with_fact("reason", "composed_active_admission_backend_mismatch")
-            .into());
-        }
-        active_ticket.rebind_capability_evidence_before_admission(complete_evidence).map_err(|error| {
+        active_ticket.extend_capability_evidence_before_admission([complete_evidence]).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_composed.admission_evidence",
                 "failed to rebind the active composed admission ticket before query-service admission",
@@ -458,7 +495,7 @@ fn complete_composed_admission_evidence(
     };
     let ticket = first_ticket.rebind_with_source_and_capability_evidence(source, complete_evidence);
     if let Some(attempt) = task_context.session_config().options().extensions.get::<NexusAttemptExtension>() {
-        attempt.bind_ticket(Arc::clone(&ticket));
+        attempt.bind_ticket(Arc::clone(&ticket)).map_err(DataFusionError::from)?;
     }
     Ok(CompletedComposedAdmissionEvidence {
         execution_config: execution_config.with_existing_query_admission_ticket(ticket),

@@ -63,7 +63,7 @@ pub use graph_algorithm::{
     graph_result_schema_for_vertex_type, planned_resident_graph_key, stable_graph_result_schema,
 };
 #[doc(hidden)]
-pub use identity::canonical_execution_scope_fingerprint;
+pub use identity::{DeferredGraphExecutionScopeIdentity, canonical_execution_scope_fingerprint};
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
 };

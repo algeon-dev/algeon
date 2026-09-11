@@ -1812,6 +1812,9 @@ impl ExecutionContext {
             if evidence.producer_occurrence_scope_count_for_plan(plan) > 0 {
                 return Ok(());
             }
+            if evidence.execution_manifest().and_then(|manifest| manifest.occurrence_for_plan(plan)).is_some() {
+                return Ok(());
+            }
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
@@ -1833,57 +1836,7 @@ impl ExecutionContext {
         plan: &QueryPlan,
         occurrence_ids: &[String],
     ) -> Result<()> {
-        let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
-        let expected_schema = nexus_query_planning::admission::log_safe_fingerprint(&format!(
-            "{:?}",
-            caller_visible_plan.output_schema()
-        ));
-        let matching = evidence
-            .execution_scopes()
-            .iter()
-            .filter(|shape| shape.matches(plan) && shape.output_schema_fingerprint() == expected_schema)
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "the admitted capability evidence has no occurrence manifest for the native plan",
-            )
-            .with_fact("reason", "admitted_capability_scope_mismatch")
-            .with_fact("matching_shape_count", 0));
-        }
-        let scheduled = matching
-            .iter()
-            .map(|shape| {
-                shape.producer_occurrences().iter().map(|occurrence| occurrence.occurrence_id()).collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        if scheduled.iter().any(|candidate| candidate.as_slice() == occurrence_ids) {
-            return Ok(());
-        }
-        let Some(same_len) = scheduled.iter().find(|candidate| candidate.len() == occurrence_ids.len()) else {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "the runtime composed input count differs from the admitted capability manifest",
-            )
-            .with_fact("schedule_reason", "runtime_occurrence_count_mismatch")
-            .with_fact("scheduled_occurrence_count", scheduled.first().map_or(0, Vec::len))
-            .with_fact("runtime_occurrence_count", occurrence_ids.len()));
-        };
-        for (scheduled, runtime) in same_len.iter().zip(occurrence_ids) {
-            if *scheduled != runtime {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "nexus_query_engine.runtime.context",
-                    "the runtime composed input order differs from the admitted capability manifest",
-                )
-                .with_fact("schedule_reason", "runtime_occurrence_order_mismatch")
-                .with_fact("scheduled_occurrence_id", *scheduled)
-                .with_fact("runtime_occurrence_id", runtime));
-            }
-        }
-        Ok(())
+        evidence.validate_composed_occurrences(plan, occurrence_ids)
     }
 
     fn validate_admitted_evidence(
@@ -1961,14 +1914,36 @@ impl ExecutionContext {
             .with_fact("reason", "deferred_resident_phase_identity_mismatch"));
         }
         submitted_evidence.validate_covers_plan(plan)?;
-        let Some(expected_scope) = submitted_evidence
+        let expected_scopes = submitted_evidence
             .execution_scopes()
             .iter()
-            .find(|scope| scope.matches(plan) && !scope.producer_occurrences().is_empty())
-        else {
+            .filter(|scope| scope.matches(plan) && !scope.producer_occurrences().is_empty())
+            .collect::<Vec<_>>();
+        if expected_scopes.is_empty() {
             return Ok(self.clone());
-        };
-        expected_scope.validate_manifest_core()?;
+        }
+        for scope in &expected_scopes {
+            scope.validate_manifest_core()?;
+        }
+        let expected_scope = expected_scopes
+            .iter()
+            .copied()
+            .find(|scope| {
+                scope.producer_occurrences().iter().all(|expected| {
+                    let Some(input) = gpu_inputs.get(expected.occurrence_id()) else {
+                        return false;
+                    };
+                    let Some(actual_scope) = input.producer_execution_scope() else {
+                        return false;
+                    };
+                    let actual_schema =
+                        nexus_query_planning::admission::log_safe_fingerprint(&format!("{:?}", input.schema()));
+                    (actual_scope == expected.execution_scope_fingerprint()
+                        || input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan)))
+                        && actual_schema == expected.output_schema_fingerprint()
+                })
+            })
+            .unwrap_or(expected_scopes[0]);
         let mut capability_evidence = submitted_evidence.clone();
         capability_evidence.attest_cugraph_graph_execution_scope(plan);
         let inputs = expected_scope
@@ -1997,6 +1972,7 @@ impl ExecutionContext {
                 let actual_schema =
                     nexus_query_planning::admission::log_safe_fingerprint(&format!("{:?}", input.schema()));
                 if actual_scope != expected.execution_scope_fingerprint()
+                    && !input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan))
                     || actual_schema != expected.output_schema_fingerprint()
                 {
                     return Err(QueryError::new(

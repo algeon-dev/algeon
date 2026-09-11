@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use datafusion_nexus::planner::DataFusionCpuExecutionPolicy;
+use datafusion_nexus::planner::{DataFusionCpuExecutionPolicy, NexusGpuExecutionMode};
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
 #[cfg(feature = "iceberg")]
@@ -11,7 +11,7 @@ use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::Sourc
 use nexus_server::{
     AuthMode, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
     NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
-    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_EXECUTION_MODE_ENV,
     NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
     NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,

@@ -393,7 +393,7 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
 }
 
 #[tokio::test]
-async fn native_host_rejects_combined_admission_ticket_before_grant() {
+async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evidence() {
     let backend = InstalledTestGpuBackend::new();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-combined-ticket");
     let runtime_env = Arc::new(RuntimeEnv::default());
@@ -403,7 +403,8 @@ async fn native_host_rejects_combined_admission_ticket_before_grant() {
     let combined_evidence = AttemptCapabilityEvidence::aggregate([
         AttemptCapabilityEvidence::for_query_plan(&plan),
         AttemptCapabilityEvidence::for_query_plan(&other_plan),
-    ]);
+    ])
+    .expect("test evidence has one manifest");
     let expected_combined_evidence = combined_evidence.clone();
     let source = backend
         .optimizer_config()
@@ -422,14 +423,66 @@ async fn native_host_rejects_combined_admission_ticket_before_grant() {
         .expect("native host execution should return a lazy stream");
     let result = stream.next().await.expect("native host stream should resolve once");
 
-    let error = result.expect_err("a combined ticket must not be rebound to one host fragment");
+    let error = result.expect_err("the fixture reaches the intentionally unsupported native read");
+    let native = error.find_nexus_error().expect("native execution failure remains structured");
+    assert_eq!(native.operation(), "datafusion_nexus.native_exec.execute");
+    assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before ticket validation");
+    let refined = ticket.attempt_capability_evidence_for_rebind().expect("combined evidence remains bound");
+    assert!(
+        expected_combined_evidence
+            .execution_scopes()
+            .iter()
+            .all(|expected| { refined.execution_scopes().iter().any(|actual| actual == expected) })
+    );
+    drop(stream);
+    drop(exec);
+    drop(ticket);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while backend.backend().admission_snapshot().unwrap().active_queries != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("combined ticket cleanup must release its grant");
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    remove_fixture(dir);
+}
+
+#[tokio::test]
+async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
+    let backend = InstalledTestGpuBackend::new();
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-unrelated-ticket");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-unrelated", &bytes).await;
+    let (plan, _) = prunable_query_plan("s3://host-unrelated/table/data.parquet", bytes.len(), false);
+    let (other_plan, _) = prunable_query_plan("s3://other-unrelated/table/data.parquet", bytes.len(), true);
+    let unrelated_evidence = AttemptCapabilityEvidence::for_query_plan(&other_plan);
+    let expected_unrelated_evidence = unrelated_evidence.clone();
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
+    let ticket = QueryAdmissionTicket::new(source.clone(), Some(unrelated_evidence));
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(source)
+        .with_existing_query_admission_ticket(Arc::clone(&ticket))
+        .with_lakehouse_footer_pruning(true);
+    let exec = NexusNativeExec::try_new(plan, config).expect("test native host execution should build");
+
+    let mut stream = exec
+        .execute(0, task_context_with_runtime(Arc::clone(&runtime_env)))
+        .expect("native host execution should return a lazy stream");
+    let result = stream.next().await.expect("native host stream should resolve once");
+
+    let error = result.expect_err("an unrelated ticket cannot acquire this host fragment");
     let native = error.find_nexus_error().expect("ticket mismatch remains structured");
     assert_eq!(native.operation(), "datafusion_nexus.native_exec.admission_evidence");
     assert_eq!(native.fact_value("reason"), Some("native_host_admission_evidence_scope_mismatch"));
-    assert_eq!(native.fact_value("ticket_evidence_scope"), Some("combined_or_different_native_plan"));
+    assert_eq!(native.fact_value("ticket_evidence_scope"), Some("different_native_plan"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before ticket validation");
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0, "mismatch must reject before grant");
-    assert_eq!(ticket.attempt_capability_evidence_for_rebind(), Some(expected_combined_evidence));
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(ticket.attempt_capability_evidence_for_rebind(), Some(expected_unrelated_evidence));
     remove_fixture(dir);
 }
 

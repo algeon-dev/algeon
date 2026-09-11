@@ -5,7 +5,8 @@ use super::{
     file::ServerNativeFileConfig,
     *,
 };
-use crate::planner::DataFusionCpuExecutionPolicy;
+use crate::planner::{DataFusionCpuExecutionPolicy, NexusGpuExecutionMode};
+pub const NEXUS_SERVER_EXECUTION_MODE_ENV: &str = "NEXUS_SERVER_EXECUTION_MODE";
 
 /// Maximum source row groups planned into one native bounded source chunk.
 pub const NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
@@ -72,6 +73,13 @@ pub struct NexusServerNativeConfigOption {
 /// config introspection. Parser code remains explicit so validation stays
 /// local to `native_optimizer_config`.
 pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] = &[
+    NexusServerNativeConfigOption {
+        toml_field: "native.execution_mode",
+        env_var: NEXUS_SERVER_EXECUTION_MODE_ENV,
+        value_type: "enum: functions_only|native_preferred|native_required",
+        scope: ServerNativeConfigScope::NativeExecution,
+        description: "GPU execution mode.",
+    },
     NexusServerNativeConfigOption {
         toml_field: "native.max_source_chunk_bytes",
         env_var: NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
@@ -182,6 +190,14 @@ pub(super) fn native_optimizer_config(
             .map(|policy| NativeConfigValue::new(policy, raw.field))
     })
     .transpose()?;
+    let execution_mode = optional_native_string(
+        values,
+        NEXUS_SERVER_EXECUTION_MODE_ENV,
+        "native.execution_mode",
+        file.execution_mode.as_deref(),
+    )
+    .map(|raw| parse_execution_mode(raw.field, &raw.value).map(|mode| NativeConfigValue::new(mode, raw.field)))
+    .transpose()?;
     for (field, zero) in [
         (max_source_chunk.as_ref().map(|value| value.field), max_source_chunk.as_ref().map(|value| value.value == 0)),
         (max_row_groups.as_ref().map(|value| value.field), max_row_groups.as_ref().map(|value| value.value == 0)),
@@ -218,9 +234,19 @@ pub(super) fn native_optimizer_config(
     }
 
     let mut optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
-    if let Some(policy) = datafusion_cpu_execution_policy {
+    if let Some(mode) = execution_mode {
+        optimizer_config = optimizer_config.with_execution_mode(mode.value);
+        if let Some(policy) = datafusion_cpu_execution_policy
+            && optimizer_config.datafusion_cpu_execution_policy() != policy.value
+        {
+            return Err(ServerError::invalid_config(policy.field, "conflicts with native.execution_mode"));
+        }
+    } else if let Some(policy) = datafusion_cpu_execution_policy {
         optimizer_config = optimizer_config.with_datafusion_cpu_execution_policy(policy.value);
     }
+    optimizer_config.validate().map_err(|_| {
+        ServerError::invalid_config("native.execution_mode", "conflicts with native.final_plan_requirement")
+    })?;
     Ok(optimizer_config)
 }
 
@@ -308,5 +334,17 @@ pub(super) fn parse_datafusion_cpu_execution_policy(
     match raw.trim().to_ascii_lowercase().as_str() {
         "no_datafusion_cpu" => Ok(DataFusionCpuExecutionPolicy::Reject),
         other => Err(ServerError::invalid_config(field, format!("must be `no_datafusion_cpu`, got `{other}`"))),
+    }
+}
+
+fn parse_execution_mode(field: &'static str, raw: &str) -> Result<NexusGpuExecutionMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "functions_only" => Ok(NexusGpuExecutionMode::FunctionsOnly),
+        "native_preferred" => Ok(NexusGpuExecutionMode::NativePreferred),
+        "native_required" => Ok(NexusGpuExecutionMode::NativeRequired),
+        other => Err(ServerError::invalid_config(
+            field,
+            format!("must be functions_only, native_preferred, or native_required, got `{other}`"),
+        )),
     }
 }

@@ -38,6 +38,22 @@ pub(super) struct NativeOptimizationAttempt {
     pub(super) rewritten: bool,
 }
 
+impl NativeOptimizationAttempt {
+    /// Retains the DataFusion plan when relational native rewriting is
+    /// intentionally disabled. GPU function discovery and admission still run
+    /// in the final optimizer stage after this selection result is produced.
+    pub(super) fn retained(plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self {
+            plan,
+            report: PlanningReport::new(),
+            native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
+            source_diagnostics: Vec::new(),
+            capability_contract: NativeCapabilityContractDiagnostics::default(),
+            rewritten: false,
+        }
+    }
+}
+
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NexusNativeExecutionConfig,
