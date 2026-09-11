@@ -17,7 +17,7 @@ use super::{
     NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput, NativeGraphPredicateInput,
     ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result, SchemaRef, SortExpr, SortSpec,
     SourceNode, add_logical_mapping_plan, decode_logical_graph_result, execute_query_plan,
-    finalize_graph_query_outcome, graph_uses_logical_mapping, is_bfs_path_output, node::projected_schema, plan_error,
+    finalize_graph_query_outcome, graph_uses_logical_mapping, node::projected_schema, plan_error,
 };
 
 /// The graph-fragment definition shared by preflight, plan construction, and
@@ -185,7 +185,7 @@ pub(super) fn cugraph_schema_query_plan(
         })
         .collect::<Vec<_>>();
     let logical_mapping = graph_uses_logical_mapping(&spec, &edge_schema)?;
-    crate::cugraph_sql::validate_logical_edge_id_capability(&spec, logical_mapping)?;
+    spec.validate_logical_edge_id_capability(logical_mapping)?;
     let (execution_spec, graph_input, graph_edge_schema, graph_predicates, codebook) = if logical_mapping {
         let mapping = add_logical_mapping_plan(
             &mut builder,
@@ -235,7 +235,7 @@ pub(super) fn cugraph_schema_query_plan(
     }
     if let Some(codebook) = codebook {
         (root, root_schema) = decode_logical_graph_result(&mut builder, &spec, root, root_schema, codebook)?;
-        if is_bfs_path_output(&spec) {
+        if spec.is_bfs_path_output() {
             root = builder.add_sort(
                 root,
                 SortSpec::new(vec![SortExpr::new(NativeExpr::column("path_index"), false, false)]),

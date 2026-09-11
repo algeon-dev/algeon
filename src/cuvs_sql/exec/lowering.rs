@@ -12,7 +12,7 @@ use nexus_query_engine::{
     source::{GpuResidentSource, SourceNode},
 };
 
-use super::{CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions, error::invalid_call};
+use super::super::{CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions, error::invalid_call};
 use crate::{error::Error, native_exec::child_inputs::NativeChildBinding};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

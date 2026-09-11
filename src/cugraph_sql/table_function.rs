@@ -38,9 +38,9 @@ use datafusion::{
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphVertexIdDomain,
-    PredicateSourceColumnRole, PredicateSourceSpec, datafusion_table_reference, parse_cugraph_algorithm_spec,
-    plan_error, result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
-    validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+    PredicateSourceColumnRole, PredicateSourceSpec, parse_cugraph_algorithm_spec, plan_error,
+    result_schema_for_vertex_domain, validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
+    vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
@@ -96,7 +96,7 @@ impl TableProvider for CugraphAlgoTableProvider {
             plan_error("cuGraph SQL table functions require a DataFusion SessionState for catalog resolution")
         })?;
         let mut spec = self.spec.clone();
-        let table_ref = datafusion_table_reference(&spec.table_name);
+        let table_ref = spec.table_name.datafusion_reference();
         let schema = session_state.schema_for_ref(table_ref.clone())?;
         let provider = schema
             .table(table_ref.table())
@@ -360,7 +360,7 @@ fn maybe_resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, session: 
     let Some(session_state) = session.as_any().downcast_ref::<SessionState>() else {
         return;
     };
-    let table_ref = datafusion_table_reference(&spec.table_name);
+    let table_ref = spec.table_name.datafusion_reference();
     let Ok(schema) = session_state.schema_for_ref(table_ref.clone()) else {
         return;
     };
@@ -404,7 +404,7 @@ async fn validate_cugraph_static_sources(
         plan_error("cuGraph SQL table functions require a DataFusion SessionState for catalog resolution")
     })?;
     let mut spec = original_spec.clone();
-    let table_ref = datafusion_table_reference(&spec.table_name);
+    let table_ref = spec.table_name.datafusion_reference();
     let schema = session_state.schema_for_ref(table_ref.clone())?;
     let provider = schema
         .table(table_ref.table())
@@ -413,7 +413,7 @@ async fn validate_cugraph_static_sources(
     let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
     spec.output_schema = result_schema_for_vertex_domain(spec.algorithm, &spec.params, Some(&vertex_domain));
     for source in spec.predicate_source_specs() {
-        let table_ref = datafusion_table_reference(&source.table_name);
+        let table_ref = source.table_name.datafusion_reference();
         let schema = session_state.schema_for_ref(table_ref.clone())?;
         let provider = schema.table(table_ref.table()).await?.ok_or_else(|| {
             plan_error(format!("No table named '{}' for cuGraph side-input source", source.table_name))
@@ -452,7 +452,7 @@ async fn predicate_source_plans(
         plans.push(plan);
     }
     for source in spec.predicate_source_specs() {
-        let table_ref = datafusion_table_reference(&source.table_name);
+        let table_ref = source.table_name.datafusion_reference();
         let schema = session_state.schema_for_ref(table_ref.clone())?;
         let provider = schema.table(table_ref.table()).await?.ok_or_else(|| {
             plan_error(format!("No table named '{}' for cuGraph side-input source", source.table_name))
@@ -540,7 +540,7 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
             )));
         }
     }
-    super::validate_logical_edge_id_capability(spec, domain.is_string_logical())?;
+    spec.validate_logical_edge_id_capability(domain.is_string_logical())?;
     Ok(domain)
 }
 

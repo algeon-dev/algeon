@@ -21,13 +21,14 @@ use super::{
     cugraph_execution_capability_evidence, cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor,
     cugraph_schema_query_plan, edge_execution_config, edge_source_graph_vertex_estimate,
     exact_native_edge_source_gpu_plan, execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping,
-    is_bfs_path_output, materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan_error,
-    planned_resident_graph_key, preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu,
+    materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan_error, planned_resident_graph_key,
+    preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu,
     register_gpu_resident_producer_discovery, register_graph_execution_plan_discovery, run_gpu_execution_task,
     task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
     validate_standalone_bounded_cugraph_sources,
 };
 use crate::attempt::NexusAttemptExtension;
+
 #[derive(Clone, Debug)]
 pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
@@ -172,7 +173,7 @@ impl CugraphAlgoExec {
         // one immutable ticket is minted after metadata preparation.
         let native_execution_config = native_execution_config.without_query_admission_ticket();
         let metrics_capture = native_execution_config.new_metrics_capture();
-        let equivalence_properties = if is_bfs_path_output(&spec) {
+        let equivalence_properties = if spec.is_bfs_path_output() {
             match schema.index_of("path_index") {
                 Ok(index) => EquivalenceProperties::new_with_orderings(
                     Arc::clone(&schema),
@@ -1008,7 +1009,7 @@ pub(super) fn pushed_logical_consumer_options(
     producer: &CugraphAlgoExec,
     consumer_plan: &nexus_query_engine::plan::QueryPlan,
 ) -> Result<Option<CugraphResultPlanOptions>> {
-    if is_bfs_path_output(&producer.spec)
+    if producer.spec.is_bfs_path_output()
         || !graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema())?
         || !consumer_plan.unreachable_node_ids().is_empty()
         || consumer_plan.output_schema() != &producer.schema()
@@ -1068,7 +1069,7 @@ pub(super) fn pushed_logical_consumer_options(
 pub(super) fn cugraph_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
     let producer = plan.downcast_ref::<CugraphAlgoExec>()?;
     let logical_mapping = graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema()).ok()?;
-    if crate::cugraph_sql::validate_logical_edge_id_capability(&producer.spec, logical_mapping).is_err() {
+    if producer.spec.validate_logical_edge_id_capability(logical_mapping).is_err() {
         return None;
     }
     Some(producer as &dyn GpuResidentProducer)
@@ -1116,7 +1117,7 @@ impl GraphExecutionPlan for CugraphAlgoExec {
             Ok(logical_mapping) => logical_mapping,
             Err(error) => return Some(error),
         };
-        if let Err(error) = crate::cugraph_sql::validate_logical_edge_id_capability(&self.spec, logical_mapping) {
+        if let Err(error) = self.spec.validate_logical_edge_id_capability(logical_mapping) {
             return Some(error);
         }
         None
