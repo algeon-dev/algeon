@@ -320,6 +320,13 @@ impl QueryCoordinator {
         })
     }
 
+    /// Whether `query_id` still resolves to a record. False once the record
+    /// has been evicted, so callers that key state off a query id can release
+    /// it on the same schedule the coordinator releases the query itself.
+    pub(crate) fn knows_query(&self, query_id: &str) -> bool {
+        self.lock_state().current.contains_key(query_id)
+    }
+
     pub(crate) fn live_count_locked(state: &QueryRegistryState) -> usize {
         state
             .records

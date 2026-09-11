@@ -20,7 +20,6 @@ use arrow_flight::{
         server::{FlightSqlService, PeekableFlightDataStream},
     },
 };
-use dashmap::DashMap;
 use datafusion::{
     common::TableReference,
     datasource::TableType,
@@ -59,7 +58,7 @@ use super::{
     },
     diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
-    observability::{CapturedError, StableValue},
+    observability::CapturedError,
 };
 use crate::{
     adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
@@ -84,6 +83,7 @@ mod ddl;
 mod execution;
 mod frame_limiter;
 mod metadata;
+mod ownership;
 mod prepared;
 mod rpc;
 mod service;
@@ -100,7 +100,8 @@ use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
 use execution::cancel_invalid_argument_status;
 use frame_limiter::encode_flight_data_stream;
 use metadata::*;
-use prepared::PreparedStatementEntry;
+use ownership::{Owner, QueryOwnership};
+use prepared::{PreparedStatementEntry, PreparedStatementStore};
 pub use service::DatafusionNexusFlightSqlService;
 use status::*;
 use tickets::*;
@@ -116,10 +117,3 @@ const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 const CORRELATION_ID_METADATA_KEY: &str = "x-datafusion-nexus-correlation-id";
 const CORRELATION_ID_METADATA_ALIASES: &[&str] = &[CORRELATION_ID_METADATA_KEY, "x-correlation-id"];
 const MAX_CORRELATION_ID_LEN: usize = 256;
-/// Hard cap on live prepared-statement handles across all connections.
-/// Bounds the worst case for clients that leak handles by disconnecting
-/// without calling `ClosePreparedStatement`. Sized for DataGrip-class
-/// clients (a few hundred concurrent handles); raise when a real workload
-/// demands it. Hitting the cap returns `RESOURCE_EXHAUSTED` rather than
-/// silently evicting another connection's prepared statement.
-const MAX_PREPARED_STATEMENTS: usize = 1024;

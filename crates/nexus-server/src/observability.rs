@@ -277,6 +277,256 @@ impl fmt::Display for StableValue<'_> {
     }
 }
 
+/// Mask placeholder substituted for every masked `OPTIONS` value. Fixed
+/// length so a masked artifact never leaks the secret's length.
+const SQL_OPTION_VALUE_MASK: &str = "***";
+
+/// Masks the values inside every DataFusion `OPTIONS (...)` clause of `sql`
+/// (as used by `CREATE EXTERNAL TABLE ... OPTIONS (...)` and `COPY ... TO ...
+/// OPTIONS (...)`), keeping the option keys intact so an operator can still
+/// see which option was set. `sql` with no `OPTIONS` clause is returned
+/// byte-identical.
+///
+/// This is a plain left-to-right scan over the token stream, not a SQL
+/// parser: it tracks only string-literal boundaries (so `OPTIONS` inside a
+/// string, or a quote inside a value, is never misread) and the `OPTIONS (
+/// ... )` key/value shape from `datafusion-sql`'s grammar (`'key' 'value',
+/// key2 value2, ...`; no `=`). An `OPTIONS (` clause that never reaches its
+/// closing `)` (or a value literal that is never closed) masks to the end of
+/// input rather than emit the unscanned tail, so a truncated or malformed
+/// statement fails closed.
+fn redact_sql_options(sql: &str) -> std::borrow::Cow<'_, str> {
+    if !contains_options_keyword(sql) {
+        return std::borrow::Cow::Borrowed(sql);
+    }
+    let bytes = sql.as_bytes();
+    let mut output = String::with_capacity(sql.len());
+    let mut index = 0;
+    // Bytes not part of a quote or the `OPTIONS` keyword are copied through
+    // verbatim as UTF-8 substrings of `sql`, never decoded byte-by-byte, so
+    // multi-byte characters outside those two ASCII constructs are untouched.
+    let mut plain_start = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' => {
+                output.push_str(&sql[plain_start..index]);
+                let end = skip_quoted_literal(bytes, index);
+                output.push_str(&sql[index..end]);
+                index = end;
+                plain_start = index;
+            },
+            _ if matches_keyword_at(bytes, index, b"OPTIONS") => {
+                output.push_str(&sql[plain_start..index]);
+                let keyword_end = index + "OPTIONS".len();
+                output.push_str(&sql[index..keyword_end]);
+                let mut cursor = keyword_end;
+                skip_whitespace(bytes, &mut cursor);
+                if cursor < bytes.len() && bytes[cursor] == b'(' {
+                    output.push_str(&sql[keyword_end..cursor]);
+                    index = mask_options_clause(sql, bytes, cursor, &mut output);
+                } else {
+                    index = keyword_end;
+                }
+                plain_start = index;
+            },
+            _ => index += 1,
+        }
+    }
+    output.push_str(&sql[plain_start..]);
+    std::borrow::Cow::Owned(output)
+}
+
+/// Cheap pre-check so SQL with no `OPTIONS` clause never allocates: an ASCII
+/// case-insensitive substring search for the bare word `options`, ignoring
+/// whether it occurs inside a string literal (an over-approximation is fine
+/// here — the real scan below still does the precise, string-aware check).
+fn contains_options_keyword(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    (0..bytes.len()).any(|index| matches_keyword_at(bytes, index, b"OPTIONS"))
+}
+
+/// Returns true when `bytes[index..]` starts with `keyword` (ASCII
+/// case-insensitive) as a standalone word: not preceded or followed by an
+/// identifier character, so `OPTIONS` never matches inside a longer
+/// identifier such as `my_options_table`.
+fn matches_keyword_at(bytes: &[u8], index: usize, keyword: &[u8]) -> bool {
+    if index + keyword.len() > bytes.len() {
+        return false;
+    }
+    if index > 0 && is_identifier_byte(bytes[index - 1]) {
+        return false;
+    }
+    if !bytes[index..index + keyword.len()].eq_ignore_ascii_case(keyword) {
+        return false;
+    }
+    let after = index + keyword.len();
+    !(after < bytes.len() && is_identifier_byte(bytes[after]))
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn skip_whitespace(bytes: &[u8], cursor: &mut usize) {
+    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+}
+
+/// Finds the end of a single- or double-quoted string literal starting at
+/// `start` (`bytes[start]` is the opening quote), honoring the standard SQL
+/// `''`/`""` doubled-quote escape. Returns the index just past the literal's
+/// closing quote, or `bytes.len()` when the literal is never closed.
+fn skip_quoted_literal(bytes: &[u8], start: usize) -> usize {
+    let quote = bytes[start];
+    let mut cursor = start + 1;
+    loop {
+        match bytes[cursor..].iter().position(|&byte| byte == quote) {
+            None => return bytes.len(),
+            Some(relative) => {
+                let quote_index = cursor + relative;
+                if bytes.get(quote_index + 1) == Some(&quote) {
+                    cursor = quote_index + 2;
+                } else {
+                    return quote_index + 1;
+                }
+            },
+        }
+    }
+}
+
+/// Advances `cursor` past whitespace, copying it through to `output`
+/// unmasked. Returns `false` (having appended the fail-closed mask) when
+/// this reaches end of input.
+fn copy_whitespace(sql: &str, bytes: &[u8], cursor: &mut usize, output: &mut String) -> bool {
+    let start = *cursor;
+    skip_whitespace(bytes, cursor);
+    output.push_str(&sql[start..*cursor]);
+    if *cursor >= bytes.len() {
+        output.push_str(SQL_OPTION_VALUE_MASK);
+        return false;
+    }
+    true
+}
+
+/// Masks the value of every `'key' value` / `key 'value'` pair inside an
+/// `OPTIONS (...)` clause whose opening `(` is at `sql[paren_index]`,
+/// appending the masked clause to `output`. Returns the index in `sql` just
+/// past the clause's closing `)`, or `sql.len()` when the clause is never
+/// closed (in which case the remainder of `sql` is masked wholesale).
+fn mask_options_clause(sql: &str, bytes: &[u8], paren_index: usize, output: &mut String) -> usize {
+    output.push('(');
+    let mut cursor = paren_index + 1;
+    loop {
+        if !copy_whitespace(sql, bytes, &mut cursor, output) {
+            return bytes.len();
+        }
+        if bytes[cursor] == b')' {
+            output.push(')');
+            return cursor + 1;
+        }
+
+        // Key: quoted literal or bare identifier (dotted, per
+        // `parse_option_key`). Keys are never masked.
+        let key_start = cursor;
+        cursor = if matches!(bytes[cursor], b'\'' | b'"') {
+            skip_quoted_literal(bytes, cursor)
+        } else {
+            skip_option_word(bytes, cursor)
+        };
+        output.push_str(&sql[key_start..cursor.min(bytes.len())]);
+        if cursor >= bytes.len() {
+            output.push_str(SQL_OPTION_VALUE_MASK);
+            return bytes.len();
+        }
+
+        if !copy_whitespace(sql, bytes, &mut cursor, output) {
+            return bytes.len();
+        }
+        // `)` or `,` here means a malformed pair (key with no value):
+        // nothing to mask.
+        if bytes[cursor] == b')' {
+            output.push(')');
+            return cursor + 1;
+        }
+        if bytes[cursor] != b',' {
+            // Value: mask its span, keeping delimiting quotes (if any) intact.
+            if matches!(bytes[cursor], b'\'' | b'"') {
+                let quote = bytes[cursor];
+                let end = skip_quoted_literal(bytes, cursor);
+                let closed = end > cursor + 1 && end <= bytes.len() && bytes[end - 1] == quote;
+                if !closed {
+                    output.push_str(SQL_OPTION_VALUE_MASK);
+                    return bytes.len();
+                }
+                output.push(quote as char);
+                output.push_str(SQL_OPTION_VALUE_MASK);
+                output.push(quote as char);
+                cursor = end;
+            } else {
+                cursor = skip_option_word(bytes, cursor);
+                output.push_str(SQL_OPTION_VALUE_MASK);
+            }
+            if !copy_whitespace(sql, bytes, &mut cursor, output) {
+                return bytes.len();
+            }
+            if bytes[cursor] == b')' {
+                output.push(')');
+                return cursor + 1;
+            }
+        }
+        // Consume the pair-separating comma before looping back for the
+        // next key. Anything else here is malformed input; the outer loop
+        // re-synchronizes on the next `OPTIONS`/quote/end-of-input.
+        if bytes[cursor] == b',' {
+            output.push(',');
+            cursor += 1;
+        }
+    }
+}
+
+/// Skips one bare `OPTIONS` key/value word: a run of identifier bytes
+/// (covering dotted keys like `format.compression` and bare values like
+/// `snappy` or `55`). Advances by at least one byte so a stray delimiter
+/// (malformed input, e.g. a bare `,` where a key was expected) cannot stall
+/// the scan.
+fn skip_option_word(bytes: &[u8], start: usize) -> usize {
+    let mut cursor = start;
+    while cursor < bytes.len() && (is_identifier_byte(bytes[cursor]) || bytes[cursor] == b'.') {
+        cursor += 1;
+    }
+    if cursor > start {
+        return cursor;
+    }
+    // No identifier byte here (a stray delimiter or non-ASCII byte where a
+    // key/value word was expected): advance to the next UTF-8 char boundary
+    // so the caller's `sql[..cursor]` slice never lands mid-character.
+    cursor += 1;
+    while cursor < bytes.len() && !is_utf8_char_boundary(bytes[cursor]) {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn is_utf8_char_boundary(byte: u8) -> bool {
+    // Continuation bytes are `10xxxxxx`; every other byte starts a char.
+    byte & 0b1100_0000 != 0b1000_0000
+}
+
+/// `Display` wrapper that masks `OPTIONS` clause values before newline/CR/tab
+/// stabilization, so SQL text is redacted before it is ever formatted for a
+/// log line or retained artifact. Distinct from [`StableValue`], which is
+/// also used for non-SQL fields (query ids, error facts) that must never be
+/// masked.
+pub(super) struct RedactedSql<'a>(pub(super) &'a str);
+
+impl fmt::Display for RedactedSql<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted = redact_sql_options(self.0);
+        StableValue(&redacted).fmt(formatter)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct CapturedQuery {
     pub(super) query_id: String,
@@ -307,7 +557,10 @@ impl CapturedQuery {
         max_metric_records: u64,
     ) -> Self {
         let mut capture = CaptureBudget::new(max_capture_bytes);
-        let sql = capture.retain_text(&sql);
+        // Redact before retention: the captured copy backs `GetQueryStats` /
+        // `GetQueryRuntimeArtifact` client responses, so it must never carry
+        // an unredacted secret, independent of how it is later rendered.
+        let sql = capture.retain_text(&redact_sql_options(&sql));
         let correlation_id = correlation_id.as_deref().map(|value| capture.retain_text(value));
         Self {
             query_id,
@@ -328,7 +581,7 @@ impl CapturedQuery {
     }
 
     pub(super) fn set_sql(&mut self, sql: String) {
-        self.capture.replace_text(&mut self.sql, sql);
+        self.capture.replace_text(&mut self.sql, redact_sql_options(&sql));
         self.last_touched_at = Instant::now();
     }
 
@@ -1221,6 +1474,94 @@ mod tests {
         assert_eq!(row_limited.text, header, "rows after the first failed row must not be appended");
         assert!(row_limited.truncated);
         assert_eq!(row_limited.discarded_bytes, long_row.len());
+    }
+
+    #[test]
+    fn redact_sql_options_masks_single_quoted_values_and_keeps_keys() {
+        let sql = "CREATE EXTERNAL TABLE t STORED AS PARQUET OPTIONS ('aws.access_key_id' 'AKIAEXAMPLE', \
+                   'aws.secret_access_key' 'super-secret-value') LOCATION 's3://bucket/path'";
+        let redacted = redact_sql_options(sql);
+        assert!(redacted.contains("'aws.access_key_id' '***'"), "{redacted}");
+        assert!(redacted.contains("'aws.secret_access_key' '***'"), "{redacted}");
+        assert!(!redacted.contains("AKIAEXAMPLE"), "{redacted}");
+        assert!(!redacted.contains("super-secret-value"), "{redacted}");
+        assert!(redacted.contains("LOCATION 's3://bucket/path'"), "value outside OPTIONS must survive: {redacted}");
+    }
+
+    #[test]
+    fn redact_sql_options_handles_doubled_single_quote_escapes_inside_a_value() {
+        let sql = "CREATE EXTERNAL TABLE t STORED AS CSV OPTIONS ('format.delimiter' 'a''b') LOCATION 'x.csv'";
+        let redacted = redact_sql_options(sql);
+        assert!(redacted.contains("'format.delimiter' '***'"), "{redacted}");
+        assert!(!redacted.contains("a''b"), "{redacted}");
+        // The escaped value must not be mistaken for the literal's end: the
+        // clause must still close correctly and LOCATION must survive.
+        assert!(redacted.contains("LOCATION 'x.csv'"), "{redacted}");
+    }
+
+    #[test]
+    fn redact_sql_options_fails_closed_on_unterminated_clause() {
+        let sql = "CREATE EXTERNAL TABLE t STORED AS CSV OPTIONS ('aws.secret_access_key' 'super-secret";
+        let redacted = redact_sql_options(sql);
+        assert!(!redacted.contains("super-secret"), "{redacted}");
+        // An unterminated clause masks to end of input rather than emit any
+        // unscanned tail verbatim.
+        assert!(redacted.ends_with(SQL_OPTION_VALUE_MASK), "{redacted}");
+    }
+
+    #[test]
+    fn redact_sql_options_ignores_options_word_inside_a_string_literal_or_identifier() {
+        let in_string = "SELECT 'this mentions OPTIONS but is not a clause' AS label";
+        assert_eq!(redact_sql_options(in_string), in_string);
+
+        let as_identifier = "SELECT * FROM my_options_table WHERE options_id = 1";
+        assert_eq!(redact_sql_options(as_identifier), as_identifier);
+    }
+
+    #[test]
+    fn redact_sql_options_is_case_insensitive() {
+        let sql = "CREATE EXTERNAL TABLE t STORED AS CSV options ('k' 'secret-value') LOCATION 'x.csv'";
+        let redacted = redact_sql_options(sql);
+        assert!(!redacted.contains("secret-value"), "{redacted}");
+
+        let sql_mixed = "CREATE EXTERNAL TABLE t STORED AS CSV Options ('k' 'secret-value') LOCATION 'x.csv'";
+        let redacted_mixed = redact_sql_options(sql_mixed);
+        assert!(!redacted_mixed.contains("secret-value"), "{redacted_mixed}");
+    }
+
+    #[test]
+    fn redact_sql_options_passes_through_sql_with_no_options_clause_byte_identical() {
+        let sql = "SELECT * FROM lineitem WHERE l_orderkey = 1";
+        assert_eq!(redact_sql_options(sql), sql);
+    }
+
+    #[test]
+    fn captured_query_retains_sql_already_redacted() {
+        let now = Instant::now();
+        let sql = "CREATE EXTERNAL TABLE t STORED AS CSV OPTIONS ('aws.secret_access_key' 'super-secret') \
+                   LOCATION 'x.csv'"
+            .to_string();
+        let captured = CapturedQuery::new("query-redacted".to_string(), sql, None, now, 4096, 64);
+
+        let payload = String::from_utf8(captured.to_query_stats_payload(4096).bytes.to_vec()).unwrap();
+        assert!(!payload.contains("super-secret"), "{payload}");
+        assert!(payload.contains("'aws.secret_access_key' '***'"), "{payload}");
+    }
+
+    #[test]
+    fn captured_query_set_sql_redacts_the_replacement_too() {
+        let now = Instant::now();
+        let mut captured =
+            CapturedQuery::new("query-redacted-2".to_string(), "select 1".to_string(), None, now, 4096, 64);
+        captured.set_sql(
+            "CREATE EXTERNAL TABLE t STORED AS CSV OPTIONS ('aws.secret_access_key' 'super-secret') \
+             LOCATION 'x.csv'"
+                .to_string(),
+        );
+
+        let payload = String::from_utf8(captured.to_query_stats_payload(4096).bytes.to_vec()).unwrap();
+        assert!(!payload.contains("super-secret"), "{payload}");
+        assert!(payload.contains("'aws.secret_access_key' '***'"), "{payload}");
     }
 
     #[test]

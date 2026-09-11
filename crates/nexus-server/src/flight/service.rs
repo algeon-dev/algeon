@@ -10,14 +10,17 @@ pub struct DatafusionNexusFlightSqlService {
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) coordinator: Arc<QueryCoordinator>,
     pub(super) runtime_observation_config: RuntimeObservationConfig,
-    /// Map of prepared-statement handle → [`PreparedStatementEntry`].
-    /// Populated by `do_action_create_prepared_statement` and removed by
-    /// `do_action_close_prepared_statement` (or replaced when the same
-    /// handle is reused). The handle is an opaque UUID and is distinct
-    /// from the per-execution `query_id` issued at `get_flight_info_*`
-    /// time; one prepared statement can be executed multiple times,
-    /// each producing a fresh `query_id` / Flight ticket.
-    pub(super) prepared_statements: Arc<DashMap<String, PreparedStatementEntry>>,
+    /// Live prepared statements, keyed by handle. Populated by
+    /// `do_action_create_prepared_statement` and removed by
+    /// `do_action_close_prepared_statement`. The handle is an opaque UUID and
+    /// is distinct from the per-execution `query_id` issued at
+    /// `get_flight_info_*` time; one prepared statement can be executed
+    /// multiple times, each producing a fresh `query_id` / Flight ticket.
+    pub(super) prepared_statements: Arc<PreparedStatementStore>,
+    /// Principal that issued each live `query_id` and prepared-statement
+    /// handle. Consulted before every lookup by id so an authenticated caller
+    /// cannot redeem, cancel, or read another principal's query.
+    pub(super) ownership: Arc<QueryOwnership>,
     pub(super) statement_ticket_ttl: Duration,
     /// Parent token that every per-statement token is derived from. Cancelled
     /// by [`crate::serve`] on SIGINT/SIGTERM so statements already
@@ -157,6 +160,7 @@ impl DatafusionNexusFlightSqlService {
             coordinator: QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&observability_config)),
             runtime_observation_config: RuntimeObservationConfig::native_execution(),
             prepared_statements: Arc::default(),
+            ownership: Arc::default(),
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
             auth,
@@ -169,10 +173,19 @@ impl DatafusionNexusFlightSqlService {
         self
     }
 
-    /// Validate the bearer token on a Flight request. Disabled auth keeps the
-    /// existing trusted-network behavior and returns no principal.
-    pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<crate::auth::Principal>, Status> {
-        self.auth.check(request.metadata())
+    /// Validate the bearer token on a Flight request and resolve the caller to
+    /// the [`Owner`] that ids are registered against. Disabled auth keeps the
+    /// existing trusted-network behavior: every caller is [`Owner::Anonymous`].
+    pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Owner, Status> {
+        self.auth.check(request.metadata()).map(|principal| Owner::from_principal(principal.as_ref()))
+    }
+
+    /// Authorize `caller` to name `id`, then hand back the caller so the
+    /// authorized id and its owner stay bound at the call site.
+    pub(super) fn authorize_id<T>(&self, request: &Request<T>, id: &str) -> Result<Owner, Status> {
+        let caller = self.check_auth(request)?;
+        self.ownership.authorize(id, &caller)?;
+        Ok(caller)
     }
 
     pub(super) async fn build_get_tables_response(

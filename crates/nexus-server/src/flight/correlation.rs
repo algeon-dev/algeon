@@ -194,7 +194,7 @@ mod correlation_tests {
         assert!(payload.contains("# correlation_id=client-corr-42\n"), "{payload}");
         assert!(
             service
-                .cancel_from_flight_info(&response.into_inner().encode_to_vec())
+                .cancel_from_flight_info(&response.into_inner().encode_to_vec(), &Owner::Anonymous)
                 .expect("ticket cancellation decodes")
         );
         let payload = sealed_query_stats(&service, &query_id).await;

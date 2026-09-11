@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use super::*;
+use crate::observability::RedactedSql;
 
 #[tonic::async_trait]
 impl FlightSqlService for DatafusionNexusFlightSqlService {
@@ -18,7 +19,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        self.check_auth(&request)?;
+        let caller = self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
         let parsed_statement = self.parse_flight_statement(&sql);
@@ -33,6 +34,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         let (query_id, mut planning_lease) = registration.map_err(|(query_id, status)| {
             status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
         })?;
+        self.ownership.insert(query_id.clone(), caller);
         let query_span =
             DatafusionNexusFlightSqlService::query_span(&query_id, correlation_id.as_deref(), "get_flight_info");
         let _query_enter = query_span.enter();
@@ -40,7 +42,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql,
+            sql = %RedactedSql(&sql),
             "planning Flight SQL statement"
         );
         if query.transaction_id.is_some() {
@@ -130,7 +132,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: CommandPreparedStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        self.check_auth(&request)?;
+        let caller = self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let handle = match std::str::from_utf8(&query.prepared_statement_handle) {
             Ok(handle) => handle.to_string(),
@@ -143,6 +145,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
+        self.ownership.authorize(&handle, &caller)?;
         let (sql, execution_domain) =
             match self.prepared_statements.get(&handle).map(|entry| (entry.sql.clone(), entry.execution_domain)) {
                 Some(entry) => entry,
@@ -169,6 +172,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         let (query_id, planning_lease) = registration.map_err(|(query_id, status)| {
             status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
         })?;
+        self.ownership.insert(query_id.clone(), caller);
         let parsed_statement = self.parse_flight_statement(&sql);
         let query_span = DatafusionNexusFlightSqlService::query_span(
             &query_id,
@@ -334,11 +338,11 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         ticket: TicketStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.check_auth(&request)?;
-        let request_correlation_id = request_correlation_id(&request)?;
         let query_id = std::str::from_utf8(&ticket.statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?
             .to_string();
+        self.authorize_id(&request, &query_id)?;
+        let request_correlation_id = request_correlation_id(&request)?;
         self.execute_ticket(query_id, request_correlation_id).await
     }
 
@@ -347,11 +351,11 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: CommandPreparedStatementQuery,
         request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        self.check_auth(&request)?;
-        let request_correlation_id = request_correlation_id(&request)?;
         let query_id = std::str::from_utf8(&query.prepared_statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?
             .to_string();
+        self.authorize_id(&request, &query_id)?;
+        let request_correlation_id = request_correlation_id(&request)?;
         self.execute_ticket(query_id, request_correlation_id).await
     }
 
@@ -562,7 +566,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: CommandStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        self.check_auth(&request)?;
+        let caller = self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
         if query.transaction_id.is_some() {
@@ -579,10 +583,11 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         ) {
             return Err(record_non_attempt_failure(self, &correlation_id, error)?);
         }
-        let (_query_id, planning_lease) =
+        let (query_id, planning_lease) =
             self.register_new_attempt_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
+        self.ownership.insert(query_id, caller);
         self.execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::Statement).await
     }
 
@@ -591,7 +596,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: CommandPreparedStatementUpdate,
         request: Request<PeekableFlightDataStream>,
     ) -> Result<i64, Status> {
-        self.check_auth(&request)?;
+        let caller = self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let handle = match std::str::from_utf8(&query.prepared_statement_handle) {
             Ok(handle) => handle.to_string(),
@@ -604,6 +609,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
+        self.ownership.authorize(&handle, &caller)?;
         let (sql, already_executed) = match self
             .prepared_statements
             .get(&handle)
@@ -630,6 +636,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             self.register_new_attempt_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
+        self.ownership.insert(query_id.clone(), caller);
         self.coordinator.set_sql(&query_id, sql.clone());
 
         // DataGrip-class clients may re-run the held handle after executing a
@@ -659,7 +666,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: ActionCreatePreparedStatementRequest,
         request: Request<arrow_flight::Action>,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
-        self.check_auth(&request)?;
+        let caller = self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
         let (query_id, mut planning_lease) =
@@ -686,18 +693,6 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             let (status, captured) = adapter_error_to_status_and_capture(error);
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             planning_lease.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
-        if self.prepared_statements.len() >= MAX_PREPARED_STATEMENTS {
-            let error = Error::new(
-                ErrorCode::ServiceOverloaded,
-                "datafusion_nexus.server.flight.do_action_create_prepared_statement.admission",
-                format!("too many live prepared statements (limit {MAX_PREPARED_STATEMENTS})"),
-            )
-            .with_log_safe_fact("limit", MAX_PREPARED_STATEMENTS);
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.finish_captured("admission", &status, captured);
             return Err(status);
         }
         // Plan logically to derive the result-set schema the client needs
@@ -807,8 +802,25 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         // Reuse the returned opaque handle as this action's query_id so the
         // successful create action remains addressable through GetQueryStats.
         let handle = query_id.clone();
-        self.prepared_statements
-            .insert(handle.clone(), PreparedStatementEntry::new(sql, no_result_ddl, execution_domain));
+        // The cap check and the insert that consumes it are one operation in
+        // the store, so concurrent creates cannot both pass the check.
+        if let Err(limit) = self.prepared_statements.insert(
+            handle.clone(),
+            caller.clone(),
+            PreparedStatementEntry::new(sql, no_result_ddl, execution_domain),
+        ) {
+            let error = Error::new(
+                ErrorCode::ServiceOverloaded,
+                "datafusion_nexus.server.flight.do_action_create_prepared_statement.admission",
+                format!("{} (limit {})", limit.message(), limit.limit()),
+            )
+            .with_log_safe_fact("limit", limit.limit());
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("admission", &status, captured);
+            return Err(status);
+        }
+        self.ownership.insert(handle.clone(), caller);
         tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
         planning_lease.succeed();
 
@@ -824,15 +836,17 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: ActionClosePreparedStatementRequest,
         request: Request<arrow_flight::Action>,
     ) -> Result<(), Status> {
-        self.check_auth(&request)?;
         let handle = std::str::from_utf8(&query.prepared_statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let caller = self.authorize_id(&request, handle)?;
         // Closing an unknown handle is not an error: arrow-flight clients
         // may retry close, and the handle may have been swept by a prior
         // close on the same connection. Trace-log the no-op so client
         // lifecycle bugs (e.g. double-close, close-after-eviction) are
         // observable without breaking the idempotent contract.
-        if self.prepared_statements.remove(handle).is_none() {
+        if self.prepared_statements.remove(handle, &caller) {
+            self.ownership.remove(handle);
+        } else {
             tracing::trace!(
                 prepared_statement_handle = handle,
                 "close of unknown or already-closed prepared statement (no-op)"
@@ -846,8 +860,8 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         query: ActionCancelQueryRequest,
         request: Request<arrow_flight::Action>,
     ) -> Result<ActionCancelQueryResult, Status> {
-        self.check_auth(&request)?;
-        let result = if self.cancel_from_flight_info(&query.info)? {
+        let caller = self.check_auth(&request)?;
+        let result = if self.cancel_from_flight_info(&query.info, &caller)? {
             FLIGHT_SQL_CANCEL_RESULT_CANCELLING
         } else {
             FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE
@@ -877,7 +891,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         &self,
         request: Request<arrow_flight::Action>,
     ) -> Result<Response<<Self as FlightService>::DoActionStream>, Status> {
-        self.check_auth(&request)?;
+        let caller = self.check_auth(&request)?;
         let action_type = request.get_ref().r#type.as_str();
         if action_type == GET_ADMISSION_STATS_ACTION {
             let payload = self
@@ -897,6 +911,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             if query_id.is_empty() {
                 return Err(Status::invalid_argument("GetQueryRuntimeArtifact query_id body is empty"));
             }
+            self.ownership.authorize(query_id, &caller)?;
             let response = self
                 .coordinator
                 .lease_runtime_artifact(query_id)
@@ -923,6 +938,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         if query_id.is_empty() {
             return Err(Status::invalid_argument("GetQueryStats query_id body is empty"));
         }
+        self.ownership.authorize(query_id, &caller)?;
         let response = self
             .coordinator
             .lease_query_stats(query_id)
