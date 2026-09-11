@@ -1,6 +1,6 @@
 //! End-to-end runner for the local Iceberg REST catalog + RustFS stack.
 //!
-//! This exercises the real `RestIcebergCatalogBackend` against a local REST
+//! This exercises the real `RestCatalogBackend` against a local REST
 //! fixture + S3-compatible store (RustFS). It is an explicit `cargo run` tool,
 //! not a `cargo test` target. `NEXUS_ICEBERG_REST_E2E=1` is still required so an
 //! accidental invocation fails before touching external services.
@@ -25,9 +25,9 @@ use std::sync::Arc;
 
 use datafusion::catalog::CatalogProvider;
 use datafusion_nexus::table_format::iceberg::{
-    IcebergTableIdentifier, SourceAccessPolicy,
+    SourceAccessPolicy, TableIdentifier,
     catalog::{
-        IcebergCatalogBackend, NexusIcebergCatalogSource, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
+        CatalogBackend, NexusIcebergCatalogSource, RestCatalogBackend, RestCatalogConfig,
         build_scoped_catalog_provider_from_backend,
     },
     source_access_policy_to_native_source_storage_profile,
@@ -110,7 +110,7 @@ fn reject_non_empty_env(name: &'static str) -> E2eResult<()> {
 }
 
 /// Builds a REST config with one explicit, frozen RustFS source policy.
-fn rest_config_from_env() -> RestIcebergCatalogConfig {
+fn rest_config_from_env() -> RestCatalogConfig {
     let uri = std::env::var("NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
     let warehouse = std::env::var("NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
 
@@ -129,21 +129,19 @@ fn rest_config_from_env() -> RestIcebergCatalogConfig {
             ),
     );
 
-    RestIcebergCatalogConfig::new("lake", uri, warehouse).with_source_access_policy(source_access)
+    RestCatalogConfig::new("lake", uri, warehouse).with_source_access_policy(source_access)
 }
 
-async fn rest_catalog_source(config: RestIcebergCatalogConfig) -> E2eResult<Arc<dyn IcebergCatalogBackend>> {
-    let backend = RestIcebergCatalogBackend::connect(config).await?.into_backend();
+async fn rest_catalog_source(config: RestCatalogConfig) -> E2eResult<Arc<dyn CatalogBackend>> {
+    let backend = RestCatalogBackend::connect(config).await?.into_backend();
     Ok(Arc::new(NexusIcebergCatalogSource::new(backend)))
 }
 
 /// Read path: list namespaces through the REST backend. Proves the Rust/OpenDAL
 /// catalog client can talk to the fixture.
 async fn rest_backend_lists_namespaces_local() {
-    let backend = RestIcebergCatalogBackend::connect(rest_config_from_env())
-        .await
-        .expect("connect to REST catalog")
-        .into_backend();
+    let backend =
+        RestCatalogBackend::connect(rest_config_from_env()).await.expect("connect to REST catalog").into_backend();
     let namespaces = backend.list_namespaces().await.expect("list namespaces");
     eprintln!("discovered namespaces: {namespaces:?}");
     assert!(!namespaces.is_empty(), "expected at least one namespace in the local catalog");
@@ -235,12 +233,10 @@ async fn rest_table_metadata_contract_local() {
         std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST metadata E2E");
     let table_name = std::env::var("NEXUS_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
 
-    let backend = RestIcebergCatalogBackend::connect(rest_config_from_env())
-        .await
-        .expect("connect to REST catalog")
-        .into_backend();
+    let backend =
+        RestCatalogBackend::connect(rest_config_from_env()).await.expect("connect to REST catalog").into_backend();
     let table = backend
-        .load_table(IcebergTableIdentifier { namespace: vec![namespace.clone()], name: table_name.clone() })
+        .load_table(TableIdentifier { namespace: vec![namespace.clone()], name: table_name.clone() })
         .await
         .expect("load REST E2E table");
     let table = table.table();

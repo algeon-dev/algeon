@@ -12,8 +12,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::{
     native_report::bench_support::{ParityFloatTolerance, ParityStatus, compare_record_batches},
     table_format::iceberg::catalog::{
-        IcebergCatalogBackend, NexusIcebergCatalogSource, RestIcebergCatalogBackend,
-        build_scoped_catalog_provider_from_backend,
+        CatalogBackend, NexusIcebergCatalogSource, RestCatalogBackend, build_scoped_catalog_provider_from_backend,
     },
 };
 use futures::TryStreamExt;
@@ -119,8 +118,8 @@ pub(super) async fn build_cpu_references(
     params: &Params,
     workloads: &BTreeMap<&'static str, Workload>,
 ) -> E2eResult<BTreeMap<&'static str, CpuReference>> {
-    let backend: Arc<dyn IcebergCatalogBackend> = Arc::new(NexusIcebergCatalogSource::new(
-        RestIcebergCatalogBackend::connect(params.rest_config()).await?.into_backend(),
+    let backend: Arc<dyn CatalogBackend> = Arc::new(NexusIcebergCatalogSource::new(
+        RestCatalogBackend::connect(params.rest_config()).await?.into_backend(),
     ));
     let provider = build_scoped_catalog_provider_from_backend(backend, "rest", &params.namespace).await?;
     let context = SessionContext::new_with_config(SessionConfig::new());

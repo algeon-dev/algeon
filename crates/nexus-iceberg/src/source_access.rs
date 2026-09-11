@@ -339,7 +339,7 @@ impl fmt::Debug for S3SourceAccessPolicy {
 /// Glue catalog configuration. Its source policy is the single policy shared
 /// by the resolved table, leaf scan planning, and future root delegates.
 #[derive(Clone, PartialEq, Eq)]
-pub struct GlueIcebergCatalogConfig {
+pub struct GlueCatalogConfig {
     pub catalog_handle: String,
     pub warehouse: String,
     pub region: String,
@@ -384,7 +384,7 @@ impl GlueCatalogCredentials {
     }
 }
 
-impl GlueIcebergCatalogConfig {
+impl GlueCatalogConfig {
     /// Creates Glue catalog configuration with an AWS-default source policy.
     pub fn new(catalog_handle: impl Into<String>, warehouse: impl Into<String>, region: impl Into<String>) -> Self {
         let region = region.into();
@@ -464,9 +464,9 @@ impl GlueIcebergCatalogConfig {
     }
 }
 
-impl fmt::Debug for GlueIcebergCatalogConfig {
+impl fmt::Debug for GlueCatalogConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GlueIcebergCatalogConfig")
+        f.debug_struct("GlueCatalogConfig")
             .field("catalog_handle", &self.catalog_handle)
             .field("warehouse", &self.warehouse)
             .field("region", &self.region)
@@ -482,7 +482,7 @@ impl fmt::Debug for GlueIcebergCatalogConfig {
 /// REST catalog configuration. The REST bearer token and endpoint are hidden
 /// from `Debug`; scan candidates receive neither.
 #[derive(Clone, PartialEq, Eq)]
-pub struct RestIcebergCatalogConfig {
+pub struct RestCatalogConfig {
     pub catalog_handle: String,
     uri: String,
     pub warehouse: String,
@@ -491,7 +491,7 @@ pub struct RestIcebergCatalogConfig {
     source_access: SourceAccessPolicy,
 }
 
-impl RestIcebergCatalogConfig {
+impl RestCatalogConfig {
     /// Creates REST catalog configuration. A custom S3 endpoint can be added
     /// later through [`Self::with_source_access_policy`].
     pub fn new(catalog_handle: impl Into<String>, uri: impl Into<String>, warehouse: impl Into<String>) -> Self {
@@ -547,9 +547,9 @@ impl RestIcebergCatalogConfig {
     }
 }
 
-impl fmt::Debug for RestIcebergCatalogConfig {
+impl fmt::Debug for RestCatalogConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RestIcebergCatalogConfig")
+        f.debug_struct("RestCatalogConfig")
             .field("catalog_handle", &self.catalog_handle)
             .field("uri", &"<redacted>")
             .field("warehouse", &self.warehouse)
@@ -589,12 +589,12 @@ mod tests {
                 .with_static_credentials("local-access", "local-secret", Some("session".to_string()));
         let policy = SourceAccessPolicy::S3(policy);
 
-        let glue = GlueIcebergCatalogConfig::new("glue", "s3://warehouse", "us-east-1")
+        let glue = GlueCatalogConfig::new("glue", "s3://warehouse", "us-east-1")
             .with_profile("glue-profile")
             .with_source_access_policy(policy.clone())
             .with_catalog_static_credentials("glue-access", "glue-secret", Some("glue-session".to_string()));
-        let rest = RestIcebergCatalogConfig::new("rest", "http://catalog:8181", "s3://warehouse")
-            .with_source_access_policy(policy);
+        let rest =
+            RestCatalogConfig::new("rest", "http://catalog:8181", "s3://warehouse").with_source_access_policy(policy);
 
         for properties in [glue.catalog_properties(), rest.catalog_properties()] {
             assert_eq!(properties.get("s3.endpoint"), Some(&"http://localhost:9000".to_string()));
@@ -622,8 +622,8 @@ mod tests {
     fn unsigned_custom_endpoint_enables_anonymous_file_io_requests() {
         let policy =
             SourceAccessPolicy::s3_custom_endpoint("http://localhost:9000", Some("us-east-1".to_string()), Some(true));
-        let rest = RestIcebergCatalogConfig::new("rest", "http://catalog:8181", "s3://warehouse")
-            .with_source_access_policy(policy);
+        let rest =
+            RestCatalogConfig::new("rest", "http://catalog:8181", "s3://warehouse").with_source_access_policy(policy);
 
         let properties = rest.catalog_properties();
 
@@ -636,7 +636,7 @@ mod tests {
     fn file_io_verification_requires_an_exact_s3_policy_match() {
         let policy =
             SourceAccessPolicy::s3_custom_endpoint("http://localhost:9000", Some("us-east-1".to_string()), Some(true));
-        let rest = RestIcebergCatalogConfig::new("rest", "http://catalog:8181", "s3://warehouse")
+        let rest = RestCatalogConfig::new("rest", "http://catalog:8181", "s3://warehouse")
             .with_source_access_policy(policy.clone());
         let matching = rest.catalog_properties();
 

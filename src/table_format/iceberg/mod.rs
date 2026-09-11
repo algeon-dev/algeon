@@ -8,7 +8,7 @@ pub mod catalog;
 mod planner;
 
 pub use adapter::{iceberg_scan_candidate_to_table_format_scan_plan, root_error_from_iceberg};
-pub use nexus_iceberg::{IcebergTableIdentifier, ResolvedIcebergTable, S3CredentialMode, SourceAccessPolicy};
+pub use nexus_iceberg::{ResolvedTable, S3CredentialMode, SourceAccessPolicy, TableIdentifier};
 
 pub use self::planner::{
     IcebergTableFormatPlanner, NexusIcebergTableProvider, iceberg_file_scan_tasks_to_table_format_scan_plan,

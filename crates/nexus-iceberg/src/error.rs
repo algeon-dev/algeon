@@ -1,14 +1,14 @@
 use std::{error::Error as StdError, fmt};
 
 /// Result returned by this leaf crate.
-pub type IcebergResult<T> = Result<T, IcebergError>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Machine-readable Iceberg failure code.
 ///
 /// The code describes the response category, never the vendor crate that
 /// surfaced the condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcebergErrorCode {
+pub enum ErrorCode {
     Authentication,
     Access,
     NotFound,
@@ -20,7 +20,7 @@ pub enum IcebergErrorCode {
     Internal,
 }
 
-impl IcebergErrorCode {
+impl ErrorCode {
     /// Stable adapter-facing code.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -39,7 +39,7 @@ impl IcebergErrorCode {
 
 /// Retry status normalized from Iceberg and vendor failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcebergErrorStatus {
+pub enum ErrorStatus {
     Permanent,
     Temporary,
     Cancelled,
@@ -47,7 +47,7 @@ pub enum IcebergErrorStatus {
 
 /// The leaf operation that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcebergOperation {
+pub enum Operation {
     CatalogConnect,
     CatalogListNamespaces,
     CatalogListTables,
@@ -61,7 +61,7 @@ pub enum IcebergOperation {
     SourceAccess,
 }
 
-impl IcebergOperation {
+impl Operation {
     /// Stable operation code for logs and adapter conversions.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -86,8 +86,8 @@ impl IcebergOperation {
 /// URLs, authorization data, raw vendor context, and source chains are
 /// intentionally absent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct IcebergErrorContext {
-    pub catalog_kind: Option<IcebergCatalogErrorKind>,
+pub struct ErrorContext {
+    pub catalog_kind: Option<CatalogErrorKind>,
     pub catalog_handle: Option<String>,
     pub table_identifier: Option<String>,
     pub snapshot_id: Option<i64>,
@@ -98,7 +98,7 @@ pub struct IcebergErrorContext {
 
 /// Catalog backend kind as error context, kept independent of backend handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcebergCatalogErrorKind {
+pub enum CatalogErrorKind {
     Glue,
     Rest,
 }
@@ -109,20 +109,35 @@ pub enum IcebergCatalogErrorKind {
 /// This avoids exposing an upstream HTTP error chain that might contain a
 /// credential-bearing URL or authorization header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IcebergError {
-    pub code: IcebergErrorCode,
-    pub status: IcebergErrorStatus,
-    pub operation: IcebergOperation,
-    pub sanitized_message: String,
-    pub typed_context: Box<IcebergErrorContext>,
+pub struct Error {
+    code: ErrorCode,
+    status: ErrorStatus,
+    operation: Operation,
+    // Private so every value reaches this field through `sanitize_message`;
+    // a public field would let a caller store an unredacted vendor message.
+    sanitized_message: String,
+    typed_context: Box<ErrorContext>,
 }
 
-impl IcebergError {
-    /// Creates a normalized leaf error.
-    pub fn new(
-        code: IcebergErrorCode,
-        status: IcebergErrorStatus,
-        operation: IcebergOperation,
+impl Error {
+    /// Creates a normalized leaf error whose retry status is derived from
+    /// `code`. Use [`Self::retryable`] for a permanent code that a live
+    /// transport reported as retryable.
+    pub fn new(code: ErrorCode, operation: Operation, sanitized_message: impl AsRef<str>) -> Self {
+        Self::with_status(code, status_for(code, false), operation, sanitized_message)
+    }
+
+    /// Creates a normalized leaf error for a transport that reported the
+    /// condition as retryable, promoting an otherwise permanent code to
+    /// [`ErrorStatus::Temporary`].
+    pub fn retryable(code: ErrorCode, operation: Operation, sanitized_message: impl AsRef<str>) -> Self {
+        Self::with_status(code, status_for(code, true), operation, sanitized_message)
+    }
+
+    fn with_status(
+        code: ErrorCode,
+        status: ErrorStatus,
+        operation: Operation,
         sanitized_message: impl AsRef<str>,
     ) -> Self {
         Self {
@@ -135,30 +150,54 @@ impl IcebergError {
     }
 
     /// Adds typed, safe context.
-    pub fn with_context(mut self, typed_context: IcebergErrorContext) -> Self {
+    pub fn with_context(mut self, typed_context: ErrorContext) -> Self {
         self.typed_context = Box::new(typed_context);
         self
     }
 
+    /// Returns the machine-readable failure code.
+    pub const fn code(&self) -> ErrorCode {
+        self.code
+    }
+
+    /// Returns the normalized retry status.
+    pub const fn status(&self) -> ErrorStatus {
+        self.status
+    }
+
+    /// Returns the leaf operation that failed.
+    pub const fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    /// Returns the credential-sanitized message.
+    pub fn sanitized_message(&self) -> &str {
+        &self.sanitized_message
+    }
+
+    /// Returns the typed, credential-safe context.
+    pub const fn typed_context(&self) -> &ErrorContext {
+        &self.typed_context
+    }
+
     #[cfg(feature = "catalog")]
     /// Normalizes an `iceberg-rust` error without retaining its source chain.
-    pub fn from_iceberg_error(operation: IcebergOperation, source: iceberg::Error) -> Self {
+    pub fn from_iceberg_error(operation: Operation, source: iceberg::Error) -> Self {
         let code = classify_iceberg_error(&source);
-        let status = status_for(code, source.retryable());
-        Self::new(code, status, operation, source.message())
+        Self::with_status(code, status_for(code, source.retryable()), operation, source.message())
     }
 }
 
-impl fmt::Display for IcebergError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "Iceberg {} ({}) during {}: {}",
             self.code.as_str(),
             match self.status {
-                IcebergErrorStatus::Permanent => "permanent",
-                IcebergErrorStatus::Temporary => "temporary",
-                IcebergErrorStatus::Cancelled => "cancelled",
+                ErrorStatus::Permanent => "permanent",
+                ErrorStatus::Temporary => "temporary",
+                ErrorStatus::Cancelled => "cancelled",
             },
             self.operation.as_str(),
             self.sanitized_message
@@ -166,16 +205,16 @@ impl fmt::Display for IcebergError {
     }
 }
 
-impl StdError for IcebergError {}
+impl StdError for Error {}
 
 /// Classifies a dependency message when its transport condition is more
 /// specific than the upstream Iceberg error kind.
-pub fn classify_error_message(message: &str, retryable: bool) -> IcebergErrorCode {
+pub(crate) fn classify_error_message(message: &str, retryable: bool) -> ErrorCode {
     let text = message.to_ascii_lowercase();
     if contains_any(&text, &["cancelled", "canceled", "request aborted", "operation aborted"]) {
-        IcebergErrorCode::Cancelled
+        ErrorCode::Cancelled
     } else if contains_any(&text, &["timeout", "timed out", "deadline exceeded"]) {
-        IcebergErrorCode::Timeout
+        ErrorCode::Timeout
     } else if contains_any(
         &text,
         &[
@@ -193,7 +232,7 @@ pub fn classify_error_message(message: &str, retryable: bool) -> IcebergErrorCod
             " 401",
         ],
     ) {
-        IcebergErrorCode::Authentication
+        ErrorCode::Authentication
     } else if contains_any(
         &text,
         &[
@@ -209,28 +248,28 @@ pub fn classify_error_message(message: &str, retryable: bool) -> IcebergErrorCod
             " 403",
         ],
     ) {
-        IcebergErrorCode::Access
+        ErrorCode::Access
     } else if contains_any(&text, &["not found", "does not exist", "http_404", " 404"]) {
-        IcebergErrorCode::NotFound
+        ErrorCode::NotFound
     } else if retryable {
-        IcebergErrorCode::TemporaryDependency
+        ErrorCode::TemporaryDependency
     } else {
-        IcebergErrorCode::Internal
+        ErrorCode::Internal
     }
 }
 
 #[cfg(feature = "catalog")]
-fn status_for(code: IcebergErrorCode, retryable: bool) -> IcebergErrorStatus {
+fn status_for(code: ErrorCode, retryable: bool) -> ErrorStatus {
     match code {
-        IcebergErrorCode::Cancelled => IcebergErrorStatus::Cancelled,
-        IcebergErrorCode::TemporaryDependency | IcebergErrorCode::Timeout => IcebergErrorStatus::Temporary,
-        _ if retryable => IcebergErrorStatus::Temporary,
-        _ => IcebergErrorStatus::Permanent,
+        ErrorCode::Cancelled => ErrorStatus::Cancelled,
+        ErrorCode::TemporaryDependency | ErrorCode::Timeout => ErrorStatus::Temporary,
+        _ if retryable => ErrorStatus::Temporary,
+        _ => ErrorStatus::Permanent,
     }
 }
 
 #[cfg(feature = "catalog")]
-fn classify_iceberg_error(source: &iceberg::Error) -> IcebergErrorCode {
+fn classify_iceberg_error(source: &iceberg::Error) -> ErrorCode {
     use iceberg::ErrorKind;
 
     // Inspect vendor source messages only while the error is live. They can
@@ -239,22 +278,22 @@ fn classify_iceberg_error(source: &iceberg::Error) -> IcebergErrorCode {
     let mut current: Option<&(dyn StdError + 'static)> = Some(source);
     while let Some(error) = current {
         let message_code = classify_error_message(&error.to_string(), false);
-        if message_code != IcebergErrorCode::Internal {
+        if message_code != ErrorCode::Internal {
             return message_code;
         }
         current = error.source();
     }
     match source.kind() {
-        ErrorKind::NamespaceNotFound | ErrorKind::TableNotFound => IcebergErrorCode::NotFound,
+        ErrorKind::NamespaceNotFound | ErrorKind::TableNotFound => ErrorCode::NotFound,
         ErrorKind::DataInvalid | ErrorKind::PreconditionFailed | ErrorKind::CatalogCommitConflicts => {
-            IcebergErrorCode::InvalidMetadata
+            ErrorCode::InvalidMetadata
         },
-        ErrorKind::FeatureUnsupported => IcebergErrorCode::UnsupportedSchema,
-        ErrorKind::Unexpected if source.retryable() => IcebergErrorCode::TemporaryDependency,
+        ErrorKind::FeatureUnsupported => ErrorCode::UnsupportedSchema,
+        ErrorKind::Unexpected if source.retryable() => ErrorCode::TemporaryDependency,
         ErrorKind::Unexpected | ErrorKind::NamespaceAlreadyExists | ErrorKind::TableAlreadyExists => {
-            IcebergErrorCode::Internal
+            ErrorCode::Internal
         },
-        _ => IcebergErrorCode::Internal,
+        _ => ErrorCode::Internal,
     }
 }
 
@@ -340,10 +379,9 @@ mod tests {
 
     #[test]
     fn errors_are_sanitized_and_do_not_keep_vendor_sources() {
-        let error = IcebergError::new(
-            IcebergErrorCode::Authentication,
-            IcebergErrorStatus::Permanent,
-            IcebergOperation::CatalogConnect,
+        let error = Error::new(
+            ErrorCode::Authentication,
+            Operation::CatalogConnect,
             "request https://user:password@catalog.example/v1 token=not-for-logs",
         );
 
@@ -355,44 +393,39 @@ mod tests {
 
     #[test]
     fn errors_redact_every_signed_url_and_sensitive_query_parameter() {
-        let error = IcebergError::new(
-            IcebergErrorCode::Authentication,
-            IcebergErrorStatus::Permanent,
-            IcebergOperation::CatalogConnect,
+        let error = Error::new(
+            ErrorCode::Authentication,
+            Operation::CatalogConnect,
             "request https://catalog.example/v1?X-Amz-Credential=credential-secret&X-Amz-Signature=signature-secret then https://user:password@store.example/file?token=token-secret X-Amz-Security-Token=session-secret",
         );
 
-        assert!(!error.sanitized_message.contains("catalog.example"));
-        assert!(!error.sanitized_message.contains("store.example"));
-        assert!(!error.sanitized_message.contains("credential-secret"));
-        assert!(!error.sanitized_message.contains("signature-secret"));
-        assert!(!error.sanitized_message.contains("token-secret"));
-        assert!(!error.sanitized_message.contains("session-secret"));
-        assert_eq!(error.sanitized_message.matches("<redacted-url>").count(), 2);
+        assert!(!error.sanitized_message().contains("catalog.example"));
+        assert!(!error.sanitized_message().contains("store.example"));
+        assert!(!error.sanitized_message().contains("credential-secret"));
+        assert!(!error.sanitized_message().contains("signature-secret"));
+        assert!(!error.sanitized_message().contains("token-secret"));
+        assert!(!error.sanitized_message().contains("session-secret"));
+        assert_eq!(error.sanitized_message().matches("<redacted-url>").count(), 2);
     }
 
     #[test]
     fn errors_redact_split_http_credential_headers() {
-        let error = IcebergError::new(
-            IcebergErrorCode::Authentication,
-            IcebergErrorStatus::Permanent,
-            IcebergOperation::CatalogConnect,
+        let error = Error::new(
+            ErrorCode::Authentication,
+            Operation::CatalogConnect,
             "request failed Authorization: Bearer not-for-logs Cookie: session=also-not-for-logs",
         );
 
-        assert!(!error.sanitized_message.contains("not-for-logs"));
-        assert!(!error.sanitized_message.contains("also-not-for-logs"));
+        assert!(!error.sanitized_message().contains("not-for-logs"));
+        assert!(!error.sanitized_message().contains("also-not-for-logs"));
     }
 
     #[test]
     fn error_message_classification_preserves_auth_access_and_transient_cases() {
-        assert_eq!(classify_error_message("service returned AccessDeniedException", false), IcebergErrorCode::Access);
-        assert_eq!(
-            classify_error_message("ExpiredTokenException from catalog", false),
-            IcebergErrorCode::Authentication
-        );
-        assert_eq!(classify_error_message("catalog request timed out", false), IcebergErrorCode::Timeout);
-        assert_eq!(classify_error_message("dependency unavailable", true), IcebergErrorCode::TemporaryDependency);
+        assert_eq!(classify_error_message("service returned AccessDeniedException", false), ErrorCode::Access);
+        assert_eq!(classify_error_message("ExpiredTokenException from catalog", false), ErrorCode::Authentication);
+        assert_eq!(classify_error_message("catalog request timed out", false), ErrorCode::Timeout);
+        assert_eq!(classify_error_message("dependency unavailable", true), ErrorCode::TemporaryDependency);
     }
 
     #[cfg(feature = "catalog")]
@@ -405,11 +438,11 @@ mod tests {
         let access = Error::new(ErrorKind::Unexpected, "catalog request failed")
             .with_source(std::io::Error::other("PermissionDenied: forbidden"));
 
-        let auth = IcebergError::from_iceberg_error(IcebergOperation::CatalogConnect, auth);
-        let access = IcebergError::from_iceberg_error(IcebergOperation::CatalogConnect, access);
+        let auth = super::Error::from_iceberg_error(Operation::CatalogConnect, auth);
+        let access = super::Error::from_iceberg_error(Operation::CatalogConnect, access);
 
-        assert_eq!(auth.code, IcebergErrorCode::Authentication);
-        assert_eq!(access.code, IcebergErrorCode::Access);
+        assert_eq!(auth.code, ErrorCode::Authentication);
+        assert_eq!(access.code, ErrorCode::Access);
         assert!(!auth.sanitized_message.contains("not-for-logs"));
         assert!(StdError::source(&auth).is_none());
         assert!(StdError::source(&access).is_none());

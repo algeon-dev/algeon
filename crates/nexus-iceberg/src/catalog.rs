@@ -10,29 +10,29 @@ use iceberg_storage_opendal::OpenDalStorageFactory;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    GlueIcebergCatalogConfig, IcebergCatalogErrorKind, IcebergError, IcebergErrorContext, IcebergOperation,
-    IcebergResult, IcebergTableIdentifier, ResolvedIcebergTable, RestIcebergCatalogConfig, SourceAccessPolicy,
+    CatalogErrorKind, Error, ErrorContext, GlueCatalogConfig, Operation, ResolvedTable, RestCatalogConfig, Result,
+    SourceAccessPolicy, TableIdentifier,
 };
 
 /// Catalog implementation kind, independent from a DataFusion catalog name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IcebergCatalogKind {
+pub enum CatalogKind {
     Glue,
     Rest,
 }
 
-impl IcebergCatalogKind {
-    const fn error_kind(self) -> IcebergCatalogErrorKind {
+impl CatalogKind {
+    const fn error_kind(self) -> CatalogErrorKind {
         match self {
-            Self::Glue => IcebergCatalogErrorKind::Glue,
-            Self::Rest => IcebergCatalogErrorKind::Rest,
+            Self::Glue => CatalogErrorKind::Glue,
+            Self::Rest => CatalogErrorKind::Rest,
         }
     }
 }
 
 /// Catalog namespace identity without upstream catalog types.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IcebergNamespace {
+pub struct Namespace {
     pub parts: Vec<String>,
 }
 
@@ -40,18 +40,18 @@ pub struct IcebergNamespace {
 ///
 /// It applies one frozen source-access policy to its Iceberg catalog/FileIO
 /// properties. The exact same policy is then placed in each
-/// [`ResolvedIcebergTable`].
-pub struct IcebergCatalogBackend {
-    kind: IcebergCatalogKind,
+/// [`ResolvedTable`].
+pub struct CatalogBackend {
+    kind: CatalogKind,
     catalog_handle: String,
     catalog: Arc<dyn Catalog>,
     source_access: SourceAccessPolicy,
     source_access_is_enforced_by_catalog_file_io: bool,
 }
 
-impl IcebergCatalogBackend {
+impl CatalogBackend {
     fn new(
-        kind: IcebergCatalogKind,
+        kind: CatalogKind,
         catalog_handle: String,
         catalog: Arc<dyn Catalog>,
         source_access: SourceAccessPolicy,
@@ -60,32 +60,32 @@ impl IcebergCatalogBackend {
         Self { kind, catalog_handle, catalog, source_access, source_access_is_enforced_by_catalog_file_io }
     }
 
-    pub const fn kind(&self) -> IcebergCatalogKind {
+    pub const fn kind(&self) -> CatalogKind {
         self.kind
     }
 
     /// Lists catalog namespaces without exposing upstream catalog types.
-    pub async fn list_namespaces(&self) -> IcebergResult<Vec<IcebergNamespace>> {
+    pub async fn list_namespaces(&self) -> Result<Vec<Namespace>> {
         let namespaces = self
             .catalog
             .list_namespaces(None)
             .await
-            .map_err(|source| self.normalize(IcebergOperation::CatalogListNamespaces, source))?;
-        Ok(namespaces.into_iter().map(|namespace| IcebergNamespace { parts: namespace.inner() }).collect())
+            .map_err(|source| self.normalize(Operation::CatalogListNamespaces, source))?;
+        Ok(namespaces.into_iter().map(|namespace| Namespace { parts: namespace.inner() }).collect())
     }
 
     /// Lists table identities in a namespace.
-    pub async fn list_tables(&self, namespace: IcebergNamespace) -> IcebergResult<Vec<IcebergTableIdentifier>> {
+    pub async fn list_tables(&self, namespace: Namespace) -> Result<Vec<TableIdentifier>> {
         let namespace = NamespaceIdent::from_vec(namespace.parts)
-            .map_err(|source| self.normalize(IcebergOperation::CatalogListTables, source))?;
+            .map_err(|source| self.normalize(Operation::CatalogListTables, source))?;
         let tables = self
             .catalog
             .list_tables(&namespace)
             .await
-            .map_err(|source| self.normalize(IcebergOperation::CatalogListTables, source))?;
+            .map_err(|source| self.normalize(Operation::CatalogListTables, source))?;
         Ok(tables
             .into_iter()
-            .map(|table| IcebergTableIdentifier {
+            .map(|table| TableIdentifier {
                 namespace: table.namespace().as_ref().clone(),
                 name: table.name().to_string(),
             })
@@ -93,40 +93,40 @@ impl IcebergCatalogBackend {
     }
 
     /// Loads a table and freezes its snapshot/schema/source-access tuple.
-    pub async fn load_table(&self, table: IcebergTableIdentifier) -> IcebergResult<ResolvedIcebergTable> {
+    pub async fn load_table(&self, table: TableIdentifier) -> Result<ResolvedTable> {
         let table_display = table.display_name();
         let namespace = NamespaceIdent::from_vec(table.namespace).map_err(|source| {
-            self.normalize(IcebergOperation::TableLoad, source)
-                .with_context(IcebergErrorContext { table_identifier: Some(table_display.clone()), ..self.context() })
+            self.normalize(Operation::TableLoad, source)
+                .with_context(ErrorContext { table_identifier: Some(table_display.clone()), ..self.context() })
         })?;
         let table = TableIdent::new(namespace, table.name);
         let loaded = self.catalog.load_table(&table).await.map_err(|source| {
-            self.normalize(IcebergOperation::TableLoad, source)
-                .with_context(IcebergErrorContext { table_identifier: Some(table_display), ..self.context() })
+            self.normalize(Operation::TableLoad, source)
+                .with_context(ErrorContext { table_identifier: Some(table_display), ..self.context() })
         })?;
         if self.source_access_is_enforced_by_catalog_file_io {
-            ResolvedIcebergTable::from_catalog_file_io(loaded, self.source_access.clone())
+            ResolvedTable::from_catalog_file_io(loaded, self.source_access.clone())
         } else {
-            ResolvedIcebergTable::from_table(loaded, self.source_access.clone())
+            ResolvedTable::from_table(loaded, self.source_access.clone())
         }
     }
 
-    fn context(&self) -> IcebergErrorContext {
-        IcebergErrorContext {
+    fn context(&self) -> ErrorContext {
+        ErrorContext {
             catalog_kind: Some(self.kind.error_kind()),
             catalog_handle: Some(self.catalog_handle.clone()),
-            ..IcebergErrorContext::default()
+            ..ErrorContext::default()
         }
     }
 
-    fn normalize(&self, operation: IcebergOperation, source: iceberg::Error) -> IcebergError {
-        IcebergError::from_iceberg_error(operation, source).with_context(self.context())
+    fn normalize(&self, operation: Operation, source: iceberg::Error) -> Error {
+        Error::from_iceberg_error(operation, source).with_context(self.context())
     }
 }
 
-impl fmt::Debug for IcebergCatalogBackend {
+impl fmt::Debug for CatalogBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("IcebergCatalogBackend")
+        f.debug_struct("CatalogBackend")
             .field("kind", &self.kind)
             .field("catalog_handle", &self.catalog_handle)
             .field("catalog", &"<connected Iceberg catalog>")
@@ -138,13 +138,13 @@ impl fmt::Debug for IcebergCatalogBackend {
 
 /// Connected AWS Glue catalog backend.
 #[cfg(feature = "glue")]
-pub struct GlueIcebergCatalogBackend(IcebergCatalogBackend);
+pub struct GlueCatalogBackend(CatalogBackend);
 
 #[cfg(feature = "glue")]
-impl GlueIcebergCatalogBackend {
+impl GlueCatalogBackend {
     /// Connects Glue with source/FileIO properties derived from the frozen
     /// source-access policy.
-    pub async fn connect(config: GlueIcebergCatalogConfig) -> IcebergResult<Self> {
+    pub async fn connect(config: GlueCatalogConfig) -> Result<Self> {
         use iceberg_catalog_glue::GlueCatalogBuilder;
 
         let catalog_handle = config.catalog_handle.clone();
@@ -154,48 +154,40 @@ impl GlueIcebergCatalogBackend {
             .load(catalog_handle.clone(), config.catalog_properties())
             .await
             .map_err(|source| {
-                IcebergError::from_iceberg_error(IcebergOperation::CatalogConnect, source).with_context(
-                    IcebergErrorContext {
-                        catalog_kind: Some(IcebergCatalogErrorKind::Glue),
-                        catalog_handle: Some(catalog_handle.clone()),
-                        ..IcebergErrorContext::default()
-                    },
-                )
+                Error::from_iceberg_error(Operation::CatalogConnect, source).with_context(ErrorContext {
+                    catalog_kind: Some(CatalogErrorKind::Glue),
+                    catalog_handle: Some(catalog_handle.clone()),
+                    ..ErrorContext::default()
+                })
             })?;
-        Ok(Self(IcebergCatalogBackend::new(
-            IcebergCatalogKind::Glue,
-            catalog_handle,
-            Arc::new(glue),
-            source_access,
-            true,
-        )))
+        Ok(Self(CatalogBackend::new(CatalogKind::Glue, catalog_handle, Arc::new(glue), source_access, true)))
     }
 
-    pub const fn backend(&self) -> &IcebergCatalogBackend {
+    pub const fn backend(&self) -> &CatalogBackend {
         &self.0
     }
 
-    pub fn into_backend(self) -> IcebergCatalogBackend {
+    pub fn into_backend(self) -> CatalogBackend {
         self.0
     }
 }
 
 #[cfg(feature = "glue")]
-impl fmt::Debug for GlueIcebergCatalogBackend {
+impl fmt::Debug for GlueCatalogBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("GlueIcebergCatalogBackend").field(&self.0).finish()
+        f.debug_tuple("GlueCatalogBackend").field(&self.0).finish()
     }
 }
 
 /// Connected Iceberg REST catalog backend.
 #[cfg(feature = "rest")]
-pub struct RestIcebergCatalogBackend(IcebergCatalogBackend);
+pub struct RestCatalogBackend(CatalogBackend);
 
 #[cfg(feature = "rest")]
-impl RestIcebergCatalogBackend {
+impl RestCatalogBackend {
     /// Connects a REST catalog with an S3 OpenDAL FileIO factory. The catalog
     /// and FileIO properties come from the same frozen source-access policy.
-    pub async fn connect(config: RestIcebergCatalogConfig) -> IcebergResult<Self> {
+    pub async fn connect(config: RestCatalogConfig) -> Result<Self> {
         use iceberg_catalog_rest::RestCatalogBuilder;
         use iceberg_storage_opendal::OpenDalStorageFactory;
 
@@ -207,36 +199,28 @@ impl RestIcebergCatalogBackend {
             .load(catalog_handle.clone(), config.catalog_properties())
             .await
             .map_err(|source| {
-                IcebergError::from_iceberg_error(IcebergOperation::CatalogConnect, source).with_context(
-                    IcebergErrorContext {
-                        catalog_kind: Some(IcebergCatalogErrorKind::Rest),
-                        catalog_handle: Some(catalog_handle.clone()),
-                        ..IcebergErrorContext::default()
-                    },
-                )
+                Error::from_iceberg_error(Operation::CatalogConnect, source).with_context(ErrorContext {
+                    catalog_kind: Some(CatalogErrorKind::Rest),
+                    catalog_handle: Some(catalog_handle.clone()),
+                    ..ErrorContext::default()
+                })
             })?;
-        Ok(Self(IcebergCatalogBackend::new(
-            IcebergCatalogKind::Rest,
-            catalog_handle,
-            Arc::new(rest),
-            source_access,
-            false,
-        )))
+        Ok(Self(CatalogBackend::new(CatalogKind::Rest, catalog_handle, Arc::new(rest), source_access, false)))
     }
 
-    pub const fn backend(&self) -> &IcebergCatalogBackend {
+    pub const fn backend(&self) -> &CatalogBackend {
         &self.0
     }
 
-    pub fn into_backend(self) -> IcebergCatalogBackend {
+    pub fn into_backend(self) -> CatalogBackend {
         self.0
     }
 }
 
 #[cfg(feature = "rest")]
-impl fmt::Debug for RestIcebergCatalogBackend {
+impl fmt::Debug for RestCatalogBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("RestIcebergCatalogBackend").field(&self.0).finish()
+        f.debug_tuple("RestCatalogBackend").field(&self.0).finish()
     }
 }
 
@@ -269,7 +253,7 @@ impl fmt::Debug for GlueSourceStorageFactory {
 // redacted round trip could not reconstruct a working source policy.
 #[cfg(feature = "glue")]
 impl Serialize for GlueSourceStorageFactory {
-    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, _serializer: S) -> core::result::Result<S::Ok, S::Error>
     where S: Serializer {
         Err(serde::ser::Error::custom("Nexus Glue source storage factories are process-local"))
     }
@@ -277,7 +261,7 @@ impl Serialize for GlueSourceStorageFactory {
 
 #[cfg(feature = "glue")]
 impl<'de> Deserialize<'de> for GlueSourceStorageFactory {
-    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(_deserializer: D) -> core::result::Result<Self, D::Error>
     where D: Deserializer<'de> {
         Err(serde::de::Error::custom("Nexus Glue source storage factories are process-local"))
     }

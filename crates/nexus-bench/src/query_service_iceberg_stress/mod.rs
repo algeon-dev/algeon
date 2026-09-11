@@ -27,12 +27,12 @@ use datafusion_nexus::{
         AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, TableFormatScanRequest,
         iceberg::{
             AWS_ACCESS_KEY_ID_ENV, AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, AWS_SECRET_ACCESS_KEY_ENV,
-            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, IcebergTableFormatPlanner, IcebergTableIdentifier,
+            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, IcebergTableFormatPlanner,
             NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN,
             NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
             NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
-            NexusIcebergTableProvider, ResolvedIcebergTable, SourceAccessPolicy,
-            catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig},
+            NexusIcebergTableProvider, ResolvedTable, SourceAccessPolicy, TableIdentifier,
+            catalog::{GlueCatalogBackend, GlueCatalogConfig},
             source_access_policy_to_native_source_storage_profile,
         },
     },
@@ -126,14 +126,14 @@ struct StressConfig {
 
 #[derive(Debug, Clone)]
 struct ResolvedGlueTableConfig {
-    catalog_config: GlueIcebergCatalogConfig,
-    identifier: IcebergTableIdentifier,
+    catalog_config: GlueCatalogConfig,
+    identifier: TableIdentifier,
     credential_source: &'static str,
 }
 
 impl ResolvedGlueTableConfig {
-    async fn load(&self) -> DataFusionResult<ResolvedIcebergTable> {
-        let backend = GlueIcebergCatalogBackend::connect(self.catalog_config.clone())
+    async fn load(&self) -> DataFusionResult<ResolvedTable> {
+        let backend = GlueCatalogBackend::connect(self.catalog_config.clone())
             .await
             .map_err(|error| DataFusionError::External(Box::new(error)))?
             .into_backend();
@@ -165,8 +165,8 @@ impl StressConfig {
         let aws_secret_access_key = env_optional(AWS_SECRET_ACCESS_KEY_ENV);
         let aws_session_token = env_optional(AWS_SESSION_TOKEN_ENV).or_else(|| env_optional(AWS_SECURITY_TOKEN_ENV));
         let source_access_policy = source_access_policy_from_env(&region)?;
-        let mut catalog_config = GlueIcebergCatalogConfig::new(catalog_handle, warehouse, region)
-            .with_source_access_policy(source_access_policy);
+        let mut catalog_config =
+            GlueCatalogConfig::new(catalog_handle, warehouse, region).with_source_access_policy(source_access_policy);
         if let Some(catalog_id) = catalog_id {
             catalog_config = catalog_config.with_catalog_id(catalog_id);
         }
@@ -184,7 +184,7 @@ impl StressConfig {
         }
         let table = ResolvedGlueTableConfig {
             catalog_config,
-            identifier: IcebergTableIdentifier { namespace: vec![database], name: table },
+            identifier: TableIdentifier { namespace: vec![database], name: table },
             credential_source: glue_credential_source(
                 profile.as_deref(),
                 aws_access_key_id.is_some(),
@@ -969,8 +969,8 @@ mod tests {
     fn queue_test_config() -> StressConfig {
         StressConfig {
             table: ResolvedGlueTableConfig {
-                catalog_config: GlueIcebergCatalogConfig::new("glue", "s3://warehouse", "us-east-1"),
-                identifier: IcebergTableIdentifier { namespace: vec!["db".to_string()], name: "table".to_string() },
+                catalog_config: GlueCatalogConfig::new("glue", "s3://warehouse", "us-east-1"),
+                identifier: TableIdentifier { namespace: vec!["db".to_string()], name: "table".to_string() },
                 credential_source: "aws_default_chain",
             },
             table_alias: "iceberg_t".to_string(),

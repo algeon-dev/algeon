@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::{
-    DataType, Error, ErrorCode, Field, FieldRef, Fields, IcebergSchema, NestedField, Result, Schema, SchemaRef,
-    TASK_CONVERSION_OPERATION, TableFormat, Type, UnionFields,
+    DataType, Error, ErrorCode, Field, FieldRef, Fields, NestedField, Result, Schema, SchemaRef,
+    TASK_CONVERSION_OPERATION, TableFormat, Type, UnionFields, VendorSchema,
 };
 
 /// Converts an Iceberg schema into the metadata-free Arrow schema exposed to DataFusion.
@@ -13,7 +13,7 @@ use super::{
 /// mismatch. Keep Iceberg field ids in
 /// [`crate::table_format::TableFormatColumnMapping::field_id`] and expose
 /// metadata-free Arrow schemas at DataFusion boundaries.
-pub fn iceberg_schema_to_datafusion_arrow_schema(schema: &IcebergSchema) -> Result<SchemaRef> {
+pub fn iceberg_schema_to_datafusion_arrow_schema(schema: &VendorSchema) -> Result<SchemaRef> {
     let arrow_schema = iceberg::arrow::schema_to_arrow_schema(schema).map_err(|error| {
         Error::new(
             ErrorCode::UnsupportedType,

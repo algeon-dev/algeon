@@ -509,18 +509,6 @@ async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
     assert!(format!("{:?}", cloned.query_planner()).contains("CuvsQueryPlanner"));
 }
 
-#[tokio::test]
-async fn backendless_session_context_builder_is_rejected() {
-    let error = match build_session_context(&bounded_config(1)).await {
-        Ok(_) => panic!("backendless Flight SQL session construction must fail"),
-        Err(error) => error,
-    };
-
-    assert_eq!(error.code(), crate::adapter_error::ErrorCode::InvalidRequest);
-    assert_eq!(error.operation(), "datafusion_nexus.server.builder");
-    assert_eq!(error.fact_value("reason"), Some("server_backend_required"));
-}
-
 #[test]
 fn builder_rejects_injected_session_context_from_different_backend() {
     let error = validate_injected_session_backend_binding(false).unwrap_err();
@@ -567,13 +555,12 @@ fn single_librmm_runtime_mapping_check_passes_in_this_process() {
 #[cfg(feature = "iceberg")]
 #[test]
 fn iceberg_backend_snapshot_sanitizes_rest_urls_for_logs() {
-    let backend = config::IcebergCatalogBackendConfig::Rest(
-        crate::table_format::iceberg::catalog::RestIcebergCatalogConfig::new(
+    let backend =
+        config::IcebergCatalogBackendConfig::Rest(crate::table_format::iceberg::catalog::RestCatalogConfig::new(
             "lake",
             "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
             "s3://lakehouse/warehouse",
-        ),
-    );
+        ));
     let source_access = crate::table_format::iceberg::SourceAccessPolicy::s3_custom_endpoint(
         "http://user:s3-secret@rustfs.local:9000/path?sig=secret#frag",
         None,

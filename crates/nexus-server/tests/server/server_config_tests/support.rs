@@ -118,7 +118,7 @@ fn expect_glue_backend(
 #[cfg(feature = "iceberg")]
 fn expect_rest_backend(
     iceberg: &nexus_server::IcebergServerConfig,
-) -> &datafusion_nexus::table_format::iceberg::catalog::RestIcebergCatalogConfig {
+) -> &datafusion_nexus::table_format::iceberg::catalog::RestCatalogConfig {
     match &iceberg.backend {
         nexus_server::IcebergCatalogBackendConfig::Rest(rest) => rest,
         other => panic!("expected REST backend, got {other:?}"),

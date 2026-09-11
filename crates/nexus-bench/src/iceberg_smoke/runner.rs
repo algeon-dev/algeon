@@ -498,7 +498,7 @@ pub(crate) async fn register_custom_probe_table(
 }
 
 async fn provider_with_native_planner<P>(
-    resolved: &ResolvedIcebergTable,
+    resolved: &ResolvedTable,
     planner: Arc<P>,
     catalog_type: &str,
 ) -> SmokeResult<NexusIcebergTableProvider>

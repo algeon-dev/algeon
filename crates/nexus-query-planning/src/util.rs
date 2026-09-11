@@ -2,14 +2,6 @@ use std::{collections::HashMap, hash::Hasher};
 
 use fnv::FnvHasher;
 
-pub fn max_option<T: Ord>(left: Option<T>, right: Option<T>) -> Option<T> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct StableFnv1a64 {
     state: u64,

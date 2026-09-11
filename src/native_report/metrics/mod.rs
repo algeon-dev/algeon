@@ -23,7 +23,6 @@ pub use dynamic_filter::{
 };
 pub use graph::NativeGraphRuntimeMetricRow;
 use graph::graph_runtime_rows;
-use labels::max_optional_usize;
 pub use lakehouse_cache::NativeLakehouseCacheFillEventMetricRow;
 use lakehouse_cache::lakehouse_cache_fill_event_snapshot_rows;
 pub use plan_task::NativePlanTaskMappingMetricRow;
@@ -421,19 +420,16 @@ impl NativeDataFusionExecutionMetrics {
             (Some(left), Some(right)) if left == right => Some(left),
             _ => None,
         };
-        self.admission_wait_time_ns = max_optional_usize(self.admission_wait_time_ns, admission_wait_time_ns);
+        self.admission_wait_time_ns = self.admission_wait_time_ns.max(admission_wait_time_ns);
         self.device_ordinal = match (self.device_ordinal, device_ordinal) {
             (Some(left), Some(right)) if left == right => Some(left),
             _ => None,
         };
-        self.query_grant_bytes = max_optional_usize(self.query_grant_bytes, query_grant_bytes);
-        self.resident_dataframe_peak_bytes =
-            max_optional_usize(self.resident_dataframe_peak_bytes, resident_dataframe_peak_bytes);
-        self.allocator_high_water_bytes =
-            max_optional_usize(self.allocator_high_water_bytes, allocator_high_water_bytes);
-        self.max_task_observed_peak_bytes =
-            max_optional_usize(self.max_task_observed_peak_bytes, max_task_observed_peak_bytes);
-        self.max_task_retained_bytes = max_optional_usize(self.max_task_retained_bytes, max_task_retained_bytes);
+        self.query_grant_bytes = self.query_grant_bytes.max(query_grant_bytes);
+        self.resident_dataframe_peak_bytes = self.resident_dataframe_peak_bytes.max(resident_dataframe_peak_bytes);
+        self.allocator_high_water_bytes = self.allocator_high_water_bytes.max(allocator_high_water_bytes);
+        self.max_task_observed_peak_bytes = self.max_task_observed_peak_bytes.max(max_task_observed_peak_bytes);
+        self.max_task_retained_bytes = self.max_task_retained_bytes.max(max_task_retained_bytes);
         self.merge_graph_runtime_rows(graph_runtime_rows);
         self.merge_task_operator_rows(task_operator_rows);
         self.merge_task_runtime_rows(task_runtime_rows);
@@ -735,9 +731,8 @@ impl NativeDataFusionExecutionMetrics {
             {
                 existing.task_count = existing.task_count.saturating_add(row.task_count);
                 existing.elapsed_ns = existing.elapsed_ns.saturating_add(row.elapsed_ns);
-                existing.max_observed_peak_bytes =
-                    max_optional_usize(existing.max_observed_peak_bytes, row.max_observed_peak_bytes);
-                existing.max_retained_bytes = max_optional_usize(existing.max_retained_bytes, row.max_retained_bytes);
+                existing.max_observed_peak_bytes = existing.max_observed_peak_bytes.max(row.max_observed_peak_bytes);
+                existing.max_retained_bytes = existing.max_retained_bytes.max(row.max_retained_bytes);
             } else {
                 self.task_operator_rows.push(row);
             }
@@ -753,9 +748,8 @@ impl NativeDataFusionExecutionMetrics {
             {
                 existing.operator_kind = row.operator_kind;
                 existing.elapsed_ns = existing.elapsed_ns.saturating_add(row.elapsed_ns);
-                existing.max_observed_peak_bytes =
-                    max_optional_usize(existing.max_observed_peak_bytes, row.max_observed_peak_bytes);
-                existing.max_retained_bytes = max_optional_usize(existing.max_retained_bytes, row.max_retained_bytes);
+                existing.max_observed_peak_bytes = existing.max_observed_peak_bytes.max(row.max_observed_peak_bytes);
+                existing.max_retained_bytes = existing.max_retained_bytes.max(row.max_retained_bytes);
             } else {
                 self.task_runtime_rows.push(row);
             }

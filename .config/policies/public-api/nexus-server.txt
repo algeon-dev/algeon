@@ -7,17 +7,9 @@ pub nexus_server::AuthMode::Disabled
 impl nexus_server::AuthMode
 pub fn nexus_server::AuthMode::token_ttl(&self) -> core::option::Option<core::time::Duration>
 pub fn nexus_server::AuthMode::validate(&self) -> nexus_server::Result<()>
-pub enum nexus_server::FlightSqlNativeNotSupportedClass
-pub nexus_server::FlightSqlNativeNotSupportedClass::IcebergDeleteFiles
-pub nexus_server::FlightSqlNativeNotSupportedClass::IcebergObjectStoreRead
-pub nexus_server::FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge
-pub nexus_server::FlightSqlNativeNotSupportedClass::Other
-impl nexus_server::FlightSqlNativeNotSupportedClass
-pub const fn nexus_server::FlightSqlNativeNotSupportedClass::as_str(self) -> &'static str
-pub const fn nexus_server::FlightSqlNativeNotSupportedClass::from_capability_reason(datafusion_nexus::capability::CapabilityReason) -> Self
 pub enum nexus_server::IcebergCatalogBackendConfig
 pub nexus_server::IcebergCatalogBackendConfig::Glue(nexus_server::GlueServerBackendConfig)
-pub nexus_server::IcebergCatalogBackendConfig::Rest(nexus_iceberg::source_access::RestIcebergCatalogConfig)
+pub nexus_server::IcebergCatalogBackendConfig::Rest(nexus_iceberg::source_access::RestCatalogConfig)
 pub enum nexus_server::PasswordHashError
 pub nexus_server::PasswordHashError::HashFailure(alloc::string::String)
 pub nexus_server::PasswordHashError::InvalidHash(alloc::string::String)
@@ -35,12 +27,6 @@ pub nexus_server::ServerShutdown::OsSignals
 pub nexus_server::ServerShutdown::Token(tokio_util::sync::cancellation_token::CancellationToken)
 pub struct nexus_server::AuthConfig
 pub nexus_server::AuthConfig::mode: nexus_server::AuthMode
-pub struct nexus_server::AuthInterceptor
-impl nexus_server::AuthInterceptor
-pub fn nexus_server::AuthInterceptor::check(&self, &tonic::metadata::map::MetadataMap) -> core::result::Result<core::option::Option<nexus_server::Principal>, tonic::status::Status>
-pub fn nexus_server::AuthInterceptor::mode(&self) -> &nexus_server::AuthMode
-pub fn nexus_server::AuthInterceptor::new(nexus_server::AuthMode, nexus_server::TokenStore) -> Self
-pub fn nexus_server::AuthInterceptor::tokens(&self) -> &nexus_server::TokenStore
 pub struct nexus_server::CugraphServerConfig
 pub nexus_server::CugraphServerConfig::default_graph_options: datafusion_nexus::cugraph_sql::types::CugraphGraphOptions
 pub struct nexus_server::FlightSqlServer
@@ -90,8 +76,6 @@ pub nexus_server::NexusServerNativeConfigOption::env_var: &'static str
 pub nexus_server::NexusServerNativeConfigOption::scope: nexus_server::ServerNativeConfigScope
 pub nexus_server::NexusServerNativeConfigOption::toml_field: &'static str
 pub nexus_server::NexusServerNativeConfigOption::value_type: &'static str
-pub struct nexus_server::Principal
-pub nexus_server::Principal::username: alloc::string::String
 pub struct nexus_server::ServerConfig
 pub nexus_server::ServerConfig::auth: nexus_server::AuthConfig
 pub nexus_server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
@@ -143,12 +127,6 @@ pub fn nexus_server::ServerObservabilityConfig::default() -> Self
 pub struct nexus_server::StaticUserConfig
 pub nexus_server::StaticUserConfig::password_hash: alloc::string::String
 pub nexus_server::StaticUserConfig::username: alloc::string::String
-pub struct nexus_server::TokenStore
-impl nexus_server::TokenStore
-pub fn nexus_server::TokenStore::issue(&self, nexus_server::Principal, core::option::Option<core::time::Duration>) -> alloc::string::String
-pub fn nexus_server::TokenStore::new() -> Self
-pub fn nexus_server::TokenStore::sweep_expired(&self)
-pub fn nexus_server::TokenStore::validate(&self, &str) -> core::option::Option<nexus_server::Principal>
 pub struct nexus_server::WorkspaceOverlayConfig
 pub nexus_server::WorkspaceOverlayConfig::backing_aliases: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub nexus_server::WorkspaceOverlayConfig::backing_catalog: alloc::string::String
@@ -213,16 +191,9 @@ pub const nexus_server::UNSUPPORTED_COLUMN_METADATA_KEY: &str
 pub const nexus_server::UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str
 pub const nexus_server::UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str
 pub fn nexus_server::backend_from_server_config(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion_nexus::backend::NexusGpuBackend>
-pub fn nexus_server::build_session_config(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion_execution::config::SessionConfig>
-pub async fn nexus_server::build_session_context(&nexus_server::ServerConfig) -> nexus_server::Result<datafusion::execution::context::SessionContext>
 pub async fn nexus_server::build_session_context_with_backend(&nexus_server::ServerConfig, &datafusion_nexus::backend::NexusGpuBackend) -> nexus_server::Result<datafusion::execution::context::SessionContext>
-pub fn nexus_server::datafusion_error_to_status(datafusion_common::error::DataFusionError) -> tonic::status::Status
-pub fn nexus_server::datafusion_error_to_status_for_operation(datafusion_common::error::DataFusionError, &'static str) -> tonic::status::Status
-pub async fn nexus_server::handle_handshake(&nexus_server::AuthMode, &nexus_server::TokenStore, tonic::request::Request<tonic::codec::decode::Streaming<arrow_flight::gen::HandshakeRequest>>) -> core::result::Result<tonic::response::Response<futures_core::stream::BoxStream<'static, core::result::Result<arrow_flight::gen::HandshakeResponse, tonic::status::Status>>>, tonic::status::Status>
 pub fn nexus_server::hash_password(&str) -> core::result::Result<alloc::string::String, nexus_server::PasswordHashError>
 pub fn nexus_server::init_cuda_device(usize) -> nexus_server::Result<()>
-pub fn nexus_server::log_native_planning_report(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>)
-pub fn nexus_server::log_native_planning_report_for_tables(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>, &str)
 pub async fn nexus_server::serve(nexus_server::ServerConfig) -> nexus_server::Result<()>
 pub async fn nexus_server::serve_with_listener(nexus_server::ServerConfig, std::net::tcp::TcpListener) -> nexus_server::Result<()>
 pub fn nexus_server::verify_password(&str, &str) -> core::result::Result<bool, nexus_server::PasswordHashError>

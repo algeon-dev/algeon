@@ -52,7 +52,7 @@ pub struct TableFormatScanPlan {
     /// ranges, sequence values, or name mappings) that root native lowering
     /// does not currently consume.
     #[cfg(feature = "iceberg")]
-    iceberg_candidate: Option<Arc<nexus_iceberg::IcebergScanCandidate>>,
+    iceberg_candidate: Option<Arc<nexus_iceberg::ScanCandidate>>,
 }
 
 impl PartialEq for TableFormatScanPlan {
@@ -177,7 +177,7 @@ impl TableFormatScanPlan {
     /// scan plan. This is an adapter boundary value, not a second source of
     /// native execution facts.
     #[cfg(feature = "iceberg")]
-    pub fn with_iceberg_candidate(mut self, candidate: Arc<nexus_iceberg::IcebergScanCandidate>) -> Self {
+    pub fn with_iceberg_candidate(mut self, candidate: Arc<nexus_iceberg::ScanCandidate>) -> Self {
         self.iceberg_candidate = Some(candidate);
         self
     }
@@ -185,7 +185,7 @@ impl TableFormatScanPlan {
     /// Returns the frozen Iceberg candidate when this scan originated through
     /// the Iceberg leaf adapter.
     #[cfg(feature = "iceberg")]
-    pub fn iceberg_candidate(&self) -> Option<&Arc<nexus_iceberg::IcebergScanCandidate>> {
+    pub fn iceberg_candidate(&self) -> Option<&Arc<nexus_iceberg::ScanCandidate>> {
         self.iceberg_candidate.as_ref()
     }
 

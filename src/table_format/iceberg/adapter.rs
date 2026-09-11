@@ -7,12 +7,11 @@
 
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef, UnionFields};
+use arrow::datatypes::{DataType, Field, Fields, Schema as ArrowSchema, SchemaRef, UnionFields};
 use nexus_iceberg::{
-    IcebergColumnBinding, IcebergColumnRole, IcebergColumnSource, IcebergDefaultValue, IcebergDeleteContent,
-    IcebergDeleteFile, IcebergError, IcebergErrorCode, IcebergErrorStatus, IcebergFileFormat, IcebergNameMapping,
-    IcebergNameMappingField, IcebergPartitionTransform, IcebergScalarValue, IcebergScanCandidate, IcebergScanRequest,
-    IcebergSchema, IcebergSchemaField,
+    ColumnBinding, ColumnRole, ColumnSource, DefaultValue, DeleteContent, DeleteFile, Error as IcebergError,
+    ErrorCode as IcebergErrorCode, ErrorStatus, FileFormat, NameMapping, NameMappingField, PartitionTransform,
+    ScalarValue, ScanCandidate, ScanRequest, Schema, SchemaField,
 };
 
 use crate::{
@@ -35,7 +34,7 @@ const CANDIDATE_CONVERSION_OPERATION: &str = "datafusion_nexus.table_format.iceb
 /// not yet executable natively (for example residuals, pruning evidence,
 /// sequence values, file ranges, or nested name mappings).
 pub fn iceberg_scan_candidate_to_table_format_scan_plan(
-    candidate: IcebergScanCandidate,
+    candidate: ScanCandidate,
     catalog_type: Option<&str>,
 ) -> Result<TableFormatScanPlan> {
     let candidate = Arc::new(candidate);
@@ -75,25 +74,25 @@ pub fn iceberg_scan_candidate_to_table_format_scan_plan(
 
 fn append_request_columns(
     plan: &mut TableFormatScanPlan,
-    schema: &IcebergSchema,
-    request: &IcebergScanRequest,
-    name_mapping: Option<&IcebergNameMapping>,
+    schema: &Schema,
+    request: &ScanRequest,
+    name_mapping: Option<&NameMapping>,
 ) -> Result<()> {
     match &request.projection {
-        nexus_iceberg::IcebergProjection::AllColumns => {
+        nexus_iceberg::Projection::AllColumns => {
             for (index, field) in schema.fields.iter().enumerate() {
                 let arrow = schema.arrow_schema.field(index);
-                let binding = IcebergColumnBinding {
+                let binding = ColumnBinding {
                     field_id: field.field_id,
                     output_name: field.name.clone(),
-                    source: IcebergColumnSource::PhysicalFile,
-                    role: IcebergColumnRole::Projected,
+                    source: ColumnSource::PhysicalFile,
+                    role: ColumnRole::Projected,
                     missing_default: field.initial_default.clone(),
                 };
                 append_binding(plan, schema, &binding, name_mapping, Some(arrow))?;
             }
         },
-        nexus_iceberg::IcebergProjection::Columns(bindings) => {
+        nexus_iceberg::Projection::Columns(bindings) => {
             for binding in bindings {
                 append_binding(plan, schema, binding, name_mapping, None)?;
             }
@@ -107,9 +106,9 @@ fn append_request_columns(
 
 fn append_binding(
     plan: &mut TableFormatScanPlan,
-    schema: &IcebergSchema,
-    binding: &IcebergColumnBinding,
-    name_mapping: Option<&IcebergNameMapping>,
+    schema: &Schema,
+    binding: &ColumnBinding,
+    name_mapping: Option<&NameMapping>,
     top_level_arrow: Option<&Field>,
 ) -> Result<()> {
     let (schema_field, arrow, is_top_level) = schema_field(schema, binding.field_id).ok_or_else(|| {
@@ -122,17 +121,17 @@ fn append_binding(
     })?;
     let arrow = canonical_field(top_level_arrow.unwrap_or(arrow));
     let source = match binding.source {
-        IcebergColumnSource::PhysicalFile
+        ColumnSource::PhysicalFile
             if is_top_level && candidate_has_identity_partition_field(plan, binding.field_id) =>
         {
             TableFormatColumnSource::IdentityPartitionValue
         },
-        IcebergColumnSource::PhysicalFile if is_top_level => TableFormatColumnSource::DirectTopLevelFileColumn,
-        IcebergColumnSource::PartitionConstant => TableFormatColumnSource::IdentityPartitionValue,
-        IcebergColumnSource::MissingWithDefault => TableFormatColumnSource::MissingNullableColumn,
+        ColumnSource::PhysicalFile if is_top_level => TableFormatColumnSource::DirectTopLevelFileColumn,
+        ColumnSource::PartitionConstant => TableFormatColumnSource::IdentityPartitionValue,
+        ColumnSource::MissingWithDefault => TableFormatColumnSource::MissingNullableColumn,
         // Root native scan facts have no metadata-column source. Retain the
         // leaf candidate unchanged and reject only the optional native path.
-        IcebergColumnSource::MetadataColumn | IcebergColumnSource::PhysicalFile => {
+        ColumnSource::MetadataColumn | ColumnSource::PhysicalFile => {
             TableFormatColumnSource::UnsupportedNestedProjection
         },
     };
@@ -149,16 +148,16 @@ fn append_binding(
     );
     if let Some(default) = binding.missing_default.as_ref() {
         match default {
-            IcebergDefaultValue::Scalar(default) if iceberg_scalar_is_not_native_materializable(default) => {
+            DefaultValue::Scalar(default) if iceberg_scalar_is_not_native_materializable(default) => {
                 plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
                     TableFormatUnsupportedFeatureCode::IcebergScalarValueUnsupported,
                     "Iceberg schema-evolution default cannot be materialized by the native source",
                 ));
             },
-            IcebergDefaultValue::Scalar(default) => {
+            DefaultValue::Scalar(default) => {
                 mapping = mapping.with_missing_default_value(root_scalar(default));
             },
-            IcebergDefaultValue::Unsupported => {
+            DefaultValue::Unsupported => {
                 plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
                     TableFormatUnsupportedFeatureCode::IcebergScalarValueUnsupported,
                     "Iceberg schema-evolution default is unsupported by the native source",
@@ -171,12 +170,12 @@ fn append_binding(
     }
 
     match binding.role {
-        IcebergColumnRole::Projected => plan.projected_columns.push(mapping),
-        IcebergColumnRole::FilterOnly => {
+        ColumnRole::Projected => plan.projected_columns.push(mapping),
+        ColumnRole::FilterOnly => {
             mapping.role = TableFormatColumnRole::PureFilter;
             plan.pure_filter_columns.push(mapping);
         },
-        IcebergColumnRole::ProjectedAndFilter => {
+        ColumnRole::ProjectedAndFilter => {
             plan.projected_columns.push(mapping.clone());
             mapping.role = TableFormatColumnRole::PureFilter;
             plan.pure_filter_columns.push(mapping);
@@ -192,15 +191,15 @@ fn candidate_has_identity_partition_field(plan: &TableFormatScanPlan, field_id: 
     !candidate.data_files.is_empty()
         && candidate.data_files.iter().all(|file| {
             file.partition_values.iter().any(|partition| {
-                partition.source_field_id == field_id && partition.transform == IcebergPartitionTransform::Identity
+                partition.source_field_id == field_id && partition.transform == PartitionTransform::Identity
             })
         })
 }
 
-fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidate: &IcebergScanCandidate) {
-    use nexus_iceberg::IcebergPredicateEnforcement;
+fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidate: &ScanCandidate) {
+    use nexus_iceberg::PredicateEnforcement;
 
-    if matches!(candidate.request.predicate.enforcement, IcebergPredicateEnforcement::PartiallyEnforced) {
+    if matches!(candidate.request.predicate.enforcement, PredicateEnforcement::PartiallyEnforced) {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
             TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported,
             "Iceberg candidate retains a residual predicate for its eventual consumer",
@@ -208,8 +207,8 @@ fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidat
     }
 
     let projection_bindings = match &candidate.request.projection {
-        nexus_iceberg::IcebergProjection::AllColumns => &[][..],
-        nexus_iceberg::IcebergProjection::Columns(bindings) => bindings,
+        nexus_iceberg::Projection::AllColumns => &[][..],
+        nexus_iceberg::Projection::Columns(bindings) => bindings,
     };
     for binding in projection_bindings.iter().chain(&candidate.request.filter_bindings) {
         let identity_partition_file_count = candidate
@@ -217,8 +216,7 @@ fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidat
             .iter()
             .filter(|file| {
                 file.partition_values.iter().any(|partition| {
-                    partition.source_field_id == binding.field_id
-                        && partition.transform == IcebergPartitionTransform::Identity
+                    partition.source_field_id == binding.field_id && partition.transform == PartitionTransform::Identity
                 })
             })
             .count();
@@ -237,15 +235,15 @@ fn append_candidate_semantic_rejections(plan: &mut TableFormatScanPlan, candidat
     }
 }
 
-fn iceberg_name_mapping_has_nested_fields(mapping: &IcebergNameMapping) -> bool {
+fn iceberg_name_mapping_has_nested_fields(mapping: &NameMapping) -> bool {
     mapping.fields.iter().any(|field| !field.fields.is_empty() || iceberg_name_mapping_field_has_nested_fields(field))
 }
 
-fn iceberg_name_mapping_field_has_nested_fields(field: &IcebergNameMappingField) -> bool {
+fn iceberg_name_mapping_field_has_nested_fields(field: &NameMappingField) -> bool {
     !field.fields.is_empty() || field.fields.iter().any(iceberg_name_mapping_field_has_nested_fields)
 }
 
-fn append_candidate_files(plan: &mut TableFormatScanPlan, candidate: &IcebergScanCandidate) -> Result<()> {
+fn append_candidate_files(plan: &mut TableFormatScanPlan, candidate: &ScanCandidate) -> Result<()> {
     for (data_index, data_file) in candidate.data_files.iter().enumerate() {
         let id = format!("iceberg-data-{data_index}");
         if data_file.range.start != 0 || data_file.range.length != data_file.file_size_bytes {
@@ -263,7 +261,7 @@ fn append_candidate_files(plan: &mut TableFormatScanPlan, candidate: &IcebergSca
             ));
         }
         for partition in &data_file.partition_values {
-            if !matches!(partition.transform, IcebergPartitionTransform::Identity) {
+            if !matches!(partition.transform, PartitionTransform::Identity) {
                 plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
                     TableFormatUnsupportedFeatureCode::IcebergPartitionTransformUnsupported,
                     id.clone(),
@@ -315,8 +313,8 @@ fn append_candidate_files(plan: &mut TableFormatScanPlan, candidate: &IcebergSca
             }
             let delete = root_delete_file(&id, data_index, delete_index, delete_file);
             match delete_file.content {
-                IcebergDeleteContent::Position => root.push_position_delete_file(delete.clone()),
-                IcebergDeleteContent::Equality => root.push_equality_delete_file(delete.clone()),
+                DeleteContent::Position => root.push_position_delete_file(delete.clone()),
+                DeleteContent::Equality => root.push_equality_delete_file(delete.clone()),
             }
             plan.delete_files.push(delete);
         }
@@ -329,11 +327,11 @@ fn root_delete_file(
     data_file_id: &str,
     data_index: usize,
     delete_index: usize,
-    delete_file: &IcebergDeleteFile,
+    delete_file: &DeleteFile,
 ) -> TableFormatDeleteFile {
     let content = match delete_file.content {
-        IcebergDeleteContent::Position => TableFormatDeleteFileContent::PositionDeletes,
-        IcebergDeleteContent::Equality => TableFormatDeleteFileContent::EqualityDeletes,
+        DeleteContent::Position => TableFormatDeleteFileContent::PositionDeletes,
+        DeleteContent::Equality => TableFormatDeleteFileContent::EqualityDeletes,
     };
     let mut root = TableFormatDeleteFile::for_data_file(
         format!("iceberg-delete-{data_index}-{delete_index}"),
@@ -353,10 +351,7 @@ fn root_delete_file(
     root
 }
 
-fn root_partition_value(
-    value: &nexus_iceberg::IcebergPartitionValue,
-    schema: &IcebergSchema,
-) -> Option<TableFormatPartitionValue> {
+fn root_partition_value(value: &nexus_iceberg::PartitionValue, schema: &Schema) -> Option<TableFormatPartitionValue> {
     let (_, arrow, _) = schema_field(schema, value.source_field_id)?;
     let (_, name, nullable) = schema_field(schema, value.source_field_id)
         .map(|(field, arrow, _)| (field.field_id, field.name.clone(), arrow.is_nullable()))?;
@@ -369,56 +364,56 @@ fn root_partition_value(
     ))
 }
 
-fn root_partition_transform(transform: IcebergPartitionTransform) -> TableFormatPartitionTransform {
+fn root_partition_transform(transform: PartitionTransform) -> TableFormatPartitionTransform {
     match transform {
-        IcebergPartitionTransform::Identity => TableFormatPartitionTransform::Identity,
-        IcebergPartitionTransform::Bucket(buckets) => TableFormatPartitionTransform::Bucket { buckets },
-        IcebergPartitionTransform::Truncate(width) => TableFormatPartitionTransform::Truncate { width },
-        IcebergPartitionTransform::Year => TableFormatPartitionTransform::Year,
-        IcebergPartitionTransform::Month => TableFormatPartitionTransform::Month,
-        IcebergPartitionTransform::Day => TableFormatPartitionTransform::Day,
-        IcebergPartitionTransform::Hour => TableFormatPartitionTransform::Hour,
-        IcebergPartitionTransform::Void => TableFormatPartitionTransform::Unknown("void".to_string()),
-        IcebergPartitionTransform::Unknown => TableFormatPartitionTransform::Unknown("unknown".to_string()),
+        PartitionTransform::Identity => TableFormatPartitionTransform::Identity,
+        PartitionTransform::Bucket(buckets) => TableFormatPartitionTransform::Bucket { buckets },
+        PartitionTransform::Truncate(width) => TableFormatPartitionTransform::Truncate { width },
+        PartitionTransform::Year => TableFormatPartitionTransform::Year,
+        PartitionTransform::Month => TableFormatPartitionTransform::Month,
+        PartitionTransform::Day => TableFormatPartitionTransform::Day,
+        PartitionTransform::Hour => TableFormatPartitionTransform::Hour,
+        PartitionTransform::Void => TableFormatPartitionTransform::Unknown("void".to_string()),
+        PartitionTransform::Unknown => TableFormatPartitionTransform::Unknown("unknown".to_string()),
     }
 }
 
-fn root_scalar(value: &IcebergScalarValue) -> TableFormatScalarValue {
+fn root_scalar(value: &ScalarValue) -> TableFormatScalarValue {
     match value {
-        IcebergScalarValue::Null => TableFormatScalarValue::Null,
-        IcebergScalarValue::Boolean(value) => TableFormatScalarValue::Boolean(*value),
-        IcebergScalarValue::Int(value) => TableFormatScalarValue::Int32(*value),
-        IcebergScalarValue::Long(value) => TableFormatScalarValue::Int64(*value),
-        IcebergScalarValue::Float { bits } => TableFormatScalarValue::Float32(f32::from_bits(*bits)),
-        IcebergScalarValue::Double { bits } => TableFormatScalarValue::Float64(f64::from_bits(*bits)),
-        IcebergScalarValue::Decimal { unscaled, .. } => TableFormatScalarValue::Int128(*unscaled),
-        IcebergScalarValue::String(value) => TableFormatScalarValue::Utf8(value.clone()),
-        IcebergScalarValue::Date(value) => TableFormatScalarValue::Date32(*value),
-        IcebergScalarValue::Time(value) => TableFormatScalarValue::Time64Micros(*value),
-        IcebergScalarValue::TimestampMicros(value) => TableFormatScalarValue::TimestampMicros(*value),
-        IcebergScalarValue::TimestampNanos(value) => TableFormatScalarValue::TimestampNanos(*value),
-        IcebergScalarValue::Uuid(value) => TableFormatScalarValue::Uuid(*value),
-        IcebergScalarValue::Binary(value) => TableFormatScalarValue::Binary(value.clone()),
+        ScalarValue::Null => TableFormatScalarValue::Null,
+        ScalarValue::Boolean(value) => TableFormatScalarValue::Boolean(*value),
+        ScalarValue::Int(value) => TableFormatScalarValue::Int32(*value),
+        ScalarValue::Long(value) => TableFormatScalarValue::Int64(*value),
+        ScalarValue::Float { bits } => TableFormatScalarValue::Float32(f32::from_bits(*bits)),
+        ScalarValue::Double { bits } => TableFormatScalarValue::Float64(f64::from_bits(*bits)),
+        ScalarValue::Decimal { unscaled, .. } => TableFormatScalarValue::Int128(*unscaled),
+        ScalarValue::String(value) => TableFormatScalarValue::Utf8(value.clone()),
+        ScalarValue::Date(value) => TableFormatScalarValue::Date32(*value),
+        ScalarValue::Time(value) => TableFormatScalarValue::Time64Micros(*value),
+        ScalarValue::TimestampMicros(value) => TableFormatScalarValue::TimestampMicros(*value),
+        ScalarValue::TimestampNanos(value) => TableFormatScalarValue::TimestampNanos(*value),
+        ScalarValue::Uuid(value) => TableFormatScalarValue::Uuid(*value),
+        ScalarValue::Binary(value) => TableFormatScalarValue::Binary(value.clone()),
     }
 }
 
-fn iceberg_scalar_is_not_native_materializable(value: &IcebergScalarValue) -> bool {
+fn iceberg_scalar_is_not_native_materializable(value: &ScalarValue) -> bool {
     matches!(
         value,
-        IcebergScalarValue::Time(_)
-            | IcebergScalarValue::TimestampMicros(_)
-            | IcebergScalarValue::TimestampNanos(_)
-            | IcebergScalarValue::Uuid(_)
-            | IcebergScalarValue::Binary(_)
+        ScalarValue::Time(_)
+            | ScalarValue::TimestampMicros(_)
+            | ScalarValue::TimestampNanos(_)
+            | ScalarValue::Uuid(_)
+            | ScalarValue::Binary(_)
     )
 }
 
-fn logical_schema_for_request(schema: &IcebergSchema, request: &IcebergScanRequest) -> Result<SchemaRef> {
+fn logical_schema_for_request(schema: &Schema, request: &ScanRequest) -> Result<SchemaRef> {
     let fields = match &request.projection {
-        nexus_iceberg::IcebergProjection::AllColumns => {
+        nexus_iceberg::Projection::AllColumns => {
             schema.arrow_schema.fields().iter().map(|field| canonical_field(field.as_ref())).collect::<Vec<_>>()
         },
-        nexus_iceberg::IcebergProjection::Columns(bindings) => bindings
+        nexus_iceberg::Projection::Columns(bindings) => bindings
             .iter()
             .map(|binding| {
                 let (_, arrow, _) = schema_field(schema, binding.field_id).ok_or_else(|| {
@@ -437,11 +432,11 @@ fn logical_schema_for_request(schema: &IcebergSchema, request: &IcebergScanReque
             })
             .collect::<Result<Vec<_>>>()?,
     };
-    Ok(Arc::new(Schema::new(fields)))
+    Ok(Arc::new(ArrowSchema::new(fields)))
 }
 
 fn canonical_schema(schema: &SchemaRef) -> SchemaRef {
-    Arc::new(Schema::new(schema.fields().iter().map(|field| canonical_field(field.as_ref())).collect::<Vec<_>>()))
+    Arc::new(ArrowSchema::new(schema.fields().iter().map(|field| canonical_field(field.as_ref())).collect::<Vec<_>>()))
 }
 
 fn canonical_field(field: &Field) -> Arc<Field> {
@@ -482,7 +477,7 @@ fn canonical_data_type(data_type: &DataType) -> DataType {
     }
 }
 
-fn schema_field(schema: &IcebergSchema, field_id: i32) -> Option<(&IcebergSchemaField, &Field, bool)> {
+fn schema_field(schema: &Schema, field_id: i32) -> Option<(&SchemaField, &Field, bool)> {
     schema.fields.iter().zip(schema.arrow_schema.fields()).find_map(|(field, arrow)| {
         (field.field_id == field_id).then_some((field, arrow.as_ref(), true)).or_else(|| {
             find_nested_schema_field(field, arrow.as_ref(), field_id).map(|(field, arrow)| (field, arrow, false))
@@ -491,10 +486,10 @@ fn schema_field(schema: &IcebergSchema, field_id: i32) -> Option<(&IcebergSchema
 }
 
 fn find_nested_schema_field<'a>(
-    field: &'a IcebergSchemaField,
+    field: &'a SchemaField,
     arrow: &'a Field,
     field_id: i32,
-) -> Option<(&'a IcebergSchemaField, &'a Field)> {
+) -> Option<(&'a SchemaField, &'a Field)> {
     let children = arrow_children(arrow.data_type());
     field.children.iter().zip(children).find_map(|(child, arrow)| {
         (child.field_id == field_id)
@@ -517,7 +512,7 @@ fn arrow_children(data_type: &DataType) -> Vec<&Field> {
     }
 }
 
-fn name_mapping_names_for_field_id(mapping: Option<&IcebergNameMapping>, field_id: i32) -> Option<Vec<String>> {
+fn name_mapping_names_for_field_id(mapping: Option<&NameMapping>, field_id: i32) -> Option<Vec<String>> {
     let mut names = Vec::new();
     for field in mapping.into_iter().flat_map(|mapping| &mapping.fields) {
         collect_name_mapping_names(field, field_id, &mut names);
@@ -525,7 +520,7 @@ fn name_mapping_names_for_field_id(mapping: Option<&IcebergNameMapping>, field_i
     (!names.is_empty()).then_some(names)
 }
 
-fn collect_name_mapping_names(field: &IcebergNameMappingField, field_id: i32, names: &mut Vec<String>) {
+fn collect_name_mapping_names(field: &NameMappingField, field_id: i32, names: &mut Vec<String>) {
     if field.field_id == Some(field_id) {
         for name in &field.names {
             if !names.contains(name) {
@@ -538,12 +533,12 @@ fn collect_name_mapping_names(field: &IcebergNameMappingField, field_id: i32, na
     }
 }
 
-fn root_file_format(format: IcebergFileFormat) -> TableFormatDataFileFormat {
+fn root_file_format(format: FileFormat) -> TableFormatDataFileFormat {
     match format {
-        IcebergFileFormat::Parquet => TableFormatDataFileFormat::Parquet,
-        IcebergFileFormat::Orc => TableFormatDataFileFormat::Orc,
-        IcebergFileFormat::Avro => TableFormatDataFileFormat::Avro,
-        IcebergFileFormat::Puffin => TableFormatDataFileFormat::Unknown("puffin".to_string()),
+        FileFormat::Parquet => TableFormatDataFileFormat::Parquet,
+        FileFormat::Orc => TableFormatDataFileFormat::Orc,
+        FileFormat::Avro => TableFormatDataFileFormat::Avro,
+        FileFormat::Puffin => TableFormatDataFileFormat::Unknown("puffin".to_string()),
     }
 }
 
@@ -563,17 +558,17 @@ fn read_capability(location: &str) -> TableFormatReadCapability {
 /// upstream error source to the root error.
 pub fn root_error_from_iceberg(source: IcebergError, operation: &'static str, message: impl Into<String>) -> Error {
     let mut error = Error::new(root_error_code(&source), operation, message)
-        .with_log_safe_fact("iceberg_error_code", source.code.as_str())
-        .with_log_safe_fact("iceberg_error_status", iceberg_error_status_code(source.status))
-        .with_log_safe_fact("iceberg_operation", source.operation.as_str())
-        .with_fact("iceberg_message", source.sanitized_message);
-    let context = source.typed_context.as_ref();
+        .with_log_safe_fact("iceberg_error_code", source.code().as_str())
+        .with_log_safe_fact("iceberg_error_status", iceberg_error_status_code(source.status()))
+        .with_log_safe_fact("iceberg_operation", source.operation().as_str())
+        .with_fact("iceberg_message", source.sanitized_message().to_string());
+    let context = source.typed_context();
     if let Some(kind) = context.catalog_kind {
         error = error.with_log_safe_fact(
             "iceberg_catalog_kind",
             match kind {
-                nexus_iceberg::IcebergCatalogErrorKind::Glue => "glue",
-                nexus_iceberg::IcebergCatalogErrorKind::Rest => "rest",
+                nexus_iceberg::CatalogErrorKind::Glue => "glue",
+                nexus_iceberg::CatalogErrorKind::Rest => "rest",
             },
         );
     }
@@ -599,10 +594,10 @@ pub fn root_error_from_iceberg(source: IcebergError, operation: &'static str, me
 }
 
 fn root_error_code(error: &IcebergError) -> ErrorCode {
-    if error.status == IcebergErrorStatus::Temporary {
+    if error.status() == ErrorStatus::Temporary {
         return ErrorCode::SourceTemporaryFailure;
     }
-    match error.code {
+    match error.code() {
         IcebergErrorCode::Authentication => ErrorCode::SourceUnauthenticated,
         IcebergErrorCode::Access => ErrorCode::SourceAccessDenied,
         IcebergErrorCode::NotFound => ErrorCode::SourceObjectNotFound,
@@ -614,22 +609,21 @@ fn root_error_code(error: &IcebergError) -> ErrorCode {
     }
 }
 
-const fn iceberg_error_status_code(status: IcebergErrorStatus) -> &'static str {
+const fn iceberg_error_status_code(status: ErrorStatus) -> &'static str {
     match status {
-        IcebergErrorStatus::Permanent => "permanent",
-        IcebergErrorStatus::Temporary => "temporary",
-        IcebergErrorStatus::Cancelled => "cancelled",
+        ErrorStatus::Permanent => "permanent",
+        ErrorStatus::Temporary => "temporary",
+        ErrorStatus::Cancelled => "cancelled",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
     use nexus_iceberg::{
-        IcebergDataFile, IcebergErrorContext, IcebergFileRange, IcebergFileSequence, IcebergOperation,
-        IcebergPartitionValue, IcebergPredicateEnforcement, IcebergPredicateIntent, IcebergProjection,
-        IcebergResidualPredicate, IcebergScanCandidate, IcebergSchemaField, IcebergSourceLimit, IcebergTableIdentifier,
-        ResolvedIcebergSnapshot, ResolvedIcebergTableFacts,
+        DataFile, ErrorContext, FileRange, FileSequence, Operation, PartitionValue, PredicateEnforcement,
+        PredicateIntent, Projection, ResidualPredicate, ResolvedSnapshot, ResolvedTableFacts, ScanCandidate,
+        SchemaField, SourceLimit, TableIdentifier,
     };
 
     use super::*;
@@ -638,11 +632,10 @@ mod tests {
     fn leaf_error_conversion_preserves_classification_and_redacts_at_the_root_boundary() {
         let leaf = IcebergError::new(
             IcebergErrorCode::Authentication,
-            IcebergErrorStatus::Permanent,
-            IcebergOperation::CatalogConnect,
+            Operation::CatalogConnect,
             "catalog https://user:password@example.invalid token=secret",
         )
-        .with_context(IcebergErrorContext { snapshot_id: Some(42), ..Default::default() });
+        .with_context(ErrorContext { snapshot_id: Some(42), ..Default::default() });
 
         let error = root_error_from_iceberg(leaf, "datafusion_nexus.test.iceberg", "Iceberg catalog connection failed");
 
@@ -665,12 +658,12 @@ mod tests {
             .with_source(std::io::Error::other("PermissionDenied: forbidden"));
 
         let auth = root_error_from_iceberg(
-            IcebergError::from_iceberg_error(IcebergOperation::CatalogConnect, auth),
+            IcebergError::from_iceberg_error(Operation::CatalogConnect, auth),
             "datafusion_nexus.test.iceberg",
             "Iceberg catalog connection failed",
         );
         let access = root_error_from_iceberg(
-            IcebergError::from_iceberg_error(IcebergOperation::CatalogConnect, access),
+            IcebergError::from_iceberg_error(Operation::CatalogConnect, access),
             "datafusion_nexus.test.iceberg",
             "Iceberg catalog connection failed",
         );
@@ -684,51 +677,51 @@ mod tests {
 
     #[test]
     fn candidate_conversion_retains_exact_leaf_semantics_and_rejects_only_native_acceleration() {
-        let schema = IcebergSchema::new(
+        let schema = Schema::new(
             7,
-            Arc::new(Schema::new(vec![
+            Arc::new(ArrowSchema::new(vec![
                 Field::new("id", DataType::Int64, false),
                 Field::new("part", DataType::FixedSizeBinary(16), true),
             ])),
-            vec![IcebergSchemaField::new(1, "id", true, "long"), IcebergSchemaField::new(2, "part", false, "uuid")],
+            vec![SchemaField::new(1, "id", true, "long"), SchemaField::new(2, "part", false, "uuid")],
         )
         .unwrap();
-        let candidate = IcebergScanCandidate::try_new(
-            ResolvedIcebergTableFacts {
-                table: IcebergTableIdentifier::new(vec!["analytics".to_string()], "events").unwrap(),
-                snapshot: ResolvedIcebergSnapshot { snapshot_id: Some(42), sequence_number: Some(11), schema_id: 7 },
+        let candidate = ScanCandidate::try_new(
+            ResolvedTableFacts {
+                table: TableIdentifier::new(vec!["analytics".to_string()], "events").unwrap(),
+                snapshot: ResolvedSnapshot { snapshot_id: Some(42), sequence_number: Some(11), schema_id: 7 },
                 schema,
             },
-            IcebergScanRequest {
-                projection: IcebergProjection::Columns(vec![IcebergColumnBinding {
+            ScanRequest {
+                projection: Projection::Columns(vec![ColumnBinding {
                     field_id: 1,
                     output_name: "id".to_string(),
-                    source: IcebergColumnSource::MissingWithDefault,
-                    role: IcebergColumnRole::Projected,
-                    missing_default: Some(IcebergDefaultValue::Scalar(IcebergScalarValue::Uuid([8; 16]))),
+                    source: ColumnSource::MissingWithDefault,
+                    role: ColumnRole::Projected,
+                    missing_default: Some(DefaultValue::Scalar(ScalarValue::Uuid([8; 16]))),
                 }]),
                 filter_bindings: Vec::new(),
-                predicate: IcebergPredicateIntent {
-                    enforcement: IcebergPredicateEnforcement::ConsumerMustEnforce,
-                    residual: Some(IcebergResidualPredicate { canonical: "field(1) > 0".to_string() }),
+                predicate: PredicateIntent {
+                    enforcement: PredicateEnforcement::ConsumerMustEnforce,
+                    residual: Some(ResidualPredicate { canonical: "field(1) > 0".to_string() }),
                 },
                 iceberg_predicate: None,
-                source_limit: IcebergSourceLimit { row_limit: Some(10), file_limit: Some(1) },
+                source_limit: SourceLimit { row_limit: Some(10), file_limit: Some(1) },
                 pruning: Default::default(),
             },
-            vec![IcebergDataFile {
+            vec![DataFile {
                 location: "s3://warehouse/events/data.parquet".to_string(),
-                format: IcebergFileFormat::Parquet,
+                format: FileFormat::Parquet,
                 file_size_bytes: 1024,
-                range: IcebergFileRange { start: 128, length: 896 },
+                range: FileRange { start: 128, length: 896 },
                 record_count: Some(99),
-                sequence: IcebergFileSequence { data_sequence_number: Some(9), file_sequence_number: Some(10) },
+                sequence: FileSequence { data_sequence_number: Some(9), file_sequence_number: Some(10) },
                 encryption_key_metadata_present: false,
-                partition_values: vec![IcebergPartitionValue {
+                partition_values: vec![PartitionValue {
                     source_field_id: 2,
                     partition_field_id: 1002,
-                    transform: IcebergPartitionTransform::Identity,
-                    value: IcebergScalarValue::Uuid([7; 16]),
+                    transform: PartitionTransform::Identity,
+                    value: ScalarValue::Uuid([7; 16]),
                 }],
                 delete_files: Vec::new(),
             }],
@@ -740,12 +733,12 @@ mod tests {
         let retained = plan.iceberg_candidate().expect("the exact leaf candidate is retained");
 
         assert_eq!(retained.resolved_table.snapshot.snapshot_id, Some(42));
-        assert_eq!(retained.request.predicate.enforcement, IcebergPredicateEnforcement::ConsumerMustEnforce);
+        assert_eq!(retained.request.predicate.enforcement, PredicateEnforcement::ConsumerMustEnforce);
         assert_eq!(
             retained.request.predicate.residual.as_ref().map(|value| value.canonical.as_str()),
             Some("field(1) > 0")
         );
-        assert_eq!(retained.data_files[0].range, IcebergFileRange { start: 128, length: 896 });
+        assert_eq!(retained.data_files[0].range, FileRange { start: 128, length: 896 });
         assert_eq!(plan.snapshot_id.as_deref(), Some("42"));
         assert!(
             !plan.unsupported_features.iter().any(|feature| {
@@ -771,22 +764,22 @@ mod tests {
 
     #[test]
     fn candidate_conversion_retains_materializable_schema_defaults_for_missing_old_file_columns() {
-        let schema =
-            IcebergSchema::new(
-                7,
-                Arc::new(Schema::new(vec![Field::new("region", DataType::Utf8, true)])),
-                vec![IcebergSchemaField::new(1, "region", false, "string").with_initial_default(
-                    IcebergDefaultValue::Scalar(IcebergScalarValue::String("unknown".to_string())),
-                )],
-            )
-            .unwrap();
-        let candidate = IcebergScanCandidate::try_new(
-            ResolvedIcebergTableFacts {
-                table: IcebergTableIdentifier::new(vec!["analytics".to_string()], "events").unwrap(),
-                snapshot: ResolvedIcebergSnapshot { snapshot_id: Some(42), sequence_number: Some(11), schema_id: 7 },
+        let schema = Schema::new(
+            7,
+            Arc::new(ArrowSchema::new(vec![Field::new("region", DataType::Utf8, true)])),
+            vec![
+                SchemaField::new(1, "region", false, "string")
+                    .with_initial_default(DefaultValue::Scalar(ScalarValue::String("unknown".to_string()))),
+            ],
+        )
+        .unwrap();
+        let candidate = ScanCandidate::try_new(
+            ResolvedTableFacts {
+                table: TableIdentifier::new(vec!["analytics".to_string()], "events").unwrap(),
+                snapshot: ResolvedSnapshot { snapshot_id: Some(42), sequence_number: Some(11), schema_id: 7 },
                 schema,
             },
-            IcebergScanRequest::default(),
+            ScanRequest::default(),
             Vec::new(),
             None,
         )

@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-pub(super) use nexus_query_engine::harness::max_option as max_optional_usize;
-
 pub(super) fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
 }

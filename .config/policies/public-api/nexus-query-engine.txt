@@ -95,4 +95,3 @@ pub fn nexus_query_engine::exec::read_literal_batch_source(&nexus_query_runtime:
 pub fn nexus_query_engine::exec::read_local_parquet_source(&nexus_query_runtime::runtime::context::ExecutionContext, nexus_query_planning::plan::core::NodeId, &nexus_query_planning::source::parquet::LocalParquetSource, &mut nexus_query_runtime::metrics::QueryMetrics) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::resident::GpuDataFrame>
 pub mod nexus_query_engine::harness
 pub use nexus_query_engine::harness::StableFnv1a64
-pub use nexus_query_engine::harness::max_option

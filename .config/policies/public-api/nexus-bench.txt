@@ -14,7 +14,7 @@ pub nexus_bench::iceberg_smoke::CustomWorkload::Tpcds
 pub nexus_bench::iceberg_smoke::CustomWorkload::Tpch
 pub enum nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3
-pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::catalog_config: nexus_iceberg::source_access::GlueIcebergCatalogConfig
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::catalog_config: nexus_iceberg::source_access::GlueCatalogConfig
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::credential_source: &'static str
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::database: alloc::string::String
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::table: alloc::string::String

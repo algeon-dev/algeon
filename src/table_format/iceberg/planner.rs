@@ -21,16 +21,15 @@ use iceberg::{
     io::{FileIO, FileRead},
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
-        DataContentType, DataFileFormat, Datum, Literal, NameMapping as IcebergNameMapping, NestedField, PartitionSpec,
-        PrimitiveLiteral, Schema as IcebergSchema, Transform, Type,
+        DataContentType, DataFileFormat, Datum, Literal, NameMapping as VendorNameMapping, NestedField, PartitionSpec,
+        PrimitiveLiteral, Schema as VendorSchema, Transform, Type,
     },
     table::Table,
 };
 use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_iceberg::{
-    IcebergColumnBinding, IcebergColumnRole, IcebergColumnSource, IcebergPredicateIntent, IcebergProjection,
-    IcebergScanPlanningOptions, IcebergScanRequest, IcebergSourceLimit, ResolvedIcebergTable, S3CredentialMode,
-    S3CredentialRef, S3FileIoConfigVerification, SourceAccessPolicy,
+    ColumnBinding, ColumnRole, ColumnSource, PredicateIntent, Projection, ResolvedTable, S3CredentialMode,
+    S3CredentialRef, S3FileIoConfigVerification, ScanPlanningOptions, ScanRequest, SourceAccessPolicy, SourceLimit,
 };
 use nexus_query_engine::{
     datatypes::is_supported_arrow_type,
@@ -106,7 +105,7 @@ pub struct NexusIcebergTableProvider {
 
 #[derive(Clone)]
 enum NexusIcebergCpuSource {
-    ResolvedTable(Box<ResolvedIcebergTable>),
+    ResolvedTable(Box<ResolvedTable>),
     InjectedProvider(Arc<dyn TableProvider>),
 }
 
@@ -114,21 +113,21 @@ impl NexusIcebergTableProvider {
     /// Builds a provider from the frozen leaf table resolution. The same
     /// resolution supplies the CPU delegate and all native candidate planning;
     /// neither path may rediscover a newer snapshot or source-access policy.
-    pub fn try_new_resolved(resolved: ResolvedIcebergTable) -> Result<Self> {
+    pub fn try_new_resolved(resolved: ResolvedTable) -> Result<Self> {
         Self::try_new_resolved_with_optional_parquet_read_strategy_config(resolved, None)
     }
 
     /// Builds a provider from a frozen leaf table resolution with root-owned
     /// native source-strategy configuration.
     pub fn try_new_resolved_with_parquet_read_strategy_config(
-        resolved: ResolvedIcebergTable,
+        resolved: ResolvedTable,
         config: TableFormatParquetReadStrategyConfig,
     ) -> Result<Self> {
         Self::try_new_resolved_with_optional_parquet_read_strategy_config(resolved, Some(config))
     }
 
     fn try_new_resolved_with_optional_parquet_read_strategy_config(
-        resolved: ResolvedIcebergTable,
+        resolved: ResolvedTable,
         config: Option<TableFormatParquetReadStrategyConfig>,
     ) -> Result<Self> {
         let resolved_snapshot_id = resolved.facts().snapshot.snapshot_id;
@@ -466,7 +465,7 @@ impl IcebergScanPlanningTimeoutContext {
 /// page-index semantics.
 #[derive(Debug, Clone)]
 pub struct IcebergTableFormatPlanner {
-    resolved: ResolvedIcebergTable,
+    resolved: ResolvedTable,
     catalog_type: Option<String>,
     parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
 }
@@ -474,9 +473,9 @@ pub struct IcebergTableFormatPlanner {
 impl IcebergTableFormatPlanner {
     /// Builds a root native-inspection planner over one frozen leaf table resolution.
     ///
-    /// Manifest/task planning is delegated to `ResolvedIcebergTable`; this
+    /// Manifest/task planning is delegated to `ResolvedTable`; this
     /// root planner owns only source strategy and footer inspection.
-    pub fn new(resolved: ResolvedIcebergTable) -> Self {
+    pub fn new(resolved: ResolvedTable) -> Self {
         let parquet_read_strategy_config = parquet_read_strategy_config_from_resolved_source_access(
             &resolved,
             TableFormatParquetReadStrategyConfig::from_env(),
@@ -493,7 +492,7 @@ impl IcebergTableFormatPlanner {
     /// Sets the table-format Parquet read-strategy config used while resolving
     /// Iceberg data-file scan facts. Leaf-owned source-access facts always
     /// override environment-derived storage identity so the CPU delegate and
-    /// native plan use the one policy frozen in `ResolvedIcebergTable`.
+    /// native plan use the one policy frozen in `ResolvedTable`.
     pub fn with_parquet_read_strategy_config(mut self, config: TableFormatParquetReadStrategyConfig) -> Self {
         self.parquet_read_strategy_config =
             parquet_read_strategy_config_from_resolved_source_access(&self.resolved, config);
@@ -543,7 +542,7 @@ impl IcebergTableFormatPlanner {
                 })
             })
             .transpose()?;
-        let options = IcebergScanPlanningOptions {
+        let options = ScanPlanningOptions {
             snapshot_id,
             case_sensitive: request.case_sensitive,
             manifest_concurrency: REMOTE_ICEBERG_METADATA_PLANNING_CONCURRENCY,
@@ -643,16 +642,16 @@ fn is_s3_location(location: &str) -> bool {
 /// request contract. The root owns DataFusion predicate parsing; the leaf owns
 /// binding those names to the frozen Iceberg snapshot and planning its tasks.
 fn iceberg_scan_request_from_table_format_request(
-    resolved: &ResolvedIcebergTable,
+    resolved: &ResolvedTable,
     request: &TableFormatScanRequest,
-) -> Result<IcebergScanRequest> {
+) -> Result<ScanRequest> {
     let projection = match request.projected_column_names.as_deref() {
-        None => IcebergProjection::AllColumns,
-        Some(columns) => IcebergProjection::Columns(
+        None => Projection::AllColumns,
+        Some(columns) => Projection::Columns(
             columns
                 .iter()
                 .map(|column| {
-                    iceberg_top_level_binding(resolved, column, request.case_sensitive, IcebergColumnRole::Projected)
+                    iceberg_top_level_binding(resolved, column, request.case_sensitive, ColumnRole::Projected)
                 })
                 .collect::<Result<Vec<_>>>()?,
         ),
@@ -663,27 +662,25 @@ fn iceberg_scan_request_from_table_format_request(
         .map(table_format_predicate_columns)
         .unwrap_or_default()
         .into_iter()
-        .map(|column| {
-            iceberg_top_level_binding(resolved, &column, request.case_sensitive, IcebergColumnRole::FilterOnly)
-        })
+        .map(|column| iceberg_top_level_binding(resolved, &column, request.case_sensitive, ColumnRole::FilterOnly))
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(IcebergScanRequest {
+    Ok(ScanRequest {
         projection,
         filter_bindings,
-        predicate: IcebergPredicateIntent::none(),
+        predicate: PredicateIntent::none(),
         iceberg_predicate: request.predicate.as_ref().and_then(table_format_predicate_to_iceberg_predicate),
-        source_limit: IcebergSourceLimit { row_limit: request.scan_limit.map(|limit| limit as u64), file_limit: None },
+        source_limit: SourceLimit { row_limit: request.scan_limit.map(|limit| limit as u64), file_limit: None },
         pruning: Default::default(),
     })
 }
 
 fn iceberg_top_level_binding(
-    resolved: &ResolvedIcebergTable,
+    resolved: &ResolvedTable,
     name: &str,
     case_sensitive: bool,
-    role: IcebergColumnRole,
-) -> Result<IcebergColumnBinding> {
+    role: ColumnRole,
+) -> Result<ColumnBinding> {
     let matches_name = |candidate: &str| {
         if case_sensitive { candidate == name } else { candidate.eq_ignore_ascii_case(name) }
     };
@@ -698,10 +695,10 @@ fn iceberg_top_level_binding(
             .with_fact("table_format", TableFormat::Iceberg.code())
             .with_fact("column", name));
     };
-    Ok(IcebergColumnBinding {
+    Ok(ColumnBinding {
         field_id: field.field_id,
         output_name: name.to_string(),
-        source: IcebergColumnSource::PhysicalFile,
+        source: ColumnSource::PhysicalFile,
         role,
         missing_default: field.initial_default.clone(),
     })
@@ -735,7 +732,7 @@ fn table_format_predicate_columns(predicate: &TableFormatPredicate) -> Vec<Strin
 /// configuration. Cache policy remains root-owned, but endpoint and
 /// credential-mode facts may not be rediscovered from a later environment.
 fn parquet_read_strategy_config_from_resolved_source_access(
-    resolved: &ResolvedIcebergTable,
+    resolved: &ResolvedTable,
     mut config: TableFormatParquetReadStrategyConfig,
 ) -> TableFormatParquetReadStrategyConfig {
     let source_access = resolved.source_access_policy().s3_access();
@@ -760,7 +757,7 @@ fn parquet_read_strategy_config_from_resolved_source_access(
 /// The returned value deliberately stays out of scan candidates and reports:
 /// it can hold static credentials, while the candidate must remain
 /// credential-free.
-fn native_source_storage_profile_from_resolved(resolved: &ResolvedIcebergTable) -> SourceStorageProfile {
+fn native_source_storage_profile_from_resolved(resolved: &ResolvedTable) -> SourceStorageProfile {
     source_access_policy_to_native_source_storage_profile(resolved.source_access_policy())
 }
 

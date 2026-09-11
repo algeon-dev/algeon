@@ -171,7 +171,7 @@ impl DatafusionNexusFlightSqlService {
 
     /// Validate the bearer token on a Flight request. Disabled auth keeps the
     /// existing trusted-network behavior and returns no principal.
-    pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<crate::Principal>, Status> {
+    pub(super) fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<crate::auth::Principal>, Status> {
         self.auth.check(request.metadata())
     }
 

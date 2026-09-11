@@ -83,17 +83,6 @@ impl TokenStore {
         Some(entry.principal.clone())
     }
 
-    /// Drop expired entries. Optional — `validate` cleans up lazily —
-    /// but useful as a periodic sweep to bound memory in long-running
-    /// servers that issue tokens faster than they are used.
-    pub fn sweep_expired(&self) {
-        let now = Instant::now();
-        self.inner.retain(|_, entry| match entry.expires_at {
-            Some(expires_at) => now < expires_at,
-            None => true,
-        });
-    }
-
     /// Number of live tokens (including any not yet swept). Test-only
     /// hook; production callers do not need this.
     #[cfg(test)]
@@ -137,18 +126,6 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1));
         assert!(store.validate(&token).is_none(), "expired token must reject");
         assert_eq!(store.len(), 0, "expired entry must be removed from the map");
-    }
-
-    #[test]
-    fn sweep_expired_removes_stale_entries() {
-        let store = TokenStore::new();
-        let live = store.issue(principal("alice"), Some(Duration::from_secs(60)));
-        let _stale = store.issue(principal("bob"), Some(Duration::from_millis(0)));
-        std::thread::sleep(Duration::from_millis(1));
-        assert_eq!(store.len(), 2);
-        store.sweep_expired();
-        assert_eq!(store.len(), 1);
-        assert!(store.validate(&live).is_some());
     }
 
     #[test]

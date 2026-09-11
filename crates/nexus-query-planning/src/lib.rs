@@ -33,5 +33,4 @@ pub mod triage;
 pub mod util;
 #[doc(hidden)]
 pub mod validation;
-#[doc(hidden)]
-pub mod vector_validation;
+mod vector_validation;

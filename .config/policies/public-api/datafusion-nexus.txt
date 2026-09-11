@@ -1969,15 +1969,15 @@ pub use datafusion_nexus::table_format::S3SourceStorageCredential
 pub use datafusion_nexus::table_format::S3SourceStorageProfile
 pub use datafusion_nexus::table_format::SourceStorageProfile
 pub mod datafusion_nexus::table_format::iceberg
-pub use datafusion_nexus::table_format::iceberg::IcebergTableIdentifier
-pub use datafusion_nexus::table_format::iceberg::ResolvedIcebergTable
+pub use datafusion_nexus::table_format::iceberg::ResolvedTable
 pub use datafusion_nexus::table_format::iceberg::S3CredentialMode
 pub use datafusion_nexus::table_format::iceberg::SourceAccessPolicy
+pub use datafusion_nexus::table_format::iceberg::TableIdentifier
 pub mod datafusion_nexus::table_format::iceberg::catalog
-pub use datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogBackend
-pub use datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig
-pub use datafusion_nexus::table_format::iceberg::catalog::RestIcebergCatalogBackend
-pub use datafusion_nexus::table_format::iceberg::catalog::RestIcebergCatalogConfig
+pub use datafusion_nexus::table_format::iceberg::catalog::GlueCatalogBackend
+pub use datafusion_nexus::table_format::iceberg::catalog::GlueCatalogConfig
+pub use datafusion_nexus::table_format::iceberg::catalog::RestCatalogBackend
+pub use datafusion_nexus::table_format::iceberg::catalog::RestCatalogConfig
 pub struct datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions
 pub datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions::scan_planning_timeout: core::option::Option<core::time::Duration>
 impl datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions
@@ -1990,14 +1990,14 @@ pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProv
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider::schema_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub struct datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
 impl datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
-pub const fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::backend(&self) -> &alloc::sync::Arc<nexus_iceberg::catalog::IcebergCatalogBackend>
-pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::from_shared_backend(alloc::sync::Arc<nexus_iceberg::catalog::IcebergCatalogBackend>) -> Self
-pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::new(nexus_iceberg::catalog::IcebergCatalogBackend) -> Self
+pub const fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::backend(&self) -> &alloc::sync::Arc<nexus_iceberg::catalog::CatalogBackend>
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::from_shared_backend(alloc::sync::Arc<nexus_iceberg::catalog::CatalogBackend>) -> Self
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::new(nexus_iceberg::catalog::CatalogBackend) -> Self
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::with_parquet_read_strategy_config(self, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> Self
-impl datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
+impl datafusion_nexus::table_format::iceberg::catalog::CatalogBackend for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::list_namespaces<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::NamespaceIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::list_tables<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::NamespaceIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::TableIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::load_table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::TableIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<nexus_iceberg::resolved::ResolvedIcebergTable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::load_table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::TableIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<nexus_iceberg::resolved::ResolvedTable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::parquet_read_strategy_config(&self) -> core::option::Option<datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig>
 pub struct datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
 impl datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
@@ -2009,25 +2009,25 @@ pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvi
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table_exist(&self, &str) -> bool
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table_type<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<datafusion_expr::table_source::TableType>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend: core::fmt::Debug + core::marker::Send + core::marker::Sync
-pub fn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend::list_namespaces<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::NamespaceIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend::list_tables<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::NamespaceIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::TableIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend::load_table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::TableIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<nexus_iceberg::resolved::ResolvedIcebergTable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend::parquet_read_strategy_config(&self) -> core::option::Option<datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig>
-impl datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
+pub trait datafusion_nexus::table_format::iceberg::catalog::CatalogBackend: core::fmt::Debug + core::marker::Send + core::marker::Sync
+pub fn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend::list_namespaces<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::NamespaceIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend::list_tables<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::NamespaceIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::TableIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend::load_table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::TableIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<nexus_iceberg::resolved::ResolvedTable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend::parquet_read_strategy_config(&self) -> core::option::Option<datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig>
+impl datafusion_nexus::table_format::iceberg::catalog::CatalogBackend for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::list_namespaces<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::NamespaceIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::list_tables<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::NamespaceIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<alloc::vec::Vec<iceberg::catalog::TableIdent>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::load_table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::TableIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<nexus_iceberg::resolved::ResolvedIcebergTable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::load_table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 iceberg::catalog::TableIdent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_nexus::error::Result<nexus_iceberg::resolved::ResolvedTable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::parquet_read_strategy_config(&self) -> core::option::Option<datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig>
-pub async fn datafusion_nexus::table_format::iceberg::catalog::build_catalog_provider_from_backend(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend>, impl core::convert::Into<alloc::string::String>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
-pub async fn datafusion_nexus::table_format::iceberg::catalog::build_catalog_provider_from_backend_with_options(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend>, impl core::convert::Into<alloc::string::String>, datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
-pub async fn datafusion_nexus::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend>, impl core::convert::Into<alloc::string::String>, &str) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
-pub async fn datafusion_nexus::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend_with_options(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::IcebergCatalogBackend>, impl core::convert::Into<alloc::string::String>, &str, datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
+pub async fn datafusion_nexus::table_format::iceberg::catalog::build_catalog_provider_from_backend(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend>, impl core::convert::Into<alloc::string::String>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
+pub async fn datafusion_nexus::table_format::iceberg::catalog::build_catalog_provider_from_backend_with_options(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend>, impl core::convert::Into<alloc::string::String>, datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
+pub async fn datafusion_nexus::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend>, impl core::convert::Into<alloc::string::String>, &str) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
+pub async fn datafusion_nexus::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend_with_options(alloc::sync::Arc<dyn datafusion_nexus::table_format::iceberg::catalog::CatalogBackend>, impl core::convert::Into<alloc::string::String>, &str, datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider>
 pub struct datafusion_nexus::table_format::iceberg::IcebergTableFormatPlanner
 impl datafusion_nexus::table_format::IcebergTableFormatPlanner
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::inspect_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatScanPlan) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::native_source_storage_profile(&self) -> nexus_query_runtime::runtime::object_store::SourceStorageProfile
-pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::new(nexus_iceberg::resolved::ResolvedIcebergTable) -> Self
+pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::new(nexus_iceberg::resolved::ResolvedTable) -> Self
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::with_parquet_read_strategy_config(self, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> Self
@@ -2041,8 +2041,8 @@ pub struct datafusion_nexus::table_format::iceberg::NexusIcebergTableProvider
 impl datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_session::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_runtime::runtime::object_store::SourceStorageProfile>
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedIcebergTable) -> datafusion_nexus::error::Result<Self>
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedIcebergTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedTable) -> datafusion_nexus::error::Result<Self>
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_scan_planning_timeout(self, core::option::Option<core::time::Duration>) -> Self
 impl core::fmt::Debug for datafusion_nexus::table_format::NexusIcebergTableProvider
@@ -2068,9 +2068,9 @@ pub const datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_REGION_ENV: 
 pub const datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV: &str
 pub const datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV: &str
 pub fn datafusion_nexus::table_format::iceberg::iceberg_file_scan_tasks_to_table_format_scan_plan(core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, impl core::iter::traits::collect::IntoIterator<Item = iceberg::scan::task::FileScanTask>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
-pub fn datafusion_nexus::table_format::iceberg::iceberg_scan_candidate_to_table_format_scan_plan(nexus_iceberg::scan::IcebergScanCandidate, core::option::Option<&str>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
+pub fn datafusion_nexus::table_format::iceberg::iceberg_scan_candidate_to_table_format_scan_plan(nexus_iceberg::scan::ScanCandidate, core::option::Option<&str>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::iceberg::iceberg_schema_to_datafusion_arrow_schema(&iceberg::spec::schema::Schema) -> datafusion_nexus::error::Result<arrow_schema::schema::SchemaRef>
-pub fn datafusion_nexus::table_format::iceberg::root_error_from_iceberg(nexus_iceberg::error::IcebergError, &'static str, impl core::convert::Into<alloc::string::String>) -> datafusion_nexus::error::Error
+pub fn datafusion_nexus::table_format::iceberg::root_error_from_iceberg(nexus_iceberg::error::Error, &'static str, impl core::convert::Into<alloc::string::String>) -> datafusion_nexus::error::Error
 pub fn datafusion_nexus::table_format::iceberg::source_access_policy_to_native_source_storage_profile(&nexus_iceberg::source_access::SourceAccessPolicy) -> nexus_query_runtime::runtime::object_store::SourceStorageProfile
 pub mod datafusion_nexus::table_format::scan
 pub use datafusion_nexus::table_format::scan::CredentialMode
@@ -2384,7 +2384,7 @@ pub fn datafusion_nexus::table_format::TableFormatScanPlan::credential_mode_summ
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::diagnostics(&self) -> datafusion_nexus::table_format::TableFormatScanDiagnostics
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::direct_device_read_disposition(&self) -> datafusion_nexus::table_format::TableFormatDirectDeviceReadDisposition
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::first_not_supported_reason(&self) -> core::option::Option<datafusion_nexus::capability::CapabilityReason>
-pub fn datafusion_nexus::table_format::TableFormatScanPlan::iceberg_candidate(&self) -> core::option::Option<&alloc::sync::Arc<nexus_iceberg::scan::IcebergScanCandidate>>
+pub fn datafusion_nexus::table_format::TableFormatScanPlan::iceberg_candidate(&self) -> core::option::Option<&alloc::sync::Arc<nexus_iceberg::scan::ScanCandidate>>
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::is_native_admissible(&self) -> bool
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::lakehouse_cache_fill_mode_summary(&self) -> alloc::string::String
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::lakehouse_cache_read_mode_summary(&self) -> alloc::string::String
@@ -2400,7 +2400,7 @@ pub fn datafusion_nexus::table_format::TableFormatScanPlan::unsupported_capabili
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_data_file(self, datafusion_nexus::table_format::TableFormatDataFile) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_delete_file(self, datafusion_nexus::table_format::TableFormatDeleteFile) -> Self
-pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_iceberg_candidate(self, alloc::sync::Arc<nexus_iceberg::scan::IcebergScanCandidate>) -> Self
+pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_iceberg_candidate(self, alloc::sync::Arc<nexus_iceberg::scan::ScanCandidate>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_logical_schema(self, arrow_schema::schema::SchemaRef) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_native_source_schema(self, arrow_schema::schema::SchemaRef) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_projected_column(self, datafusion_nexus::table_format::TableFormatColumnMapping) -> Self
@@ -2638,7 +2638,7 @@ pub struct datafusion_nexus::table_format::IcebergTableFormatPlanner
 impl datafusion_nexus::table_format::IcebergTableFormatPlanner
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::inspect_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatScanPlan) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::native_source_storage_profile(&self) -> nexus_query_runtime::runtime::object_store::SourceStorageProfile
-pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::new(nexus_iceberg::resolved::ResolvedIcebergTable) -> Self
+pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::new(nexus_iceberg::resolved::ResolvedTable) -> Self
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::with_parquet_read_strategy_config(self, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> Self
@@ -2674,8 +2674,8 @@ pub struct datafusion_nexus::table_format::NexusIcebergTableProvider
 impl datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_session::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_runtime::runtime::object_store::SourceStorageProfile>
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedIcebergTable) -> datafusion_nexus::error::Result<Self>
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedIcebergTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedTable) -> datafusion_nexus::error::Result<Self>
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_scan_planning_timeout(self, core::option::Option<core::time::Duration>) -> Self
 impl core::fmt::Debug for datafusion_nexus::table_format::NexusIcebergTableProvider
@@ -2843,7 +2843,7 @@ pub fn datafusion_nexus::table_format::TableFormatScanPlan::credential_mode_summ
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::diagnostics(&self) -> datafusion_nexus::table_format::TableFormatScanDiagnostics
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::direct_device_read_disposition(&self) -> datafusion_nexus::table_format::TableFormatDirectDeviceReadDisposition
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::first_not_supported_reason(&self) -> core::option::Option<datafusion_nexus::capability::CapabilityReason>
-pub fn datafusion_nexus::table_format::TableFormatScanPlan::iceberg_candidate(&self) -> core::option::Option<&alloc::sync::Arc<nexus_iceberg::scan::IcebergScanCandidate>>
+pub fn datafusion_nexus::table_format::TableFormatScanPlan::iceberg_candidate(&self) -> core::option::Option<&alloc::sync::Arc<nexus_iceberg::scan::ScanCandidate>>
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::is_native_admissible(&self) -> bool
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::lakehouse_cache_fill_mode_summary(&self) -> alloc::string::String
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::lakehouse_cache_read_mode_summary(&self) -> alloc::string::String
@@ -2859,7 +2859,7 @@ pub fn datafusion_nexus::table_format::TableFormatScanPlan::unsupported_capabili
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_data_file(self, datafusion_nexus::table_format::TableFormatDataFile) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_delete_file(self, datafusion_nexus::table_format::TableFormatDeleteFile) -> Self
-pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_iceberg_candidate(self, alloc::sync::Arc<nexus_iceberg::scan::IcebergScanCandidate>) -> Self
+pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_iceberg_candidate(self, alloc::sync::Arc<nexus_iceberg::scan::ScanCandidate>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_logical_schema(self, arrow_schema::schema::SchemaRef) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_native_source_schema(self, arrow_schema::schema::SchemaRef) -> Self
 pub fn datafusion_nexus::table_format::TableFormatScanPlan::with_projected_column(self, datafusion_nexus::table_format::TableFormatColumnMapping) -> Self

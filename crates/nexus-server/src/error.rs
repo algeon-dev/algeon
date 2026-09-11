@@ -27,7 +27,6 @@ pub const ALGORITHM_METADATA_KEY: &str = "x-datafusion-nexus-algorithm";
 pub const ITERATIONS_METADATA_KEY: &str = "x-datafusion-nexus-iterations";
 pub const MAX_ITERATIONS_METADATA_KEY: &str = "x-datafusion-nexus-max-iterations";
 pub const EPSILON_METADATA_KEY: &str = "x-datafusion-nexus-epsilon";
-const DATAFUSION_ERROR_FALLBACK_OPERATION: &str = "datafusion_nexus.server.datafusion_error";
 
 pub type Result<T> = std::result::Result<T, ServerError>;
 
@@ -151,7 +150,7 @@ impl ServerError {
             Err(source) => source,
         };
         #[cfg(feature = "iceberg")]
-        let source = match source.downcast::<nexus_iceberg::IcebergError>() {
+        let source = match source.downcast::<nexus_iceberg::Error>() {
             Ok(iceberg_error) => {
                 return Self {
                     inner: crate::table_format::iceberg::root_error_from_iceberg(
@@ -317,10 +316,6 @@ fn quote(value: &str) -> String {
     } else {
         format!("{value:?}")
     }
-}
-
-pub fn datafusion_error_to_status(error: DataFusionError) -> Status {
-    datafusion_error_to_status_for_operation(error, DATAFUSION_ERROR_FALLBACK_OPERATION)
 }
 
 pub fn datafusion_error_to_status_for_operation(error: DataFusionError, operation: &'static str) -> Status {
@@ -1221,25 +1216,15 @@ mod tests {
     #[cfg(feature = "iceberg")]
     #[test]
     fn server_error_session_preserves_foreign_iceberg_classification() {
-        use nexus_iceberg::{IcebergError, IcebergErrorCode, IcebergErrorStatus, IcebergOperation};
+        use nexus_iceberg::{Error as IcebergError, ErrorCode as IcebergErrorCode, Operation};
 
         let auth = ServerError::session(
             "catalog authentication failed",
-            IcebergError::new(
-                IcebergErrorCode::Authentication,
-                IcebergErrorStatus::Permanent,
-                IcebergOperation::CatalogConnect,
-                "authentication failed",
-            ),
+            IcebergError::new(IcebergErrorCode::Authentication, Operation::CatalogConnect, "authentication failed"),
         );
         let access = ServerError::session(
             "catalog access failed",
-            IcebergError::new(
-                IcebergErrorCode::Access,
-                IcebergErrorStatus::Permanent,
-                IcebergOperation::CatalogListTables,
-                "access denied",
-            ),
+            IcebergError::new(IcebergErrorCode::Access, Operation::CatalogListTables, "access denied"),
         );
         let unknown = ServerError::session("foreign source failed", std::io::Error::other("unknown"));
 
