@@ -51,7 +51,7 @@ compatibility belong in `crates/nexus-query-engine`.
   are the only source registry, lockfile, workspace, and full validation gate.
 - Default members are the adapter, `nexus-workloads`, and `nexus-query-engine`.
   Bench, tools, and examples are explicit non-default members.
-- Linux only. MSRV is Rust 1.94; formatting requires nightly.
+- Linux only. MSRV is Rust 1.95; formatting requires nightly.
 
 ## Native GPU engine core
 

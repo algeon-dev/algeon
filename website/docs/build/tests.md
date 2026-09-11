@@ -37,7 +37,7 @@ the native/component structural checks and before nextest inventory and test
 lanes. Both are compile-only phases: they do not run tests, contact external
 services, or acquire the GPU lock. The phase table names these rows exactly.
 
-`msrv-check` uses the workspace's declared Rust version (currently Rust 1.94),
+`msrv-check` uses the workspace's declared Rust version (currently Rust 1.95),
 not a second version constant maintained in this page:
 
 ```bash
@@ -409,7 +409,7 @@ cargo clippy --workspace --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep-going
 ```
 
-The MSRV is Rust 1.94. Formatting requires nightly.
+The MSRV is Rust 1.95. Formatting requires nightly.
 
 ## Continuous enforcement
 
