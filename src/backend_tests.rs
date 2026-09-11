@@ -437,3 +437,43 @@ fn backend_qualification_quarantine_rejects_unknown_ordinal_with_adapter_operati
     assert_eq!(error.operation(), "datafusion_nexus.backend.quarantine_device_for_qualification");
     assert!(error.fact_value("native_code").is_some());
 }
+
+#[test]
+fn backend_builder_validate_accepts_consistent_declaration_without_gpu_resources() {
+    bounded_backend_builder(&[0]).validate().expect("consistent declaration passes dry-run validation");
+}
+
+#[test]
+fn backend_builder_validate_rejects_empty_devices() {
+    let error = NexusGpuBackend::builder().devices([]).validate().expect_err("dry-run must reject empty devices");
+    assert_eq!(error.fact_value("reason"), Some("missing_devices"));
+}
+
+#[test]
+fn backend_probe_device_capacity_reports_live_cuda_totals() {
+    let probe = NexusGpuBackend::probe_device_capacity(0, GpuMemoryOwnership::WholeDeviceExclusive, 0)
+        .expect("GPU lane provides device 0 for capacity probing");
+    assert!(probe.cuda_total_bytes > 0);
+    assert!(probe.cuda_free_bytes <= probe.cuda_total_bytes);
+    assert_eq!(probe.owned_capacity_bytes, probe.cuda_total_bytes);
+    assert_eq!(probe.max_declarable_limit_bytes, probe.cuda_total_bytes);
+    assert_eq!(probe.max_managed_capacity_bytes, probe.cuda_total_bytes);
+}
+
+#[test]
+fn backend_core_build_error_surfaces_capacity_cause_in_display() {
+    let native = nexus_query_engine::error::QueryError::new(
+        nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.gpu.device_registry.capacity",
+        "explicit managed capacity cannot exceed owned device memory",
+    )
+    .with_fact("device_ordinal", 0_usize)
+    .with_fact("configured_limit_bytes", 118111600640_u64)
+    .with_fact("owned_capacity_bytes", 101973819392_u64)
+    .with_fact("reason", "explicit_capacity_exceeds_owned_capacity");
+    let error = super::backend_core_build_error("failed to initialize ownership-enforcing GPU backend core", native);
+    let display = error.to_string();
+    assert!(display.contains("explicit_capacity_exceeds_owned_capacity"), "{display}");
+    assert!(display.contains("owned_capacity_bytes=101973819392"), "{display}");
+    assert!(display.contains("configured_limit_bytes=118111600640"), "{display}");
+}

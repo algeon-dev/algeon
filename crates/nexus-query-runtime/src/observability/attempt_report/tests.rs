@@ -200,7 +200,7 @@ fn resource_evidence_preserves_explicit_unavailable_provenance_through_serde() {
     let mut evidence = AttemptResourceEvidence::unavailable();
     evidence.grant_cap_bytes = AttemptEvidenceField::attempt_exact(4096);
     evidence.ledger_sequence = AttemptEvidenceField::device_snapshot(17);
-    evidence.outcome_terminal_usage = AttemptEvidenceField::sampled_after_failure(AttemptTimedDomainUsage {
+    evidence.outcome_terminal_usage = AttemptEvidenceField::sampled_at_terminal_boundary(AttemptTimedDomainUsage {
         sampled_ns: 23,
         usage: AttemptFinalDomainUsage {
             domain_id: 7,
@@ -230,7 +230,7 @@ fn resource_evidence_preserves_explicit_unavailable_provenance_through_serde() {
     let encoded = serde_json::to_value(evidence).expect("resource evidence serializes");
     assert_eq!(encoded["grant_cap_bytes"]["provenance"], "attempt_exact");
     assert_eq!(encoded["ledger_sequence"]["provenance"], "device_snapshot");
-    assert_eq!(encoded["outcome_terminal_usage"]["provenance"], "sampled_after_failure");
+    assert_eq!(encoded["outcome_terminal_usage"]["provenance"], "sampled_at_terminal_boundary");
     assert_eq!(encoded["outcome_terminal_usage"]["value"]["pool_usage"]["reserved_high_bytes"], 96);
     assert_eq!(encoded["allocator_event"]["provenance"], "unavailable");
     assert!(encoded["allocator_event"]["value"].is_null());

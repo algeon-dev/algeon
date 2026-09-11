@@ -721,11 +721,12 @@ impl QueryCompletion {
         } else if let Some(slot) = self.attempt_finalizer_slot.take() {
             match slot.finalize_not_admitted(fallback.clone()) {
                 Ok(_) => true,
-                Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable)
-                    if owner.as_ref().is_some_and(|owner| owner.sealed_snapshot().is_some()) =>
-                {
-                    true
-                },
+                // The attempt owner's rejection or commit path consumed the
+                // linear finalizer first. That path records the terminal
+                // outcome and seals this same recorder right after taking it,
+                // so the seal belongs to it: sealing here too would race its
+                // outcome with this fallback, and the report is not lost.
+                Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable) => false,
                 Err(error) => {
                     eprintln!(
                         "[nexus-query-engine] warning: failed to finalize unadmitted attempt before seal; suppressing report publication: {error}"

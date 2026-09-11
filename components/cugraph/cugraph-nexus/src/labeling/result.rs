@@ -100,6 +100,9 @@ impl WeaklyConnectedComponentsResult {
     }
 
     /// Convert this result to a cudf DataFrame with `"vertex"` and `"label"` columns.
+    ///
+    /// Each `"label"` is the minimum vertex id of its component, so labels are
+    /// stable across runs.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
         crate::cudf_interop::weakly_connected_components_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("WeaklyConnectedComponentsResult::to_dataframe"))
@@ -142,6 +145,9 @@ impl StronglyConnectedComponentsResult {
     }
 
     /// Convert this result to a cudf DataFrame with `"vertex"` and `"label"` columns.
+    ///
+    /// Each `"label"` is the minimum vertex id of its component, so labels are
+    /// stable across runs.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
         crate::cudf_interop::strongly_connected_components_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("StronglyConnectedComponentsResult::to_dataframe"))

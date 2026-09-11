@@ -68,6 +68,7 @@ pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::terminal_ho
 pub mod datafusion_nexus::backend
 pub use datafusion_nexus::backend::DeviceCapabilities
 pub use datafusion_nexus::backend::DeviceQuarantineInjection
+pub use datafusion_nexus::backend::GpuDeviceCapacityProbe
 pub use datafusion_nexus::backend::GpuDeviceMemoryLimit
 pub use datafusion_nexus::backend::GpuMemoryOwnership
 pub use datafusion_nexus::backend::NexusGpuDeviceConfig
@@ -97,6 +98,7 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&s
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::is_session_state_bound(&self, &datafusion::execution::session_state::SessionState) -> bool
 pub fn datafusion_nexus::backend::NexusGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn datafusion_nexus::backend::NexusGpuBackend::probe_device_capacity(usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership, u64) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::backend_core::GpuDeviceCapacityProbe>
 pub fn datafusion_nexus::backend::NexusGpuBackend::quarantine_device_for_qualification(&self, usize) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::query_service::service::api::DeviceQuarantineInjection>
 pub fn datafusion_nexus::backend::NexusGpuBackend::queue_policy(&self) -> &datafusion_nexus::backend::NexusGpuQueuePolicy
 pub fn datafusion_nexus::backend::NexusGpuBackend::same_backend(&self, &Self) -> bool
@@ -109,6 +111,7 @@ impl datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::NexusGpuBackend>
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::devices(self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_runtime::runtime::backend_core::GpuBackendDeviceConfig>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::queue_policy(self, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
+pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::validate(self) -> datafusion_nexus::error::Result<()>
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_attempt_completion_queue_capacity(self, usize) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_datafusion_cpu_execution_policy(self, datafusion_nexus::planner::DataFusionCpuExecutionPolicy) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_native_execution_config(self, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self

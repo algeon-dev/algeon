@@ -74,7 +74,7 @@ fn record(outcome: OutcomeClass, slo_met: bool, work_units: u64, phase: Phase) -
         terminal_outcome: "succeeded".to_string(),
         outcome,
         attempt_peak_aligned_bytes: Some(256),
-        attempt_terminal_usage_provenance: "sampled_after_failure".to_string(),
+        attempt_terminal_usage_provenance: "sampled_at_terminal_boundary".to_string(),
         attempt_pool_reserved_high_bytes: Some(1024),
         unattributed_allocator_provenance: "unavailable".to_string(),
         cleanup_disposition: "completed".to_string(),

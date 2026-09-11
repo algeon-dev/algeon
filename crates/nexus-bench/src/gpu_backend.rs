@@ -1,19 +1,15 @@
 use std::time::Duration;
 
 use datafusion_nexus::{
-    backend::{
-        NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile,
-        NexusGpuQueuePolicy,
-    },
+    backend::{NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
     planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
 };
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuBackendSession,
-        GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig,
-        QueueBounds,
+        GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuBackendSession, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
     },
 };
 
@@ -28,18 +24,11 @@ pub(crate) fn build_installed_gpu_backend(
 ) -> datafusion_nexus::error::Result<NexusGpuBackend> {
     let native_optimizer_config =
         native_optimizer_config.with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy);
-    let stream_pool_size =
-        max_active_attempts.saturating_mul(source_work_per_attempt.max(1).saturating_add(1)).max(max_active_attempts);
     let device_profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(device_memory_limit)
         .with_cache_cap_bytes(0)
         .with_source_work_per_attempt(source_work_per_attempt)
-        .with_max_active_attempts(max_active_attempts)
-        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(
-            stream_pool_size,
-            max_active_attempts,
-            max_active_attempts,
-        ));
+        .with_derived_installation_bounds(max_active_attempts);
     let device_config = NexusGpuDeviceConfig::new(device_profile, GpuMemoryOwnership::WholeDeviceExclusive);
     NexusGpuBackend::builder()
         .with_optimizer_config(native_optimizer_config)
@@ -65,17 +54,11 @@ impl GpuBackendOwner {
         max_active_attempts: usize,
         source_reads: usize,
     ) -> GpuBackendDeviceConfig {
-        let streams =
-            max_active_attempts.saturating_mul(source_reads.max(1).saturating_add(1)).max(max_active_attempts);
         GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(device_ordinal)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
-                .with_max_active_attempts(max_active_attempts)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
-                    streams,
-                    max_active_attempts,
-                    max_active_attempts,
-                )),
+                .with_source_work_per_attempt(source_reads.max(1))
+                .with_derived_installation_bounds(max_active_attempts),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )
     }

@@ -2029,6 +2029,14 @@ impl ExecutionContext {
         self.attempt_allocation_domain.clone()
     }
 
+    // Plain `#[cfg(test)]` would keep this invisible to downstream test
+    // targets, which need it to cover the adapter fail-closed admission guard.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn replace_query_service_admitted_for_test(&mut self, admitted: bool) {
+        self.query_service_admitted = admitted;
+    }
+
     pub(super) fn install_root_stream_cleanup_completion(
         &self,
         before_quiescence: impl FnOnce(crate::runtime::service_stream::StreamCleanupOutcome) + Send + 'static,

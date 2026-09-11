@@ -670,7 +670,7 @@ pub nexus_query_runtime::observability::AttemptDisposition::Unplanned
 pub enum nexus_query_runtime::observability::AttemptEvidenceProvenance
 pub nexus_query_runtime::observability::AttemptEvidenceProvenance::AttemptExact
 pub nexus_query_runtime::observability::AttemptEvidenceProvenance::DeviceSnapshot
-pub nexus_query_runtime::observability::AttemptEvidenceProvenance::SampledAfterFailure
+pub nexus_query_runtime::observability::AttemptEvidenceProvenance::SampledAtTerminalBoundary
 pub nexus_query_runtime::observability::AttemptEvidenceProvenance::Unavailable
 pub enum nexus_query_runtime::observability::AttemptFailureFactKey
 pub nexus_query_runtime::observability::AttemptFailureFactKey::AllocationSource
@@ -1029,7 +1029,7 @@ pub nexus_query_runtime::observability::AttemptEvidenceField::value: core::optio
 impl<T> nexus_query_runtime::observability::AttemptEvidenceField<T>
 pub const fn nexus_query_runtime::observability::AttemptEvidenceField<T>::attempt_exact(T) -> Self
 pub const fn nexus_query_runtime::observability::AttemptEvidenceField<T>::device_snapshot(T) -> Self
-pub const fn nexus_query_runtime::observability::AttemptEvidenceField<T>::sampled_after_failure(T) -> Self
+pub const fn nexus_query_runtime::observability::AttemptEvidenceField<T>::sampled_at_terminal_boundary(T) -> Self
 pub const fn nexus_query_runtime::observability::AttemptEvidenceField<T>::unavailable() -> Self
 impl<T> core::default::Default for nexus_query_runtime::observability::AttemptEvidenceField<T>
 pub fn nexus_query_runtime::observability::AttemptEvidenceField<T>::default() -> Self
@@ -2274,6 +2274,7 @@ pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::cache_cap_bytes(&se
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::default_query_limit_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::device_capabilities(&self) -> &DeviceCapabilities
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::device_ordinal(&self) -> usize
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::homogeneous(impl core::iter::traits::collect::IntoIterator<Item = usize>, &nexus_query_runtime::runtime::GpuBackendDeviceProfile, nexus_query_runtime::runtime::GpuMemoryOwnership) -> alloc::vec::Vec<Self>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::install_telemetry(&self) -> bool
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::lane_count(&self) -> usize
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::max_active_attempts(&self) -> usize
@@ -2309,6 +2310,7 @@ pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::source_work_per_at
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_backend_reserve_bytes(self, u64) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_cache_cap_bytes(self, u64) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_default_query_limit_bytes(self, u64) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_derived_installation_bounds(self, usize) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_device_capabilities(self, DeviceCapabilities) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_installation_bounds(self, nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_max_active_attempts(self, usize) -> Self
@@ -2363,6 +2365,15 @@ pub fn nexus_query_runtime::runtime::GpuBackendSession::refresh_backend_telemetr
 pub fn nexus_query_runtime::runtime::GpuBackendSession::same_backend(&self, &Self) -> bool
 pub fn nexus_query_runtime::runtime::GpuBackendSession::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<nexus_query_runtime::observability::QueryAttemptReport>>
 pub fn nexus_query_runtime::runtime::GpuBackendSession::try_admit_query_with_request(&self, nexus_query_runtime::runtime::QueryAdmissionRequest) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_runtime::runtime::QueryHandle>>
+#[non_exhaustive] pub struct nexus_query_runtime::runtime::GpuDeviceCapacityProbe
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::backend_reserve_bytes: u64
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::cuda_free_bytes: u64
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::cuda_total_bytes: u64
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::device_ordinal: usize
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::max_declarable_limit_bytes: u64
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::max_managed_capacity_bytes: u64
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::owned_capacity_bytes: u64
+pub nexus_query_runtime::runtime::GpuDeviceCapacityProbe::physical_total_bytes: core::option::Option<u64>
 pub struct nexus_query_runtime::runtime::GpuExecutionPoolSnapshot
 pub nexus_query_runtime::runtime::GpuExecutionPoolSnapshot::active_jobs: usize
 pub nexus_query_runtime::runtime::GpuExecutionPoolSnapshot::active_query_jobs: usize
@@ -2585,4 +2596,5 @@ pub const nexus_query_runtime::runtime::NVIDIA_FS_PROC_PATH: &str
 pub const nexus_query_runtime::runtime::NVIDIA_FS_SYSFS_PATH: &str
 pub fn nexus_query_runtime::runtime::default_lakehouse_cache_fill_budget_bytes() -> u64
 pub fn nexus_query_runtime::runtime::default_service_stream_pool_size_for_device(cudf::runtime::device::DeviceId) -> usize
+pub fn nexus_query_runtime::runtime::probe_device_capacity(usize, nexus_query_runtime::runtime::GpuMemoryOwnership, u64) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::GpuDeviceCapacityProbe>
 pub fn nexus_query_runtime::runtime::project_backend_histogram(&nexus_query_runtime::metrics::BackendMetricDescriptor, nexus_query_runtime::runtime::BackendHistogramSnapshot) -> core::result::Result<nexus_query_runtime::runtime::BackendHistogramProjection, nexus_query_runtime::runtime::BackendMetricProjectionError>

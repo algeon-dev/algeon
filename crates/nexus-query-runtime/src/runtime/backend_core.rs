@@ -33,7 +33,7 @@ use super::{
         BackendAttemptDurations, BackendMemoryFailureTelemetry, BackendMetricsSnapshot, BackendMetricsStore,
         BackendTelemetryAvailability, BackendTelemetryRefresh, BackendTelemetryRefreshSnapshot, BackendTelemetrySource,
     },
-    gpu::{LiveBackendLease, claim_live_backend, normalize_device_ordinals},
+    gpu::{GpuInventory, LiveBackendLease, NexusGpuInventory, claim_live_backend, normalize_device_ordinals},
     observation_completion::ObservationCompletionExecutor,
 };
 use crate::attempt::{
@@ -66,6 +66,103 @@ impl GpuMemoryOwnership {
             Self::StaticPartition { allocation_limit_bytes } => Some(allocation_limit_bytes),
         }
     }
+}
+
+/// Pre-build capacity probe for one CUDA device.
+///
+/// Answers "how much may I declare here" without acquiring the process owner
+/// lease or installing any allocator: the CUDA-visible totals, the NVML
+/// physical total when reported, the owned capacity for the requested
+/// ownership, and the managed capacity left after the backend reserve.
+/// Build-time resolution stays the enforcement authority; this probe only
+/// predicts its ownership-vs-facts inputs so callers need not binary-search
+/// the limit through repeated `build()` failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GpuDeviceCapacityProbe {
+    pub device_ordinal: usize,
+    /// NVML-reported physical framebuffer capacity, when the optional NVML
+    /// substrate reported one. CUDA-visible capacity may be smaller by the
+    /// driver-reserved framebuffer.
+    pub physical_total_bytes: Option<u64>,
+    /// CUDA-visible allocation capacity. Ownership and explicit limits are
+    /// compared against this, not against the NVML total.
+    pub cuda_total_bytes: u64,
+    pub cuda_free_bytes: u64,
+    pub owned_capacity_bytes: u64,
+    /// Largest explicit managed-capacity limit this ownership accepts,
+    /// before the backend reserve is subtracted.
+    pub max_declarable_limit_bytes: u64,
+    pub backend_reserve_bytes: u64,
+    pub max_managed_capacity_bytes: u64,
+}
+
+/// Queries declarable capacity for one device without building a backend.
+///
+/// This never claims the live-backend lease and never installs a memory
+/// manager. Declare at most `max_declarable_limit_bytes` as the explicit
+/// limit (or use it whole) and the build will not refuse on capacity grounds.
+/// Refusals carry the same `reason` facts the build would report.
+pub fn probe_device_capacity(
+    device_ordinal: usize,
+    memory_ownership: GpuMemoryOwnership,
+    backend_reserve_bytes: u64,
+) -> Result<GpuDeviceCapacityProbe> {
+    let facts = NexusGpuInventory.facts(device_ordinal)?;
+    let (owned_capacity_bytes, max_managed_capacity_bytes) = resolve_probe_capacities(
+        device_ordinal,
+        &facts,
+        memory_ownership.allocation_limit_bytes(),
+        backend_reserve_bytes,
+    )?;
+    Ok(GpuDeviceCapacityProbe {
+        device_ordinal,
+        physical_total_bytes: facts.physical_total_bytes,
+        cuda_total_bytes: facts.total_bytes,
+        cuda_free_bytes: facts.free_bytes,
+        owned_capacity_bytes,
+        max_declarable_limit_bytes: owned_capacity_bytes,
+        backend_reserve_bytes,
+        max_managed_capacity_bytes,
+    })
+}
+
+fn resolve_probe_capacities(
+    device_ordinal: usize,
+    facts: &DeviceFacts,
+    allocation_limit_bytes: Option<u64>,
+    backend_reserve_bytes: u64,
+) -> Result<(u64, u64)> {
+    const OPERATION: &str = "nexus_query_engine.gpu_backend_core.probe_capacity";
+    if let Some(allocation_limit) = allocation_limit_bytes.filter(|limit| *limit > facts.total_bytes) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            OPERATION,
+            "static partition cannot exceed discovered CUDA-visible device memory",
+        )
+        .with_fact("device_ordinal", device_ordinal)
+        .with_fact("allocation_limit_bytes", allocation_limit)
+        .with_fact("cuda_total_bytes", facts.total_bytes)
+        .with_fact(
+            "physical_total_bytes",
+            facts.physical_total_bytes.map_or("unavailable".to_owned(), |total| total.to_string()),
+        )
+        .with_fact("reason", "static_partition_exceeds_physical_capacity"));
+    }
+    let owned_capacity_bytes = allocation_limit_bytes.unwrap_or(facts.total_bytes);
+    let max_managed_capacity_bytes =
+        owned_capacity_bytes.checked_sub(backend_reserve_bytes).filter(|capacity| *capacity > 0).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                OPERATION,
+                "backend reserve exhausts the probed owned device capacity",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("owned_capacity_bytes", owned_capacity_bytes)
+            .with_fact("backend_reserve_bytes", backend_reserve_bytes)
+            .with_fact("reason", "backend_reserve_exhausts_capacity")
+        })?;
+    Ok((owned_capacity_bytes, max_managed_capacity_bytes))
 }
 
 /// Soft admission capacity calculation for one device.
@@ -229,6 +326,25 @@ impl GpuBackendDeviceProfile {
         self
     }
 
+    /// Sets the active-attempt limit and clears explicit installation bounds
+    /// so construction derives them from this profile.
+    ///
+    /// Prefer this over spelling `with_max_active_attempts` plus
+    /// `with_installation_bounds` separately: the pair carries the same
+    /// number twice with no type-level guarantee they agree. Explicit bounds
+    /// remain available through `with_installation_bounds` for deployments
+    /// that deliberately overprovision stream or worker capacity.
+    pub fn with_derived_installation_bounds(mut self, max_active_attempts: usize) -> Self {
+        self.max_active_attempts = max_active_attempts;
+        self.installation_bounds = None;
+        self
+    }
+
+    /// Sets explicit stream, worker, and execution-lane bounds.
+    ///
+    /// Most callers should prefer [`Self::with_derived_installation_bounds`];
+    /// use this only to deliberately overprovision beyond the derived
+    /// `A_d * (1 + S_d)` stream formula.
     pub fn with_installation_bounds(mut self, installation_bounds: GpuBackendDeviceInstallationBounds) -> Self {
         self.installation_bounds = Some(installation_bounds);
         self
@@ -293,6 +409,29 @@ pub struct GpuBackendDeviceConfig {
 }
 
 impl GpuBackendDeviceConfig {
+    /// Builds one device config per ordinal from a shared template profile.
+    ///
+    /// Every returned config clones the template policy (capacity, reserve,
+    /// query limit, attempts, bounds, capabilities, telemetry) and rebinds
+    /// only the device ordinal; the template's own ordinal is ignored. The
+    /// deployment ownership is shared by every device. This is the shorthand
+    /// for the common homogeneous multi-device deployment; heterogeneous
+    /// devices still declare one [`Self::new`] each.
+    pub fn homogeneous(
+        device_ordinals: impl IntoIterator<Item = usize>,
+        template: &GpuBackendDeviceProfile,
+        memory_ownership: GpuMemoryOwnership,
+    ) -> Vec<Self> {
+        device_ordinals
+            .into_iter()
+            .map(|device_ordinal| {
+                let mut profile = template.clone();
+                profile.device_ordinal = device_ordinal;
+                Self::new(profile, memory_ownership)
+            })
+            .collect()
+    }
+
     pub fn new(profile: GpuBackendDeviceProfile, memory_ownership: GpuMemoryOwnership) -> Self {
         let (stream_pool_size, worker_count, lane_count, installation_bounds_set) = match profile.installation_bounds {
             Some(bounds) => (bounds.stream_pool_size, bounds.worker_count, bounds.lane_count, true),
@@ -2476,5 +2615,87 @@ mod tests {
         assert_eq!(counters.completion_queue_pushed, 1);
         assert_eq!(counters.completion_queue_overflowed, 0);
         backend.close_and_wait(Duration::from_secs(10)).unwrap();
+    }
+
+    fn probe_facts(total_bytes: u64) -> DeviceFacts {
+        DeviceFacts {
+            device: 3,
+            model_name: None,
+            uuid: None,
+            physical_total_bytes: Some(1_100),
+            total_bytes,
+            free_bytes: 500,
+            sm_count: None,
+            utilization_pct: None,
+        }
+    }
+
+    #[test]
+    fn probe_capacities_resolve_owned_and_managed_bounds() {
+        let facts = probe_facts(1_000);
+        for (limit, reserve, expected) in [
+            (None, 0, (1_000, 1_000)),
+            (None, 100, (1_000, 900)),
+            (Some(600), 100, (600, 500)),
+            (Some(1_000), 0, (1_000, 1_000)),
+        ] {
+            assert_eq!(resolve_probe_capacities(3, &facts, limit, reserve).expect("probe math resolves"), expected);
+        }
+    }
+
+    #[test]
+    fn probe_capacities_reject_partition_above_cuda_total() {
+        let facts = probe_facts(1_000);
+        let error = resolve_probe_capacities(3, &facts, Some(1_001), 0).unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("static_partition_exceeds_physical_capacity"));
+        assert_eq!(error.fact_value("cuda_total_bytes"), Some("1000"));
+        assert_eq!(error.fact_value("physical_total_bytes"), Some("1100"));
+    }
+
+    #[test]
+    fn probe_capacities_reject_exhausting_reserve() {
+        let facts = probe_facts(1_000);
+        for reserve in [1_000, 1_001] {
+            let error = resolve_probe_capacities(3, &facts, None, reserve).unwrap_err();
+            assert_eq!(error.fact_value("reason"), Some("backend_reserve_exhausts_capacity"));
+        }
+    }
+
+    #[test]
+    fn derived_installation_bounds_clear_explicit_bounds() {
+        let profile = GpuBackendDeviceProfile::new(0)
+            .with_max_active_attempts(2)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(99, 99, 99))
+            .with_derived_installation_bounds(4);
+        assert_eq!(profile.max_active_attempts(), 4);
+        assert_eq!(profile.installation_bounds(), None);
+    }
+
+    #[test]
+    fn homogeneous_device_configs_rebind_template_ordinals() {
+        let template = GpuBackendDeviceProfile::new(7)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 })
+            .with_max_active_attempts(3);
+        let devices = GpuBackendDeviceConfig::homogeneous([0, 2], &template, GpuMemoryOwnership::WholeDeviceExclusive);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].device_ordinal(), 0);
+        assert_eq!(devices[1].device_ordinal(), 2);
+        for device in &devices {
+            assert_eq!(device.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 });
+            assert_eq!(device.max_active_attempts(), 3);
+            assert_eq!(device.memory_ownership(), GpuMemoryOwnership::WholeDeviceExclusive);
+        }
+    }
+
+    #[test]
+    fn probe_device_capacity_reports_live_cuda_totals() {
+        let probe = probe_device_capacity(0, GpuMemoryOwnership::WholeDeviceExclusive, 0)
+            .expect("GPU lane provides device 0 for capacity probing");
+        assert_eq!(probe.device_ordinal, 0);
+        assert!(probe.cuda_total_bytes > 0);
+        assert!(probe.cuda_free_bytes <= probe.cuda_total_bytes);
+        assert_eq!(probe.owned_capacity_bytes, probe.cuda_total_bytes);
+        assert_eq!(probe.max_declarable_limit_bytes, probe.cuda_total_bytes);
+        assert_eq!(probe.max_managed_capacity_bytes, probe.cuda_total_bytes);
     }
 }
