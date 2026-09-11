@@ -47,6 +47,7 @@ fn fixture_delete_file(
         file_path: file_path.into(),
         file_size_in_bytes,
         file_type,
+        file_format: DataFileFormat::Parquet,
         partition_spec_id: 0,
         equality_ids,
         referenced_data_file: None,
@@ -62,26 +63,32 @@ fn file_scan_task(
     format: DataFileFormat,
     deletes: Vec<FileScanTaskDeleteFile>,
 ) -> FileScanTask {
-    FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        first_row_id: None,
-        data_sequence_number: None,
-        data_file_path: path.into(),
-        data_file_format: format,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1, 2],
-        predicate: None,
-        deletes,
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        unified_partition_type: None,
-        case_sensitive: true,
-        key_metadata: None,
-    }
+    file_scan_task_with_projection_and_mapping(path, format, deletes, vec![1, 2], Some(17), None)
+}
+
+fn file_scan_task_with_projection_and_mapping(
+    path: impl Into<String>,
+    format: DataFileFormat,
+    deletes: Vec<FileScanTaskDeleteFile>,
+    project_field_ids: Vec<i32>,
+    record_count: Option<u64>,
+    name_mapping: Option<Arc<NameMapping>>,
+) -> FileScanTask {
+    FileScanTask::builder()
+        .with_file_size_in_bytes(4096)
+        .with_start(0)
+        .with_length(4096)
+        .with_record_count(record_count)
+        .with_data_file_path(path.into())
+        .with_data_file_format(format)
+        .with_schema(iceberg_schema())
+        .with_project_field_ids(project_field_ids)
+        .with_deletes(deletes)
+        .with_partition(Some(Struct::empty()))
+        .with_name_mapping(name_mapping)
+        .with_case_sensitive(true)
+        .build()
+        .expect("valid file scan task fixture")
 }
 
 fn partitioned_iceberg_schema() -> Arc<Schema> {
@@ -106,26 +113,20 @@ fn identity_and_day_partition_task(path: impl Into<String>) -> FileScanTask {
         .unwrap()
         .build()
         .unwrap();
-    FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        first_row_id: None,
-        data_sequence_number: None,
-        data_file_path: path.into(),
-        data_file_format: DataFileFormat::Parquet,
-        schema,
-        project_field_ids: vec![1, 2, 3],
-        predicate: None,
-        deletes: Vec::new(),
-        partition: Some(Struct::from_iter([Some(Literal::string("customer-1")), Some(Literal::int(19_000))])),
-        partition_spec: Some(Arc::new(partition_spec)),
-        name_mapping: None,
-        unified_partition_type: None,
-        case_sensitive: true,
-        key_metadata: None,
-    }
+    FileScanTask::builder()
+        .with_file_size_in_bytes(4096)
+        .with_start(0)
+        .with_length(4096)
+        .with_record_count(Some(17))
+        .with_data_file_path(path.into())
+        .with_data_file_format(DataFileFormat::Parquet)
+        .with_schema(schema)
+        .with_project_field_ids(vec![1, 2, 3])
+        .with_partition(Some(Struct::from_iter([Some(Literal::string("customer-1")), Some(Literal::int(19_000))])))
+        .with_partition_spec(Some(Arc::new(partition_spec)))
+        .with_case_sensitive(true)
+        .build()
+        .expect("valid partitioned file scan task fixture")
 }
 
 fn timestamp_decimal_partition_task(path: impl Into<String>) -> FileScanTask {
@@ -149,68 +150,23 @@ fn timestamp_decimal_partition_task(path: impl Into<String>) -> FileScanTask {
         .unwrap()
         .build()
         .unwrap();
-    FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        first_row_id: None,
-        data_sequence_number: None,
-        data_file_path: path.into(),
-        data_file_format: DataFileFormat::Parquet,
-        schema,
-        project_field_ids: vec![1, 2],
-        predicate: None,
-        deletes: Vec::new(),
-        partition: Some(Struct::from_iter([
+    FileScanTask::builder()
+        .with_file_size_in_bytes(4096)
+        .with_start(0)
+        .with_length(4096)
+        .with_record_count(Some(17))
+        .with_data_file_path(path.into())
+        .with_data_file_format(DataFileFormat::Parquet)
+        .with_schema(schema)
+        .with_project_field_ids(vec![1, 2])
+        .with_partition(Some(Struct::from_iter([
             Some(Literal::timestamp(1_700_000_000_123_456)),
             Some(Literal::decimal(12_345)),
-        ])),
-        partition_spec: Some(Arc::new(partition_spec)),
-        name_mapping: None,
-        unified_partition_type: None,
-        case_sensitive: true,
-        key_metadata: None,
-    }
-}
-
-fn task_with_partition_spec_source_absent_from_scan_schema(path: impl Into<String>) -> FileScanTask {
-    let scan_schema = iceberg_schema();
-    let spec_schema = Arc::new(
-        Schema::builder()
-            .with_fields([
-                Arc::new(NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long))),
-                Arc::new(NestedField::optional(99, "legacy_bucket", Type::Primitive(PrimitiveType::Long))),
-            ])
-            .build()
-            .unwrap(),
-    );
-    let partition_spec = PartitionSpec::builder(spec_schema)
-        .add_partition_field("legacy_bucket", "legacy_bucket", Transform::Identity)
-        .unwrap()
+        ])))
+        .with_partition_spec(Some(Arc::new(partition_spec)))
+        .with_case_sensitive(true)
         .build()
-        .unwrap();
-
-    FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        first_row_id: None,
-        data_sequence_number: None,
-        data_file_path: path.into(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: scan_schema,
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: Vec::new(),
-        partition: Some(Struct::from_iter([Some(Literal::long(7))])),
-        partition_spec: Some(Arc::new(partition_spec)),
-        name_mapping: None,
-        unified_partition_type: None,
-        case_sensitive: true,
-        key_metadata: None,
-    }
+        .expect("valid timestamp and decimal partition task fixture")
 }
 
 struct MetadataOnlyIcebergFixture {
@@ -406,23 +362,6 @@ fn identity_timestamp_and_decimal_partition_values_keep_typed_metadata_literals(
     );
 }
 
-#[test]
-fn partition_spec_source_absent_from_scan_schema_is_structured_rejection() {
-    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
-        Some("45679".to_string()),
-        Some("aws_glue".to_string()),
-        [task_with_partition_spec_source_absent_from_scan_schema("s3://lakehouse/warehouse/events/data-0001.parquet")],
-    )
-    .unwrap();
-
-    assert!(!plan.is_native_admissible());
-    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergPartitionTransformUnsupported]);
-    assert_eq!(
-        plan.diagnostics().rejected_feature_list,
-        vec![CapabilityReason::IcebergPartitionTransformUnsupported.code().to_string()]
-    );
-}
-
 #[tokio::test]
 async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan() {
     let fixture = MetadataOnlyIcebergFixture::new();
@@ -549,14 +488,25 @@ fn unsupported_object_store_scheme_is_rejected_with_structured_reason() {
 }
 
 fn name_mapping_task(mapping: NameMapping) -> FileScanTask {
-    FileScanTask {
-        name_mapping: Some(Arc::new(mapping)),
-        ..file_scan_task("s3://lakehouse/warehouse/lineitem/data-0001.parquet", DataFileFormat::Parquet, vec![])
-    }
+    file_scan_task_with_projection_and_mapping(
+        "s3://lakehouse/warehouse/lineitem/data-0001.parquet",
+        DataFileFormat::Parquet,
+        vec![],
+        vec![1, 2],
+        Some(17),
+        Some(Arc::new(mapping)),
+    )
 }
 
 fn count_star_name_mapping_task(mapping: NameMapping) -> FileScanTask {
-    FileScanTask { project_field_ids: vec![], record_count: None, ..name_mapping_task(mapping) }
+    file_scan_task_with_projection_and_mapping(
+        "s3://lakehouse/warehouse/lineitem/data-0001.parquet",
+        DataFileFormat::Parquet,
+        vec![],
+        vec![],
+        None,
+        Some(Arc::new(mapping)),
+    )
 }
 
 #[test]

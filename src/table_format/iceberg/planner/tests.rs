@@ -41,6 +41,7 @@ fn fixture_delete_file(
         file_path: file_path.to_string(),
         file_size_in_bytes,
         file_type,
+        file_format: DataFileFormat::Parquet,
         partition_spec_id: 0,
         equality_ids,
         referenced_data_file: None,
@@ -54,26 +55,30 @@ fn fixture_delete_file(
 /// Plain single-file task fixture. Row-level and sequence metadata stay
 /// absent because these tests exercise identity, limits, and delete facts.
 fn fixture_task(data_file_path: &str, record_count: Option<u64>, deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
-    FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count,
-        first_row_id: None,
-        data_sequence_number: None,
-        data_file_path: data_file_path.to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes,
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        unified_partition_type: None,
-        case_sensitive: true,
-        key_metadata: None,
-    }
+    fixture_task_with_range(data_file_path, record_count, deletes, 0, 4096)
+}
+
+fn fixture_task_with_range(
+    data_file_path: &str,
+    record_count: Option<u64>,
+    deletes: Vec<FileScanTaskDeleteFile>,
+    start: u64,
+    length: u64,
+) -> FileScanTask {
+    FileScanTask::builder()
+        .with_file_size_in_bytes(4096)
+        .with_start(start)
+        .with_length(length)
+        .with_record_count(record_count)
+        .with_data_file_path(data_file_path.to_string())
+        .with_data_file_format(DataFileFormat::Parquet)
+        .with_schema(iceberg_schema())
+        .with_project_field_ids(vec![1])
+        .with_deletes(deletes)
+        .with_partition(Some(Struct::empty()))
+        .with_case_sensitive(true)
+        .build()
+        .expect("valid file scan task fixture")
 }
 
 #[test]
@@ -106,9 +111,8 @@ fn iceberg_task_conversion_uses_injected_parquet_read_strategy_config() {
 
 #[test]
 fn iceberg_snapshot_content_identity_is_complete_object_scoped() {
-    let mut first = fixture_task("s3://bucket/table/data.parquet", None, vec![]);
-    first.length = 2048;
-    let second = FileScanTask { start: 2048, length: 2048, record_count: None, ..first.clone() };
+    let first = fixture_task_with_range("s3://bucket/table/data.parquet", None, vec![], 0, 2048);
+    let second = fixture_task_with_range("s3://bucket/table/data.parquet", None, vec![], 2048, 2048);
 
     assert_eq!(iceberg_task_content_identity(Some("123"), &first), iceberg_task_content_identity(Some("123"), &second));
 }
@@ -444,6 +448,26 @@ fn iceberg_task_delete_attachment_preserves_data_row_groups() {
     assert_eq!(data_file.row_groups, Some(vec![2, 3]));
     assert_eq!(data_file.position_delete_files.len(), 1);
     assert_eq!(plan.delete_files.len(), 1);
+}
+
+#[test]
+fn iceberg_delete_file_format_comes_from_manifest_facts() {
+    let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg);
+    let mut data_file = TableFormatDataFile::new(
+        "data-0",
+        "s3://bucket/table/data.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatReadCapability::object_store("s3"),
+    );
+    let mut delete_file =
+        fixture_delete_file("s3://bucket/table/delete.parquet", 512, DataContentType::PositionDeletes, None);
+    delete_file.file_format = DataFileFormat::Puffin;
+
+    append_delete_file_facts(&mut plan, &mut data_file, "data-0", 0, &delete_file).unwrap();
+
+    assert_eq!(plan.delete_files[0].format, TableFormatDataFileFormat::Unknown("puffin".to_string()));
+    assert!(data_file.position_delete_files.is_empty());
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergDeleteFilesUnsupported]);
 }
 
 #[test]
