@@ -11,8 +11,12 @@ use super::{
     execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
     execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
     materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
-    partial_aggregate_work_reservation_upper_bound_bytes, release_partials_reverse,
-    should_execute_incremental_partitioned_final_aggregate_merge,
+    partial_aggregate_work_reservation_upper_bound_bytes,
+    partitioned::{
+        execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks, partitioned_aggregate_partition_count,
+        should_partition_whole_input_grouped_aggregate,
+    },
+    release_partials_reverse, should_execute_incremental_partitioned_final_aggregate_merge,
     statistical_partial_aggregate_work_reservation_upper_bound_bytes,
     stream_bounded_join_leaf_local_parquet_source_chunks, unsupported_bounded_shape,
 };
@@ -821,8 +825,10 @@ fn split_compiled_aggregate_stream_frame(
 /// native tolerant libcudf std pass over the complete input.
 ///
 /// This function reads every chunk's raw data (source read + filter +
-/// projections, but NO partial aggregate), concatenates all raw frames into a
-/// single in-memory frame, then runs one full groupby aggregate.
+/// projections, but NO partial aggregate). When the aggregate groups by a key
+/// it hands the chunks to the group-key partitioned path, which rebuilds one
+/// partition at a time; otherwise it concatenates all raw frames into a single
+/// in-memory frame and runs one full groupby aggregate.
 pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_chunks(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -840,6 +846,19 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
                 return Err(error);
             },
         }
+    }
+
+    let raw_bytes = raw_frames.iter().map(CommittedPartial::device_bytes).sum::<u64>();
+    if raw_frames.len() > 1
+        && should_partition_whole_input_grouped_aggregate(execution.context(), bounded.aggregate.0, raw_bytes)
+    {
+        let partition_count = partitioned_aggregate_partition_count(execution.context(), raw_bytes);
+        return execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks(
+            execution,
+            bounded,
+            raw_frames,
+            partition_count,
+        );
     }
 
     if raw_frames.len() == 1 {

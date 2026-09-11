@@ -86,6 +86,8 @@ struct cudf_exec_context {
   int32_t device;
   cudf_current_resource_route_handle current_resource_route = nullptr;
   bool stream_provider_execution_scope = false;
+  /// Parquet read/decompression scratch limit in bytes, or 0 for no limit.
+  std::size_t parquet_pass_read_limit = 0;
   cudf_device_guard guard;
 
   cudf_exec_context(rmm::cuda_stream_view stream,

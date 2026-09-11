@@ -16,6 +16,12 @@ extern "C" {
 /// and the shim must switch to it before entering libcudf.
 #define CUDF_EXEC_FLAG_DEVICE_EXPLICIT 1u
 
+/// Bit 1 of `flags`: when set, `reserved[0]` bounds the read and decompression
+/// scratch of Parquet reads, in bytes, which row-group selection alone cannot
+/// bound. The rows returned are unchanged. The limit is a hint: a single row
+/// group that does not fit within it is still loaded.
+#define CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT 2u
+
 /// Versioned execution options for compute and host-materialization APIs.
 ///
 /// Set `struct_size` to `sizeof(cudf_exec_options_t)`.
@@ -33,7 +39,9 @@ extern "C" {
 ///
 /// `mr` must outlive any outputs allocated through it.
 ///
-/// `reserved` must be zero in this version.
+/// `reserved[0]` carries the Parquet pass read limit in bytes when
+/// `CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT` is set in `flags`; it must be zero
+/// otherwise. The remaining `reserved` entries must be zero in this version.
 typedef struct cudf_exec_options_t {
   size_t struct_size;
   int32_t device;

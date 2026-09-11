@@ -303,6 +303,23 @@ impl Runtime {
         Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
     }
 
+    /// [`Self::with_memory_resource_override`] that also bounds Parquet read
+    /// and decompression scratch to `parquet_pass_read_limit` bytes.
+    ///
+    /// The resource override caps what an operation may allocate, turning an
+    /// oversized read into a failure; the pass limit instead makes the read
+    /// decode in passes that fit.
+    pub(crate) fn with_memory_resource_override_and_parquet_pass_read_limit(
+        &self,
+        mr: &DeviceMemoryResource,
+        parquet_pass_read_limit: u64,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
+        let domain = ExecutionDomain::with_parquet_pass_read_limit(&domain, parquet_pass_read_limit);
+        Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
+    }
+
     pub(crate) fn with_execution_overrides(
         &self,
         stream: &CudaStream,

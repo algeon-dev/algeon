@@ -20,6 +20,7 @@ use crate::core::{error::Result, memory::DeviceMemoryResource};
 pub struct ExecutionOverrides<'a> {
     stream: Option<&'a CudaStream>,
     mr: Option<&'a DeviceMemoryResource>,
+    parquet_pass_read_limit: u64,
 }
 
 impl<'a> ExecutionOverrides<'a> {
@@ -54,12 +55,23 @@ impl<'a> ExecutionOverrides<'a> {
         self
     }
 
+    /// Bound the read and decompression scratch of Parquet reads in this
+    /// operation to `limit` bytes. Zero means no limit.
+    ///
+    /// The rows returned are unchanged. The limit is a hint: a single row group
+    /// that does not fit within it is still loaded.
+    pub fn with_parquet_pass_read_limit(mut self, limit: u64) -> Self {
+        self.parquet_pass_read_limit = limit;
+        self
+    }
+
     pub(crate) fn resolve_output_domain(&self, input_domain: &Arc<ExecutionDomain>) -> Result<Arc<ExecutionDomain>> {
-        ExecutionDomain::resolve_with_borrowed_override(
+        let domain = ExecutionDomain::resolve_with_borrowed_override(
             input_domain,
             self.stream,
             self.mr,
             "execution_overrides::resolve_output_domain",
-        )
+        )?;
+        Ok(ExecutionDomain::with_parquet_pass_read_limit(&domain, self.parquet_pass_read_limit))
     }
 }

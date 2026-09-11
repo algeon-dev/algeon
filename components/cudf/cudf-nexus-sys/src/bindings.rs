@@ -224,7 +224,7 @@ pub struct cudf_memory_failure_info_t {
     #[doc = " With `CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN`, `reserved[0]`\n stores a `cudf_memory_failure_domain_t`, then primary and member ids."]
     pub reserved: [u64; 3usize],
 }
-#[doc = " Versioned execution options for compute and host-materialization APIs.\n\n Set `struct_size` to `sizeof(cudf_exec_options_t)`.\n\n Execution-sensitive production entry points require a non-NULL options\n pointer, `CUDF_EXEC_FLAG_DEVICE_EXPLICIT`, a non-NULL `stream`, and a\n non-NULL `mr`. Passing NULL for the options pointer, clearing the explicit\n device flag, or leaving `stream` / `mr` NULL is only accepted by narrow\n permissive diagnostics and legacy regression hooks.\n\n `device`:  CUDA device ordinal to execute on.  When\n            `CUDF_EXEC_FLAG_DEVICE_EXPLICIT` is set in `flags`, the shim\n            switches to this device before entering libcudf. Production\n            operation paths reject options with the flag clear.\n\n `mr` must outlive any outputs allocated through it.\n\n `reserved` must be zero in this version."]
+#[doc = " Versioned execution options for compute and host-materialization APIs.\n\n Set `struct_size` to `sizeof(cudf_exec_options_t)`.\n\n Execution-sensitive production entry points require a non-NULL options\n pointer, `CUDF_EXEC_FLAG_DEVICE_EXPLICIT`, a non-NULL `stream`, and a\n non-NULL `mr`. Passing NULL for the options pointer, clearing the explicit\n device flag, or leaving `stream` / `mr` NULL is only accepted by narrow\n permissive diagnostics and legacy regression hooks.\n\n `device`:  CUDA device ordinal to execute on.  When\n            `CUDF_EXEC_FLAG_DEVICE_EXPLICIT` is set in `flags`, the shim\n            switches to this device before entering libcudf. Production\n            operation paths reject options with the flag clear.\n\n `mr` must outlive any outputs allocated through it.\n\n `reserved[0]` carries the Parquet pass read limit in bytes when\n `CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT` is set in `flags`; it must be zero\n otherwise. The remaining `reserved` entries must be zero in this version."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_exec_options_t {
@@ -572,6 +572,7 @@ pub struct cudf_prepared_replace_with_backrefs_handle_state {
     _unused: [u8; 0],
 }
 pub const CUDF_EXEC_FLAG_DEVICE_EXPLICIT: u32 = 1;
+pub const CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT: u32 = 2;
 pub const CUDF_SUCCESS: cudf_status_t = 0;
 pub const CUDF_ERROR_INVALID_OPERATION: cudf_status_t = 1;
 pub const CUDF_ERROR_CUDA: cudf_status_t = 2;

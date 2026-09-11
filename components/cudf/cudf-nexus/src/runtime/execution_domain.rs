@@ -76,6 +76,8 @@ pub(crate) struct ExecutionDomain {
     affinity_owner: Arc<RuntimeAffinityOwner>,
     boundary_observer: Option<BoundaryObserverRef>,
     retained_lifetimes: RetainedLifetimes,
+    /// Parquet read/decompression scratch limit in bytes, or 0 for no limit.
+    parquet_pass_read_limit: u64,
 }
 
 /// Immutable device authority shared by all execution-domain FFI entry.
@@ -102,17 +104,29 @@ impl DeviceExecutionAuthority {
         Self { device }
     }
 
-    fn enter(&self, stream: &CudaStream, mr: &DeviceMemoryResource) -> Result<EnteredExecution> {
+    fn enter(
+        &self,
+        stream: &CudaStream,
+        mr: &DeviceMemoryResource,
+        parquet_pass_read_limit: u64,
+    ) -> Result<EnteredExecution> {
         let entry = DeviceGuard::enter(self.device, "execution_domain::enter")?;
+        let mut flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+        let mut reserved = [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS];
+        // The shim rejects the flag paired with a zero limit.
+        if parquet_pass_read_limit > 0 {
+            flags |= cudf_sys::CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT;
+            reserved[0] = parquet_pass_read_limit;
+        }
         Ok(EnteredExecution {
             _entry: entry,
             options: cudf_sys::cudf_exec_options_t {
                 struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
                 device: self.device.ordinal_raw(),
-                flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
+                flags,
                 stream: stream.as_raw(),
                 mr: mr.as_raw(),
-                reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
+                reserved,
             },
         })
     }
@@ -242,6 +256,7 @@ impl ExecutionDomain {
     ) -> Result<Arc<Self>> {
         mr.register_stream_for_retirement(&stream);
         Ok(Arc::new(Self {
+            parquet_pass_read_limit: 0,
             device,
             authority: DeviceExecutionAuthority::new(device),
             binding_extensions: Arc::new(BindingExtensions::default()),
@@ -273,6 +288,7 @@ impl ExecutionDomain {
         let stream = Arc::new(CudaStream::new()?);
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
         let domain = Arc::new(Self {
+            parquet_pass_read_limit: 0,
             device,
             authority: DeviceExecutionAuthority::new(device),
             binding_extensions: Arc::new(BindingExtensions::default()),
@@ -406,7 +422,29 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn enter_execution(&self) -> Result<EnteredExecution> {
-        self.authority.enter(&self.stream, &self.mr)
+        self.authority.enter(&self.stream, &self.mr, self.parquet_pass_read_limit)
+    }
+
+    /// Derives a domain whose Parquet reads decode in passes bounded by
+    /// `limit` bytes of read and decompression scratch.
+    pub(crate) fn with_parquet_pass_read_limit(input: &Arc<Self>, limit: u64) -> Arc<Self> {
+        if limit == input.parquet_pass_read_limit {
+            return Arc::clone(input);
+        }
+        Arc::new(Self {
+            device: input.device,
+            authority: DeviceExecutionAuthority::new(input.device),
+            binding_extensions: Arc::clone(&input.binding_extensions),
+            stream: Arc::clone(&input.stream),
+            mr: Arc::clone(&input.mr),
+            workflow_id: input.workflow_id,
+            bundle_id: input.bundle_id,
+            binding_id: input.binding_id,
+            affinity_owner: Arc::clone(&input.affinity_owner),
+            boundary_observer: input.boundary_observer.clone(),
+            retained_lifetimes: input.retained_lifetimes.clone(),
+            parquet_pass_read_limit: limit,
+        })
     }
 
     pub(crate) fn stream(&self) -> &CudaStream {
@@ -456,6 +494,7 @@ impl ExecutionDomain {
         mr.register_stream_for_retirement(stream.as_ref());
 
         Ok(Arc::new(Self {
+            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
             authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::new(BindingExtensions::default()),
@@ -478,6 +517,7 @@ impl ExecutionDomain {
             return Ok(Arc::clone(input));
         };
         Ok(Arc::new(Self {
+            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
             authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::clone(&input.binding_extensions),
@@ -497,6 +537,7 @@ impl ExecutionDomain {
             return Ok(Arc::clone(input));
         };
         Ok(Arc::new(Self {
+            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
             authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::clone(&input.binding_extensions),
@@ -531,6 +572,7 @@ impl ExecutionDomain {
             return Ok(Arc::clone(input));
         }
         Ok(Arc::new(Self {
+            parquet_pass_read_limit: input.parquet_pass_read_limit,
             device: input.device,
             authority: DeviceExecutionAuthority::new(input.device),
             binding_extensions: Arc::clone(&input.binding_extensions),

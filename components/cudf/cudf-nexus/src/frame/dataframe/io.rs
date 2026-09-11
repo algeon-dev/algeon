@@ -1511,6 +1511,16 @@ fn dataframe_from_parquet_table_options(
     Ok(frame)
 }
 
+/// Read/decompression scratch budget for one source-chunk read.
+///
+/// The decoded output must fit inside the same budget, so scratch takes a share
+/// of it rather than all of it. The divisor is a starting point, not a measured
+/// optimum.
+fn parquet_pass_read_limit_for_budget(budget_bytes: usize) -> u64 {
+    const SCRATCH_SHARE_DIVISOR: u64 = 2;
+    (budget_bytes as u64) / SCRATCH_SHARE_DIVISOR
+}
+
 fn read_parquet_source_chunk_with_budget_input(
     runtime: &Runtime,
     source: &LocalParquetSource,
@@ -1520,8 +1530,14 @@ fn read_parquet_source_chunk_with_budget_input(
     operation: &'static str,
     input: SourceChunkReadInput<'_>,
 ) -> Result<BudgetedExecutionOutcome<ParquetSourceChunkReadOutput>> {
+    // Shapes the read only; the allocator remains the single arbiter of the
+    // query's allocation limit.
     let budget_runtime = runtime
-        .with_memory_resource_override(token.memory_resource(), operation)
+        .with_memory_resource_override_and_parquet_pass_read_limit(
+            token.memory_resource(),
+            parquet_pass_read_limit_for_budget(token.request().budget_bytes()),
+            operation,
+        )
         .map_err(|error| token.annotate_error(error, operation))?;
     let output = match input {
         SourceChunkReadInput::Path => read_parquet_source_chunk_frame(&budget_runtime, source, chunk, mode, operation),
@@ -2255,5 +2271,64 @@ impl ParquetWriteOptions {
             Some(rt) => base.with_runtime(rt).build(),
             None => base.build(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// A bounded pass-read limit must decode the exact same rows, in the
+    /// same order, as the unbounded one-shot reader.
+    ///
+    /// `Runtime::with_memory_resource_override_and_parquet_pass_read_limit`
+    /// is `pub(crate)`, so this contract is exercised as a unit test here
+    /// rather than from `tests/`, which only sees the crate's public API.
+    #[test]
+    fn parquet_pass_read_limit_preserves_row_order_across_multiple_passes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pass_read_limit.parquet");
+        let runtime = Runtime::new().unwrap();
+
+        let row_count = 20_000usize;
+        let ids: Vec<i64> = (0..row_count as i64).collect();
+        let values: Vec<i64> = ids.iter().map(|id| id * 7 + 3).collect();
+        let id_series = Series::from_column(runtime.column_from_slice(&ids).unwrap()).unwrap();
+        let value_series = Series::from_column(runtime.column_from_slice(&values).unwrap()).unwrap();
+        let frame = DataFrame::from_series([("id", id_series), ("value", value_series)]).unwrap();
+
+        let write_options =
+            ParquetWriteOptions::builder().filepath(&path).row_group_size_rows(2_000).with_runtime(&runtime).build();
+        frame.write_parquet_with_options(write_options).unwrap();
+
+        let unbounded = DataFrame::read_parquet(&runtime, &path).unwrap();
+        assert_eq!(unbounded.num_rows(), row_count);
+
+        // Well under the ~320 KB of decoded i64 data, so the read spans several
+        // passes rather than one.
+        let pass_read_limit = 64 * 1024;
+        let bounded_runtime = runtime
+            .with_memory_resource_override_and_parquet_pass_read_limit(
+                runtime.memory_resource(),
+                pass_read_limit,
+                "test::parquet_pass_read_limit",
+            )
+            .unwrap();
+        let bounded_options = ParquetReadOptions::builder().filepath(&path).with_runtime(&bounded_runtime).build();
+        let bounded = DataFrame::read_parquet_with_options(bounded_options).unwrap();
+        assert_eq!(bounded.num_rows(), row_count);
+
+        assert_eq!(
+            unbounded.series("id").unwrap().to_vec_strict::<i64>().unwrap(),
+            bounded.series("id").unwrap().to_vec_strict::<i64>().unwrap(),
+        );
+        assert_eq!(
+            unbounded.series("value").unwrap().to_vec_strict::<i64>().unwrap(),
+            bounded.series("value").unwrap().to_vec_strict::<i64>().unwrap(),
+        );
+        assert_eq!(bounded.series("id").unwrap().to_vec_strict::<i64>().unwrap(), ids);
+        assert_eq!(bounded.series("value").unwrap().to_vec_strict::<i64>().unwrap(), values);
     }
 }
