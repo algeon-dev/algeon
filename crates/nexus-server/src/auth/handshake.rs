@@ -10,6 +10,7 @@
 
 use std::sync::LazyLock;
 
+use argon2::Params;
 use arrow_flight::{HandshakeRequest, HandshakeResponse};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures::stream::BoxStream;
@@ -18,10 +19,25 @@ use tonic::{
     metadata::{AsciiMetadataValue, MetadataMap},
 };
 
-use super::{AuthMode, Principal, StaticUserConfig, TokenStore, hash_password, verify_password};
+use super::{AuthInterceptor, AuthMode, Principal, StaticUserConfig, hash_password, verify_password};
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BASIC_PREFIX: &str = "Basic ";
+
+/// Memory budget for handshakes verifying concurrently on the blocking pool.
+/// `password.rs` hashes with Argon2's default params (`m_cost` = 19 MiB per
+/// verification, including the decoy path for unknown users); the tokio
+/// blocking pool defaults to 512 threads, so with no cap a handshake flood
+/// could schedule ~9.5 GiB of concurrent Argon2 work. 256 MiB keeps peak
+/// verification memory small while still allowing real concurrency.
+const VERIFICATION_MEMORY_BUDGET_KIB: u32 = 256 * 1024;
+
+/// Number of Argon2 verifications allowed to run concurrently, derived from
+/// [`VERIFICATION_MEMORY_BUDGET_KIB`] and the actual `m_cost` used by
+/// `password.rs` (Argon2's library default) rather than an arbitrary count.
+pub(crate) fn verification_permits() -> usize {
+    (VERIFICATION_MEMORY_BUDGET_KIB / Params::DEFAULT_M_COST).max(1) as usize
+}
 
 /// Decoy Argon2 hash that gives unknown users the same password-check cost as
 /// known users with wrong passwords.
@@ -47,41 +63,67 @@ type HandshakeResponseStream = BoxStream<'static, Result<HandshakeResponse, Stat
 /// passthrough that emits a single empty response — clients can still
 /// call it (some drivers do unconditionally), and the result is the
 /// same as the pre-auth stub.
+///
+/// Credential verification runs Argon2 (real or decoy), which is
+/// CPU/memory-heavy and must not run inline on an async worker thread.
+/// It is dispatched to [`tokio::task::spawn_blocking`] gated by
+/// `interceptor`'s verification semaphore; when the semaphore is
+/// saturated the handshake fails fast with `resource_exhausted` rather
+/// than queuing, since an unbounded queue of pending verifications is
+/// the same memory DoS as running them inline.
 pub async fn handle_handshake(
-    mode: &AuthMode,
-    tokens: &TokenStore,
+    interceptor: &AuthInterceptor,
     request: Request<Streaming<HandshakeRequest>>,
 ) -> Result<Response<HandshakeResponseStream>, Status> {
+    let token = authenticate_and_issue_token(interceptor, request.metadata()).await?;
+    let mut response = empty_response();
+    if let Some(token) = token {
+        let bearer = AsciiMetadataValue::try_from(format!("Bearer {token}"))
+            .map_err(|_| Status::internal("issued token contains invalid header bytes"))?;
+        response.metadata_mut().insert(AUTHORIZATION_HEADER, bearer);
+    }
+    Ok(response)
+}
+
+/// Metadata-only handshake core: validates credentials (off the async
+/// worker) and mints a bearer token. Split out from [`handle_handshake`] so
+/// it is testable without constructing a real [`Streaming`] request body,
+/// which handshake handling never reads.
+async fn authenticate_and_issue_token(
+    interceptor: &AuthInterceptor,
+    metadata: &MetadataMap,
+) -> Result<Option<String>, Status> {
+    let mode = interceptor.mode();
+    let tokens = interceptor.tokens();
     match mode {
-        AuthMode::Disabled => Ok(empty_response()),
+        AuthMode::Disabled => Ok(None),
         AuthMode::BasicBearer { users, .. } => {
-            let (username, password) = extract_basic_credentials(request.metadata())?;
-            let user = authenticate_user(users, &username, &password)?;
+            let (username, password) = extract_basic_credentials(metadata)?;
+            let permit = interceptor
+                .verification_semaphore()
+                .try_acquire()
+                .map_err(|_| Status::resource_exhausted("too many concurrent handshakes, retry later"))?;
 
-            let principal = Principal { username: user.username.clone() };
-            let token = tokens.issue(principal, mode.token_ttl());
+            let users = users.clone();
+            let username =
+                tokio::task::spawn_blocking(move || authenticate_user(&users, &username, &password).map(|()| username))
+                    .await
+                    .map_err(|_| Status::internal("password verification task panicked"))??;
+            drop(permit);
 
-            let mut response = empty_response();
-            let bearer = AsciiMetadataValue::try_from(format!("Bearer {token}"))
-                .map_err(|_| Status::internal("issued token contains invalid header bytes"))?;
-            response.metadata_mut().insert(AUTHORIZATION_HEADER, bearer);
-            Ok(response)
+            let principal = Principal { username };
+            let token = tokens.issue(principal, mode.token_ttl())?;
+            Ok(Some(token))
         },
     }
 }
 
 /// Authenticate while spending Argon2 work for unknown usernames, hiding
-/// username existence from handshake timing.
-fn authenticate_user<'a>(
-    users: &'a [StaticUserConfig],
-    username: &str,
-    password: &str,
-) -> Result<&'a StaticUserConfig, Status> {
+/// username existence from handshake timing. Takes an owned user list so
+/// the check can run inside `spawn_blocking`, which requires `'static`.
+fn authenticate_user(users: &[StaticUserConfig], username: &str, password: &str) -> Result<(), Status> {
     match users.iter().find(|u| u.username == username) {
-        Some(user) => {
-            verify_credential(user, password)?;
-            Ok(user)
-        },
+        Some(user) => verify_credential(user, password),
         None => {
             // Spend decoy Argon2 work, then return the same error as a wrong password.
             let _ = verify_password(password, &DUMMY_PASSWORD_HASH);
@@ -181,8 +223,7 @@ mod tests {
     #[test]
     fn authenticate_user_accepts_correct_credentials() {
         let users = test_users();
-        let user = authenticate_user(&users, "alice", "s3cret").expect("correct credentials authenticate");
-        assert_eq!(user.username, "alice");
+        authenticate_user(&users, "alice", "s3cret").expect("correct credentials authenticate");
     }
 
     #[test]
@@ -216,5 +257,49 @@ mod tests {
         // The decoy must be a real PHC hash so verification performs Argon2 work.
         let outcome = verify_password("any password", &DUMMY_PASSWORD_HASH);
         assert!(matches!(outcome, Ok(false)), "dummy hash must verify as a real Argon2 mismatch, got: {outcome:?}");
+    }
+
+    fn basic_bearer_interceptor() -> AuthInterceptor {
+        let mode = AuthMode::BasicBearer { users: test_users(), token_ttl_secs: 60 };
+        AuthInterceptor::new(mode, super::super::TokenStore::new())
+    }
+
+    fn basic_auth_header(username: &str, password: &str) -> String {
+        format!("Basic {}", BASE64_STANDARD.encode(format!("{username}:{password}")))
+    }
+
+    #[tokio::test]
+    async fn authenticate_and_issue_token_succeeds_for_correct_credentials() {
+        let interceptor = basic_bearer_interceptor();
+        let md = make_metadata(Some(&basic_auth_header("alice", "s3cret")));
+        let token = authenticate_and_issue_token(&interceptor, &md).await.expect("correct credentials succeed");
+        assert!(token.is_some(), "basic_bearer mode must issue a token");
+    }
+
+    #[tokio::test]
+    async fn authenticate_and_issue_token_rejects_unknown_and_wrong_password_identically() {
+        let interceptor = basic_bearer_interceptor();
+        let unknown_md = make_metadata(Some(&basic_auth_header("mallory", "s3cret")));
+        let wrong_md = make_metadata(Some(&basic_auth_header("alice", "wrong")));
+        let unknown = authenticate_and_issue_token(&interceptor, &unknown_md).await.unwrap_err();
+        let wrong = authenticate_and_issue_token(&interceptor, &wrong_md).await.unwrap_err();
+        assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
+        assert_eq!(unknown.code(), wrong.code());
+        assert_eq!(unknown.message(), wrong.message());
+    }
+
+    #[tokio::test]
+    async fn saturated_verification_semaphore_fails_fast_with_resource_exhausted() {
+        let interceptor = basic_bearer_interceptor();
+        // Hold every permit up front so the handshake below cannot acquire
+        // one; this must reject immediately rather than queue.
+        let semaphore = interceptor.verification_semaphore();
+        let permits = semaphore.try_acquire_many(semaphore.available_permits() as u32).expect("acquire all permits");
+
+        let md = make_metadata(Some(&basic_auth_header("alice", "s3cret")));
+        let status = authenticate_and_issue_token(&interceptor, &md).await.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+
+        drop(permits);
     }
 }

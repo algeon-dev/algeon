@@ -7,6 +7,9 @@
 //! interceptor cannot reliably tell from the [`tonic::Request<()>`]
 //! alone which RPC it is gating.
 
+use std::sync::Arc;
+
+use tokio::sync::Semaphore;
 use tonic::{Status, metadata::MetadataMap};
 
 use super::{AuthMode, Principal, TokenStore};
@@ -14,12 +17,16 @@ use super::{AuthMode, Principal, TokenStore};
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BEARER_PREFIX: &str = "Bearer ";
 
-/// Clone-cheap handle over `(mode, token_store)`. Constructed once at
-/// server start and cloned into the Flight SQL service.
+/// Clone-cheap handle over `(mode, token_store, verification_semaphore)`.
+/// Constructed once at server start and cloned into the Flight SQL service.
 #[derive(Clone)]
 pub struct AuthInterceptor {
     mode: AuthMode,
     tokens: TokenStore,
+    /// Bounds Argon2 verifications running concurrently on the blocking
+    /// pool across all handshakes for this server instance. See
+    /// `handshake::verification_permits` for the permit-count derivation.
+    verification_semaphore: Arc<Semaphore>,
 }
 
 impl AuthInterceptor {
@@ -28,7 +35,8 @@ impl AuthInterceptor {
         if matches!(mode, AuthMode::BasicBearer { .. }) {
             super::handshake::warm_unknown_user_timing_decoy();
         }
-        Self { mode, tokens }
+        let verification_semaphore = Arc::new(Semaphore::new(super::handshake::verification_permits()));
+        Self { mode, tokens, verification_semaphore }
     }
 
     pub fn mode(&self) -> &AuthMode {
@@ -37,6 +45,10 @@ impl AuthInterceptor {
 
     pub fn tokens(&self) -> &TokenStore {
         &self.tokens
+    }
+
+    pub(crate) fn verification_semaphore(&self) -> &Semaphore {
+        &self.verification_semaphore
     }
 
     /// Validate the request metadata against the configured mode.
@@ -106,7 +118,7 @@ mod tests {
     #[test]
     fn valid_bearer_returns_principal() {
         let tokens = TokenStore::new();
-        let token = tokens.issue(principal("alice"), Some(Duration::from_secs(60)));
+        let token = tokens.issue(principal("alice"), Some(Duration::from_secs(60))).expect("issue under capacity");
         let mode = AuthMode::BasicBearer { users: vec![], token_ttl_secs: 60 };
         let interceptor = AuthInterceptor::new(mode, tokens);
 

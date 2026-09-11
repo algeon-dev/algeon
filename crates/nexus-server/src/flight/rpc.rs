@@ -10,7 +10,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         &self,
         request: Request<Streaming<HandshakeRequest>>,
     ) -> Result<Response<BoxStream<'static, Result<HandshakeResponse, Status>>>, Status> {
-        handle_handshake(self.auth.mode(), self.auth.tokens(), request).await
+        handle_handshake(&self.auth, request).await
     }
 
     async fn get_flight_info_statement(
