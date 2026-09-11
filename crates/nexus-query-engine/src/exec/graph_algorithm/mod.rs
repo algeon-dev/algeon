@@ -13,8 +13,6 @@ mod implementation;
 #[path = "disabled.rs"]
 mod implementation;
 
-#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
-pub use implementation::force_next_graph_statistics_optional_resource_exhausted_for_test;
 #[cfg(not(feature = "cugraph"))]
 pub(in crate::exec) use implementation::graph_algorithm_feature_disabled;
 #[cfg(feature = "cugraph")]

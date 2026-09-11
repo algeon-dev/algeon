@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use nexus_query_engine::{
-    admission::{bounded_pipeline_admission, bounded_pipeline_rejection_projection},
+    admission::bounded_pipeline_decision,
     capability::CapabilityDecision,
     exec::preflight_query_plan,
     expr::{ColumnRef, Expr},
@@ -423,10 +423,10 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
 fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker() {
     for plan in [knn_plan(false), knn_plan(true)] {
         assert!(plan.contains_vector_algorithm());
-        assert!(bounded_pipeline_admission(&plan).expect("bounded admission should classify vector plan").is_none());
-        let projection = bounded_pipeline_rejection_projection(&plan)
-            .expect("bounded rejection projection should be constructible")
-            .expect("vector plan should have a bounded rejection");
+        let decision = bounded_pipeline_decision(&plan, Default::default())
+            .expect("bounded admission should classify vector plan");
+        assert!(decision.admission().is_none());
+        let projection = decision.rejection_projection().expect("vector plan should have a bounded rejection");
         assert_eq!(projection.reason, "root_join_admission_requires_sink_root_join");
         assert!(!projection.facts.contains_key("memory_boundary"));
         assert!(!projection.facts.contains_key("required_contract"));

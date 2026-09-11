@@ -182,7 +182,7 @@ fn projection_global_limit_admits_projection_over_join_without_aggregate() {
     assert_eq!(plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Limit(_))).count(), 1);
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_projection_global_limit_pipeline(), "{analysis:#?}");
-    let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .unwrap()
         .expect("projection/global-limit join should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::ProjectionGlobalLimit);

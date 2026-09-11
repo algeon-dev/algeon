@@ -1,5 +1,5 @@
 use nexus_query_engine::{
-    admission::{BoundedPipelineAdmission, bounded_pipeline_admission},
+    admission::{BoundedPipelineDecision, bounded_pipeline_decision},
     capability::AggregateStrategyExecutionOptions,
     error::Result,
     expr::Expr,
@@ -41,6 +41,9 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _pipeline_kind = PipelineTaskKind::SourceRead;
     let _aggregate = AggregateStrategyExecutionOptions::default();
     let _triage = TriageSummary::healthy();
-    let _bounded_admission: fn(&QueryPlan) -> Result<Option<BoundedPipelineAdmission>> = bounded_pipeline_admission;
+    let _bounded_decision: fn(
+        &QueryPlan,
+        nexus_query_engine::mode::StatisticalAggregateExecutionMode,
+    ) -> Result<BoundedPipelineDecision> = bounded_pipeline_decision;
     let _source_validation: fn(&LocalParquetSource) -> Result<()> = validate_local_parquet_source;
 }

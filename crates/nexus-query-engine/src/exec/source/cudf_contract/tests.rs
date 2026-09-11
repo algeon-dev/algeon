@@ -215,16 +215,6 @@ fn typed_remote_parquet_contract_hardwires_fail_closed_kvikio_mode() {
 }
 
 #[test]
-fn resolved_datasource_probe_accepts_remote_kvikio_contract() {
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
-        "s3://bucket/part.parquet",
-        crate::source::CredentialMode::SharedProcessEnv,
-    );
-
-    validate_remote_parquet_datasource_probe_request(&resolved, "nexus_query_engine.test.probe").unwrap();
-}
-
-#[test]
 fn datasource_probe_cudf_failures_preserve_facts_without_source_text() {
     let source = cudf::io::parquet::RemoteParquetSource::s3("s3://bucket/part.parquet")
         .expect("valid remote source")

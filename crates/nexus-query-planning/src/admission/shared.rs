@@ -41,10 +41,6 @@ impl CapabilityFirstPipelineAdmission {
         self.candidate_status
     }
 
-    pub(super) fn rejection_reason(&self) -> Option<&'static str> {
-        self.rejection_projection.as_ref().map(|projection| projection.reason)
-    }
-
     pub(super) fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
         self.rejection_projection.as_ref()
     }
@@ -79,12 +75,6 @@ impl CapabilityFirstPipelineAdmission {
 }
 
 pub(super) fn capability_first_bounded_pipeline_admission(
-    plan: &QueryPlan,
-) -> Result<Option<CapabilityFirstPipelineAdmission>> {
-    capability_first_bounded_pipeline_admission_impl(plan)
-}
-
-pub(super) fn capability_first_bounded_cugraph_pipeline_admission(
     plan: &QueryPlan,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
     capability_first_bounded_pipeline_admission_impl(plan)
@@ -229,7 +219,10 @@ mod tests {
             .expect("join plan should be considered by bounded admission");
 
         assert!(matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Rejected));
-        assert_eq!(admission.rejection_reason(), Some("unsupported_compiled_pipeline_envelope"));
+        assert_eq!(
+            admission.rejection_projection().map(|projection| projection.reason),
+            Some("unsupported_compiled_pipeline_envelope")
+        );
         assert!(admission.pipeline().is_none());
 
         assert!(

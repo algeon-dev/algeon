@@ -20,7 +20,7 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     metrics::QueryMetrics,
     plan::QueryPlan,
     runtime::{ExecutionContext, resident::GpuResultHandle},
@@ -246,12 +246,8 @@ impl CuvsAlgoExec {
             Arc::clone(&self.output_schema),
             sink,
         )?;
-        let outcome = execute_query_plan_with_gpu_inputs_observed(
-            native_context,
-            &plan,
-            &uploaded.inputs,
-            self.native_execution_config.runtime_observation_config(),
-        );
+        let outcome =
+            execute_query_plan(native_context, QueryExecutionRequest::new(&plan).with_gpu_inputs(&uploaded.inputs));
         let (result, mut query_metrics, _observation) = outcome.into_parts();
         record_cuvs_staging_boundaries(&mut query_metrics, &host_to_device_uploads);
         metrics.record_query_metrics(&query_metrics);

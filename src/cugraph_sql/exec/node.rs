@@ -684,10 +684,7 @@ impl CugraphAlgoExec {
                                     let handle = result
                                         .gpu_handle()
                                         .expect("host materialization route requires a GPU publication");
-                                    let mut graph_metrics = GraphExecutionMetrics::new(
-                                        metrics,
-                                        self.native_execution_config.runtime_observation_config(),
-                                    );
+                                    let mut graph_metrics = GraphExecutionMetrics::new(metrics);
                                     let output = materialize_gpu_output_eagerly(
                                         handle,
                                         task_context.as_ref(),
@@ -729,8 +726,7 @@ impl CugraphAlgoExec {
         singleflight_leader: Option<&mut GraphBfsLeader>,
     ) -> Result<EagerCugraphHostOutput> {
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let mut graph_metrics =
-            GraphExecutionMetrics::new(metrics, self.native_execution_config.runtime_observation_config());
+        let mut graph_metrics = GraphExecutionMetrics::new(metrics);
         let result = async {
             let UploadedCugraphInputs {
                 edge_schema,
@@ -835,8 +831,7 @@ impl CugraphAlgoExec {
         let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
             .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let mut graph_metrics =
-            GraphExecutionMetrics::new(&metrics, self.native_execution_config.runtime_observation_config());
+        let mut graph_metrics = GraphExecutionMetrics::new(&metrics);
         let result = async {
             let UploadedCugraphInputs {
                 edge_schema,

@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 use super::{
     CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support,
     shared::{
-        CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission,
-        capability_first_bounded_cugraph_pipeline_admission, capability_first_bounded_pipeline_admission,
+        CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
     },
 };
 use crate::{
@@ -54,101 +53,88 @@ impl BoundedPipelineAdmission {
     }
 }
 
-pub fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
+/// One capability-first decision for bounded execution and report projection.
+///
+/// Consumers inspect the admitted pipeline or rejection evidence from this
+/// value. Execution consumes it through [`Self::into_execution_admission`] so
+/// unsupported compiled-pipeline classifications retain their structured error
+/// behavior without re-running capability analysis.
+#[derive(Debug)]
+pub struct BoundedPipelineDecision {
+    admission: Option<BoundedPipelineAdmission>,
+    rejection_projection: Option<CapabilityRejectionProjection>,
+    execution_error: Option<QueryError>,
+}
+
+impl BoundedPipelineDecision {
+    /// Admitted analysis, envelope, and compiled pipeline, when applicable.
+    pub fn admission(&self) -> Option<&BoundedPipelineAdmission> {
+        self.admission.as_ref()
+    }
+
+    /// Rejection evidence produced by the same capability decision.
+    pub fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
+        self.rejection_projection.as_ref()
+    }
+
+    /// Converts the decision into the execution-facing admission result.
+    pub fn into_execution_admission(self) -> Result<Option<BoundedPipelineAdmission>> {
+        if let Some(error) = self.execution_error {
+            return Err(error);
+        }
+        Ok(self.admission)
+    }
+}
+
+/// Produces the canonical bounded-pipeline decision for a plan and execution mode.
+pub fn bounded_pipeline_decision(
+    plan: &QueryPlan,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> Result<BoundedPipelineDecision> {
     let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
-        return Ok(None);
+        return Ok(BoundedPipelineDecision { admission: None, rejection_projection: None, execution_error: None });
     };
-    if row_delete_application_rejection_projection(plan).is_some() {
-        return Ok(None);
+    if !plan.contains_graph_algorithm()
+        && let Some(rejection_projection) = row_delete_application_rejection_projection(plan)
+    {
+        return Ok(BoundedPipelineDecision {
+            admission: None,
+            rejection_projection: Some(rejection_projection),
+            execution_error: None,
+        });
     }
     match admission.candidate_status() {
-        CapabilityFirstCandidateStatus::Admitted => capability_admission_from_capability_first(admission).map(Some),
-        CapabilityFirstCandidateStatus::Rejected => match admission.rejection_reason() {
-            Some("unsupported_sink_boundary") | Some("unsupported_compiled_pipeline_envelope") => {
-                Err(compiled_bounded_pipeline_required_error(
-                    plan,
-                    admission.pipeline(),
-                    admission
-                        .rejection_projection()
-                        .expect("rejected capability-first admission should carry a projection"),
+        CapabilityFirstCandidateStatus::Admitted => {
+            let mut admission = capability_admission_from_capability_first(admission)?;
+            if admission.envelope() == CapabilityEnvelope::ExactStatisticalJoinFinalFullSort
+                && !statistical_aggregate_execution_mode.is_datafusion_exact()
+            {
+                admission = tolerant_statistical_join_final_full_sort_admission(plan, admission)?;
+            }
+            Ok(BoundedPipelineDecision {
+                admission: Some(admission),
+                rejection_projection: None,
+                execution_error: None,
+            })
+        },
+        CapabilityFirstCandidateStatus::Rejected => {
+            let rejection_projection = admission
+                .rejection_projection()
+                .expect("rejected capability-first admission should carry a projection")
+                .clone();
+            let execution_error = (plan.contains_graph_algorithm()
+                || matches!(
+                    rejection_projection.reason,
+                    "unsupported_sink_boundary" | "unsupported_compiled_pipeline_envelope"
                 ))
-            },
-            _ => Ok(None),
+            .then(|| compiled_bounded_pipeline_required_error(plan, admission.pipeline(), &rejection_projection));
+            Ok(BoundedPipelineDecision {
+                admission: None,
+                rejection_projection: Some(rejection_projection),
+                execution_error,
+            })
         },
     }
-}
-
-#[doc(hidden)]
-pub fn bounded_cugraph_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
-    let Some(admission) = capability_first_bounded_cugraph_pipeline_admission(plan)? else {
-        return Ok(None);
-    };
-    match admission.candidate_status() {
-        CapabilityFirstCandidateStatus::Admitted => capability_admission_from_capability_first(admission).map(Some),
-        CapabilityFirstCandidateStatus::Rejected => Err(compiled_bounded_pipeline_required_error(
-            plan,
-            admission.pipeline(),
-            admission.rejection_projection().expect("rejected cuGraph pipeline admission should carry a projection"),
-        )),
-    }
-}
-
-/// Runs capability-envelope admission for a query plan under the caller-selected
-/// floating statistical aggregate execution contract.
-///
-/// Shape-only admission remains available through
-/// [`bounded_pipeline_admission`]. This mode-aware facade is the
-/// execution/report boundary: exact statistical final-sort shapes are admitted
-/// under either their exact host-Welford contract or a separate GPU-native
-/// tolerant contract.
-pub fn bounded_pipeline_admission_with_statistical_aggregate_mode(
-    plan: &QueryPlan,
-    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Result<Option<BoundedPipelineAdmission>> {
-    let Some(admission) = bounded_pipeline_admission(plan)? else {
-        return Ok(None);
-    };
-    if admission.envelope() == CapabilityEnvelope::ExactStatisticalJoinFinalFullSort
-        && !statistical_aggregate_execution_mode.is_datafusion_exact()
-    {
-        return tolerant_statistical_join_final_full_sort_admission(plan, admission).map(Some);
-    }
-    Ok(Some(admission))
-}
-
-/// Returns the shared capability-envelope rejection projection for a join plan.
-///
-/// This mirrors the one capability-first admission path without converting
-/// compiled-runtime ownership failures into execution errors, so report
-/// surfaces can project the same rejection evidence.
-pub fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
-    let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
-        return Ok(None);
-    };
-    if let Some(projection) = row_delete_application_rejection_projection(plan) {
-        return Ok(Some(projection));
-    }
-    Ok(admission.rejection_projection().cloned())
-}
-
-/// Returns the capability-envelope rejection projection after applying the
-/// caller-selected floating statistical aggregate execution contract.
-pub fn bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
-    plan: &QueryPlan,
-    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Result<Option<CapabilityRejectionProjection>> {
-    let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
-        return Ok(None);
-    };
-    if let Some(projection) = row_delete_application_rejection_projection(plan) {
-        return Ok(Some(projection));
-    }
-    if admission.envelope() == Some(CapabilityEnvelope::ExactStatisticalJoinFinalFullSort)
-        && !statistical_aggregate_execution_mode.is_datafusion_exact()
-    {
-        return Ok(None);
-    }
-    Ok(admission.rejection_projection().cloned())
 }
 
 fn row_delete_application_rejection_projection(plan: &QueryPlan) -> Option<CapabilityRejectionProjection> {

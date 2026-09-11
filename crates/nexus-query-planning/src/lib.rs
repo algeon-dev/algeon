@@ -34,3 +34,5 @@ pub mod util;
 #[doc(hidden)]
 pub mod validation;
 mod vector_validation;
+
+pub use validation::validate_query_plan;

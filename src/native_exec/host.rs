@@ -18,7 +18,7 @@ use datafusion::{
 };
 use nexus_query_engine::{
     admission::AttemptCapabilityEvidence,
-    exec::{execute_query_plan_observed, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::QueryPlan,
 };
 
@@ -225,7 +225,6 @@ impl ExecutionPlan for NexusNativeExec {
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
-        let runtime_observation_config = execution_config.runtime_observation_config();
         let account_memory_pool = execution_config.host_output_memory_pool_accounting();
         let metrics = NexusNativeMetrics::new_with_capture_and_shape(
             &self.metrics,
@@ -320,7 +319,7 @@ impl ExecutionPlan for NexusNativeExec {
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
                         // Once native execution starts, the attempt is terminal: errors are surfaced with stable
                         // facts by `native_query_runtime_error` and are not replayed through DataFusion.
-                        let outcome = execute_query_plan_observed(&context, &gpu_plan, runtime_observation_config);
+                        let outcome = execute_query_plan(&context, QueryExecutionRequest::new(&gpu_plan));
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "datafusion_nexus.native_exec.execute",

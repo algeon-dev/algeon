@@ -1,5 +1,100 @@
 //! Ordered native-to-DataFusion metric contract.
 
+#[cfg(test)]
+use nexus_query_engine::metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, QueryMetrics};
+
+#[cfg(test)]
+const fn metric(
+    name: &'static str,
+    unit: MetricUnit,
+    aggregation: MetricAggregation,
+    semantics: &'static str,
+    direction: Option<MetricDirection>,
+) -> MetricDescriptor {
+    MetricDescriptor { name, unit, aggregation, semantics, direction, healthy: None }
+}
+
+/// DataFusion metrics projected from adapter-owned admission, cache, and
+/// sealed-attempt state rather than from `QueryMetrics`.
+#[cfg(test)]
+const DATAFUSION_PROJECTION_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
+    metric(
+        "admission_sequence",
+        MetricUnit::Count,
+        MetricAggregation::Last,
+        "Admission sequence assigned by the query service.",
+        None,
+    ),
+    metric(
+        "admission_sequence_observed",
+        MetricUnit::Boolean,
+        MetricAggregation::Last,
+        "Whether an admission sequence was observed for the execution.",
+        None,
+    ),
+    metric(
+        "admission_wait_time",
+        MetricUnit::Nanos,
+        MetricAggregation::Sum,
+        "Time spent waiting for query-service admission.",
+        Some(MetricDirection::LowerIsBetter),
+    ),
+    metric(
+        "admission_wait_time_observed",
+        MetricUnit::Boolean,
+        MetricAggregation::Last,
+        "Whether query-service admission wait time was observed.",
+        None,
+    ),
+    metric(
+        "device_ordinal",
+        MetricUnit::Count,
+        MetricAggregation::Last,
+        "GPU device ordinal selected by query-service admission.",
+        None,
+    ),
+    metric(
+        "device_ordinal_observed",
+        MetricUnit::Boolean,
+        MetricAggregation::Last,
+        "Whether a GPU device ordinal was observed for the execution.",
+        None,
+    ),
+    metric(
+        "query_grant_bytes",
+        MetricUnit::DeviceBytes,
+        MetricAggregation::Last,
+        "Immutable device-memory grant assigned by query-service admission.",
+        None,
+    ),
+    metric(
+        "query_grant_bytes_observed",
+        MetricUnit::Boolean,
+        MetricAggregation::Last,
+        "Whether a query-service device-memory grant was observed.",
+        None,
+    ),
+    metric(
+        "native_lakehouse_cache_fill_event_snapshot_rows",
+        MetricUnit::Count,
+        MetricAggregation::RowCount,
+        "Nested lakehouse cache-fill event snapshot rows.",
+        None,
+    ),
+    metric(
+        "attempt_report_rows",
+        MetricUnit::Count,
+        MetricAggregation::RowCount,
+        "Fixed-cardinality rows projected from sealed attempt reports.",
+        None,
+    ),
+];
+
+#[cfg(test)]
+fn native_datafusion_metric_descriptors() -> impl Iterator<Item = &'static MetricDescriptor> {
+    QueryMetrics::descriptors().iter().chain(DATAFUSION_PROJECTION_METRIC_DESCRIPTORS)
+}
+
 /// Storage and DataFusion category attached to a native metric descriptor.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,9 +289,10 @@ for_each_native_nexus_metric!(define_contract);
 mod tests {
     use std::collections::BTreeSet;
 
-    use nexus_query_engine::metrics::native_datafusion_metric_descriptors;
-
-    use super::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES;
+    use super::{
+        DATAFUSION_PROJECTION_METRIC_DESCRIPTORS, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, QueryMetrics,
+        native_datafusion_metric_descriptors,
+    };
 
     #[test]
     fn public_contract_names_exactly_match_engine_native_metric_descriptors() {
@@ -217,5 +313,11 @@ mod tests {
             "the public DataFusion metric contract must not duplicate a name"
         );
         assert_eq!(descriptor_name_set, contract_name_set);
+
+        let query_names = QueryMetrics::descriptors().iter().map(|descriptor| descriptor.name).collect::<BTreeSet<_>>();
+        let projection_names =
+            DATAFUSION_PROJECTION_METRIC_DESCRIPTORS.iter().map(|descriptor| descriptor.name).collect::<BTreeSet<_>>();
+        assert_eq!(projection_names.len(), DATAFUSION_PROJECTION_METRIC_DESCRIPTORS.len());
+        assert!(query_names.is_disjoint(&projection_names));
     }
 }

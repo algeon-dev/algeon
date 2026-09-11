@@ -1145,10 +1145,8 @@ fn mode_admission_gate_decision(
 }
 
 fn bounded_admitted(plan: &QueryPlan) -> Option<bool> {
-    match crate::admission::bounded_pipeline_admission(plan) {
-        Ok(Some(_)) => Some(true),
-        Ok(None) => Some(false),
-        Err(error) if error.code() == crate::error::QueryErrorCode::UnsupportedPlanShape => Some(false),
+    match crate::admission::bounded_pipeline_decision(plan, crate::mode::StatisticalAggregateExecutionMode::default()) {
+        Ok(decision) => Some(decision.admission().is_some()),
         Err(_) => None,
     }
 }

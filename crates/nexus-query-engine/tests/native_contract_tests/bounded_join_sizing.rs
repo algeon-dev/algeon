@@ -1,10 +1,8 @@
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
-use nexus_query_engine::{
-    error::QueryErrorCode,
-    exec::{
-        JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
-        join_output_upper_bound_bytes,
-    },
+use nexus_query_engine::error::QueryErrorCode;
+use nexus_query_planning::materialization_sizing::{
+    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
+    join_output_upper_bound_bytes,
 };
 
 fn fixed_column(data_type: ArrowDataType) -> JoinOutputColumnUpperBoundInput {

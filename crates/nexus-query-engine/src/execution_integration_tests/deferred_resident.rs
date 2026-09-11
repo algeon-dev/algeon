@@ -411,7 +411,7 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
         immutable_grant,
         "activation must retain the original immutable grant"
     );
-    let result = crate::exec::execute_query_plan_with_gpu_inputs(&activated, &consumer_plan, &inputs)
+    let result = execute_plan(&activated, &consumer_plan, Some(&inputs))
         .expect("two LEFT JOIN consumer executes after exact resident refinement");
     let batch = result.output().as_host_arrow().expect("consumer host output");
     assert_eq!(batch.num_rows(), 12, "duplicate first-role matches must multiply six input pairs");

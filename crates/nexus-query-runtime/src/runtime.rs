@@ -59,12 +59,12 @@ pub use backend_lifecycle::BackendLifecycle;
 #[doc(hidden)]
 pub use backend_lifecycle::ObservationPermit;
 pub use backend_metrics::{
-    BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BACKEND_METRIC_DEVICE_CAPACITY,
-    BackendAdmissionHealth, BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration,
-    BackendAttemptDurations, BackendAttemptMetricsSnapshot, BackendAttemptOutcome, BackendDeviceMetricsSnapshot,
-    BackendHistogramProjection, BackendHistogramSnapshot, BackendMemoryFailureTelemetry, BackendMetricAttribute,
-    BackendMetricAttributeValue, BackendMetricProjectionError, BackendMetricSample, BackendMetricSampleValue,
-    BackendMetricsSnapshot, BackendTelemetryAvailability, BackendTelemetryMetricsSnapshot, BackendTelemetryRefresh,
+    BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, BACKEND_METRIC_DEVICE_CAPACITY, BackendAdmissionHealth,
+    BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptDurations,
+    BackendAttemptMetricsSnapshot, BackendAttemptOutcome, BackendDeviceMetricsSnapshot, BackendHistogramProjection,
+    BackendHistogramSnapshot, BackendMemoryFailureTelemetry, BackendMetricAttribute, BackendMetricAttributeValue,
+    BackendMetricProjectionError, BackendMetricSample, BackendMetricSampleValue, BackendMetricsSnapshot,
+    BackendTelemetryAvailability, BackendTelemetryMetricsSnapshot, BackendTelemetryRefresh,
     BackendTelemetryRefreshSnapshot, BackendTelemetrySource, project_backend_histogram,
 };
 pub use cache::{
@@ -127,3 +127,5 @@ pub use service_stream::{
 };
 #[doc(hidden)]
 pub use service_stream::{ServiceStreamPool, SourceReadStreamLease};
+
+pub use crate::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS;

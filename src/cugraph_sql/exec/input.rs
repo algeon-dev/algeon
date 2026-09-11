@@ -8,12 +8,12 @@ use super::{
     BoxFuture, ChildrenPropertiesMode, CugraphAlgorithmSpec, DataFusionError, Error, ErrorCode, ExecutionContext,
     ExecutionPlan, GpuDataFrame, GpuResidentInputMap, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics,
     HostBatchCursorConfig, MemoryConsumer, MemoryReservation, NexusNativeComposedExec, NexusNativeExec,
-    NexusNativeMetrics, QueryOutput, RecordBatch, RecordBatchStream, RecordOutput, ReplaceChildrenOptions, Result,
-    SchemaRef, Stream, TaskContext, TryStreamExt, as_nexus_native_composed_exec, as_nexus_native_exec,
-    counted_cudf_runtime, edge_source_output_rows, execute_gpu_resident_producer_with_context,
-    execute_query_plan_observed, execute_query_plan_with_gpu_inputs_observed, finalize_graph_query_outcome,
-    get_record_batch_memory_size, gpu_resident_producer_input_name, native_gpu_resident_producer,
-    plan_contains_nexus_native, prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows,
+    NexusNativeMetrics, QueryExecutionRequest, QueryOutput, RecordBatch, RecordBatchStream, RecordOutput,
+    ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext, TryStreamExt, as_nexus_native_composed_exec,
+    as_nexus_native_exec, counted_cudf_runtime, edge_source_output_rows, execute_gpu_resident_producer_with_context,
+    execute_query_plan, finalize_graph_query_outcome, get_record_batch_memory_size, gpu_resident_producer_input_name,
+    native_gpu_resident_producer, plan_contains_nexus_native, prepare_gpu_resident_producer_for_execution,
+    resident_side_input_output_rows,
 };
 
 const CUGRAPH_HOST_INPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-input-staging]";
@@ -760,7 +760,7 @@ pub(super) async fn execute_edge_source_to_gpu(
         )
         .await
         .clone_with_gpu_resident_sink();
-        let outcome = execute_query_plan_observed(context, &native_plan, metrics.runtime_observation_config());
+        let outcome = execute_query_plan(context, QueryExecutionRequest::new(&native_plan));
         let output = finalize_graph_query_outcome(
             metrics,
             outcome,
@@ -826,12 +826,8 @@ pub(super) async fn execute_edge_source_to_gpu(
                 producer.execute_gpu_result_with_context(context, 0, Arc::clone(&task_context)).await?;
             gpu_inputs.insert(input_name, handle);
         }
-        let outcome = execute_query_plan_with_gpu_inputs_observed(
-            context,
-            &native_plan,
-            &gpu_inputs,
-            metrics.runtime_observation_config(),
-        );
+        let outcome =
+            execute_query_plan(context, QueryExecutionRequest::new(&native_plan).with_gpu_inputs(&gpu_inputs));
         let output = finalize_graph_query_outcome(
             metrics,
             outcome,

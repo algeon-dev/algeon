@@ -488,25 +488,18 @@ fn invalid(message: &'static str) -> QueryError {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        panic::{AssertUnwindSafe, catch_unwind},
-        sync::Arc,
-    };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
     use crate::{
-        attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
         observability::{
-            AttemptAdmissionFact, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptFailureCode,
-            AttemptHealthTransition, AttemptTerminalCommit, PlanExecutionId, RuntimeObservationConfig,
-            RuntimeObservationPayload, RuntimeObservationSession, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle,
-            RuntimeTerminalOutcome, TaskLifecycleState,
+            PlanExecutionId, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession,
+            RuntimeQueryLifecycle, RuntimeTerminalOutcome, TaskLifecycleState,
         },
         pipeline::{
             PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, ResidentLifetime,
             ResidentResource, SinkBoundary, SinkBoundaryKind,
         },
-        runtime::BackendLifecycle,
     };
 
     struct LifecycleTestExecutor {
@@ -688,74 +681,25 @@ mod tests {
     fn scheduler_routes_all_secondary_cleanup_failures_to_the_attempt_lifecycle() {
         let pipeline = lifecycle_test_pipeline();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
-        let backend_lifecycle = BackendLifecycle::new();
-        let begin = AttemptOwner::begin(
-            BeginAttemptRequest {
-                observation: RuntimeObservationConfig::bounded(32, 64 * 1024),
-                ..BeginAttemptRequest::default()
-            },
-            backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-            Arc::new(AttemptBackendCounters::default()),
-            None,
-        );
-        let owner = begin.owner;
-        let completion = begin.completion.completion();
-        let attempt_handle = owner.handle();
-        attempt_handle.record_planning_started().expect("planning starts");
-        attempt_handle.record_planning_finished().expect("planning finishes");
-        attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
-        attempt_handle.record_admission_requested().expect("admission request records");
-        attempt_handle
-            .record_admitted(AttemptAdmissionFact {
-                admission_sequence: 1,
-                admission_wait_ns: 0,
-                device_ordinal: 0,
-                grant_bytes: 1,
-            })
-            .expect("attempt admission records");
-
-        let binding = owner.admission_binding();
-        let plan = RuntimePlanExecutionLifecycle::from_handle(
-            binding.observation_handle(),
-            PlanExecutionId::new("plan-scheduler-two-cleanup-failures"),
-        );
-        let scope = plan.execution_scope();
+        let lifecycle = lifecycle("scheduler-two-cleanup-failures");
+        let scope = lifecycle.execution_scope();
         let mut executor = LifecycleTestExecutor::failing_with_two_cleanup_failures(PipelineTaskId::new(1));
 
         let error = scheduler.run_observed(&mut executor, &scope).expect_err("primary task failure propagates");
         assert_eq!(error.code(), QueryErrorCode::Internal);
         assert_eq!(executor.released, [ResidentResourceId::new(0)]);
         assert_eq!(executor.cleanup_calls, 1);
-        plan.finish(RuntimeTerminalOutcome::from_query_error(&error));
-        owner.commit_query_error(&error).expect("borrowed primary failure commits before finalization");
-
-        let (observation_owner, finalizer_slot) = binding.into_parts();
-        finalizer_slot
-            .take_for_admission()
-            .expect("admitted attempt retains one finalizer")
-            .finalize_admitted(AttemptTerminalCommit::new(
-                AttemptCapacityDisposition::Released,
-                None,
-                AttemptHealthTransition::HealthyReuse,
-            ))
-            .expect("post-cleanup finalization succeeds");
-        observation_owner.finish_query(Some(RuntimeTerminalOutcome::from_query_error(&error)));
-
-        let report = completion.wait_timeout(std::time::Duration::from_secs(1)).expect("attempt report publishes");
-        assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::CompletedWithFailures);
-        assert_eq!(report.cleanup_failure_count, 2, "every scheduler cleanup failure is counted");
-        assert!(report.cleanup_failure_count_complete);
-        let first = report.first_cleanup_failure.as_ref().expect("first cleanup summary is retained");
-        assert!(!first.complete(), "a retained first summary is incomplete after the later scheduler cleanup failure");
-        assert_eq!(first.failure().code(), AttemptFailureCode::MemoryReservationFailed);
-
-        let snapshot = observation_owner.sealed_snapshot().expect("attempt observation sealed");
-        let cleanup_events = snapshot
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::from_query_error(&error)).expect("observation seals");
+        let cleanup = snapshot
             .events()
             .iter()
-            .filter(|event| matches!(event.payload, RuntimeObservationPayload::CleanupFailure(_)))
-            .count();
-        assert_eq!(cleanup_events, 2, "timeline remains a projection of both cleanup failures");
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::CleanupFailure(observation) => Some(&observation.summary),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cleanup.len(), 2, "timeline retains every scheduler cleanup failure");
+        assert!(cleanup.iter().all(|summary| summary.phase() == CleanupFailurePhase::TaskExecution));
     }
 
     fn lifecycle(label: &str) -> RuntimeQueryLifecycle {

@@ -43,8 +43,6 @@ use graph_builder::*;
 use layout::*;
 use params::*;
 use similarity::*;
-#[cfg(any(test, feature = "test-hooks"))]
-pub use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
 use structure::*;
 use traversal::{execute_bfs, execute_sssp};
 use validation::*;

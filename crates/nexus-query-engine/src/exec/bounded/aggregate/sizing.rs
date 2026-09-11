@@ -24,11 +24,11 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BoundedExecutionAttempt, Expr,
-    Field, GpuDataFrame, JoinOutputColumnUpperBoundInput, PartialAggregateShape, QueryError, QueryErrorCode, Result,
-    avg_sum_state_data_type, execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr,
-    lower_named_column_expr, lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes,
-    partial_global_aggregate_output_schema,
+    Field, GpuDataFrame, PartialAggregateShape, QueryError, QueryErrorCode, Result, avg_sum_state_data_type,
+    execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr, lower_named_column_expr,
+    lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes, partial_global_aggregate_output_schema,
 };
+use crate::materialization_sizing::JoinOutputColumnUpperBoundInput;
 
 pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,

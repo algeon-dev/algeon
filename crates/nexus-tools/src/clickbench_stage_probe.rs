@@ -31,15 +31,15 @@ use nexus_bench::report_workload::clickbench::{
     clickbench_native_profile_settings_from_env, clickbench_report_session_config,
 };
 use nexus_query_engine::{
-    exec::{execute_query_plan_with_runtime_observation, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     observability::{
-        RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession, RuntimeOperatorStageState,
-        RuntimeQueryId, write_runtime_observation_jsonl,
+        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
+        RuntimeOperatorStageState, RuntimeQueryId, write_runtime_observation_jsonl,
     },
     plan::QueryPlan,
     runtime::{
         ExecutionCancellation, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
-        GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig, QueryHandle,
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
     },
 };
 use nexus_workloads::clickbench::{
@@ -118,9 +118,19 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         ProbeMode::NativeObserved => {
             let backend = build_probe_backend(&profile)?;
             for query_id in &config.query_ids {
-                let query_handle = Arc::new(backend.session().admit_query()?);
+                let owner = RuntimeObservationOwner::new(
+                    RuntimeQueryId::new(query_id),
+                    None,
+                    RuntimeObservationConfig::bounded(LIVE_RECORDS, LIVE_BYTES),
+                );
+                let observation = owner.handle();
+                let query_handle =
+                    Arc::new(backend.session().admit_query_with_request(
+                        QueryAdmissionRequest::new().with_runtime_observation_owner(owner),
+                    )?);
                 let verdict =
-                    probe_native_observed(query_id, &root, &profile, &config, Arc::clone(&query_handle)).await?;
+                    probe_native_observed(query_id, &root, &profile, &config, Arc::clone(&query_handle), observation)
+                        .await?;
                 record_verdict(&config, &verdict)?;
                 verdicts.push(verdict);
             }
@@ -161,6 +171,7 @@ async fn probe_native_observed(
     profile: &nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
     config: &ProbeConfig,
     query_handle: Arc<QueryHandle>,
+    observation: RuntimeObservationHandle,
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
     let physical = plan_native_physical(query_id, root, sql, profile).await?;
@@ -171,17 +182,11 @@ async fn probe_native_observed(
     let live_dir = query_dir.join("live");
     fs::create_dir_all(&live_dir)?;
 
-    let session = RuntimeObservationSession::new(
-        RuntimeQueryId::new(query_id),
-        None,
-        RuntimeObservationConfig::bounded(LIVE_RECORDS, LIVE_BYTES),
-    );
-    let handle = session.handle();
     let cancellation = ExecutionCancellation::new();
     let stop = Arc::new(AtomicBool::new(false));
     let live_count = Arc::new(Mutex::new(0u64));
     let watchdog = spawn_watchdog(
-        handle.clone(),
+        observation.clone(),
         live_dir.clone(),
         config.snapshot_interval,
         Arc::clone(&stop),
@@ -193,12 +198,12 @@ async fn probe_native_observed(
     let started = Instant::now();
     let admitted_context = query_handle.acquire_context_with_cancellation(cancellation.clone())?;
 
-    let outcome = execute_query_plan_with_runtime_observation(admitted_context.context(), &native_plan, session);
+    let outcome = execute_query_plan(admitted_context.context(), QueryExecutionRequest::new(&native_plan));
     stop.store(true, Ordering::Release);
     let _ = watchdog.join();
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    let (result, _, sealed) = outcome.into_parts();
+    let (result, _, _) = outcome.into_parts();
     let cancelled = cancellation.is_cancelled();
     let mut completed = false;
     let mut output_rows = None;
@@ -222,6 +227,20 @@ async fn probe_native_observed(
             error = Some(format!("{code}: {err}"));
             cancelled && code == "cancelled"
         },
+    };
+
+    drop(result);
+    drop(admitted_context);
+    query_handle.finish();
+    let seal_deadline = Instant::now() + Duration::from_secs(10);
+    let sealed = loop {
+        if let Some(snapshot) = observation.sealed_snapshot() {
+            break Some(snapshot);
+        }
+        if Instant::now() >= seal_deadline {
+            break None;
+        }
+        thread::yield_now();
     };
 
     let sealed_jsonl = if let Some(snapshot) = sealed.as_ref() {

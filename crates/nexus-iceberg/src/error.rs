@@ -258,7 +258,6 @@ pub(crate) fn classify_error_message(message: &str, retryable: bool) -> ErrorCod
     }
 }
 
-#[cfg(feature = "catalog")]
 fn status_for(code: ErrorCode, retryable: bool) -> ErrorStatus {
     match code {
         ErrorCode::Cancelled => ErrorStatus::Cancelled,

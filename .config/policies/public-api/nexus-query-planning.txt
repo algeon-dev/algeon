@@ -5,12 +5,14 @@ impl nexus_query_planning::admission::BoundedPipelineAdmission
 pub fn nexus_query_planning::admission::BoundedPipelineAdmission::analysis(&self) -> &nexus_query_planning::capability::CapabilityAnalysis
 pub const fn nexus_query_planning::admission::BoundedPipelineAdmission::envelope(&self) -> nexus_query_planning::capability::CapabilityEnvelope
 pub fn nexus_query_planning::admission::BoundedPipelineAdmission::pipeline(&self) -> &nexus_query_planning::pipeline::CompiledPipeline
+pub struct nexus_query_planning::admission::BoundedPipelineDecision
+impl nexus_query_planning::admission::BoundedPipelineDecision
+pub fn nexus_query_planning::admission::BoundedPipelineDecision::admission(&self) -> core::option::Option<&nexus_query_planning::admission::BoundedPipelineAdmission>
+pub fn nexus_query_planning::admission::BoundedPipelineDecision::into_execution_admission(self) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::BoundedPipelineAdmission>>
+pub fn nexus_query_planning::admission::BoundedPipelineDecision::rejection_projection(&self) -> core::option::Option<&nexus_query_planning::capability::CapabilityRejectionProjection>
 pub fn nexus_query_planning::admission::bounded_join_modeled_facts(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub fn nexus_query_planning::admission::bounded_join_unsupported_shape_facts(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
-pub fn nexus_query_planning::admission::bounded_pipeline_admission(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::BoundedPipelineAdmission>>
-pub fn nexus_query_planning::admission::bounded_pipeline_admission_with_statistical_aggregate_mode(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::BoundedPipelineAdmission>>
-pub fn nexus_query_planning::admission::bounded_pipeline_rejection_projection(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::capability::CapabilityRejectionProjection>>
-pub fn nexus_query_planning::admission::bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::capability::CapabilityRejectionProjection>>
+pub fn nexus_query_planning::admission::bounded_pipeline_decision(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<nexus_query_planning::admission::BoundedPipelineDecision>
 pub mod nexus_query_planning::capability
 pub enum nexus_query_planning::capability::AggregateExecutionStage
 pub nexus_query_planning::capability::AggregateExecutionStage::FinalMerge
@@ -513,14 +515,6 @@ pub nexus_query_planning::contract_report::CapabilityDecisionStatus::Deferred
 pub nexus_query_planning::contract_report::CapabilityDecisionStatus::Rejected
 impl nexus_query_planning::contract_report::CapabilityDecisionStatus
 pub const fn nexus_query_planning::contract_report::CapabilityDecisionStatus::as_str(self) -> &'static str
-pub enum nexus_query_planning::contract_report::CapabilityEnvelopeStatus
-pub nexus_query_planning::contract_report::CapabilityEnvelopeStatus::Admitted
-pub nexus_query_planning::contract_report::CapabilityEnvelopeStatus::Deferred
-pub nexus_query_planning::contract_report::CapabilityEnvelopeStatus::Rejected
-impl nexus_query_planning::mode::CapabilityEnvelopeStatus
-pub const fn nexus_query_planning::mode::CapabilityEnvelopeStatus::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::mode::CapabilityEnvelopeStatus
-pub fn nexus_query_planning::mode::CapabilityEnvelopeStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_planning::contract_report::CapabilityContractReport
 impl nexus_query_planning::contract_report::CapabilityContractReport
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::decision_rows(&self) -> &[nexus_query_planning::contract_report::CapabilityDecisionRow]

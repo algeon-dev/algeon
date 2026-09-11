@@ -161,10 +161,6 @@ impl NativeExecutionMetricsCapture {
         self.wiring.new_observation_activity()
     }
 
-    pub const fn runtime_observation_config(&self) -> RuntimeObservationConfig {
-        self.wiring.runtime_observation_config()
-    }
-
     pub const fn metric_capture_limits(&self) -> RuntimeObservationLimits {
         self.wiring.metric_capture_limits()
     }

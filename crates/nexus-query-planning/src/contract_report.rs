@@ -4,7 +4,6 @@ use std::{collections::BTreeMap, fmt};
 
 use serde_json::{Value, json};
 
-pub use crate::mode::CapabilityEnvelopeStatus;
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner,
@@ -12,6 +11,7 @@ use crate::{
     },
     correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
+    mode::CapabilityEnvelopeStatus,
     pipeline::CompiledPipeline,
     plan::NodeId,
 };

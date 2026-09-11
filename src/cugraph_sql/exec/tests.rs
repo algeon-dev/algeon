@@ -27,7 +27,6 @@ use futures::future::BoxFuture;
 use nexus_query_engine::{
     admission::AttemptCapabilityEvidence,
     expr::{Expr, SortExpr, SortSpec},
-    observability::RuntimeObservationConfig,
     plan::{PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     runtime::ExecutionCancellation,
     source::{
@@ -1399,7 +1398,7 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
         ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().expect("test CUDA runtime"))).unwrap();
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
     let staged_inputs = stage_cugraph_inputs(
         &triangle_spec(),
         memory_edge_source(16),
@@ -1435,7 +1434,7 @@ async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_uplo
     assert!(native_context.is_query_service_admitted());
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
     let staged_inputs = stage_cugraph_inputs(
         &triangle_spec(),
         memory_edge_source(16),
@@ -1567,7 +1566,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
         .expect("wrong-order fixture must acquire an admitted context");
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
     let wrong_order_error = match execute_edge_source_to_gpu(
         wrong_order_context.context(),
         &mut graph_metrics,

@@ -19,7 +19,7 @@ use datafusion::{
 use futures::future::BoxFuture;
 use nexus_query_engine::{
     admission::AttemptCapabilityEvidence,
-    exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::QueryPlan,
     runtime::{
         ExecutionContext,
@@ -615,7 +615,6 @@ impl ExecutionPlan for NexusNativeComposedExec {
                         })
                     })
                     .collect::<DataFusionResult<Vec<_>>>()?;
-                let runtime_observation_config = execution_config.runtime_observation_config();
                 // Build one native context for all producer fragments and the consumer so device-resident
                 // handles are compatible across the composed execution.
                 let context_lease = execution_config
@@ -750,11 +749,9 @@ impl ExecutionPlan for NexusNativeComposedExec {
                         let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
                         // The consumer query starts after all GPU-resident producer handles are registered. The
                         // native attempt is terminal after this point and is not replayed through DataFusion.
-                        let outcome = execute_query_plan_with_gpu_inputs_observed(
+                        let outcome = execute_query_plan(
                             &context,
-                            &gpu_plan,
-                            &input_map,
-                            runtime_observation_config,
+                            QueryExecutionRequest::new(&gpu_plan).with_gpu_inputs(&input_map),
                         );
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
@@ -978,12 +975,8 @@ impl GpuResidentProducer for NexusNativeComposedGpuProducerExec {
                 self.execution_config.plan_task_mapping_datafusion_shape(),
             );
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-            let outcome = execute_query_plan_with_gpu_inputs_observed(
-                native_context,
-                &self.plan,
-                &input_map,
-                self.execution_config.runtime_observation_config(),
-            );
+            let outcome =
+                execute_query_plan(native_context, QueryExecutionRequest::new(&self.plan).with_gpu_inputs(&input_map));
             let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
                 DataFusionError::from(native_query_runtime_error(
                     "datafusion_nexus.native_composed_gpu_producer.execute_gpu",

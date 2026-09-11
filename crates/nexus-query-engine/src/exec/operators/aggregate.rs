@@ -9,18 +9,18 @@ use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CaseWhen,
     CudfAggSpec, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext,
     ExecutionOverrides, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions, LiteralValue,
-    LoweredAggregate, NodeId, PER_COLUMN_ALIGNMENT_PADDING_BYTES, QueryError, QueryErrorCode, QueryMetrics,
-    RecordBatch, ReduceAgg, Result, STRING_OFFSET_BYTES_CONSERVATIVE, Schema, aggregate_spec_has_avg,
-    aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
-    attach_budget_token_failure_facts, avg_sum_state_data_type, budgeted_value, cast_count_output_columns,
-    cast_count_output_columns_with_budget, cast_reduction_output_columns, cast_reduction_output_columns_with_budget,
-    cudf_dtype_from_arrow_type, execute_global_aggregate, execute_global_aggregate_with_budget, execution_overrides,
-    final_global_aggregate_spec, final_global_aggregate_state_output_schema, finalize_avg_output_columns,
-    finalize_avg_output_columns_with_budget, global_count_star_expr, global_valid_count_state_alias, lit, lit_null,
-    lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_final_aggregate_spec,
-    lower_named_column_expr, lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec,
-    partial_global_aggregate_output_schema, partial_global_aggregate_spec, schema_with_datafusion_order_columns,
-    sort_by_datafusion_order_if_present, validate_avg_output_fields,
+    LoweredAggregate, NodeId, QueryError, QueryErrorCode, QueryMetrics, RecordBatch, ReduceAgg, Result, Schema,
+    aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
+    aggregate_spec_has_floating_statistical_aggregate, attach_budget_token_failure_facts, avg_sum_state_data_type,
+    budgeted_value, cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
+    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, execute_global_aggregate,
+    execute_global_aggregate_with_budget, execution_overrides, final_global_aggregate_spec,
+    final_global_aggregate_state_output_schema, finalize_avg_output_columns, finalize_avg_output_columns_with_budget,
+    global_count_star_expr, global_valid_count_state_alias, lit, lit_null, lower_aggregate_function,
+    lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_final_aggregate_spec, lower_named_column_expr,
+    lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec, partial_global_aggregate_output_schema,
+    partial_global_aggregate_spec, schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
+    validate_avg_output_fields,
 };
 use crate::{
     capability::{
@@ -28,6 +28,7 @@ use crate::{
         AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision,
     },
     chunk::SourceChunk,
+    materialization_sizing::{PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE},
     mode::StatisticalAggregateExecutionMode,
 };
 

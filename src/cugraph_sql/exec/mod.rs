@@ -34,14 +34,13 @@ use datafusion::{
 use futures::{Stream, TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
     exec::{
-        execute_query_plan_observed, execute_query_plan_with_gpu_inputs_observed,
+        QueryExecutionRequest, execute_query_plan,
         output::{QueryExecutionOutcome, QueryOutput},
     },
     expr::{
         AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr as NativeExpr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
-    observability::RuntimeObservationConfig,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
         GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
@@ -150,25 +149,14 @@ use residency::{attach_graph_residency, cugraph_graph_residency_descriptor};
 
 pub(super) struct GraphExecutionMetrics<'a> {
     sink: &'a NexusNativeMetrics,
-    runtime_observation_config: RuntimeObservationConfig,
     accumulated: QueryMetrics,
     stage_count: usize,
     published: bool,
 }
 
 impl<'a> GraphExecutionMetrics<'a> {
-    pub(super) fn new(sink: &'a NexusNativeMetrics, runtime_observation_config: RuntimeObservationConfig) -> Self {
-        Self {
-            sink,
-            runtime_observation_config,
-            accumulated: QueryMetrics::default(),
-            stage_count: 0,
-            published: false,
-        }
-    }
-
-    fn runtime_observation_config(&self) -> RuntimeObservationConfig {
-        self.runtime_observation_config
+    pub(super) fn new(sink: &'a NexusNativeMetrics) -> Self {
+        Self { sink, accumulated: QueryMetrics::default(), stage_count: 0, published: false }
     }
 
     fn merge_stage_evidence(

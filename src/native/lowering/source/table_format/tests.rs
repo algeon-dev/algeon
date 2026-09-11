@@ -18,7 +18,7 @@ use datafusion::{
     physical_plan::{empty::EmptyExec, filter::FilterExec},
 };
 use nexus_query_engine::{
-    exec::{execute_query_plan, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::PlanNode,
     runtime::ExecutionContext,
     source::{self, CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
@@ -1350,8 +1350,8 @@ fn table_format_field_id_missing_nullable_list_executes_as_declared_typed_nulls(
     let plan = builder.finish_with_host_sink(lowered.node);
     let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
 
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else {
+    let outcome = execute_query_plan(&context, QueryExecutionRequest::new(&plan));
+    let QueryOutput::HostArrow(batch) = outcome.result().unwrap() else {
         panic!("table-format list source should materialize host Arrow output");
     };
     assert_eq!(batch.schema(), scan_schema);

@@ -15,8 +15,8 @@ use super::{
     GraphSpectralClusteringParams, GraphSsspParams, GraphSsspSource, GraphTriangleCountAllParams, GraphWccParams,
     LimitSpec, LiteralValue, NativeExpr, NativeGraphBetweennessSeeds, NativeGraphBfsPredicateInputs,
     NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput, NativeGraphPredicateInput,
-    ProjectionOutput, QueryOutput, QueryPlanBuilder, Result, SchemaRef, SortExpr, SortSpec, SourceNode,
-    add_logical_mapping_plan, decode_logical_graph_result, execute_query_plan_with_gpu_inputs_observed,
+    ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result, SchemaRef, SortExpr, SortSpec,
+    SourceNode, add_logical_mapping_plan, decode_logical_graph_result, execute_query_plan,
     finalize_graph_query_outcome, graph_uses_logical_mapping, is_bfs_path_output, node::projected_schema, plan_error,
 };
 
@@ -85,12 +85,8 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
     }
-    let outcome = execute_query_plan_with_gpu_inputs_observed(
-        &graph_context,
-        &plan.plan,
-        &plan.inputs,
-        metrics.runtime_observation_config(),
-    );
+    let outcome =
+        execute_query_plan(&graph_context, QueryExecutionRequest::new(&plan.plan).with_gpu_inputs(&plan.inputs));
     let output = finalize_graph_query_outcome(
         metrics,
         outcome,

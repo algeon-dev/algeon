@@ -32,7 +32,7 @@ use cache::{
 use policy::LakehouseCachePolicy;
 #[cfg(test)]
 use s3::object_store_bucket_fact;
-pub(super) use s3::parse_s3_source_uri;
+pub(in crate::exec::source) use s3::parse_s3_source_uri;
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

@@ -1,18 +1,24 @@
+#[cfg(feature = "iceberg")]
 use std::time::Duration;
 
 use datafusion_nexus::{
-    backend::{NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
+        NexusGpuQueuePolicy,
+    },
     planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
 };
+#[cfg(feature = "iceberg")]
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuBackendSession, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
+        GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuBackendSession, KvikioCompatModeStatus,
+        NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
     },
 };
 
+#[cfg(feature = "iceberg")]
 const OPERATION: &str = "nexus_bench.gpu_backend";
 
 pub(crate) fn build_installed_gpu_backend(
@@ -42,11 +48,13 @@ pub(crate) fn build_installed_gpu_backend(
 /// Sessions are deliberately weak capabilities. Keeping this owner alive is
 /// what keeps the installed runtime, allocator, pools, and caches available.
 #[derive(Debug)]
+#[cfg(feature = "iceberg")]
 pub(crate) struct GpuBackendOwner {
     core: GpuBackendCore,
     session: GpuBackendSession,
 }
 
+#[cfg(feature = "iceberg")]
 impl GpuBackendOwner {
     pub(crate) fn device_config(
         device_ordinal: usize,
@@ -94,6 +102,7 @@ impl GpuBackendOwner {
     }
 }
 
+#[cfg(feature = "iceberg")]
 fn invalid_config(field: &'static str, message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, message).with_fact("field", field)
 }
