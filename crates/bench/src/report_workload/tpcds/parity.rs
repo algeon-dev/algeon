@@ -586,7 +586,7 @@ fn external_oracle_sql(root: &Path, query_sql: &str, output_path: &Path) -> Work
 fn read_external_oracle_parquet(path: &Path) -> Result<NativeTpcdsParityExternalOutput, String> {
     let file = fs::File::open(path).map_err(|error| format!("failed to open {}: {error}", path.display()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|error| error.to_string())?;
-    let schema = builder.schema().clone();
+    let schema = Arc::clone(builder.schema());
     let reader = builder.build().map_err(|error| error.to_string())?;
     let batches = reader.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     Ok(NativeTpcdsParityExternalOutput::Succeeded { schema, batches })

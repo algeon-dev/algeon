@@ -251,7 +251,7 @@ fn overload_fairness_profile_is_a_finite_bounded_cohort() {
     let error = no_overload.validate_overload_fairness_scenario().unwrap_err();
     assert!(error.to_string().contains("above configured active-attempt capacity"), "{error}");
 
-    let mut unbounded = profile.clone();
+    let mut unbounded = profile;
     unbounded.scheduling.max_rounds = None;
     let error = unbounded.validate_overload_fairness_scenario().unwrap_err();
     assert!(error.to_string().contains("max_rounds=1"), "{error}");
@@ -697,7 +697,7 @@ fn write_tiny_graph_parquet(
         vec![
             Arc::new(Int64Array::from(values.clone())),
             Arc::new(Int64Array::from(values.clone())),
-            Arc::new(Int64Array::from(values.clone())),
+            Arc::new(Int64Array::from(values)),
             Arc::new(Float64Array::from(vec![1.0; rows])),
             Arc::new(Int32Array::from(vec![0; rows])),
             Arc::new(Int32Array::from(vec![0; rows])),
@@ -1369,11 +1369,11 @@ fn close_under_load_evidence_requires_the_public_active_and_queued_witness() {
     };
     assert!(evidence.is_evidenced());
 
-    let no_queued_witness = super::artifact::CloseUnderLoadEvidence { queued_at_close: 0, ..evidence.clone() };
+    let no_queued_witness = super::artifact::CloseUnderLoadEvidence { queued_at_close: 0, ..evidence };
     assert!(!no_queued_witness.is_evidenced());
 
     let incomplete_in_flight =
-        super::artifact::CloseUnderLoadEvidence { in_flight_terminal_after_close: 1, ..evidence.clone() };
+        super::artifact::CloseUnderLoadEvidence { in_flight_terminal_after_close: 1, ..evidence };
     assert!(!incomplete_in_flight.is_evidenced());
 
     let no_active_witness = super::artifact::CloseUnderLoadEvidence { admitted_at_close: 0, ..evidence };
@@ -1488,7 +1488,7 @@ fn steps_mode_replaces_the_scalar_window_and_rate_fields() {
         rate_overrun: Some(RateOverrunPolicy::Drop),
     }];
     rate.validate().unwrap();
-    let mut missing_rate = rate.clone();
+    let mut missing_rate = rate;
     missing_rate.scheduling.steps[0].arrival_rate_per_second = None;
     let error = missing_rate.validate().unwrap_err().to_string();
     assert!(error.contains("requires arrival_rate_per_second for rate-mode steps"), "{error}");
@@ -1576,7 +1576,7 @@ fn storm_knobs_validate_their_shapes() {
     let error = zero_cancel.validate().unwrap_err().to_string();
     assert!(error.contains("cancel_every_n"), "{error}");
 
-    let mut orphan_delay = profile.clone();
+    let mut orphan_delay = profile;
     orphan_delay.scheduling.cancel_every_n = None;
     let error = orphan_delay.validate().unwrap_err().to_string();
     assert!(error.contains("cancel_after_ms requires"), "{error}");

@@ -375,7 +375,7 @@ mod tests {
         let handle = session.handle();
         {
             let guard = RuntimeOperatorStageGuard::start(
-                handle.clone(),
+                handle,
                 Some(PlanExecutionId::new("plan-1")),
                 Some(RuntimeSpanId::new(1)),
                 RuntimeOperatorStageKind::RegexReplacePreflight,

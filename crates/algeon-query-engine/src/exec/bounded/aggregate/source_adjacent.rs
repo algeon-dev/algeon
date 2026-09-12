@@ -1922,7 +1922,7 @@ mod tests {
             Some(3),
         );
         assert_eq!(row_capped_batches.iter().map(SourceChunkBatch::chunk_count).collect::<Vec<_>>(), vec![3, 3, 2]);
-        let mut unknown_rows = chunks.clone();
+        let mut unknown_rows = chunks;
         unknown_rows[1].known_row_count = None;
         let unknown_row_batches = source_adjacent_raw_source_batches(
             policy,

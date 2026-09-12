@@ -1125,7 +1125,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .gpu_handoff_drains
-                .insert((join_key.clone(), leader.generation), Arc::new(GpuHandoffDrain::new(2)));
+                .insert((join_key, leader.generation), Arc::new(GpuHandoffDrain::new(2)));
             let remaining = || {
                 leader
                     .handoff_drain()

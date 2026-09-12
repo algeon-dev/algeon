@@ -2076,7 +2076,7 @@ mod tests {
             let published = Arc::new(PublishedCheckpointProbe::default());
 
             let error = GpuBackendCore::builder(one_device_backend_draft(device_ordinal))
-                .with_construction_probe(published.clone())
+                .with_construction_probe(Arc::clone(&published) as _)
                 .with_observation_completion_executor_factory(Arc::new(FailingObservationCompletionExecutorFactory {
                     failing_lane,
                 }))
@@ -2102,7 +2102,8 @@ mod tests {
         );
         let probe = Arc::new(CountingProbe::default());
 
-        let error = GpuBackendCore::builder(config).with_construction_probe(probe.clone()).build().unwrap_err();
+        let error =
+            GpuBackendCore::builder(config).with_construction_probe(Arc::clone(&probe) as _).build().unwrap_err();
 
         assert_eq!(error.fact_value("reason"), Some("reserve_exhausts_fallback"));
         assert_eq!(probe.0.load(Ordering::Relaxed), 0);
@@ -2347,7 +2348,7 @@ mod tests {
                 inspected: AtomicU8::new(0),
             });
             let error = GpuBackendCore::builder(one_device_backend_draft(0))
-                .with_construction_probe(probe.clone())
+                .with_construction_probe(Arc::clone(&probe) as _)
                 .build_with_construction_journal(journal)
                 .unwrap_err();
 

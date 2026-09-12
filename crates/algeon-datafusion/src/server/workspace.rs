@@ -260,7 +260,8 @@ mod tests {
     async fn workspace_reads_backing_and_keeps_writes_local() {
         let backing = Arc::new(MemorySchemaProvider::new());
         backing.register_table("edges_by_src".to_string(), table()).unwrap();
-        let workspace = AlgeonWorkspaceSchemaProvider::new(backing.clone(), Some(["edges_by_src".to_string()]));
+        let workspace =
+            AlgeonWorkspaceSchemaProvider::new(Arc::clone(&backing) as _, Some(["edges_by_src".to_string()]));
 
         assert!(workspace.table("edges_by_src").await.unwrap().is_some());
         assert_eq!(workspace.table_type("edges_by_src").await.unwrap(), Some(TableType::Base));

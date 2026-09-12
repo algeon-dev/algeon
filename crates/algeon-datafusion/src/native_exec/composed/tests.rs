@@ -357,7 +357,7 @@ fn complete_composed_admission_evidence_rebinds_fake_producer_with_full_cpu_only
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
         ticket: Arc::clone(&producer_ticket),
-        capability_evidence: producer_evidence.clone(),
+        capability_evidence: producer_evidence,
         graph_execution: true,
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
@@ -390,7 +390,7 @@ fn complete_composed_admission_evidence_aggregates_non_attested_consumer_fallbac
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
         ticket: producer_ticket,
-        capability_evidence: producer_evidence.clone(),
+        capability_evidence: producer_evidence,
         graph_execution: true,
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
@@ -593,7 +593,7 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
         Arc::new(FakeGpuResidentProducer {
             input_name: "second".to_string(),
             ticket: second_ticket,
-            capability_evidence: graph_evidence.clone(),
+            capability_evidence: graph_evidence,
             graph_execution: true,
             execute_count: Arc::new(AtomicUsize::new(0)),
             inner: EmptyExec::new(Arc::clone(&schema)),
@@ -789,9 +789,7 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
     let grant = backend
         .backend()
         .session_capability()
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_query_plan_capability_evidence(completed_evidence.clone()),
-        )
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(completed_evidence))
         .expect("the installed test profile must admit the composed evidence");
     assert_eq!(grant.device_ordinal(), 0);
     drop(grant);

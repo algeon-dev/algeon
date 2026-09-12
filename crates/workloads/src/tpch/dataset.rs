@@ -457,8 +457,8 @@ fn read_tpch_table_file_metadata(root: &Path, path: &Path) -> WorkloadResult<Tpc
     }
 
     let byte_size = metadata.len();
-    let arrow_schema = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?.schema().clone();
-    let schema = canonical_schema(arrow_schema.as_ref());
+    let reader_builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+    let schema = canonical_schema(reader_builder.schema().as_ref());
     let file = File::open(path)?;
     let reader = SerializedFileReader::new(file)?;
     let parquet_metadata = reader.metadata();

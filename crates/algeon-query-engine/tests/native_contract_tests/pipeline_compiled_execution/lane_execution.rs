@@ -72,7 +72,7 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
             },
             Some(width) => {
                 let support = LaneDispatchSupport::new(
-                    route.clone(),
+                    Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
                     pipeline.clone(),
@@ -273,7 +273,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         let mut executor =
             CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
         let mut support = LaneDispatchSupport::new(
-            route.clone(),
+            Arc::clone(&route),
             metrics_context.clone(),
             plan.clone(),
             pipeline.clone(),
@@ -516,7 +516,7 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         let mut executor =
             CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
         let support = LaneDispatchSupport::new(
-            route.clone(),
+            Arc::clone(&route),
             metrics_context.clone(),
             plan.clone(),
             pipeline.clone(),

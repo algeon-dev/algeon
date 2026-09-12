@@ -751,7 +751,7 @@ impl DatafusionAlgeonFlightSqlService {
             batch
         });
         let mut stream: BoxStream<'static, Result<arrow::record_batch::RecordBatch, FlightError>> = Box::pin(stream);
-        let result_streaming_span_for_poll = streaming_span.clone();
+        let result_streaming_span_for_poll = streaming_span;
         let stream = futures::stream::poll_fn(move |context| {
             let _stream_enter = result_streaming_span_for_poll.enter();
             stream.as_mut().poll_next(context)

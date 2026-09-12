@@ -740,7 +740,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     self.clone_materialized_subtree_with_required_columns(filter.input, family, &input_required);
                 let mut filter = filter.clone();
                 filter.input = input;
-                let input_schema = self.nodes[input.index()].output_schema().clone();
+                let input_schema = Arc::clone(self.nodes[input.index()].output_schema());
                 self.push_node(
                     PlanNode::Filter(filter),
                     PlanFacts::device(input_schema, SchemaBehavior::PreservesInput),
@@ -870,7 +870,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 let mut sort = sort.clone();
                 sort.input = input;
                 let mut facts = old_node.facts.clone();
-                facts.output_schema = self.nodes[input.index()].output_schema().clone();
+                facts.output_schema = Arc::clone(self.nodes[input.index()].output_schema());
                 self.push_node(PlanNode::Sort(sort), facts)
             },
             PlanNode::Limit(limit) => {
@@ -879,7 +879,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 let mut limit = limit.clone();
                 limit.input = input;
                 let mut facts = old_node.facts.clone();
-                facts.output_schema = self.nodes[input.index()].output_schema().clone();
+                facts.output_schema = Arc::clone(self.nodes[input.index()].output_schema());
                 self.push_node(PlanNode::Limit(limit), facts)
             },
             PlanNode::Aggregate(_)

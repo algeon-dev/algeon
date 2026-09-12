@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use super::rewrite;
 use crate::{
@@ -197,8 +197,8 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
                 break candidate;
             }
         };
-        let schema = producer.output_schema().clone();
-        let mut source = GpuResidentSource::new(&input_name, schema.clone());
+        let schema = Arc::clone(producer.output_schema());
+        let mut source = GpuResidentSource::new(&input_name, Arc::clone(&schema));
         let row_count_upper_bound = query_plan_hard_row_upper_bound(&producer)
             .expect("selected shared-resident producers have a hard row bound");
         source = source.with_row_count_upper_bound(row_count_upper_bound);

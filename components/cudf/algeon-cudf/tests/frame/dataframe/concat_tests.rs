@@ -422,7 +422,7 @@ fn test_copy_preserves_schema_and_data() {
     )
     .unwrap();
 
-    let copy = df.clone();
+    let copy = df;
 
     assert_eq!(copy.num_columns(), 2);
     assert_eq!(copy.num_rows(), 3);

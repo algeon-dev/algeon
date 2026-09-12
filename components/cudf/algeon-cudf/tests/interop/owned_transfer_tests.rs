@@ -837,7 +837,7 @@ fn runtime_release_owned_column_transfer_release_waits_on_consumer_event() {
     let baseline_sync = observed_event_synchronize_call_count();
     let baseline_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
 
-    let release_event = consumer_event.clone();
+    let release_event = consumer_event;
     let (tx, rx) = mpsc::channel();
     let release_thread = thread::spawn(move || {
         let result = releaser.release(TransferCompletionAuthority::cross_device_event(&release_event));

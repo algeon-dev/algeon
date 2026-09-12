@@ -360,7 +360,7 @@ fn split_single_marker_is_null_predicate(expr: &Expr, marker_names: &[&str]) -> 
     let remaining_terms = terms
         .into_iter()
         .enumerate()
-        .filter_map(|(index, term)| (index != marker_index).then_some(term.clone()))
+        .filter_map(|(index, term)| (index != marker_index).then_some(term))
         .collect::<Vec<_>>();
     Some((marker_name?, rebuild_conjunction(remaining_terms)))
 }

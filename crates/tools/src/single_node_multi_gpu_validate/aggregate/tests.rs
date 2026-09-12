@@ -514,8 +514,8 @@ fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
     assert_eq!(evidence.unrelated_device_progress_count, 0);
     assert_eq!(evidence.unrelated_device_completion_count, 0);
 
-    let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000)
-        .with_overload_fairness(evidence.clone());
+    let aggregate =
+        MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000).with_overload_fairness(evidence);
     let artifact_projection = serde_json::to_value(&aggregate).unwrap();
     assert_eq!(artifact_projection["scenarios"]["overload_fairness"]["status"], "evidenced");
     assert!(artifact_projection["attempts"][0]["admission_wait"]["protection_device_ordinal"].is_null());
@@ -812,7 +812,7 @@ fn quarantine_cycles_evidence_requires_every_configured_cycle_to_evidence() {
     assert_eq!(evidenced.cycles[1].device_health_generation, 1);
 
     // Fewer cycles than configured is a failure, not a partial pass.
-    let incomplete = QuarantineCyclesEvidence::from_cycle_evidence(3, vec![first.clone()]);
+    let incomplete = QuarantineCyclesEvidence::from_cycle_evidence(3, vec![first]);
     assert!(!incomplete.is_evidenced());
     assert_eq!(incomplete.completed_cycles, 1);
 

@@ -593,7 +593,7 @@ fn native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time() {
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
     let config = support::native_optimizer_config();
-    let rule = AlgeonNativePhysicalOptimizerRule::new(config.clone());
+    let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let options = ConfigOptions::default();
 
     let optimized = rule.optimize(plan, &options).unwrap();

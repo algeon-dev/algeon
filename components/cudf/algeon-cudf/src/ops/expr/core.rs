@@ -795,7 +795,6 @@ fn cast_series_to_binary_operand_dtype(series: Series, target: DataType, ctx: &E
     }
     let cv = series.view()?;
     let column = unary::cast_impl(&cv, &target, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?;
-    drop(cv);
     ctx.wrap_column(column)
 }
 
@@ -815,7 +814,6 @@ fn apply_datetime_offset(
             ctx.required_exec_options(),
             ctx.operation,
         )?;
-        drop(cv);
         ctx.wrap_column(col)?
     } else {
         series

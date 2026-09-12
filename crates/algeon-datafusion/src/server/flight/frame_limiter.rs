@@ -478,7 +478,7 @@ mod tests {
         }
         let backing = Arc::new(TrackedBacking { bytes, dropped: Arc::clone(&dropped) });
         let values_ptr = NonNull::new(backing.bytes.as_ptr().cast_mut()).unwrap();
-        let allocation: Arc<dyn arrow::alloc::Allocation> = backing.clone();
+        let allocation: Arc<dyn arrow::alloc::Allocation> = Arc::clone(&backing) as _;
         let values = unsafe { Buffer::from_custom_allocation(values_ptr, backing.bytes.len(), allocation) };
         let array = StringArray::new(OffsetBuffer::new(ScalarBuffer::from(offsets)), values, None);
         drop(backing);
@@ -542,7 +542,7 @@ mod tests {
             dropped: Arc::clone(&dropped),
         });
         let unused_ptr = NonNull::new(unused.bytes.as_ptr().cast_mut()).expect("non-empty tracked backing");
-        let unused_allocation: Arc<dyn arrow::alloc::Allocation> = unused.clone();
+        let unused_allocation: Arc<dyn arrow::alloc::Allocation> = Arc::clone(&unused) as _;
         // SAFETY: `unused` owns an immutable allocation at `unused_ptr` for
         // exactly `unused.bytes.len()` bytes and is retained by the Buffer.
         let unused_buffer =

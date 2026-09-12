@@ -151,7 +151,7 @@ impl QueryService {
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let (config, queue_bounds) = controller.into_parts();
         validate_controller_policy_preflight(&config, &queue_bounds, &device_ordinals)?;
-        let registry_config = device_registry_config(device_ordinals.clone(), device_profiles)?;
+        let registry_config = device_registry_config(device_ordinals, device_profiles)?;
         let resolved_plans = DeviceRegistry::resolve_install_plans(&AlgeonGpuInventory, &registry_config, Some(probe))?;
         let resources = Self::install_runtime_resources(
             &config,

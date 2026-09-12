@@ -1,6 +1,6 @@
 //! Bounded native query-service admission harness.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use query_planning::{
     admission::AttemptRequirement,

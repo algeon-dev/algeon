@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Condvar, Weak,
+        Arc, Condvar, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -160,7 +160,7 @@ impl QueryHandleLifetime {
         let attempt_auxiliary_slots = AttemptAuxiliarySlots::new(device_ordinal, attempt_auxiliary_capacity);
         let service_epoch_user = service.service_epoch.retain_existing_user();
         Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
-            let weak_lifetime = weak.clone();
+            let weak_lifetime = Weak::clone(weak);
             let on_query_idle = Arc::new(move || {
                 if let Some(lifetime) = weak_lifetime.upgrade() {
                     lifetime.release_if_ready();
@@ -329,7 +329,7 @@ impl QueryHandleLifetime {
         if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
             return Err(self.released_error());
         }
-        let owner: Arc<dyn Send + Sync> = self.clone();
+        let owner: Arc<dyn Send + Sync> = Arc::clone(self) as _;
         self.query_epoch.acquire(owner, operation).map_err(|_error| self.released_error())
     }
 
@@ -857,59 +857,26 @@ impl QueryHandleReportCommit {
         // This is the sole projection of the exact final usage sample and
         // health transition above. Typed fault and retry evidence shares this
         // commit and must not resample terminal facts.
-        let terminal_commit = match (&disposition, evidence) {
-            (CapacityCommitDisposition::FrozenResident { .. }, _) => crate::observability::AttemptTerminalCommit::new(
+        let terminal_commit = match &disposition {
+            CapacityCommitDisposition::FrozenResident { .. } => crate::observability::AttemptTerminalCommit::new(
                 crate::observability::AttemptCapacityDisposition::FrozenResident,
                 final_domain_usage,
                 crate::observability::AttemptHealthTransition::HealthyReuse,
             ),
-            (CapacityCommitDisposition::HealthyReuse, CleanupEvidence::Completed) => {
-                crate::observability::AttemptTerminalCommit::new(
-                    crate::observability::AttemptCapacityDisposition::Released,
-                    final_domain_usage,
-                    crate::observability::AttemptHealthTransition::HealthyReuse,
-                )
-            },
-            (CapacityCommitDisposition::HealthyReuse, _) => crate::observability::AttemptTerminalCommit::new(
+            CapacityCommitDisposition::HealthyReuse => crate::observability::AttemptTerminalCommit::new(
                 crate::observability::AttemptCapacityDisposition::Released,
                 final_domain_usage,
                 crate::observability::AttemptHealthTransition::HealthyReuse,
             ),
-            (
-                CapacityCommitDisposition::DeviceQuarantine { .. } | CapacityCommitDisposition::BackendUnhealthy { .. },
-                CleanupEvidence::Completed,
-            ) => crate::observability::AttemptTerminalCommit::new(
+            CapacityCommitDisposition::DeviceQuarantine { .. } => crate::observability::AttemptTerminalCommit::new(
                 crate::observability::AttemptCapacityDisposition::RetainedQuarantine,
                 final_domain_usage,
-                match disposition {
-                    CapacityCommitDisposition::DeviceQuarantine { .. } => {
-                        crate::observability::AttemptHealthTransition::DeviceQuarantined
-                    },
-                    CapacityCommitDisposition::BackendUnhealthy { .. } => {
-                        crate::observability::AttemptHealthTransition::BackendUnhealthy
-                    },
-                    CapacityCommitDisposition::HealthyReuse | CapacityCommitDisposition::FrozenResident { .. } => {
-                        unreachable!()
-                    },
-                },
+                crate::observability::AttemptHealthTransition::DeviceQuarantined,
             ),
-            (
-                CapacityCommitDisposition::DeviceQuarantine { .. } | CapacityCommitDisposition::BackendUnhealthy { .. },
-                _,
-            ) => crate::observability::AttemptTerminalCommit::new(
+            CapacityCommitDisposition::BackendUnhealthy { .. } => crate::observability::AttemptTerminalCommit::new(
                 crate::observability::AttemptCapacityDisposition::RetainedQuarantine,
                 final_domain_usage,
-                match disposition {
-                    CapacityCommitDisposition::DeviceQuarantine { .. } => {
-                        crate::observability::AttemptHealthTransition::DeviceQuarantined
-                    },
-                    CapacityCommitDisposition::BackendUnhealthy { .. } => {
-                        crate::observability::AttemptHealthTransition::BackendUnhealthy
-                    },
-                    CapacityCommitDisposition::HealthyReuse | CapacityCommitDisposition::FrozenResident { .. } => {
-                        unreachable!()
-                    },
-                },
+                crate::observability::AttemptHealthTransition::BackendUnhealthy,
             ),
         };
         let terminal_commit = native_fault_evidence

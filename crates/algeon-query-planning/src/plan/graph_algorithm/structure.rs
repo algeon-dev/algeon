@@ -29,7 +29,7 @@ impl EdgeNormalizeSpec {
             (true, true) => (EdgeDedupStrategy::KeepLast, EdgeWeightCombiner::KeepLastInputOrder),
             (false, true) => (EdgeDedupStrategy::KeepFirst, EdgeWeightCombiner::MinWeight),
         };
-        Self { edge_columns: edge_columns.clone(), add_reverse: !graph_options.directed, dedup, weight_combiner }
+        Self { edge_columns, add_reverse: !graph_options.directed, dedup, weight_combiner }
     }
 }
 

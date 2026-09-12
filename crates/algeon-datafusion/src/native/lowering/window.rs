@@ -233,7 +233,7 @@ fn parse_lag_lead_args(
     if args.is_empty() || args.len() > 3 {
         return Err(CapabilityReason::UnsupportedExpression);
     }
-    let value_expr = args[0].clone();
+    let value_expr = Arc::clone(&args[0]);
     validate_physical_expr(&value_expr, input_schema)?;
     let value_type =
         value_expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
@@ -571,14 +571,15 @@ fn lower_window_spec(
                 frame,
             });
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
-            match standard_window_kind(standard)? {
+            let kind = standard_window_kind(standard)?;
+            match kind {
                 StandardWindowKind::Rank => functions.push(NativeWindowFunction::Rank { alias }),
                 StandardWindowKind::RowNumber => functions.push(NativeWindowFunction::row_number(alias)),
                 StandardWindowKind::Lag | StandardWindowKind::Lead => {
-                    let direction = match standard_window_kind(standard)? {
-                        StandardWindowKind::Lag => NativeShiftDirection::Lag,
-                        StandardWindowKind::Lead => NativeShiftDirection::Lead,
-                        _ => unreachable!(),
+                    let direction = if kind == StandardWindowKind::Lag {
+                        NativeShiftDirection::Lag
+                    } else {
+                        NativeShiftDirection::Lead
                     };
                     let args = parse_lag_lead_args(standard, input_schema)?;
                     let lowered_value =

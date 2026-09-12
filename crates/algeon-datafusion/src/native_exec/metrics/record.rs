@@ -1429,7 +1429,7 @@ mod tests {
 
         metrics.record_query_metrics(&query_metrics);
         let attempt_id = AttemptId::mint();
-        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(attempt_id, [capture.clone()]);
+        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(attempt_id, [capture]);
 
         assert_eq!(snapshot.attempt_id(), attempt_id);
         assert!(snapshot.execution_complete());

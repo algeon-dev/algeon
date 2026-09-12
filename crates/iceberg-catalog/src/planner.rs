@@ -720,7 +720,7 @@ mod tests {
                 let mut writer = ManifestWriterBuilder::new(
                     output,
                     Some(snapshot.snapshot_id()),
-                    schema.clone(),
+                    std::sync::Arc::clone(&schema),
                     partition_spec.as_ref().clone(),
                 )
                 .build_v2_data();

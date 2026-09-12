@@ -180,7 +180,7 @@ impl<T> SupervisedWorkerSupervisor<T> {
 
 impl<T: Send + 'static> SupervisedWorkerSupervisor<T> {
     fn activate_process_exit(self: &Arc<Self>) {
-        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
+        let shutdown: Arc<dyn ProcessExitShutdown> = Arc::clone(self) as _;
         let registration = register_cuda_process_exit_shutdown(shutdown);
         *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
     }

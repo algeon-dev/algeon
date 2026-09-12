@@ -1288,7 +1288,7 @@ mod tests {
         });
         assert!(fleet_utilization_interval(&devices, &process, &policy).unwrap().is_none());
 
-        let mut duplicate_policy = policy.clone();
+        let mut duplicate_policy = policy;
         duplicate_policy.device_ordinals = vec![0, 0, 1, 2];
         assert_eq!(
             fleet_utilization_interval(&devices, &process, &duplicate_policy),

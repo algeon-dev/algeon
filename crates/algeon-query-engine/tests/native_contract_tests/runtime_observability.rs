@@ -35,7 +35,7 @@ fn test_session(
         "query-observation",
         Some(RuntimeTraceId::new("trace-parent")),
         config,
-        clock.clone(),
+        Arc::clone(&clock) as _,
     );
     (session, clock)
 }
@@ -330,7 +330,7 @@ fn jsonl_v2_matches_fixed_golden_bytes() {
         "golden-query",
         Some(RuntimeTraceId::new("golden-trace")),
         RuntimeObservationConfig::bounded(6, 4_096),
-        clock.clone(),
+        Arc::clone(&clock) as _,
     );
     let execution = PlanExecutionId::new("golden-execution");
     session.record_topology(RuntimeObservationRecordClass::PlanNode, || {

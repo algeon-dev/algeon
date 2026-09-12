@@ -757,7 +757,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let mut passthrough_builder = QueryPlanBuilder::new();
     let passthrough_source = passthrough_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
         "compiled_root_join",
-        plan.output_schema().clone(),
+        Arc::clone(plan.output_schema()),
     )));
     let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
     let root_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);

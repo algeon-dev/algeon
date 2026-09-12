@@ -1727,7 +1727,7 @@ fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_
     assert_eq!(foreign.materialization(), DeviceArrowImportMaterialization::ForeignRetainedView);
 
     let imported = DataFrame::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime).unwrap();
-    let (source_table, source_names) = source.clone().try_into_table().unwrap();
+    let (source_table, source_names) = source.try_into_table().unwrap();
     let (imported_table, imported_names) = imported.try_into_table().unwrap();
 
     assert_eq!(source_names, imported_names);

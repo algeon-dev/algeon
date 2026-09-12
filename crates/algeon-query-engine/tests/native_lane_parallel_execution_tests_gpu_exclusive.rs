@@ -309,7 +309,7 @@ fn lane_width_2_agrees_with_serial_and_inline_on_union_branches() {
             },
             Some(width) => {
                 let support = LaneDispatchSupport::new(
-                    route.clone(),
+                    Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
                     pipeline.clone(),
@@ -717,8 +717,7 @@ fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
         None,
         RuntimeObservationConfig::bounded(4096, 4 * 1024 * 1024),
     );
-    let lifecycle =
-        RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("lane-permit-contention"));
+    let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner, PlanExecutionId::new("lane-permit-contention"));
     let context: ExecutionContext = test_context
         .context
         .context()
@@ -732,8 +731,8 @@ fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
 
     let executor = context.gpu_executor().expect("admitted context exposes its device executor");
     let observation = context.runtime_observation().clone();
-    let dispatch_context = context.clone();
-    let dispatch_plan = plan.clone();
+    let dispatch_context = context;
+    let dispatch_plan = plan;
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
     let output = runtime
         .block_on(executor.run_observed_scoped(
@@ -796,8 +795,7 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
 
     let owner =
         RuntimeObservationOwner::new("lane-inline-release", None, RuntimeObservationConfig::bounded(512, 512 * 1024));
-    let lifecycle =
-        RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("lane-inline-release-plan"));
+    let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner, PlanExecutionId::new("lane-inline-release-plan"));
     let scope = lifecycle.execution_scope();
     let observed_context = context.with_runtime_execution_scope(scope.clone()).expect("observation scope applies");
 

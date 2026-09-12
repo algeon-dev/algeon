@@ -1,11 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use crate::plan::{GraphAlgorithmParams, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink};
 
 pub(super) fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
     match sink {
         ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: schema.clone() },
+        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: Arc::clone(schema) },
     }
 }
 

@@ -434,7 +434,7 @@ impl GpuLocalParquetSourceCache {
                 state.record_event(
                     self.inner.ledger.device_ordinal(),
                     self.inner.allocation_lease.domain_id().get(),
-                    correlation_fingerprint.clone(),
+                    correlation_fingerprint,
                     &key,
                     "load_hit",
                     0,
@@ -1134,7 +1134,7 @@ mod tests {
         let waiter_cache = Arc::clone(&cache);
         let waiter_context = Arc::clone(&context);
         let waiter_schema = Arc::clone(&schema);
-        let waiter_key = key.clone();
+        let waiter_key = key;
         let waiter =
             thread::spawn(move || waiter_cache.checkout_or_claim(waiter_key, waiter_context.as_ref(), &waiter_schema));
 
@@ -1177,7 +1177,7 @@ mod tests {
         let waiter_cache = Arc::clone(&cache);
         let waiter_context = Arc::clone(&context);
         let waiter_schema = Arc::clone(&schema);
-        let waiter_key = key.clone();
+        let waiter_key = key;
         let waiter =
             thread::spawn(move || waiter_cache.checkout_or_claim(waiter_key, waiter_context.as_ref(), &waiter_schema));
 

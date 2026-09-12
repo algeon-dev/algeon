@@ -179,7 +179,7 @@ fn graph_algorithm_validation_plan(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
         algorithm.definition().default_graph_options(&GraphConstructionOptions::default()),
-        params.clone(),
+        params,
         Arc::clone(&output_schema),
     );
     let graph = builder.add_graph_algorithm(source, spec);

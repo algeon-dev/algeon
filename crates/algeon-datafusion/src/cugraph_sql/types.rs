@@ -1520,7 +1520,7 @@ fn bfs_result_schema_with_vertex_type(params: &CugraphBfsParams, vertex_type: Da
     let predecessor_type = vertex_type.clone();
     let mut fields = match params.output.mode {
         CugraphBfsOutputMode::Raw => vec![
-            Field::new("vertex", vertex_type.clone(), false),
+            Field::new("vertex", vertex_type, false),
             Field::new("distance", DataType::Int64, false),
             Field::new("predecessor", predecessor_type, true),
         ],

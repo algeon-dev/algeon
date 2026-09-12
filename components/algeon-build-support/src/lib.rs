@@ -1384,7 +1384,7 @@ mod tests {
             cuda_home: Some(toolkit.clone()),
             cuda_path: Some(toolkit.clone()),
         };
-        assert_eq!(cuda_toolkit_roots(&environment), vec![toolkit.clone(), PathBuf::from(CANONICAL_CUDA_ROOT)]);
+        assert_eq!(cuda_toolkit_roots(&environment), vec![toolkit, PathBuf::from(CANONICAL_CUDA_ROOT)]);
         assert_eq!(resolve_nvtx3interop_library(&environment, "x86_64-unknown-linux-gnu"), selected);
     }
 

@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, time::Instant};
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::DataFrame;
@@ -71,16 +71,16 @@ impl CompiledGpuTaskExecutor<'_> {
             JoinSide::Left => join.spec.keys[0].left.name(),
             JoinSide::Right => join.spec.keys[0].right.name(),
         };
-        let build_schema = self
-            .plan
-            .node(build_input)
-            .ok_or_else(|| {
-                invalid("compiled dynamic-filter producer references a missing build input")
-                    .with_fact("plan_node_id", build_input)
-                    .with_fact("join_node_id", join_node_id)
-            })?
-            .output_schema()
-            .clone();
+        let build_schema = Arc::clone(
+            self.plan
+                .node(build_input)
+                .ok_or_else(|| {
+                    invalid("compiled dynamic-filter producer references a missing build input")
+                        .with_fact("plan_node_id", build_input)
+                        .with_fact("join_node_id", join_node_id)
+                })?
+                .output_schema(),
+        );
         if build_schema.index_of(build_key).is_err() {
             for route in &routes {
                 self.dynamic_filters.insert_skipped(route.id, "producer_key_not_in_build_input");
@@ -247,7 +247,7 @@ impl CompiledGpuTaskExecutor<'_> {
             let handle = GpuResultHandle::new(
                 self.execution.context(),
                 GpuDataFrame::new(selected_frame),
-                selected_schema.clone(),
+                Arc::clone(&selected_schema),
             )?;
             let batch = handle.to_host_record_batch()?;
             self.execution.metrics().add_materialization_time(timer.elapsed());
@@ -467,7 +467,7 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         let Some(source_schema) = self.plan.node(source_node_id).and_then(|node| match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source) => Some(source.schema.clone()),
+                SourceNode::LocalParquet(source) => Some(Arc::clone(&source.schema)),
                 _ => None,
             },
             _ => None,
@@ -545,16 +545,16 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         self.ensure_dynamic_filter_routes_ready(join_node_id, &routes)?;
         let probe_input = join_probe_input_node(join);
-        let probe_schema = self
-            .plan
-            .node(probe_input)
-            .ok_or_else(|| {
-                invalid("compiled dynamic-filter probe consumer references a missing probe input")
-                    .with_fact("join_node_id", join_node_id)
-                    .with_fact("probe_input_node_id", probe_input)
-            })?
-            .output_schema()
-            .clone();
+        let probe_schema = Arc::clone(
+            self.plan
+                .node(probe_input)
+                .ok_or_else(|| {
+                    invalid("compiled dynamic-filter probe consumer references a missing probe input")
+                        .with_fact("join_node_id", join_node_id)
+                        .with_fact("probe_input_node_id", probe_input)
+                })?
+                .output_schema(),
+        );
         for route in &routes {
             let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, probe_schema.as_ref()) else {
                 continue;
@@ -741,16 +741,16 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         self.ensure_dynamic_filter_routes_ready(join_node_id, &routes)?;
         let probe_input = join_probe_input_node(join);
-        let probe_schema = self
-            .plan
-            .node(probe_input)
-            .ok_or_else(|| {
-                invalid("compiled dynamic-filter probe consumer references a missing probe input")
-                    .with_fact("join_node_id", join_node_id)
-                    .with_fact("probe_input_node_id", probe_input)
-            })?
-            .output_schema()
-            .clone();
+        let probe_schema = Arc::clone(
+            self.plan
+                .node(probe_input)
+                .ok_or_else(|| {
+                    invalid("compiled dynamic-filter probe consumer references a missing probe input")
+                        .with_fact("join_node_id", join_node_id)
+                        .with_fact("probe_input_node_id", probe_input)
+                })?
+                .output_schema(),
+        );
         let mut input = Some(input);
         let mut frame: Option<ResidentGpuFrame> = None;
         for route in &routes {
@@ -818,16 +818,16 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         self.ensure_dynamic_filter_routes_ready(join_node_id, &routes)?;
         let probe_input = join_probe_input_node(join);
-        let probe_schema = self
-            .plan
-            .node(probe_input)
-            .ok_or_else(|| {
-                invalid("compiled dynamic-filter probe consumer references a missing probe input")
-                    .with_fact("join_node_id", join_node_id)
-                    .with_fact("probe_input_node_id", probe_input)
-            })?
-            .output_schema()
-            .clone();
+        let probe_schema = Arc::clone(
+            self.plan
+                .node(probe_input)
+                .ok_or_else(|| {
+                    invalid("compiled dynamic-filter probe consumer references a missing probe input")
+                        .with_fact("join_node_id", join_node_id)
+                        .with_fact("probe_input_node_id", probe_input)
+                })?
+                .output_schema(),
+        );
         for route in &routes {
             let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, probe_schema.as_ref()) else {
                 continue;
@@ -945,7 +945,7 @@ impl CompiledGpuTaskExecutor<'_> {
         consumer_node_id: NodeId,
         input_node_id: NodeId,
     ) -> Result<ArrowSchemaRef> {
-        self.plan.node(input_node_id).map(|node| node.output_schema().clone()).ok_or_else(|| {
+        self.plan.node(input_node_id).map(|node| Arc::clone(node.output_schema())).ok_or_else(|| {
             invalid("compiled dynamic-filter consumer references a missing input")
                 .with_fact("consumer_node_id", consumer_node_id)
                 .with_fact("consumer_input_node_id", input_node_id)

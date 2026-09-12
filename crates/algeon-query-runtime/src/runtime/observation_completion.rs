@@ -224,7 +224,7 @@ impl ObservationCompletionSupervisor {
             }
         }
 
-        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
+        let shutdown: Arc<dyn ProcessExitShutdown> = Arc::clone(self) as _;
         let registration = register(shutdown);
         let registration_to_unregister = {
             let mut slot = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

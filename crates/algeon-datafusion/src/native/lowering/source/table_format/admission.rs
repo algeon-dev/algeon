@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use super::{
     AlgeonIcebergScanExec, CapabilityReason, ExecutionPlan, NativeLiteralValue, NativeMissingColumn,
@@ -60,7 +63,7 @@ pub(super) fn table_format_column_requirements(
     required_output_fields: &RequiredFields,
 ) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let required_scan_output_indices =
-        required_source_scan_output_indices(scan_schema.clone(), filter, required_output_fields)?;
+        required_source_scan_output_indices(Arc::clone(&scan_schema), filter, required_output_fields)?;
     let output_columns = required_scan_output_indices
         .iter()
         .map(|index| {
@@ -79,7 +82,7 @@ pub(super) fn table_format_column_requirements(
 
     let output_column_set: BTreeSet<String> = output_columns.iter().cloned().collect();
     let predicate_columns =
-        table_format_predicate_scan_output_indices(scan_schema.clone(), filter, required_output_fields)?
+        table_format_predicate_scan_output_indices(Arc::clone(&scan_schema), filter, required_output_fields)?
             .into_iter()
             .map(|index| {
                 scan_schema

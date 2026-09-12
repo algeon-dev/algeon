@@ -805,7 +805,7 @@ fn table_format_bare_boolean_filter_stays_post_decode() {
             crate::table_format::TableFormatColumnRole::PureFilter,
         ));
     let scan_exec = Arc::new(test_scan_exec(scan_plan.clone(), Arc::clone(&output_schema)));
-    let scan_plan_exec: Arc<dyn ExecutionPlan> = scan_exec.clone();
+    let scan_plan_exec: Arc<dyn ExecutionPlan> = Arc::clone(&scan_exec) as _;
     let scan_schema = scan_plan_exec.schema();
     let predicate = col("flag", &scan_schema).unwrap();
     let filter = FilterExec::try_new(predicate, scan_plan_exec).unwrap();

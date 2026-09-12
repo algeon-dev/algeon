@@ -269,7 +269,7 @@ fn native_optimizer_lifts_reader_predicate_filters_for_scalar_count_materializat
 fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_streaming_support() {
     let plan = repeated_scalar_mixed_aggregate_materialization_plan();
 
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     let diagnostics = &result.diagnostics.shared_subplan_materialization;
     assert_eq!(diagnostics.considered_count, 3);

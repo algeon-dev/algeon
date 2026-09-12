@@ -646,7 +646,7 @@ mod tests {
 
         // Verify all 5 vertex ids are present
         let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vert copy");
-        let mut sorted = vertices.clone();
+        let mut sorted = vertices;
         sorted.sort();
         assert_eq!(sorted, vec![0, 1, 2, 3, 4], "should contain vertices 0-4");
     }

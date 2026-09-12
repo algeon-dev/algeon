@@ -1990,7 +1990,7 @@ fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> 
         .map(|(index, field)| {
             let column = batch.column(index);
             if column.data_type() == field.data_type() {
-                return Ok(column.clone());
+                return Ok(Arc::clone(column));
             }
 
             if let Some(column) = timestamp_array_with_schema_timezone(column.as_ref(), field.data_type())? {
@@ -2013,7 +2013,7 @@ fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> 
         .collect::<Result<Vec<ArrayRef>>>()?;
 
     let options = RecordBatchOptions::new().with_row_count((columns.is_empty()).then_some(batch.num_rows()));
-    RecordBatch::try_new_with_options(schema.clone(), columns, &options).map_err(|error| {
+    RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options).map_err(|error| {
         map_arrow_schema_contract_error(operation, error)
             .with_detail("schema_contract_failure", "schema_record_batch_build_failed")
     })
@@ -2024,7 +2024,7 @@ fn timestamp_array_with_schema_timezone(column: &dyn Array, expected_type: &Arro
         (
             ArrowDataType::Timestamp(actual_unit, _),
             ArrowDataType::Timestamp(expected_unit, Some(expected_timezone)),
-        ) if actual_unit == expected_unit => (actual_unit, expected_unit, expected_timezone.clone()),
+        ) if actual_unit == expected_unit => (actual_unit, expected_unit, Arc::clone(expected_timezone)),
         _ => return Ok(None),
     };
 

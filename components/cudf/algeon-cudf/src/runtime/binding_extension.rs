@@ -462,8 +462,6 @@ where T: Any + Send + Sync
             },
         };
         if prior_leases > 1 {
-            drop(lifecycle);
-            drop(generation);
             return;
         }
 

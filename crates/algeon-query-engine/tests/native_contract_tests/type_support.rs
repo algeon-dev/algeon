@@ -226,10 +226,8 @@ fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
 #[test]
 fn list_string_columns_are_rejected_as_native_operator_operands() {
     let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("tags", list_type.clone(), true),
-    ]));
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("tags", list_type, true)]));
 
     let sort_error = native_validation_error_for_plan(|builder| {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));

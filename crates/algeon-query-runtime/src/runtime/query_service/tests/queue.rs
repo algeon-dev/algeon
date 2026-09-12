@@ -833,7 +833,7 @@ fn direct_owner_resolution_does_not_consume_commit_wait() {
         1,
     );
     let pause = service.pause_pending_preflight();
-    let direct_service = service.clone();
+    let direct_service = service;
     let direct = std::thread::spawn(move || direct_service.try_admit_query());
     pause.wait_until_entered(Duration::from_secs(1));
 

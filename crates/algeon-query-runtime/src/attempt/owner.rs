@@ -161,7 +161,6 @@ impl Clone for AttemptCompletion {
     fn clone(&self) -> Self {
         let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.receivers = state.receivers.saturating_add(1);
-        drop(state);
         Self { cell: Arc::clone(&self.cell) }
     }
 }
@@ -190,7 +189,6 @@ impl AttemptCompletionFactory {
     pub fn completion(&self) -> AttemptCompletion {
         let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.receivers = state.receivers.saturating_add(1);
-        drop(state);
         AttemptCompletion { cell: Arc::clone(&self.cell) }
     }
 
@@ -682,7 +680,7 @@ impl AttemptOwner {
         admitted: bool,
     ) -> Result<(), AttemptLifecycleError> {
         if !admitted {
-            match self.0.finalizer_slot.finalize_not_admitted(terminal.clone()) {
+            match self.0.finalizer_slot.finalize_not_admitted(terminal) {
                 Ok(terminal) => {
                     let _ = self.0.observation_owner.finish_query(Some(terminal));
                 },
@@ -1130,7 +1128,7 @@ mod tests {
             permit,
             Arc::clone(&counters),
             queue,
-            clock.clone(),
+            Arc::clone(&clock) as _,
         );
         (begin, clock, counters)
     }
@@ -1476,7 +1474,8 @@ mod tests {
     #[test]
     fn held_receivers_do_not_route_to_the_abandoned_queue() {
         let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
-        let (begin, _clock, counters) = test_begin(RuntimeObservationConfig::native_execution(), Some(queue.clone()));
+        let (begin, _clock, counters) =
+            test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
         let _held = begin.completion.completion();
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         assert_eq!(counters.snapshot().completion_queue_pushed, 0);

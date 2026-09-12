@@ -286,7 +286,7 @@ fn normalize_sort_stack<'a>(
         };
     let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate.clone())?;
     let (pre_aggregate_projection, native_input) =
-        peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, initial_candidate.clone())?;
+        peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, initial_candidate)?;
     let candidate = native_stack_candidate_for_input(
         root,
         output_schema_fields,
@@ -429,7 +429,7 @@ fn normalize_global_aggregate_stack<'a>(
         global_aggregate_candidate(output_schema_fields, post_aggregate_projection.is_some(), false, false, false);
     let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
     let (pre_aggregate_projection, native_input) =
-        peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, candidate.clone())?;
+        peel_pre_aggregate_projection_and_input(aggregate_peel.aggregate, candidate)?;
     let candidate = global_aggregate_candidate_for_input(
         output_schema_fields,
         &native_input,
@@ -581,7 +581,7 @@ fn normalize_input_root<'a>(
     candidate: GpuCandidate,
     projection_order: PostAggregateProjectionOrder,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
-    let input = normalize_native_input(input_plan, candidate.clone(), sort.is_some())?;
+    let input = normalize_native_input(input_plan, candidate, sort.is_some())?;
     let candidate = input_root_candidate(
         stack_root,
         output_schema_fields,

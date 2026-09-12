@@ -269,7 +269,6 @@ impl PreparedDataFrameGroupBy {
         let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
             self.keys.iter().map(|s| s.as_str()).collect();
         let _key_indices = resolve_column_names(columns, &key_refs, operation)?;
-        drop(key_refs);
 
         for spec in specs {
             if !columns.contains_key(spec.column.as_str()) {
@@ -502,7 +501,6 @@ impl<'a> GroupBy<'a> {
         let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
             self.keys.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(columns, &key_refs, operation)?;
-        drop(key_refs);
 
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
         let prepared = if self.options.keys_are_sorted() {
@@ -528,7 +526,6 @@ impl<'a> GroupBy<'a> {
             let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
                 self.keys.iter().map(|s| s.as_str()).collect();
             let key_indices = resolve_column_names(columns, &key_refs, operation)?;
-            drop(key_refs);
 
             let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
             let execution = ResolvedExecution::unary(keys_table.table().execution_domain(), ctx, operation)?;
@@ -623,7 +620,6 @@ impl<'a> GroupBy<'a> {
         let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
             self.keys.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(columns, &key_refs, operation)?;
-        drop(key_refs);
 
         for spec in specs {
             if !columns.contains_key(spec.column.as_str()) {
@@ -814,7 +810,6 @@ impl<'a> GroupBy<'a> {
         let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
             self.keys.iter().map(|s| s.as_str()).collect();
         let key_indices = resolve_column_names(columns, &key_refs, operation)?;
-        drop(key_refs);
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
 
         let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> =

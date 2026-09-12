@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
@@ -739,8 +739,9 @@ impl<'a> SemijoinReductionRewriter<'a> {
             })
             .collect::<Vec<_>>();
 
-        let target_schema =
-            self.nodes.get(target_new_id.index()).expect("rewritten target node must exist").output_schema().clone();
+        let target_schema = Arc::clone(
+            self.nodes.get(target_new_id.index()).expect("rewritten target node must exist").output_schema(),
+        );
         let mut spec = original_semijoin.spec.clone();
         spec.keys = keys;
         spec.output_projection = left_output_projection_for_schema(&target_schema);
@@ -757,7 +758,7 @@ impl<'a> SemijoinReductionRewriter<'a> {
         original_semijoin: &JoinNode,
         pushed_left: NodeId,
     ) -> NodeId {
-        let pushed_schema = self.nodes[pushed_left.index()].output_schema().clone();
+        let pushed_schema = Arc::clone(self.nodes[pushed_left.index()].output_schema());
         let projected_schema = semijoin_projection_schema(self.original, original_semijoin);
         if schemas_equal(&pushed_schema, &projected_schema)
             && semijoin_projection_is_identity(self.original, original_semijoin)
@@ -1073,13 +1074,13 @@ fn left_output_projection_for_schema(schema: &ArrowSchemaRef) -> Vec<JoinOutputC
 }
 
 fn semijoin_projection_schema(plan: &QueryPlan, join: &JoinNode) -> ArrowSchemaRef {
-    let left_schema = plan.node(join.inputs[0]).expect("left-semi left input must exist").output_schema().clone();
+    let left_schema = plan.node(join.inputs[0]).expect("left-semi left input must exist").output_schema();
     let fields = join
         .spec
         .output_projection
         .iter()
         .map(|output| {
-            let slot = resolve_output_slot(&left_schema, &output.column)
+            let slot = resolve_output_slot(left_schema, &output.column)
                 .expect("left-semi projection should resolve before rewrite");
             let input_field = left_schema.field(slot);
             Field::new(output.output_name.clone(), input_field.data_type().clone(), input_field.is_nullable())

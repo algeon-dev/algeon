@@ -759,7 +759,7 @@ mod observation_tests {
         let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
         let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
         let observation = test_observation(&owner);
-        let worker_observation = observation.clone();
+        let worker_observation = Arc::clone(&observation);
         let waiter = thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
 
         pool.wait_until_acquire_queued_for_test(Instant::now() + Duration::from_secs(5));
@@ -804,7 +804,7 @@ mod observation_tests {
                 "source-queue-clock",
                 None,
                 RuntimeObservationConfig::bounded(64, 64 * 1024),
-                clock.clone(),
+                Arc::clone(&clock) as _,
             ))
             .build_with_runtime_observation()
             .unwrap();
@@ -812,7 +812,7 @@ mod observation_tests {
         let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
         let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
         let observation = test_observation(&owner);
-        let worker_observation = observation.clone();
+        let worker_observation = Arc::clone(&observation);
         let lease_waiter =
             thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
 
@@ -826,7 +826,7 @@ mod observation_tests {
         let before_spawn_release = Arc::new(Barrier::new(2));
         let worker_release = Arc::new(Barrier::new(2));
         let (started_sender, started_receiver) = mpsc::sync_channel(0);
-        let spawn_observation = observation.clone();
+        let spawn_observation = observation;
         let hook = SourceReadSpawnTestHook {
             entered: Arc::clone(&before_spawn_entered),
             release: Arc::clone(&before_spawn_release),
@@ -864,7 +864,7 @@ mod observation_tests {
             "source-queue-exhausted-clock",
             None,
             RuntimeObservationConfig::bounded(3, 64 * 1024),
-            clock.clone(),
+            Arc::clone(&clock) as _,
         ));
         let observation = test_observation(&owner);
         clock.set_monotonic_ns(1_000);
@@ -901,7 +901,7 @@ mod observation_tests {
         let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
         let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
         let observation = test_observation(&owner);
-        let worker_observation = observation.clone();
+        let worker_observation = observation;
         let waiter = thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
 
         pool.wait_until_acquire_queued_for_test(Instant::now() + Duration::from_secs(5));

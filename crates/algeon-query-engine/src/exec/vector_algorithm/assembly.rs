@@ -282,7 +282,7 @@ mod tests {
             vec![1.0, 1.0, 0.4, 0.6]
         );
 
-        let mut inner_product = params.clone();
+        let mut inner_product = params;
         inner_product.metric = VectorDistanceMetric::InnerProduct;
         let output = assemble_brute_force_knn_output(
             &context,

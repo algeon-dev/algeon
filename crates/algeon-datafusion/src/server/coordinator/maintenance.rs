@@ -265,7 +265,7 @@ impl QueryCoordinator {
                 }
                 if record.terminal_outcome.is_none() {
                     let mut terminal =
-                        QueryTerminal::Cancelled { stage: "server_shutdown", error: shutdown_error.clone() };
+                        QueryTerminal::Cancelled { stage: "server_shutdown", error: Arc::clone(&shutdown_error) };
                     Self::apply_terminal_to_capture(record, &mut terminal, now);
                     record.terminal_outcome = Some(terminal.compact_outcome());
                     record.terminal = Some(terminal);

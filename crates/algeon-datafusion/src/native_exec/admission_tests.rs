@@ -509,7 +509,7 @@ async fn composed_producer_consumer_success_seals_after_consumer_eof() {
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
-        ticket.clone(),
+        Arc::clone(&ticket),
     );
     let task_context = Arc::new(TaskContext::default());
 
@@ -561,7 +561,7 @@ fn composed_producer_execute_error_releases_round_and_seals_failure() {
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::ExecuteError, Arc::clone(&observed_ticket)),
-        ticket.clone(),
+        Arc::clone(&ticket),
     );
 
     let error = match exec.execute(0, Arc::new(TaskContext::default())) {
@@ -582,7 +582,7 @@ async fn composed_consumer_error_seals_one_failed_terminal_boundary() {
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::StreamError, Arc::clone(&observed_ticket)),
-        ticket.clone(),
+        Arc::clone(&ticket),
     );
 
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("consumer stream starts");
@@ -603,7 +603,7 @@ async fn composed_consumer_cancellation_is_terminalized_as_cancelled() {
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::CancelledStream, Arc::clone(&observed_ticket)),
-        ticket.clone(),
+        Arc::clone(&ticket),
     );
 
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cancelled consumer stream starts");
@@ -674,7 +674,7 @@ async fn one_context_ticket_keeps_composed_round_alive_until_all_streams_drop() 
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
-        ticket.clone(),
+        Arc::clone(&ticket),
     );
     let task_context = Arc::new(TaskContext::default());
 

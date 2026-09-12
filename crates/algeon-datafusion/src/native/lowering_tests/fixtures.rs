@@ -573,7 +573,11 @@ pub(super) fn write_nested_prefix_row_group_pruning_parquet_file(path: &std::pat
     let payload_x = Arc::new(Field::new("x", DataType::Int32, false));
     let payload_y = Arc::new(Field::new("y", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![
-        Field::new("payload", DataType::Struct(Fields::from(vec![payload_x.clone(), payload_y.clone()])), false),
+        Field::new(
+            "payload",
+            DataType::Struct(Fields::from(vec![Arc::clone(&payload_x), Arc::clone(&payload_y)])),
+            false,
+        ),
         Field::new("key", DataType::Int32, false),
         Field::new("m00", DataType::Int64, false),
     ]));

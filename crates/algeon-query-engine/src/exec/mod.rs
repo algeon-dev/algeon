@@ -270,10 +270,10 @@ fn execute_query_plan_with_observation(
     let manifest_query_id = observation_handle.query_id().map(|id| QueryId::new(id.as_str()));
     let manifest_trace_id = observation_handle.trace_id().map(|id| TraceId::new(id.as_str()));
     let manifest_is_authoritative = manifest_query_id.is_some();
-    let query_id = manifest_query_id.clone().or_else(|| context.query_id().cloned()).unwrap_or_else(QueryId::mint);
+    let query_id = manifest_query_id.or_else(|| context.query_id().cloned()).unwrap_or_else(QueryId::mint);
     let trace_id = if manifest_is_authoritative { manifest_trace_id } else { context.trace_id().cloned() };
     let observed_context = context
-        .with_runtime_observation_handle(observation_handle.clone())
+        .with_runtime_observation_handle(observation_handle)
         .and_then(
             |context| {
                 if context.query_id().is_none() { context.with_query_id(query_id.clone()) } else { Ok(context) }
@@ -405,7 +405,7 @@ fn execute_query_plan_output(
             ResultSink::GpuResident { .. } => Output::GpuResident(gpu_result_handle(context, plan, frame)?),
             ResultSink::HostArrow { schema, .. } => {
                 let executable_schema =
-                    plan.node(plan.sink().input()).expect("validated sink input exists").output_schema().clone();
+                    Arc::clone(plan.node(plan.sink().input()).expect("validated sink input exists").output_schema());
                 Output::HostArrow(materialize_gpu_frame_to_host(context, frame, executable_schema, schema, metrics)?)
             },
         }

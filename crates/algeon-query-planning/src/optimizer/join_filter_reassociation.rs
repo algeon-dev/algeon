@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 
@@ -236,7 +236,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         self.diagnostics.considered_count += 1;
 
         let output_schema =
-            self.original.node(candidate_node_id).expect("candidate node must exist").output_schema().clone();
+            Arc::clone(self.original.node(candidate_node_id).expect("candidate node must exist").output_schema());
         match self.plan_reassociation(join, output_schema) {
             Ok(planned) => {
                 candidate.crossed_join_node_id = Some(planned.crossed_join_node_id);
@@ -287,7 +287,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             return None;
         }
 
-        match self.plan_reassociation(&projected_join, projection.output_schema().clone()) {
+        match self.plan_reassociation(&projected_join, Arc::clone(projection.output_schema())) {
             Ok(planned) => {
                 candidate.crossed_join_node_id = Some(planned.crossed_join_node_id);
                 candidate.filtered_child_node_id = Some(planned.filtered_child_node_id);
@@ -570,7 +570,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
                 )
             })
             .collect::<Vec<_>>();
-        let filtered_schema = self.nodes[filtered_child_new.index()].output_schema().clone();
+        let filtered_schema = Arc::clone(self.nodes[filtered_child_new.index()].output_schema());
         let projection = filtered_schema
             .fields()
             .iter()

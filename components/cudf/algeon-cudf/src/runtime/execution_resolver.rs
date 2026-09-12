@@ -95,7 +95,7 @@ impl ResolvedExecution {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
     use super::ResolvedExecution;
     use crate::{
@@ -228,7 +228,7 @@ mod tests {
 
         reset_dependency_observation();
         let execution = ResolvedExecution::with_output_domain(
-            output.execution_domain().clone(),
+            Arc::clone(output.execution_domain()),
             [source_a.execution_domain(), source_b.execution_domain()],
             "execution_resolver::test::with_output_domain",
         )

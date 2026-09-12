@@ -47,11 +47,11 @@ fn test_factorize_i32_with_duplicates() {
     }
 
     // Verify uniques contain exactly the input distinct values (order is not guaranteed).
-    let mut expected_uniques = data.clone();
+    let mut expected_uniques = data;
     expected_uniques.sort();
     expected_uniques.dedup();
 
-    let mut actual_uniques = uniques_host.clone();
+    let mut actual_uniques = uniques_host;
     actual_uniques.sort();
     actual_uniques.dedup();
 

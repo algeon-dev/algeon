@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(status.message(), format!("invalid SQL statement: {parser_display}"));
         assert!(!status.message().contains("ParserError("));
         assert_error_metadata(&status, "sql_parse", "invalid_input", "permanent");
-        assert_eq!(status_source_diagnostics(&status), (Some(parser_display.clone()), Some(parser_display.clone())));
+        assert_eq!(status_source_diagnostics(&status), (Some(parser_display.clone()), Some(parser_display)));
     }
 
     #[test]

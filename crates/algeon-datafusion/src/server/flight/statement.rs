@@ -161,8 +161,7 @@ impl DatafusionAlgeonFlightSqlService {
         if let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) {
             execution_config = execution_config.with_trace_id(correlation_id.to_string());
         }
-        let optimizer_config =
-            self.native_optimizer_config.clone().with_native_execution_config(execution_config.clone());
+        let optimizer_config = self.native_optimizer_config.clone().with_native_execution_config(execution_config);
         // Retain the native rule so we can read its `last_report` for the
         // planning-report log after physical optimization runs.
         let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config));

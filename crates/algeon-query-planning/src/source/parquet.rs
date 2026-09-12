@@ -1398,7 +1398,7 @@ mod tests {
 
         assert!(complete.has_simple_directed_edge_topology("src", "dst"));
         assert!(!complete.has_simple_directed_edge_topology("dst", "src"));
-        assert!(!complete.clone().with_scan_limit(Some(1)).has_simple_directed_edge_topology("src", "dst"));
+        assert!(!complete.with_scan_limit(Some(1)).has_simple_directed_edge_topology("src", "dst"));
 
         let multi_file = LocalParquetSource::from_files(
             vec![

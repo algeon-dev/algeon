@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use query_engine::{
@@ -62,13 +64,13 @@ pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
     let predicate = if let Some(filter) = filter
         && scan_predicate_covers_filter
     {
-        let bindings = source_bindings_for_schema(source_output_schema, frontend_schema.clone());
+        let bindings = source_bindings_for_schema(source_output_schema, frontend_schema);
         lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&bindings))
     } else {
         let Some(reader_scan_predicate) = reader_scan_predicate.as_ref() else {
             return Ok(None);
         };
-        let bindings = source_bindings_for_schema(source_output_schema, frontend_schema.clone());
+        let bindings = source_bindings_for_schema(source_output_schema, Arc::clone(&frontend_schema));
         lower_physical_expr_with_bindings(reader_scan_predicate, &frontend_schema, Some(&bindings))
     };
     let predicate = match predicate {

@@ -386,7 +386,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, true),
     ]))));
-    ctx.register_table("metadata_probe", scan_probe.clone()).unwrap();
+    ctx.register_table("metadata_probe", Arc::clone(&scan_probe) as _).unwrap();
     ctx.register_table(
         "user_rows",
         Arc::new(datafusion::datasource::empty::EmptyTable::new(Arc::new(Schema::new(vec![
@@ -400,10 +400,10 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
         Field::new("dst", DataType::Int64, false),
         Field::new("weight", DataType::Float64, false),
     ]))));
-    ctx.register_table("validation_edges", validation_edges.clone()).unwrap();
+    ctx.register_table("validation_edges", Arc::clone(&validation_edges) as _).unwrap();
     let replacement = ctx.state().create_logical_plan("SELECT * FROM user_rows").await.unwrap();
     let controlled_rewrite = Arc::new(ControlledPlanReplacement::new(replacement));
-    ctx.register_relation_planner(controlled_rewrite.clone()).unwrap();
+    ctx.register_relation_planner(Arc::clone(&controlled_rewrite) as _).unwrap();
     let ctx = Arc::new(ctx);
     let shutdown = CancellationToken::new();
     let server = FlightSqlServer::builder()

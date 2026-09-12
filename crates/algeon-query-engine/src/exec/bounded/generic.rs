@@ -127,11 +127,10 @@ fn execute_bounded_generic_node(
             let input_schema = plan
                 .node(window.input)
                 .expect("validated window input exists")
-                .output_schema()
-                .clone();
-            let output_schema = node.output_schema().clone();
+                .output_schema();
+            let output_schema = node.output_schema();
             execute_bounded_generic_unary(execution, id, "bounded_generic_window", input, false, |context, input, _token, metrics| {
-                    execute_window(context, window, &input_schema, input, &output_schema, metrics)
+                    execute_window(context, window, input_schema, input, output_schema, metrics)
                 })
         },
         PlanNode::Sort(sort) => {
@@ -194,16 +193,15 @@ fn execute_bounded_generic_node(
             let input_schema = plan
                 .node(aggregate.input)
                 .expect("validated aggregate input exists")
-                .output_schema()
-                .clone();
-            let output_schema = node.output_schema().clone();
+                .output_schema();
+            let output_schema = node.output_schema();
             let input_reserved_bytes = input.device_bytes();
             execute_compiled_bounded_aggregate_from_frame(
                 execution,
                 id,
                 aggregate,
-                &input_schema,
-                &output_schema,
+                input_schema,
+                output_schema,
                 input.frame,
                 input_reserved_bytes,
             )

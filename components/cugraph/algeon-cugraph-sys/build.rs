@@ -102,7 +102,7 @@ fn main() {
             .into_os_string(),
         )
     } else {
-        cmake_build_dir_env.clone()
+        cmake_build_dir_env
     };
 
     let mut contract = build_support::resolve_native_build_contract(

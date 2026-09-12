@@ -808,7 +808,7 @@ mod tests {
     fn column_chunk_with_statistics(schema_body: &str, statistics: Statistics) -> ColumnChunkMetaData {
         let parquet_type = parse_message_type(schema_body).expect("test Parquet schema should parse");
         let schema = Arc::new(SchemaDescriptor::new(Arc::new(parquet_type)));
-        ColumnChunkMetaData::builder(schema.columns()[0].clone())
+        ColumnChunkMetaData::builder(Arc::clone(&schema.columns()[0]))
             .set_statistics(statistics)
             .build()
             .expect("test column metadata should build")
@@ -1080,7 +1080,7 @@ mod tests {
         let object_path = ObjectStorePath::parse("warehouse/test.parquet").expect("valid path");
         store.put(&object_path, bytes.clone().into()).await.expect("put should succeed");
 
-        let mut reader = ObjectStoreParquetReader::new(store.clone(), object_path.clone(), file_size);
+        let mut reader = ObjectStoreParquetReader::new(Arc::clone(&store) as _, object_path.clone(), file_size);
 
         let metadata = reader.get_metadata(None).await.expect("metadata should load");
         assert_eq!(metadata.file_metadata().num_rows(), 2);
@@ -1122,7 +1122,11 @@ mod tests {
         let payload_a = Arc::new(Field::new("a", DataType::Int64, false));
         let payload_b = Arc::new(Field::new("b", DataType::Int64, false));
         let schema = Arc::new(Schema::new(vec![
-            Field::new("payload", DataType::Struct(Fields::from(vec![payload_a.clone(), payload_b.clone()])), false),
+            Field::new(
+                "payload",
+                DataType::Struct(Fields::from(vec![Arc::clone(&payload_a), Arc::clone(&payload_b)])),
+                false,
+            ),
             Field::new("key", DataType::Int64, false),
         ]));
         let payload_a_values = Arc::new(Int64Array::from(vec![0, 0])) as ArrayRef;
