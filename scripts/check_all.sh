@@ -90,6 +90,8 @@ POLICY_SCRIPTS=(
   scripts/ci/tests/check_pass_as_skip_policy_tests.sh
   scripts/ci/tests/check_public_api_surface_tests.sh
   scripts/ci/tests/check_nextest_gpu_lock_tests.sh
+  scripts/ci/tests/check_prose_slop_tests.sh
+  scripts/ci/tests/check_sloplint_tests.sh
 )
 
 policy_scripts() {
