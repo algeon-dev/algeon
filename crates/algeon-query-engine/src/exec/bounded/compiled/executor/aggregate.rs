@@ -101,7 +101,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 node.output_schema(),
                 stream,
                 preserve_output_stream,
-                self.aggregate_dispatch,
+                self.aggregate_dispatch.as_ref(),
                 topk.as_ref(),
             )
         } else if state.can_consume_task_input_resource(task, input) {
@@ -152,7 +152,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     node.output_schema(),
                     stream,
                     preserve_output_stream,
-                    self.aggregate_dispatch,
+                    self.aggregate_dispatch.as_ref(),
                     topk.as_ref(),
                 )
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))

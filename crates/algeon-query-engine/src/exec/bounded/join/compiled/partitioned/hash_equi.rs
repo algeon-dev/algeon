@@ -657,3 +657,188 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
         }
     }
 }
+
+/// Whether partitioned probe chunks may run in parallel sharing one split build.
+///
+/// Partitioned streaming supports inner and probe-preserved left joins; each
+/// probe chunk is partitioned to match the build and probed partition by
+/// partition. Chunks are independent (concatenation preserves inner and
+/// probe-preserved semantics); partitions within a chunk stay serial in the
+/// lane, preserving the existing split/retry and skew handling. A single huge
+/// key still follows the existing split or typed failure path; adding lanes
+/// never assumes the max partition shrinks.
+pub(in crate::exec::bounded) fn partitioned_parallel_probe_supported(node: &JoinNode) -> bool {
+    super::super::partitioned_streaming_probe_supported(node)
+}
+
+struct PartitionedProbeWorkState {
+    pending: VecDeque<ResidentGpuFrame>,
+    outputs: Vec<ResidentGpuFrame>,
+}
+
+/// Minimal Send+Sync view of a split partitioned build shared across lanes.
+///
+/// Partitions are immutable `DataFrame` clones behind `Arc` columns; each
+/// lane supplies its own stream and workspace. No new `unsafe` impl.
+struct SharedPartitionedBuild {
+    build_side: JoinSide,
+    build_rows: u64,
+    build_bytes: u64,
+    partitioned: PartitionedJoinSide,
+    partition_count: usize,
+    partition_target_bytes: u64,
+    strategy_options: KeyedHashJoinStrategyOptions,
+}
+
+impl SharedPartitionedBuild {
+    fn from_state(state: &PartitionedHashEquiJoinFrameStreamProbeState) -> Self {
+        Self {
+            build_side: state.build_side,
+            build_rows: state.build_rows,
+            build_bytes: state.build_bytes,
+            partitioned: clone_partitioned_side(&state.build_partitioned),
+            partition_count: state.partition_count,
+            partition_target_bytes: state.partition_target_bytes,
+            strategy_options: state.strategy_options,
+        }
+    }
+}
+
+fn clone_partitioned_side(side: &PartitionedJoinSide) -> PartitionedJoinSide {
+    match side {
+        PartitionedJoinSide::Contiguous { frame, device_bytes, offsets } => PartitionedJoinSide::Contiguous {
+            frame: frame.clone(),
+            device_bytes: *device_bytes,
+            offsets: offsets.clone(),
+        },
+        PartitionedJoinSide::Split { partitions, device_bytes } => {
+            PartitionedJoinSide::Split { partitions: partitions.to_vec(), device_bytes: *device_bytes }
+        },
+    }
+}
+
+/// Drain a partitioned lazy stream's eager chunks in parallel.
+///
+/// The caller retains ownership of `probe` while lanes run; each lane clones
+/// the shared split build and drains exactly one probe chunk through the
+/// existing single-chunk lazy pipeline (partition, probe partitions
+/// serially, collect). Outputs keep chunk order; the build is constructed
+/// once regardless of chunk count. The `outer` dispatcher contract matches
+/// the hash parallel probe.
+pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    node: &JoinNode,
+    mut probe: PartitionedHashEquiJoinFrameStreamProbeState,
+    outer: Option<&super::super::super::super::compiled::lanes::AggregateLaneDispatch>,
+) -> Result<Vec<ResidentGpuFrame>> {
+    // Take probe inputs out first so `probe` stays usable for the shared-view
+    // construction; the frames move into lane work while partitions live on
+    // in `shared` through `Arc` columns.
+    let inputs = std::mem::replace(&mut probe.inputs, ResidentFrameStreamPayload::new(Vec::new()));
+    let frames = inputs.into_remaining_frames_owned(execution)?;
+    if frames.len() <= 1 {
+        return serial_partitioned_single_stream(execution, node_id, node, probe, frames.into());
+    }
+    let shared = std::sync::Arc::new(SharedPartitionedBuild::from_state(&probe));
+    // `probe` (with empty inputs) is no longer needed; its build partitions
+    // live on in `shared` through `Arc` columns while lanes run.
+    drop(probe);
+    let node_owned = node.clone();
+    let mut state = PartitionedProbeWorkState { pending: frames.into(), outputs: Vec::new() };
+    let chunk_count = state.pending.len();
+    let mut run_on = |dispatch: &super::super::super::super::compiled::lanes::AggregateLaneDispatch,
+                      execution: &mut BoundedExecutionAttempt<'_>| {
+        let width = dispatch.width();
+        execution.metrics().record_join_strategy_decision(
+            node_id,
+            &BTreeMap::from([
+                ("parallel_probe", "partitioned".to_string()),
+                ("parallel_probe_chunks", chunk_count.to_string()),
+                ("parallel_probe_width", width.to_string()),
+            ]),
+        );
+        dispatch.execute_work(
+            execution,
+            &mut state,
+            |state, _| Ok(state.pending.pop_front()),
+            {
+                let shared = std::sync::Arc::clone(&shared);
+                let node_owned = node_owned.clone();
+                move |lane_execution, chunk| {
+                    partitioned_probe_one_chunk(lane_execution, node_id, &node_owned, &shared, chunk)
+                }
+            },
+            |state, _, mut chunk_outputs| {
+                state.outputs.append(&mut chunk_outputs);
+                Ok(())
+            },
+        )
+    };
+    match outer {
+        Some(dispatch) => run_on(dispatch, execution)?,
+        None => super::super::super::super::compiled::lanes::AggregateLaneDispatch::with_available_lanes(
+            execution,
+            |dispatch, execution| run_on(dispatch, execution),
+        )?,
+    }
+    Ok(state.outputs)
+}
+
+fn serial_partitioned_single_stream(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    node: &JoinNode,
+    probe: PartitionedHashEquiJoinFrameStreamProbeState,
+    mut frames: VecDeque<ResidentGpuFrame>,
+) -> Result<Vec<ResidentGpuFrame>> {
+    // Single-chunk fallback preserves the exact serial lazy path: rebuild a
+    // one-stream probe state and drain it without lanes.
+    let mut outputs = Vec::new();
+    let mut probe = probe;
+    probe.inputs = ResidentFrameStreamPayload::new(frames.drain(..).collect());
+    let stream = partitioned_hash_equi_join_frame_stream_probe_to_payload(node_id, node, probe);
+    outputs.extend(stream.into_remaining_frames_owned(execution)?);
+    Ok(outputs)
+}
+
+fn partitioned_probe_one_chunk(
+    lane_execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    node: &JoinNode,
+    shared: &SharedPartitionedBuild,
+    chunk: ResidentGpuFrame,
+) -> Result<Vec<ResidentGpuFrame>> {
+    let build = BoundedCompiledPartitionedJoinBuildState {
+        strategy_options: shared.strategy_options,
+        side: shared.build_side,
+        rows: shared.build_rows,
+        bytes: shared.build_bytes,
+        partition_count: shared.partition_count,
+        partition_target_bytes: shared.partition_target_bytes,
+        partitioned: clone_partitioned_side(&shared.partitioned),
+        input_chunks: 1,
+    };
+    let single = ResidentFrameStreamPayload::new(vec![chunk]);
+    let lazy = execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream(
+        lane_execution,
+        node_id,
+        node,
+        build,
+        single,
+    )?;
+    let inner = match lazy {
+        BoundedCompiledJoinProbeState::PartitionedLazyStream(inner) => inner,
+        other => {
+            // Split-build single-chunk probes always return lazy; any other
+            // variant would mean the strategy changed under us.
+            crate::exec::bounded::release_bounded_compiled_join_probe_state(lane_execution, other);
+            return Err(unsupported_bounded_shape(
+                "partitioned parallel probe expected a lazy stream for its chunk",
+                "partitioned_parallel_probe_unexpected_state",
+            ));
+        },
+    };
+    let stream = partitioned_hash_equi_join_frame_stream_probe_to_payload(node_id, node, inner);
+    stream.into_remaining_frames_owned(lane_execution)
+}

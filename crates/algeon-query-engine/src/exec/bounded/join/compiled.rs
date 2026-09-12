@@ -142,15 +142,15 @@ pub(in crate::exec::bounded) fn stateless_streaming_probe_supported(node: &JoinN
 }
 
 pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
-    left_keys: Vec<String>,
-    left_columns: Vec<String>,
-    build: BoundedJoinSideFrame,
-    input_build_rows: u64,
-    input_build_bytes: u64,
-    filtered_join: GpuFilteredJoinBuildHandle,
-    hash_table_bytes: u64,
-    null_aware_probe: NullAwareAntiProbe,
-    timer: Instant,
+    pub(in crate::exec::bounded) left_keys: Vec<String>,
+    pub(in crate::exec::bounded) left_columns: Vec<String>,
+    pub(in crate::exec::bounded) build: BoundedJoinSideFrame,
+    pub(in crate::exec::bounded) input_build_rows: u64,
+    pub(in crate::exec::bounded) input_build_bytes: u64,
+    pub(in crate::exec::bounded) filtered_join: GpuFilteredJoinBuildHandle,
+    pub(in crate::exec::bounded) hash_table_bytes: u64,
+    pub(in crate::exec::bounded) null_aware_probe: NullAwareAntiProbe,
+    pub(in crate::exec::bounded) timer: Instant,
 }
 
 pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinProbeState {
@@ -526,6 +526,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
                 node,
                 BoundedCompiledJoinBuildState::Partitioned(build),
                 ResidentFrameStreamPayload::new(vec![ResidentGpuFrame::with_device_bytes(input, bytes)]),
+                None,
             )
         },
     }
@@ -573,6 +574,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
             node,
             build,
             ResidentFrameStreamPayload::new(vec![input]),
+            None,
         ),
     }
 }
@@ -614,7 +616,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     };
     if lazy_probe_supported {
         let inputs = bounded_join_leaf_local_parquet_source_frame_stream(execution, stream);
-        return execute_bounded_compiled_join_probe_from_frame_stream(execution, node_id, node, build, inputs);
+        return execute_bounded_compiled_join_probe_from_frame_stream(execution, node_id, node, build, inputs, None);
     }
 
     match build {
@@ -701,41 +703,78 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     node: &JoinNode,
     build: BoundedCompiledJoinBuildState,
     mut inputs: ResidentFrameStreamPayload,
+    outer: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
         BoundedCompiledJoinBuildState::Prepared(build) if mixed_left_match_probe_supported(node, build.strategy) => {
             execute_compiled_mixed_left_join_probe_from_frame_stream(execution, node, build, inputs)
         },
         BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
-            Ok(BoundedCompiledJoinProbeState::HashLazyStream(RootHashJoinFrameStreamProbeState { build, inputs }))
+            // Reusable build with parallel probe chunks: one table built once,
+            // many probe chunks share it on disjoint lanes with private
+            // workspace. Eager multi-frame inputs probe in parallel and merge
+            // by concatenation (chunk-independent for inner/probe-preserved
+            // left); single-chunk and lazy inputs keep the lazy stream path.
+            if hash_parallel_probe_supported(node) && inputs.len() > 1 {
+                match parallel_hash_probe_frame_stream(execution, node_id, node, &build, inputs, outer) {
+                    Ok(outputs) => Ok(BoundedCompiledJoinProbeState::HashStreamed { build, outputs }),
+                    Err(error) => {
+                        release_bounded_root_hash_join_build_state(build);
+                        Err(error)
+                    },
+                }
+            } else {
+                Ok(BoundedCompiledJoinProbeState::HashLazyStream(RootHashJoinFrameStreamProbeState { build, inputs }))
+            }
         },
         BoundedCompiledJoinBuildState::Filtered(build) => {
-            let mut outputs = Vec::new();
-            while let Some(input) = inputs.next_yielded_frame(execution) {
-                let mut input = match input {
-                    Ok(input) => input,
+            // One filtered build serves many probe chunks; membership is per
+            // probe row, so parallel chunks merge by concatenation. Eager
+            // multi-frame inputs use lanes, otherwise keep the serial stream
+            // drain.
+            if filtered_parallel_probe_supported(node) && inputs.len() > 1 {
+                let frames = match inputs.into_remaining_frames_owned(execution) {
+                    Ok(frames) => frames,
                     Err(error) => {
-                        inputs.release_all(execution);
-                        release_streamed_join_outputs_reverse(outputs);
                         release_compiled_filtered_join_build_state(build);
                         return Err(error);
                     },
                 };
-                let input = input.take_for_release();
-                match execute_compiled_filtered_join_probe_chunk_from_resident_frame(
-                    execution, node_id, node, &build, input,
-                ) {
-                    Ok(output) => outputs.push(output),
+                match parallel_filtered_probe_frames(execution, node_id, node, &build, frames, outer) {
+                    Ok(outputs) => Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs }),
                     Err(error) => {
-                        inputs.release_all(execution);
-                        release_streamed_join_outputs_reverse(outputs);
                         release_compiled_filtered_join_build_state(build);
-                        return Err(error);
+                        Err(error)
                     },
                 }
+            } else {
+                let mut outputs = Vec::new();
+                while let Some(input) = inputs.next_yielded_frame(execution) {
+                    let mut input = match input {
+                        Ok(input) => input,
+                        Err(error) => {
+                            inputs.release_all(execution);
+                            release_streamed_join_outputs_reverse(outputs);
+                            release_compiled_filtered_join_build_state(build);
+                            return Err(error);
+                        },
+                    };
+                    let input = input.take_for_release();
+                    match execute_compiled_filtered_join_probe_chunk_from_resident_frame(
+                        execution, node_id, node, &build, input,
+                    ) {
+                        Ok(output) => outputs.push(output),
+                        Err(error) => {
+                            inputs.release_all(execution);
+                            release_streamed_join_outputs_reverse(outputs);
+                            release_compiled_filtered_join_build_state(build);
+                            return Err(error);
+                        },
+                    }
+                }
+                inputs.release_producer(execution);
+                Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs })
             }
-            inputs.release_producer(execution);
-            Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs })
         },
         BoundedCompiledJoinBuildState::Prepared(build)
             if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
@@ -756,6 +795,16 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
             )
         },
         other => {
+            // Serial probe path for strategies that require exclusive access
+            // or a global complement (build-preserved outer, full, residual,
+            // mixed/keyless/cross). The reason is recorded beside the
+            // parallel-probe decisions so the fallback stays visible in the
+            // same observation stream.
+            let serial_reason = serial_probe_reason(node);
+            execution.metrics().record_join_strategy_decision(
+                node_id,
+                &BTreeMap::from([("probe", "serial".to_string()), ("serial_probe_reason", serial_reason.to_string())]),
+            );
             let inputs = match inputs.into_remaining_frames_owned(execution) {
                 Ok(inputs) => inputs,
                 Err(error) => {
@@ -780,6 +829,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
     node_id: NodeId,
     node: &JoinNode,
     probe: BoundedCompiledJoinProbeState,
+    outer: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
 ) -> Result<ResidentGpuFrame> {
     match probe {
         BoundedCompiledJoinProbeState::Hash(probe) => {
@@ -836,9 +886,20 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
             summary,
         ),
         BoundedCompiledJoinProbeState::PartitionedLazyStream(probe) => {
-            let stream = partitioned_hash_equi_join_frame_stream_probe_to_payload(node_id, node, probe);
-            let outputs = stream.into_remaining_frames_owned(execution)?;
-            concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
+            // Independent probe chunks share one split build on the same
+            // dispatcher; partitions within a chunk stay serial, preserving
+            // split/retry and skew handling. Single-chunk and lazy inputs
+            // keep the serial lazy drain.
+            if partitioned_parallel_probe_supported(node) && probe.inputs.len() > 1 {
+                match parallel_partitioned_lazy_drain(execution, node_id, node, probe, outer) {
+                    Ok(outputs) => concatenate_streamed_hash_join_outputs(execution, node_id, outputs),
+                    Err(error) => Err(error),
+                }
+            } else {
+                let stream = partitioned_hash_equi_join_frame_stream_probe_to_payload(node_id, node, probe);
+                let outputs = stream.into_remaining_frames_owned(execution)?;
+                concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
+            }
         },
     }
 }
@@ -939,7 +1000,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 probe.strategy_options,
             )
         },
-        other => execute_bounded_compiled_join_materialize(execution, node_id, node, other)
+        other => execute_bounded_compiled_join_materialize(execution, node_id, node, other, None)
             .map(|frame| BoundedCompiledJoinMaterializeOutput::Frame(Box::new(frame))),
     }
 }

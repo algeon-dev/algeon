@@ -254,7 +254,7 @@ fn begin_filtered_join_probe_state(
     Ok((probe_state, probe_state_bytes))
 }
 
-pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
+pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
@@ -483,4 +483,150 @@ pub(super) fn release_compiled_filtered_join_probe_state(probe: BoundedCompiledF
     let BoundedCompiledFilteredJoinProbeState { build, probe, .. } = probe;
     release_compiled_filtered_join_build_state(build);
     release_bounded_join_side_frame(probe);
+}
+
+/// Whether a filtered probe may run chunks in parallel with concatenation.
+///
+/// Membership is per probe row into private probe state; null-aware anti
+/// facts are build-time. Only right-build semi/anti/mark shares the
+/// chunk-independent contract.
+pub(in crate::exec::bounded) fn filtered_parallel_probe_supported(node: &JoinNode) -> bool {
+    matches!(node.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark)
+        && node.spec.build_side == JoinSide::Right
+}
+
+struct FilteredProbeWorkState {
+    pending: std::collections::VecDeque<ResidentGpuFrame>,
+    outputs: Vec<ResidentGpuFrame>,
+}
+
+/// Minimal Send+Sync view of a filtered build shared across probe lanes.
+///
+/// The native filtered handle is read-only across probes with private probe
+/// state per lane; the timer measures the coordinator build and stays out of
+/// the shared view.
+struct SharedFilteredBuild {
+    left_keys: Vec<String>,
+    left_columns: Vec<String>,
+    build_frame: cudf::DataFrame,
+    build_rows: u64,
+    build_bytes: u64,
+    filtered_join: GpuFilteredJoinBuildHandle,
+    hash_table_bytes: u64,
+    null_aware_probe: crate::exec::join::NullAwareAntiProbe,
+}
+
+impl SharedFilteredBuild {
+    fn from_build(build: &BoundedCompiledFilteredJoinBuildState) -> Self {
+        Self {
+            left_keys: build.left_keys.clone(),
+            left_columns: build.left_columns.clone(),
+            build_frame: build.build.frame.clone(),
+            build_rows: build.build.rows,
+            build_bytes: build.build.bytes,
+            filtered_join: build.filtered_join.clone(),
+            hash_table_bytes: build.hash_table_bytes,
+            null_aware_probe: build.null_aware_probe,
+        }
+    }
+
+    fn as_build_ref(&self) -> BoundedCompiledFilteredJoinBuildState {
+        BoundedCompiledFilteredJoinBuildState {
+            left_keys: self.left_keys.clone(),
+            left_columns: self.left_columns.clone(),
+            build: BoundedJoinSideFrame {
+                frame: self.build_frame.clone(),
+                rows: self.build_rows,
+                bytes: self.build_bytes,
+            },
+            input_build_rows: self.build_rows,
+            input_build_bytes: self.build_bytes,
+            filtered_join: self.filtered_join.clone(),
+            hash_table_bytes: self.hash_table_bytes,
+            null_aware_probe: self.null_aware_probe,
+            timer: Instant::now(),
+        }
+    }
+}
+
+/// Probe eager filtered chunks in parallel sharing one build.
+///
+/// Outputs keep input chunk order; the table is built once regardless of
+/// probe batch count. The `outer` dispatcher contract matches the hash
+/// parallel probe: reuse the run's lanes when present, borrow available
+/// lanes otherwise.
+pub(in crate::exec::bounded) fn parallel_filtered_probe_frames(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: &BoundedCompiledFilteredJoinBuildState,
+    frames: Vec<ResidentGpuFrame>,
+    outer: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
+) -> Result<Vec<ResidentGpuFrame>> {
+    if frames.len() <= 1 {
+        return serial_filtered_probe_frames(execution, node_id, node, build, frames.into());
+    }
+    let mut state = FilteredProbeWorkState { pending: frames.into(), outputs: Vec::new() };
+    let chunk_count = state.pending.len();
+    let shared = std::sync::Arc::new(SharedFilteredBuild::from_build(build));
+    let node_owned = node.clone();
+    let mut run_on = |dispatch: &crate::exec::bounded::compiled::lanes::AggregateLaneDispatch,
+                      execution: &mut BoundedExecutionAttempt<'_>| {
+        let width = dispatch.width();
+        execution.metrics().record_join_strategy_decision(
+            node_id,
+            &std::collections::BTreeMap::from([
+                ("parallel_probe", "filtered".to_string()),
+                ("parallel_probe_chunks", chunk_count.to_string()),
+                ("parallel_probe_width", width.to_string()),
+            ]),
+        );
+        dispatch.execute_work(
+            execution,
+            &mut state,
+            |state, _| Ok(state.pending.pop_front()),
+            {
+                let shared = std::sync::Arc::clone(&shared);
+                let node_owned = node_owned.clone();
+                move |lane_execution, chunk| {
+                    let build_ref = shared.as_build_ref();
+                    execute_compiled_filtered_join_probe_chunk_from_resident_frame(
+                        lane_execution,
+                        node_id,
+                        &node_owned,
+                        &build_ref,
+                        chunk,
+                    )
+                }
+            },
+            |state, _, output| {
+                state.outputs.push(output);
+                Ok(())
+            },
+        )
+    };
+    match outer {
+        Some(dispatch) => run_on(dispatch, execution)?,
+        None => crate::exec::bounded::compiled::lanes::AggregateLaneDispatch::with_available_lanes(
+            execution,
+            |dispatch, execution| run_on(dispatch, execution),
+        )?,
+    }
+    Ok(state.outputs)
+}
+
+fn serial_filtered_probe_frames(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: &BoundedCompiledFilteredJoinBuildState,
+    mut frames: std::collections::VecDeque<ResidentGpuFrame>,
+) -> Result<Vec<ResidentGpuFrame>> {
+    let mut outputs = Vec::new();
+    while let Some(chunk) = frames.pop_front() {
+        outputs.push(execute_compiled_filtered_join_probe_chunk_from_resident_frame(
+            execution, node_id, node, build, chunk,
+        )?);
+    }
+    Ok(outputs)
 }

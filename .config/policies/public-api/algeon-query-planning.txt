@@ -727,6 +727,7 @@ impl query_planning::dynamic_filter::DynamicFilterSet
 pub fn query_planning::dynamic_filter::DynamicFilterSet::insert(&mut self, query_planning::dynamic_filter::DynamicFilterId, query_planning::dynamic_filter::DynamicFilter)
 pub fn query_planning::dynamic_filter::DynamicFilterSet::insert_skipped(&mut self, query_planning::dynamic_filter::DynamicFilterId, &'static str)
 pub fn query_planning::dynamic_filter::DynamicFilterSet::is_ready(&self, query_planning::dynamic_filter::DynamicFilterId) -> bool
+pub fn query_planning::dynamic_filter::DynamicFilterSet::merge_from(&mut self, &Self)
 pub fn query_planning::dynamic_filter::DynamicFilterSet::new() -> Self
 pub fn query_planning::dynamic_filter::DynamicFilterSet::produced(&self, query_planning::dynamic_filter::DynamicFilterId) -> core::option::Option<&query_planning::dynamic_filter::DynamicFilter>
 pub fn query_planning::dynamic_filter::DynamicFilterSet::skipped_reason(&self, query_planning::dynamic_filter::DynamicFilterId) -> core::option::Option<&'static str>

@@ -447,6 +447,19 @@ impl DynamicFilterSet {
             Some(DynamicFilterPayload::Produced(_)) | None => None,
         }
     }
+
+    /// Merges lane-produced payloads into the coordinator set.
+    ///
+    /// Lanes start from a snapshot of this set; aggregate group-key producers
+    /// extend it. Merging a successful lane's full set in commit order keeps
+    /// probe-side consumers' pruning without a second reservation or replay.
+    /// Keys already present carry the snapshotted value, so overwriting them
+    /// with the lane's identical copy is safe.
+    pub fn merge_from(&mut self, other: &Self) {
+        for (id, payload) in &other.payloads {
+            self.payloads.insert(*id, payload.clone());
+        }
+    }
 }
 
 /// Runtime and route-discovery thresholds for native dynamic filters.

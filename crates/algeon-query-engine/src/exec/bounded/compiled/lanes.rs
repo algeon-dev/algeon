@@ -3,13 +3,22 @@
 //! The lane dispatcher runs the same claim/output-ready/commit protocol and
 //! the same [`CompiledTaskExecutor::execute_task`] interpreter as the serial
 //! scheduler. The coordinator claims runnable tasks serially, resolves each
-//! claim's inputs into an owned scratch state, and runs the claims on
+//! lane claim's inputs into an owned scratch state, and runs the claims on
 //! execution lanes: inline on the calling thread at width 1, on pool blocking
 //! workers at wider widths. Lanes never touch the coordinator state; owned
 //! outputs return to the coordinator, which commits them in claim order.
 //! An aggregate claim stays on the coordinator and expands its source into
 //! bounded chunk work on these same lanes; chunk completion order never
 //! changes its stable input or merge order.
+//!
+//! Join build/probe/materialize, graph, and edge-normalize tasks
+//! always run inline on the coordinator: they own cross-task native state
+//! (reusable hash-table builds, probe finalization, handle affinity) that
+//! must not move across lane executors. Their independent input branches
+//! still overlap on lanes, and one build serves many probe chunks through
+//! the join owner's chunk dispatch. Dynamic-filter payloads produced on the
+//! coordinator are snapshot into lane executors so probe-side filters keep
+//! their pruning when they run on lanes.
 //!
 //! The sink boundary task always runs inline on the coordinator: it owns the
 //! pipeline's host/GPU boundary handoff, which has no overlap benefit.
@@ -204,6 +213,7 @@ pub type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<usize>) 
 /// lease, and the context derived from both, whose route alias carries the
 /// lane's single fork. Lane jobs are submitted as auxiliary work backed by
 /// this permit, so the dispatcher never charges a second one per round.
+#[derive(Clone)]
 struct LaneWorkLease {
     lease: Arc<AttemptWorkLease>,
 }
@@ -263,7 +273,7 @@ pub(super) fn run_resident_aggregate_chunks(
         &support.gpu_inputs,
         &support.metrics,
     )?;
-    executor.aggregate_dispatch = Some(&dispatch);
+    executor.aggregate_dispatch = Some(dispatch);
     let mut state = match observation_scope {
         Some(scope) => scheduler.run_observed(&mut executor, scope)?,
         None => scheduler.run(&mut executor)?,
@@ -284,12 +294,50 @@ struct LaneJobCompletion {
     task_id: PipelineTaskId,
     outcome: std::result::Result<CompiledTaskOutput<CompiledGpuResource>, LaneJobError>,
     secondary_cleanup_errors: Vec<QueryError>,
+    /// Dynamic-filter set owned by the lane executor after its task.
+    ///
+    /// Lanes start from a snapshot of the coordinator set; aggregate group-key
+    /// producers extend it. The coordinator merges successful completions'
+    /// sets in commit order so probe-side consumers in later rounds keep
+    /// their pruning. Failed rounds discard uncommitted sets like outputs.
+    dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet,
 }
 
 struct LaneClaim {
     task: PipelineTask,
     scratch: Option<CompiledPipelineState<CompiledGpuResource>>,
     lifecycle: Option<RuntimeTaskLifecycle>,
+}
+
+/// A join/graph/edge-normalize task claimed for inline coordinator execution.
+///
+/// These tasks own cross-task native state in the coordinator executor
+/// (reusable join builds, probe finalization, graph handle affinity) and
+/// therefore never receive a lane scratch state. They run on the
+/// coordinator's own context and root stream through the same
+/// claim/output-ready/commit protocol the lanes use.
+struct CoordinatorClaim {
+    task: PipelineTask,
+    lifecycle: Option<RuntimeTaskLifecycle>,
+}
+
+/// Whether a task must run inline on the coordinator instead of a lane.
+///
+/// Join build/probe/materialize own the reusable build artifact and its
+/// finalization across tasks; graph and edge-normalize keep their existing
+/// stream/MR/handle affinity and run as serial tasks coexisting with other
+/// independent lane work until their component owners prove safe overlap.
+/// All other lane-family task kinds are lane-safe: they own only private
+/// inputs, workspace, and outputs.
+fn is_coordinator_only_task_kind(kind: PipelineTaskKind) -> bool {
+    matches!(
+        kind,
+        PipelineTaskKind::JoinBuild
+            | PipelineTaskKind::JoinProbe
+            | PipelineTaskKind::JoinMaterialize
+            | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::EdgeNormalize
+    )
 }
 
 impl LaneClaim {
@@ -300,6 +348,7 @@ impl LaneClaim {
 
 struct LaneRound {
     claims: Vec<LaneClaim>,
+    coordinator: Vec<CoordinatorClaim>,
     sink: Option<(PipelineTask, Option<RuntimeTaskLifecycle>)>,
 }
 
@@ -329,6 +378,13 @@ pub fn run_lane_dispatched(
         // inline run starts instead of holding them for the whole dispatch.
         lane_leases.clear();
     }
+    // Share the run's lanes with coordinator-owned join probe work through
+    // an owned dispatcher: probe chunks reuse these same leases (and fork
+    // subsets) via `execute_work` instead of acquiring a second lane set
+    // behind the run's back. Lane-produced frames stay valid because every
+    // lease underpinning them is held for the whole run, on these leases
+    // and the dispatcher's clones alike.
+    executor.aggregate_dispatch = Some(AggregateLaneDispatch::new(support, &lane_leases, observation_scope));
     let mut state = CompiledPipelineState::new(&support.pipeline)?;
     let mut flights = CompiledFlightBoard::default();
 
@@ -370,7 +426,7 @@ pub fn run_lane_dispatched(
             cycle,
             observation_scope,
         )?;
-        if round.claims.is_empty() && round.sink.is_none() {
+        if round.claims.is_empty() && round.coordinator.is_empty() && round.sink.is_none() {
             // Claim failures inside `claim_lane_round` already cleaned up and
             // returned; reaching here means the loop broke with nothing to
             // run, which the serial scheduler reports as a stuck pipeline.
@@ -392,6 +448,22 @@ pub fn run_lane_dispatched(
                 executor,
                 &task,
                 lifecycle,
+                &mut round.claims,
+                &mut state,
+                &mut flights,
+                observation_scope,
+            )?;
+        }
+        if !round.coordinator.is_empty() {
+            // Coordinator join/graph tasks own reusable native state and run
+            // inline on the coordinator executor, whose dispatcher above
+            // lends them this run's lanes for probe-chunk work. Lane leases
+            // stay held across the call so lane-produced frames underpinning
+            // coordinator inputs are never detached mid-run.
+            run_coordinator_tasks(
+                scheduler,
+                executor,
+                round.coordinator,
                 &mut round.claims,
                 &mut state,
                 &mut flights,
@@ -453,6 +525,10 @@ pub fn run_lane_dispatched(
         );
         return Err(error);
     }
+    // Release the run's lane leases promptly instead of holding them into
+    // the caller's sink handoff; error paths above leave the field set and
+    // release through the executor drop instead.
+    executor.aggregate_dispatch = None;
     Ok(state)
 }
 
@@ -477,12 +553,21 @@ fn claim_lane_round(
     cycle: CompiledSchedulingCycle,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<LaneRound> {
-    let mut round = LaneRound { claims: Vec::new(), sink: None };
+    let mut round = LaneRound { claims: Vec::new(), coordinator: Vec::new(), sink: None };
+    // Coordinator-only tasks (join trio, graph, edge-normalize) do
+    // not consume lane leases: they run inline on the coordinator executor
+    // that owns their cross-task native state. Lane claims stop at `width`;
+    // coordinator claims join the same round without widening it, so
+    // independent input branches still fill every lane while the join owner
+    // stays serial. Control edges, barriers, and `ResourceSharing` gate both
+    // lists through the same claim protocol, and the existing
+    // build-priority/dynamic-filter ordering decides whether a probe-side
+    // branch waits for its build instead of reading eagerly.
     while round.claims.len() < width {
         let selected = match scheduler.claim_next_runnable_task(state, flights, cycle) {
             Ok(task) => task.clone(),
             Err(error) => {
-                if round.claims.is_empty() && round.sink.is_none() {
+                if round.claims.is_empty() && round.coordinator.is_empty() && round.sink.is_none() {
                     // Nothing is runnable and nothing was claimed: the serial
                     // scheduler reports this as a stuck pipeline.
                     flights.drain_dispatched_to_failed();
@@ -503,6 +588,10 @@ fn claim_lane_round(
         let mut lifecycle = observation_scope.map(|scope| lane_task_lifecycle(scope, &selected));
         if selected.kind() == PipelineTaskKind::SinkMaterialize {
             round.sink = Some((selected, lifecycle));
+            continue;
+        }
+        if is_coordinator_only_task_kind(selected.kind()) {
+            round.coordinator.push(CoordinatorClaim { task: selected, lifecycle });
             continue;
         }
         let scratch = match build_lane_scratch(pipeline, state, &selected) {
@@ -578,18 +667,20 @@ impl LaneTaskRunner<'_> {
             let secondary_cleanup_errors = self.drain_scratch();
             Ok((output, secondary_cleanup_errors))
         }));
+        let dynamic_filters = self.executor.dynamic_filters.clone();
         match outcome {
             Ok(Ok((output, secondary_cleanup_errors))) => {
-                LaneJobCompletion { task_id, outcome: Ok(output), secondary_cleanup_errors }
+                LaneJobCompletion { task_id, outcome: Ok(output), secondary_cleanup_errors, dynamic_filters }
             },
             Ok(Err(error)) => {
                 let secondary_cleanup_errors = self.drain_scratch();
-                LaneJobCompletion { task_id, outcome: Err(error), secondary_cleanup_errors }
+                LaneJobCompletion { task_id, outcome: Err(error), secondary_cleanup_errors, dynamic_filters }
             },
             Err(payload) => LaneJobCompletion {
                 task_id,
                 outcome: Err(LaneJobError::Panicked(payload)),
                 secondary_cleanup_errors: Vec::new(),
+                dynamic_filters,
             },
         }
     }
@@ -642,6 +733,12 @@ fn run_lane_claims(
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Vec<LaneJobCompletion>> {
     debug_assert!(claims.len() <= width);
+    // Coordinator-produced dynamic-filter payloads (join builds, aggregate
+    // group keys) must reach lane filters in the same run. Lane executors
+    // start empty, so snapshot the coordinator set after its tasks
+    // committed; lane work never produces filters the coordinator needs in
+    // the same round, keeping the handoff one-way.
+    let dynamic_filter_snapshot = executor.dynamic_filters.clone();
     if width <= 1 || claims.iter().any(|claim| claim.task.kind() == PipelineTaskKind::Aggregate) {
         let dispatch = AggregateLaneDispatch::new(support, lane_leases, observation_scope);
         return Ok(claims
@@ -649,7 +746,7 @@ fn run_lane_claims(
             .map(|claim| {
                 // A symbolic aggregate coordinates its chunk instances. It cannot
                 // occupy a pool worker while waiting for those same workers.
-                run_lane_claim_inline(support, claim, Some(&dispatch))
+                run_lane_claim_inline(support, claim, Some(&dispatch), &dynamic_filter_snapshot)
             })
             .collect());
     }
@@ -674,13 +771,15 @@ fn run_lane_claims(
         let pipeline = Arc::clone(&support.pipeline);
         let gpu_inputs = Arc::clone(&support.gpu_inputs);
         let metrics = Arc::clone(&support.metrics);
+        let dynamic_filter_snapshot = dynamic_filter_snapshot.clone();
         #[cfg(any(test, feature = "test-hooks"))]
         let lane_completion_gate = support.lane_completion_gate.clone();
         let observation = support.context.runtime_observation().clone();
         match pool.submit_blocking(GpuExecutionJobKind::AttemptWork, observation, move || {
             let context = lane_lease.context();
             match CompiledGpuTaskExecutor::new(context, &plan, &pipeline, &gpu_inputs, &metrics) {
-                Ok(lane_executor) => {
+                Ok(mut lane_executor) => {
+                    lane_executor.dynamic_filters = dynamic_filter_snapshot;
                     let completion =
                         LaneTaskRunner { executor: lane_executor, scratch: Some(scratch) }.run_lane_task(lane, &task);
                     #[cfg(any(test, feature = "test-hooks"))]
@@ -695,6 +794,7 @@ fn run_lane_claims(
                         error.with_fact("execution_lane", lane).with_fact("reason", "lane_executor_unavailable"),
                     )),
                     secondary_cleanup_errors: Vec::new(),
+                    dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet::new(),
                 },
             }
         }) {
@@ -736,6 +836,7 @@ fn run_lane_claims(
                 task_id,
                 outcome: Err(LaneJobError::Failed(error)),
                 secondary_cleanup_errors: Vec::new(),
+                dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet::new(),
             },
         })
         .collect())
@@ -746,7 +847,8 @@ fn run_lane_claims(
 fn run_lane_claim_inline(
     support: &LaneDispatchSupport,
     claim: &mut LaneClaim,
-    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    dispatch: Option<&AggregateLaneDispatch>,
+    dynamic_filter_snapshot: &query_planning::dynamic_filter::DynamicFilterSet,
 ) -> LaneJobCompletion {
     const LANE: usize = 0;
     let task_id = claim.task.id();
@@ -758,7 +860,8 @@ fn run_lane_claim_inline(
         &support.metrics,
     ) {
         Ok(mut lane_executor) => {
-            lane_executor.aggregate_dispatch = dispatch;
+            lane_executor.aggregate_dispatch = dispatch.cloned();
+            lane_executor.dynamic_filters = dynamic_filter_snapshot.clone();
             let completion = LaneTaskRunner { executor: lane_executor, scratch: Some(claim.take_scratch()) }
                 .run_lane_task(LANE, &claim.task);
             #[cfg(any(test, feature = "test-hooks"))]
@@ -773,6 +876,7 @@ fn run_lane_claim_inline(
                 error.with_fact("execution_lane", LANE).with_fact("reason", "lane_executor_unavailable"),
             )),
             secondary_cleanup_errors: Vec::new(),
+            dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet::new(),
         },
     }
 }
@@ -801,7 +905,7 @@ fn commit_lane_completions(
     let mut claims = claims.into_iter();
     let mut completions = completions.into_iter();
     while let (Some(mut claim), Some(completion)) = (claims.next(), completions.next()) {
-        let LaneJobCompletion { task_id, outcome, secondary_cleanup_errors } = completion;
+        let LaneJobCompletion { task_id, outcome, secondary_cleanup_errors, dynamic_filters } = completion;
         debug_assert_eq!(claim.task.id(), task_id);
         let mut lifecycle = claim.lifecycle.take();
         for secondary in &secondary_cleanup_errors {
@@ -856,6 +960,11 @@ fn commit_lane_completions(
                         return Err(error);
                     },
                 };
+                // Stage lane-produced filters only after the lane's outputs
+                // commit: a commit failure leaves no merged filters, and
+                // successful lanes of a failed round never reach this line
+                // because the first failure returns before their commit.
+                executor.merge_lane_dynamic_filters(dynamic_filters);
                 if let Err(error) = release_completed_resources(executor, released, |cleanup_error| {
                     record_cleanup_failure(
                         observation_scope,
@@ -1084,6 +1193,97 @@ fn run_coordinator_sink(
     }
     if let Some(lifecycle) = lifecycle.take() {
         lifecycle.finish();
+    }
+    Ok(())
+}
+
+/// Runs the round's coordinator-only tasks inline on the coordinator.
+///
+/// Join build/probe/materialize, graph, and edge-normalize tasks
+/// own cross-task native state in the coordinator executor, so they run
+/// here instead of on lane workers. The round's lane scratches were already
+/// extracted before the first coordinator task runs; a coordinator failure
+/// therefore releases them too, since their inputs already left the
+/// coordinator state and no lane will ever run.
+fn run_coordinator_tasks(
+    scheduler: &CompiledPipelineScheduler,
+    executor: &mut CompiledGpuTaskExecutor,
+    coordinator: Vec<CoordinatorClaim>,
+    claims: &mut [LaneClaim],
+    state: &mut CompiledPipelineState<CompiledGpuResource>,
+    flights: &mut CompiledFlightBoard,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
+) -> Result<()> {
+    for CoordinatorClaim { task, lifecycle } in coordinator {
+        let mut lifecycle = lifecycle;
+        let output = match catch_unwind(AssertUnwindSafe(|| executor.execute_task(&task, state))) {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                fail_task_lifecycle(&mut lifecycle, &error);
+                flights.drain_dispatched_to_failed();
+                cleanup_lane_scratches(executor, claims, observation_scope, CleanupFailurePhase::TaskExecution);
+                cleanup_preserving_primary(
+                    executor,
+                    state,
+                    observation_scope,
+                    CleanupFailurePhase::TaskExecution,
+                    &error,
+                );
+                return Err(error);
+            },
+            Err(payload) => {
+                if let Some(lifecycle) = lifecycle.take() {
+                    lifecycle.panicked();
+                }
+                flights.drain_dispatched_to_failed();
+                cleanup_lane_scratches(executor, claims, observation_scope, CleanupFailurePhase::TaskPanic);
+                let _ = release_live_resources_on_error(executor, state, |cleanup_error| {
+                    record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskPanic, cleanup_error);
+                });
+                std::panic::resume_unwind(payload);
+            },
+        };
+        if let Err(error) = scheduler.mark_task_output_ready(task.id(), flights) {
+            fail_task_lifecycle(&mut lifecycle, &error);
+            flights.drain_dispatched_to_failed();
+            cleanup_lane_scratches(executor, claims, observation_scope, CleanupFailurePhase::TaskCompletion);
+            cleanup_preserving_primary(executor, state, observation_scope, CleanupFailurePhase::TaskCompletion, &error);
+            return Err(error);
+        }
+        let released = match scheduler.commit_claimed_task(&task, output.into_produced_resources(), state, flights) {
+            Ok(released) => released,
+            Err(error) => {
+                fail_task_lifecycle(&mut lifecycle, &error);
+                flights.drain_dispatched_to_failed();
+                cleanup_lane_scratches(executor, claims, observation_scope, CleanupFailurePhase::TaskCompletion);
+                cleanup_preserving_primary(
+                    executor,
+                    state,
+                    observation_scope,
+                    CleanupFailurePhase::TaskCompletion,
+                    &error,
+                );
+                return Err(error);
+            },
+        };
+        if let Err(error) = release_completed_resources(executor, released, |cleanup_error| {
+            record_cleanup_failure(observation_scope, CleanupFailurePhase::CompletedResourceRelease, cleanup_error);
+        }) {
+            fail_task_lifecycle(&mut lifecycle, &error);
+            flights.drain_dispatched_to_failed();
+            cleanup_lane_scratches(executor, claims, observation_scope, CleanupFailurePhase::CompletedResourceRelease);
+            cleanup_preserving_primary(
+                executor,
+                state,
+                observation_scope,
+                CleanupFailurePhase::CompletedResourceRelease,
+                &error,
+            );
+            return Err(error);
+        }
+        if let Some(lifecycle) = lifecycle.take() {
+            lifecycle.finish();
+        }
     }
     Ok(())
 }

@@ -130,9 +130,14 @@ pub fn compiled_bounded_query_plan_support(
 /// only of these task kinds is judged by the same task/resource contracts as
 /// join plans, whether it contains a union. A union of independent
 /// branches is the first acceptance case, not an admission switch.
-/// Aggregate and final-sort tasks use the same compiled contracts; windows,
-/// graph, and vector work stay outside this set until their contracts migrate,
-/// and those plans keep their existing paths.
+/// Aggregate and final-sort tasks use the same compiled contracts; join
+/// build/probe/materialize tasks run on the coordinator through the same
+/// claim/output-ready/commit protocol while their independent input branches
+/// overlap on lanes, reusing one build for many probe chunks. Graph and
+/// edge-normalize tasks keep their existing stream/MR/handle affinity and run
+/// as serial coordinator tasks coexisting with other independent work until
+/// their component owners prove safe overlap. Windows stay on their existing
+/// path until their compiled contract migrates.
 #[doc(hidden)]
 pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> bool {
     !pipeline.tasks().is_empty()
@@ -144,9 +149,14 @@ pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> b
                     | PipelineTaskKind::LiteralBatchSource
                     | PipelineTaskKind::Unary
                     | PipelineTaskKind::Aggregate
+                    | PipelineTaskKind::JoinBuild
+                    | PipelineTaskKind::JoinProbe
+                    | PipelineTaskKind::JoinMaterialize
                     | PipelineTaskKind::FinalSort
                     | PipelineTaskKind::Limit
                     | PipelineTaskKind::Union
+                    | PipelineTaskKind::EdgeNormalize
+                    | PipelineTaskKind::GraphAlgorithm
                     | PipelineTaskKind::SinkMaterialize
             )
         })

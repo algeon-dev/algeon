@@ -45,8 +45,8 @@ use query_engine::{
         ResidentResourceId, SinkBoundary, SinkBoundaryKind, compile_pipeline,
     },
     plan::{
-        JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan,
-        QueryPlanBuilder, WindowFunction, WindowSpec,
+        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,
+        QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,

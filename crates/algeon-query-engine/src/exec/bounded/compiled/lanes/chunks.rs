@@ -17,24 +17,32 @@ use crate::{
     runtime::{GpuExecutionJobKind, PoolBlockingWork},
 };
 
-/// Borrows the compiled run's lanes: expanded work never acquires nested
-/// permits or starts a source-read worker from an operator worker.
-pub(in crate::exec::bounded) struct AggregateLaneDispatch<'a> {
+/// Owns a share of the compiled run's lanes: expanded work never acquires
+/// nested permits or starts a source-read worker from an operator worker.
+///
+/// The dispatch owns its lane leases (cloned `Arc`s into the same attempt
+/// auxiliary permits and fork subsets the run holds), so it can be moved
+/// into executors and shared by reference without borrowing the run's
+/// lease table. Coordinator-owned join probe work reuses the run's
+/// dispatcher through the same [`execute_work`](Self::execute_work) window
+/// instead of acquiring a second lane set behind the run's back.
+#[derive(Clone)]
+pub(in crate::exec::bounded) struct AggregateLaneDispatch {
     context: Arc<crate::runtime::ExecutionContext>,
     metrics: Arc<crate::exec::ExecutionMetrics>,
     #[cfg(any(test, feature = "test-hooks"))]
     completion_gate: Option<super::AggregateChunkCompletionGate>,
-    lanes: &'a [LaneWorkLease],
-    observation_scope: Option<&'a crate::observability::RuntimeExecutionObservationScope>,
+    lanes: Vec<LaneWorkLease>,
+    observation_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
 }
 
 #[derive(Default)]
-struct ChunkFlights<'a, O> {
-    observation_scope: Option<&'a crate::observability::RuntimeExecutionObservationScope>,
+struct ChunkFlights<O> {
+    observation_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
     jobs: BTreeMap<usize, (usize, PoolBlockingWork<Result<O>>)>,
 }
 
-impl<O> Drop for ChunkFlights<'_, O> {
+impl<O> Drop for ChunkFlights<O> {
     fn drop(&mut self) {
         // A panic or early error must drain before the enclosing run returns
         // its lane leases. Uncommitted outputs are released after each join.
@@ -42,7 +50,7 @@ impl<O> Drop for ChunkFlights<'_, O> {
             let result = handle.join().and_then(|result| result);
             if let Err(error) = result {
                 super::super::scheduler::record_cleanup_failure(
-                    self.observation_scope,
+                    self.observation_scope.as_ref(),
                     crate::observability::CleanupFailurePhase::TaskExecution,
                     &error,
                 );
@@ -51,21 +59,21 @@ impl<O> Drop for ChunkFlights<'_, O> {
     }
 }
 
-impl<'a> AggregateLaneDispatch<'a> {
+impl AggregateLaneDispatch {
     pub(in crate::exec::bounded) fn width(&self) -> usize {
         self.lanes.len().max(1)
     }
 
     pub(super) fn new(
-        support: &'a LaneDispatchSupport,
-        lanes: &'a [LaneWorkLease],
-        observation_scope: Option<&'a crate::observability::RuntimeExecutionObservationScope>,
+        support: &LaneDispatchSupport,
+        lanes: &[LaneWorkLease],
+        observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
     ) -> Self {
         Self {
             context: Arc::clone(&support.context),
             metrics: Arc::clone(&support.metrics),
-            lanes,
-            observation_scope,
+            lanes: lanes.to_vec(),
+            observation_scope: observation_scope.cloned(),
             #[cfg(any(test, feature = "test-hooks"))]
             completion_gate: support.aggregate_chunk_completion_gate.clone(),
         }
@@ -76,7 +84,7 @@ impl<'a> AggregateLaneDispatch<'a> {
     /// attempt permit; a coordinator takes only currently available leases.
     pub(in crate::exec::bounded) fn with_available_lanes<R>(
         execution: &mut BoundedExecutionAttempt<'_>,
-        run: impl FnOnce(&AggregateLaneDispatch<'_>, &mut BoundedExecutionAttempt<'_>) -> Result<R>,
+        run: impl FnOnce(&AggregateLaneDispatch, &mut BoundedExecutionAttempt<'_>) -> Result<R>,
     ) -> Result<R> {
         let context = Arc::new(execution.context().clone());
         let requested = if context.is_attempt_work_lease_context() {
@@ -96,8 +104,8 @@ impl<'a> AggregateLaneDispatch<'a> {
         let dispatcher = AggregateLaneDispatch {
             context,
             metrics: Arc::new(execution.metrics().clone()),
-            lanes: &lanes,
-            observation_scope: observation_scope.as_ref(),
+            lanes,
+            observation_scope,
             #[cfg(any(test, feature = "test-hooks"))]
             completion_gate: None,
         };
@@ -178,7 +186,7 @@ impl<'a> AggregateLaneDispatch<'a> {
         let pool = self.context.gpu_executor()?;
         let work = Arc::new(work);
         let (completed, completions) = mpsc::channel();
-        let mut flights = ChunkFlights { observation_scope: self.observation_scope, jobs: BTreeMap::new() };
+        let mut flights = ChunkFlights { observation_scope: self.observation_scope.clone(), jobs: BTreeMap::new() };
         let mut ready = BTreeMap::new();
         let mut free_lanes = (0..self.lanes.len()).collect::<Vec<_>>();
         let mut dispatched = 0;
@@ -196,7 +204,7 @@ impl<'a> AggregateLaneDispatch<'a> {
                 let lease = Arc::clone(&self.lanes[lane].lease);
                 let work = Arc::clone(&work);
                 let metrics = Arc::clone(&self.metrics);
-                let observation_scope = self.observation_scope.cloned();
+                let observation_scope = self.observation_scope.clone();
                 let notification = completed.clone();
                 #[cfg(any(test, feature = "test-hooks"))]
                 let gate = self.completion_gate.clone();
@@ -246,7 +254,7 @@ impl<'a> AggregateLaneDispatch<'a> {
     }
 
     fn finish_work<O>(&self, execution: &BoundedExecutionAttempt<'_>, result: Result<O>) -> Result<O> {
-        finish_chunk_work(execution, result, self.observation_scope)
+        finish_chunk_work(execution, result, self.observation_scope.as_ref())
     }
 }
 
