@@ -214,12 +214,6 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    #[cfg(feature = "server")]
-    #[doc(hidden)]
-    pub fn with_cancellation_for_internal_consumer(self, cancellation: ExecutionCancellation) -> Self {
-        self.with_cancellation(cancellation)
-    }
-
     /// Cooperative cancellation observed while an adapter-owned host boundary
     /// is staged before native context acquisition.
     pub(crate) fn cancellation(&self) -> &ExecutionCancellation {
@@ -233,27 +227,12 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    #[cfg(feature = "server")]
-    #[doc(hidden)]
-    pub fn with_io_lifecycle_for_internal_consumer(self, lifecycle: IoLifecycle) -> Self {
-        self.with_io_lifecycle(lifecycle)
-    }
-
     /// Attach a server-side query metrics capture sink.
-    #[cfg(feature = "server")]
+    #[cfg(any(test, feature = "server"))]
     pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
         self.query_id = capture.query_id().map(QueryId::new);
         self.metrics_capture = Some(capture);
         self
-    }
-
-    #[cfg(feature = "server")]
-    #[doc(hidden)]
-    pub fn with_metrics_capture_for_internal_consumer(
-        self,
-        capture: crate::native_exec::ServerInternalNativeMetricsCapture,
-    ) -> Self {
-        self.with_metrics_capture(capture)
     }
 
     /// Attach a diagnostic query id to native execution metrics.

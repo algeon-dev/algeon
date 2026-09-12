@@ -20,10 +20,7 @@ mod remedy;
 mod sql;
 
 #[cfg(feature = "server")]
-#[doc(hidden)]
-pub mod server_internal {
-    pub use super::sql::{coverage_batch, coverage_schema};
-}
+pub(crate) use sql::{coverage_batch, coverage_schema};
 
 #[cfg(test)]
 mod tests;

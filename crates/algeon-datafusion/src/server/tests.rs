@@ -10,7 +10,7 @@ use crate::server::{
     backend::{
         AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
-    native_exec::{AlgeonNativeExecutionConfig, ServerInternalNativeMetricsCapture as NativeMetricsCapture},
+    native_exec::{AlgeonNativeExecutionConfig, NativeMetricsCapture},
     planner::AlgeonNativeOptimizerConfig,
 };
 

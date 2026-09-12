@@ -67,14 +67,9 @@ use crate::{
             ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
             AlgeonSessionStateBuilderExt,
         },
-        gpu_coverage::{
-            ExplainGpuOutputMode, parse_explain_gpu,
-            server_internal::{coverage_batch, coverage_schema},
-            validate_query,
-        },
+        gpu_coverage::{ExplainGpuOutputMode, coverage_batch, coverage_schema, parse_explain_gpu, validate_query},
         native_exec::{
-            ServerInternalNativeMetricsCapture as NativeMetricsCapture,
-            ServerInternalNativeObservationActivityFactory as NativeObservationActivityFactory,
+            NativeMetricsCapture, ServerNativeObservationActivityFactory as NativeObservationActivityFactory,
         },
         planner::{
             ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,

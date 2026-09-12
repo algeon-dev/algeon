@@ -51,6 +51,7 @@ mod vector_algorithm;
 
 #[cfg(test)]
 pub(crate) use bounded::pipeline::YieldedFrameCounterTestHarness;
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
@@ -58,8 +59,11 @@ pub use bounded::pipeline::{
     is_lane_family_pipeline, run_lane_dispatched,
 };
 use edge_normalize::execute_edge_normalize;
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use execution_metrics::ExecutionMetrics;
+#[cfg(not(feature = "test-hooks"))]
+pub(crate) use execution_metrics::ExecutionMetrics;
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
 use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};

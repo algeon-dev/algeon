@@ -66,9 +66,6 @@
 extern crate self as algeon_datafusion;
 
 pub mod attempt;
-#[cfg(feature = "server")]
-#[doc(hidden)]
-pub use attempt::server_internal;
 pub mod backend;
 pub mod capability;
 pub mod cugraph_sql;

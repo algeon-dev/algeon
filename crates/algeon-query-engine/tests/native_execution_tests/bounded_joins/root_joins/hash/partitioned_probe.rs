@@ -43,8 +43,7 @@ fn partitioned_probe_retry_plan(runtime: &cudf::Runtime, dir: &Path, rows_per_ch
         Arc::clone(&probe_schema),
     );
     let limited = builder.add_limit(sorted, LimitSpec::fetch(2), probe_schema);
-    let mut strategy = KeyedHashJoinStrategyOptions::default();
-    strategy.large_keyed_hash_build_row_threshold = 1;
+    let strategy = KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(1);
     builder.finish_with_host_sink(limited).with_keyed_hash_join_strategy_options(strategy)
 }
 

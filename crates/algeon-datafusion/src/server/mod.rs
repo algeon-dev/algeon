@@ -213,7 +213,7 @@ impl FlightSqlServerBuilder {
         let native_execution_config = native_optimizer_config
             .native_execution_config()
             .clone()
-            .with_io_lifecycle_for_internal_consumer(io_lifecycle.handle())
+            .with_io_lifecycle(io_lifecycle.handle())
             .with_host_output_memory_pool_accounting(true);
         native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
 

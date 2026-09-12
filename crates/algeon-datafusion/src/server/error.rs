@@ -152,13 +152,7 @@ impl ServerError {
         };
         let source = match source.downcast::<query_engine::error::QueryError>() {
             Ok(native_error) => {
-                return Self {
-                    inner: Error::from_native_for_internal_consumer(
-                        "algeon_datafusion.server.session",
-                        message,
-                        *native_error,
-                    ),
-                };
+                return Self { inner: Error::from_native("algeon_datafusion.server.session", message, *native_error) };
             },
             Err(source) => source,
         };
@@ -967,11 +961,7 @@ mod tests {
         )
         .with_fact("literal", "server-native-source-fact-secret");
         let native_error = ServerError {
-            inner: Error::from_native_for_internal_consumer(
-                "algeon_datafusion.test.server_debug_source",
-                "native server wrapper",
-                native,
-            ),
+            inner: Error::from_native("algeon_datafusion.test.server_debug_source", "native server wrapper", native),
         };
         let native_source = native_error
             .source()

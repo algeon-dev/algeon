@@ -74,9 +74,7 @@ impl DatafusionAlgeonFlightSqlService {
             match node {
                 LogicalPlan::TableScan(scan)
                     if table_reference_is_information_schema(&scan.table_name)
-                        || crate::gpu_functions::server_internal::is_builtin_gpu_metadata_table_source(
-                            &scan.source,
-                        ) =>
+                        || crate::gpu_functions::is_builtin_gpu_metadata_table_source(&scan.source) =>
                 {
                     saw_metadata_scan = true;
                 },
@@ -158,8 +156,8 @@ impl DatafusionAlgeonFlightSqlService {
             .native_optimizer_config
             .native_execution_config()
             .clone()
-            .with_cancellation_for_internal_consumer(cancellation)
-            .with_metrics_capture_for_internal_consumer(metrics_capture);
+            .with_cancellation(cancellation)
+            .with_metrics_capture(metrics_capture);
         if let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) {
             execution_config = execution_config.with_trace_id(correlation_id.to_string());
         }

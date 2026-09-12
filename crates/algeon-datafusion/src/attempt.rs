@@ -878,8 +878,7 @@ impl std::fmt::Debug for AttemptStream {
 }
 
 #[cfg(feature = "server")]
-#[doc(hidden)]
-pub mod server_internal {
+pub(crate) mod server_internal {
     use datafusion::{
         common::{DataFusionError, Result as DataFusionResult},
         physical_plan::ExecutionPlan,
