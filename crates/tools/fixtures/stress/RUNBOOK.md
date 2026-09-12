@@ -514,7 +514,7 @@ flock /tmp/cudf-gpu.lock target/release/algeon_tools single-node-multi-gpu-valid
   --config crates/tools/fixtures/stress/stress-s2-sweep-scan-sf1.json \
   --out-dir target/stress/s2-sweep-scan-sf1 --measured-run
 
-cargo build --release -p server --all-features --bin algeon_server
+cargo build --release -p algeon-server --all-features --bin algeon_server
 cargo build --release -p tools --all-features
 
 ALGEON_SERVER_GPU_DEVICES=0,1,2,3 \

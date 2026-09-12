@@ -578,7 +578,7 @@ pub(super) fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> 
     ]) {
         return Err(ServerError::invalid_config(
             ALGEON_ICEBERG_NAMESPACE_ENV,
-            "Iceberg server registration requires building with -p server --features iceberg",
+            "Iceberg server registration requires building with -p algeon-server --features iceberg",
         ));
     }
     Ok(())

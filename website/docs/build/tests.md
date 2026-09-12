@@ -136,7 +136,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep
 | `cuvs` | cuVS SQL functions (exact kNN, KMeans, PCA) and their GPU execution |
 | `nvml` | Optional NVML device diagnostics |
 
-The Arrow Flight SQL server is launched by the separate private `server` package; its
+The Arrow Flight SQL server is launched by the separate `algeon-server` package; its
 `cugraph`, `cuvs`, and `nvml` features forward the corresponding
 adapter and engine capabilities.
 
@@ -145,7 +145,7 @@ release acceptance resume after the upstream iceberg-rust 0.12 release is
 available and validated.
 
 ```bash
-cargo run -p server --all-features --bin algeon_server
+cargo run -p algeon-server --all-features --bin algeon_server
 ```
 
 ## Acceptance runs outside the gate

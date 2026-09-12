@@ -4,7 +4,7 @@ fn server_config_rejects_iceberg_env_without_iceberg_feature() {
     let env = BTreeMap::from([(ALGEON_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string())]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
 
-    assert!(error.to_string().contains("-p server --features iceberg"));
+    assert!(error.to_string().contains("-p algeon-server --features iceberg"));
 }
 
 #[cfg(not(feature = "cugraph"))]

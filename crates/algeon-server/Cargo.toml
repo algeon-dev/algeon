@@ -1,11 +1,11 @@
 [package]
 name = "algeon-server"
-description = "Private standalone launcher for the algeon-datafusion Flight SQL server."
+description = "Standalone Arrow Flight SQL server binary for algeon-datafusion."
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
 license.workspace = true
-publish = ["crates-io"]
+publish = false
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"

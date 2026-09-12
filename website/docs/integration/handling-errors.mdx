@@ -42,7 +42,7 @@ runtime failure is an error.
 | `query-engine` | planning's `QueryError` | Native execution failures and the compatible public facade re-export. |
 | DataFusion adapter | `algeon_datafusion::error::Error` | DataFusion planning/execution context and projection of native errors into the public adapter taxonomy. |
 | DataFusion traits | `DataFusionError` | Framework boundary only. Algeon errors cross it as a typed `External` source. |
-| DataFusion server module | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics under `algeon_datafusion::server`; the private `server` package only launches it. |
+| DataFusion server module | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics under `algeon_datafusion::server`; the `algeon-server` package only launches it. |
 
 Fix a missing classification at its owner. If a cuDF or cuGraph error lacks the
 typed information Algeon needs, extend the owning component crate instead of
