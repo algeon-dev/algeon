@@ -1,4 +1,5 @@
 use std::{
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -14,7 +15,11 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
-use datafusion::{common::DataFusionError, physical_plan::RecordBatchStream, prelude::SessionContext};
+use datafusion::{
+    common::DataFusionError,
+    physical_plan::{RecordBatchStream, displayable},
+    prelude::SessionContext,
+};
 use futures::StreamExt as _;
 use query_engine::harness::StableFnv1a64;
 
@@ -45,6 +50,7 @@ pub(super) async fn run_attempt(
     item: &WorkloadItem,
     requested_query_cap_bytes: u64,
     query_id: String,
+    plan_artifact_dir: Option<&Path>,
 ) -> AttemptOutcome {
     let started = Instant::now();
     let attempt = match backend.begin_attempt_with_query_cap_bytes(
@@ -66,7 +72,8 @@ pub(super) async fn run_attempt(
         },
     };
     let completion = attempt.completion();
-    let drained = tokio::time::timeout(config.query_timeout, drain(&attempt, ctx, item, config)).await;
+    let drained =
+        tokio::time::timeout(config.query_timeout, drain(&attempt, ctx, item, config, plan_artifact_dir)).await;
     let timed_out = drained.is_err();
     if timed_out {
         // A harness-side timeout is not a service outcome. Cancel so the
@@ -111,8 +118,20 @@ async fn drain(
     ctx: &SessionContext,
     item: &WorkloadItem,
     config: &GoodputConfig,
+    plan_artifact_dir: Option<&Path>,
 ) -> Result<DrainedOutput, DataFusionError> {
-    let mut stream = attempt.sql(ctx, &item.sql).await?;
+    let mut stream = match plan_artifact_dir {
+        Some(dir) => {
+            let plan = attempt.plan_sql(ctx, &item.sql).await?;
+            let mut text = format!("physical_plan:\n{}\n", displayable(plan.as_ref()).indent(true));
+            text.push_str("\ncompiled_pipelines_recompiled_for_diagnostics:\n");
+            crate::plan_artifacts::append_compiled_pipeline_diagnostic(&mut text, &plan);
+            std::fs::write(dir.join(format!("{}.plan.txt", item.id)), text)
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            attempt.execute_physical_plan(plan, ctx)?
+        },
+        None => attempt.sql(ctx, &item.sql).await?,
+    };
     let schema = stream.schema();
     let mut rows = 0_usize;
     let mut retained = Vec::new();

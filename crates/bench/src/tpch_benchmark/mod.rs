@@ -31,6 +31,7 @@ use workloads::tpch::{
 
 use crate::report_workload::tpch::tpch_report_session_config;
 
+mod artifacts;
 mod case_runner;
 mod config;
 mod dataset;

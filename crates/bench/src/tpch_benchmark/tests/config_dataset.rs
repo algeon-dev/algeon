@@ -26,7 +26,7 @@ fn native_planning_uses_the_strict_final_plan_policy_frozen_in_benchmark_config(
     let config = NativeTpchBenchmarkConfig::default();
     let resources = NativeTpchRuntimeResources::unavailable();
 
-    let optimizer = execution::native_optimizer_config(&config, &resources);
+    let optimizer = execution::native_optimizer_config(&config, &resources, None);
 
     assert_eq!(
         optimizer.datafusion_cpu_execution_policy(),

@@ -5,6 +5,8 @@
 //! executor when execution acquires the native query context.
 
 use std::sync::Arc;
+#[cfg(feature = "bench-support")]
+use std::sync::Mutex;
 
 use datafusion::execution::context::TaskContext;
 use query_engine::{
@@ -59,6 +61,9 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) trace_id: Option<TraceId>,
     pub(super) plan_task_mapping_datafusion_shape: Option<String>,
     pub(super) metrics_capture: Option<NativeMetricsCapture>,
+    #[cfg(feature = "bench-support")]
+    pub(super) benchmark_observation_capture:
+        Option<Arc<Mutex<Option<query_engine::observability::SealedRuntimeObservationSnapshot>>>>,
     pub(super) lakehouse_footer_pruning: bool,
     #[cfg(feature = "cugraph")]
     pub(super) graph_execution_services: GraphExecutionServices,
@@ -151,6 +156,8 @@ impl AlgeonNativeExecutionConfig {
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: Some(NativeMetricsCapture::standalone()),
+            #[cfg(feature = "bench-support")]
+            benchmark_observation_capture: None,
             lakehouse_footer_pruning: false,
             #[cfg(feature = "cugraph")]
             graph_execution_services: GraphExecutionServices::default(),
@@ -252,6 +259,17 @@ impl AlgeonNativeExecutionConfig {
     /// Attach a diagnostic query id to native execution metrics.
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         self.query_id = Some(query_id.into());
+        self
+    }
+
+    /// Captures the sealed observation from this execution for benchmark artifacts.
+    #[cfg(feature = "bench-support")]
+    #[doc(hidden)]
+    pub fn with_benchmark_observation_capture(
+        mut self,
+        capture: Arc<Mutex<Option<query_engine::observability::SealedRuntimeObservationSnapshot>>>,
+    ) -> Self {
+        self.benchmark_observation_capture = Some(capture);
         self
     }
 

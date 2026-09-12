@@ -81,12 +81,7 @@ pub(super) fn parse_mix(raw: &str) -> Result<Vec<MixEntry>, Box<dyn Error>> {
     Ok(mix)
 }
 
-/// Ad-hoc skew and string items over the TPC-H tables.
-///
-/// These cover shapes the standard queries do not: unanchored string matching,
-/// high-cardinality distinct state, a deliberately skewed join key filter, and
-/// a global sort. Each one stresses a different memory profile under the same
-/// query cap, so the mix is not dominated by one execution shape.
+/// Ad-hoc shape and memory controls over the TPC-H tables.
 const ADHOC_ITEMS: &[(&str, &str)] = &[
     (
         "string_filter",
@@ -113,6 +108,21 @@ const ADHOC_ITEMS: &[(&str, &str)] = &[
         "global_sort",
         "SELECT l_orderkey, l_partkey, l_extendedprice FROM lineitem ORDER BY l_extendedprice DESC, l_orderkey ASC \
          LIMIT 100",
+    ),
+    (
+        "independent_union",
+        "SELECT k FROM (SELECT l_orderkey AS k FROM lineitem WHERE l_orderkey < 100 UNION ALL SELECT o_orderkey \
+         AS k FROM orders WHERE o_orderkey < 100) ORDER BY k LIMIT 100",
+    ),
+    (
+        "repeated_cte",
+        "WITH filtered AS (SELECT l_orderkey, l_partkey FROM lineitem WHERE l_orderkey < 100) SELECT COUNT(*) \
+         FROM filtered a JOIN filtered b ON a.l_partkey = b.l_partkey WHERE a.l_orderkey <> b.l_orderkey",
+    ),
+    (
+        "variable_width_group",
+        "SELECT l_comment, COUNT(*) AS n FROM lineitem WHERE l_orderkey < 1000000 GROUP BY l_comment ORDER BY \
+         l_comment LIMIT 100",
     ),
 ];
 

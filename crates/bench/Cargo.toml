@@ -43,6 +43,7 @@ cuvs-sys = { workspace = true, optional = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
 aws-config = { workspace = true, optional = true }
 aws-credential-types = { workspace = true, optional = true }

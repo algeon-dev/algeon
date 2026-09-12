@@ -43,12 +43,24 @@ impl AlgeonNativeExecutionConfig {
     ) -> crate::native_exec::NativeRuntimeObservation {
         let query_id = self.query_id.clone().unwrap_or_else(QueryId::mint);
         let trace_id = self.trace_id.as_ref().map(|trace_id| RuntimeTraceId::new(trace_id.as_str()));
-        match capture {
+        let observation = match capture {
             Some(capture) => capture.new_runtime_observation(query_id, trace_id),
             None => {
                 RuntimeObservationOwner::new(query_id, trace_id, RuntimeObservationConfig::native_execution()).into()
             },
+        };
+        #[cfg(feature = "bench-support")]
+        if let (Some(target), crate::native_exec::NativeRuntimeObservation::Local(owner)) =
+            (&self.benchmark_observation_capture, &observation)
+        {
+            let target = Arc::clone(target);
+            owner.register_seal_observer(move |snapshot| {
+                if let Ok(mut slot) = target.lock() {
+                    *slot = Some(snapshot);
+                }
+            });
         }
+        observation
     }
 
     #[cfg(feature = "cugraph")]
