@@ -1,8 +1,10 @@
-//! Errors carry a [`ErrorKind`] variant, an [`ErrorStatus`] for retry
-//! semantics, an operation name describing what was being attempted, an
-//! optional human-readable message, optional key-value context pairs, and an
-//! optional source error. This makes it easy to diagnose failures without
-//! losing the underlying cause.
+//! Errors carry a [`ErrorKind`] variant, an [`ErrorStatus`] recording the
+//! observed source condition, an operation name describing what was being
+//! attempted, an optional human-readable message, optional key-value context
+//! pairs, and an optional source error. This makes it easy to diagnose
+//! failures without losing the underlying cause. The status is the
+//! observation, not permission to retry: callers decide recovery only after
+//! cleanup and device-health checks.
 
 use std::{
     backtrace::{Backtrace, BacktraceStatus},
@@ -207,26 +209,33 @@ impl fmt::Display for AllocationFailureSource {
     }
 }
 
-/// Retry semantics for an error.
+/// Source condition recorded on an error.
 ///
-/// Separates retryability from error categorisation so callers can make
-/// informed retry decisions without guessing.
+/// The status describes the condition observed at the source; it is not
+/// permission to retry. A caller must still complete its own cleanup and
+/// device-health checks before deciding anything:
 ///
 /// - [`Permanent`](ErrorStatus::Permanent) — will never succeed without
 ///   external changes (e.g. invalid input, unsupported operation). Do not
-///   retry.
-/// - [`Temporary`](ErrorStatus::Temporary) — transient, may succeed on retry
-///   (e.g. GPU memory pressure, resource contention).
-/// - [`Persistent`](ErrorStatus::Persistent) — was transient but still failed
-///   after retries. Stop retrying.
+///   retry the same request.
+/// - [`Temporary`](ErrorStatus::Temporary) — transient condition that may
+///   clear (e.g. GPU memory pressure, recoverable CUDA failure). Retry only
+///   after cleanup and a health check.
+/// - [`Persistent`](ErrorStatus::Persistent) — the source reports a
+///   continuing condition (e.g. a fatal CUDA probe result, recorded without
+///   any retry having happened). Stop automatic retry, finish cleanup, and
+///   escalate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {
     /// The error is permanent — retrying will not help without external
     /// intervention.
     Permanent,
-    /// The error is transient — the same operation may succeed if retried.
+    /// The source condition is transient and may clear. Retry remains the
+    /// caller's decision after cleanup and device-health checks.
     Temporary,
-    /// The error was transient but persisted after retries — stop retrying.
+    /// The source reports a continuing condition. It may be set directly by
+    /// a fatal probe result without any retry having happened — stop
+    /// automatic retry, finish cleanup, and escalate.
     Persistent,
 }
 
@@ -353,19 +362,27 @@ impl Error {
         self
     }
 
-    /// Mark this error as temporary (retryable).
+    /// Record a transient source condition.
+    ///
+    /// This marks the observation only. Retry remains the caller's decision
+    /// after its cleanup and device-health checks.
     pub fn set_temporary(mut self) -> Self {
         self.status = ErrorStatus::Temporary;
         self
     }
 
-    /// Mark this error as permanent (not retryable).
+    /// Record a permanent source condition: retrying the same request will
+    /// not help without external changes.
     pub fn set_permanent(mut self) -> Self {
         self.status = ErrorStatus::Permanent;
         self
     }
 
-    /// Mark this error as persistent (was temporary, retries exhausted).
+    /// Record a continuing source condition.
+    ///
+    /// A fatal probe result can set this status directly, without any retry
+    /// having happened. Callers must stop automatic retry, finish cleanup,
+    /// and escalate.
     pub fn set_persistent(mut self) -> Self {
         self.status = ErrorStatus::Persistent;
         self
@@ -439,17 +456,23 @@ impl Error {
         self.allocation_facts().cuda_error
     }
 
-    /// Whether this error is temporary (retryable).
+    /// Whether the source reported a transient condition.
+    ///
+    /// This is the observation, not permission to retry: the caller must
+    /// still complete cleanup and device-health checks first.
     pub fn is_temporary(&self) -> bool {
         self.status == ErrorStatus::Temporary
     }
 
-    /// Whether this error is permanent (not retryable).
+    /// Whether the source reported a permanent condition.
     pub fn is_permanent(&self) -> bool {
         self.status == ErrorStatus::Permanent
     }
 
-    /// Whether this error is persistent (transient, but retries are exhausted).
+    /// Whether the source reported a continuing condition.
+    ///
+    /// This status can be set directly by a fatal probe result without any
+    /// retry having happened.
     pub fn is_persistent(&self) -> bool {
         self.status == ErrorStatus::Persistent
     }

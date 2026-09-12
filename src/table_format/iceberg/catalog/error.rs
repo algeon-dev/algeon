@@ -5,6 +5,15 @@ use super::{Error, ErrorCode};
 pub(super) const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 
 fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCatalogErrorFacts>) -> ErrorCode {
+    // The typed kind is the strongest evidence and is never overridden by
+    // flattened wrapper text. Structured transport detail (AWS facts) only
+    // decides when the kind is generic.
+    match source.kind() {
+        iceberg::ErrorKind::TableNotFound | iceberg::ErrorKind::NamespaceNotFound => {
+            return ErrorCode::SourceObjectNotFound;
+        },
+        _ => {},
+    }
     if let Some(aws_facts) = aws_facts {
         if matches!(
             aws_facts.error_code,
@@ -150,15 +159,41 @@ impl AwsCatalogErrorFacts {
     }
 }
 
+/// Maximum source-chain layers rendered for AWS transport-detail extraction.
+///
+/// Catalog backends flatten typed SDK errors into text, so extraction must
+/// see past generic wrappers — but an unbounded foreign chain must not
+/// dictate adapter work. Matches the crate's other foreign-error budgets.
+const MAX_AWS_FACT_CHAIN_DEPTH: usize = 32;
+/// Maximum bytes retained from the chain. AWS markers are short SDK codes;
+/// the cap only truncates extreme foreign payloads, never the markers.
+const MAX_AWS_FACT_CHAIN_BYTES: usize = 16_384;
+
 fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
-    let mut text = source.to_string();
+    let mut text = bounded_layer_text(&source.to_string(), MAX_AWS_FACT_CHAIN_BYTES);
     let mut current = source.source();
-    while let Some(source) = current {
+    for _ in 0..MAX_AWS_FACT_CHAIN_DEPTH {
+        let Some(layer) = current else { break };
+        if text.len() >= MAX_AWS_FACT_CHAIN_BYTES {
+            break;
+        }
         text.push_str(": ");
-        text.push_str(&source.to_string());
-        current = source.source();
+        let remaining = MAX_AWS_FACT_CHAIN_BYTES.saturating_sub(text.len());
+        text.push_str(&bounded_layer_text(&layer.to_string(), remaining));
+        current = layer.source();
     }
     text
+}
+
+fn bounded_layer_text(layer: &str, max_bytes: usize) -> String {
+    if layer.len() <= max_bytes {
+        return layer.to_string();
+    }
+    let mut end = max_bytes;
+    while !layer.is_char_boundary(end) {
+        end -= 1;
+    }
+    layer[..end].to_string()
 }
 
 fn aws_error_code_fact(text: &str) -> Option<&'static str> {

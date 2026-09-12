@@ -131,11 +131,18 @@ fn final_plan_requirement_error(
             .with_fact("capability_reason", capability_reason.code())
             .with_fact("operator_count", candidate.operator_count);
         if let Some(detail) = detail {
+            // `reason` is bounded operational classification and may be
+            // logged. The column name, Arrow type, and role name the query
+            // caller's own schema detail, so they stay ordinary facts hidden
+            // from operational logs and Debug by default. The server
+            // projection owner retains them explicitly for query-caller
+            // surfaces (Flight metadata allowlist, query-stats capture) and
+            // keeps them in the actionable status message.
             error = error
                 .with_log_safe_fact("reason", capability_reason.code())
-                .with_log_safe_fact("unsupported_column", detail.name.as_str())
-                .with_log_safe_fact("unsupported_column_type", detail.data_type.as_str())
-                .with_log_safe_fact("unsupported_column_role", detail.role);
+                .with_fact("unsupported_column", detail.name.as_str())
+                .with_fact("unsupported_column_type", detail.data_type.as_str())
+                .with_fact("unsupported_column_role", detail.role);
         }
     }
     error
@@ -637,6 +644,41 @@ mod tests {
         assert_eq!(error.fact_value("requirement"), Some("no_datafusion_cpu"));
         assert_eq!(error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
         assert_eq!(error.fact_value("terminal_plan_disposition"), Some("rejected"));
+    }
+
+    #[test]
+    fn strict_rejection_schema_detail_is_client_visible_but_not_log_safe() {
+        use crate::{
+            capability::CapabilityReason,
+            report::{GpuCandidate, UnsupportedColumnDetail},
+        };
+
+        let mut report = PlanningReport::new();
+        report.push_not_supported_column(
+            GpuCandidate::new("ParquetExec", 1),
+            CapabilityReason::UnsupportedType,
+            UnsupportedColumnDetail::new("訂單明細", "List(Int64)", "projected"),
+        );
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let error = final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&report));
+
+        assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+        assert!(error.message().contains("訂單明細"), "{}", error.message());
+        assert_eq!(error.fact_value("unsupported_column"), Some("訂單明細"));
+        assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Int64)"));
+        assert_eq!(error.fact_value("unsupported_column_role"), Some("projected"));
+        let logs = error.facts().log_safe_projection();
+        assert!(
+            !logs.rendered().unwrap_or_default().contains("訂單明細"),
+            "operational logs must not carry caller schema identifiers"
+        );
+        assert!(
+            error
+                .facts()
+                .retained_capture_entries()
+                .contains(&("unsupported_column".to_string(), "訂單明細".to_string())),
+            "query-caller capture must retain the strict-rejection detail"
+        );
     }
 
     #[test]

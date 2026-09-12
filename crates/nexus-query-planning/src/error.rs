@@ -5,7 +5,11 @@
 //! can preserve native classification facts while exposing adapter-level
 //! planning and execution categories to DataFusion.
 
-use std::{collections::BTreeMap, error::Error as StdError, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error as StdError,
+    fmt,
+};
 
 use serde_json::{Value, json};
 
@@ -550,13 +554,25 @@ pub const fn attempt_failure_code_for_query_error(code: QueryErrorCode) -> Attem
 /// by tests, reports, and callers. Values are stringified with [`ToString`].
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
 ///
-/// Empty keys and duplicate inserts panic. The native engine reserves
-/// `cudf_code`, `cudf_kind`, `cudf_status`, `cudf_operation`, and `cudf_message`
-/// for wrapped `cudf::Error` facts.
+/// Decoration never panics: empty keys are ignored and duplicate inserts keep
+/// the first value. Rejected keys are reported deterministically under
+/// `fact_collision_keys` so a colliding decoration stays diagnosable instead
+/// of replacing the primary error's facts. Callers that own a key and must
+/// overwrite it use [`QueryError::with_query_id`], [`QueryError::with_trace_id`],
+/// or another explicit overwrite path, never a second [`QueryError::with_fact`].
+/// The native engine reserves `cudf_code`, `cudf_kind`, `cudf_status`,
+/// `cudf_operation`, and `cudf_message` for wrapped `cudf::Error` facts.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
+    collision_keys: BTreeSet<&'static str>,
 }
+
+/// Fact key recording rejected duplicate or empty decoration keys.
+pub const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
+
+/// Placeholder recorded when a decoration key is empty.
+pub const EMPTY_FACT_KEY: &str = "<empty>";
 
 impl Facts {
     pub fn new() -> Self {
@@ -573,9 +589,21 @@ impl Facts {
     }
 
     fn insert(&mut self, key: &'static str, value: String) {
-        assert!(!key.is_empty(), "nexus-query-engine error fact key must not be empty");
-        let previous = self.values.insert(key, value);
-        assert!(previous.is_none(), "nexus-query-engine error fact key inserted twice: {key}");
+        if key.is_empty() {
+            self.record_collision(EMPTY_FACT_KEY);
+            return;
+        }
+        if key == FACT_COLLISION_KEYS || self.values.contains_key(key) {
+            self.record_collision(key);
+            return;
+        }
+        self.values.insert(key, value);
+    }
+
+    fn record_collision(&mut self, key: &'static str) {
+        self.collision_keys.insert(key);
+        let value = self.collision_keys.iter().copied().collect::<Vec<_>>().join(",");
+        self.values.insert(FACT_COLLISION_KEYS, value);
     }
 
     fn set(&mut self, key: &'static str, value: String) {
@@ -638,6 +666,12 @@ impl QueryError {
     /// `operation` should be a stable dotted identifier such as
     /// `nexus_query_engine.plan.execute`. `message` is human-facing diagnostic
     /// text. Add machine-readable context with [`Self::with_fact`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when `operation` or `message` is empty. Construction-time
+    /// identity must be present; later decoration ([`Self::with_fact`],
+    /// [`Self::with_source`]) never panics and keeps the first value instead.
     pub fn new(code: QueryErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
         assert!(!operation.is_empty(), "nexus-query-engine error operation must not be empty");
@@ -677,7 +711,11 @@ impl QueryError {
     ///
     /// `key` must be a non-empty static string and should be treated as part of
     /// the diagnostic contract once exposed. `value` is stringified with
-    /// [`ToString`]. Duplicate keys panic.
+    /// [`ToString`]. A duplicate or empty key never panics and never replaces
+    /// the primary error's facts: the first value wins and the rejected key is
+    /// recorded under [`FACT_COLLISION_KEYS`]. Layered `with_fact` calls must
+    /// therefore use distinct keys per layer; wrapping an error must not
+    /// re-emit a key the wrapped error already owns.
     #[must_use]
     pub fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.0.facts.insert(key, value.to_string());
@@ -695,11 +733,15 @@ impl QueryError {
 
     /// Retains typed cuGraph allocation provenance and mirrors its stable label
     /// into ordinary error facts for existing diagnostic consumers.
+    ///
+    /// This is an explicit overwrite path owned by the cuGraph boundary: the
+    /// mirrored fact always tracks the typed field, so a second call replaces
+    /// both together instead of recording a collision.
     #[cfg(any(feature = "cugraph", test))]
     #[must_use]
     #[doc(hidden)]
     pub fn with_cugraph_allocation_source(mut self, source: CugraphAllocationSource) -> Self {
-        self.0.facts.insert("cugraph_allocation_source", source.as_str().to_string());
+        self.0.facts.set("cugraph_allocation_source", source.as_str().to_string());
         self.0.cugraph_allocation_source = Some(source);
         self
     }
@@ -748,11 +790,17 @@ impl QueryError {
         self
     }
 
-    /// Attaches the source error, replacing any source already present.
+    /// Attaches the source error when no source is already present.
+    ///
+    /// A second source is discarded so error decoration cannot replace the
+    /// original causal chain. Layers that need to add context wrap the error
+    /// in a new [`QueryError`] instead of re-attaching a source.
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
-        self.0.source = Some(Box::new(source));
+        if self.0.source.is_none() {
+            self.0.source = Some(Box::new(source));
+        }
         self
     }
 
@@ -794,7 +842,16 @@ impl QueryError {
         } else {
             error.with_fact("cuvs_message", redact_uri_tokens(cuvs_message))
         };
+        // cuVS context is an ordered container that allows duplicate keys with
+        // last-write-wins reads (`context_value`). Collapse to the effective
+        // value per key before projecting into the unique fact map so a
+        // legitimately repeated key (for example two `native_status` entries)
+        // converts without losing the primary error.
+        let mut effective_context = BTreeMap::new();
         for (key, value) in source.context().filter(|(key, _)| is_safe_cuvs_context_fact(key)) {
+            effective_context.insert(key, value);
+        }
+        for (key, value) in effective_context {
             error = error.with_fact(key, value);
         }
         error.with_source(source)
@@ -1073,34 +1130,24 @@ impl StdError for QueryError {
     }
 }
 
-// cuDF classification preserves permanent size/host-limit codes first, then
-// generic resource exhaustion, retry status (`Temporary`/`Persistent`), and
-// permanent failures by cuDF kind. This keeps
-// cuDF's coarse status contract intact. Sealed attempt advice, not this
-// status alone, governs retry; Persistent requires escalation or intervention.
-// Notable permanent mappings:
+// Allocation attribution is owned by `cudf-nexus`: the typed FFI failure
+// source proves a query-limit rejection or physical exhaustion, while a
+// budget-scope annotation is only a usage snapshot of the scope the error
+// passed through. See `cudf::allocation_attribution`. Sealed attempt advice,
+// not this status alone, governs retry; Persistent requires escalation or
+// intervention. Notable permanent mappings:
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
-    // The typed FFI failure source is the canonical channel and must be
-    // consulted before the budget annotation. A budgeted scope annotates every
-    // error that passes through it -- its own status reads
-    // `exceeded_or_lower_layer_rejected` -- so the annotation's presence cannot
-    // tell a cap rejection apart from a physically exhausted device. Trusting
-    // it first reports device exhaustion as a permanent cap violation, which
-    // tells the caller to raise a limit that was never reached.
-    if let Some(detail) = error.ffi_detail() {
-        match detail.failure_source {
-            cudf::CudfErrorFailureSource::ReservationLimit => {
-                return QueryErrorCode::QueryMemoryLimitExceeded;
-            },
-            cudf::CudfErrorFailureSource::Physical => return QueryErrorCode::DeviceOutOfMemory,
-            cudf::CudfErrorFailureSource::Unknown => {},
-            _ => {},
-        }
-    }
-    if error.budget_exhaustion().is_some() {
-        return QueryErrorCode::QueryMemoryLimitExceeded;
+    match cudf::allocation_attribution(error) {
+        cudf::CudfAllocationAttribution::ConfirmedQueryLimit => {
+            return QueryErrorCode::QueryMemoryLimitExceeded;
+        },
+        cudf::CudfAllocationAttribution::ConfirmedPhysical => return QueryErrorCode::DeviceOutOfMemory,
+        cudf::CudfAllocationAttribution::UnattributedAllocationFailure => {
+            return QueryErrorCode::DeviceAllocationFailed;
+        },
+        cudf::CudfAllocationAttribution::NonAllocationFailure => {},
     }
     match cudf::classify_cudf_error(error) {
         cudf::CudfErrorClassification::SizeOverflow => QueryErrorCode::SizeOverflow,
@@ -1206,6 +1253,83 @@ mod tests {
         assert_eq!(redact_uri_tokens("  spaced   message  "), "spaced message");
     }
 
+    fn cudf_allocation_error_for_test(
+        code: cudf::ErrorCode,
+        failure_source: Option<cudf::CudfErrorFailureSource>,
+        with_budget_scope: bool,
+    ) -> cudf::Error {
+        use cudf::testing::error as cudf_test_error;
+        let mut error =
+            cudf_test_error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
+        if let Some(failure_source) = failure_source {
+            error = cudf_test_error::with_ffi_detail_for_test(
+                error,
+                cudf::CudfErrorDetail {
+                    status: 0,
+                    failure_source,
+                    domain_id: 0,
+                    member_id: 0,
+                    generation: 0,
+                    requested_bytes: 4096,
+                    alignment: 256,
+                    cuda_error: -1,
+                    message: "synthetic allocation failure".to_string(),
+                },
+            );
+        }
+        if with_budget_scope {
+            error = cudf_test_error::with_budget_exhaustion_for_test(
+                error,
+                cudf_test_error::budget_exhaustion_detail_for_test(
+                    1024,
+                    1024,
+                    1024,
+                    512,
+                    4096,
+                    1,
+                    "test_boundary",
+                    "cudf.test.allocation_attribution",
+                ),
+            );
+        }
+        error
+    }
+
+    #[test]
+    fn cudf_allocation_attribution_drives_native_classification_not_scope_usage() {
+        let cases = [
+            (
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::ReservationLimit),
+                true,
+                QueryErrorCode::QueryMemoryLimitExceeded,
+            ),
+            (
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::Physical),
+                true,
+                QueryErrorCode::DeviceOutOfMemory,
+            ),
+            (
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::Unknown),
+                true,
+                QueryErrorCode::DeviceAllocationFailed,
+            ),
+            (cudf::ErrorCode::OutOfMemory, None, true, QueryErrorCode::DeviceAllocationFailed),
+            (cudf::ErrorCode::IoFailure, None, true, QueryErrorCode::CudfDependencyFailure),
+        ];
+
+        for (index, (code, failure_source, with_budget_scope, expected)) in cases.into_iter().enumerate() {
+            let error = QueryError::from_cudf(
+                "nexus_query_engine.test.allocation_attribution",
+                "wrapped cudf failure",
+                cudf_allocation_error_for_test(code, failure_source, with_budget_scope),
+            );
+            assert_eq!(error.code(), expected, "native mismatch for case {index}");
+        }
+    }
+
     #[cfg(feature = "cugraph")]
     #[test]
     fn graph_cache_scope_peak_is_a_typed_sideband_not_an_error_fact() {
@@ -1250,5 +1374,59 @@ mod tests {
                 assert_eq!(error.fact_value("native_status"), Some("CUVS_ERROR"));
             }
         }
+    }
+
+    #[test]
+    fn duplicate_fact_decoration_preserves_first_value_and_records_collision() {
+        let error = QueryError::new(
+            QueryErrorCode::CudfInvalidInput,
+            "nexus_query_engine.test.fact_collision",
+            "fact collision probe",
+        )
+        .with_fact("layer", "outer")
+        .with_fact("layer", "inner")
+        .with_fact("", "empty key is ignored");
+
+        assert_eq!(error.fact_value("layer"), Some("outer"));
+        assert_eq!(error.fact_value(FACT_COLLISION_KEYS), Some("<empty>,layer"));
+        assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+    }
+
+    #[test]
+    fn repeated_source_decoration_preserves_first_cause() {
+        let first = sample_cudf_error();
+        let expected_cause = first.to_string();
+        let error = QueryError::new(
+            QueryErrorCode::CudfInvalidInput,
+            "nexus_query_engine.test.source_preservation",
+            "source preservation probe",
+        )
+        .with_source(first)
+        .with_source(QueryError::new(
+            QueryErrorCode::DeviceFault,
+            "nexus_query_engine.test.decoration",
+            "decoration must not replace the cause",
+        ));
+
+        let cause = error.source_error().expect("first source must be retained").to_string();
+        assert_eq!(cause, expected_cause, "{cause}");
+        assert!(!cause.contains("decoration must not replace the cause"), "{cause}");
+    }
+
+    #[cfg(feature = "cuvs")]
+    #[test]
+    fn from_cuvs_duplicate_context_projects_effective_value_without_panic() {
+        let source = cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.duplicate")
+            .with_context("native_status", "CUVS_ERROR")
+            .with_context("native_status", "CUVS_ERROR_RETRY")
+            .set_temporary();
+        assert_eq!(source.context_value("native_status"), Some("CUVS_ERROR_RETRY"));
+
+        let error =
+            QueryError::from_cuvs("nexus_query_engine.test.from_cuvs_duplicate", "wrapped cuVS failure", source);
+
+        assert_eq!(error.code(), QueryErrorCode::CudfTemporaryFailure);
+        assert_eq!(error.fact_value("native_status"), Some("CUVS_ERROR_RETRY"));
+        assert!(error.source_error().is_some());
     }
 }

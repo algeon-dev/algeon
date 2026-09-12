@@ -22,7 +22,9 @@ pub use catalog::GlueCatalogBackend;
 pub use catalog::RestCatalogBackend;
 #[cfg(feature = "catalog")]
 pub use catalog::{CatalogBackend, CatalogKind, Namespace};
-pub use error::{CatalogErrorKind, Error, ErrorCode, ErrorContext, ErrorStatus, Operation, Result};
+pub use error::{
+    CatalogErrorKind, ClassificationProvenance, Error, ErrorCode, ErrorContext, ErrorStatus, Operation, Result,
+};
 #[cfg(feature = "catalog")]
 pub use planner::ScanPlanningOptions;
 #[cfg(feature = "catalog")]

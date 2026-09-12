@@ -6,14 +6,16 @@ description: Understand error ownership, DataFusion and Flight boundaries, retry
 
 # Error Handling Design
 
-Every failure Nexus returns carries a stable machine-readable `code`, a
+Every Nexus-owned adapter failure carries a stable machine-readable `code`, a
 coarse `kind`, and a `status` that says whether the condition is permanent,
 temporary, or persistent, in addition to a human-readable message. An
-application can find that identity inside any `DataFusionError` it receives,
-or read it from gRPC metadata over Flight SQL, and should make decisions from
-those typed fields, never from formatted error text. Nexus keeps an error
-typed at the layer that owns the failure and converts it only when crossing a
-real boundary.
+application can find that identity inside a `DataFusionError` that wraps a
+Nexus adapter error, or read it from gRPC metadata over Flight SQL, and
+should make decisions from those typed fields, never from formatted error
+text. Nexus keeps an error typed at the layer that owns the failure and
+converts it only when crossing a real boundary. Ordinary DataFusion errors
+that carry no Nexus identity, and transport errors below the server, keep
+their own policies: nothing in this guide upgrades them to Nexus errors.
 
 The typical native-execution path is:
 
@@ -99,10 +101,14 @@ fn record_failure(error: &DataFusionError) {
 }
 ```
 
-The search is deterministic and bounded, follows standard source chains, and
-visits every `DataFusionError::Collection` branch. A `None` result means the
-error has no Nexus identity; keep the application's existing DataFusion
-policy. There is deliberately no blanket conversion in the other direction.
+The search is deterministic depth-first pre-order and bounded by both depth
+and total node count. It follows standard source chains and visits every
+`DataFusionError::Collection` branch in order, returning the first Nexus
+error it reaches — not the most severe one. A `None` result only means no
+Nexus error was found within that budget; it does not prove that branches
+beyond the budget contain no Nexus identity. When there is no match, keep the
+application's existing DataFusion policy. There is deliberately no blanket
+conversion in the other direction.
 
 ## Creating and wrapping errors
 
@@ -113,9 +119,13 @@ Create the error where the failed contract is known:
   `nexus-query-planning`.
 - Use adapter `Error` for DataFusion-specific planning, wrappers, and public
   integration behavior.
-- Use `Error::from_native` when a `QueryError` reaches the adapter. It maps the
-  native code and preserves native code, kind, status, operation, message,
-  non-colliding facts, and source.
+- A `QueryError` reaching the adapter is converted at that boundary (the
+  constructor is contributor-internal, not a public integration entry point).
+  The conversion maps the native code and preserves native code, kind,
+  status, operation, message, non-colliding facts, and source. Contributors
+  find the canonical construction rules in the owner rustdoc
+  (`crates/nexus-query-planning/src/error.rs`, `src/error.rs`); integrators
+  only need the public constructors and `find_nexus_error()` shown above.
 - Use the existing typed lower-layer constructors and provenance at cuDF,
   cuGraph, or cuVS boundaries. Their mappings use enums and status, not message
   text.
@@ -168,6 +178,23 @@ prerequisite and submit a new attempt. Cancellation, drop, and panic do not
 become retries, and transport delivery failure does not rewrite the sealed
 attempt outcome.
 
+Recovering from an attempted query follows the attempt lifecycle, not the
+error value alone:
+
+1. Classify the returned error at the correct boundary:
+   `QueryAdmissionOutcome::from_error` while admission is still being
+   attempted, `from_execution_error` after a handle has been published.
+2. Retain the attempt completion the service published for the attempt.
+3. Wait for the sealed `QueryAttemptReport` and read its `retry_advice`,
+   derived only after terminal outcome, GPU cleanup, capacity disposition,
+   device health, native-fault isolation, and resource evidence are
+   committed. Satisfy the advice's paired prerequisite before submitting a
+   new attempt.
+
+Receiving an execution error is not proof that cleanup finished. The sealed
+report is the only signal that binds the recovery advice to completed
+cleanup.
+
 ## Diagnostics and disclosure
 
 Treat raw facts and source chains as trusted in-process diagnostics. They may
@@ -198,6 +225,13 @@ invariant, and internal failures use `INTERNAL`. Client messages are narrowed
 for source, dependency, invariant, and internal failures; logs and retained
 diagnostics keep the separate structured fields and bounded safe projection.
 
+One code-specific exception: a non-converged native algorithm
+(`algorithm_did_not_converge`) returns `FAILED_PRECONDITION` with an
+actionable message naming the algorithm, the iterations reached, and the
+configured limits, plus matching `algorithm`, `iterations`,
+`max_iterations`, and `epsilon` metadata. It is a parameter problem to fix,
+not a condition to blindly retry.
+
 Every status created from an adapter `Error` includes these metadata fields:
 
 - `x-datafusion-nexus-error-code`
@@ -206,12 +240,24 @@ Every status created from an adapter `Error` includes these metadata fields:
 - `x-datafusion-nexus-error-operation`
 
 The server also projects only `unsupported_column`, `unsupported_column_type`,
-`unsupported_column_role`, `predicate_role`, `reason`, `required_option`, and
-`native_message` when present. Query and correlation identifiers are added by
-the statement boundary. The source chain is retained locally, not emitted as
-metadata. Client-visible fact selection is independent of
-`with_log_safe_fact`; a producer of `native_message`, for example, must treat
-it as transport-visible data.
+`unsupported_column_role`, `predicate_role`, `reason`, `required_option`,
+`algorithm`, `iterations`, `max_iterations`, `epsilon`, and `native_message`
+when present. `native_message` is projected only for client-actionable
+validation kinds (cancellation, not-found, permission, auth, planning,
+invalid-input, unsupported): internal, dependency, invariant, and execution
+failures never carry raw native text in metadata, however their status
+message reads. Query and correlation identifiers are added by the statement
+boundary. The source chain is retained locally, not emitted as metadata.
+Client-visible fact selection is independent of `with_log_safe_fact`. Attach
+`native_message` as a trusted in-process diagnostic whose content is already
+safe to expose on the allowlisted validation paths; the server gate decides
+the projection, not the producer.
+
+Metadata values must be transmittable ASCII and are capped at 256 bytes per
+value with a `...` marker. Values that cannot cross the wire (for example
+non-ASCII schema details) are omitted and listed under
+`x-datafusion-nexus-omitted-facts`; the full diagnosis stays available in the
+status message and query stats.
 
 ### Strict unsupported-type rejection
 
@@ -241,6 +287,15 @@ The terminal `GetQueryStats` structured error retains the same facts as
 machine-readable projections; they do not replace the actionable status
 message. The existing allowlist and masking rules still apply, so raw facts and
 the source chain are not exposed.
+
+The four projections do not carry identical bytes. The status message keeps
+the full actionable text, including non-ASCII column names. Metadata carries
+only ASCII values capped at 256 bytes with a `...` marker; a non-ASCII column
+name is omitted from metadata and listed under
+`x-datafusion-nexus-omitted-facts`. Query stats retain the structured facts
+without the wire encoding limits. The column name never enters operational
+logs or `Debug` output. Compare projections per surface — message, metadata,
+logs, query stats — rather than asserting four equal strings.
 
 Protocol policy outside the built-in server belongs to the application. The
 embedded REST example intentionally maps typed errors before applying its
