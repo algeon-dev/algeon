@@ -1762,3 +1762,353 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
         .expect("resident join output stays readable after its lane leases are released");
     assert_eq!(int64_values(&batch, 0), vec![Some(3)], "inner join feeds three rows into the count");
 }
+
+fn sort_lane_nullable_source(path: &Path, keys: &[Option<i32>], values: &[Option<i64>]) -> NativeLocalParquetSource {
+    write_nullable_key_value_parquet(path, keys, values);
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, true)]));
+    NativeLocalParquetSource::from_files(
+        vec![enrich_fixture_local_parquet_file(LocalParquetFile::new(path))],
+        schema,
+        vec!["k".to_string(), "v".to_string()],
+    )
+}
+
+/// A fused top-k over a two-frame union stream sorts one candidate per
+/// frame on disjoint lanes and merges on the coordinator. The rendezvous
+/// gate proves both candidates are in execution simultaneously; the serial,
+/// width-1, and width-2 outputs must agree exactly, including null-key
+/// placement. Reverting the lane fan-out leaves the gate with a single
+/// arrival and fails the overlap assertions.
+#[test]
+fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("query-engine-lane-sort-topk");
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, true)]));
+    let left = sort_lane_nullable_source(
+        &dir.join("left.parquet"),
+        &[Some(5), Some(3), None, Some(1)],
+        &[Some(50), Some(30), None, Some(10)],
+    );
+    let right = sort_lane_nullable_source(
+        &dir.join("right.parquet"),
+        &[Some(4), Some(2), Some(0)],
+        &[Some(40), Some(20), Some(0)],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left));
+    let right = builder.add_source(SourceNode::LocalParquet(right));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let sort =
+        builder.add_sort(union, SortSpec::new(vec![SortExpr::new(Expr::column("k"), true, true)]), Arc::clone(&schema));
+    let limit = builder.add_limit(sort, LimitSpec::new(0, 6), Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(limit);
+
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("sort/top-k admission should not error");
+    let pipeline = decision.admission().expect("union sort/top-k uses compiled admission").pipeline().clone();
+    assert!(is_lane_family_pipeline(&pipeline), "union sort/top-k dispatches on lanes");
+    let sort_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::FinalSort)
+        .expect("union sort/top-k compiles a final sort task");
+    assert!(
+        matches!(sort_task.sort_strategy(), Some(query_engine::pipeline::SortStrategy::FusedTopK { .. })),
+        "sort/limit fuses into a stream-capable top-k"
+    );
+
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("sort/top-k plan acquires a context");
+    let route = test_context.attempt_stream_provider_route().expect("admitted sort owns a fork route");
+    let arrivals = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
+    let run = |requested_lanes: Option<usize>, coordinate: bool| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-lane-parity");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("sort pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        if let Some(width) = requested_lanes {
+            let mut support = LaneDispatchSupport::new(
+                Arc::clone(&route),
+                metrics_context.clone(),
+                plan.clone(),
+                pipeline.clone(),
+                gpu_inputs.clone(),
+                metrics.clone(),
+            )
+            .with_requested_lanes(width);
+            if coordinate {
+                let arrivals = Arc::clone(&arrivals);
+                support = support.with_aggregate_chunk_completion_gate(Arc::new(move |ordinal, lane, fork| {
+                    let (mutex, wake) = &*arrivals;
+                    let mut observed = mutex.lock().expect("sort arrival mutex");
+                    observed.push((ordinal, lane, fork));
+                    wake.notify_all();
+                    let (observed, _) = wake
+                        .wait_timeout_while(observed, Duration::from_secs(10), |observed| observed.len() < 2)
+                        .expect("sort arrival wait");
+                    assert!(observed.len() >= 2, "two top-k candidates must reach completion before either can return");
+                }));
+            }
+            let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                .expect("lane-dispatched sort/top-k should complete");
+            assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
+        } else {
+            let state = scheduler.run(&mut executor).expect("serial sort/top-k should complete");
+            assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
+        }
+        let batch = executor.take_host_output().expect("sort sink materializes one batch");
+        int32_values(&batch, 0).into_iter().zip(int64_values(&batch, 1)).collect::<Vec<_>>()
+    };
+
+    let expected = vec![
+        (None, None),
+        (Some(5), Some(50)),
+        (Some(4), Some(40)),
+        (Some(3), Some(30)),
+        (Some(2), Some(20)),
+        (Some(1), Some(10)),
+    ];
+    assert_eq!(run(None, false), expected, "serial baseline orders nulls first, then keys descending");
+    assert_eq!(run(Some(1), false), expected, "width 1 runs the same lane protocol inline");
+    assert_eq!(run(Some(2), true), expected, "width 2 merges lane candidates into the same global top-k");
+    let observed = arrivals.0.lock().expect("sort arrival mutex");
+    assert!(observed.len() >= 2, "two top-k candidates must complete on lanes");
+    assert_ne!(observed[0].0, observed[1].0, "candidates carry distinct chunk ordinals");
+    assert_ne!(observed[0].1, observed[1].1, "candidates occupy distinct lanes");
+    assert_ne!(observed[0].2, observed[1].2, "candidates own distinct fork streams");
+}
+
+/// Saturating an attempt's auxiliary envelope never starves lane dispatch:
+/// with every permit held elsewhere, the run narrows to width 1 inline and
+/// still commits every task exactly once; releasing the permits restores the
+/// wide path. The lane gate proves the narrowing structurally: every claim
+/// runs on lane 0 while saturated, and both lanes serve work once released.
+/// No sleeps: the fallback is a structural property of try-acquire, not
+/// timing.
+#[test]
+fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let left_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("left literal batch");
+    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3])) as ArrayRef])
+        .expect("right literal batch");
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
+    let right =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("saturation admission should not error");
+    let pipeline = decision.admission().expect("literal union uses compiled admission").pipeline().clone();
+    assert!(is_lane_family_pipeline(&pipeline), "literal union dispatches on lanes");
+
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("saturation plan acquires a context");
+    let route = test_context.attempt_stream_provider_route().expect("admitted attempt owns a fork route");
+    // Hold the whole auxiliary envelope: no lane lease remains for the run.
+    let mut held = Vec::new();
+    while let Some(lease) =
+        test_context.try_acquire_attempt_work_lease().expect("auxiliary try-acquire should not error")
+    {
+        held.push(lease);
+    }
+    assert_eq!(held.len(), route.lane_capacity(), "the test holds every auxiliary permit");
+
+    let lanes = Arc::new(Mutex::new(Vec::new()));
+    let run = |lanes: &Arc<Mutex<Vec<usize>>>| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("saturation-fallback");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("union pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let lanes = Arc::clone(lanes);
+        let support = LaneDispatchSupport::new(
+            Arc::clone(&route),
+            metrics_context.clone(),
+            plan.clone(),
+            pipeline.clone(),
+            gpu_inputs.clone(),
+            metrics.clone(),
+        )
+        .with_requested_lanes(2)
+        .with_lane_completion_gate(Arc::new(move |lane, _| {
+            lanes.lock().expect("saturation lane mutex").push(lane);
+        }));
+        let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+            .expect("saturated lane dispatch should complete");
+        assert_eq!(state.live_resource_count(), 0, "saturated run releases every resource");
+        let batch = executor.take_host_output().expect("saturated sink materializes one batch");
+        let mut values = int32_values(&batch, 0);
+        values.sort();
+        values
+    };
+
+    let expected = vec![Some(1), Some(2), Some(3)];
+    assert_eq!(run(&lanes), expected, "a saturated attempt still computes every branch once");
+    assert!(!lanes.lock().expect("saturation lane mutex").is_empty(), "saturated claims still run");
+    assert!(
+        lanes.lock().expect("saturation lane mutex").iter().all(|lane| *lane == 0),
+        "no claim leaves lane 0 while every permit is held"
+    );
+    drop(held);
+    let lanes = Arc::new(Mutex::new(Vec::new()));
+    assert_eq!(run(&lanes), expected, "releasing the envelope restores result parity");
+    let observed = lanes.lock().expect("saturation lane mutex");
+    assert!(observed.contains(&0) && observed.contains(&1), "released permits serve both lanes: {observed:?}");
+}
+
+/// Offset, mixed sort directions, and null keys agree across widths on a
+/// single-frame sort input. The frame holds one chunk, so the lane protocol
+/// keeps the serial candidate path; this locks the coordinator-inline
+/// change to exact parity instead of silent drift.
+#[test]
+fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("query-engine-lane-sort-offset");
+    let keys: Vec<Option<i32>> =
+        vec![Some(3), Some(1), Some(2), None, Some(2), Some(3), Some(1), None, Some(0), Some(2)];
+    let values: Vec<Option<i64>> = keys.iter().map(|key| key.map(|key| i64::from(key) * 10)).collect();
+    let source = sort_lane_nullable_source(&dir.join("input.parquet"), &keys, &values);
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, true)]));
+    let mut builder = QueryPlanBuilder::new();
+    let scan = builder.add_source(SourceNode::LocalParquet(source));
+    let sort = builder.add_sort(
+        scan,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("k"), false, false),
+            SortExpr::new(Expr::column("v"), true, false),
+        ]),
+        Arc::clone(&schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::new(2, 5), Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(limit);
+
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("offset sort admission should not error");
+    let pipeline = decision.admission().expect("offset sort uses compiled admission").pipeline().clone();
+    assert!(is_lane_family_pipeline(&pipeline), "single-frame sort dispatches on lanes");
+
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("offset sort acquires a context");
+    let route = test_context.attempt_stream_provider_route().expect("admitted sort owns a fork route");
+    // A fused top-k over one source is not capped by the DAG leaf count:
+    // its input expands into local candidates, so production routing must
+    // offer the whole fork pool, not width 1.
+    {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-width-request");
+        let support = LaneDispatchSupport::new(
+            Arc::clone(&route),
+            (*test_context).clone(),
+            plan.clone(),
+            pipeline.clone(),
+            GpuResidentInputMap::new(),
+            metrics,
+        );
+        assert_eq!(
+            support.requested_lanes,
+            route.lane_capacity(),
+            "single-source fused top-k requests the full fork pool"
+        );
+    }
+    // A full sort without a fused limit expands nothing: it keeps the leaf
+    // cap instead of charging permits for lanes that stay idle.
+    {
+        let mut full_builder = QueryPlanBuilder::new();
+        let full_scan = full_builder.add_source(SourceNode::LocalParquet(sort_lane_nullable_source(
+            &dir.join("full.parquet"),
+            &[Some(2), Some(1)],
+            &[Some(20), Some(10)],
+        )));
+        let full_sort = full_builder.add_sort(
+            full_scan,
+            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
+            Arc::clone(&schema),
+        );
+        let full_plan = full_builder.finish_with_host_sink(full_sort);
+        let full_pipeline = bounded_pipeline_decision(
+            &full_plan,
+            StatisticalAggregateExecutionMode::default(),
+            query_engine::rapids_backend::rapids_analysis_context(),
+        )
+        .expect("full sort admission should not error")
+        .admission()
+        .expect("full sort uses compiled admission")
+        .pipeline()
+        .clone();
+        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-width-request");
+        let support = LaneDispatchSupport::new(
+            Arc::clone(&route),
+            (*test_context).clone(),
+            full_plan,
+            full_pipeline,
+            GpuResidentInputMap::new(),
+            metrics,
+        );
+        assert_eq!(support.requested_lanes, 1, "single-source full sort keeps the leaf cap");
+    }
+    let run = |requested_lanes: Option<usize>| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-offset-parity");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("offset sort is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        if let Some(width) = requested_lanes {
+            let support = LaneDispatchSupport::new(
+                Arc::clone(&route),
+                metrics_context.clone(),
+                plan.clone(),
+                pipeline.clone(),
+                gpu_inputs.clone(),
+                metrics.clone(),
+            )
+            .with_requested_lanes(width);
+            let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                .expect("lane-dispatched offset sort should complete");
+            assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
+        } else {
+            let state = scheduler.run(&mut executor).expect("serial offset sort should complete");
+            assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
+        }
+        let batch = executor.take_host_output().expect("offset sort sink materializes one batch");
+        int32_values(&batch, 0).into_iter().zip(int64_values(&batch, 1)).collect::<Vec<_>>()
+    };
+
+    // Payloads derive from keys, so tied keys carry identical payloads and
+    // the unstable tie pick cannot drift the expected rows: k ascending
+    // nulls last, v descending, skip 2, fetch 5.
+    let mut ordered: Vec<(Option<i32>, Option<i64>)> = keys.into_iter().zip(values).collect();
+    ordered.sort_by(|left, right| match (left.0, right.0) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(left_key), Some(right_key)) => left_key.cmp(&right_key).then_with(|| right.1.cmp(&left.1)),
+    });
+    let expected: Vec<(Option<i32>, Option<i64>)> = ordered.into_iter().skip(2).take(5).collect();
+    assert_eq!(run(None), expected, "serial baseline applies offset after the global order");
+    assert_eq!(run(Some(1)), expected, "width 1 preserves offset and mixed directions");
+    assert_eq!(run(Some(2)), expected, "width 2 preserves offset and mixed directions");
+}

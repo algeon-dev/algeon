@@ -285,6 +285,18 @@ pub(super) fn remove_nonlinear_topk_contract_parquets() {
     }
 }
 
+pub(super) fn write_nullable_key_value_parquet(path: &Path, keys: &[Option<i32>], values: &[Option<i64>]) {
+    assert_eq!(keys.len(), values.len());
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(keys.to_vec())), Arc::new(Int64Array::from(values.to_vec()))],
+    )
+    .unwrap();
+    write_parquet(path, schema, &batch);
+}
+
 pub(super) fn write_key_value_parquet(path: &Path, keys: &[i32], values: &[i64]) {
     assert_eq!(keys.len(), values.len());
     let schema =

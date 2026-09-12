@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fast static check for AI writing slop (em-dashes and banned phrases).
+# Fast static check for AI writing slop (em-dashes and banned phrases)
+# and front matter YAML syntax.
 # Scans markdown / prose documentation for prohibited characters and tropes.
 set -euo pipefail
 
@@ -13,9 +14,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 USAGE = """Usage: check_prose_slop.sh [OPTIONS] [PATHS...]
 
-Checks markdown documentation for AI writing slop (em-dashes and banned phrases).
+Checks markdown documentation for AI writing slop (em-dashes and banned phrases)
+and validates YAML front matter syntax.
 When no paths or git flags are given, defaults to scanning:
   docs/ note/ website/docs/
 
@@ -130,6 +137,40 @@ def scan_file(path):
             lines = f.readlines()
     except Exception as err:
         return [f"cannot read file: {err}"]
+
+    # Validate YAML front matter on markdown documents starting with '---'
+    if path.suffix.lower() in {".md", ".mdx", ".markdown"} and lines and lines[0].strip() == "---":
+        closing_idx = None
+        for idx in range(1, len(lines)):
+            if lines[idx].strip() in ("---", "..."):
+                closing_idx = idx
+                break
+        if closing_idx is None:
+            violations.append(f"{path}:1: unclosed front matter delimiter '---'")
+        elif yaml is None:
+            violations.append(
+                f"{path}:1: PyYAML (python3-yaml) is required to validate front matter"
+            )
+        else:
+            fm_text = "".join(lines[1:closing_idx])
+            try:
+                parsed = yaml.safe_load(fm_text)
+                if parsed is not None and not isinstance(parsed, dict):
+                    violations.append(
+                        f"{path}:1: invalid front matter: expected YAML mapping (key-value pairs)"
+                    )
+            except yaml.YAMLError as err:
+                mark = getattr(err, "problem_mark", None)
+                line_no = (mark.line + 2) if mark else 1
+                col_no = (mark.column + 1) if mark else 1
+                problem = getattr(err, "problem", str(err))
+                violations.append(
+                    f"{path}:{line_no}:{col_no}: invalid front matter YAML: {problem}"
+                )
+            except Exception as err:
+                violations.append(
+                    f"{path}:1: invalid front matter YAML: {err}"
+                )
 
     in_fence = False
     fence_tag = ""

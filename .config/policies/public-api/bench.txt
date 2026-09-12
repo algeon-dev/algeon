@@ -201,6 +201,8 @@ pub const fn bench::report_workload::RelationalExecutionSelection::datafusion_cp
 pub const fn bench::report_workload::RelationalExecutionSelection::installs_native_rule(self) -> bool
 pub const fn bench::report_workload::RelationalExecutionSelection::native() -> Self
 pub const fn bench::report_workload::RelationalExecutionSelection::strict_native() -> Self
+pub mod bench::sort_lane_sweep
+pub async fn bench::sort_lane_sweep::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod bench::tpcds_three_way_bench
 pub async fn bench::tpcds_three_way_bench::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod bench::tpch_benchmark

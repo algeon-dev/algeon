@@ -270,10 +270,18 @@ impl CompiledGpuTaskExecutor<'_> {
                         &sort,
                         Some(&limit),
                         *input_frame,
+                        self.aggregate_dispatch.as_ref(),
                     )
                 },
                 CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                    execute_final_sort_node_from_stream_with_retry(&mut self.execution, node_id, &sort, &limit, stream)
+                    execute_final_sort_node_from_stream_with_retry(
+                        &mut self.execution,
+                        node_id,
+                        &sort,
+                        &limit,
+                        stream,
+                        self.aggregate_dispatch.as_ref(),
+                    )
                 },
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                     Err(invalid("compiled final sort cannot consume a deferred join leaf source")

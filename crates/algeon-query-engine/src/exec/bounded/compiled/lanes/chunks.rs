@@ -25,7 +25,10 @@ use crate::{
 /// into executors and shared by reference without borrowing the run's
 /// lease table. Coordinator-owned join probe work reuses the run's
 /// dispatcher through the same [`execute_work`](Self::execute_work) window
-/// instead of acquiring a second lane set behind the run's back.
+/// instead of acquiring a second lane set behind the run's back, and
+/// final-sort top-k candidates do the same: the name keeps its aggregate
+/// origin, but the dispatcher carries any owned lane work with stable
+/// ordinals, readiness events, and exactly-once ordered commit.
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct AggregateLaneDispatch {
     context: Arc<crate::runtime::ExecutionContext>,
@@ -277,7 +280,18 @@ impl AggregateLaneDispatch {
                 return Err(error);
             }
             while !exhausted && flights.jobs.len() + ready.len() < self.lanes.len() {
-                let Some(input) = next(state, execution)? else {
+                // A pull failure must still observe committed-but-unmerged
+                // outputs before aborting, or a late lane failure lands on
+                // an unrelated later fence. In-flight jobs drain through
+                // their join below.
+                let input = match next(state, execution) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                        return Err(error);
+                    },
+                };
+                let Some(input) = input else {
                     exhausted = true;
                     break;
                 };
@@ -291,7 +305,10 @@ impl AggregateLaneDispatch {
                 let notification = completed.clone();
                 #[cfg(any(test, feature = "test-hooks"))]
                 let gate = self.completion_gate.clone();
-                let handle = pool.submit_blocking_with_completion(
+                // A saturated pool submission fails without dispatching: the
+                // ready outputs still need their readiness observed before
+                // the abort for the same attribution reason as above.
+                let handle = match pool.submit_blocking_with_completion(
                     GpuExecutionJobKind::AttemptWork,
                     self.context.runtime_observation().clone(),
                     move || {
@@ -309,7 +326,13 @@ impl AggregateLaneDispatch {
                     move || {
                         let _ = notification.send(ordinal);
                     },
-                )?;
+                ) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                        return Err(error);
+                    },
+                };
                 flights.jobs.insert(ordinal, ChunkFlight { lane, fork, handle });
                 dispatched += 1;
             }

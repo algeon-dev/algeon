@@ -1,11 +1,12 @@
 use super::{
-    CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode, LimitSpec, QueryError,
-    QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, TopKLevelItem, commit_topk_merge_level,
-    concat_committed_frames_with_token, cudf_query_error_with_budget_details, estimate_rows_bytes,
-    estimated_bytes_per_row, estimated_limited_output_bytes, execute_limit_on_frame_with_token,
-    execute_limit_spec_with_token, execute_limit_with_token, final_sort_retry_facts, final_sort_rows_per_chunk,
-    final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
-    record_final_sort_retry_error, reduce_merge_fan_in, sort_topk_candidate_with_budget, topk_candidate_rows,
+    AggregateLaneDispatch, CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode,
+    LimitSpec, QueryError, QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, SortLaneCandidate,
+    TopKLevelItem, commit_topk_merge_level, concat_committed_frames_with_token, cudf_query_error_with_budget_details,
+    estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes, execute_limit_on_frame_with_token,
+    execute_limit_spec_with_token, execute_limit_with_token, execute_sort_lane_candidate, final_sort_retry_facts,
+    final_sort_rows_per_chunk, final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
+    record_final_sort_retry_error, reduce_merge_fan_in, sort_lane_fan_out, sort_lane_params,
+    sort_topk_candidate_with_budget, split_sort_candidate_ranges, stream_candidate_chunk_hint, topk_candidate_rows,
 };
 
 #[derive(Clone, Copy)]
@@ -31,13 +32,25 @@ struct TopKMergeAttempt {
     attempt: usize,
 }
 
+struct FrameCandidateState {
+    ranges: std::vec::IntoIter<(usize, usize)>,
+    parent: GpuDataFrame,
+    parent_bytes: u64,
+    candidates: Vec<CommittedPartial>,
+}
+
+struct StreamCandidateState<'p> {
+    payload: &'p mut ResidentFrameStreamPayload,
+    candidates: Vec<CommittedPartial>,
+}
+
 #[derive(Clone, Copy)]
 enum TopKWorkTokenFailureMode {
     Direct,
     RuntimeFacts,
 }
 
-impl FinalSortExecutor<'_, '_> {
+impl FinalSortExecutor<'_, '_, '_> {
     pub(super) fn hierarchical_topk(
         &mut self,
         limit: &LimitNode,
@@ -78,16 +91,54 @@ impl FinalSortExecutor<'_, '_> {
             return Ok(input);
         }
         let bytes_per_row = estimated_bytes_per_row(input.device_bytes(), input_rows);
-        let rows_per_chunk = final_sort_rows_per_chunk(
-            input_rows,
-            bytes_per_row,
-            self.execution.device_budget_bytes().saturating_sub(input.device_bytes()),
-        );
-        let mut candidates = match self.initial_topk_candidates(
-            &input,
-            TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
-            initial_attempt,
-        ) {
+        let available = self.execution.device_budget_bytes().saturating_sub(input.device_bytes());
+        let rows_per_chunk = final_sort_rows_per_chunk(input_rows, bytes_per_row, available);
+        let ranges = split_sort_candidate_ranges(input_rows, rows_per_chunk);
+        // Size fan-out chunks against a per-lane share of the remaining
+        // budget: each lane sorts its chunk concurrently, so the serial
+        // single-chunk sizing would admit roughly `width` times the live
+        // work. The serial path below keeps the original sizing exactly.
+        let (ranges, rows_per_chunk) = if sort_lane_fan_out(self.dispatch, ranges.len(), initial_attempt) {
+            let width = self.dispatch.expect("sort lane fan-out requires a lane dispatcher").width().max(1);
+            let rows_per_chunk = final_sort_rows_per_chunk(input_rows, bytes_per_row, available / width as u64);
+            (split_sort_candidate_ranges(input_rows, rows_per_chunk), rows_per_chunk)
+        } else {
+            (ranges, rows_per_chunk)
+        };
+        let initial: Result<Vec<CommittedPartial>> = if sort_lane_fan_out(self.dispatch, ranges.len(), initial_attempt)
+        {
+            let dispatch = self.dispatch.expect("sort lane fan-out requires a lane dispatcher");
+            match self.lane_frame_candidates(dispatch, &input, keep_rows, bytes_per_row, ranges, initial_attempt) {
+                Ok(candidates) => Ok(candidates),
+                // The frame input is intact (candidates borrowed it), so a
+                // retryable fan-out failure retries serially at attempt 2:
+                // one live chunk instead of `width`. A serial attempt-1
+                // failure has nothing narrower to fall back to and fails
+                // directly through the shared wrapper below.
+                Err(error)
+                    if is_retryable_final_sort_error(&error) && initial_attempt <= 1 && self.max_attempts > 1 =>
+                {
+                    record_final_sort_retry_error(&error, self.execution.metrics());
+                    crate::exec::retry::backoff_before_retry(
+                        self.execution.context(),
+                        "query_engine.exec.bounded.final_sort_lane_retry",
+                    )?;
+                    self.initial_topk_candidates(
+                        &input,
+                        TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
+                        2,
+                    )
+                },
+                Err(error) => Err(error),
+            }
+        } else {
+            self.initial_topk_candidates(
+                &input,
+                TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
+                initial_attempt,
+            )
+        };
+        let mut candidates = match initial {
             Ok(candidates) => candidates,
             Err(error) => {
                 record_final_sort_retry_error(&error, self.execution.metrics());
@@ -175,6 +226,87 @@ impl FinalSortExecutor<'_, '_> {
         self.finalize_final_sort_output_reservation(output, output_reservation, self.max_attempts)
     }
 
+    /// Sorts and truncates one frame's row ranges on execution lanes.
+    ///
+    /// Each lane slices its range on its own stream from the shared parent
+    /// clone, so no cross-stream edge leaves the coordinator. Commit order is
+    /// the stable chunk order, and every uncommitted output drains through
+    /// release accounting when the fan-out fails.
+    fn lane_frame_candidates(
+        &mut self,
+        dispatch: &AggregateLaneDispatch,
+        input: &CommittedPartial,
+        keep_rows: usize,
+        bytes_per_row: u64,
+        ranges: Vec<(usize, usize)>,
+        attempt: usize,
+    ) -> Result<Vec<CommittedPartial>> {
+        let params = sort_lane_params(self.sort, self.node_id, keep_rows, attempt, self.max_attempts);
+        let parent = input.frame.clone();
+        let parent_bytes = input.device_bytes();
+        let mut state =
+            FrameCandidateState { ranges: ranges.into_iter(), parent, parent_bytes, candidates: Vec::new() };
+        dispatch.execute_work(
+            self.execution,
+            &mut state,
+            |state, _| {
+                Ok(state.ranges.next().map(|(offset, length)| SortLaneCandidate {
+                    input: ResidentGpuFrame::with_device_bytes(state.parent.clone(), state.parent_bytes),
+                    slice: Some((offset, length)),
+                    bytes_per_row,
+                    boundary: "final_sort_topk_chunk",
+                }))
+            },
+            move |execution, candidate| execute_sort_lane_candidate(execution, &params, candidate),
+            |state, _, candidate| {
+                state.candidates.push(candidate);
+                Ok(())
+            },
+        )?;
+        Ok(state.candidates)
+    }
+
+    /// Sorts and truncates one stream's frames on execution lanes.
+    ///
+    /// Pulling stays serial on the coordinator behind the payload's single
+    /// cursor contract; only the owned pulled frames move to lanes. Lane
+    /// failures drain through release accounting and leave unpulled frames
+    /// in the payload for the caller to release.
+    fn lane_stream_candidates(
+        &mut self,
+        dispatch: &AggregateLaneDispatch,
+        inputs: &mut ResidentFrameStreamPayload,
+        keep_rows: usize,
+        attempt: usize,
+    ) -> Result<Vec<CommittedPartial>> {
+        let params = sort_lane_params(self.sort, self.node_id, keep_rows, attempt, self.max_attempts);
+        let mut state = StreamCandidateState { payload: inputs, candidates: Vec::new() };
+        dispatch.execute_work(
+            self.execution,
+            &mut state,
+            |state, execution| match state.payload.next_yielded_frame(execution) {
+                Some(Ok(mut yielded)) => {
+                    let input = yielded.take_for_release();
+                    let bytes_per_row = estimated_bytes_per_row(input.device_bytes(), input.frame.num_rows());
+                    Ok(Some(SortLaneCandidate {
+                        input,
+                        slice: None,
+                        bytes_per_row,
+                        boundary: "final_sort_topk_stream_chunk",
+                    }))
+                },
+                Some(Err(error)) => Err(error),
+                None => Ok(None),
+            },
+            move |execution, candidate| execute_sort_lane_candidate(execution, &params, candidate),
+            |state, _, candidate| {
+                state.candidates.push(candidate);
+                Ok(())
+            },
+        )?;
+        Ok(state.candidates)
+    }
+
     fn initial_topk_candidates(
         &mut self,
         input: &CommittedPartial,
@@ -226,28 +358,48 @@ impl FinalSortExecutor<'_, '_> {
             return self.zero_limit_stream(limit, inputs, initial_attempt);
         }
 
-        let mut candidates = Vec::with_capacity(inputs.len());
-        while let Some(input) = inputs.next_yielded_frame(self.execution) {
-            let mut input = match input {
-                Ok(input) => input,
-                Err(error) => {
-                    inputs.release_remaining_frames();
-                    return Err(error);
-                },
-            };
-            let input = input.take_for_release();
-            match self.topk_stream_frame_candidate_attempt(input, keep_rows, initial_attempt) {
-                Ok(candidate) => candidates.push(candidate),
-                Err(error) => {
-                    inputs.release_remaining_frames();
-                    return Err(final_sort_retry_facts(
-                        "hierarchical_topk_stream_initial_failed",
-                        self.execution.metrics(),
-                    )
-                    .attach_to_error(error));
-                },
+        // Buffered frames are exact for eager payloads; zero buffered frames
+        // behind a live producer means the count is unknown, so the gate
+        // assumes multi-frame and the dispatcher narrows to one job when a
+        // single frame arrives. That lone lane output merges unmerged on the
+        // coordinator while the run's leases stay held, which keeps its
+        // lifetime correct on every sink.
+        let chunk_hint = stream_candidate_chunk_hint(inputs.len());
+        let initial: Result<Vec<CommittedPartial>> = if sort_lane_fan_out(self.dispatch, chunk_hint, initial_attempt) {
+            let dispatch = self.dispatch.expect("sort lane fan-out requires a lane dispatcher");
+            self.lane_stream_candidates(dispatch, inputs, keep_rows, initial_attempt)
+        } else {
+            let mut candidates = Vec::with_capacity(inputs.len());
+            while let Some(input) = inputs.next_yielded_frame(self.execution) {
+                let mut input = match input {
+                    Ok(input) => input,
+                    Err(error) => {
+                        inputs.release_remaining_frames();
+                        return Err(error);
+                    },
+                };
+                let input = input.take_for_release();
+                match self.topk_stream_frame_candidate_attempt(input, keep_rows, initial_attempt) {
+                    Ok(candidate) => candidates.push(candidate),
+                    Err(error) => {
+                        inputs.release_remaining_frames();
+                        return Err(error);
+                    },
+                }
             }
-        }
+            Ok(candidates)
+        };
+        let mut candidates = match initial {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                inputs.release_remaining_frames();
+                return Err(final_sort_retry_facts(
+                    "hierarchical_topk_stream_initial_failed",
+                    self.execution.metrics(),
+                )
+                .attach_to_error(error));
+            },
+        };
 
         if candidates.is_empty() {
             return Err(QueryError::new(

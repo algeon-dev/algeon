@@ -8,6 +8,7 @@ pub mod clickbench_benchmark;
 pub mod query_service_goodput;
 pub mod report_metadata;
 pub mod report_workload;
+pub mod sort_lane_sweep;
 pub mod tpcds_three_way_bench;
 pub mod tpch_benchmark;
 

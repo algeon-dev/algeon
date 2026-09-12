@@ -20,10 +20,11 @@ pub use executor::CompiledGpuTaskExecutor;
 #[cfg(test)]
 pub(crate) use frame_stream::YieldedFrameCounterTestHarness;
 pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
-use lanes::run_resident_aggregate_chunks;
+use lanes::run_resident_lane_borrow;
 #[doc(hidden)]
 pub use lanes::{
-    LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline, run_lane_dispatched,
+    LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline,
+    run_lane_dispatched,
 };
 pub use resource::CompiledGpuResource;
 pub use scheduler::{CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput};
@@ -59,10 +60,11 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     )?;
     metrics.record_compiled_pipeline_attempt();
     let lane_support = lane_dispatch_support(context, plan, pipeline, gpu_inputs, metrics);
-    let (completed_task_count, output, host_sink) = if let Some(support) =
-        lane_support.as_ref().filter(|_| is_resident_aggregate_lane_pipeline(pipeline))
+    let (completed_task_count, output, host_sink) = if let Some(support) = lane_support
+        .as_ref()
+        .filter(|_| is_resident_aggregate_lane_pipeline(pipeline) || is_resident_sort_lane_pipeline(pipeline))
     {
-        let (completed, output) = run_resident_aggregate_chunks(&scheduler, observation_scope, support)?;
+        let (completed, output) = run_resident_lane_borrow(&scheduler, observation_scope, support)?;
         (completed, QueryOutput::GpuResident(output), false)
     } else {
         let mut executor = CompiledGpuTaskExecutor::new(context, plan, pipeline, gpu_inputs, metrics)?;
@@ -99,7 +101,10 @@ fn lane_dispatch_support(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
 ) -> Option<LaneDispatchSupport> {
-    if !is_lane_family_pipeline(pipeline) && !is_resident_aggregate_lane_pipeline(pipeline) {
+    if !is_lane_family_pipeline(pipeline)
+        && !is_resident_aggregate_lane_pipeline(pipeline)
+        && !is_resident_sort_lane_pipeline(pipeline)
+    {
         return None;
     }
     let route = context.attempt_stream_provider_route()?;

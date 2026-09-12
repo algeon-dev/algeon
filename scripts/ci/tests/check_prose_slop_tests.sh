@@ -98,6 +98,54 @@ if ! "${CHECK_SCRIPT}" --exclude "excluded" "${scratch}/excluded_slop.md" >/dev/
   fail "--exclude option failed to skip matching file"
 fi
 
+# 6. Valid YAML front matter passes.
+cat <<'EOF' >"${scratch}/valid_frontmatter.md"
+---
+sidebar_position: 1
+description: "A valid description: with a quoted colon"
+---
+# Content
+Document content without slop.
+EOF
+
+if ! "${CHECK_SCRIPT}" "${scratch}/valid_frontmatter.md" >/dev/null 2>&1; then
+  fail "valid front matter unexpectedly failed check"
+fi
+
+# 7. Invalid YAML front matter (unquoted colon) is detected.
+cat <<'EOF' >"${scratch}/invalid_frontmatter.md"
+---
+sidebar_position: 1
+description: An invalid description: with unquoted colon
+---
+# Content
+Document content.
+EOF
+
+if "${CHECK_SCRIPT}" "${scratch}/invalid_frontmatter.md" >/dev/null 2>&1; then
+  fail "invalid front matter was not detected"
+fi
+out=$("${CHECK_SCRIPT}" "${scratch}/invalid_frontmatter.md" 2>&1 || true)
+if ! echo "${out}" | grep -q "invalid front matter YAML"; then
+  fail "invalid front matter error message missing: ${out}"
+fi
+
+# 8. Unclosed front matter delimiter is detected.
+cat <<'EOF' >"${scratch}/unclosed_frontmatter.md"
+---
+sidebar_position: 1
+# Content
+Document content.
+EOF
+
+if "${CHECK_SCRIPT}" "${scratch}/unclosed_frontmatter.md" >/dev/null 2>&1; then
+  fail "unclosed front matter was not detected"
+fi
+out=$("${CHECK_SCRIPT}" "${scratch}/unclosed_frontmatter.md" 2>&1 || true)
+if ! echo "${out}" | grep -q "unclosed front matter delimiter"; then
+  fail "unclosed front matter error message missing: ${out}"
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "check_prose_slop_tests: ${failures} check(s) failed" >&2
   exit 1

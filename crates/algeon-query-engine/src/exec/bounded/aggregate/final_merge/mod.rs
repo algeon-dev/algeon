@@ -273,19 +273,25 @@ pub(super) fn apply_partitioned_final_merge_topk(
             .with_partition_index(partition_index)
             .with_input_rows(topk_stats.input_rows),
     );
-    let output =
-        match execute_final_sort_node_with_retry(execution, bounded.aggregate_id, &topk.sort, Some(topk.limit), input)
-            .map_err(|error| error.with_fact_if_absent("partitioned_final_merge_topk_partition", partition_index))
-        {
-            Ok(output) => {
-                stage_guard.finish(Some(output.frame.num_rows() as u64), None);
-                output
-            },
-            Err(error) => {
-                stage_guard.fail(&error);
-                return Err(error);
-            },
-        };
+    let output = match execute_final_sort_node_with_retry(
+        execution,
+        bounded.aggregate_id,
+        &topk.sort,
+        Some(topk.limit),
+        input,
+        None,
+    )
+    .map_err(|error| error.with_fact_if_absent("partitioned_final_merge_topk_partition", partition_index))
+    {
+        Ok(output) => {
+            stage_guard.finish(Some(output.frame.num_rows() as u64), None);
+            output
+        },
+        Err(error) => {
+            stage_guard.fail(&error);
+            return Err(error);
+        },
+    };
     topk_stats.output_rows = topk_stats.output_rows.saturating_add(output.frame.num_rows() as u64);
     let output_frame = output.frame;
     Ok(output_frame)
