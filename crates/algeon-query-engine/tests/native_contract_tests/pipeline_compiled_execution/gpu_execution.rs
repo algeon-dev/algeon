@@ -694,22 +694,25 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
 }
 
 #[test]
-fn execute_query_plan_uses_bounded_fallback_when_compiled_admission_is_absent() {
+fn execute_query_plan_routes_aggregate_sort_limit_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-compiled-fallback");
     let path = dir.join("input.parquet");
     let source_schema = write_source_unary_parquet(&path);
     let plan = aggregate_sort_limit_data_plan(&path, source_schema);
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("aggregate admission should not fail")
+        .expect("aggregate/sort/limit should use the compiled pipeline");
     let context = bounded_context(shared_runtime(runtime), &plan);
 
-    let result = execute_query_plan(&context, &plan).expect("unsupported compiled graph should use bounded fallback");
+    let result = execute_query_plan(&context, &plan).expect("compiled aggregate/sort/limit should execute");
     let batch = result.output().as_host_arrow().expect("host sink should return host Arrow");
     let metrics = result.metrics();
 
     assert_eq!(batch.num_rows(), 4);
-    assert_eq!(metrics.compiled_pipeline_attempts, 0);
-    assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
-    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 0);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, admission.pipeline().tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
 }
 
 #[test]

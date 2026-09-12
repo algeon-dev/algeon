@@ -169,7 +169,7 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
             assert_eq!(event.boundary, "chunk_operator");
         },
         "query_engine.global_aggregate.null_output" => {
-            assert!(matches!(event.boundary.as_str(), "chunk_operator" | "final_aggregate_merge"));
+            assert!(matches!(event.boundary.as_str(), "chunk_operator" | "final_aggregate_merge"), "{event:?}");
         },
         "query_engine.final_sort.prepare" => {
             assert_eq!(event.boundary, "final_sort");

@@ -27,7 +27,7 @@ use crate::{
     plan::{NodeId, QueryPlan},
     runtime::{
         ExecutionContext,
-        resident::{GpuResidentInputMap, GpuResultHandle},
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
 };
 
@@ -57,6 +57,7 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) execution: BoundedExecutionAttempt<'a>,
+    pub(super) aggregate_dispatch: Option<&'a super::lanes::AggregateLaneDispatch<'a>>,
     pub(super) plan: &'a QueryPlan,
     pub(super) pipeline: &'a CompiledPipeline,
     pub(super) gpu_inputs: GpuResidentInputMap,
@@ -83,6 +84,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let gpu_inputs = gpu_inputs.clone();
         Ok(Self {
             execution,
+            aggregate_dispatch: None,
             plan,
             pipeline,
             gpu_inputs,
@@ -133,6 +135,21 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         let ResidentGpuFrame { frame, .. } = *frame;
+        let frame = if self.aggregate_dispatch.is_some() {
+            // Lane leases remain live through this handoff; the resident result
+            // must not retain columns backed by a leased worker stream.
+            let root_runtime = self.execution.context().runtime()?;
+            let adopted = frame.frame().copy_into_runtime(&root_runtime).map_err(|error| {
+                cudf_query_error(
+                    "query_engine.compiled_gpu_sink.root_adoption",
+                    "failed to adopt aggregate output onto the root query runtime",
+                    error,
+                )
+            })?;
+            GpuDataFrame::try_new_with_source_residency(adopted, &frame)?
+        } else {
+            frame
+        };
         let output_bytes = frame.device_allocated_size_bytes()?;
         let resident_owner = self.execution.context().retain_resident_output_owner(output_bytes)?;
         let frame =

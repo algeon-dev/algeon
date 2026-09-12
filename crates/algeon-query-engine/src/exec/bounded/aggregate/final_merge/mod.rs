@@ -11,13 +11,14 @@ mod incremental;
 mod partitioned;
 
 pub(in crate::exec::bounded) use compiled::execute_compiled_bounded_final_aggregate_merge;
+pub(in crate::exec::bounded::aggregate) use compiled::{
+    execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial,
+};
 pub(in crate::exec::bounded::aggregate) use incremental::{
     CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge,
 };
-pub(in crate::exec::bounded) use partitioned::{
-    AlignedGroupKeyPartitionPartial, execute_aligned_group_key_partitioned_final_aggregate_merge,
-    execute_final_aggregate_merge,
-};
+pub(in crate::exec::bounded) use partitioned::execute_final_aggregate_merge;
+pub(in crate::exec::bounded::aggregate) use partitioned::execute_incremental_source_adjacent_final_aggregate_merge;
 
 pub(super) struct PartitionedFinalMergeTopK<'a> {
     sort: SortNode,

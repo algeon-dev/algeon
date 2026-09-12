@@ -285,6 +285,24 @@ impl GpuExecutorLease {
     {
         self.pool.submit_blocking(kind, observation, work)
     }
+
+    /// Submits blocking work and calls `completion` after its class slot is
+    /// reusable and its terminal outcome is available to join.
+    #[doc(hidden)]
+    pub fn submit_blocking_with_completion<F, T, C>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        work: F,
+        completion: C,
+    ) -> Result<PoolBlockingWork<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+        C: FnOnce() + Send + 'static,
+    {
+        self.pool.submit_blocking_with_completion(kind, observation, work, completion)
+    }
 }
 
 impl std::fmt::Debug for GpuExecutorLease {
@@ -315,6 +333,35 @@ impl<T> std::fmt::Debug for PoolBlockingWork<T> {
 enum BlockingWorkOutcome<T> {
     Completed(T),
     Panicked,
+}
+
+/// A submitted worker may be discarded by pool shutdown before its closure
+/// starts. Its completion notification still has to wake a coordinator that
+/// is waiting to join the submitted handle.
+struct BlockingCompletionNotify<C: FnOnce()> {
+    completion: Option<C>,
+}
+
+impl<C: FnOnce()> BlockingCompletionNotify<C> {
+    fn new(completion: C) -> Self {
+        Self { completion: Some(completion) }
+    }
+
+    fn notify(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            completion();
+        }
+    }
+}
+
+impl<C: FnOnce()> Drop for BlockingCompletionNotify<C> {
+    fn drop(&mut self) {
+        if self.completion.is_some() {
+            // Shutdown can drop queued work during unwind; a notification panic
+            // must not turn that cleanup into a second panic.
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| self.notify()));
+        }
+    }
 }
 
 impl<T> PoolBlockingWork<T> {
@@ -816,6 +863,40 @@ impl GpuExecutionPool {
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
+        self.submit_blocking_inner(kind, observation, work, || {})
+    }
+
+    /// Submits blocking work with a terminal notification, including panic.
+    /// The callback runs after the outcome can be joined and does not hold a
+    /// pool slot; a coordinator can use it to receive workers in finish order.
+    #[doc(hidden)]
+    pub fn submit_blocking_with_completion<F, T, C>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        work: F,
+        completion: C,
+    ) -> Result<PoolBlockingWork<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+        C: FnOnce() + Send + 'static,
+    {
+        self.submit_blocking_inner(kind, observation, work, completion)
+    }
+
+    fn submit_blocking_inner<F, T, C>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        work: F,
+        completion: C,
+    ) -> Result<PoolBlockingWork<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+        C: FnOnce() + Send + 'static,
+    {
         self.check_resource_epoch(RUN_OPERATION)?;
         let class = kind.job_class();
         let class_permit = self
@@ -843,7 +924,9 @@ impl GpuExecutionPool {
             if self.inner.submissions_closed.load(Ordering::Acquire) {
                 return Err(pool_closed_error(device_ordinal));
             }
+            let completion = BlockingCompletionNotify::new(completion);
             self.inner.handle.spawn_blocking(move || {
+                let mut completion = completion;
                 let _resource_epoch = resource_epoch;
                 let mut guard = guard;
                 let _scope = guard.activate();
@@ -865,6 +948,7 @@ impl GpuExecutionPool {
                 drop(_resource_epoch);
                 drop(guard);
                 let _ = sender.send(outcome);
+                completion.notify();
             });
         }
         Ok(PoolBlockingWork { receiver, job, device_ordinal, kind })

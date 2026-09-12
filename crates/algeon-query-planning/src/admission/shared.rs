@@ -91,7 +91,7 @@ fn capability_first_bounded_pipeline_admission_impl(
     // the compiled pipeline depends on the operator capabilities its pipeline
     // carries, never on which plan shape surrounds them. Plans outside the
     // migrated contract keep the previous behavior (`Ok(None)`; the caller
-    // falls back to the aggregate/generic executor).
+    // falls back to their existing executor).
     let analysis = plan.capability_analysis(ctx);
     if let Some(projection) = analysis.first_local_rejection_projection() {
         if plan.contains_join() || plan.contains_vector_algorithm() {
@@ -115,8 +115,8 @@ fn capability_first_bounded_pipeline_admission_impl(
     };
     let converged = !plan.contains_join() && !plan.contains_vector_algorithm();
     if converged && !pipeline_tasks_within_migrated_contract(&pipeline) {
-        // Aggregates, sorts, windows, and graph/vector-owned shapes stay on
-        // their existing paths until later phases migrate their contracts.
+        // Windows and graph/vector-owned shapes stay on their existing paths
+        // until their compiled contracts migrate.
         return Ok(None);
     }
     let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) || converged {

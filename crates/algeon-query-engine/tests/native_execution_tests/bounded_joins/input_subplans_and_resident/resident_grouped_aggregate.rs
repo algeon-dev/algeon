@@ -61,12 +61,7 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
     assert_eq!(join_metrics[1].join_type, "inner");
     assert!(join_metrics[1].residual_predicate);
     assert_eq!(join_metrics[1].output_rows, 2);
-    assert_budgeted_success_event_with_boundary(
-        metrics,
-        "query_engine.aggregate.execute_partial",
-        2,
-        "compiled_aggregate_partial_state_work",
-    );
+    assert_budgeted_success_event_with_boundary(metrics, "query_engine.aggregate.execute_partial", 2, "chunk_operator");
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

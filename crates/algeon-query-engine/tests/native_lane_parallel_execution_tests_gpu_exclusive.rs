@@ -1088,7 +1088,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     assert!(lane_context.is_attempt_work_lease_context(), "a lane context is a work-lease context");
 
     let outcome = query_engine::exec::execute_query_plan(&lane_context, QueryExecutionRequest::new(&plan));
-    let (result, _metrics, _observation) = outcome.into_parts();
+    let (result, metrics, _observation) = outcome.into_parts();
     let output = result.expect("a source read from a work lease completes inline instead of deadlocking");
     let QueryOutput::HostArrow(batch) = output else {
         panic!("host sink should materialize one RecordBatch");
@@ -1104,20 +1104,11 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
         .collect();
     assert_eq!(totals, expected, "every row of every chunk reaches the aggregate exactly once");
 
+    // Batched chunk work has one source read, so logical row-group coverage
+    // comes from the source facts rather than source-worker lifecycle events.
+    assert_eq!(metrics.source_chunks_attempted, ROW_GROUPS as u64);
+    assert_eq!(metrics.source_chunks_committed, ROW_GROUPS as u64);
     let snapshot = owner.live_snapshot().expect("observation remains live");
-    let source_read_chunks = snapshot
-        .events()
-        .iter()
-        .filter_map(|event| match &event.payload {
-            RuntimeObservationPayload::SourceRead(read) => Some((read.file_index, read.chunk_index)),
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        source_read_chunks.len(),
-        ROW_GROUPS,
-        "the aggregate must read every row group as its own scheduled chunk, saw {source_read_chunks:?}"
-    );
     let (_, source_worker_leases) = count_acquired_stream_leases(&snapshot);
     assert_eq!(
         source_worker_leases, 0,

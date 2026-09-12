@@ -116,6 +116,69 @@ struct BoundedJoinLeafSourceStreamDynamicFilterStage {
 }
 
 impl BoundedJoinLeafLocalParquetSourceStream {
+    /// Borrows the source-adjacent aggregate contract from this already
+    /// planned occurrence. Arbitrary unary chains and dynamic-filter routes
+    /// retain their stream interpreter when that contract cannot represent them.
+    pub(in crate::exec::bounded) fn aggregate_plan<'a>(
+        &'a self,
+        aggregate_id: NodeId,
+        aggregate: &'a crate::plan::AggregateNode,
+        input_schema: &'a arrow::datatypes::SchemaRef,
+        output_schema: &'a arrow::datatypes::SchemaRef,
+    ) -> Option<crate::exec::bounded::BoundedPlan<'a>> {
+        if !self.reader_dynamic_filters.is_empty() {
+            return None;
+        }
+        let mut pre_filter_projections = Vec::new();
+        let mut post_filter_projections = Vec::new();
+        let mut filter = None;
+        for stage in &self.stages {
+            match stage {
+                BoundedJoinLeafSourceStreamStage::Filter { node, dynamic_filter: None, .. } if filter.is_none() => {
+                    filter = Some(node);
+                },
+                BoundedJoinLeafSourceStreamStage::Filter { .. } => return None,
+                BoundedJoinLeafSourceStreamStage::Projection { node, .. } => {
+                    let stages =
+                        if filter.is_some() { &mut post_filter_projections } else { &mut pre_filter_projections };
+                    stages.push((node, node.output_schema()));
+                },
+            }
+        }
+        Some(crate::exec::bounded::BoundedPlan {
+            source_id: self.node_id,
+            source: &self.source,
+            pre_filter_projections,
+            filter,
+            post_filter_projections,
+            aggregate_id,
+            aggregate_input_schema: input_schema,
+            aggregate: (aggregate, output_schema),
+            post_aggregate_stages: Vec::new(),
+            sort: None,
+            post_sort_projections: Vec::new(),
+            limit: None,
+        })
+    }
+
+    pub(in crate::exec::bounded) fn chunks(&self) -> &[SourceChunk] {
+        &self.chunks
+    }
+
+    /// Executes one logical chunk, including source-owned split retries. The
+    /// consumer must keep outputs private until this call succeeds.
+    pub(in crate::exec::bounded) fn execute_chunk<F>(
+        &self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        chunk: SourceChunk,
+        consume: &mut F,
+    ) -> Result<u64>
+    where
+        F: FnMut(&SourceChunk, usize, ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
+    {
+        execute_uncommitted_source_chunk(execution, self, chunk, 1, consume)
+    }
+
     pub(in crate::exec::bounded) fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
@@ -158,7 +221,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         }
     }
 
-    fn has_stages(&self) -> bool {
+    pub(in crate::exec::bounded) fn has_stages(&self) -> bool {
         !self.stages.is_empty()
     }
 

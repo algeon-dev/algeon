@@ -78,6 +78,7 @@ struct BackendTestPolicy {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
+    source_work_per_attempt: usize,
     source_scheduler_policy: SourceSchedulerPolicy,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
 }
@@ -89,6 +90,7 @@ impl Default for BackendTestPolicy {
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,
             min_retry_chunk_row_groups: 1,
+            source_work_per_attempt: 1,
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
         }
@@ -113,6 +115,7 @@ impl BackendTestPolicy {
                 max_row_groups_per_chunk,
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
+                source_work_per_attempt: 1,
                 source_scheduler_policy: SourceSchedulerPolicy::default(),
                 statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             },
@@ -161,7 +164,12 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
             GpuBackendDeviceProfile::new(0)
                 .with_default_query_limit_bytes(NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES)
                 .with_max_active_attempts(1)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 1, 1)),
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
+                    4,
+                    policy.source_work_per_attempt,
+                    policy.source_work_per_attempt,
+                ))
+                .with_source_work_per_attempt(policy.source_work_per_attempt),
             GpuMemoryOwnership::WholeDeviceExclusive,
         );
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
@@ -277,6 +285,11 @@ fn backend_runtime_with_policy(policy: BackendTestPolicy) -> Arc<cudf::Runtime> 
 }
 
 impl BackendQueryContext {
+    fn with_source_work_per_attempt(mut self, source_work_per_attempt: usize) -> Self {
+        self.policy.source_work_per_attempt = source_work_per_attempt;
+        self
+    }
+
     fn runtime(&self) -> query_engine::error::Result<cudf::Runtime> {
         Ok(backend_runtime_with_policy(self.policy).as_ref().clone())
     }

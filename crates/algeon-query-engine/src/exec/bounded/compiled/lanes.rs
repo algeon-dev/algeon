@@ -7,6 +7,9 @@
 //! execution lanes: inline on the calling thread at width 1, on pool blocking
 //! workers at wider widths. Lanes never touch the coordinator state; owned
 //! outputs return to the coordinator, which commits them in claim order.
+//! An aggregate claim stays on the coordinator and expands its source into
+//! bounded chunk work on these same lanes; chunk completion order never
+//! changes its stable input or merge order.
 //!
 //! The sink boundary task always runs inline on the coordinator: it owns the
 //! pipeline's host/GPU boundary handoff, which has no overlap benefit.
@@ -39,9 +42,12 @@ use crate::{
     plan::QueryPlan,
     runtime::{
         AttemptStreamProviderRoute, AttemptWorkLease, ExecutionContext, GpuExecutionJobKind, PoolBlockingWork,
-        resident::GpuResidentInputMap,
+        resident::{GpuResidentInputMap, GpuResultHandle},
     },
 };
+
+mod chunks;
+pub(in crate::exec::bounded) use chunks::AggregateLaneDispatch;
 
 const OPERATION: &str = "query_engine.exec.bounded.compiled.lane";
 
@@ -53,16 +59,24 @@ const OPERATION: &str = "query_engine.exec.bounded.compiled.lane";
 /// admitted attempt's fork pool through
 /// [`AttemptStreamProviderRoute::lane_capacity`].
 ///
-/// A GPU-resident sink is excluded: its output frame is produced on the
-/// lane's leased stream and outlives the attempt through the resident owner,
-/// so it would keep that lane's stream lease charged to the query after the
-/// run. Widening lane dispatch to resident sinks needs the coordinator to
-/// adopt a lane output onto the attempt's root runtime, which is a frame
-/// provenance change, not a dispatch one.
+/// GPU-resident sinks keep the serial task scheduler. Only their aggregate's
+/// private source chunks may use lanes, and the sink adopts its frame onto
+/// the root runtime before those lanes are released.
 #[doc(hidden)]
 pub fn is_lane_family_pipeline(pipeline: &CompiledPipeline) -> bool {
     pipeline.sink().kind() == SinkBoundaryKind::HostArrowMaterialization
         && pipeline_tasks_within_migrated_contract(pipeline)
+}
+
+/// A resident pipeline may borrow lanes only inside aggregate source work;
+/// the compiled DAG and sink still execute on the root coordinator.
+#[doc(hidden)]
+pub fn is_resident_aggregate_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
+    pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput
+        && pipeline_tasks_within_migrated_contract(pipeline)
+        && pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Aggregate)
+        && pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::SourceRead)
+        && !pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::GpuResidentSource)
 }
 
 /// How many of `pipeline`'s tasks the dispatcher can ever have in flight at
@@ -105,11 +119,14 @@ pub struct LaneDispatchSupport {
     pub metrics: Arc<ExecutionMetrics>,
     #[cfg(any(test, feature = "test-hooks"))]
     lane_completion_gate: Option<LaneCompletionGate>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    aggregate_chunk_completion_gate: Option<AggregateChunkCompletionGate>,
 }
 
 impl LaneDispatchSupport {
-    /// Builds dispatch support at the narrower of the width the attempt's
-    /// fork pool backs and the width the pipeline graph can ever fill.
+    /// Builds dispatch support from the attempt's fork capacity. Materialized
+    /// task pipelines are additionally capped by their independent leaves;
+    /// aggregate tasks can expand one leaf into several chunk instances.
     pub fn new(
         route: Arc<AttemptStreamProviderRoute>,
         context: ExecutionContext,
@@ -118,7 +135,13 @@ impl LaneDispatchSupport {
         gpu_inputs: GpuResidentInputMap,
         metrics: ExecutionMetrics,
     ) -> Self {
-        let requested_lanes = route.lane_capacity().min(lane_family_concurrent_task_count(&pipeline));
+        // Aggregate tasks expand their deferred source into independently runnable
+        // chunks; unlike materialized tasks, their width is not the DAG leaf count.
+        let requested_lanes = if pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Aggregate) {
+            route.lane_capacity()
+        } else {
+            route.lane_capacity().min(lane_family_concurrent_task_count(&pipeline))
+        };
         Self {
             route,
             requested_lanes,
@@ -129,7 +152,17 @@ impl LaneDispatchSupport {
             metrics: Arc::new(metrics),
             #[cfg(any(test, feature = "test-hooks"))]
             lane_completion_gate: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            aggregate_chunk_completion_gate: None,
         }
+    }
+
+    /// Observes a completed but uncommitted aggregate chunk, with its stable
+    /// ordinal, lane index, and claimed fork. Width 1 invokes this inline.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn with_aggregate_chunk_completion_gate(mut self, gate: AggregateChunkCompletionGate) -> Self {
+        self.aggregate_chunk_completion_gate = Some(gate);
+        self
     }
 
     /// Overrides the dispatch width. Tests pin a width to exercise the inline
@@ -161,6 +194,10 @@ impl LaneDispatchSupport {
 #[cfg(any(test, feature = "test-hooks"))]
 pub type LaneCompletionGate = Arc<dyn Fn(usize, Option<usize>) + Send + Sync>;
 
+/// Aggregate chunk ordinal, lane index, and lane-local fork identity.
+#[cfg(any(test, feature = "test-hooks"))]
+pub type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<usize>) + Send + Sync>;
+
 /// One execution lane's attempt work lease, held for the whole dispatched run.
 ///
 /// The lease bundles the lane's attempt auxiliary permit, its service stream
@@ -186,10 +223,10 @@ impl LaneWorkLease {
     /// picks, so `requested_lanes` leases leave
     /// `lane_capacity() - requested_lanes` forks for the other permit holders
     /// whichever forks those holders already took.
-    fn acquire_for_run(support: &LaneDispatchSupport, requested_lanes: usize) -> Result<Vec<Self>> {
+    fn acquire_for_run(context: &ExecutionContext, requested_lanes: usize) -> Result<Vec<Self>> {
         let mut leases = Vec::with_capacity(requested_lanes);
         for lane in 0..requested_lanes {
-            let acquired = support.context.try_acquire_attempt_work_lease().map_err(|error| {
+            let acquired = context.try_acquire_attempt_work_lease().map_err(|error| {
                 error.with_fact("execution_lane", lane).with_fact("execution_lane_count", requested_lanes)
             })?;
             match acquired {
@@ -199,6 +236,41 @@ impl LaneWorkLease {
         }
         Ok(leases)
     }
+}
+
+/// Keep lane leases through the resident sink handoff so any lane-backed
+/// columns can be copied to the root runtime while their producer streams
+/// are still alive.
+pub(super) fn run_resident_aggregate_chunks(
+    scheduler: &CompiledPipelineScheduler,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
+    support: &LaneDispatchSupport,
+) -> Result<(usize, GpuResultHandle)> {
+    let requested_lanes = support.requested_lanes.min(support.route.lane_capacity());
+    let mut lanes = if requested_lanes > 1 {
+        LaneWorkLease::acquire_for_run(&support.context, requested_lanes)?
+    } else {
+        Vec::new()
+    };
+    if lanes.len() < 2 {
+        lanes.clear();
+    }
+    let dispatch = AggregateLaneDispatch::new(support, &lanes, observation_scope);
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &support.context,
+        &support.plan,
+        &support.pipeline,
+        &support.gpu_inputs,
+        &support.metrics,
+    )?;
+    executor.aggregate_dispatch = Some(&dispatch);
+    let mut state = match observation_scope {
+        Some(scope) => scheduler.run_observed(&mut executor, scope)?,
+        None => scheduler.run(&mut executor)?,
+    };
+    let completed_task_count = state.completed_task_count();
+    let output = executor.take_gpu_output(&mut state)?;
+    Ok((completed_task_count, output))
 }
 
 type PanicPayload = Box<dyn Any + Send + 'static>;
@@ -245,8 +317,11 @@ pub fn run_lane_dispatched(
     // and root stream, so it needs no lease; wider widths hold one attempt
     // work lease per lane for the whole run. Fewer than two obtainable leases
     // fall back to that inline arm rather than waiting for a permit.
-    let mut lane_leases =
-        if requested_lanes > 1 { LaneWorkLease::acquire_for_run(support, requested_lanes)? } else { Vec::new() };
+    let mut lane_leases = if requested_lanes > 1 {
+        LaneWorkLease::acquire_for_run(&support.context, requested_lanes)?
+    } else {
+        Vec::new()
+    };
     let width = if lane_leases.len() > 1 { lane_leases.len() } else { 1 };
     if width == 1 {
         // A single obtained lease is unusable for the inline arm: release its
@@ -567,8 +642,16 @@ fn run_lane_claims(
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Vec<LaneJobCompletion>> {
     debug_assert!(claims.len() <= width);
-    if width <= 1 {
-        return Ok(claims.iter_mut().map(|claim| run_lane_claim_inline(support, claim)).collect());
+    if width <= 1 || claims.iter().any(|claim| claim.task.kind() == PipelineTaskKind::Aggregate) {
+        let dispatch = AggregateLaneDispatch::new(support, lane_leases, observation_scope);
+        return Ok(claims
+            .iter_mut()
+            .map(|claim| {
+                // A symbolic aggregate coordinates its chunk instances. It cannot
+                // occupy a pool worker while waiting for those same workers.
+                run_lane_claim_inline(support, claim, Some(&dispatch))
+            })
+            .collect());
     }
     debug_assert_eq!(lane_leases.len(), width, "a wider run holds one work lease per lane");
     let pool = match support.context.gpu_executor() {
@@ -660,7 +743,11 @@ fn run_lane_claims(
 
 /// Runs one claim on the coordinator's own context and root stream. Width 1
 /// runs on the route's reserved root fork, so it needs no work lease.
-fn run_lane_claim_inline(support: &LaneDispatchSupport, claim: &mut LaneClaim) -> LaneJobCompletion {
+fn run_lane_claim_inline(
+    support: &LaneDispatchSupport,
+    claim: &mut LaneClaim,
+    dispatch: Option<&AggregateLaneDispatch<'_>>,
+) -> LaneJobCompletion {
     const LANE: usize = 0;
     let task_id = claim.task.id();
     match CompiledGpuTaskExecutor::new(
@@ -670,7 +757,8 @@ fn run_lane_claim_inline(support: &LaneDispatchSupport, claim: &mut LaneClaim) -
         &support.gpu_inputs,
         &support.metrics,
     ) {
-        Ok(lane_executor) => {
+        Ok(mut lane_executor) => {
+            lane_executor.aggregate_dispatch = dispatch;
             let completion = LaneTaskRunner { executor: lane_executor, scratch: Some(claim.take_scratch()) }
                 .run_lane_task(LANE, &claim.task);
             #[cfg(any(test, feature = "test-hooks"))]

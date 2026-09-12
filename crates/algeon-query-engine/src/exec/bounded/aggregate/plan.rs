@@ -31,6 +31,14 @@ pub(in crate::exec::bounded) struct BoundedPlan<'a> {
     pub(in crate::exec::bounded) limit: Option<(NodeId, &'a LimitNode)>,
 }
 
+/// A single-consumer aggregate output path whose compiled sort contract
+/// permits partition-local pruning before the global top-k task.
+pub(in crate::exec::bounded) struct SourceAggregateTopK<'a> {
+    pub post_aggregate_stages: Vec<BoundedUnaryStage<'a>>,
+    pub sort: &'a SortNode,
+    pub limit: (NodeId, &'a LimitNode),
+}
+
 fn take_projection_stack<'a>(
     plan: &'a QueryPlan,
     current: &mut NodeId,

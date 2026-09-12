@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 mod executor;
 mod frame_stream;
 mod helpers;
-mod lanes;
+pub(in crate::exec::bounded) mod lanes;
 mod resource;
 mod scheduler;
 mod state;
@@ -20,8 +20,11 @@ pub use executor::CompiledGpuTaskExecutor;
 #[cfg(test)]
 pub(crate) use frame_stream::YieldedFrameCounterTestHarness;
 pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
+use lanes::run_resident_aggregate_chunks;
 #[doc(hidden)]
-pub use lanes::{LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched};
+pub use lanes::{
+    LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline, run_lane_dispatched,
+};
 pub use resource::CompiledGpuResource;
 pub use scheduler::{CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput};
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
@@ -55,11 +58,16 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
         prioritized_join_build_tasks(plan, pipeline),
     )?;
     metrics.record_compiled_pipeline_attempt();
-    let (completed_task_count, output, host_sink) = {
+    let lane_support = lane_dispatch_support(context, plan, pipeline, gpu_inputs, metrics);
+    let (completed_task_count, output, host_sink) = if let Some(support) =
+        lane_support.as_ref().filter(|_| is_resident_aggregate_lane_pipeline(pipeline))
+    {
+        let (completed, output) = run_resident_aggregate_chunks(&scheduler, observation_scope, support)?;
+        (completed, QueryOutput::GpuResident(output), false)
+    } else {
         let mut executor = CompiledGpuTaskExecutor::new(context, plan, pipeline, gpu_inputs, metrics)?;
         // Fork scarcity shrinks the assignment inside the dispatcher; route
         // registration already guarantees a non-empty fork pool.
-        let lane_support = lane_dispatch_support(context, plan, pipeline, gpu_inputs, metrics);
         let mut state = match lane_support {
             Some(support) => run_lane_dispatched(&scheduler, &mut executor, observation_scope, &support)?,
             None => match observation_scope {
@@ -81,7 +89,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     Ok(output)
 }
 
-/// Lane dispatch support for union-family pipelines admitted with a
+/// Lane dispatch support for eligible pipelines admitted with a
 /// fork-stream route. Returns `None` for pipelines that keep the serial
 /// scheduler path and for contexts without a route.
 fn lane_dispatch_support(
@@ -91,7 +99,7 @@ fn lane_dispatch_support(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
 ) -> Option<LaneDispatchSupport> {
-    if !is_lane_family_pipeline(pipeline) {
+    if !is_lane_family_pipeline(pipeline) && !is_resident_aggregate_lane_pipeline(pipeline) {
         return None;
     }
     let route = context.attempt_stream_provider_route()?;

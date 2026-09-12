@@ -4,11 +4,6 @@ pub(in crate::exec::bounded) fn is_retryable_chunk_error(error: &QueryError) -> 
     crate::exec::retry::is_retryable_resource_error(error)
 }
 
-pub(in crate::exec::bounded::chunks) fn is_prefetch_chunk_error(error: &QueryError) -> bool {
-    error.fact_value("budget_boundary") == Some("source_chunk_prefetch")
-        || error.fact_value("memory_boundary") == Some("source_chunk_prefetch")
-}
-
 pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }

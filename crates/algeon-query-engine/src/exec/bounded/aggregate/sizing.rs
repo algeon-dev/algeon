@@ -26,8 +26,7 @@ use super::{
     AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BoundedExecutionAttempt, Expr,
     Field, GpuDataFrame, PartialAggregateShape, QueryError, QueryErrorCode, Result, avg_sum_state_data_type,
     cudf_query_error, execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr,
-    lower_named_column_expr, lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes,
-    partial_global_aggregate_output_schema,
+    lower_named_column_expr, partial_aggregate_upper_bound_bytes, partial_global_aggregate_output_schema,
 };
 use crate::materialization_sizing::JoinOutputColumnUpperBoundInput;
 
@@ -178,8 +177,9 @@ fn grouped_partial_aggregate_upper_bound_columns(
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
 ) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
-    let lowered = lower_partial_aggregate_spec(spec)?;
-    let mut columns = Vec::with_capacity(lowered.output_names.len());
+    // State sizing reads output types; input expressions are materialized by
+    // the operator owner before kernel lowering (including COUNT literals).
+    let mut columns = Vec::with_capacity(spec.group_exprs.len() + spec.aggr_exprs.len().saturating_mul(2));
 
     for expr in &spec.group_exprs {
         let (input_column, output_name) =
@@ -211,10 +211,9 @@ fn grouped_partial_aggregate_upper_bound_columns(
         columns.push(fixed_partial_column(field));
     }
 
-    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+    for expr in &spec.aggr_exprs {
         match expr.function {
             AggregateFunction::Avg => {
-                let state = AvgStateAliases::for_aggregate_index(index);
                 let input_type = aggregate_input_data_type(&expr.expr, input_schema)?;
                 let output_field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
                     QueryError::new(
@@ -235,8 +234,6 @@ fn grouped_partial_aggregate_upper_bound_columns(
                     input_max_string_length_bytes: None,
                     input_total_string_bytes: None,
                 });
-                debug_assert!(lowered.output_names.iter().any(|name| name == state.sum()));
-                debug_assert!(lowered.output_names.iter().any(|name| name == state.count()));
             },
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 let field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
