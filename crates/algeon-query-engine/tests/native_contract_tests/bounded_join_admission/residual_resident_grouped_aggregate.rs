@@ -6,7 +6,7 @@ use super::*;
 fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability_evidence_stays_narrow() {
     // S3 admits multi-join aggregate pipelines through the compiled task
     // contracts, so these variants are executable now; what stays narrow is
-    // the mixed keyed/residual envelope itself — none of them matches it.
+    // the mixed keyed/residual envelope itself; none of them matches it.
     for variant in [
         ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
         ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,

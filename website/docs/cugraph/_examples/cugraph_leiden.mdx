@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_leiden. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_leiden. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -53,7 +53,7 @@ Louvain's 10,684-paper computer-vision community shatters into eight Leiden
 communities of 50+ members; overall the same graph yields 1,960 Louvain
 communities versus 2,670 for Leiden. When a Louvain community is only held
 together by a few incidental citations, Leiden's refinement phase is what
-separates it — the guarantee that every returned community is internally
+separates it: the guarantee that every returned community is internally
 connected is the reason to prefer Leiden as the default. Both runs are
 deterministic here (`seed` defaults to 0), which is why the community ids in
 this table are stable across sessions.

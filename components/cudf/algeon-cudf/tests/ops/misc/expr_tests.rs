@@ -799,7 +799,7 @@ fn with_columns_named_pair_overrides_inherited_output_name() {
 
 fn with_columns_no_alias_errors() {
     let df = xy_df();
-    // (col + lit) has no alias and is not a bare col() — should error.
+    // (col + lit) has no alias and is not a bare col(); should error.
     let err = df.with_columns([col("x") + lit(1i32)]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);

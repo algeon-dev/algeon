@@ -21,7 +21,7 @@ Every example is assembled from the same three pieces:
    builder and shared by everything installed from it.
 2. **Sessions installed from that backend.** `backend.install_on(...)` wires
    the native optimizer into a DataFusion `SessionStateBuilder`. Many sessions
-   — and therefore many frontends — share one backend and one admission
+  ; and therefore many frontends; share one backend and one admission
    ledger.
 3. **An attempt per query.** Every query execution is an explicit attempt:
    begin it before planning, consume the result stream, then await the
@@ -46,7 +46,7 @@ A common point of confusion: `embedded_backend` does **not** call
 `begin_attempt`. Its admission is plan-scoped (REST path) or ticket-scoped
 (Flight path), driven by the installed optimizer rule and the Flight server
 under the hood. `attempt_lifecycle` is the example that drives the attempt API
-directly — read it to understand the contract those frameworks manage for you.
+directly; read it to understand the contract those frameworks manage for you.
 
 ## `attempt_lifecycle`: the per-query contract
 
@@ -80,7 +80,7 @@ cargo run -p examples --all-features --bin attempt_lifecycle
 
 Requires one CUDA device; exits with a clear message when none is present. Set
 `ALGEON_ATTEMPT_LIFECYCLE_PROFILING_ROWS` (default 1,000,000) for an
-Nsight-sized input — the binary doubles as a public-API profiling probe for
+Nsight-sized input; the binary doubles as a public-API profiling probe for
 the native concurrent path.
 
 The executable contract behind this example lives in
@@ -332,10 +332,10 @@ that ordinary embeddings do not need.
 
 The ownership split is the point of the example:
 
-- **The engine owns measurement** — labels, units, bucket conversion, and
-  aggregation semantics — and exposes one coherent `BackendMetricsSnapshot`
+- **The engine owns measurement**: labels, units, bucket conversion, and
+  aggregation semantics; and exposes one coherent `BackendMetricsSnapshot`
   per backend generation.
-- **Your application owns the OpenTelemetry SDK** — the meter provider, export
+- **Your application owns the OpenTelemetry SDK**: the meter provider, export
   schedule, resource attributes, and endpoint policy.
 
 The pattern: construct your SDK meter/provider, pass the meter and a
@@ -354,15 +354,15 @@ No CUDA device is required for this one.
 
 ## Where to go next
 
-- [Integrating Algeon](https://algeon.dev/integration) — choosing between
+- [Integrating Algeon](https://algeon.dev/integration): choosing between
   a DataFusion session, this embedded example, and the Flight SQL server.
-- [DataFusion Session](https://algeon.dev/integration/datafusion-session) —
+- [DataFusion Session](https://algeon.dev/integration/datafusion-session);
   backend builder, admission configuration, and final-plan requirements.
-- [Flight SQL Server](https://algeon.dev/integration/flight-sql-server) —
+- [Flight SQL Server](https://algeon.dev/integration/flight-sql-server);
   the server environment contract `embedded_backend` consumes.
-- [Configuration](https://algeon.dev/integration/configuration) — the
+- [Configuration](https://algeon.dev/integration/configuration): the
   full environment-variable reference.
-- [GPU Coverage Validation](https://algeon.dev/integration/gpu-coverage-validation) —
+- [GPU Coverage Validation](https://algeon.dev/integration/gpu-coverage-validation);
   `algeon_explain_coverage` / `EXPLAIN GPU` before shipping a query.
-- [Handling Errors](https://algeon.dev/integration/handling-errors) —
+- [Handling Errors](https://algeon.dev/integration/handling-errors);
   typed errors at your application boundary.

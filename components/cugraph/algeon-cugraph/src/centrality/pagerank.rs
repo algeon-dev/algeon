@@ -383,7 +383,7 @@ mod tests {
         let vertices: Vec<i32> = vertices_view.to_vec_i32(&handle).expect("vert copy");
         let values: Vec<f32> = values_view.to_vec_f32(&handle).expect("val copy");
 
-        // Find the PageRank of vertex 0 (hub) — should be highest
+        // Find the PageRank of vertex 0 (hub); should be highest
         let hub_idx = vertices.iter().position(|&v| v == 0).expect("hub vertex");
         let hub_rank = values[hub_idx];
 

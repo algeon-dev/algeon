@@ -25,7 +25,7 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
 }
 
 // ---------------------------------------------------------------------------
-// GroupBy::agg with AggSpec — basic aggregations
+// GroupBy::agg with AggSpec; basic aggregations
 // ---------------------------------------------------------------------------
 
 fn groupby_sum() {
@@ -342,7 +342,7 @@ fn groupby_with_options_include_null_keys() {
 }
 
 // ===========================================================================
-// Expanded GroupByAgg enum — Median, NUnique, Std, Variance
+// Expanded GroupByAgg enum; Median, NUnique, Std, Variance
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -571,7 +571,7 @@ fn groupby_var_shortcut() {
 }
 
 // ---------------------------------------------------------------------------
-// Extended naming — all GroupByAgg variants in a single groupby
+// Extended naming; all GroupByAgg variants in a single groupby
 // ---------------------------------------------------------------------------
 
 fn groupby_all_agg_variants_naming() {

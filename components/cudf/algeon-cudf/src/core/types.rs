@@ -139,7 +139,7 @@ impl TypeId {
 
     /// Returns `true` if this is a fixed-width numeric type (integers and floats).
     ///
-    /// `Bool8` is **not** considered numeric — use [`is_boolean`](Self::is_boolean)
+    /// `Bool8` is **not** considered numeric; use [`is_boolean`](Self::is_boolean)
     /// instead, or combine with `|| is_boolean()` when both are acceptable.
     pub fn is_numeric(self) -> bool {
         matches!(

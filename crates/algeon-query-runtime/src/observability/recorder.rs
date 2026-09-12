@@ -532,7 +532,7 @@ struct RuntimeObservationRecorderState {
     // Metrics reduction shares this lock with retention and loss accounting,
     // so one revision always describes totals, retained rows, and completeness
     // together. It is partitioned by plan execution because one query can run
-    // several, and each execution's projection must carry only its own facts —
+    // several, and each execution's projection must carry only its own facts;
     // a consumer that sums projections must not count a fact twice.
     metrics: BTreeMap<PlanExecutionId, PlanExecutionMetrics>,
     metrics_revision: u64,
@@ -580,8 +580,8 @@ pub struct BudgetWindow(u64);
 
 /// Growing detail families and the loss class each is retained under.
 ///
-/// Families bounded by plan topology — graph calibration rows, which a later
-/// measurement updates in place, task mappings, and the keyed task summaries —
+/// Families bounded by plan topology; graph calibration rows, which a later
+/// measurement updates in place, task mappings, and the keyed task summaries;
 /// are not listed: they cannot grow with data, and retaining them in full keeps
 /// in-place updates correct.
 fn detail_lengths(metrics: &QueryMetrics) -> [usize; 5] {
@@ -935,7 +935,7 @@ impl RuntimeObservationHandle {
 
     /// Offers one source-read detail row for bounded retention.
     ///
-    /// Rows never feed totals — record the matching [`SourceReadFact`]s for
+    /// Rows never feed totals; record the matching [`SourceReadFact`]s for
     /// those. With trace capture disabled the row is intentionally not kept;
     /// otherwise it is retained under the recorder's record and byte limits,
     /// which are shared by the whole query, and a declined row is counted as a

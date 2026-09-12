@@ -4,7 +4,7 @@
 //! into the compact rows defined here; everything below the row structs is a
 //! pure reduction over them, so utilization balance and drift evidence are
 //! unit-testable without CUDA. The rows deliberately mirror fields the
-//! artifact already retains in the raw snapshot samples — this is a compact
+//! artifact already retains in the raw snapshot samples; this is a compact
 //! queryable projection of the same observation, never a second event store.
 //!
 //! Only the measured run samples, so the CPU-only feature reaches these

@@ -90,7 +90,7 @@ impl DataFrame {
     /// columns.
     ///
     /// # Cost
-    /// Unchanged columns are shared via `Arc::clone` — no GPU copy.
+    /// Unchanged columns are shared via `Arc::clone`; no GPU copy.
     ///
     /// # Errors
     /// Returns an error if the new column's row count does not match the
@@ -146,7 +146,7 @@ impl DataFrame {
     /// # Duplicate name handling
     ///
     /// If the same output name appears more than once in `pairs`, the **last
-    /// value wins** — earlier entries for that name are silently overwritten.
+    /// value wins**; earlier entries for that name are silently overwritten.
     /// This matches the semantics of Python's `DataFrame.assign(**kwargs)` and
     /// is intentional: `assign` is a batch "set these columns" operation, not a
     /// schema-definition operation. Methods that define schema shape
@@ -207,8 +207,8 @@ impl DataFrame {
     /// use [`with_column`](Self::with_column) (single) or
     /// [`assign`](Self::assign) (batch).
     ///
-    /// All expressions are evaluated against the **original** state of `self`
-    /// — not an incrementally mutated copy. This ensures that expressions can
+    /// All expressions are evaluated against the **original** state of `self`,
+    /// not an incrementally mutated copy. This ensures that expressions can
     /// reference columns that other expressions will overwrite, and the order
     /// of evaluation does not matter.
     ///

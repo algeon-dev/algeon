@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_k_core. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_k_core. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -40,7 +40,7 @@ edges). Note also that this per-direction floor is a stricter condition than
 ### Chain it into the next algorithm
 
 The materialized backbone is itself a valid edge relation, so it can feed
-another `cugraph_*` call — a two-stage GPU pipeline connected through a local
+another `cugraph_*` call, forming a two-stage GPU pipeline connected through a local
 workspace table name:
 
 ```sql

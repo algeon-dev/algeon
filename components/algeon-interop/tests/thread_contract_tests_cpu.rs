@@ -34,7 +34,7 @@ assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
 assert_not_impl_any!(BorrowedColumnView<'static>: Send, Sync);
 assert_not_impl_any!(BorrowedTableView<'static>: Send, Sync);
 
-/// Sentinel address for contract tests — never dereferenced, only used to
+/// Sentinel address for contract tests; never dereferenced, only used to
 /// satisfy non-null validation in `BoundBytes` / `CudaStreamHandle` constructors.
 fn fake_ptr(addr: usize) -> *const core::ffi::c_void {
     addr as *const core::ffi::c_void

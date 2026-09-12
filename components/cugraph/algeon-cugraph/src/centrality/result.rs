@@ -180,8 +180,8 @@ impl PageRankResult {
     /// Convert this PageRank result to a cudf DataFrame.
     ///
     /// Returns a 2-column DataFrame:
-    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
-    /// - `"value"` — PageRank values with the underlying result dtype (`Float32` or `Float64`)
+    /// - `"vertex"`: vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"value"`: PageRank values with the underlying result dtype (`Float32` or `Float64`)
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
@@ -590,8 +590,8 @@ impl BetweennessCentralityResult {
     /// Convert this betweenness centrality result to a cudf DataFrame.
     ///
     /// Returns a 2-column DataFrame:
-    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
-    /// - `"value"` — betweenness centrality values with the underlying result
+    /// - `"vertex"`: vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"value"`: betweenness centrality values with the underlying result
     ///   dtype (`Float32` or `Float64`)
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns

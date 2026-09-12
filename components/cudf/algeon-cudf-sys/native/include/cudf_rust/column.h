@@ -315,7 +315,7 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
 /// For STRING columns the data pointer is NULL. Use child column views
 /// for offsets and a string-specific chars helper for the character buffer.
 ///
-/// The offset of the column view is NOT applied — the pointer is to the
+/// The offset of the column view is NOT applied; the pointer is to the
 /// base of the device buffer. Callers working with sliced views must add
 /// `offset * element_size` manually.
 cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, void const** out);

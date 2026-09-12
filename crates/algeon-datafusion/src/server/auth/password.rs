@@ -61,7 +61,7 @@ pub fn verify_password(password: &str, phc_string: &str) -> Result<bool, Passwor
 }
 
 /// Hash a plaintext password with Argon2id and the library defaults
-/// (m=19456, t=2, p=1 — current OWASP recommendation as of mid-2024).
+/// (m=19456, t=2, p=1; current OWASP recommendation as of mid-2024).
 ///
 /// Operators run this once per user when authoring the TOML config and
 /// paste the returned PHC string into `password_hash`.

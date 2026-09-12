@@ -118,7 +118,7 @@ mod sealed {
 
 /// Trait mapping Rust element types to their exact [`DataType`] equivalent.
 ///
-/// This trait is sealed — it cannot be implemented outside this crate. Only the
+/// This trait is sealed; it cannot be implemented outside this crate. Only the
 /// standard numeric types that have a direct cuGraph representation are supported.
 ///
 /// Use this trait as a bound on generic functions that need to convert between

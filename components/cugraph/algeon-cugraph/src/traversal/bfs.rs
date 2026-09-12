@@ -412,10 +412,10 @@ impl BfsResult {
     /// Convert this BFS result to a cudf DataFrame.
     ///
     /// Returns a DataFrame with columns:
-    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
-    /// - `"distance"` — BFS distances with the underlying result dtype;
+    /// - `"vertex"`: vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"distance"`: BFS distances with the underlying result dtype;
     ///   unreachable vertices use that integer dtype's max sentinel value
-    /// - `"predecessor"` — predecessor vertex ids with the underlying result
+    /// - `"predecessor"`: predecessor vertex ids with the underlying result
     ///   dtype, only if predecessors were computed; the column is omitted
     ///   otherwise
     ///

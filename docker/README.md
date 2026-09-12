@@ -7,7 +7,7 @@ SQL on `:50051`.
 
 ## Why this image is unusual
 
-algeon-datafusion links **forked, locally built** RAPIDS C++ libraries — a
+algeon-datafusion links **forked, locally built** RAPIDS C++ libraries; a
 modified cuDF, cuGraph, RMM and cuVS. The `.so` files in the public
 `rapidsai/*` and `nvidia/cuda` images are the *stock* upstream builds and are
 **ABI-incompatible** with this binary. So the image cannot install RAPIDS from a
@@ -47,7 +47,7 @@ payload includes `payload-manifest.json` with relative paths, file hashes, and t
 artifact-affecting policy fingerprint. `SKIP_CARGO_BUILD=1` succeeds only when
 the build record and canonical artifact still match the selected policy.
 
-Prerequisites: the forked libs must already be built —
+Prerequisites: the forked libs must already be built;
 `target/native/cudf-install/lib/libcudf.so`,
 `target/native/cuvs-install/lib/libcuvs.so`, and (for cugraph)
 `target/native/cugraph-install/lib/libcugraph.so`. Set `ALGEON_NATIVE_DIR` when
@@ -73,7 +73,7 @@ allocator enforces the query's memory cap.
 
 ## Image size
 
-The cuGraph feature is the dominant cost — it roughly **triples** the image,
+The cuGraph feature is the dominant cost; it roughly **triples** the image,
 mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
 
 | Build | Forked libs | Harvested CUDA | ≈ Final image |
@@ -90,9 +90,9 @@ debugging.
 GPU kernels are baked into the forked libs as fatbins. **Coverage differs by
 library** because of how each fork was compiled:
 
-- **cuDF** — `libcudf.so` ships cubins for **sm_75, 80, 86, 89, 90, 100, 110,
+- **cuDF**: `libcudf.so` ships cubins for **sm_75, 80, 86, 89, 90, 100, 110,
   120** plus PTX. Portable across Turing → Blackwell, and JIT-able beyond.
-- **cuGraph / cuVS** — currently built for **sm_120 (Blackwell) ONLY**, no PTX.
+- **cuGraph / cuVS**: currently built for **sm_120 (Blackwell) ONLY**, no PTX.
   **cuGraph queries will fail on any non-Blackwell GPU.** This is a build-time
   setting in `cugraph` (`CMAKE_CUDA_ARCHITECTURES`), not something the
   Dockerfile can fix. To make the cuGraph image portable, rebuild the forked

@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_pagerank. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_pagerank. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx)
 (4.9M papers, 45.6M `src`-cites-`dst` edges).
@@ -28,8 +28,8 @@ LIMIT 5;
 
 In this run the first and third papers have modest raw counts (1,401 and 224
 citations), but the papers citing them are themselves foundational results,
-and PageRank propagates that structure. The full call — 45.6M edges, GPU graph
-build, 4.1M scores, join, and sort — returned in about 1.5 s on the
+and PageRank propagates that structure. The full call (45.6M edges, GPU graph
+build, 4.1M scores, join, and sort) returned in about 1.5 s on the
 [capture host](../demo-dataset.mdx); that is an observation from one run, not
 a performance figure.
 
@@ -59,7 +59,7 @@ Rank **#115** of 4,894,081 in this run.
 The first argument is any relation name, including a view. Joining the edge
 list to `papers` on **both** endpoints restricts the graph to citations within
 a chosen era, and PageRank then ranks the most important papers within that
-window — here, the pre-2000 literature.
+window (here, the pre-2000 literature).
 
 ```sql
 CREATE VIEW edges_pre2000 AS

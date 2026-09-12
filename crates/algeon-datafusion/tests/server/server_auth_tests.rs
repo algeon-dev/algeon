@@ -33,7 +33,7 @@ async fn auth_disabled_passes_handshake_and_query_through() {
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    // Default mode is Disabled — explicit for clarity.
+    // Default mode is Disabled; explicit for clarity.
     config.auth = AuthConfig { mode: AuthMode::Disabled };
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });

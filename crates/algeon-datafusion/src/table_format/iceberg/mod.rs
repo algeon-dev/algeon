@@ -53,7 +53,7 @@ pub const ALGEON_ICEBERG_S3_PATH_STYLE_ENV: &str = "ALGEON_ICEBERG_S3_PATH_STYLE
 ///
 /// The only accepted value is `default_chain`. Setting it is an explicit
 /// operator opt-in to the ambient AWS default credential chain (env vars,
-/// profile, IMDS instance role) for the configured object storage — including
+/// profile, IMDS instance role) for the configured object storage; including
 /// when a custom `ALGEON_ICEBERG_S3_ENDPOINT` is set, where the default is
 /// otherwise unsigned requests so a local S3-compatible stack never silently
 /// picks up developer AWS credentials. Mutually exclusive with the static

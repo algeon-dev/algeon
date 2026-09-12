@@ -269,7 +269,7 @@ fn q72_n15_shape_bound_matches_observed_order_of_magnitude() {
     let observed = 58_268_236_464u64; // partition 1 observed reservation bytes
     // Bound must be ≥ observed (correctness).
     assert!(bound >= observed, "bound {bound} below observed {observed}");
-    // Bound must not be wildly larger (sanity — within 2× is the
+    // Bound must not be wildly larger (sanity; within 2× is the
     // expected over-reservation for a synthetic projection).
     assert!(bound <= observed * 4, "bound {bound} more than 4x observed {observed}");
 }

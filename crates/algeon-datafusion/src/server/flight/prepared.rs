@@ -21,7 +21,7 @@ use super::{ownership::Owner, *};
 /// deduplicated, so they can still be executed repeatedly.
 ///
 /// Contract: a no-result-set DDL handle is applied **at most once**. This is
-/// scoped to *one* handle — a fresh `CreatePreparedStatement` (a distinct
+/// scoped to *one* handle; a fresh `CreatePreparedStatement` (a distinct
 /// handle) re-runs the DDL and still surfaces a genuine duplicate, so an
 /// independent client running `CREATE` against a pre-existing table is not
 /// masked. The dedup targets the sequential double-send a single JDBC client
@@ -50,7 +50,7 @@ impl PreparedStatementEntry {
     }
 
     /// True when this is a no-result-set DDL handle that has already executed
-    /// once — i.e. a repeat execution that must be treated as a no-op.
+    /// once; i.e. a repeat execution that must be treated as a no-op.
     pub(super) fn ddl_already_executed(&self) -> bool {
         self.no_result_ddl && self.executed.load(Ordering::Relaxed)
     }

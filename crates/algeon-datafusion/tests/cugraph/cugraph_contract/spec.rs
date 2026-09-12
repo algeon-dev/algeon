@@ -1,7 +1,7 @@
 //! Registry-driven CPU-only contract rows for cuGraph algorithms.
 //!
-//! Each row asserts one stable contract surface — stable output schema,
-//! capability admission, bounded rejection — for every algorithm
+//! Each row asserts one stable contract surface; stable output schema,
+//! capability admission, bounded rejection; for every algorithm
 //! currently in the cuGraph operation registry. New algorithms must
 //! extend the registry; the rows here iterate it automatically and do
 //! not need per-algorithm test files.

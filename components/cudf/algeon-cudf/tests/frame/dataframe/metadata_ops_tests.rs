@@ -149,7 +149,7 @@ fn test_rename_columns_duplicate_target_returns_error() {
 
 fn test_rename_columns_target_conflicts_with_existing_unrenamed_column() {
     let df = sample_df();
-    // Rename "id" to "flag" — but "flag" already exists and is not being renamed
+    // Rename "id" to "flag"; but "flag" already exists and is not being renamed
     let err = df.rename_columns([("id", "flag")]).expect_err("expected conflicting rename target");
 
     assert_duplicate_name_error(&err, "flag");
@@ -168,7 +168,7 @@ fn test_rename_columns_duplicate_source_returns_canonical_duplicate_error() {
 
 fn test_rename_columns_swap_is_allowed() {
     let df = sample_df();
-    // Swap "id" and "flag" names — both are being renamed, so no conflict
+    // Swap "id" and "flag" names; both are being renamed, so no conflict
     let result = df.rename_columns([("id", "flag"), ("flag", "id")]).unwrap();
 
     assert_eq!(result.column_names(), &["flag", "score", "id"]);

@@ -275,7 +275,7 @@ impl DeviceRegistry {
     /// frozen: this phase performs no new device selection and no
     /// automatic-capacity policy resolution. It does take one live free-bytes
     /// snapshot per device to freeze the managed capacity (`M`) against
-    /// post-install reality — the manager installation itself consumes device
+    /// post-install reality; the manager installation itself consumes device
     /// memory that pre-install facts cannot see.
     #[doc(hidden)]
     pub fn install_resolved(

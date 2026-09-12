@@ -24,7 +24,7 @@ A request with no `range` and a 200 over a `*/data/*.parquet` object is a
 full-object data-file GET (the regression tracked for the LIMIT path); ranged
 GETs (206 with a `bytes=...` range) are the desired footer-first behavior.
 
-Diagnostic tool only — local, header-signed SigV4 traffic. Do NOT put it in
+Diagnostic tool only; local, header-signed SigV4 traffic. Do NOT put it in
 front of presigned-URL traffic: the log records the full request path including
 the query string, which for presigned URLs carries the signature/credential.
 It also buffers each response fully in memory before forwarding, so a full-object

@@ -278,7 +278,7 @@ impl<'a> ColumnView<'a> {
 
     /// Returns the raw device (GPU) data pointer of this column view.
     ///
-    /// This is a zero-copy operation — no data moves between GPU and host.
+    /// This is a zero-copy operation; no data moves between GPU and host.
     /// The returned pointer points to device memory containing `len()` elements
     /// of `data_type()`.
     ///
@@ -754,7 +754,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// This is the safe, typed alternative to [`device_data_ptr()`](Self::device_data_ptr)
     /// and [`offset()`](Self::offset). The returned `DeviceSlice` already accounts
-    /// for the column's offset — no manual pointer arithmetic needed.
+    /// for the column's offset; no manual pointer arithmetic needed.
     ///
     /// This is an advanced raw-pointer helper for code that already knows how
     /// to consume a device pointer + length pair. For external cross-crate

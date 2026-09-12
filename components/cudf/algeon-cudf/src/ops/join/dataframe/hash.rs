@@ -265,9 +265,9 @@ impl DataFrame {
     ///
     /// # Key modes
     ///
-    /// - `on(keys)` — shared key column names present in both sides. Output
+    /// - `on(keys)`: shared key column names present in both sides. Output
     ///   contains one shared key column per key.
-    /// - `left_on(keys)` + `right_on(keys)` — asymmetric key names. Both key
+    /// - `left_on(keys)` + `right_on(keys)`: asymmetric key names. Both key
     ///   columns are preserved in the output.
     ///
     /// # Suffix handling

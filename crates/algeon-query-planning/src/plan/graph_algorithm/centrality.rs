@@ -127,7 +127,7 @@ impl Default for GraphKatzCentralityParams {
 /// depending on the cuGraph feature.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphHitsParams {
-    /// Convergence tolerance. Must be > 0 — libcugraph's convergence
+    /// Convergence tolerance. Must be > 0; libcugraph's convergence
     /// test never accepts at epsilon=0 on a non-empty graph.
     pub epsilon: f64,
     /// Maximum number of power-iteration steps. Must be >= 1.

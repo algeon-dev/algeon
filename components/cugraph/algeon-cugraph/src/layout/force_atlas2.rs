@@ -1,4 +1,4 @@
-//! Force Atlas 2 — force-directed graph layout algorithm.
+//! Force Atlas 2; force-directed graph layout algorithm.
 //!
 //! Force Atlas 2 (FA2) computes a 2D layout for graph visualization by
 //! simulating physical forces (attraction along edges, repulsion between all
@@ -76,7 +76,7 @@ pub struct ForceAtlas2Params {
     pub scaling_ratio: PositiveF64,
     /// Attract distant nodes more strongly to the center (default: `false`).
     pub strong_gravity_mode: bool,
-    /// Gravity — attracts nodes to center, prevents islands drifting
+    /// Gravity; attracts nodes to center, prevents islands drifting
     /// (default: 1.0). Zero disables gravity. Must be non-negative.
     pub gravity: NonNegativeF64,
     /// Print convergence info at each iteration (default: `false`).
@@ -256,9 +256,9 @@ impl LayoutResult {
     /// Convert this layout result to a cudf DataFrame.
     ///
     /// Returns a 3-column DataFrame:
-    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
-    /// - `"x"` — x-axis coordinates as `Float32`
-    /// - `"y"` — y-axis coordinates as `Float32`
+    /// - `"vertex"`: vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"x"`: x-axis coordinates as `Float32`
+    /// - `"y"`: y-axis coordinates as `Float32`
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.

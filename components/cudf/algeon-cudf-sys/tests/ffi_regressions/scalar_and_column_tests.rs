@@ -925,7 +925,7 @@ fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_spa
     assert_eq!(sliced_ptr, full_ptr);
     // The pointer is the chars BASE and the slice's offsets index from that
     // base, so the span must cover everything the slice references:
-    // "zero" + "one" + "two" — ending at the last byte of "two".
+    // "zero" + "one" + "two"; ending at the last byte of "two".
     assert_eq!(sliced_size, "zeroonetwo".len());
 
     unsafe {

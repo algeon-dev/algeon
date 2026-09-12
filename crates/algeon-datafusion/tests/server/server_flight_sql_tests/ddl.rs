@@ -518,8 +518,8 @@ async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 }
 
-// Regression: a prepared DDL handle re-executed twice — the double-send a
-// JDBC client such as DataGrip triggers — must succeed both times. DataGrip /
+// Regression: a prepared DDL handle re-executed twice; the double-send a
+// JDBC client such as DataGrip triggers; must succeed both times. DataGrip /
 // the Arrow Flight SQL JDBC driver classify DDL prepared statements as updates
 // when no result-set schema is advertised. The second execution is deduplicated
 // into a no-op instead of failing with "already exists".

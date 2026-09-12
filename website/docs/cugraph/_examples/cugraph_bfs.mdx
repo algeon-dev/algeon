@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_bfs. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_bfs. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
@@ -7,8 +7,8 @@ Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
 
 Following citations forward (`'src', 'dst'`) walks into a paper's reference
 ancestry. Swapping the two column arguments (`'dst', 'src'`) traverses the
-same edges in the opposite direction — from a paper to the papers that cite it,
-and then their citers — without building a new table. Starting from AlexNet
+same edges in the opposite direction (from a paper to the papers that cite it,
+and then their citers) without building a new table. Starting from AlexNet
 (2012), each BFS generation is one hop outward in citing papers:
 
 ```sql

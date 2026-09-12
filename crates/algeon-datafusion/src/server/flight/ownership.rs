@@ -1,8 +1,8 @@
 //! Per-principal ownership of the ids the Flight SQL server hands to clients.
 //!
 //! Authentication establishes *who* is calling; this registry establishes
-//! *what they may name*. Every id the server returns to a client — a
-//! per-execution `query_id` and a prepared-statement handle — is an opaque
+//! *what they may name*. Every id the server returns to a client; a
+//! per-execution `query_id` and a prepared-statement handle; is an opaque
 //! bearer reference: any authenticated caller that guesses or observes one
 //! could otherwise redeem another user's ticket, cancel their query, read
 //! their retained SQL and runtime artifact, or close their prepared

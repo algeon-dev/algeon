@@ -733,7 +733,7 @@ fn test_sort_values_nulls_first() {
 
 fn test_sort_values_rejects_wrong_descending_len() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
-    // Single column but 2 descending flags — should fail
+    // Single column but 2 descending flags; should fail
     let result = s.sort_values(SortOptions::new().with_descending(vec![true, false]));
     let err = result.unwrap_err();
 

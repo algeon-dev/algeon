@@ -1,7 +1,7 @@
 //! GPU-accelerated dictionary encoding (factorize / categorize).
 //!
 //! Dictionary encoding maps a column's values to dense integer indices backed
-//! by a sorted, unique key set — equivalent to `pandas.factorize()` or
+//! by a sorted, unique key set; equivalent to `pandas.factorize()` or
 //! `pandas.Categorical`.
 //!
 //! The returned indices are row-aligned with the encoded input. They are not,
@@ -227,7 +227,7 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
 /// directly comparable.
 ///
 /// This is the correct way to prepare two or more dictionary-encoded
-/// columns for use as graph vertex IDs — it guarantees the same string
+/// columns for use as graph vertex IDs; it guarantees the same string
 /// always maps to the same integer across all columns.
 ///
 /// No high-level `Series` wrapper exists yet for shared dictionary-key

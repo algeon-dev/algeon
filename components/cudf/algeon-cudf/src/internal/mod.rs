@@ -4,11 +4,11 @@
 //!
 //! # Submodules
 //!
-//! - [`temp_table`] — `TempTableView`: crate-private self-borrowing temporary
+//! - [`temp_table`]: `TempTableView`: crate-private self-borrowing temporary
 //!   table view used to keep `ColumnView` inputs alive while building
 //!   `TableView`s.
-//! - [`resolve`] — Column-name resolution and validation helpers.
-//! - [`reassemble`] — DataFrame reassembly from raw `Table` + names.
+//! - [`resolve`]: Column-name resolution and validation helpers.
+//! - [`reassemble`]: DataFrame reassembly from raw `Table` + names.
 
 pub(crate) mod hash;
 pub(crate) mod reassemble;

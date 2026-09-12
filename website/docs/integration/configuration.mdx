@@ -247,7 +247,7 @@ configured with a filling policy (`read_through` or `fill_before_read`).
 `KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `ALGEON_ICEBERG_FOOTER_PRUNING` are
 process/source flags rather than `ServerConfig` fields; set them before
 process startup. `ALGEON_ICEBERG_FOOTER_PRUNING` accepts only `true`, `false`,
-`1`, or `0` — any other value is a startup/planning error, not a silent
+`1`, or `0`; any other value is a startup/planning error, not a silent
 `false`.
 
 Use a workspace overlay when the source catalog is read-only but interactive

@@ -519,7 +519,7 @@ fn assert_executable_iceberg_datafusion_plan(plan: &dyn ExecutionPlan) {
 /// boundary, then (2) verifies no aggregate / sort / join / repartition /
 /// SortPreservingMergeExec node is sitting above that boundary. A surviving
 /// `AggregateExec` or `SortPreservingMergeExec` would mean the native rule
-/// only consumed the leaf — that is the regression this test pins.
+/// only consumed the leaf; that is the regression this test pins.
 fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
     let rendered = displayable(plan).indent(false).to_string();
     let native_root = find_algeon_native_exec_root(plan).unwrap_or_else(|| {

@@ -197,7 +197,7 @@ pub(crate) fn eval_in_output_domain(
 }
 /// A type-erased factory for creating a [`Scalar`] from a literal value.
 ///
-/// Not part of the public API — use [`lit()`] to create literals.
+/// Not part of the public API; use [`lit()`] to create literals.
 mod agg;
 mod core;
 mod datetime;

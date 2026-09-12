@@ -10,7 +10,7 @@ use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
 use crate::common::error_context_value;
 
 // ===========================================================================
-// to_vec_strict<T> — numeric host materialization (rejects nullable)
+// to_vec_strict<T>; numeric host materialization (rejects nullable)
 // ===========================================================================
 
 fn test_to_vec_i32() {
@@ -75,7 +75,7 @@ fn test_to_vec_on_string_column_returns_error() {
 }
 
 // ===========================================================================
-// to_optional_vec<T> — numeric with null awareness
+// to_optional_vec<T>; numeric with null awareness
 // ===========================================================================
 
 fn test_to_optional_vec_all_valid() {
@@ -132,7 +132,7 @@ fn test_to_optional_vec_bool_preserves_false_and_skips_nulls() {
 }
 
 // ===========================================================================
-// to_strings_strict — rejects nullable string columns
+// to_strings_strict; rejects nullable string columns
 // ===========================================================================
 
 fn test_to_strings_basic() {
@@ -174,7 +174,7 @@ fn test_to_strings_on_numeric_returns_error() {
 }
 
 // ===========================================================================
-// to_optional_strings — null-preserving string materialization
+// to_optional_strings; null-preserving string materialization
 // ===========================================================================
 
 fn test_to_optional_strings_with_nulls() {
@@ -201,7 +201,7 @@ fn test_to_optional_strings_on_numeric_returns_type_mismatch_error() {
 }
 
 // ===========================================================================
-// to_strings_lossy — nulls become empty strings
+// to_strings_lossy; nulls become empty strings
 // ===========================================================================
 
 fn test_to_strings_lossy_maps_null_to_empty() {

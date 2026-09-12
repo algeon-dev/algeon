@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_strongly_connected_components. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_strongly_connected_components. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -32,7 +32,7 @@ FROM loops;
 The notable result is the largest component: **1.37M papers sit inside one
 strongly connected component**. Preprint/journal duplicate versions,
 simultaneous publication, and metadata errors introduce enough forward-dated
-citations — a newer paper cited by an older one — to bind roughly a third of the
+citations (a newer paper cited by an older one) to bind roughly a third of the
 graph into a single component. These apparent forward-in-time citations are a
 structural feature of bibliographic data.
 
@@ -58,6 +58,6 @@ LIMIT 6;
 | 265 | 2018 | DC programming and DCA: thirty years of developments |
 | 265 | 2018 | Convergence Analysis of Difference-of-Convex Algorithm with Subanalytic Data |
 
-12,015 of the 14,613 cycles are exactly two papers — same-year companion
+12,015 of the 14,613 cycles are exactly two papers: same-year companion
 papers and surveys citing each other, the typical form of mutual citation in
 practice.

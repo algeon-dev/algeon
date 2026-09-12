@@ -244,7 +244,7 @@ impl FlightSqlServerBuilder {
 /// Initialize the process-wide CUDA device context for `ordinal`.
 ///
 /// The first CUDA call in a process implicitly runs `cuInit()`, which establishes
-/// the driver context — a one-time cost of a couple of seconds. [`serve`] triggers
+/// the driver context; a one-time cost of a couple of seconds. [`serve`] triggers
 /// this lazily while constructing the query-service admission controller; calling
 /// it up front pays the cost before the server accepts connections, so binding is
 /// not delayed by the cold start. The device count is cached, so
@@ -341,7 +341,7 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
 
     // Abort the watchdog if it was armed. If the serve future returned before
     // the shutdown future ran (e.g. a bind/listen error), the oneshot sender
-    // was dropped — `recv` returns Err and there is nothing to abort.
+    // was dropped; `recv` returns Err and there is nothing to abort.
     if let Some(mut watchdog_rx) = watchdog_rx
         && let Ok(watchdog) = (&mut watchdog_rx).await
     {

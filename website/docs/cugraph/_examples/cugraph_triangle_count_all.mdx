@@ -1,11 +1,11 @@
-{/* Hand-owned examples for cugraph_triangle_count_all. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_triangle_count_all. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Count every triangle in 45.6M edges
 
 A triangle in a citation graph is a paper that cites two works which also cite
-each other — the unit of tightly interlinked literature. One call counts them
+each other, forming the unit of tightly interlinked literature. One call counts them
 for every vertex (edges are treated as undirected):
 
 ```sql
@@ -27,8 +27,8 @@ the full scan, GPU graph build, and count returned in about 0.6 s on the
 
 ### Local clustering coefficient in plain SQL
 
-Raw triangle counts track degree. Normalizing by the possible neighbor pairs —
-the local clustering coefficient `2T / (d·(d−1))` — separates *communities*
+Raw triangle counts track degree. Normalizing by the possible neighbor pairs
+(the local clustering coefficient `2T / (d·(d−1))`) separates *communities*
 from *hubs*. With `{"directed": false}` the `in_degree` column of
 `cugraph_degrees_all` is exactly the triangle graph's neighbor count, so two
 GPU calls joined in SQL give the coefficient:
@@ -60,7 +60,7 @@ LIMIT 5;
 | A Leakage-Resilient Mode of Operation | 2009 | 210 | 2,566 | 0.117 |
 
 Among well-connected papers (degree ≥ 200), the most clustered neighborhoods
-are systems-security and leakage-resilient-crypto papers — communities where
+are systems-security and leakage-resilient-crypto papers, representing communities where
 everyone cites everyone. The contrast with a hub: SIFT has 46× the triangles
 of the top row but a coefficient of just 0.0005, because its 22,925 neighbors
 barely know each other.

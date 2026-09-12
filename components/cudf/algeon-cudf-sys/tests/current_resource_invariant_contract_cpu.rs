@@ -6,7 +6,7 @@
 //! when the domain is created and never changed afterwards. libcudf
 //! temporaries deliberately resolve through that long-lived adaptor and are
 //! accounted per stream, so no operation ever needs to swap the current
-//! resource — and none may: a per-op swap is process-visible mutable state
+//! resource; and none may: a per-op swap is process-visible mutable state
 //! that forces global serialization and reintroduces the 2026-06-07
 //! dangling-resource race.
 //!

@@ -1215,7 +1215,7 @@ unsafe extern "C" {
         buf_size: usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Get the raw device (GPU) data pointer of a column_view.\n\n Returns the pointer to the device memory that backs this column's data.\n The pointer remains valid as long as the underlying column/table is alive.\n\n For fixed-width types the pointer addresses `size` contiguous elements.\n For STRING columns the data pointer is NULL. Use child column views\n for offsets and a string-specific chars helper for the character buffer.\n\n The offset of the column view is NOT applied — the pointer is to the\n base of the device buffer. Callers working with sliced views must add\n `offset * element_size` manually."]
+    #[doc = " Get the raw device (GPU) data pointer of a column_view.\n\n Returns the pointer to the device memory that backs this column's data.\n The pointer remains valid as long as the underlying column/table is alive.\n\n For fixed-width types the pointer addresses `size` contiguous elements.\n For STRING columns the data pointer is NULL. Use child column views\n for offsets and a string-specific chars helper for the character buffer.\n\n The offset of the column view is NOT applied; the pointer is to the\n base of the device buffer. Callers working with sliced views must add\n `offset * element_size` manually."]
     pub fn cudf_column_view_data_ptr(
         handle: cudf_column_view_handle,
         out: *mut *const core::ffi::c_void,
@@ -1389,7 +1389,7 @@ unsafe extern "C" {
         out_columns: *mut *mut cudf_column_handle,
         out_count: *mut i32,
     ) -> cudf_status_t;
-    #[doc = " Free a heap-allocated array of column handles returned by APIs such as\n cudf_table_release_columns, cudf_groupby_aggregate, and\n cudf_dictionary_match_dictionaries.\n Does NOT destroy the individual columns — caller must do that first."]
+    #[doc = " Free a heap-allocated array of column handles returned by APIs such as\n cudf_table_release_columns, cudf_groupby_aggregate, and\n cudf_dictionary_match_dictionaries.\n Does NOT destroy the individual columns; caller must do that first."]
     pub fn cudf_free_column_array(array: *mut cudf_column_handle);
     #[doc = " Export one borrowed cudf column view as Arrow C Device ABI.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned ArrowDeviceArray when bridge-owned device storage is reported.\n\n This slice supports recursive fixed-width (including decimal), STRING,\n LIST, STRUCT, and DICTIONARY32 column layouts.\n Any `BOOL8` leaf exports through a bridge-owned device copy because Arrow\n uses bitmap layout. Zero-row STRING leaves also export through bridge-owned\n device storage because Arrow requires a length + 1 offsets buffer."]
     pub fn cudf_arrow_device_column_export(
@@ -1992,7 +1992,7 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Read a Parquet file, returning the table and column names.\n `out_names` is populated with `out_num_names` null-terminated strings.\n When `out_num_names` is zero, `*out_names` is NULL.\n The caller must free the names with `cudf_io_free_column_names()`.\n\n `row_groups` / `num_row_groups` — same semantics as `cudf_io_read_parquet_ex`.\n\n Read Parquet with metadata and explicit execution context.\n\n Contract:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
+    #[doc = " Read a Parquet file, returning the table and column names.\n `out_names` is populated with `out_num_names` null-terminated strings.\n When `out_num_names` is zero, `*out_names` is NULL.\n The caller must free the names with `cudf_io_free_column_names()`.\n\n `row_groups` / `num_row_groups`; same semantics as `cudf_io_read_parquet_ex`.\n\n Read Parquet with metadata and explicit execution context.\n\n Contract:\n - `filepath` must be non-NULL\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `columns` must be non-NULL\n - `skip_rows` must be >= 0\n - `num_rows` must be >= -1 (`-1` means read all remaining rows)\n - if `num_row_groups > 0`, `row_groups` must be non-NULL\n - if `num_row_groups > 0`, `skip_rows` must be 0 and `num_rows` must be -1\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
     pub fn cudf_io_read_parquet_with_metadata_ex(
         filepath: *const core::ffi::c_char,
         columns: *mut *const core::ffi::c_char,

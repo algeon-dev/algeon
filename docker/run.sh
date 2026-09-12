@@ -24,7 +24,7 @@ IMAGE="${ALGEON_SERVER_IMAGE:-algeon-server:x86-64-v4}"
 # ---------------------------------------------------------------------------
 # Server core
 # ALGEON_SERVER_BIND          host:port to listen on (default: 0.0.0.0:50051)
-# ALGEON_SERVER_LOG           tracing filter — "info", "debug", "warn,datafusion=info"
+# ALGEON_SERVER_LOG           tracing filter: "info", "debug", "warn,datafusion=info"
 # ---------------------------------------------------------------------------
 BIND="0.0.0.0:50051"
 LOG="info"
@@ -187,7 +187,7 @@ ARGS=(
 [[ -n "${CUGRAPH_CONSTRUCTION_POLICY}" ]] && \
     ARGS+=(-e "ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY=${CUGRAPH_CONSTRUCTION_POLICY}")
 
-# AWS credentials — forward from host environment (short-lived STS tokens).
+# AWS credentials: forward from host environment (short-lived STS tokens).
 [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]     && ARGS+=(-e "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}")
 [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] && ARGS+=(-e "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}")
 [[ -n "${AWS_SESSION_TOKEN:-}" ]]     && ARGS+=(-e "AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}")

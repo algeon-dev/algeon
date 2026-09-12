@@ -553,7 +553,7 @@ function renderVertexIdSupport(specs) {
       `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
       renderTypeList(contract.numeric_endpoint_types),
       supportsLogicalStrings ? renderTypeList(logicalEndpointTypes) : 'Not supported',
-      supportsLogicalStrings ? code(contract.logical_string_output_type) : '—',
+      supportsLogicalStrings ? code(contract.logical_string_output_type) : 'None',
       supportsLogicalStrings ? sideInputLimitations.map(prose).join('; ') || 'None declared' : 'Not applicable',
       legacyInt32Only ? 'Yes' : 'No',
     ];

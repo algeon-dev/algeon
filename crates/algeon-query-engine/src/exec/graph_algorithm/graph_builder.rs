@@ -28,7 +28,7 @@ where
 /// its native allocations, but a hit resumes it under the attempt runtime:
 /// the attempt stream waits on the park event, and algorithm workspace,
 /// auxiliary streams, and outputs allocate through the attempt binding, so
-/// they charge to the borrower's grant — never to the cache share. Only the
+/// they charge to the borrower's grant; never to the cache share. Only the
 /// final dataframe is retained into the attempt domain, and the graph is
 /// re-parked before the checkout returns to the cache.
 #[cfg(feature = "cugraph")]

@@ -183,7 +183,7 @@ impl Table {
 
     /// Create a table from a vector of columns.
     ///
-    /// The columns are *moved* into the table — do not use them afterwards.
+    /// The columns are *moved* into the table; do not use them afterwards.
     pub fn from_columns(columns: Vec<Column>) -> Result<Self> {
         Self::from_columns_impl(columns, None, None, "table::from_columns")
     }
@@ -263,7 +263,7 @@ impl Table {
     /// The table is destroyed in the process. The returned columns are in
     /// the same order as they were when the table was created.
     ///
-    /// This is a zero-copy operation on the GPU — column device memory is
+    /// This is a zero-copy operation on the GPU; column device memory is
     /// transferred, not copied.
     pub fn into_columns(self) -> Result<Vec<Column>> {
         let this = std::mem::ManuallyDrop::new(self);
@@ -315,7 +315,7 @@ impl Table {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        // Free the array (not the columns — they are now owned by Column).
+        // Free the array (not the columns; they are now owned by Column).
         // SAFETY: out_columns was allocated by the C shim for the column pointer array.
         unsafe { cudf_sys::cudf_free_column_array(out_columns) };
 

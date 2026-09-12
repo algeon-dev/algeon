@@ -13,19 +13,19 @@
 //!
 //! # Key concepts
 //!
-//! - **[`cudf_interop`]** — canonical prepared cuDF graph ingress and result
+//! - **[`cudf_interop`]**: canonical prepared cuDF graph ingress and result
 //!   egress for the Algeon engine.
-//! - **[`ResourceHandle`]** — long-lived owner of GPU execution provenance
+//! - **[`ResourceHandle`]**: long-lived owner of GPU execution provenance
 //!   (bound device, retained runtime, cuGraph resource handle). Not
 //!   thread-safe.
-//! - **[`EnteredContext`]** — short-lived execution session created by
+//! - **[`EnteredContext`]**: short-lived execution session created by
 //!   [`ResourceHandle::enter`]. GPU-capable APIs require this token.
-//! - **[`DeviceArray<T>`]** — owning GPU array with compile-time element type.
+//! - **[`DeviceArray<T>`]**: owning GPU array with compile-time element type.
 //!   Freed on drop. Create views via [`DeviceArray::view()`].
-//! - **[`GraphBuilder`]** — low-level builder for constructing a [`Graph`] from
+//! - **[`GraphBuilder`]**: low-level builder for constructing a [`Graph`] from
 //!   pre-materialized device edge lists. Validates inputs before crossing the
 //!   FFI boundary.
-//! - **[`Graph<T>`]** — the central graph data structure, parameterized by
+//! - **[`Graph<T>`]**: the central graph data structure, parameterized by
 //!   transposition state ([`Forward`] or [`Transposed`]). Algorithms are methods
 //!   on `Graph`, constrained by the required layout.
 //!
@@ -35,10 +35,10 @@
 //! forward or transposed form. Algorithms that require a specific layout
 //! accept only the correct variant, catching mismatches at compile time:
 //!
-//! - **[`Forward`]** — required by [`Graph::bfs`] and [`Graph::louvain`]
-//! - **[`Transposed`]** — required by [`Graph::pagerank`],
+//! - **[`Forward`]**: required by [`Graph::bfs`] and [`Graph::louvain`]
+//! - **[`Transposed`]**: required by [`Graph::pagerank`],
 //!   [`Graph::in_degrees`], [`Graph::degrees`]
-//! - **Generic** (`T: Transposition`) — [`Graph::betweenness_centrality`],
+//! - **Generic** (`T: Transposition`): [`Graph::betweenness_centrality`],
 //!   [`Graph::force_atlas2`], [`Graph::out_degrees`]
 //!
 //! # cudf interop
@@ -67,7 +67,7 @@ pub mod tree;
 pub mod types;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Crate-root re-exports — foundational cross-cutting types only
+// Crate-root re-exports; foundational cross-cutting types only
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Arrays

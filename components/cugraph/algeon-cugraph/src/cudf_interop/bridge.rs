@@ -37,7 +37,7 @@ fn validate_runtime_result_device(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Checked DeviceSlice → DeviceArrayView — zero-copy bridge
+// Checked DeviceSlice → DeviceArrayView; zero-copy bridge
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Create a typed [`crate::DeviceArrayView`] from a runtime-typed cudf [`DeviceSlice`],

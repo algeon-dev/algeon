@@ -9,14 +9,14 @@ which walks the closure rather than the declared dependencies, because a helper
 crate is how such a dependency comes back.
 
 Backend-neutral means the contracts are expressed in semantics, types, data
-shape, and lifetime — not that the crate is ignorant of join builds, resident
+shape, and lifetime; not that the crate is ignorant of join builds, resident
 frames, or graph layouts. Arrow and pure-Rust Parquet metadata types stay.
 
 ## Main areas
 
 - `plan/`, `expr/`, `source/`, `chunk/`, and `datatypes.rs` own the native IR,
   source facts, and the Arrow type and cast semantics the query language admits.
-- `backend.rs` states the questions planning cannot answer itself — whether a
+- `backend.rs` states the questions planning cannot answer itself: whether a
   backend represents a type, binds an expression or aggregate, or infers a
   kernel's output type. The engine implements it and passes it in explicitly as
   an `AnalysisContext`; there is no registry and no default.

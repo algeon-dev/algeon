@@ -38,15 +38,15 @@ pub enum BinaryOperator {
     Mul = 2,
     /// Integer division (`lhs / rhs`), truncating toward zero.
     Div = 3,
-    /// True (floating-point) division — always produces a float result.
+    /// True (floating-point) division; always produces a float result.
     TrueDiv = 4,
-    /// Floor division — rounds the quotient toward negative infinity.
+    /// Floor division; rounds the quotient toward negative infinity.
     FloorDiv = 5,
     /// C/C++ modulo (`lhs % rhs`). The result has the sign of `lhs`.
     Mod = 6,
-    /// Positive modulo — the result is always non-negative (`[0, |rhs|)`).
+    /// Positive modulo; the result is always non-negative (`[0, |rhs|)`).
     Pmod = 7,
-    /// Python-style modulo — the result has the sign of `rhs`.
+    /// Python-style modulo; the result has the sign of `rhs`.
     Pymod = 8,
     /// Exponentiation (`pow(lhs, rhs)`), producing a float result.
     Pow = 9,
@@ -498,7 +498,7 @@ fn infer_primitive_binary_output(
 ///
 /// Works with both numeric and string columns. For strings, only comparison
 /// operators (`Equal`, `NotEqual`, `Less`, `Greater`, `LessEqual`,
-/// `GreaterEqual`) are supported — arithmetic operators return an error.
+/// `GreaterEqual`) are supported; arithmetic operators return an error.
 pub fn binary_operation_vv(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
@@ -828,7 +828,7 @@ fn pow10_i128(exponent: u32, operation: &'static str) -> Result<i128> {
 /// Binary operation: column op scalar.
 ///
 /// Works with both numeric and string columns. For strings, only comparison
-/// operators are supported — arithmetic operators return an error.
+/// operators are supported; arithmetic operators return an error.
 pub fn binary_operation_vs(
     lhs: &ColumnView<'_>,
     rhs: &Scalar,
@@ -911,7 +911,7 @@ pub(crate) fn binary_operation_vs_impl(
 /// Binary operation: scalar op column.
 ///
 /// Works with both numeric and string columns. For strings, only comparison
-/// operators are supported — arithmetic operators return an error.
+/// operators are supported; arithmetic operators return an error.
 pub fn binary_operation_sv(
     lhs: &Scalar,
     rhs: &ColumnView<'_>,

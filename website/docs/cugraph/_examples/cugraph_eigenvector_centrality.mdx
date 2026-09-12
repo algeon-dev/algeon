@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_eigenvector_centrality. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_eigenvector_centrality. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -7,7 +7,7 @@ These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 Eigenvector centrality has no damping and no teleport: a paper scores highly
 only if the papers citing it score highly themselves. On 45.6M citation edges
 the fixed point concentrates all mass in the most self-reinforcing corner of
-the graph — the 1970s theory and databases canon:
+the graph, matching the 1970s theory and databases canon:
 
 ```sql
 SELECT p.title, p.year, ROUND(e.value, 3) AS eigenvector
@@ -35,7 +35,7 @@ whose damping spreads importance much further out.
 ### Quantify the winner-take-all behavior
 
 Both functions return plain relations, so one statement can measure how much
-more concentrated eigenvector mass is than PageRank mass — here, the top 100
+more concentrated eigenvector mass is than PageRank mass (here, the top 100
 of 4.1M scored papers hold 10.7% of all eigenvector centrality but only 2.8%
 of all PageRank:
 

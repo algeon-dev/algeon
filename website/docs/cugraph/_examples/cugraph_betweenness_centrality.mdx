@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_betweenness_centrality. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_betweenness_centrality. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -9,7 +9,7 @@ default), so the full 4.1M-vertex citation graph needs `{"k": N}` or explicit
 `seeds`. A `WHERE` clause is the cleaner instrument: the 2010s AI literature
 (same views as the [Louvain example](../algorithms/community/cugraph_louvain.mdx))
 is a ~38k-vertex graph, small enough that every source is used and the scores
-are exact and deterministic — no sampling options required.
+are exact and deterministic; no sampling options required.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -46,12 +46,12 @@ LIMIT 6;
 With `normalized: false` the score is a raw count: over one million shortest
 citation chains inside this subgraph pass through the *Deep learning in neural
 networks* survey and through R-CNN. These are the brokers between AI
-subfields — surveys and boundary-crossing architectures — a different signal
+subfields (surveys and boundary-crossing architectures), a different signal
 than citation volume: none of them is the most-cited paper in the view. In
 this run the exact call over the 164k-edge subgraph returned in well under a
 second on the [capture host](../demo-dataset.mdx).
 
-On the full graph, pass a deterministic sample size instead — execution uses
+On the full graph, pass a deterministic sample size instead: execution uses
 the first `k` distinct graph vertices in stable order and refuses `k` larger
 than the actual vertex count:
 

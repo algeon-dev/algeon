@@ -51,15 +51,15 @@ pub enum UnaryOperator {
     Sqrt,
     /// Cube root.
     Cbrt,
-    /// Ceiling — smallest integer >= x.
+    /// Ceiling; smallest integer >= x.
     Ceil,
-    /// Floor — largest integer <= x.
+    /// Floor; largest integer <= x.
     Floor,
     /// Absolute value.
     Abs,
     /// Round to nearest integer (half-to-even / banker's rounding).
     Rint,
-    /// Population count — number of `1`-bits in the binary representation.
+    /// Population count; number of `1`-bits in the binary representation.
     BitCount,
     /// Bitwise inversion (flips every bit). For integer types.
     BitInvert,

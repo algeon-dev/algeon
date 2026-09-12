@@ -327,7 +327,7 @@ async fn rest_native_planning_and_parity_local() {
 
     let namespace = std::env::var("ALGEON_ICEBERG_NAMESPACE")
         .expect("set ALGEON_ICEBERG_NAMESPACE for local REST planning/parity E2E");
-    // `nation` is small and has a `n_regionkey` group key — a stable
+    // `nation` is small and has a `n_regionkey` group key; a stable
     // aggregate-over-Iceberg shape the native rule rewrites.
     let table = std::env::var("ALGEON_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
     let group_col = std::env::var("ALGEON_ICEBERG_REST_E2E_GROUP_COL").unwrap_or_else(|_| "n_regionkey".to_string());
@@ -394,7 +394,7 @@ async fn rest_native_planning_and_parity_local() {
     // CPU-reader stability (default): a second independent CPU-reader run must
     // agree with the first. This is deterministic and storage-profile-independent;
     // it proves the read + aggregate shape is stable end-to-end through RustFS. It
-    // does NOT validate the native-rewritten plan's result — that is the GPU-parity
+    // does NOT validate the native-rewritten plan's result; that is the GPU-parity
     // opt-in below.
     let cpu_provider2 =
         build_scoped_catalog_provider_from_backend(rest_catalog_source(rest_config).await.unwrap(), "rest", &namespace)
@@ -410,7 +410,7 @@ async fn rest_native_planning_and_parity_local() {
 
     // GPU-native parity is opt-in. Set this for local REST/RustFS/local-cache
     // validation of the native source-storage profile path. We do NOT silently
-    // skip on error — a failure when the flag is set is a real failure.
+    // skip on error; a failure when the flag is set is a real failure.
     let gpu_parity = std::env::var("ALGEON_ICEBERG_REST_E2E_GPU_PARITY").map(|v| v == "1").unwrap_or(false);
     if !gpu_parity {
         eprintln!(
@@ -426,7 +426,7 @@ async fn rest_native_planning_and_parity_local() {
         .expect("plan native sql (exec)")
         .collect()
         .await
-        .expect("execute native (GPU) plan — ALGEON_ICEBERG_REST_E2E_GPU_PARITY=1 requires it to run");
+        .expect("execute native (GPU) plan; ALGEON_ICEBERG_REST_E2E_GPU_PARITY=1 requires it to run");
     let native_rows = sorted_rows(&native_batches);
     eprintln!("native plan produced {} rows", native_rows.len());
     assert_eq!(native_rows, cpu_rows, "native vs CPU row parity mismatch for {namespace}.{table}");

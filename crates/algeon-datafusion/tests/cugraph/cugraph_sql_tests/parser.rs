@@ -730,7 +730,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         "epsilon must be positive",
     );
 
-    // alpha must be strictly positive — alpha=0 makes Katz centrality
+    // alpha must be strictly positive; alpha=0 makes Katz centrality
     // degenerate to the constant `beta` vector.
     assert_error_contains(
         parse_cugraph_algorithm_spec(

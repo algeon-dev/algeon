@@ -959,8 +959,8 @@ impl QueryService {
     /// Shared admission-commit tail. The caller has selected and placed the
     /// request, removed it from the queue, and provisionally
     /// counted it as admitting; the admission mutex is not held. Builds the
-    /// admission envelope — lane, root stream, allocation domain, root
-    /// member, worker scope — while the mutex is released, then publishes
+    /// admission envelope; lane, root stream, allocation domain, root
+    /// member, worker scope; while the mutex is released, then publishes
     /// admission. Any failure restores the provisional count exactly, releases
     /// every envelope component in reverse order outside the mutex, and
     /// finishes the request with the primary error.

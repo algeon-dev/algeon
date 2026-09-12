@@ -1,6 +1,6 @@
 // Report-before-reuse commit: deterministic barriers for the normative
-// order — cleanup complete → disposition/health commit → seal/report_ready →
-// capacity release — plus health disposition coverage.
+// order; cleanup complete → disposition/health commit → seal/report_ready →
+// capacity release; plus health disposition coverage.
 
 use super::service::disposition::{
     CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit, decide_capacity_disposition,

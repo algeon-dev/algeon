@@ -176,7 +176,7 @@ impl ClickbenchDatasetMetadata {
 /// 4. A directory containing a `partitioned/` subdir with `hits_*.parquet`.
 ///
 /// Mixed layouts (both a `hits.parquet` and `hits_*.parquet` shards at the
-/// same level) error out — that combination has no upstream meaning and is
+/// same level) error out; that combination has no upstream meaning and is
 /// almost always a stale-fixture bug.
 pub fn discover_clickbench_layout(root: &Path) -> WorkloadResult<ClickbenchLayout> {
     if root.is_file() {
@@ -234,7 +234,7 @@ fn ensure_parquet_extension(path: &Path) -> WorkloadResult<()> {
 /// Collect canonical partitioned shards. The upstream
 /// `download-hits-parquet-partitioned` script always names shards
 /// `hits_<u32>.parquet`, so we admit only that pattern and silently drop any
-/// other Parquet file in the directory — e.g. user samples, user-managed exports,
+/// other Parquet file in the directory; e.g. user samples, user-managed exports,
 /// or `.parquet.tmp` half-writes. Anything that does not match is ignored
 /// rather than rejected, since `partitioned/` directories are routinely
 /// shared with unrelated data on staging volumes.

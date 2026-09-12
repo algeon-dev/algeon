@@ -26,7 +26,7 @@ pub(super) fn flight_sql_table_types_schema() -> Arc<Schema> {
 /// specified by the Flight SQL protobuf documentation
 /// (`catalog_name`, `db_schema_name`, `table_name`, `column_name`,
 /// `key_name`, `key_sequence`). DataFusion does not model primary-key
-/// constraints, so the response is always an empty batch — but it must
+/// constraints, so the response is always an empty batch; but it must
 /// still carry this exact schema or arrow-flight clients refuse it.
 pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
@@ -47,7 +47,7 @@ pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
 /// Schema for `CommandGetImportedKeys` / `CommandGetExportedKeys` /
 /// `CommandGetCrossReference` responses. The three RPCs share this 13-column
 /// foreign-key descriptor schema per the Flight SQL protobuf spec. DataFusion
-/// does not model foreign-key constraints, so the body is always empty — but
+/// does not model foreign-key constraints, so the body is always empty; but
 /// the schema must still match exactly or arrow-flight clients refuse it.
 pub(super) fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();

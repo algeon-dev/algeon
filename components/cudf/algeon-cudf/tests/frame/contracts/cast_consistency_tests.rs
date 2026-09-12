@@ -6,7 +6,7 @@
 use cudf::{DataFrame, DataType, TypeId, ops::expr::col};
 
 // ===========================================================================
-// Series::astype — accepts DataType directly
+// Series::astype; accepts DataType directly
 // ===========================================================================
 
 fn series_astype_accepts_datatype() {
@@ -24,7 +24,7 @@ fn series_astype_accepts_typeid() {
 }
 
 // ===========================================================================
-// Expr::cast — accepts DataType directly
+// Expr::cast; accepts DataType directly
 // ===========================================================================
 
 fn expr_cast_accepts_datatype() {
@@ -64,7 +64,7 @@ fn cast_symmetry() {
 }
 
 // ===========================================================================
-// unary::is_supported_cast — already uses DataType (no change needed)
+// unary::is_supported_cast; already uses DataType (no change needed)
 // ===========================================================================
 
 fn is_supported_cast_uses_datatype() {

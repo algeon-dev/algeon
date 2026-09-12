@@ -563,7 +563,7 @@ impl BoundBytes<'_> {
 }
 
 // SAFETY: `BoundBytes` is a non-owning pointer-plus-length descriptor for
-// CUDA device memory. CUDA device pointers are valid from any host thread —
+// CUDA device memory. CUDA device pointers are valid from any host thread;
 // the CUDA runtime does not bind a device pointer to the thread that allocated
 // it. The safe surface exposes only read-only raw pointers from `&self`;
 // mutable raw access requires `&mut self`, preventing aliased mutable device

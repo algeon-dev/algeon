@@ -1143,7 +1143,7 @@ impl Series {
         self.isin_with_context(values, ctx, "series::with_execution::isin")
     }
 
-    // ── Binary with type inference (hand-written — output type depends on both inputs) ──
+    // ── Binary with type inference (hand-written; output type depends on both inputs) ──
 
     pub(super) fn binary_series_in_context(
         &self,

@@ -519,7 +519,7 @@ def _k_core(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     subgraph = cugraph_mod.k_core(graph, k=k)
     df = subgraph.view_edge_list()
     df = df.rename(columns={"src": "src", "dst": "dst"})
-    # Normalize column names — cuGraph may use 0/1 integer column names.
+    # Normalize column names: cuGraph may use 0/1 integer column names.
     cols = list(df.columns)
     if len(cols) >= 2 and cols[0] != "src":
         df.columns = ["src", "dst"] + list(df.columns[2:])

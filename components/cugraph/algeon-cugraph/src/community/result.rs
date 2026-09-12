@@ -160,8 +160,8 @@ macro_rules! define_hierarchical_result {
             /// Convert this result to a cudf DataFrame.
             ///
             /// Returns a 2-column DataFrame:
-            /// - `"vertex"` — vertex ids with the underlying result dtype
-            /// - `"partition"` — cluster assignments with the underlying result dtype
+            /// - `"vertex"`: vertex ids with the underlying result dtype
+            /// - `"partition"`: cluster assignments with the underlying result dtype
             ///
             /// Device-to-device copy: unavoidable because the cugraph C API
             /// owns result memory and frees it on drop. Matches Python

@@ -339,7 +339,7 @@ fn redact_sql_options(sql: &str) -> std::borrow::Cow<'_, str> {
 /// Cheap pre-check so SQL with no `OPTIONS` clause never allocates: an ASCII
 /// case-insensitive substring search for the bare word `options`, ignoring
 /// whether it occurs inside a string literal (an over-approximation is fine
-/// here — the real scan below still does the precise, string-aware check).
+/// here; the real scan below still does the precise, string-aware check).
 fn contains_options_keyword(sql: &str) -> bool {
     let bytes = sql.as_bytes();
     (0..bytes.len()).any(|index| matches_keyword_at(bytes, index, b"OPTIONS"))

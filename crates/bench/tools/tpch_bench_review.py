@@ -437,7 +437,7 @@ def render_rich(records, summary, slow_threshold, full, width):
             detail.add_row(rec["q"], flagged_detail_text(rec))
         console.print(detail)
     else:
-        console.print("FLAGGED: none — all queries matched, native, and fast.")
+        console.print("FLAGGED: none; all queries matched, native, and fast.")
 
 
 def render_wide(records, summary, slow_threshold):
@@ -465,7 +465,7 @@ def render_wide(records, summary, slow_threshold):
         for rec in summary["flagged"]:
             print(f"  {rec['q']}: {flagged_detail_text(rec)}")
     else:
-        print("FLAGGED: none — all queries matched, native, and fast.")
+        print("FLAGGED: none; all queries matched, native, and fast.")
 
 
 def render_compact(records, summary, slow_threshold):
@@ -484,7 +484,7 @@ def render_compact(records, summary, slow_threshold):
         for rec in summary["flagged"]:
             print(f"  {rec['q']} {flagged_detail_text(rec)}")
     else:
-        print("FLAGGED: none — all queries matched, native, and fast.")
+        print("FLAGGED: none; all queries matched, native, and fast.")
 
 
 def main():

@@ -338,7 +338,7 @@ fn test_offset_for_non_sliced_column() {
 fn test_device_data_ptr_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.testing_view().unwrap();
-    // Empty columns may or may not have a non-null pointer — just ensure no crash.
+    // Empty columns may or may not have a non-null pointer; just ensure no crash.
     let _ptr = view.device_data_ptr().unwrap();
 }
 
@@ -604,7 +604,7 @@ fn test_device_slice_empty_column() {
 }
 
 fn test_device_slice_from_dictionary_indices() {
-    // Dictionary-encode and get the indices as a DeviceSlice — the exact
+    // Dictionary-encode and get the indices as a DeviceSlice; the exact
     // workflow that gpu-app needs.
     let data = vec![10i32, 20, 10, 30, 20, 10];
     let col = column_from_slice(&data).unwrap();
@@ -677,7 +677,7 @@ fn test_from_device_ptr_i64_roundtrip() {
 }
 
 fn test_from_device_ptr_independent_of_source() {
-    // The new column should own its own memory — dropping the source should not
+    // The new column should own its own memory; dropping the source should not
     // invalidate the new column (device-to-device copy, not zero-copy).
     let original_data = vec![42i32, 99, 7, 13];
 

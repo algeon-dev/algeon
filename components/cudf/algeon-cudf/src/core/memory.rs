@@ -1125,7 +1125,7 @@ impl RetirementStreams {
     }
 }
 
-// SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
+// SAFETY: RMM device_memory_resource implementations are thread-safe; allocate()
 // and deallocate() use internal synchronization. The handle is an opaque pointer
 // to an RMM allocator that supports concurrent access from multiple threads.
 unsafe impl Send for DeviceMemoryResourceHandle {}
@@ -1353,7 +1353,7 @@ impl DeviceMemoryManager {
     ///
     /// cudf owns the memory management of every CUDA device it uses: the
     /// first time a device's manager is created, its reservation-aware
-    /// adaptor is installed as RMM's current resource for that device — and
+    /// adaptor is installed as RMM's current resource for that device; and
     /// it stays installed for the process lifetime. By default that happens
     /// implicitly on the first `Runtime` build for the device; services
     /// should instead call this once per device at startup so the

@@ -475,7 +475,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
 /// stages cross-domain copies the warm hit never repeats, so the cold
 /// high-water structurally exceeds the warm one and a cold-sized grant would
 /// fund the workspace too. Instead the cap covers exactly the warm attempt's
-/// non-workspace footprint — the edge upload plus one full output row-set —
+/// non-workspace footprint; the edge upload plus one full output row-set;
 /// with wide margins on both sides. The capped run must then clear the
 /// upload and fail with a typed query-domain capacity error inside engine
 /// execution; had the workspace charged the cache share instead, the attempt
@@ -545,8 +545,8 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     // The cap sits strictly between the warm attempt's non-workspace
     // footprint and its workspace-inclusive footprint. It funds the edge
     // upload plus one and a half PageRank output row-sets (int32 vertex plus
-    // float64 rank per vertex) — headroom for the upload, the output, and
-    // handle creation — but not the multi-vector algorithm workspace that
+    // float64 rank per vertex); headroom for the upload, the output, and
+    // handle creation; but not the multi-vector algorithm workspace that
     // stays live beside the upload during execution. The capped hit must
     // therefore clear the upload and fail inside engine execution with a
     // typed query-domain capacity error, never by borrowing cache capacity,
@@ -593,7 +593,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
 /// under default caps: a PageRank attempt and a BFS attempt over distinct
 /// graphs are barrier-released together, and the test observes both grants
 /// live at the same instant instead of inferring overlap from timing. Both
-/// attempts use the service default cap — no per-query tuning — and must
+/// attempts use the service default cap; no per-query tuning; and must
 /// succeed with results identical to their sequential baselines, in disjoint
 /// allocation domains, without adding any cache-share charge.
 #[test]

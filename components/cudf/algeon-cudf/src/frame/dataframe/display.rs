@@ -2,7 +2,7 @@ use super::owned::DataFrame;
 
 impl std::fmt::Debug for DataFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Debug shows schema, row count, and column types — NO GPU data copy.
+        // Debug shows schema, row count, and column types; NO GPU data copy.
         let num_cols = self.columns.len();
         let num_rows = self.num_rows();
 

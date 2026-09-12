@@ -4,7 +4,7 @@
 //! plan may carry, which casts it may insert or preserve, and how a type reads
 //! in a diagnostic. Whether an execution backend can represent a type is a
 //! separate question, asked through
-//! [`crate::backend::BackendCapabilities::supports_type`] — which is why the
+//! [`crate::backend::BackendCapabilities::supports_type`]; which is why the
 //! cast policy takes an [`crate::backend::AnalysisContext`] for the one branch
 //! that needs it.
 

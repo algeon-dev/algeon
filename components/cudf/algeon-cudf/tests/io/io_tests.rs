@@ -353,7 +353,7 @@ fn test_parquet_row_group_empty_selection() {
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    // Empty row_groups slice — should read all rows (libcudf treats empty as "all")
+    // Empty row_groups slice; should read all rows (libcudf treats empty as "all")
     let read_opts =
         parquet::ParquetTableReadOptions::builder().filepath(&path).row_groups(&[]).with_runtime(&rt).build();
     let result = parquet::read_parquet_table(&read_opts).unwrap();

@@ -64,7 +64,7 @@ impl AuthMode {
         }
     }
 
-    /// Validate the config — unique usernames, non-empty fields, hash
+    /// Validate the config; unique usernames, non-empty fields, hash
     /// shape sanity. Catches obvious config-file mistakes at load time
     /// rather than at handshake time.
     pub fn validate(&self) -> Result<()> {

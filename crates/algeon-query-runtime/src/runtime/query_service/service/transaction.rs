@@ -5,8 +5,8 @@
 //! device worker scope as a single transaction. The envelope is built after
 //! the ledger transaction commits (inside the admission mutex) but while the
 //! admission mutex is released, so a bounded stream wait never blocks queue
-//! maintenance or cleanup. Admission is published — the `Admitted` lifecycle
-//! fact and the [`QueryHandle`] — only after every component validates.
+//! maintenance or cleanup. Admission is published; the `Admitted` lifecycle
+//! fact and the [`QueryHandle`]; only after every component validates.
 //!
 //! Rollback drops components in reverse acquisition order (member → domain →
 //! stream → lane → grant), preserves the primary error, and restores every

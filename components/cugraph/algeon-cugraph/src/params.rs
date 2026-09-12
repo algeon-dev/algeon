@@ -11,7 +11,7 @@
 //! | [`IterationCount`] | `> 0` (u32) | `max_iter`, `max_iterations` |
 //! | [`BfsDepthLimit`] | `> 0` (usize) | BFS `depth_limit` |
 //! | [`PositiveF64`] | `> 0.0`, finite | `scaling_ratio` |
-//! | [`UnitF64`] | `∈ (0.0, 1.0)`, finite | *(currently unused — kept for future algorithms)* |
+//! | [`UnitF64`] | `∈ (0.0, 1.0)`, finite | *(currently unused: kept for future algorithms)* |
 //! | [`NonNegativeF64`] | `>= 0.0`, finite | `epsilon`, `edge_weight_influence`, `gravity`, `jitter_tolerance` |
 //! | [`ClosedUnitF64`] | `∈ [0.0, 1.0]`, finite | `alpha` (damping factor), `barnes_hut_theta` |
 //!

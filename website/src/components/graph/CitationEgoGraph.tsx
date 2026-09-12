@@ -189,13 +189,13 @@ function EgoCanvas(): React.ReactElement {
       <figcaption className={styles.caption}>
         {hoveredNode ? (
           <>
-            <strong>{hoveredNode.title}</strong> ({hoveredNode.year}) — degree{' '}
+            <strong>{hoveredNode.title}</strong> ({hoveredNode.year}), degree{' '}
             {hoveredNode.degree} in this ego network
           </>
         ) : (
           <>
-            Ego network of <em>Attention Is All You Need</em> — 133 papers, 393
-            citation edges. Positions from <code>cugraph_force_atlas2</code>,
+            Ego network of <em>Attention Is All You Need</em> (133 papers, 393
+            citation edges). Positions from <code>cugraph_force_atlas2</code>,
             colors from <code>cugraph_louvain</code>. Hover a node; drag or
             scroll to pan and zoom.
           </>

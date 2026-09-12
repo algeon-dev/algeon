@@ -313,7 +313,7 @@
   border: 1px solid rgba(91, 102, 115, 0.28);
 }
 
-/* Inline code tokens are identifiers — never break them across lines
+/* Inline code tokens are identifiers; never break them across lines
    (e.g. `gpu_validate_call` splitting at the underscore). Long tokens move to the
    next line whole; tables already scroll horizontally when needed. */
 .markdown :not(pre) > code {
@@ -475,7 +475,7 @@
   --ag-dg-bar-fg: var(--ifm-background-color);
   --ag-dg-accent: var(--ifm-color-primary);
 
-  /* Semantic tones — fixed hues, paired with a label so they never carry
+  /* Semantic tones: fixed hues, paired with a label so they never carry
      meaning by color alone. */
   --ag-tone-safe: #2bb673;   /* compile-time safe region */
   --ag-tone-ffi: #4d8bf0;    /* the extern "C" / FFI boundary layer */
@@ -484,14 +484,14 @@
   --ag-tone-rust: #d9a066;   /* Rust-side artifacts */
   --ag-tone-plain: var(--ifm-color-emphasis-500);
 
-  /* Design-page tones — a DataFusion-orange → NVIDIA-green ramp: the closer a
+  /* Design-page tones: a DataFusion-orange → NVIDIA-green ramp: the closer a
      component sits to the GPU, the greener it gets. DataFusion hues come from
      the DataFusion logo gradient (#EF4136 → #FBB040); GPU is NVIDIA green
      (#76B900). Light-theme variants are darkened for text contrast. */
   --ag-design-df: #c93a26;      /* DataFusion / host SQL surface */
   --ag-design-algeon: #a87414;   /* the DataFusion adapter layer */
-  --ag-design-bridge: #7e8f00;  /* query-engine — halfway to the GPU */
-  --ag-design-gpu: #5e9400;     /* cudf / libcudf / CUDA — NVIDIA green */
+  --ag-design-bridge: #7e8f00;  /* query-engine: halfway to the GPU */
+  --ag-design-gpu: #5e9400;     /* cudf / libcudf / CUDA: NVIDIA green */
   --ag-design-graph: #1f8b4d;   /* cugraph, one step off the cuDF green */
   --ag-design-lake: #2e7cb4;    /* Iceberg lakehouse blue */
 
@@ -600,7 +600,7 @@
   }
 }
 
-/* Footnotes: a quiet endnote block — hairline-separated, smaller and muted
+/* Footnotes: a quiet endnote block, hairline-separated, smaller and muted
    so citations support the prose without competing with it. Links inherit
    the muted tone and only take the link color on hover. */
 .markdown .footnotes {

@@ -96,7 +96,7 @@ fn test_dataframe_json_write_no_nulls_option() {
     let write_opts = JsonWriteOptions::builder().filepath(&path).include_nulls(false).build();
     df.write_json_with_options(write_opts).unwrap();
 
-    // Read back — should still work
+    // Read back; should still work
     let read_df = DataFrame::read_json(&rt, &path).unwrap();
     assert_eq!(read_df.num_rows(), 2);
 }

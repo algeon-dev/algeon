@@ -162,7 +162,7 @@ impl AwsCatalogErrorFacts {
 /// Maximum source-chain layers rendered for AWS transport-detail extraction.
 ///
 /// Catalog backends flatten typed SDK errors into text, so extraction must
-/// see past generic wrappers — but an unbounded foreign chain must not
+/// see past generic wrappers; but an unbounded foreign chain must not
 /// dictate adapter work. Matches the crate's other foreign-error budgets.
 const MAX_AWS_FACT_CHAIN_DEPTH: usize = 32;
 /// Maximum bytes retained from the chain. AWS markers are short SDK codes;

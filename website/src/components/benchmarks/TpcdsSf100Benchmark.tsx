@@ -66,7 +66,7 @@ function runtimeYTicks(maxRealMs: number): {tickVals: number[]; tickText: string
 
 function formatMs(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) {
-    return '—';
+    return '-';
   }
   if (value >= 1000) {
     return `${(value / 1000).toFixed(1)}s`;
@@ -80,7 +80,7 @@ function formatSeconds(value: number): string {
 
 function formatSpeedup(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) {
-    return '—';
+    return '-';
   }
   return `${value.toFixed(1)}x`;
 }
@@ -393,7 +393,7 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
                         <td>{formatSpeedup(row.speedup)}</td>
                         <td>{row.gpuOutcome}</td>
                         <td>{row.rowsMatch ? 'match' : 'mismatch'}</td>
-                        <td>{row.runtimeOperatorClass || '—'}</td>
+                        <td>{row.runtimeOperatorClass || '-'}</td>
                         <td>{formatGiB(row.reservationLivePeakBytes)}</td>
                       </tr>
                     ))}

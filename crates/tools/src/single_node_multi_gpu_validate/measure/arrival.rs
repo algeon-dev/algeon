@@ -693,9 +693,9 @@ pub(super) async fn drive_concurrent_quarantine(
 
 /// Drives the repeated-quarantine scenario: one controlled quarantine per
 /// cycle against a rotation of configured ordinals while sustained closed-loop
-/// load runs. Each cycle reuses the single-quarantine barrier semantics — live-work
+/// load runs. Each cycle reuses the single-quarantine barrier semantics; live-work
 /// witness, synchronous injector acknowledgement, zero post-ack placements on
-/// the target, healthy progress on the remaining ordinals — so a cycle is
+/// the target, healthy progress on the remaining ordinals; so a cycle is
 /// exactly as falsifiable as the single-quarantine probe.
 ///
 /// Quarantine is a terminal per-device transition, so the rotation targets a

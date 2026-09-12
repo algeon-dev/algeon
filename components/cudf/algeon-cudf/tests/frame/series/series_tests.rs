@@ -1,4 +1,4 @@
-//! Integration tests for `Series` — the Arc-shared GPU column wrapper.
+//! Integration tests for `Series`; the Arc-shared GPU column wrapper.
 //!
 //! All tests require a GPU.
 

@@ -112,7 +112,7 @@ fn execution_cancellation_clones_share_state_across_threads() {
 fn execution_cancellation_default_is_independent_of_other_instances() {
     // `ExecutionContext::new` / `AlgeonNativeExecutionConfig::new` construct a
     // fresh `ExecutionCancellation` by default. Two independently-constructed
-    // contexts must not share a flag — otherwise cancelling one query would
+    // contexts must not share a flag; otherwise cancelling one query would
     // poison every other in-flight query in the server.
     let one = ExecutionCancellation::default();
     let two = ExecutionCancellation::default();

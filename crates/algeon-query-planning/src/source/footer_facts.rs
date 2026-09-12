@@ -1,7 +1,7 @@
 //! Parquet footers supplied to planning by whoever read them.
 //!
 //! Planning consumes footers; it does not open the files they came from. The
-//! caller — source preparation, which already loads and caches these footers —
+//! caller; source preparation, which already loads and caches these footers;
 //! passes what it has, so a footer is read once per source rather than once per
 //! decision that happens to need it.
 

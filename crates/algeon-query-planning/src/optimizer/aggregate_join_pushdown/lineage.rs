@@ -159,7 +159,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn substitute_columns_through_
     let mut map: BTreeMap<&str, &Expr> = BTreeMap::new();
     for output in &projection.outputs {
         if map.insert(output.field.name(), &output.expr).is_some() {
-            // Two outputs share the same name — ambiguous lineage.
+            // Two outputs share the same name; ambiguous lineage.
             return Err(AggregateJoinPushdownRejectedReason::MissingJoinOutputLineage);
         }
     }

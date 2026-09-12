@@ -1411,7 +1411,7 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
 /// (non-primitive layouts such as strings and booleans, decimals, or any
 /// column with nulls) are concatenated on the host with Arrow's `concat`
 /// kernel and imported through the same per-column path as
-/// [`dataframe_from_record_batch`] — one import per column instead of one
+/// [`dataframe_from_record_batch`]; one import per column instead of one
 /// per column per batch.
 ///
 /// All batches must share `batches[0]`'s schema. The combined row count must

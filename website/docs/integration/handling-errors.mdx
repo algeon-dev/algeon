@@ -104,7 +104,7 @@ fn record_failure(error: &DataFusionError) {
 The search is deterministic depth-first pre-order and bounded by both depth
 and total node count. It follows standard source chains and visits every
 `DataFusionError::Collection` branch in order, returning the first Algeon
-error it reaches — not the most severe one. A `None` result only means no
+error it reaches, not the most severe one. A `None` result only means no
 Algeon error was found within that budget; it does not prove that branches
 beyond the budget contain no Algeon identity. When there is no match, keep the
 application's existing DataFusion policy. There is deliberately no blanket
@@ -294,8 +294,8 @@ only ASCII values capped at 256 bytes with a `...` marker; a non-ASCII column
 name is omitted from metadata and listed under
 `x-algeon-omitted-facts`. Query stats retain the structured facts
 without the wire encoding limits. The column name never enters operational
-logs or `Debug` output. Compare projections per surface — message, metadata,
-logs, query stats — rather than asserting four equal strings.
+logs or `Debug` output. Compare projections per surface (message, metadata,
+logs, query stats) rather than asserting four equal strings.
 
 Protocol policy outside the built-in server belongs to the application. The
 embedded REST example intentionally maps typed errors before applying its

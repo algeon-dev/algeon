@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_katz_centrality. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_katz_centrality. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -7,7 +7,7 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 Katz centrality counts *all* incoming walks, discounting a walk of length *n*
 by `alpha^n`. At the default `alpha` (0.01) long chains contribute almost
 nothing and the ranking is nearly in-degree. Raising `alpha` to 0.05 shifts
-credit to papers whose citers are themselves heavily cited, transitively —
+credit to papers whose citers are themselves heavily cited, transitively;
 window functions over the two results make the shift visible as rank
 movement:
 
@@ -41,7 +41,7 @@ ORDER BY k.katz_rank;
 The risers are the foundations: *New Directions in Cryptography* climbs from
 in-degree rank #69 to Katz rank #5 and the RSA paper from #50 to #8, because
 the papers citing them anchor entire downstream literatures. Katz is the natural choice on citation-style
-graphs — near-acyclic structure starves
+graphs; near-acyclic structure starves
 [eigenvector centrality](../algorithms/centrality/cugraph_eigenvector_centrality.mdx),
 while the `beta` base score keeps every vertex non-zero here. Convergence
 requires `alpha` below the reciprocal of the graph's largest eigenvalue:
