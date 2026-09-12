@@ -1990,7 +1990,6 @@ impl QueryHandle {
             attempt_member_lease: Some(attempt_member_lease),
             attempt_stream_provider_route: Some(Arc::clone(&attempt_stream_provider_route)),
             attempt_stream_provider_alias: None,
-            attempt_fork_subset: None,
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,
             source_chunk_planning_mode: service.config.source_chunk_planning_mode,

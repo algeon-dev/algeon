@@ -30,8 +30,8 @@ fn shim_route_contract_rejects_unowned_and_empty_attempt_stream_sets() {
     assert!(STREAM_SHIM_HEADER.contains("cudf_stream_provider_attach_attempt_stream"));
     assert!(STREAM_SHIM_SOURCE.contains("fork parent is not attached to an admitted attempt"));
     assert!(STREAM_SHIM_SOURCE.contains("auxiliary stream set is empty"));
-    assert!(STREAM_SHIM_SOURCE.contains("served[index % served.size()]"));
-    assert!(STREAM_SHIM_SOURCE.contains("alias fork subset is empty or outside the attempt fork pool"));
+    assert!(STREAM_SHIM_SOURCE.contains("result.emplace_back(served);"));
+    assert!(STREAM_SHIM_SOURCE.contains("every attempt auxiliary fork is already claimed by a live alias"));
     assert!(STREAM_SHIM_SOURCE.contains("attempt_stream_routes.erase(it)"));
 }
 
@@ -58,11 +58,44 @@ fn native_route_registry_accepts_aliases_and_drains_by_parent() {
             cudf_sys::cudf_stream_provider_register_attempt(parent, fork_streams.as_ptr(), fork_streams.len()),
             cudf_sys::CUDF_SUCCESS
         );
-        assert_eq!(cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, alias, 0, 0), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(
+            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, alias, std::ptr::null_mut()),
+            cudf_sys::CUDF_SUCCESS,
+            "an attach accepts a null out pointer"
+        );
         assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(alias), cudf_sys::CUDF_SUCCESS);
         assert_eq!(cudf_sys::cudf_stream_provider_unregister_attempt(parent), cudf_sys::CUDF_SUCCESS);
         assert_eq!(cudf_sys::cudf_stream_provider_unregister_attempt(parent), cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     }
+}
+
+/// A route registered with fewer than two forks has no auxiliary fork to
+/// serve any alias, only a reserved parent fork, so it is rejected at
+/// registration rather than admitting a caller it cannot isolate.
+#[test]
+fn a_route_without_an_auxiliary_fork_is_refused() {
+    let parent = 0x1a000usize as *mut std::ffi::c_void;
+    let reserved_only = [0x1b000usize as *mut std::ffi::c_void];
+
+    let status =
+        unsafe { cudf_sys::cudf_stream_provider_register_attempt(parent, reserved_only.as_ptr(), reserved_only.len()) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT, "a reserved fork alone backs no alias");
+}
+
+/// Attaches `alias` to `parent`, returning the auxiliary fork index the route
+/// chose for it.
+fn attach(parent: *mut std::ffi::c_void, alias: *mut std::ffi::c_void) -> usize {
+    let mut claimed = usize::MAX;
+    // Only the native route map is touched; the raw stream values stand in for
+    // identities and are never dereferenced.
+    let status = unsafe { cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, alias, &raw mut claimed) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "an attach succeeds while an auxiliary fork is free");
+    claimed
+}
+
+fn detach(alias: *mut std::ffi::c_void) {
+    let status = unsafe { cudf_sys::cudf_stream_provider_detach_attempt_stream(alias) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 }
 
 fn fork(stream: *mut std::ffi::c_void, count: usize) -> Vec<usize> {
@@ -74,23 +107,28 @@ fn fork(stream: *mut std::ffi::c_void, count: usize) -> Vec<usize> {
     forks.into_iter().map(|fork| fork as usize).collect()
 }
 
-/// An alias carries its own fork subset: forks issued from it stay inside
-/// that range and round-robin within it. A whole-pool caller -- the parent or
-/// a subset-less alias -- is served only the forks no live subset alias
-/// claims, so it can never hand another lane's permit holder one of that
-/// lane's streams. Detaching releases exactly that alias's claim.
+/// Every active caller of a route owns a fixed, disjoint fork for its
+/// lifetime: the parent is served only its reserved fork (registered last),
+/// each alias only the auxiliary fork the route claimed for it, and a fork
+/// stream only itself, so a nested libcudf fork stays inside the caller that
+/// owns it. Nothing resolves to a fork another live caller may be launching
+/// kernels on. Detaching releases exactly that alias's index for the next
+/// claim.
 #[test]
-fn whole_pool_callers_avoid_claimed_forks_and_lane_forks_stay_inside_their_lane() {
+fn every_caller_owns_one_fixed_disjoint_fork() {
     let parent = 0x5000usize as *mut std::ffi::c_void;
     let fork_streams = [
         0x6000usize as *mut std::ffi::c_void,
         0x7000usize as *mut std::ffi::c_void,
         0x8000usize as *mut std::ffi::c_void,
+        // The reserved fork of the parent is the last registered entry.
         0x9000usize as *mut std::ffi::c_void,
     ];
-    let lane_alias = 0xa000usize as *mut std::ffi::c_void;
-    let whole_pool_alias = 0xb000usize as *mut std::ffi::c_void;
+    let first_alias = 0xa000usize as *mut std::ffi::c_void;
+    let second_alias = 0xa100usize as *mut std::ffi::c_void;
+    let third_alias = 0xb000usize as *mut std::ffi::c_void;
     let pool: Vec<usize> = fork_streams.iter().map(|fork| *fork as usize).collect();
+    let reserved = pool[pool.len() - 1];
 
     unsafe {
         assert_eq!(cudf_sys::cudf_stream_provider_install(), cudf_sys::CUDF_SUCCESS);
@@ -98,51 +136,55 @@ fn whole_pool_callers_avoid_claimed_forks_and_lane_forks_stay_inside_their_lane(
             cudf_sys::cudf_stream_provider_register_attempt(parent, fork_streams.as_ptr(), fork_streams.len()),
             cudf_sys::CUDF_SUCCESS
         );
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, lane_alias, 2, 4),
-            cudf_sys::CUDF_SUCCESS
-        );
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, whole_pool_alias, 0, 0),
-            cudf_sys::CUDF_SUCCESS
-        );
     }
+    assert_eq!(fork(parent, 3), vec![reserved; 3], "the parent is served only its reserved fork");
 
-    assert_eq!(fork(lane_alias, 5), vec![pool[2], pool[3], pool[2], pool[3], pool[2]]);
-    assert_eq!(fork(parent, 5), vec![pool[0], pool[1], pool[0], pool[1], pool[0]], "the parent avoids claimed forks");
+    assert_eq!(attach(parent, first_alias), 0, "the first claim takes the lowest auxiliary index");
+    assert_eq!(attach(parent, second_alias), 1, "the next claim takes the next free auxiliary index");
+    assert_eq!(attach(parent, third_alias), 2);
+
+    assert_eq!(fork(first_alias, 3), vec![pool[0]; 3], "an alias forks only its own claimed stream");
+    assert_eq!(fork(second_alias, 3), vec![pool[1]; 3]);
+    assert_eq!(fork(third_alias, 3), vec![pool[2]; 3]);
     assert_eq!(
-        fork(whole_pool_alias, 5),
-        vec![pool[0], pool[1], pool[0], pool[1], pool[0]],
-        "a subset-less alias avoids claimed forks"
+        fork(parent, 3),
+        vec![reserved; 3],
+        "three live aliases leave the parent on its reserved fork, never on theirs"
     );
 
-    // Nested forks stay inside the lane: work libcudf placed on one of the
-    // lane's forks forks again from that stream, which must not reach another
-    // lane's streams. An unclaimed fork is a whole-pool caller like any other.
-    assert_eq!(fork(fork_streams[2], 3), vec![pool[2], pool[3], pool[2]]);
-    assert_eq!(fork(fork_streams[0], 3), vec![pool[0], pool[1], pool[0]], "unclaimed forks avoid claimed forks");
+    // Nested forks stay inside the owner: work libcudf placed on a caller's
+    // fork forks again from that stream, which must not reach another
+    // caller's stream.
+    assert_eq!(fork(fork_streams[0], 2), vec![pool[0]; 2], "a claimed fork nests onto its owner's fork");
+    assert_eq!(fork(fork_streams[3], 2), vec![reserved; 2], "the reserved fork nests onto itself");
 
-    unsafe {
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(lane_alias), cudf_sys::CUDF_SUCCESS);
-    }
-    assert_eq!(fork(parent, 4), pool, "detach releases the claim with the alias");
-    assert_eq!(fork(fork_streams[2], 4), pool, "a released fork is served the whole pool again");
+    detach(second_alias);
+    assert_eq!(fork(parent, 2), vec![reserved; 2], "a detach does not move the parent off its reserved fork");
+    assert_eq!(attach(parent, second_alias), 1, "the freed index is the lowest free one for a later claim");
 
+    detach(first_alias);
+    detach(second_alias);
+    detach(third_alias);
     unsafe {
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(whole_pool_alias), cudf_sys::CUDF_SUCCESS);
         assert_eq!(cudf_sys::cudf_stream_provider_unregister_attempt(parent), cudf_sys::CUDF_SUCCESS);
     }
 }
 
-/// Every fork claimed by lanes leaves a whole-pool caller nothing disjoint to
-/// serve. That state means the attempt has no auxiliary permit left for
-/// another holder, so the whole pool is the only answer that can be correct.
+/// An attach onto a route whose auxiliary forks are all claimed fails typed
+/// rather than handing a second caller a fork a live one already owns. Only a
+/// caller without a fresh attempt auxiliary permit can reach that state, since
+/// live claims never outnumber permit holders.
 #[test]
-fn a_fully_claimed_pool_falls_back_to_serving_every_fork() {
+fn a_full_auxiliary_pool_refuses_a_further_attach() {
     let parent = 0x11000usize as *mut std::ffi::c_void;
-    let fork_streams = [0x12000usize as *mut std::ffi::c_void, 0x13000usize as *mut std::ffi::c_void];
-    let first_lane = 0x14000usize as *mut std::ffi::c_void;
-    let second_lane = 0x15000usize as *mut std::ffi::c_void;
+    let fork_streams = [
+        0x12000usize as *mut std::ffi::c_void,
+        0x13000usize as *mut std::ffi::c_void,
+        0x13100usize as *mut std::ffi::c_void,
+    ];
+    let first_alias = 0x14000usize as *mut std::ffi::c_void;
+    let second_alias = 0x15000usize as *mut std::ffi::c_void;
+    let contender = 0x15100usize as *mut std::ffi::c_void;
     let pool: Vec<usize> = fork_streams.iter().map(|fork| *fork as usize).collect();
 
     unsafe {
@@ -150,96 +192,27 @@ fn a_fully_claimed_pool_falls_back_to_serving_every_fork() {
             cudf_sys::cudf_stream_provider_register_attempt(parent, fork_streams.as_ptr(), fork_streams.len()),
             cudf_sys::CUDF_SUCCESS
         );
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, first_lane, 0, 1),
-            cudf_sys::CUDF_SUCCESS
-        );
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, second_lane, 1, 2),
-            cudf_sys::CUDF_SUCCESS
-        );
     }
+    assert_eq!(attach(parent, first_alias), 0);
+    assert_eq!(attach(parent, second_alias), 1);
 
-    assert_eq!(fork(first_lane, 2), vec![pool[0], pool[0]]);
-    assert_eq!(fork(second_lane, 2), vec![pool[1], pool[1]]);
-    assert_eq!(fork(parent, 2), pool, "no fork is unclaimed, so the parent is served the whole pool");
+    assert_eq!(fork(first_alias, 2), vec![pool[0]; 2]);
+    assert_eq!(fork(second_alias, 2), vec![pool[1]; 2]);
+    assert_eq!(fork(parent, 2), vec![pool[2]; 2], "a full auxiliary pool leaves the parent on its reserved fork");
 
+    let mut claimed = usize::MAX;
+    assert_eq!(
+        unsafe { cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, contender, &raw mut claimed) },
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION,
+        "an attach onto a fully claimed auxiliary pool fails typed rather than sharing a live caller's fork"
+    );
+
+    detach(first_alias);
+    assert_eq!(attach(parent, contender), 0, "a detach frees exactly that index for the refused caller");
+
+    detach(contender);
+    detach(second_alias);
     unsafe {
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(first_lane), cudf_sys::CUDF_SUCCESS);
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(second_lane), cudf_sys::CUDF_SUCCESS);
-        assert_eq!(cudf_sys::cudf_stream_provider_unregister_attempt(parent), cudf_sys::CUDF_SUCCESS);
-    }
-}
-
-/// Two live aliases may not claim the same fork, equal ranges included: each
-/// detach releases exactly its own claim, so a shared range would leave one
-/// alias confined to streams the other already released.
-#[test]
-fn alias_fork_subset_rejects_a_range_overlapping_a_live_claim() {
-    let parent = 0x16000usize as *mut std::ffi::c_void;
-    let fork_streams = [
-        0x17000usize as *mut std::ffi::c_void,
-        0x18000usize as *mut std::ffi::c_void,
-        0x19000usize as *mut std::ffi::c_void,
-    ];
-    let held = 0x1a000usize as *mut std::ffi::c_void;
-    let contender = 0x1b000usize as *mut std::ffi::c_void;
-
-    unsafe {
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_register_attempt(parent, fork_streams.as_ptr(), fork_streams.len()),
-            cudf_sys::CUDF_SUCCESS
-        );
-        assert_eq!(cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, held, 0, 2), cudf_sys::CUDF_SUCCESS);
-        for (fork_begin, fork_end) in [(0usize, 2usize), (0, 1), (1, 3), (1, 2)] {
-            assert_eq!(
-                cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, contender, fork_begin, fork_end),
-                cudf_sys::CUDF_ERROR_INVALID_OPERATION,
-                "subset [{fork_begin}, {fork_end}) overlaps the live claim [0, 2)"
-            );
-        }
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, contender, 2, 3),
-            cudf_sys::CUDF_SUCCESS,
-            "a disjoint claim on the same route is accepted"
-        );
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(held), cudf_sys::CUDF_SUCCESS);
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, held, 0, 2),
-            cudf_sys::CUDF_SUCCESS,
-            "the released range is claimable again"
-        );
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(held), cudf_sys::CUDF_SUCCESS);
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(contender), cudf_sys::CUDF_SUCCESS);
-        assert_eq!(cudf_sys::cudf_stream_provider_unregister_attempt(parent), cudf_sys::CUDF_SUCCESS);
-    }
-}
-
-/// An alias subset must name a non-empty range inside the attempt fork pool.
-#[test]
-fn alias_fork_subset_rejects_empty_inverted_and_out_of_pool_ranges() {
-    let parent = 0xc000usize as *mut std::ffi::c_void;
-    let fork_streams = [0xd000usize as *mut std::ffi::c_void, 0xe000usize as *mut std::ffi::c_void];
-    let alias = 0xf000usize as *mut std::ffi::c_void;
-
-    unsafe {
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_register_attempt(parent, fork_streams.as_ptr(), fork_streams.len()),
-            cudf_sys::CUDF_SUCCESS
-        );
-        for (fork_begin, fork_end) in [(1usize, 1usize), (2, 1), (0, 3), (2, 3)] {
-            assert_eq!(
-                cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, alias, fork_begin, fork_end),
-                cudf_sys::CUDF_ERROR_INVALID_ARGUMENT,
-                "subset [{fork_begin}, {fork_end}) is not inside the fork pool"
-            );
-        }
-        assert_eq!(
-            cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, alias, 0, 2),
-            cudf_sys::CUDF_SUCCESS,
-            "a rejected subset leaves the alias attachable"
-        );
-        assert_eq!(cudf_sys::cudf_stream_provider_detach_attempt_stream(alias), cudf_sys::CUDF_SUCCESS);
         assert_eq!(cudf_sys::cudf_stream_provider_unregister_attempt(parent), cudf_sys::CUDF_SUCCESS);
     }
 }
