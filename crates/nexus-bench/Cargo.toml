@@ -12,15 +12,6 @@ workspace = true
 
 [features]
 default = []
-iceberg = [
-  "datafusion-nexus/iceberg",
-  "dep:aws-config",
-  "dep:aws-credential-types",
-  "dep:iceberg",
-  "dep:iceberg-datafusion",
-  "dep:object_store",
-  "dep:tempfile",
-]
 cugraph = [
   "datafusion-nexus/cugraph",
   "dep:cugraph",
@@ -53,8 +44,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
 aws-config = { workspace = true, optional = true }
 aws-credential-types = { workspace = true, optional = true }
-iceberg = { workspace = true, optional = true }
-iceberg-datafusion = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 
@@ -128,6 +117,9 @@ test = false
 [[bin]]
 name = "tpcds_three_way_bench"
 test = false
+
+[build-dependencies]
+nexus-build-support = { workspace = true }
 
 [[test]]
 name = "iceberg_bin_tests_cpu"

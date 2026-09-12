@@ -1,14 +1,14 @@
 [package]
 name = "cudf-nexus"
-description = "Workspace-internal safe libcudf execution component for DataFusion Nexus"
+description = "Safe libcudf execution component for DataFusion Nexus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://docs.rs/cudf-nexus"
 readme = "../README.md"
-publish = false
 keywords = ["cuda", "cudf", "dataframe", "gpu", "rapids"]
 autoexamples = false
 

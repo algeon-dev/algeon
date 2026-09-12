@@ -567,6 +567,8 @@ impl Default for InstalledTestGpuBackend {
 
 #[cfg(test)]
 impl InstalledTestGpuBackend {
+    // Only the withheld `iceberg` GPU test target drives an explicit close.
+    #[cfg_attr(not(feature = "iceberg"), expect(dead_code, reason = "iceberg test target is withheld"))]
     pub(crate) fn close_and_wait(mut self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         let backend = self.backend.take().expect("test backend remains live until fixture drop");
         backend.close_and_wait(timeout)

@@ -1,55 +1,38 @@
-# DataFusion Nexus
+<p align="center">
+  <img src="website/static/img/nexus-logo-dark-theme.png" alt="DataFusion Nexus" width="420">
+  <br>
+  <a href="https://datafusion.nexus">Website</a> |
+  <a href="https://datafusion.nexus/blog/introducing-datafusion-nexus">Intro</a> |
+  <a href="https://docs.rs/datafusion-nexus">API Docs</a>
+</p>
 
-[Website](https://datafusion.nexus) |
-[Intro](https://datafusion.nexus/blog/introducing-datafusion-nexus) |
-[API Docs](https://docs.rs/datafusion-nexus)
-
-<img src="website/static/img/nexus-logo-dark-theme.png" alt="DataFusion Nexus" width="420">
+---
 
 DataFusion Nexus is an experimental GPU query engine for [Apache DataFusion](https://datafusion.apache.org/).
-It evaluates physical-plan candidates, selects those supported by [cuDF](https://docs.rapids.ai/api/cudf/stable/)
-for GPU execution, and exposes [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) and other algorithms as
-SQL table functions. Data can be read directly from local Parquet files or remote Iceberg tables.
-Physical-plan candidates that are not selected for GPU execution fall back to their native DataFusion implementations.
-
-Nexus is designed to fit into your existing architecture. Planning decisions, function
-capabilities, and errors are exposed as structured, machine-readable values, allowing
-application code to reason about queries before and after execution.
+It accelerates supported physical plans with [cuDF](https://docs.rapids.ai/api/cudf/stable/)
+and exposes GPU algorithms through SQL table functions.
+Plans not selected for GPU execution retain their DataFusion implementations.
 
 ## Features
 
-- **DataFusion-native GPU execution.** Nexus lowers supported physical-plan
-  candidates to a DataFusion-independent cuDF IR. Rewrites are whole-candidate
-  by default; narrowly certified mixed plans can retain a DataFusion CPU
-  boundary. Unsupported or cost-rejected candidates retain their executable
-  DataFusion plans, and callers can require a final plan with no DataFusion
-  CPU execution.
-- **Graph algorithms and GPU function discovery.** `cugraph_*` table functions
-  run PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over registered
-  edge relations and return ordinary rows. The shared
-  [GPU function catalog](website/docs/guides/gpu-function-discovery.mdx) lets
-  clients list and describe the cuGraph and cuVS contracts, validate available
-  calls, and check whether each function is executable in the current session.
-- **Parquet and Iceberg sources.** Native scans read local and S3-compatible
-  Parquet, including Iceberg tables resolved through REST and Glue catalogs.
-  Remote reads use cuDF's KvikIO-backed S3 data source; unsupported native
-  Iceberg scans retain their executable CPU delegate. Remote catalogs are
-  read-only, with an optional mutable local workspace for views and scratch
-  tables.
-- **Structured planning diagnostics.** Planning reports record candidate
-  outcomes and the final plan disposition.
+- **DataFusion-native GPU execution.** Integrates with DataFusion's physical
+  optimizer, with an option to require a final plan without DataFusion CPU execution.
+- **Graph algorithms and function discovery.** Run PageRank, BFS, Louvain,
+  ForceAtlas2, and other [cuGraph](https://docs.rapids.ai/api/cugraph/stable/)
+  algorithms through `cugraph_*` table functions. The
+  [GPU function catalog](website/docs/guides/gpu-function-discovery.mdx)
+  describes cuGraph and cuVS functions and their availability in the current session.
+- **Parquet and Iceberg sources.** Read local and S3-compatible Parquet, plus
+  Iceberg tables through REST and Glue catalogs. Remote catalogs are read-only.
+  Iceberg requires a source build: it is withheld from the published crates
+  until iceberg-rust ships a DataFusion 55 compatible release.
+- **Structured planning diagnostics.** Inspect GPU coverage and remediation through
   [`nexus_explain_coverage`](website/docs/integration/gpu-coverage-validation.mdx)
-  and Flight SQL `EXPLAIN GPU` expose the same coverage evidence and
-  remediation guidance.
-  Errors retain typed identities at the DataFusion boundary.
-- **Per-device memory admission.** Every native attempt is admitted against an
-  immutable GPU memory grant. Shapes without the required memory proof are
-  rejected before GPU work begins; eligible source-chunk failures may retry at
-  a smaller granularity, with structured facts reported when recovery is not
-  possible.
+  or Flight SQL `EXPLAIN GPU`. Planning reports and errors expose structured,
+  machine-readable values.
+- **GPU memory limits.** Native execution is admitted through a per-device ledger
+  and runs within a service-configured memory cap enforced by the query allocator.
 
 > [!WARNING]
-> DataFusion Nexus is still an experimental project. Its public APIs,
-> query-planning behavior, and overall architecture are evolving rapidly
-> and may change incompatibly between releases. Evaluate it carefully
-> before using it in production, and use it at your own risk.
+> DataFusion Nexus is experimental. APIs and query behavior may change
+> incompatibly between releases.

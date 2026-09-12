@@ -32,7 +32,7 @@ cuvs-sys = { workspace = true, optional = true }
 datafusion = { workspace = true }
 futures = { workspace = true }
 datafusion-nexus = { workspace = true }
-nexus-server = { workspace = true, features = ["cugraph", "iceberg"] }
+nexus-server = { workspace = true, features = ["cugraph"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 parquet = { workspace = true }
@@ -68,6 +68,9 @@ name = "otlp_metrics_exporter"
 path = "src/bin/otlp_metrics_exporter.rs"
 test = false
 required-features = ["otlp-metrics"]
+
+[build-dependencies]
+nexus-build-support = { workspace = true }
 
 [[test]]
 name = "otlp_metrics_exporter_cpu"

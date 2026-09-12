@@ -1,12 +1,14 @@
-//! Shared Cargo build-script support for RAPIDS runtime libraries, colocated
-//! with the repository's other build tooling under `scripts/build`.
+//! Shared Cargo build-script support for RAPIDS runtime libraries.
 //!
-//! This file is included by workspace build scripts. It deliberately is not a
-//! crate: none of the runtime packages should depend on build-time policy.
+//! Every Nexus package whose build script links RAPIDS native libraries depends
+//! on this crate as a build-dependency, so the published `.crate` archives stay
+//! self-contained and one implementation owns the policy.
 //!
 //! Environment capture, pure metadata/candidate/identity policy, filesystem
 //! observation, and Cargo stdout emission are kept as separate stages so the
 //! safety policy can be tested without real native libraries.
+//!
+//! std-only by contract: it runs before any dependency is built.
 
 use std::{
     ffi::OsStr,
@@ -95,8 +97,6 @@ impl RapidsConsumers {
 }
 
 pub struct Config {
-    /// Path as Cargo should track it, relative to the package manifest.
-    pub support_source: &'static str,
     pub link_arg_targets: LinkArgTargets,
     pub consumers: RapidsConsumers,
     /// Whether this package's native execution code emits NVTX annotations.
@@ -527,7 +527,6 @@ pub fn configure(config: Config) {
     let environment = read_environment(consumers);
     let metadata = resolve_metadata(&environment);
 
-    println!("cargo:rerun-if-changed={}", config.support_source);
     track_env(CUDF_METADATA_ENV);
     track_env(CUDF_RUNTIME_LIB_DIR_ENV);
     track_env(CUDF_RUST_RUNTIME_LIB_ENV);

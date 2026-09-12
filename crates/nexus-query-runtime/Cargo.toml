@@ -4,7 +4,13 @@ description = "DataFusion-free native query runtime, lifecycle, ledger, and obse
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
-publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nexus-query-runtime"
+readme = "../../README.md"
+keywords = ["datafusion", "gpu", "cuda", "runtime", "rapids"]
+categories = ["database"]
 
 [features]
 default = []

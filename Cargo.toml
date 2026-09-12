@@ -9,8 +9,8 @@ build = "build.rs"
 repository = "https://github.com/DataFusion-Nexus/datafusion-nexus"
 homepage = "https://datafusion.nexus"
 license = "Apache-2.0"
-documentation = "https://docs.rs/datafusion_nexus"
-keywords = ["sql", "datafusion", "gpu", "cuda", "iceberg"]
+documentation = "https://docs.rs/datafusion-nexus"
+keywords = ["sql", "datafusion", "gpu", "cuda", "rapids"]
 categories = ["database", "hardware-support"]
 readme = "README.md"
 
@@ -29,6 +29,7 @@ members = [
   "scripts/ci/fixtures/datafusion-facade-consumer",
   "components/cudf/cudf-nexus",
   "components/cudf/cudf-nexus-sys",
+  "components/cudf/nexus-build-support",
   "components/cudf/rapids-interop",
   "components/cugraph/cugraph-nexus",
   "components/cugraph/cugraph-nexus-sys",
@@ -54,6 +55,19 @@ homepage = "https://datafusion.nexus"
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+
+[workspace.lints.rust]
+# The `iceberg` feature is withheld from the published manifests until
+# iceberg-rust ships a DataFusion 55 / Arrow 59 compatible release; crates.io
+# has only 0.10.1 (DataFusion 53.1 / Arrow 58). The `cfg(feature = "iceberg")`
+# sites stay in place as the restoration point, so rustc must treat the value
+# as known rather than report it as an unexpected cfg.
+# See docs/issue/2026-08-20-crates-io-release-readiness.md.
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(feature, values("iceberg"))',
+  'cfg(feature, values("iceberg-e2e", "server-iceberg-e2e"))',
+  'cfg(feature, values("server-runtime-observability-e2e", "embedded-backend-e2e"))',
+] }
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
@@ -84,7 +98,7 @@ nexus-workloads = { path = "crates/nexus-workloads" }
 nexus-query-engine = { path = "crates/nexus-query-engine", version = "=0.1.0", default-features = false }
 nexus-query-planning = { path = "crates/nexus-query-planning", version = "=0.1.0", default-features = false }
 nexus-query-runtime = { path = "crates/nexus-query-runtime", version = "=0.1.0", default-features = false }
-nexus-server = { path = "crates/nexus-server", default-features = false }
+nexus-server = { path = "crates/nexus-server", version = "=0.1.0", default-features = false }
 nexus-iceberg = { path = "crates/nexus-iceberg", version = "=0.1.0", default-features = false }
 cudf = { package = "cudf-nexus", path = "components/cudf/cudf-nexus", version = "=0.1.0" }
 cudf-sys = { package = "cudf-nexus-sys", path = "components/cudf/cudf-nexus-sys", version = "=0.1.0" }
@@ -92,6 +106,7 @@ cugraph = { package = "cugraph-nexus", path = "components/cugraph/cugraph-nexus"
 cugraph-sys = { package = "cugraph-nexus-sys", path = "components/cugraph/cugraph-nexus-sys", version = "=0.1.0" }
 cuvs = { package = "cuvs-nexus", path = "components/cuvs/cuvs-nexus", version = "=0.1.0" }
 cuvs-sys = { package = "cuvs-nexus-sys", path = "components/cuvs/cuvs-nexus-sys", version = "=0.1.0" }
+nexus-build-support = { path = "components/cudf/nexus-build-support", version = "=0.1.0" }
 rapids-interop = { path = "components/cudf/rapids-interop", version = "=0.1.0" }
 ahash = "0.8"
 anyhow = "1"
@@ -153,15 +168,6 @@ cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["nexus-query-engine/nvml"]
-iceberg = [
-  "dep:nexus-iceberg",
-  "dep:iceberg",
-  "dep:iceberg-datafusion",
-  "dep:object_store",
-  "dep:opendal",
-  "dep:tempfile",
-  "nexus-iceberg/all-catalogs",
-]
 
 [dependencies]
 arrow = { workspace = true }
@@ -176,11 +182,8 @@ cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }
-nexus-iceberg = { workspace = true, optional = true }
 fnv = { workspace = true }
 futures = { workspace = true }
-iceberg = { workspace = true, optional = true }
-iceberg-datafusion = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 opendal = { workspace = true, optional = true }
 parquet = { workspace = true, default-features = true }
@@ -188,6 +191,9 @@ serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = { workspace = true }
+
+[build-dependencies]
+nexus-build-support = { workspace = true }
 
 [dev-dependencies]
 # Test-only engine seams for owner-crate white-box tests.
@@ -197,10 +203,6 @@ hex = "0.4"
 proptest = "1.7"
 sha2 = { workspace = true }
 tempfile = { workspace = true }
-
-[[test]]
-name = "iceberg_tests_gpu"
-required-features = ["iceberg"]
 
 [[test]]
 name = "cugraph_tests_gpu"
@@ -229,5 +231,3 @@ name = "native_runtime_pruning_tests_gpu"
 name = "native_tpcds_parity_tests_gpu"
 required-features = ["bench-support"]
 
-[[test]]
-name = "rapids_build_support_tests_cpu"

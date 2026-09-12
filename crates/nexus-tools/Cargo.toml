@@ -19,7 +19,6 @@ datafusion-baseline-contract-validate = [
   "dep:datafusion",
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
-  "datafusion-nexus/iceberg",
   "datafusion-nexus/bench-support",
 ]
 clickbench-stage-probe = [
@@ -39,16 +38,6 @@ cugraph-oracle = [
   "datafusion-nexus/cugraph",
   "datafusion-nexus/bench-support",
 ]
-iceberg-e2e = [
-  "dep:datafusion",
-  "dep:datafusion-nexus",
-  "dep:iceberg",
-  "dep:iceberg-catalog-glue",
-  "datafusion-nexus/iceberg",
-]
-server-iceberg-e2e = ["iceberg-e2e", "dep:nexus-server", "nexus-server/iceberg", "datafusion-nexus/bench-support"]
-server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
-embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 # The production-validation runner is intentionally opt-in. The base feature
 # stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
 # writing are unit-testable without CUDA.
@@ -103,8 +92,6 @@ nexus-examples = { path = "../nexus-examples", optional = true, features = ["otl
 nexus-workloads = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true, optional = true }
 futures = { workspace = true }
-iceberg = { workspace = true, optional = true }
-iceberg-catalog-glue = { workspace = true, optional = true }
 parquet = { workspace = true, features = ["arrow"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
@@ -127,3 +114,6 @@ name = "refresh_cugraph_oracle"
 path = "src/bin/refresh_cugraph_oracle.rs"
 required-features = ["cugraph-oracle"]
 test = false
+
+[build-dependencies]
+nexus-build-support = { workspace = true }

@@ -3,6 +3,12 @@
 //! This layer resolves table-format metadata into frontend facts that native
 //! lowering can inspect later. It does not execute source reads and it stays out
 //! of `nexus-query-engine`, which continues to receive only native source facts.
+//!
+//! The `iceberg` feature is withheld from the published manifests: crates.io
+//! carries only iceberg-rust 0.10.1 (DataFusion 53.1 / Arrow 58) while this
+//! workspace tracks DataFusion 55 / Arrow 59. The `cfg(feature = "iceberg")`
+//! items below are the restoration point once a compatible release lands.
+//! See `docs/issue/2026-08-20-crates-io-release-readiness.md`.
 
 #[cfg(feature = "iceberg")]
 pub mod iceberg;

@@ -4,6 +4,13 @@ description = "Native cuDF/cuGraph query engine contracts for DataFusion-free GP
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nexus-query-engine"
+readme = "../../README.md"
+keywords = ["datafusion", "gpu", "cuda", "cudf", "rapids"]
+categories = ["database", "hardware-support"]
 build = "build.rs"
 # The native-execution fixture is compiled as a crate unit-test module so its
 # synthetic admission hooks never need a caller-enableable public feature.
@@ -43,6 +50,9 @@ object_store = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[build-dependencies]
+nexus-build-support = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
