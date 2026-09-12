@@ -35,12 +35,13 @@ mod service_stream;
 #[doc(hidden)]
 pub mod source_identity;
 mod stream_cleanup;
+mod supervised_worker;
 #[cfg(test)]
 mod tests;
 
 pub use attempt_domain::AttemptAllocationDomain;
 #[doc(hidden)]
-pub(crate) use attempt_domain::AttemptStreamProviderRoute;
+pub use attempt_domain::AttemptStreamProviderRoute;
 #[cfg(feature = "qualification")]
 pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{
@@ -92,7 +93,7 @@ pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,
 };
 #[doc(hidden)]
-pub use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker};
+pub use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker, PoolBlockingWork};
 pub use io_capability::{
     DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV,
     KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
@@ -120,10 +121,12 @@ pub use query_service::{
 };
 #[doc(hidden)]
 pub use reservation::RetryFacts;
+#[doc(hidden)]
+pub use service_stream::{AttemptWorkLease, ServiceStreamPool};
 pub use service_stream::{
     DEFAULT_SERVICE_STREAM_POOL_SIZE, StreamLease, StreamPermitClass, default_service_stream_pool_size_for_device,
 };
 #[doc(hidden)]
-pub use service_stream::{ServiceStreamPool, SourceReadStreamLease};
+pub use supervised_worker::{SupervisedWorker, SupervisedWorkerJoin};
 
 pub use crate::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS;

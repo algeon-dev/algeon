@@ -15,16 +15,18 @@ use std::{
 };
 
 /// Orders shutdown around dependency direction: the backend coordinator first
-/// stops new cleanup work, source readers then drain before execution-pool
-/// jobs waiting on them, and stream-cleanup workers stop last.
+/// stops new cleanup work, supervised blocking workers then cancel and drain
+/// before the execution pool that carries them, and stream-cleanup workers
+/// stop last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[doc(hidden)]
 pub enum ProcessExitPhase {
     BackendCoordinator,
-    /// Joins detached source-read workers while their leased CUDA streams are
-    /// still valid. This must precede execution-pool jobs that can be waiting
-    /// for a scheduled source read, as well as stream-pool shutdown.
-    SourceReadWorker,
+    /// Cancels and joins supervised blocking workers while their leased CUDA
+    /// streams are still valid. This must precede the execution pool: the
+    /// pool's own drain waits for these workers without ever signalling their
+    /// cancellation token.
+    SupervisedWorker,
     ExecutionPool,
     StreamPool,
     ObservationCompletion,
@@ -218,15 +220,15 @@ mod tests {
             events: Arc::clone(&events),
         }));
         registry.register(Arc::new(ShutdownProbe {
-            phase: ProcessExitPhase::SourceReadWorker,
-            label: "source-read",
+            phase: ProcessExitPhase::SupervisedWorker,
+            label: "supervised-worker",
             events: Arc::clone(&events),
         }));
 
         registry.unregister(stream.id.expect("local registration has an id"));
         assert_eq!(registry.registration_count(), 3);
         registry.shutdown();
-        assert_eq!(*events.lock().unwrap(), ["backend", "source-read", "execution"]);
+        assert_eq!(*events.lock().unwrap(), ["backend", "supervised-worker", "execution"]);
     }
 
     #[test]

@@ -151,8 +151,10 @@ uses the same commands: `cargo nt -E 'package(bench)'`.
 - `scripts/check_all.sh` is the only top-level script entry. Build tooling lives
   in `scripts/build/`, CI helpers in `scripts/ci/`, manual helpers in
   `scripts/dev/`, and policy data in `.config/policies/`.
-- Keep `scripts/build/rapids.rs` std-only and shared by the DataFusion adapter,
-  native engine, server, bench, tools, and examples packages.
+- Keep `components/algeon-build-support` (library `rapids_build_support`)
+  std-only: it is the build-dependency shared by every package whose build
+  script links RAPIDS native libraries, so it must not depend on anything that
+  is built after it.
 
 ## Public contracts
 

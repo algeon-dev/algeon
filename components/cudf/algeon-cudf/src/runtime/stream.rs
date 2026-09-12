@@ -118,7 +118,17 @@ impl AttemptStreamProviderRegistration {
     }
 
     /// Attach one additional live attempt-member stream as a valid fork parent.
-    pub fn attach(&self, stream: &CudaStream) -> Result<AttemptStreamProviderAlias> {
+    ///
+    /// `fork_subset` narrows the forks served to work issued from `stream` to
+    /// that non-empty range of this route's fork pool; `None` keeps whole-pool
+    /// behavior. The subset is a property of the alias, so nested forks
+    /// issued from it on any thread stay inside the range. Detaching the
+    /// returned alias removes its subset with it.
+    pub fn attach(
+        &self,
+        stream: &CudaStream,
+        fork_subset: Option<std::ops::Range<usize>>,
+    ) -> Result<AttemptStreamProviderAlias> {
         let operation = "runtime::AttemptStreamProviderRegistration::attach";
         if stream.device() != self.parent.device() {
             return Err(Error::new_with(
@@ -129,13 +139,34 @@ impl AttemptStreamProviderRegistration {
             .with_detail("parent_device", self.parent.device().ordinal().to_string())
             .with_detail("stream_device", stream.device().ordinal().to_string()));
         }
+        let (fork_begin, fork_end) = match &fork_subset {
+            Some(range) => {
+                if range.start >= range.end || range.end > self.fork_streams.len() {
+                    return Err(Error::new_with(
+                        ErrorCode::ForeignInvalidArgument,
+                        operation,
+                        "attempt fork-stream alias subset is empty or outside the attempt fork pool",
+                    )
+                    .with_detail("fork_begin", range.start.to_string())
+                    .with_detail("fork_end", range.end.to_string())
+                    .with_detail("fork_stream_count", self.fork_streams.len().to_string()));
+                }
+                (range.start, range.end)
+            },
+            None => (0, 0),
+        };
         let _entry = DeviceEntryGuard::enter(stream.device(), operation)?;
         let raw = stream.interop_raw_handle()?;
         error::check_status_in(
             // SAFETY: `self.parent_raw` and `raw` refer to live CUDA streams
             // retained by the registration and returned alias respectively.
             unsafe {
-                cudf_sys::cudf_stream_provider_attach_attempt_stream(self.parent_raw as *mut std::ffi::c_void, raw)
+                cudf_sys::cudf_stream_provider_attach_attempt_stream(
+                    self.parent_raw as *mut std::ffi::c_void,
+                    raw,
+                    fork_begin,
+                    fork_end,
+                )
             },
             operation,
         )?;

@@ -1030,8 +1030,13 @@ impl Drop for StreamLease {
     }
 }
 
+/// One unit of auxiliary attempt work: its attempt auxiliary permit, its
+/// service stream lease, and the execution context derived from both.
+///
+/// Execution lanes and scheduled source reads hold the same lease; a lane's
+/// context additionally carries that lane's fork subset.
 #[doc(hidden)]
-pub struct SourceReadStreamLease {
+pub struct AttemptWorkLease {
     context: ExecutionContext,
     _stream_lease: StreamLease,
     // Drop after the derived context and global stream lease so the
@@ -1040,7 +1045,7 @@ pub struct SourceReadStreamLease {
     _attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
 }
 
-impl SourceReadStreamLease {
+impl AttemptWorkLease {
     pub(super) fn new(
         context: ExecutionContext,
         stream_lease: StreamLease,

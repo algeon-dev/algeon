@@ -62,8 +62,12 @@ thread_local! {
 pub enum GpuExecutionJobKind {
     /// CUDA and execution-context initialization.
     ContextSetup,
-    /// Foreground query execution.
+    /// One admitted attempt's root query execution job.
     QueryExecution,
+    /// Auxiliary work an admitted attempt issues underneath its root job:
+    /// execution lanes and scheduled source reads. Every such submission is
+    /// backed by the caller's attempt auxiliary permit.
+    AttemptWork,
     /// Resource synchronization and destruction detached from request serving.
     Cleanup,
 }
@@ -99,16 +103,23 @@ impl GpuExecutionJobKind {
         match self {
             Self::ContextSetup => "context_setup",
             Self::QueryExecution => "query_execution",
+            Self::AttemptWork => "attempt_work",
             Self::Cleanup => "cleanup",
         }
     }
 
     /// Resource class admitted for this job kind.
+    ///
+    /// A root query job is per-attempt lifecycle work, like the context setup
+    /// it follows; only the auxiliary work that job issues underneath itself
+    /// is execution-class. Context setup is the one kind whose class depends
+    /// on the attempt's own claim rather than on the kind, so it is selected
+    /// explicitly through [`GpuExecutionPool::run_observed_scoped_in_class`].
     #[doc(hidden)]
     pub const fn job_class(self) -> GpuExecutionJobClass {
         match self {
-            Self::ContextSetup | Self::Cleanup => GpuExecutionJobClass::Lifecycle,
-            Self::QueryExecution => GpuExecutionJobClass::Execution,
+            Self::ContextSetup | Self::QueryExecution | Self::Cleanup => GpuExecutionJobClass::Lifecycle,
+            Self::AttemptWork => GpuExecutionJobClass::Execution,
         }
     }
 }
@@ -199,12 +210,31 @@ impl GpuExecutionQueryTracker {
 #[derive(Clone)]
 pub struct GpuExecutorLease {
     pool: GpuExecutionPool,
+    /// Class the lease's own query-execution job runs in.
+    ///
+    /// An attempt's root execution job is root-class work, one per attempt. A
+    /// second native island of the same attempt executes on an auxiliary
+    /// fragment context that already owns an attempt auxiliary permit, so its
+    /// execution job is auxiliary work backed by that permit -- the same
+    /// ownership rule the context-setup job and the execution lanes follow.
+    /// Without this, both islands of one attempt would charge the root class,
+    /// whose capacity is one job per admitted attempt.
+    execution_class: GpuExecutionJobClass,
 }
 
 impl GpuExecutorLease {
     #[doc(hidden)]
     pub fn from_pool(pool: GpuExecutionPool) -> Self {
-        Self { pool }
+        Self { pool, execution_class: GpuExecutionJobClass::Lifecycle }
+    }
+
+    /// Builds a lease whose query-execution job runs as auxiliary work.
+    ///
+    /// The caller must already hold the attempt auxiliary permit that backs
+    /// it, for at least the lifetime of the jobs this lease runs.
+    #[doc(hidden)]
+    pub fn from_pool_for_auxiliary_fragment(pool: GpuExecutionPool) -> Self {
+        Self { pool, execution_class: GpuExecutionJobClass::Execution }
     }
 
     /// Runs one job on the lease's dedicated device executor.
@@ -229,13 +259,89 @@ impl GpuExecutorLease {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.pool.clone().run_observed_scoped(kind, observation, build_future)
+        let class = match kind {
+            GpuExecutionJobKind::QueryExecution => self.execution_class,
+            _ => kind.job_class(),
+        };
+        self.pool.clone().run_observed_scoped_in_class(kind, class, observation, build_future)
+    }
+
+    /// Submits one blocking worker onto the lease's dedicated device executor.
+    ///
+    /// This is the synchronous-work counterpart to [`run`](Self::run): the
+    /// worker runs on a bounded blocking thread instead of an async pool
+    /// worker, under the same class admission. It fits this lease's remit of
+    /// synchronous GPU work without exposing pool construction, detached
+    /// spawning, shutdown, or counters.
+    pub fn submit_blocking<F, T>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        work: F,
+    ) -> Result<PoolBlockingWork<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.pool.submit_blocking(kind, observation, work)
     }
 }
 
 impl std::fmt::Debug for GpuExecutorLease {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("GpuExecutorLease").finish_non_exhaustive()
+    }
+}
+
+/// Completion handle for one pool-carried blocking worker.
+///
+/// The waiter holds no pool permits: capacity is charged to the running
+/// worker only, so a coordinator blocked in [`PoolBlockingWork::join`]
+/// can never starve the worker it waits for.
+#[doc(hidden)]
+pub struct PoolBlockingWork<T> {
+    receiver: mpsc::Receiver<BlockingWorkOutcome<T>>,
+    job: Arc<JobObservation>,
+    device_ordinal: usize,
+    kind: GpuExecutionJobKind,
+}
+
+impl<T> std::fmt::Debug for PoolBlockingWork<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("PoolBlockingWork").finish_non_exhaustive()
+    }
+}
+
+enum BlockingWorkOutcome<T> {
+    Completed(T),
+    Panicked,
+}
+
+impl<T> PoolBlockingWork<T> {
+    /// Drains the worker and returns its exactly-once terminal outcome.
+    ///
+    /// Join is a drain: a worker that already started is always awaited and
+    /// its value handed back, so the caller can release whatever that worker
+    /// produced through its own accounting. A worker lost to pool shutdown or
+    /// process exit reports typed cancellation instead of hanging; a worker
+    /// panic reports the pool's typed panic error. A resolved join implies
+    /// the worker's class slot is already reusable.
+    pub fn join(self) -> Result<T> {
+        match self.receiver.recv() {
+            Ok(BlockingWorkOutcome::Completed(value)) => Ok(value),
+            Ok(BlockingWorkOutcome::Panicked) => Err(job_panic_error(self.device_ordinal, self.kind)),
+            Err(_) => {
+                self.job.cancellation_requested();
+                Err(QueryError::new(
+                    QueryErrorCode::Cancelled,
+                    RUN_OPERATION,
+                    "GPU execution pool blocking worker ended without delivering completion",
+                )
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("job_kind", self.kind.as_str())
+                .with_fact("reason", "gpu_execution_pool_blocking_worker_lost"))
+            },
+        }
     }
 }
 
@@ -681,6 +787,87 @@ impl GpuExecutionPool {
             let _ = run_counted_job(job_guard, permit, future).await;
         })?;
         Ok(())
+    }
+
+    /// Submits one blocking worker onto the device pool without occupying an
+    /// async worker thread.
+    ///
+    /// Blocking source reads and other host-bound device work run on tokio's
+    /// blocking threads, never on the fixed-width async workers, so serving
+    /// workers cannot starve behind a decode. Admission still rides the same
+    /// bounded class permit as every other submission: saturation fails fast
+    /// with a typed error instead of queueing unbounded waiters, and at most
+    /// `execution_job_capacity` blocking workers run concurrently, so no
+    /// second arbitrarily-sized thread pool appears behind this entry.
+    ///
+    /// The returned handle holds no pool permits. A coordinator blocked in
+    /// [`PoolBlockingWork::join`] therefore cannot starve the worker it waits
+    /// for. Capacity is released before completion is delivered, so a resolved
+    /// join implies the slot is reusable. Pool shutdown drops the completion
+    /// sender and the join reports a typed cancellation instead of hanging.
+    #[doc(hidden)]
+    pub fn submit_blocking<F, T>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        work: F,
+    ) -> Result<PoolBlockingWork<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.check_resource_epoch(RUN_OPERATION)?;
+        let class = kind.job_class();
+        let class_permit = self
+            .class_semaphore_for_class(class)
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_error| self.class_saturated_error_for_class(kind, class))?;
+        let job = self.new_job_observation(kind, observation);
+        let guard = JobCounterGuard::new(
+            kind,
+            Arc::clone(&self.inner.counters),
+            Arc::clone(&self.inner.drain),
+            self.inner.query_tracker.clone(),
+            Arc::clone(&job),
+        );
+        let (sender, receiver) = mpsc::channel();
+        let device_ordinal = self.inner.device_ordinal;
+        let resource_epoch = self.resource_epoch.clone();
+        {
+            let _submission = self.inner.submission_gate.lock().map_err(|_| {
+                QueryError::new(QueryErrorCode::Internal, RUN_OPERATION, "GPU execution submission gate was poisoned")
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("reason", "gpu_execution_pool_submission_gate_poisoned")
+            })?;
+            if self.inner.submissions_closed.load(Ordering::Acquire) {
+                return Err(pool_closed_error(device_ordinal));
+            }
+            self.inner.handle.spawn_blocking(move || {
+                let _resource_epoch = resource_epoch;
+                let mut guard = guard;
+                let _scope = guard.activate();
+                let outcome = match std::panic::catch_unwind(AssertUnwindSafe(work)) {
+                    Ok(value) => {
+                        guard.terminal.terminal(GpuJobLifecycleState::Finished);
+                        BlockingWorkOutcome::Completed(value)
+                    },
+                    Err(_) => {
+                        guard.terminal.terminal(GpuJobLifecycleState::Panicked);
+                        BlockingWorkOutcome::Panicked
+                    },
+                };
+                // The class slot, resource epoch, and job counters must be free
+                // before the completion reaches the waiter, so a resolved join
+                // implies a reusable slot rather than one still charged to this
+                // worker.
+                drop(class_permit);
+                drop(_resource_epoch);
+                drop(guard);
+                let _ = sender.send(outcome);
+            });
+        }
+        Ok(PoolBlockingWork { receiver, job, device_ordinal, kind })
     }
 
     fn new_job_observation(

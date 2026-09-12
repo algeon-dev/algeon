@@ -84,6 +84,12 @@ unsafe extern "C" {
     pub fn cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw: usize, out: *mut i32) -> cudf_status_t;
     pub fn cudf_test_event_last_raw_record_stream_raw(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_event_last_raw_record_event_raw(out: *mut usize) -> cudf_status_t;
+    #[doc = " Serve `count` forks for `stream` through the installed attempt fork-stream\n provider and write their raw values into `out_forks`."]
+    pub fn cudf_test_stream_provider_fork(
+        stream: *mut core::ffi::c_void,
+        count: usize,
+        out_forks: *mut *mut core::ffi::c_void,
+    ) -> cudf_status_t;
     pub fn cudf_test_stream_synchronize_reset();
     pub fn cudf_test_stream_block_synchronize();
     pub fn cudf_test_stream_unblock_synchronize();

@@ -1,6 +1,8 @@
 //! Capability-first bounded-pipeline admission with one decision path.
 
-use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
+use super::{
+    CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support, pipeline_tasks_within_migrated_contract,
+};
 use crate::{
     backend::AnalysisContext,
     capability::{CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionProjection},
@@ -84,13 +86,18 @@ fn capability_first_bounded_pipeline_admission_impl(
     plan: &QueryPlan,
     ctx: AnalysisContext<'_>,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
-    if !plan.contains_join() && !plan.contains_vector_algorithm() {
-        return Ok(None);
-    }
-
+    // One flow for every plan family: capability analysis, pipeline compile,
+    // then the shared task/resource support contracts. Whether a plan enters
+    // the compiled pipeline depends on the operator capabilities its pipeline
+    // carries, never on which plan shape surrounds them. Plans outside the
+    // migrated contract keep the previous behavior (`Ok(None)`; the caller
+    // falls back to the aggregate/generic executor).
     let analysis = plan.capability_analysis(ctx);
     if let Some(projection) = analysis.first_local_rejection_projection() {
-        return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+        if plan.contains_join() || plan.contains_vector_algorithm() {
+            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+        }
+        return Ok(None);
     }
     let envelope_admission = analysis.capability_envelope_admission();
     let pipeline = match compile_pipeline_outcome(plan, &analysis)? {
@@ -100,10 +107,19 @@ fn capability_first_bounded_pipeline_admission_impl(
         // reports the failure, not a plan-family envelope verdict about a
         // pipeline that does not exist.
         PipelineCompilation::Rejected(projection) => {
-            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+            if plan.contains_join() || plan.contains_vector_algorithm() {
+                return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+            }
+            return Ok(None);
         },
     };
-    let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) {
+    let converged = !plan.contains_join() && !plan.contains_vector_algorithm();
+    if converged && !pipeline_tasks_within_migrated_contract(&pipeline) {
+        // Aggregates, sorts, windows, and graph/vector-owned shapes stay on
+        // their existing paths until later phases migrate their contracts.
+        return Ok(None);
+    }
+    let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) || converged {
         analysis.capability_envelope_label()
     } else {
         match envelope_admission {
@@ -118,6 +134,12 @@ fn capability_first_bounded_pipeline_admission_impl(
             Ok(Some(CapabilityFirstPipelineAdmission::admitted(analysis, envelope, pipeline)))
         },
         CompiledBoundedPipelineSupport::Unsupported(projection) => {
+            if converged {
+                // The generic executor still owns these shapes; a support
+                // refusal inside the converged family is a fallback, not a
+                // hard refusal of a query that already runs today.
+                return Ok(None);
+            }
             Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)))
         },
     }
@@ -135,11 +157,14 @@ fn capability_first_bounded_pipeline_admission_impl(
 /// path as shared source reads, with no cursor to alias (dynamic-filter
 /// application is a no-op for non-source frames, and the contract graph still
 /// refuses unresolvable sharing at compile time). Everything else still needs
-/// a capability no compiled contract carries yet — windowed and union
-/// composition, shared frame streams, and which join kernels accept another
-/// join's retained output — so it keeps the recogniser gate until those
-/// contracts exist. Delete this function, and the branch that calls it, once
-/// they do.
+/// a capability no compiled contract carries yet — windowed composition,
+/// shared frame streams, and which join kernels accept another join's
+/// retained output — so it keeps the recogniser gate until those contracts
+/// exist. Delete this function, and the branch that calls it, once they do.
+///
+/// Union composition is covered separately: non-join families whose every
+/// task sits inside [`pipeline_tasks_within_migrated_contract`] enter the
+/// same compiled flow with a union as their first acceptance case.
 fn pipeline_is_within_migrated_execution_scope(pipeline: &CompiledPipeline) -> bool {
     pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinMaterialize).count() >= 1
         && pipeline.tasks().iter().all(|task| {

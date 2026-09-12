@@ -21,9 +21,9 @@ use query_planning::{
 };
 
 use super::{
-    CacheFillByteBudget, CacheFillBytePermit, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy,
-    GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
-    MemoryResourcePolicy, MemorySpaceId, ServiceStreamPool, SourceChunkPlanningMode, SourceReadStreamLease,
+    AttemptWorkLease, CacheFillByteBudget, CacheFillBytePermit, DeploymentIoCapability, DevicePlacement,
+    ExecutionBoundaryPolicy, GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy,
+    MemoryGrant, MemoryResourcePolicy, MemorySpaceId, ServiceStreamPool, SourceChunkPlanningMode,
     SourceSchedulerPolicy, SourceStorageProfile, StreamLease,
     allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
     attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
@@ -224,6 +224,25 @@ impl AttemptAuxiliarySlots {
         operation: &'static str,
     ) -> Result<AttemptAuxiliaryPermit> {
         self.acquire_inner(Some(cancellation), Some(deadline), operation)
+    }
+
+    /// Takes one free slot, or reports that none is free right now.
+    ///
+    /// A holder of an attempt auxiliary permit must never block on another
+    /// permit of the same attempt, so work that already owns one takes what
+    /// is left over instead of waiting for it.
+    #[doc(hidden)]
+    pub fn try_acquire(self: &Arc<Self>, operation: &'static str) -> Result<Option<AttemptAuxiliaryPermit>> {
+        let mut state = self.state.lock().map_err(|_error| {
+            QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("reason", "attempt_auxiliary_slots_poisoned")
+        })?;
+        if state.in_use < self.capacity {
+            state.in_use += 1;
+            return Ok(Some(AttemptAuxiliaryPermit { slots: Arc::clone(self) }));
+        }
+        Ok(None)
     }
 
     /// Asynchronously acquires one attempt-local auxiliary slot without
@@ -946,6 +965,10 @@ pub struct ExecutionContext {
     /// stream from the attempt domain, and before the shared route can
     /// unregister its native provider mapping.
     _attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
+    /// Fork subset every alias derived from this context claims. A work lease
+    /// acquired for one execution lane sets it, and contexts derived from that
+    /// lane inherit it, so nested work keeps forking inside the lane.
+    attempt_fork_subset: Option<std::ops::Range<usize>>,
     /// This context's shared member lease on its execution stream. One
     /// member per stream for the attempt; per-stage tokens clone it.
     attempt_member_lease: Option<cudf::StreamReservationLease>,
@@ -1214,6 +1237,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
     pub(super) admitted_capability_evidence: Option<Arc<AttemptCapabilityEvidence>>,
     pub(super) attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
+    pub(super) attempt_fork_subset: Option<std::ops::Range<usize>>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
@@ -1297,6 +1321,7 @@ impl ExecutionContext {
             attempt_member_lease: None,
             attempt_stream_provider_route: None,
             attempt_stream_provider_alias: None,
+            attempt_fork_subset: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -1353,6 +1378,7 @@ impl ExecutionContext {
             attempt_member_lease: parts.attempt_member_lease,
             attempt_stream_provider_route: parts.attempt_stream_provider_route,
             _attempt_stream_provider_alias: parts.attempt_stream_provider_alias,
+            attempt_fork_subset: parts.attempt_fork_subset,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -1435,8 +1461,20 @@ impl ExecutionContext {
 
     /// Returns an opaque lifecycle-bound executor for synchronous GPU work on
     /// this context's device.
+    ///
+    /// The lease's query-execution job follows this context's own claim on
+    /// the attempt: a root context runs it as root-class work, while an
+    /// auxiliary fragment context -- a second native island of the same
+    /// attempt -- runs it as auxiliary work backed by the attempt auxiliary
+    /// permit that context already holds. Root capacity is one job per
+    /// admitted attempt, so a second island charging it would fail where it
+    /// has a reserved auxiliary slot of its own.
     pub fn gpu_executor(&self) -> Result<GpuExecutorLease> {
-        self.gpu_execution_pool().map(GpuExecutorLease::from_pool)
+        self.gpu_execution_pool().map(if self.auxiliary_stream_permit_guard.is_some() {
+            GpuExecutorLease::from_pool_for_auxiliary_fragment
+        } else {
+            GpuExecutorLease::from_pool
+        })
     }
 
     #[doc(hidden)]
@@ -1446,6 +1484,15 @@ impl ExecutionContext {
             Some(resource_epoch) => self.gpu_execution_pool.with_resource_epoch(resource_epoch),
             None => self.gpu_execution_pool.clone(),
         })
+    }
+
+    /// Returns the admitted attempt's fork-stream route, when this context
+    /// carries one. Execution lane `i` is served fork `i` of the route's pool
+    /// through [`AttemptStreamProviderRoute::lane_capacity`]; direct contexts
+    /// have no route and run serially.
+    #[doc(hidden)]
+    pub fn attempt_stream_provider_route(&self) -> Option<Arc<AttemptStreamProviderRoute>> {
+        self.attempt_stream_provider_route.as_ref().map(Arc::clone)
     }
 
     /// Returns the query-wide diagnostic correlation id.
@@ -1554,16 +1601,19 @@ impl ExecutionContext {
         Ok(context)
     }
 
-    /// Acquires a same-device leased context for a scheduled source-read worker.
+    /// Acquires one attempt work lease: an attempt auxiliary permit, a
+    /// service stream lease, and the derived context that owns them.
+    ///
+    /// This is the single bundle behind every piece of auxiliary attempt work
+    /// -- execution lanes and scheduled source reads alike. `fork_subset`
+    /// confines the derived context's native forks to one execution lane's
+    /// share of the attempt fork pool; `None` keeps whole-pool forking.
     #[doc(hidden)]
-    pub fn acquire_source_read_lease(
+    pub fn acquire_attempt_work_lease(
         &self,
         source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,
-    ) -> Result<SourceReadStreamLease> {
-        let mut stream_scope = self.runtime_stream_lease_scope.clone();
-        if let Some((task_id, worker_id)) = source_worker {
-            stream_scope = stream_scope.with_source_worker(task_id, worker_id);
-        }
+        fork_subset: Option<std::ops::Range<usize>>,
+    ) -> Result<AttemptWorkLease> {
         // Admission reserves this bounded auxiliary share per attempt. Hold
         // the local permit for the exact lifetime of the derived stream lease,
         // so another attempt's reservation remains physically reachable.
@@ -1573,18 +1623,68 @@ impl ExecutionContext {
             .map(|slots| {
                 slots.acquire_with_cancellation(
                     &self.cancellation,
-                    "query_engine.runtime.source_read_stream.attempt_auxiliary_acquire",
+                    "query_engine.runtime.attempt_work_lease.attempt_auxiliary_acquire",
                 )
             })
             .transpose()?;
+        self.derive_attempt_work_lease(source_worker, fork_subset, attempt_auxiliary_permit)
+    }
+
+    /// Acquires one attempt work lease only if this attempt's auxiliary
+    /// envelope has a free slot right now.
+    ///
+    /// Callers that already hold an attempt auxiliary permit -- the root
+    /// execution job dispatching lanes among them -- must never block on a
+    /// second one, because the holder they would wait for may be waiting on
+    /// them. Returns `Ok(None)` when the envelope is fully claimed, so the
+    /// caller narrows its own width instead of deadlocking.
+    #[doc(hidden)]
+    pub fn try_acquire_attempt_work_lease(
+        &self,
+        fork_subset: Option<std::ops::Range<usize>>,
+    ) -> Result<Option<AttemptWorkLease>> {
+        let attempt_auxiliary_permit = match self.attempt_auxiliary_slots.as_ref() {
+            Some(slots) => {
+                match slots.try_acquire("query_engine.runtime.attempt_work_lease.attempt_auxiliary_try_acquire")? {
+                    Some(permit) => Some(permit),
+                    None => return Ok(None),
+                }
+            },
+            None => None,
+        };
+        self.derive_attempt_work_lease(None, fork_subset, attempt_auxiliary_permit).map(Some)
+    }
+
+    fn derive_attempt_work_lease(
+        &self,
+        source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,
+        fork_subset: Option<std::ops::Range<usize>>,
+        attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
+    ) -> Result<AttemptWorkLease> {
+        let mut stream_scope = self.runtime_stream_lease_scope.clone();
+        if let Some((task_id, worker_id)) = source_worker {
+            stream_scope = stream_scope.with_source_worker(task_id, worker_id);
+        }
         let stream_lease = self.service_stream_pool().acquire_observed_with_cancellation(
             &self.cancellation,
-            "query_engine.runtime.source_read_stream.acquire",
+            "query_engine.runtime.attempt_work_lease.acquire",
             self.runtime_observation.clone(),
             stream_scope,
         )?;
-        let context = self.with_stream_lease(&stream_lease)?;
-        Ok(SourceReadStreamLease::new(context, stream_lease, attempt_auxiliary_permit))
+        let mut claimed = self.clone();
+        claimed.attempt_fork_subset = fork_subset;
+        let context = claimed.with_stream_lease(&stream_lease)?;
+        Ok(AttemptWorkLease::new(context, stream_lease, attempt_auxiliary_permit))
+    }
+
+    /// Whether this context runs on a stream leased for attempt work rather
+    /// than on the attempt's own root stream.
+    ///
+    /// Work issued from such a context already holds an attempt auxiliary
+    /// permit, so it must run inline instead of leasing a second one.
+    #[doc(hidden)]
+    pub fn is_attempt_work_lease_context(&self) -> bool {
+        self._attempt_stream_provider_alias.is_some()
     }
 
     /// Builds a short-lived execution context from a borrowed stream lease.
@@ -1604,7 +1704,7 @@ impl ExecutionContext {
         let attempt_stream_provider_alias = self
             .attempt_stream_provider_route
             .as_ref()
-            .map(|route| route.attach(runtime.stream()).map(Arc::new))
+            .map(|route| route.attach(runtime.stream(), self.attempt_fork_subset.clone()).map(Arc::new))
             .transpose()?;
         Ok(Self::from_parts(ExecutionContextParts {
             service_epoch: self.service_epoch.clone(),
@@ -1631,6 +1731,7 @@ impl ExecutionContext {
             attempt_member_lease,
             attempt_stream_provider_route: self.attempt_stream_provider_route.as_ref().map(Arc::clone),
             attempt_stream_provider_alias,
+            attempt_fork_subset: self.attempt_fork_subset.clone(),
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,

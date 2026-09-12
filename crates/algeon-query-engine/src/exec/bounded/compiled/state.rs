@@ -134,6 +134,20 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
+    pub fn install_lane_claim_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<()> {
+        let slot = self.resource_slot_mut(resource)?;
+        if slot.released {
+            return Err(invalid("compiled lane scratch state received a released resident resource")
+                .with_fact("resident_resource_id", resource));
+        }
+        if slot.payload.is_some() {
+            return Err(invalid("compiled lane scratch state received an already-produced resident resource")
+                .with_fact("resident_resource_id", resource));
+        }
+        slot.payload = Some(payload);
+        Ok(())
+    }
+
     pub fn replace_resource_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<T> {
         let slot = self.resource_slot_mut(resource)?;
         if slot.released {

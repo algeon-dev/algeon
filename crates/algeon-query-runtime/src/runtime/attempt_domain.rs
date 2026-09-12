@@ -32,8 +32,29 @@ pub struct AttemptStreamProviderRoute {
 }
 
 impl AttemptStreamProviderRoute {
-    pub(super) fn attach(&self, stream: &cudf::runtime::CudaStream) -> Result<cudf::AttemptStreamProviderAlias> {
-        self.registration.attach(stream).map_err(|error| {
+    /// Maximum execution width this attempt's fork pool can back.
+    ///
+    /// The pool is fixed at admission and holds exactly as many forks as the
+    /// attempt has auxiliary permits, and lane `i` owns fork `i` alone. A run
+    /// of `k` lanes therefore leaves `lane_capacity() - k` forks unclaimed for
+    /// the up to `lane_capacity() - k` other auxiliary permit holders of the
+    /// same attempt, so no two permit holders can be served the same stream.
+    pub fn lane_capacity(&self) -> usize {
+        self._fork_streams.len()
+    }
+
+    /// Attaches `stream` as a fork parent alias of this route.
+    ///
+    /// `fork_subset` confines forks issued from `stream`, and from the forks
+    /// it is served, to that range of this route's pool; `None` keeps
+    /// whole-pool behavior. The subset lives with the alias, so it is
+    /// released when the alias detaches.
+    pub(super) fn attach(
+        &self,
+        stream: &cudf::runtime::CudaStream,
+        fork_subset: Option<std::ops::Range<usize>>,
+    ) -> Result<cudf::AttemptStreamProviderAlias> {
+        self.registration.attach(stream, fork_subset).map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_stream_provider.attach",
                 "failed to attach an attempt member stream to the fork-stream provider",

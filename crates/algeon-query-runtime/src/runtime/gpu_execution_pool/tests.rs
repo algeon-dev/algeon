@@ -272,7 +272,7 @@ async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
             outer_pool
                 .run_observed(GpuExecutionJobKind::QueryExecution, outer_observation, async move {
                     nested_pool
-                        .run_observed(GpuExecutionJobKind::ContextSetup, nested_observation, async move {
+                        .run_observed(GpuExecutionJobKind::AttemptWork, nested_observation, async move {
                             let _ = started_tx.send(());
                             std::future::pending::<()>().await;
                         })
@@ -294,7 +294,7 @@ async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
         .iter()
         .filter_map(|event| match &event.payload {
             RuntimeObservationPayload::GpuJob(observation)
-                if observation.job_kind == GpuExecutionJobKind::ContextSetup.as_str() =>
+                if observation.job_kind == GpuExecutionJobKind::AttemptWork.as_str() =>
             {
                 Some(observation.lifecycle.clone())
             },
@@ -325,7 +325,7 @@ async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
     let nested = pool
         .run(GpuExecutionJobKind::QueryExecution, async move {
             nested_pool
-                .run_observed(GpuExecutionJobKind::ContextSetup, nested_observation, async move {
+                .run_observed(GpuExecutionJobKind::AttemptWork, nested_observation, async move {
                     panic!("inline job panic")
                 })
                 .await
@@ -343,7 +343,7 @@ async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
             matches!(
                 &event.payload,
                 RuntimeObservationPayload::GpuJob(observation)
-                    if observation.job_kind == GpuExecutionJobKind::ContextSetup.as_str()
+                    if observation.job_kind == GpuExecutionJobKind::AttemptWork.as_str()
                         && observation.lifecycle == GpuJobLifecycleState::Panicked
             )
         })
@@ -393,7 +393,7 @@ async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
         let pool = pool.clone();
         let gate = Arc::clone(&gate);
         jobs.push(tokio::spawn(async move {
-            pool.run(GpuExecutionJobKind::QueryExecution, async move {
+            pool.run(GpuExecutionJobKind::AttemptWork, async move {
                 gate.wait();
                 value
             })
@@ -404,21 +404,23 @@ async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
     wait_until(|| pool.snapshot().aux_jobs_available == 0).await;
 
     let saturated = pool
-        .run(GpuExecutionJobKind::QueryExecution, async {})
+        .run(GpuExecutionJobKind::AttemptWork, async {})
         .await
         .expect_err("the fifth awaited job must not join an unbounded class waiter queue");
     assert_eq!(saturated.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
 
     wait_until(|| {
         let snapshot = pool.snapshot();
-        snapshot.active_jobs == 2 && snapshot.queued_jobs == 2 && snapshot.active_query_jobs == 2
+        snapshot.active_jobs == 2 && snapshot.queued_jobs == 2
     })
     .await;
     assert!(heartbeat.load(Ordering::Relaxed) > 0);
     let snapshot = pool.snapshot();
-    assert_eq!(snapshot.active_query_jobs, 2);
     assert_eq!(snapshot.peak_active_jobs, 2);
-    assert_eq!(snapshot.peak_active_query_jobs, 2);
+    assert_eq!(
+        snapshot.active_query_jobs, 0,
+        "the query counter counts root query jobs, never the auxiliary work they issue"
+    );
 
     gate.release();
     for job in jobs {
@@ -432,8 +434,225 @@ async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
     assert_eq!(complete.queued_jobs, 0);
     assert_eq!(complete.peak_active_jobs, 2);
     assert!(complete.peak_queued_jobs >= 2);
-    assert_eq!(complete.peak_active_query_jobs, 2);
-    assert_eq!(pool.query_tracker().snapshot().peak_active_query_jobs, 2);
+    assert_eq!(complete.peak_active_query_jobs, 0);
+    assert_eq!(pool.query_tracker().snapshot().peak_active_query_jobs, 0);
+}
+
+/// The device query counter tracks root query jobs only: the auxiliary work a
+/// root job issues underneath itself must not inflate the service's view of
+/// how many queries are executing.
+#[tokio::test(flavor = "current_thread")]
+async fn query_counters_track_root_query_jobs_and_not_the_auxiliary_work_they_issue() {
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 2, 4, GpuExecutionQueryTracker::new()).unwrap();
+    let nested_pool = pool.clone();
+    let observed = pool
+        .run(GpuExecutionJobKind::QueryExecution, async move {
+            let inside_root = pool_query_counts(&nested_pool);
+            let inside_auxiliary = nested_pool
+                .run(GpuExecutionJobKind::AttemptWork, {
+                    let nested_pool = nested_pool.clone();
+                    async move { pool_query_counts(&nested_pool) }
+                })
+                .await
+                .expect("auxiliary work runs under the root job");
+            (inside_root, inside_auxiliary)
+        })
+        .await
+        .expect("root query job runs");
+
+    assert_eq!(observed.0, (1, 1), "the root query job is counted once while it runs");
+    assert_eq!(observed.1, (1, 1), "auxiliary work under it adds nothing to the query counters");
+    let complete = pool.snapshot();
+    assert_eq!(complete.active_query_jobs, 0);
+    assert_eq!(complete.peak_active_query_jobs, 1);
+    assert_eq!(pool.query_tracker().snapshot().peak_active_query_jobs, 1);
+}
+
+fn pool_query_counts(pool: &GpuExecutionPool) -> (usize, usize) {
+    let snapshot = pool.snapshot();
+    (snapshot.active_query_jobs, pool.query_tracker().snapshot().active_query_jobs)
+}
+
+fn wait_until_sync(mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "condition was not satisfied before the test deadline");
+        thread::yield_now();
+    }
+}
+
+#[test]
+fn blocking_submit_saturates_fast_with_typed_error_on_min_pool() {
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let gate = Arc::new(BlockingGate::default());
+    let first = pool
+        .submit_blocking(
+            GpuExecutionJobKind::AttemptWork,
+            crate::observability::RuntimeObservationHandle::disabled(),
+            {
+                let gate = Arc::clone(&gate);
+                move || {
+                    gate.wait();
+                    7_u8
+                }
+            },
+        )
+        .expect("first blocking worker is admitted");
+    assert_eq!(pool.snapshot().aux_jobs_available, 0, "the running worker holds the only execution slot");
+
+    let saturated = pool
+        .submit_blocking(
+            GpuExecutionJobKind::AttemptWork,
+            crate::observability::RuntimeObservationHandle::disabled(),
+            || 9_u8,
+        )
+        .expect_err("saturation must fail fast, never queue an unbounded waiter");
+    assert_eq!(saturated.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(saturated.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
+
+    gate.release();
+    assert_eq!(first.join().expect("blocking worker completes"), 7_u8);
+    let drained = pool.snapshot();
+    assert_eq!(drained.aux_jobs_available, 1, "a resolved join implies the slot is reusable");
+    assert_eq!(drained.active_jobs, 0);
+}
+
+/// A resolved join implies the worker's class slot is already reusable: the
+/// worker releases its class permit and job counters before it delivers the
+/// completion, so a caller that joins and immediately resubmits is admitted
+/// rather than failing on a slot the finished worker still holds.
+#[test]
+fn blocking_join_resolves_only_after_the_class_slot_is_released() {
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let gate = Arc::new(BlockingGate::default());
+    let worker = pool
+        .submit_blocking(
+            GpuExecutionJobKind::AttemptWork,
+            crate::observability::RuntimeObservationHandle::disabled(),
+            {
+                let gate = Arc::clone(&gate);
+                move || {
+                    gate.wait();
+                    7_u8
+                }
+            },
+        )
+        .expect("blocking worker is admitted");
+    wait_until_sync(|| pool.snapshot().active_jobs == 1);
+    gate.release();
+
+    assert_eq!(worker.join().expect("a started worker is drained and hands back its value"), 7_u8);
+    assert_eq!(pool.snapshot().active_jobs, 0, "the joined worker no longer counts as active");
+    pool.submit_blocking(
+        GpuExecutionJobKind::AttemptWork,
+        crate::observability::RuntimeObservationHandle::disabled(),
+        || 9_u8,
+    )
+    .expect("the only class slot is reusable the moment the previous join resolves")
+    .join()
+    .expect("the resubmitted worker completes");
+}
+
+/// `submit_blocking` must hold the pool's resource epoch clone inside the
+/// worker closure, not only across submission: the closure runs on a
+/// `spawn_blocking` thread outside the async paths that already move their
+/// epoch clone into the task. If the epoch clone were dropped at submission
+/// time instead of inside the worker, the epoch would go idle (and a
+/// concurrent close could complete) while the worker is still parked.
+#[test]
+fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
+    use crate::runtime::context::{QueryResourceEpoch, QueryServiceEpoch, QueryServiceResourceEpoch};
+
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let service_epoch = QueryServiceEpoch::new(None);
+    let query_epoch = QueryResourceEpoch::new(None);
+    let anchor =
+        query_epoch.acquire(Arc::new(()), "test.gpu_execution_pool.resource_epoch").expect("query anchor acquires");
+    let resource_epoch =
+        QueryServiceResourceEpoch::acquire(&service_epoch, Some(&anchor), "test.gpu_execution_pool.resource_epoch")
+            .expect("resource epoch acquires");
+    let pool = pool.with_resource_epoch(resource_epoch);
+
+    let gate = Arc::new(BlockingGate::default());
+    let worker = pool
+        .submit_blocking(
+            GpuExecutionJobKind::AttemptWork,
+            crate::observability::RuntimeObservationHandle::disabled(),
+            {
+                let gate = Arc::clone(&gate);
+                move || {
+                    gate.wait();
+                    7_u8
+                }
+            },
+        )
+        .expect("blocking worker is admitted");
+    wait_until_sync(|| pool.snapshot().active_jobs == 1);
+
+    // Drop every external handle to the pool and its query anchor, then close
+    // the service epoch, while the worker is still parked on the gate. The
+    // task's own epoch clone must be the only thing keeping the epoch's user
+    // count above zero. `wait_for_idle_until` always reports the live user
+    // count on a non-completing wait, so checking that fact (rather than
+    // whether the call itself errors on an immediate deadline, which can
+    // trivially expire either way) deterministically distinguishes a held
+    // epoch from an idle one.
+    drop(pool);
+    drop(anchor);
+    service_epoch.invalidate();
+    let immediate = Instant::now();
+    let still_held = service_epoch
+        .wait_for_idle_until(immediate, "test.gpu_execution_pool.resource_epoch")
+        .expect_err("the closing epoch cannot complete while the worker's clone is live");
+    assert_eq!(
+        still_held.fact_value("active_resource_users"),
+        Some("1"),
+        "the parked worker's resource epoch clone must keep the closing service epoch busy"
+    );
+
+    gate.release();
+    assert_eq!(worker.join().expect("blocking worker completes"), 7_u8);
+
+    let released_deadline = Instant::now() + Duration::from_secs(5);
+    service_epoch
+        .wait_for_idle_until(released_deadline, "test.gpu_execution_pool.resource_epoch")
+        .expect("the resource epoch becomes idle once the worker's task-local clone drops after the job finishes");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blocking_completion_survives_release_cleanup_saturation() {
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let (release_sender, release_receiver) = tokio::sync::oneshot::channel::<()>();
+    pool.spawn_release_cleanup_observed_with_completion(
+        crate::observability::RuntimeObservationHandle::disabled(),
+        async move {
+            let _ = release_receiver.await;
+        },
+        || {},
+    )
+    .expect("first release cleanup occupies the dedicated slot");
+    wait_until(|| pool.snapshot().active_jobs == 1).await;
+
+    let saturated = pool
+        .spawn_release_cleanup_observed_with_completion(
+            crate::observability::RuntimeObservationHandle::disabled(),
+            async {},
+            || {},
+        )
+        .expect_err("cleanup saturation is typed, not a second waiter queue");
+    assert_eq!(saturated.fact_value("reason"), Some("gpu_execution_pool_release_cleanup_saturated"));
+
+    let worker = pool
+        .submit_blocking(
+            GpuExecutionJobKind::AttemptWork,
+            crate::observability::RuntimeObservationHandle::disabled(),
+            || 7_u8,
+        )
+        .expect("blocking completion uses its own class slot");
+    assert_eq!(worker.join().expect("blocking worker completes during cleanup saturation"), 7_u8);
+
+    let _ = release_sender.send(());
+    wait_until(|| pool.snapshot().active_jobs == 0).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -444,7 +663,7 @@ async fn width_one_spawned_child_reentrant_run_stays_on_the_same_thread() {
         .run(GpuExecutionJobKind::QueryExecution, async move {
             let outer_thread = thread::current().id();
             let inner_thread = tokio::spawn(async move {
-                nested_pool.run(GpuExecutionJobKind::ContextSetup, async { thread::current().id() }).await
+                nested_pool.run(GpuExecutionJobKind::AttemptWork, async { thread::current().id() }).await
             })
             .await
             .unwrap()
@@ -465,8 +684,8 @@ async fn reentrant_same_class_submission_is_bounded_instead_of_bypassing_the_poo
     let nested_pool = pool.clone();
 
     let nested = pool
-        .run(GpuExecutionJobKind::QueryExecution, async move {
-            nested_pool.run(GpuExecutionJobKind::QueryExecution, async { 7_u8 }).await
+        .run(GpuExecutionJobKind::AttemptWork, async move {
+            nested_pool.run(GpuExecutionJobKind::AttemptWork, async { 7_u8 }).await
         })
         .await
         .expect("outer job runs");

@@ -64,13 +64,23 @@ cudf_status_t cudf_stream_provider_register_attempt(void* parent_stream,
 /// Remove one attempt route after its streams have drained.
 cudf_status_t cudf_stream_provider_unregister_attempt(void* parent_stream);
 
-/// Attach another live attempt-member stream as a fork parent alias.
+/// Attach another live attempt-member stream as a fork parent alias, with an
+/// optional fork subset of its own.
+///
+/// When `fork_end > fork_begin`, forks requested from `alias_stream` are
+/// served round-robin from `[fork_begin, fork_end)` of the attempt's
+/// registered fork pool; the range must be non-empty and inside that pool.
+/// Passing `fork_begin == fork_end == 0` attaches the alias with whole-pool
+/// behavior. The subset is a property of the alias, not of the calling
+/// thread, so forks requested from the alias on any thread stay inside it.
+/// Detaching the alias removes its subset.
 cudf_status_t cudf_stream_provider_attach_attempt_stream(void* parent_stream,
-                                                         void* alias_stream);
+                                                         void* alias_stream,
+                                                         size_t fork_begin,
+                                                         size_t fork_end);
 
 /// Remove a previously attached attempt-member stream alias after it drains.
 cudf_status_t cudf_stream_provider_detach_attempt_stream(void* alias_stream);
-
 #ifdef __cplusplus
 }
 #endif

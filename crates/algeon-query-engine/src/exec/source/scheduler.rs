@@ -1,11 +1,12 @@
 #[cfg(test)]
 use std::sync::Barrier;
+#[cfg(test)]
+use std::thread::{self, JoinHandle};
 use std::{
     sync::{
-        Arc, Condvar, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
-    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -21,10 +22,7 @@ use crate::{
         RuntimeSourceReadObservation, RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId,
         SourceReadFact, SourceReadLifecycleState, TaskDefinitionRow, WorkerDefinitionRow,
     },
-    runtime::{
-        ExecutionCancellation, ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown,
-        register_cuda_process_exit_shutdown,
-    },
+    runtime::{ExecutionCancellation, GpuExecutorLease, SupervisedWorker, SupervisedWorkerJoin},
 };
 
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
@@ -38,9 +36,23 @@ pub(in crate::exec) struct ScheduledLocalParquetRead {
 }
 
 enum ScheduledLocalParquetReadState {
+    /// A leased worker read scheduled from the attempt's root context.
     Running {
-        worker: SourceReadWorker<ScheduledLocalParquetReadResult>,
-        source_read_lease: Box<crate::runtime::SourceReadStreamLease>,
+        worker: SupervisedWorker<ScheduledLocalParquetReadResult>,
+        source_read_lease: Box<crate::runtime::AttemptWorkLease>,
+        source: Box<LocalParquetSource>,
+        attempt: usize,
+        max_attempts: usize,
+        observation: Option<Arc<SourceReadObservation>>,
+    },
+    /// A read already issued from an attempt work lease, which ran inline on
+    /// that lease's context and stream.
+    ///
+    /// The caller holds the attempt auxiliary permit behind that lease, so
+    /// leasing a second one here would let a holder of one permit block on
+    /// another permit of the same attempt.
+    Inline {
+        result: Box<ScheduledLocalParquetReadResult>,
         source: Box<LocalParquetSource>,
         attempt: usize,
         max_attempts: usize,
@@ -58,174 +70,6 @@ pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
 struct ScheduledLocalParquetReadResult {
     frame: Result<GpuDataFrame>,
     observed_row_group_count: Option<u64>,
-}
-
-/// Owns one detached source-read worker until it has been joined.
-///
-/// The normal scheduler consumer owns this wrapper, but process exit also
-/// retains the same supervisor through the process-exit registry. That closes
-/// the gap where `std::process::exit` skips the consumer's `finish` or
-/// `abandon` call while the worker is still synchronizing a leased CUDA stream.
-struct SourceReadWorker<T> {
-    supervisor: Arc<SourceReadWorkerSupervisor<T>>,
-}
-
-struct SourceReadWorkerSupervisor<T> {
-    cancellation: ExecutionCancellation,
-    state: Mutex<SourceReadWorkerSupervisorState<T>>,
-    state_changed: Condvar,
-    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
-}
-
-struct SourceReadWorkerSupervisorState<T> {
-    process_exit_started: bool,
-    worker: Option<JoinHandle<T>>,
-    joining: bool,
-    joined: bool,
-}
-
-impl<T> SourceReadWorkerSupervisor<T> {
-    fn new(cancellation: ExecutionCancellation) -> Arc<Self> {
-        Arc::new(Self {
-            cancellation,
-            state: Mutex::new(SourceReadWorkerSupervisorState {
-                process_exit_started: false,
-                worker: None,
-                joining: false,
-                joined: false,
-            }),
-            state_changed: Condvar::new(),
-            process_exit_registration: Mutex::new(None),
-        })
-    }
-
-    fn request_process_exit(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.process_exit_started = true;
-        drop(state);
-        // Source reads check this token before entering the local-Parquet
-        // boundary. It cannot interrupt a CUDA call already in flight, so the
-        // subsequent join remains the terminal safety boundary.
-        self.cancellation.cancel();
-    }
-
-    fn unregister_process_exit(&self) {
-        let registration =
-            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(registration) = registration {
-            registration.unregister();
-        }
-    }
-
-    fn finish_join(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.joining = false;
-        state.joined = true;
-        self.state_changed.notify_all();
-        drop(state);
-        // Keep the registry entry live until the OS thread has stopped. This
-        // is also safe when the process-exit snapshot already owns the entry.
-        self.unregister_process_exit();
-    }
-
-    fn take_or_wait_for_join(&self) -> Option<JoinHandle<T>> {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            if let Some(worker) = state.worker.take() {
-                state.joining = true;
-                return Some(worker);
-            }
-            if state.joining {
-                state = self.state_changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            return None;
-        }
-    }
-
-    fn join(&self) -> Option<std::thread::Result<T>> {
-        let worker = self.take_or_wait_for_join()?;
-        let joined = worker.join();
-        self.finish_join();
-        Some(joined)
-    }
-
-    #[cfg(test)]
-    fn joined_for_test(&self) -> bool {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).joined
-    }
-}
-
-impl<T: Send + 'static> SourceReadWorkerSupervisor<T> {
-    fn activate_process_exit(self: &Arc<Self>) {
-        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
-        let registration = register_cuda_process_exit_shutdown(shutdown);
-        *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
-    }
-
-    fn spawn<F>(
-        self: &Arc<Self>,
-        queue_start: SourceReadQueueStart,
-        observation: Option<Arc<SourceReadObservation>>,
-        worker: F,
-    ) -> Result<SourceReadWorker<T>>
-    where
-        F: FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> T + Send + 'static,
-    {
-        // Hold this mutex across `thread::spawn` and handle publication. A
-        // process-exit callback either observes the fully owned JoinHandle or
-        // sets the terminal boundary first, in which case no CUDA-capable
-        // worker may begin.
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.process_exit_started {
-            drop(state);
-            self.unregister_process_exit();
-            return Err(QueryError::new(
-                QueryErrorCode::Cancelled,
-                "query_engine.source_scheduler.spawn",
-                "source read worker cannot start after process exit begins",
-            )
-            .with_fact("reason", "process_exit_started"));
-        }
-        let handle =
-            match thread::Builder::new().spawn(move || run_source_read_worker(queue_start, observation, worker)) {
-                Ok(handle) => handle,
-                Err(error) => {
-                    drop(state);
-                    self.unregister_process_exit();
-                    return Err(QueryError::new(
-                        QueryErrorCode::Internal,
-                        "query_engine.source_scheduler.spawn",
-                        "failed to spawn source read worker",
-                    )
-                    .with_fact("io_error", error));
-                },
-            };
-        state.worker = Some(handle);
-        drop(state);
-        Ok(SourceReadWorker { supervisor: Arc::clone(self) })
-    }
-}
-
-impl<T> SourceReadWorker<T> {
-    fn join(self) -> Option<std::thread::Result<T>> {
-        self.supervisor.join()
-    }
-}
-
-impl<T: Send + 'static> ProcessExitShutdown for SourceReadWorkerSupervisor<T> {
-    fn phase(&self) -> ProcessExitPhase {
-        ProcessExitPhase::SourceReadWorker
-    }
-
-    fn shutdown_for_process_exit(&self) {
-        self.request_process_exit();
-        let _ = self.join();
-        // `join` unregisters after an owned worker stops. If exit won the
-        // race before spawning, there is no worker to join but the terminal
-        // boundary still makes removing this registration safe.
-        self.unregister_process_exit();
-    }
 }
 
 struct SourceReadObservation {
@@ -410,17 +254,67 @@ fn spawn_registered_source_read_worker<T, F>(
     queue_start: SourceReadQueueStart,
     observation: Option<Arc<SourceReadObservation>>,
     cancellation: ExecutionCancellation,
+    executor: &GpuExecutorLease,
     worker: F,
-) -> Result<SourceReadWorker<T>>
+) -> Result<SupervisedWorker<T>>
 where
     T: Send + 'static,
     F: FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> T + Send + 'static,
 {
-    let supervisor = SourceReadWorkerSupervisor::new(cancellation);
-    // Register before spawning, not after: `std::process::exit` may otherwise
-    // take its registry snapshot while this worker is already executing CUDA.
-    supervisor.activate_process_exit();
-    supervisor.spawn(queue_start, observation, worker)
+    // Worker submission, cancellation, and process-exit drain are owned by
+    // the runtime device executor; the engine only produces the source work
+    // closure with its observation semantics. The single submission entry
+    // owns registration, pool admission, and the handle atomically.
+    let pool_observation = observation
+        .as_ref()
+        .map(|observation| observation.observation.clone())
+        .unwrap_or_else(RuntimeObservationHandle::disabled);
+    SupervisedWorker::submit(cancellation, executor, pool_observation, move || {
+        run_source_read_worker(queue_start, observation, worker)
+    })
+}
+
+/// The one source-read body, run either on a leased worker or inline on an
+/// attempt work lease's own context and stream.
+fn read_local_parquet_chunk_worker(
+    context: ExecutionContext,
+    source: LocalParquetSource,
+    chunk: SourceChunk,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    metrics: ExecutionMetrics,
+) -> impl FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> ScheduledLocalParquetReadResult + Send + 'static {
+    move |_queue_wait, observation| {
+        let read_started_at = Instant::now();
+        let mut observation_guard = SourceReadWorkerGuard::new(observation);
+        let frame = read_local_parquet_chunk(&context, &source, &chunk, budget_bytes, budget_boundary, &metrics)
+            .and_then(|frame| {
+                context.runtime()?.synchronize().map_err(|error| {
+                    cudf_query_error(
+                        "query_engine.source_scheduler.worker_sync",
+                        "failed to synchronize scheduled source read worker stream",
+                        error,
+                    )
+                })?;
+                Ok(frame)
+            });
+        // A pure function of the chunk's own metadata, not a metrics counter
+        // delta: the read succeeded only when `frame` is `Ok`.
+        let observed_row_group_count =
+            frame.is_ok().then(|| observed_chunk_row_group_count(&chunk)).flatten().map(|count| count as u64);
+        let read_duration_ns = read_started_at.elapsed().as_nanos() as u64;
+        match &frame {
+            Ok(_) => observation_guard.terminal(SourceReadLifecycleState::ReadFinished { read_duration_ns }),
+            Err(error) if error.code() == QueryErrorCode::Cancelled => {
+                observation_guard.terminal(SourceReadLifecycleState::Cancelled)
+            },
+            Err(error) => observation_guard.terminal(SourceReadLifecycleState::ReadFailed {
+                error_code: error.code().to_string(),
+                read_duration_ns,
+            }),
+        }
+        ScheduledLocalParquetReadResult { frame, observed_row_group_count }
+    }
 }
 
 struct SourceReadWorkerGuard {
@@ -455,8 +349,9 @@ impl Drop for SourceReadWorkerGuard {
 fn acquire_source_read_lease_then_enqueue(
     context: &ExecutionContext,
     observation: Option<&Arc<SourceReadObservation>>,
-) -> Result<(crate::runtime::SourceReadStreamLease, SourceReadQueueStart)> {
-    let lease = context.acquire_source_read_lease(observation.map(|observation| observation.source_worker_scope()))?;
+) -> Result<(crate::runtime::AttemptWorkLease, SourceReadQueueStart)> {
+    let lease =
+        context.acquire_attempt_work_lease(observation.map(|observation| observation.source_worker_scope()), None)?;
     let queue_start = SourceReadQueueStart::new(observation.map(Arc::as_ref));
     Ok((lease, queue_start))
 }
@@ -477,58 +372,56 @@ impl ScheduledLocalParquetRead {
         attempt: usize,
         max_attempts: usize,
     ) -> Result<Self> {
-        let thread_chunk = chunk.clone();
         let observation = SourceReadObservation::new(&context, &chunk, attempt);
-        let (source_read_lease, queue_start) = acquire_source_read_lease_then_enqueue(&context, observation.as_ref())?;
-        let thread_context = source_read_lease.context().clone();
-        let thread_source = source.clone();
-        let thread_observation = observation.clone();
-        let worker_cancellation = thread_context.cancellation().clone();
-        let worker = spawn_registered_source_read_worker(
-            queue_start,
-            thread_observation,
-            worker_cancellation,
-            move |_queue_wait, thread_observation| {
-                let read_started_at = Instant::now();
-                let mut observation_guard = SourceReadWorkerGuard::new(thread_observation);
-                let frame = read_local_parquet_chunk(
-                    &thread_context,
-                    &thread_source,
-                    &thread_chunk,
+        // A read issued from an attempt work lease already holds that
+        // attempt's auxiliary permit. Leasing another one here would make a
+        // permit holder wait on a second permit of the same attempt, so the
+        // read runs inline on the lease's own context and stream instead.
+        if context.is_attempt_work_lease_context() {
+            let queue_start = SourceReadQueueStart::new(observation.as_deref());
+            let result = run_source_read_worker(
+                queue_start,
+                observation.clone(),
+                read_local_parquet_chunk_worker(
+                    context,
+                    source.clone(),
+                    chunk.clone(),
                     budget_bytes,
                     budget_boundary,
-                    &metrics,
-                )
-                .and_then(|frame| {
-                    thread_context.runtime()?.synchronize().map_err(|error| {
-                        cudf_query_error(
-                            "query_engine.source_scheduler.worker_sync",
-                            "failed to synchronize scheduled source read worker stream",
-                            error,
-                        )
-                    })?;
-                    Ok(frame)
-                });
-                // A pure function of the chunk's own metadata, not a metrics
-                // counter delta: the read succeeded only when `frame` is `Ok`.
-                let observed_row_group_count = frame
-                    .is_ok()
-                    .then(|| observed_chunk_row_group_count(&thread_chunk))
-                    .flatten()
-                    .map(|count| count as u64);
-                let read_duration_ns = read_started_at.elapsed().as_nanos() as u64;
-                match &frame {
-                    Ok(_) => observation_guard.terminal(SourceReadLifecycleState::ReadFinished { read_duration_ns }),
-                    Err(error) if error.code() == QueryErrorCode::Cancelled => {
-                        observation_guard.terminal(SourceReadLifecycleState::Cancelled)
-                    },
-                    Err(error) => observation_guard.terminal(SourceReadLifecycleState::ReadFailed {
-                        error_code: error.code().to_string(),
-                        read_duration_ns,
-                    }),
-                }
-                ScheduledLocalParquetReadResult { frame, observed_row_group_count }
-            },
+                    metrics,
+                ),
+            );
+            return Ok(Self {
+                chunk,
+                state: ScheduledLocalParquetReadState::Inline {
+                    result: Box::new(result),
+                    source: Box::new(source),
+                    attempt,
+                    max_attempts,
+                    observation,
+                },
+                budget_bytes,
+                budget_boundary,
+                prefetch,
+            });
+        }
+        let (source_read_lease, queue_start) = acquire_source_read_lease_then_enqueue(&context, observation.as_ref())?;
+        let thread_context = source_read_lease.context().clone();
+        let worker_cancellation = thread_context.cancellation().clone();
+        let worker_executor = thread_context.gpu_executor()?;
+        let worker = spawn_registered_source_read_worker(
+            queue_start,
+            observation.clone(),
+            worker_cancellation,
+            &worker_executor,
+            read_local_parquet_chunk_worker(
+                thread_context,
+                source.clone(),
+                chunk.clone(),
+                budget_bytes,
+                budget_boundary,
+                metrics,
+            ),
         )?;
         Ok(Self {
             chunk,
@@ -559,7 +452,17 @@ impl ScheduledLocalParquetRead {
         execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<ScheduledLocalParquetReadOutput> {
         let ScheduledLocalParquetRead { chunk, state, budget_boundary, .. } = self;
-        let (worker, retry_context, observation) = match state {
+        let (result, retry_context) = match state {
+            ScheduledLocalParquetReadState::Inline { result, source, attempt, max_attempts, observation } => {
+                // The inline read already completed on the caller's stream;
+                // record the degenerate join interval so the source-read
+                // lifecycle stays a single shape for both arms.
+                if let Some(observation) = &observation {
+                    observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
+                    observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns: 0 });
+                }
+                (*result, Some((*source, attempt, max_attempts)))
+            },
             ScheduledLocalParquetReadState::Running {
                 worker,
                 source_read_lease,
@@ -567,45 +470,52 @@ impl ScheduledLocalParquetRead {
                 attempt,
                 max_attempts,
                 observation,
-            } => (worker, Some((*source_read_lease, *source, attempt, max_attempts)), observation),
+            } => {
+                if let Some(observation) = &observation {
+                    observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
+                }
+                let join_started_at = Instant::now();
+                let joined = worker.join();
+                let join_duration_ns = join_started_at.elapsed().as_nanos() as u64;
+                if let Some(observation) = &observation {
+                    observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns });
+                }
+                let result = match joined {
+                    Some(SupervisedWorkerJoin::Completed(result)) => result,
+                    Some(SupervisedWorkerJoin::Panicked) => {
+                        return Err(attach_row_group_facts(
+                            QueryError::new(
+                                QueryErrorCode::Internal,
+                                "query_engine.source_scheduler.join",
+                                "native source scheduler read worker panicked",
+                            )
+                            .with_fact("chunk_index", chunk.chunk_index)
+                            .with_fact("file_index", chunk.file_index)
+                            .with_fact("path", parquet_chunk_path_fact(&chunk)),
+                            &chunk,
+                        ));
+                    },
+                    Some(SupervisedWorkerJoin::Cancelled) | None => {
+                        return Err(attach_row_group_facts(
+                            QueryError::new(
+                                QueryErrorCode::Cancelled,
+                                "query_engine.source_scheduler.join",
+                                "source read worker was stopped by process exit before consumer join",
+                            )
+                            .with_fact("reason", "source_worker_process_exit")
+                            .with_fact("chunk_index", chunk.chunk_index)
+                            .with_fact("file_index", chunk.file_index)
+                            .with_fact("path", parquet_chunk_path_fact(&chunk)),
+                            &chunk,
+                        ));
+                    },
+                };
+                // The lease held the worker's stream registered through the
+                // join above; it releases at the end of this arm.
+                let _source_read_lease = source_read_lease;
+                (result, Some((*source, attempt, max_attempts)))
+            },
         };
-        if let Some(observation) = &observation {
-            observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
-        }
-        let join_started_at = Instant::now();
-        let joined = worker.join();
-        let join_duration_ns = join_started_at.elapsed().as_nanos() as u64;
-        if let Some(observation) = &observation {
-            observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns });
-        }
-        let result = joined
-            .ok_or_else(|| {
-                attach_row_group_facts(
-                    QueryError::new(
-                        QueryErrorCode::Cancelled,
-                        "query_engine.source_scheduler.join",
-                        "source read worker was stopped by process exit before consumer join",
-                    )
-                    .with_fact("reason", "source_worker_process_exit")
-                    .with_fact("chunk_index", chunk.chunk_index)
-                    .with_fact("file_index", chunk.file_index)
-                    .with_fact("path", parquet_chunk_path_fact(&chunk)),
-                    &chunk,
-                )
-            })?
-            .map_err(|_panic| {
-                attach_row_group_facts(
-                    QueryError::new(
-                        QueryErrorCode::Internal,
-                        "query_engine.source_scheduler.join",
-                        "native source scheduler read worker panicked",
-                    )
-                    .with_fact("chunk_index", chunk.chunk_index)
-                    .with_fact("file_index", chunk.file_index)
-                    .with_fact("path", parquet_chunk_path_fact(&chunk)),
-                    &chunk,
-                )
-            })?;
         match result.frame {
             Ok(frame) => Ok(ScheduledLocalParquetReadOutput {
                 chunk,
@@ -614,7 +524,7 @@ impl ScheduledLocalParquetRead {
                 observed_row_group_count: result.observed_row_group_count,
             }),
             Err(error) => {
-                if let Some((_source_read_lease, source, attempt, max_attempts)) = retry_context
+                if let Some((source, attempt, max_attempts)) = retry_context
                     && let Some(retry) = try_finish_scheduled_source_read_with_corrected_budget(
                         execution,
                         &source,
@@ -639,18 +549,29 @@ impl ScheduledLocalParquetRead {
 
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
         let ScheduledLocalParquetRead { state, .. } = self;
-        let ScheduledLocalParquetReadState::Running { worker, observation, .. } = state;
-        if let Some(observation) = &observation {
-            observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
-        }
-        let join_started_at = Instant::now();
-        // The worker already reported its read to the plan execution; an
-        // abandoned read's frame is discarded unconsumed.
-        let _abandoned = worker.join();
-        if let Some(observation) = &observation {
-            observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
-                join_duration_ns: join_started_at.elapsed().as_nanos() as u64,
-            });
+        match state {
+            // The inline read already completed and reported itself; an
+            // abandoned read's frame is discarded unconsumed.
+            ScheduledLocalParquetReadState::Inline { observation, .. } => {
+                if let Some(observation) = &observation {
+                    observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
+                    observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns: 0 });
+                }
+            },
+            ScheduledLocalParquetReadState::Running { worker, observation, .. } => {
+                if let Some(observation) = &observation {
+                    observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
+                }
+                let join_started_at = Instant::now();
+                // The worker already reported its read to the plan execution;
+                // an abandoned read's frame is discarded unconsumed.
+                let _abandoned = worker.join();
+                if let Some(observation) = &observation {
+                    observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
+                        join_duration_ns: join_started_at.elapsed().as_nanos() as u64,
+                    });
+                }
+            },
         }
         execution.record_source_read(SourceReadFact::PrefetchAbandoned);
     }
@@ -818,38 +739,6 @@ mod observation_tests {
             })
             .count();
         assert_eq!(panic_count, 1);
-    }
-
-    #[test]
-    fn process_exit_joins_source_worker_and_prevents_late_spawn() {
-        let cancellation = ExecutionCancellation::new();
-        let supervisor = SourceReadWorkerSupervisor::new(cancellation.clone());
-        let (started_sender, started_receiver) = mpsc::sync_channel(0);
-        let worker_cancellation = cancellation.clone();
-        let worker = supervisor
-            .spawn(SourceReadQueueStart::new(None), None, move |_queue_wait, _observation| {
-                started_sender.send(()).unwrap();
-                while !worker_cancellation.is_cancelled() {
-                    thread::yield_now();
-                }
-                7_u8
-            })
-            .unwrap();
-        started_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-
-        supervisor.shutdown_for_process_exit();
-
-        assert!(cancellation.is_cancelled());
-        assert!(supervisor.joined_for_test());
-        assert!(worker.join().is_none(), "process-exit owner already joined the worker");
-
-        let late_spawn = supervisor.spawn(SourceReadQueueStart::new(None), None, |_queue_wait, _observation| 9_u8);
-        let error = match late_spawn {
-            Ok(_) => panic!("source worker unexpectedly spawned after process exit"),
-            Err(error) => error,
-        };
-        assert_eq!(error.code(), QueryErrorCode::Cancelled);
-        assert_eq!(error.fact_value("reason"), Some("process_exit_started"));
     }
 
     #[test]

@@ -84,6 +84,81 @@ fn capability_admission_reports_dynamic_filter_control_cycle_as_a_dependency_cyc
     );
 }
 
+#[test]
+fn capability_admission_accepts_independent_source_unary_branches_behind_union() {
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let left_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("left literal batch");
+    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3])) as ArrayRef])
+        .expect("right literal batch");
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
+    let left = builder.add_projection(
+        left,
+        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+    );
+    let right =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
+    let right = builder.add_projection(
+        right,
+        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("union-scope admission should not error");
+    {
+        let admission =
+            decision.admission().expect("independent source/unary branches behind union use compiled admission");
+        let pipeline = admission.pipeline();
+        assert!(pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Union));
+        assert_eq!(
+            pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::LiteralBatchSource).count(),
+            2,
+            "both independent branches compile into the same pipeline"
+        );
+    }
+    assert!(
+        decision.into_execution_admission().expect("newly admitted shape must not hard-error").is_some(),
+        "admitted union-scope pipelines reach the compiled executor"
+    );
+}
+
+#[test]
+fn capability_admission_accepts_source_unary_without_requiring_a_union() {
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1])) as ArrayRef])
+        .expect("literal batch");
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let projection = builder.add_projection(
+        source,
+        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+    );
+    let plan = builder.finish_with_host_sink(projection);
+
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("converged admission should not error");
+    {
+        let admission =
+            decision.admission().expect("admission follows operator capability, not the surrounding plan shape");
+        assert!(
+            admission.pipeline().tasks().iter().all(|task| task.kind() != PipelineTaskKind::Union),
+            "no union is required to enter the compiled pipeline"
+        );
+    }
+    assert!(
+        decision.into_execution_admission().expect("admitted shape must not hard-error").is_some(),
+        "admitted source/unary pipelines reach the compiled executor"
+    );
+}
+
 fn root_full_sort_left_semi_grouped_aggregate_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_key", DataType::Int64, false),

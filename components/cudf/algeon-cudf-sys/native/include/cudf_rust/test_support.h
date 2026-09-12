@@ -98,6 +98,10 @@ cudf_status_t cudf_test_event_raw_record_call_count_for_stream_raw(uintptr_t str
 cudf_status_t cudf_test_event_last_raw_record_stream_raw(uintptr_t* out);
 cudf_status_t cudf_test_event_last_raw_record_event_raw(uintptr_t* out);
 
+/// Serve `count` forks for `stream` through the installed attempt fork-stream
+/// provider and write their raw values into `out_forks`.
+cudf_status_t cudf_test_stream_provider_fork(void* stream, size_t count, void** out_forks);
+
 void cudf_test_stream_synchronize_reset(void);
 void cudf_test_stream_block_synchronize(void);
 void cudf_test_stream_unblock_synchronize(void);

@@ -306,7 +306,7 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
     let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+    pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = blocker_started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
     })
@@ -377,7 +377,7 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
     let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+    pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = blocker_started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
     })
@@ -765,7 +765,7 @@ async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     let job_release = Arc::clone(&release);
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+    pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = started_tx.send(());
         let _permit = job_release.acquire_owned().await.expect("job release semaphore remains open");
         let _ = finished_tx.send(());
@@ -777,12 +777,12 @@ async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     handle.finish();
 
     let spawn_error = retained_pool
-        .spawn(GpuExecutionJobKind::QueryExecution, async {})
+        .spawn(GpuExecutionJobKind::AttemptWork, async {})
         .expect_err("closed query epoch must reject detached GPU work");
     assert_eq!(spawn_error.code(), QueryErrorCode::Cancelled);
     assert_eq!(spawn_error.fact_value("reason"), Some("query_handle_released"));
     let run_error = retained_pool
-        .run(GpuExecutionJobKind::QueryExecution, async {})
+        .run(GpuExecutionJobKind::AttemptWork, async {})
         .await
         .expect_err("closed query epoch must reject awaited GPU work");
     assert_eq!(run_error.code(), QueryErrorCode::Cancelled);
@@ -806,7 +806,7 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
     let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+    pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = blocker_started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("blocker release remains open");
     })
@@ -814,7 +814,7 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     blocker_started_rx.await.expect("blocking GPU job starts");
 
     let (queued_finished_tx, queued_finished_rx) = tokio::sync::oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+    pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = queued_finished_tx.send(());
     })
     .unwrap();
@@ -844,12 +844,12 @@ async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
     let spawn_error = retained_pool
-        .spawn(GpuExecutionJobKind::QueryExecution, async {})
+        .spawn(GpuExecutionJobKind::AttemptWork, async {})
         .expect_err("closed query epoch must reject detached query-handle GPU work");
     assert_eq!(spawn_error.code(), QueryErrorCode::Cancelled);
     assert_eq!(spawn_error.fact_value("reason"), Some("query_handle_released"));
     let run_error = retained_pool
-        .run(GpuExecutionJobKind::QueryExecution, async {})
+        .run(GpuExecutionJobKind::AttemptWork, async {})
         .await
         .expect_err("closed query epoch must reject awaited query-handle GPU work");
     assert_eq!(run_error.code(), QueryErrorCode::Cancelled);
@@ -978,7 +978,7 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let job = tokio::spawn(async move {
         job_pool
-            .run(GpuExecutionJobKind::QueryExecution, async move {
+            .run(GpuExecutionJobKind::AttemptWork, async move {
                 let _ = started_tx.send(());
                 let _permit = job_release.acquire_owned().await.expect("job release semaphore remains open");
             })
@@ -1040,7 +1040,7 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let execution = tokio::spawn(async move {
         job_pool
-            .run(GpuExecutionJobKind::QueryExecution, async move {
+            .run(GpuExecutionJobKind::AttemptWork, async move {
                 let _ = started_tx.send(());
                 let _permit = job_release.acquire_owned().await.expect("execution release semaphore remains open");
             })
