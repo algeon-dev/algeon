@@ -11,7 +11,7 @@ use crate::{
         ResidentGpuFrame, execute_bounded_generic_unary_from_frame, execute_bounded_generic_union,
         materialize_bounded_frame_to_host, materialize_bounded_join_leaf_local_parquet_source_stream,
     },
-    pipeline::{PipelineTask, ResidentResourceId, SinkBoundaryKind},
+    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing, SinkBoundaryKind},
     plan::{NodeId, PlanNode, ResultSink},
 };
 
@@ -67,6 +67,19 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
         let inputs = self.union_task_inputs(task, state, node_id)?;
+        // When the compiled contract lets this output stay a stream for its single consumer,
+        // chain the branch frames without a union-level concat copy. Stream consumers pull in
+        // branch order, and exact-order consumers drain in order before their own required
+        // concat, so neither branch order nor summation order changes. The union step itself
+        // never holds the branch inputs plus a full copy at once; a downstream whole-input
+        // consumer can still concatenate afterwards on its own contract, which keeps its own
+        // peak accounting.
+        if !inputs.is_empty()
+            && self.resource_data_form(output) == ResidentDataForm::FrameStream
+            && self.resource_sharing(output) == ResourceSharing::SingleConsume
+        {
+            return Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::frame_stream(inputs))]));
+        }
         let frame = execute_bounded_generic_union(&mut self.execution, node_id, inputs)
             .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))

@@ -462,12 +462,27 @@ mod tests {
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
 
     use super::{
-        HostOutputReservation, NativeOutputPublication, mark_native_runtime_error,
+        HostOutputReservation, NativeOutputPublication, conservative_properties, mark_native_runtime_error,
         native_query_runtime_error_with_publication,
     };
     use crate::error::{DataFusionErrorExt, Error, ErrorCode};
 
     const TEST_CONSUMER: &str = "NativeHostOutputReservation[test]";
+
+    /// native wrappers keep one bounded partition with `Final` emission. Chunked
+    /// device-to-host preparation happens inside that contract; rows are never streamed out
+    /// incrementally, so this must not silently become incremental emission.
+    #[test]
+    fn native_wrapper_properties_keep_single_partition_final_emission() {
+        use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+        use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+
+        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let properties = conservative_properties(Arc::clone(&schema));
+        assert_eq!(properties.output_partitioning().partition_count(), 1);
+        assert_eq!(properties.emission_type, EmissionType::Final);
+        assert_eq!(properties.boundedness, Boundedness::Bounded);
+    }
 
     #[test]
     fn native_runtime_error_marks_started_attempt_terminal_without_datafusion_replay() {
