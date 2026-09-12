@@ -15,7 +15,10 @@ const RMM_INTEROP_BRIDGE_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/rmm_interop_bridge.cpp"));
 
 fn production_shim_library() -> PathBuf {
-    let library = PathBuf::from(env!("CUDF_RUST_PRODUCTION_SHIM"));
+    let Some(path) = option_env!("CUDF_RUST_PRODUCTION_SHIM") else {
+        panic!("CUDF_RUST_PRODUCTION_SHIM must be set when the native ABI contract runs");
+    };
+    let library = PathBuf::from(path);
     assert!(
         library.is_file(),
         "production shim {} must exist; build.rs builds it for the current Cargo unit",
@@ -267,12 +270,10 @@ fn rmm_singleton_bridge_is_private_and_resolved_by_the_shim() {
 
 #[test]
 fn libcudf_and_both_shims_resolve_one_candidate_rmm() {
-    let prefix =
-        PathBuf::from(env::var("CUDF_INSTALL_DIR").expect("CUDF_INSTALL_DIR must select the candidate prefix"));
-    let candidate = fs::canonicalize(prefix.join("lib/librmm.so")).expect("candidate librmm.so must exist");
     let shim = production_shim_library();
     let bridge = shim.parent().expect("shim library must have a parent directory").join("libcudf_rust_rmm_interop.so");
-    let libcudf = prefix.join("lib/libcudf.so");
+    let libcudf = resolved_dynamic_dependency(&shim, "libcudf.so");
+    let candidate = resolved_dynamic_dependency(&libcudf, "librmm.so");
 
     assert!(dynamic_dependencies(&libcudf).contains("librmm.so"));
     for library in [&libcudf, &shim, &bridge] {

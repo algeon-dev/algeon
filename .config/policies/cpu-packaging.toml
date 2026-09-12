@@ -20,10 +20,7 @@ pass_through = [
   "PKG_CONFIG_SYSROOT_DIR",
 ]
 explicit_inputs = [
-  "CUDF_INSTALL_DIR",
-  "CUVS_INSTALL_DIR",
-  "CUVS_ROOT",
-  "CUGRAPH_CMAKE_BUILD_DIR",
+  "NEXUS_NATIVE_DIR",
 ]
 
 [clean_environment.fixed_build_environment]

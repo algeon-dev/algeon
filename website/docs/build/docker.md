@@ -44,12 +44,15 @@ want to package. The default full image expects these root-owned artifacts:
 datafusion-nexus/
 ├── target/native/cudf-install/lib/libcudf.so
 ├── target/native/cudf-install/lib/librmm.so
+├── target/native/cudf-install/lib/libcudf_rust.so
 ├── target/native/cuvs-install/lib/libcuvs.so
-└── target/native/cugraph-build/libcugraph.so
+└── target/native/cugraph-install/lib/libcugraph.so
 ```
 
-The Cargo build also produces `libcudf_rust.so` and
-`libcudf_rust_rmm_interop.so`; `docker/stage-docker-payload.sh` stages both automatically.
+The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim;
+`docker/stage-docker-payload.sh` stages both automatically. Docker consumes the
+three matching install prefixes under `NEXUS_NATIVE_DIR`; the cuGraph CMake
+build tree is only an intermediate used while producing `cugraph-install`.
 
 The lean `FEATURES=iceberg,nvml` image omits cuVS and cuGraph, so it
 needs neither optional native artifact. Production examples keep `nvml` enabled so live
@@ -196,8 +199,8 @@ algorithms
 ## Troubleshooting
 
 - `docker/stage-docker-payload.sh` cannot find `libcudf.so`, `librmm.so`, or
-  `libcugraph.so`: finish the source build first, or set `CUDF_INSTALL_DIR` /
-  `CUGRAPH_CMAKE_BUILD_DIR` to the correct artifact locations.
+  `libcugraph.so`: finish the source build first, or set `NEXUS_NATIVE_DIR` to
+  the root containing the three matching install prefixes.
 - The container starts but the first GPU query fails with
   `cudaErrorNoKernelImageForDevice`: rebuild the forked native libraries with
   CUDA architectures covering the deployment GPU.

@@ -88,6 +88,7 @@ export INSTALL_PREFIX="$CUDF_INSTALL_DIR"
 export CUVS_INSTALL_DIR="$NEXUS_ROOT/target/native/cuvs-install"
 export CUVS_ROOT="$CUVS_INSTALL_DIR"
 export CUGRAPH_CMAKE_BUILD_DIR="$NEXUS_ROOT/target/native/cugraph-build"
+export CUGRAPH_INSTALL_DIR="$NEXUS_ROOT/target/native/cugraph-install"
 
 # Use only this checkout's RAPIDS libraries at runtime.
 export LD_LIBRARY_PATH="$CUGRAPH_CMAKE_BUILD_DIR:$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/lib64"
@@ -130,10 +131,13 @@ The script drives `components/cudf/cudf`, keeps its CMake cache under
 `target/native/cudf-build`, installs cuDF and shared RMM under
 `target/native/cudf-install`, and completes the exported RMM dependency
 closure (`rapids_logger`, `nvtx3`, `fmt`, `spdlog`) that cuVS and cuGraph
-need. Success looks like:
+need. It then builds and installs the production Rust shim and its crate-version
+marker into the same prefix. Success looks like:
 
 ```bash
 ls "$CUDF_INSTALL_DIR"/lib/libcudf.so "$CUDF_INSTALL_DIR"/lib/librmm.so
+ls "$CUDF_INSTALL_DIR"/lib/libcudf_rust.so \
+   "$CUDF_INSTALL_DIR"/share/cudf_rust/{cargo-link.txt,crate-version}
 ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
@@ -161,17 +165,44 @@ bash scripts/build/build_libcugraph.sh
 
 The script builds `components/cugraph/cugraph` into
 `target/native/cugraph-build`, bound to the cuDF/RMM and cuVS prefixes
-selected above. It fails if CMake or the dynamic loader resolves a private or
-different copy of either. Success looks like:
+selected above, then installs the registry-consumer artifacts into
+`target/native/cugraph-install`. It fails if CMake or the dynamic loader
+resolves a private or different copy of either. Success looks like:
 
 ```bash
 ls "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph.so \
    "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph_c.so
+ls "$CUGRAPH_INSTALL_DIR"/lib/libcugraph.so \
+   "$CUGRAPH_INSTALL_DIR"/include/cugraph_c/algorithms.h \
+   "$CUGRAPH_INSTALL_DIR"/share/cugraph-nexus/crate-version
 ```
 
 On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
 single-GPU strongly-connected-components compatibility path. Building a
 different upstream checkout bypasses that contract.
+
+### Use the native stack from registry crates
+
+The three build scripts create a native root that registry-installed Nexus
+crates can consume without a source checkout inside Cargo's package archive:
+
+```bash
+export NEXUS_NATIVE_DIR="$NEXUS_ROOT/target/native"
+cargo build --all-features
+```
+
+`NEXUS_NATIVE_DIR` must contain `cudf-install`, `cuvs-install`, and
+`cugraph-install` from the matching Nexus tag. The sys crates verify their
+required library before invoking any native tool; the cuDF and cuGraph
+prefixes also carry a `crate-version` marker and are rejected when it differs
+from the Rust crate version. A registry build still needs `cmake` for cuVS
+package discovery, `readelf` and `ldd` from binutils for cuGraph loader
+validation, and a C compiler for the cuVS ABI probe. It does not run bindgen or
+build cuDF or cuGraph with CMake.
+
+`CUDF_INSTALL_DIR`, `CUVS_ROOT`, `CUVS_INSTALL_DIR`, and the three
+`CUGRAPH_NATIVE_*` variables remain lower-level developer selectors. Prefer
+`NEXUS_NATIVE_DIR` when consuming the complete stack.
 
 ## 4. Build the Rust workspace
 
@@ -223,11 +254,13 @@ with [Building with Docker](./docker.md).
 | Variable | Owner and purpose |
 | --- | --- |
 | `NEXUS_ROOT` | Root of the one recursive checkout. |
+| `NEXUS_NATIVE_DIR` | Root containing the three matching registry-consumer install prefixes. |
 | `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, and cuGraph. Defaults to `NATIVE`. |
 | `CUDF_CPP_BUILD_DIR` | cuDF CMake cache, normally `target/native/cudf-build`. |
 | `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. |
 | `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. |
 | `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. |
+| `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. |
 | `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuDF/RMM, cuVS, CUDA. |
 
 The native dependency relationship is:
@@ -264,7 +297,7 @@ since nexus scripts did not build it and it carries no record. To inspect the
 records:
 
 ```bash
-for root in "$CUDF_INSTALL_DIR" "$CUVS_INSTALL_DIR" "$CUGRAPH_CMAKE_BUILD_DIR"; do
+for root in "$CUDF_INSTALL_DIR" "$CUVS_INSTALL_DIR" "$CUGRAPH_INSTALL_DIR"; do
   echo "== $root =="
   cat "$root/share/nexus-native/cuda-architectures.env"
 done

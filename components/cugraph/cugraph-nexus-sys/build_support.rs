@@ -7,12 +7,9 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-const ETXTBSY_RETRY_ATTEMPTS: usize = 6;
-const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(25);
 const CUDA_ARCHITECTURE_CONTRACT: &str = "share/nexus-native/cuda-architectures.env";
 const CUDF_RUST_PUBLIC_HEADERS: [&str; 2] =
     ["include/cudf_rust/error_boundary.hpp", "include/cudf_rust/memory_resource.h"];
@@ -1146,58 +1143,6 @@ pub(crate) fn parse_cmake_link_command(command: &str) -> Result<ParsedLinkComman
     Ok(ParsedLinkCommand { link_dirs, runtime_dirs })
 }
 
-pub(crate) fn resolve_compiler_probe_command(env_val: Option<&str>) -> Result<(String, Vec<String>), String> {
-    let raw = env_val.unwrap_or("cc").trim();
-    if raw.is_empty() {
-        return Err(
-            "CC is set but empty. Set CC to the compiler used for this build, or unset CC to fall back to 'cc'."
-                .to_string(),
-        );
-    }
-
-    let parts = split_shell_words(raw)?;
-    let (compiler, args) = parts.split_first().ok_or_else(|| {
-        "Could not determine a compiler command from CC. Set CC to the compiler used for this build, or unset CC to fall back to 'cc'."
-            .to_string()
-    })?;
-
-    Ok((compiler.clone(), args.to_vec()))
-}
-
-pub(crate) fn detect_system_include_dir(env_val: Option<&str>) -> Result<PathBuf, String> {
-    let (compiler, compiler_args) = resolve_compiler_probe_command(env_val)?;
-    let mut command = Command::new(&compiler);
-    command
-        .args(&compiler_args)
-        .args(["-v", "-E", "-x", "c", "-"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-
-    let compiler_display = format_compiler_command(&compiler, &compiler_args);
-    let output = command_output_with_etxtbsy_retry(&mut command).map_err(|err| {
-        format!(
-            "Failed to run C compiler '{}' while probing system include paths: {err}. Set CC to the compiler used for this build and ensure it is installed.",
-            compiler_display
-        )
-    })?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "C compiler '{}' exited with status {} while probing system include paths. Set CC to the compiler used for this build and ensure it supports '-v -E -x c -'.",
-            compiler_display, output.status
-        ));
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    parse_compiler_include_dir(&stderr).ok_or_else(|| {
-        format!(
-            "Could not determine a system include directory from compiler '{}'. Set CC to the compiler used for this build and ensure it reports a standard '#include <...> search starts here:' list.",
-            compiler_display
-        )
-    })
-}
-
 pub(crate) fn has_required_cugraph_libs(dir: &Path) -> bool {
     has_library(dir, "cugraph") && has_library(dir, "cugraph_c")
 }
@@ -1539,48 +1484,6 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
 
 fn display_paths(paths: &[PathBuf]) -> String {
     paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")
-}
-
-fn command_output_with_etxtbsy_retry(command: &mut Command) -> io::Result<std::process::Output> {
-    let mut last_error = None;
-
-    for attempt in 0..ETXTBSY_RETRY_ATTEMPTS {
-        match command.output() {
-            Ok(output) => return Ok(output),
-            Err(err) if err.raw_os_error() == Some(26) && attempt + 1 < ETXTBSY_RETRY_ATTEMPTS => {
-                last_error = Some(err);
-                thread::sleep(ETXTBSY_RETRY_DELAY);
-            },
-            Err(err) => return Err(err),
-        }
-    }
-
-    Err(last_error.expect("ETXTBSY retry loop should retain the last error"))
-}
-
-fn parse_compiler_include_dir(stderr: &str) -> Option<PathBuf> {
-    let mut in_search_list = false;
-    for line in stderr.lines() {
-        if line.contains("#include <...> search starts here:") {
-            in_search_list = true;
-            continue;
-        }
-        if line.contains("End of search list.") {
-            break;
-        }
-        if in_search_list {
-            let path = PathBuf::from(line.trim());
-            if path.join("stddef.h").exists() {
-                return Some(path);
-            }
-        }
-    }
-
-    None
-}
-
-fn format_compiler_command(compiler: &str, args: &[String]) -> String {
-    if args.is_empty() { compiler.to_string() } else { format!("{compiler} {}", args.join(" ")) }
 }
 
 fn format_command(command: &Command) -> String {

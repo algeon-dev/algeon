@@ -11,9 +11,193 @@
 //! std-only by contract: it runs before any dependency is built.
 
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
+    fmt,
     path::{Path, PathBuf},
 };
+
+const DOCS_RS_ENV: &str = "DOCS_RS";
+const NEXUS_NATIVE_DIR_ENV: &str = "NEXUS_NATIVE_DIR";
+
+/// Native artifact contract owned by one sys crate.
+pub struct NativeComponent {
+    pub crate_name: &'static str,
+    pub install_dir_name: &'static str,
+    pub required_library: &'static str,
+    pub override_env: Option<&'static str>,
+    pub source_required_env: Option<&'static str>,
+    pub source_tree_sentinel: Option<&'static str>,
+    pub build_script: &'static str,
+}
+
+/// How a sys crate must obtain its native library for the current build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeLinking {
+    Skip,
+    Prebuilt(PathBuf),
+    SourceTree,
+    Missing(MissingNative),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeSearch {
+    candidate: String,
+    state: String,
+}
+
+/// Actionable native-discovery failure returned to a sys crate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingNative {
+    crate_name: &'static str,
+    required_library: &'static str,
+    build_script: &'static str,
+    searches: Vec<NativeSearch>,
+}
+
+impl fmt::Display for MissingNative {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let library = Path::new(self.required_library)
+            .file_name()
+            .unwrap_or_else(|| OsStr::new(self.required_library))
+            .to_string_lossy();
+        writeln!(formatter, "{}: no usable {library}.", self.crate_name)?;
+        writeln!(formatter)?;
+        writeln!(formatter, "Nexus links against RAPIDS native libraries you build from the repository:")?;
+        writeln!(formatter)?;
+        writeln!(formatter, "  1. git clone --recursive https://github.com/DataFusion-Nexus/datafusion-nexus")?;
+        writeln!(formatter, "  2. bash {}", self.build_script)?;
+        writeln!(formatter, "  3. export NEXUS_NATIVE_DIR=<repo>/target/native")?;
+        writeln!(formatter)?;
+        writeln!(formatter, "Searched:")?;
+        for search in &self.searches {
+            writeln!(formatter, "  {:<68} ({})", search.candidate, search.state)?;
+        }
+        write!(formatter, "\nDocs: https://datafusion.nexus/docs/build/from-source")
+    }
+}
+
+fn missing_search(component: &NativeComponent, searches: Vec<NativeSearch>) -> NativeLinking {
+    NativeLinking::Missing(MissingNative {
+        crate_name: component.crate_name,
+        required_library: component.required_library,
+        build_script: component.build_script,
+        searches,
+    })
+}
+
+/// Resolve docs.rs, explicit-prefix, repository-source, and workspace-prefix
+/// builds in their declared precedence order.
+pub fn resolve_native_linking(
+    component: &NativeComponent,
+    manifest_dir: &Path,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> NativeLinking {
+    if env(DOCS_RS_ENV).is_some() {
+        return NativeLinking::Skip;
+    }
+
+    if component.source_required_env.is_some_and(|name| env(name).is_some())
+        && component.source_tree_sentinel.is_some_and(|sentinel| manifest_dir.join(sentinel).is_file())
+    {
+        return NativeLinking::SourceTree;
+    }
+
+    let mut searches = Vec::new();
+    if let Some(name) = component.override_env {
+        match env(name) {
+            Some(value) => {
+                let prefix = PathBuf::from(value);
+                let required = prefix.join(component.required_library);
+                if required.is_file() {
+                    return NativeLinking::Prebuilt(prefix);
+                }
+                searches.push(NativeSearch {
+                    candidate: format!("${name}/{}", component.required_library),
+                    state: format!("{name} set to {}, but library not found", prefix.display()),
+                });
+                return missing_search(component, searches);
+            },
+            None => searches.push(NativeSearch {
+                candidate: format!("${name}/{}", component.required_library),
+                state: format!("{name} unset"),
+            }),
+        }
+    }
+
+    match env(NEXUS_NATIVE_DIR_ENV) {
+        Some(value) => {
+            let native_root = PathBuf::from(value);
+            let prefix = native_root.join(component.install_dir_name);
+            let required = prefix.join(component.required_library);
+            if required.is_file() {
+                return NativeLinking::Prebuilt(prefix);
+            }
+            searches.push(NativeSearch {
+                candidate: format!("$NEXUS_NATIVE_DIR/{}/{}", component.install_dir_name, component.required_library),
+                state: format!("NEXUS_NATIVE_DIR set to {}, but library not found", native_root.display()),
+            });
+            return missing_search(component, searches);
+        },
+        None => searches.push(NativeSearch {
+            candidate: format!("$NEXUS_NATIVE_DIR/{}/{}", component.install_dir_name, component.required_library),
+            state: "NEXUS_NATIVE_DIR unset".to_string(),
+        }),
+    }
+
+    if let Some(sentinel) = component.source_tree_sentinel {
+        let sentinel_path = manifest_dir.join(sentinel);
+        if sentinel_path.is_file() {
+            return NativeLinking::SourceTree;
+        }
+        searches.push(NativeSearch {
+            candidate: format!("<manifest>/{sentinel}"),
+            state: "source tree not present".to_string(),
+        });
+    }
+
+    let workspace_prefix = manifest_dir.join("../../..").join("target/native").join(component.install_dir_name);
+    let required = workspace_prefix.join(component.required_library);
+    if required.is_file() {
+        return NativeLinking::Prebuilt(workspace_prefix);
+    }
+    searches.push(NativeSearch {
+        candidate: format!(
+            "<manifest>/../../../target/native/{}/{}",
+            component.install_dir_name, component.required_library
+        ),
+        state: "not found".to_string(),
+    });
+    missing_search(component, searches)
+}
+
+/// Verify that an installed native prefix was produced for the consuming
+/// crate version.
+pub fn verify_prebuilt_crate_version(
+    component: &NativeComponent,
+    prefix: &Path,
+    marker_relative: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let marker = prefix.join(marker_relative);
+    let installed = std::fs::read_to_string(&marker).map_err(|error| {
+        format!(
+            "{} {expected}: the prebuilt native artifacts under {} have no readable {marker_relative}: {error}.\n\nRebuild them from the matching tag:\n  git -C <repo> checkout v{expected} && bash {}",
+            component.crate_name,
+            prefix.display(),
+            component.build_script
+        )
+    })?;
+    let installed = installed.trim();
+    if installed != expected {
+        return Err(format!(
+            "{} {expected}: the prebuilt native artifacts under {} were built for crate version {installed} ({marker_relative}).\n\nRebuild them from the matching tag:\n  git -C <repo> checkout v{expected} && bash {}",
+            component.crate_name,
+            prefix.display(),
+            component.build_script
+        ));
+    }
+    Ok(())
+}
 
 const CUDF_METADATA_ENV: &str = "DEP_CUDF_RUST_METADATA";
 const CUDF_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUDF_RUST_RUNTIME_LIB_DIR";
@@ -523,6 +707,11 @@ fn track_cuda_environment() {
 }
 
 pub fn configure(config: Config) {
+    track_env(DOCS_RS_ENV);
+    if std::env::var_os(DOCS_RS_ENV).is_some() {
+        return;
+    }
+
     let consumers = config.consumers;
     let environment = read_environment(consumers);
     let metadata = resolve_metadata(&environment);
@@ -967,6 +1156,96 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    const TEST_COMPONENT: NativeComponent = NativeComponent {
+        crate_name: "cudf-nexus-sys",
+        install_dir_name: "cudf-install",
+        required_library: "lib/libcudf_rust.so",
+        override_env: Some("CUDF_INSTALL_DIR"),
+        source_required_env: Some("CARGO_FEATURE_TEST_HOOKS"),
+        source_tree_sentinel: Some("../cudf/cmake/rapids_config.cmake"),
+        build_script: "scripts/build/build_libcudf.sh",
+    };
+
+    #[test]
+    fn native_linking_precedence_is_docs_override_native_root_source_then_workspace() {
+        let test_dir = TestDir::new("native-linking-precedence");
+        let manifest = test_dir.path().join("components/cudf/cudf-nexus-sys");
+        std::fs::create_dir_all(manifest.join("../cudf/cmake")).unwrap();
+        std::fs::write(manifest.join("../cudf/cmake/rapids_config.cmake"), b"sentinel").unwrap();
+
+        let docs = |name: &str| (name == DOCS_RS_ENV).then(|| OsString::from("1"));
+        assert_eq!(resolve_native_linking(&TEST_COMPONENT, &manifest, &docs), NativeLinking::Skip);
+
+        let override_prefix = test_dir.path().join("override");
+        std::fs::create_dir_all(override_prefix.join("lib")).unwrap();
+        std::fs::write(override_prefix.join(TEST_COMPONENT.required_library), b"shim").unwrap();
+        let explicit = |name: &str| (name == "CUDF_INSTALL_DIR").then(|| override_prefix.clone().into_os_string());
+        assert_eq!(
+            resolve_native_linking(&TEST_COMPONENT, &manifest, &explicit),
+            NativeLinking::Prebuilt(override_prefix.clone())
+        );
+
+        let source_required = |name: &str| {
+            (name == "CUDF_INSTALL_DIR")
+                .then(|| override_prefix.clone().into_os_string())
+                .or_else(|| (name == "CARGO_FEATURE_TEST_HOOKS").then(|| OsString::from("1")))
+        };
+        assert_eq!(resolve_native_linking(&TEST_COMPONENT, &manifest, &source_required), NativeLinking::SourceTree);
+
+        let native_root = test_dir.path().join("native-root");
+        let native_prefix = native_root.join(TEST_COMPONENT.install_dir_name);
+        std::fs::create_dir_all(native_prefix.join("lib")).unwrap();
+        std::fs::write(native_prefix.join(TEST_COMPONENT.required_library), b"shim").unwrap();
+        let native = |name: &str| (name == NEXUS_NATIVE_DIR_ENV).then(|| native_root.clone().into_os_string());
+        assert_eq!(resolve_native_linking(&TEST_COMPONENT, &manifest, &native), NativeLinking::Prebuilt(native_prefix));
+
+        assert_eq!(resolve_native_linking(&TEST_COMPONENT, &manifest, &|_| None), NativeLinking::SourceTree);
+
+        std::fs::remove_file(manifest.join("../cudf/cmake/rapids_config.cmake")).unwrap();
+        let workspace_prefix = manifest.join("../../../target/native/cudf-install");
+        std::fs::create_dir_all(workspace_prefix.join("lib")).unwrap();
+        std::fs::write(workspace_prefix.join(TEST_COMPONENT.required_library), b"shim").unwrap();
+        assert_eq!(
+            resolve_native_linking(&TEST_COMPONENT, &manifest, &|_| None),
+            NativeLinking::Prebuilt(workspace_prefix)
+        );
+    }
+
+    #[test]
+    fn native_linking_explicit_missing_prefix_fails_with_actionable_diagnostic() {
+        let test_dir = TestDir::new("native-linking-missing");
+        let manifest = test_dir.path().join("manifest");
+        std::fs::create_dir_all(&manifest).unwrap();
+        let missing_prefix = test_dir.path().join("missing-prefix");
+        let linking = resolve_native_linking(&TEST_COMPONENT, &manifest, &|name| {
+            (name == "CUDF_INSTALL_DIR").then(|| missing_prefix.clone().into_os_string())
+        });
+        let NativeLinking::Missing(missing) = linking else {
+            panic!("an explicitly selected incomplete prefix must be rejected")
+        };
+        let diagnostic = missing.to_string();
+        assert!(diagnostic.contains("cudf-nexus-sys: no usable libcudf_rust.so"));
+        assert!(diagnostic.contains("CUDF_INSTALL_DIR set to"));
+        assert!(diagnostic.contains("bash scripts/build/build_libcudf.sh"));
+        assert!(diagnostic.contains("https://datafusion.nexus/docs/build/from-source"));
+    }
+
+    #[test]
+    fn prebuilt_crate_version_mismatch_names_both_versions_and_rebuild_command() {
+        let test_dir = TestDir::new("native-version-mismatch");
+        let marker = test_dir.path().join("share/cudf_rust/crate-version");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "0.0.9\n").unwrap();
+
+        let diagnostic =
+            verify_prebuilt_crate_version(&TEST_COMPONENT, test_dir.path(), "share/cudf_rust/crate-version", "0.1.0")
+                .expect_err("mismatched native artifacts must be rejected");
+
+        assert!(diagnostic.contains("cudf-nexus-sys 0.1.0"));
+        assert!(diagnostic.contains("built for crate version 0.0.9"));
+        assert!(diagnostic.contains("checkout v0.1.0 && bash scripts/build/build_libcudf.sh"));
     }
 
     #[test]

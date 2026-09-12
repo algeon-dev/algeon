@@ -28,8 +28,8 @@ bash scripts/check_all.sh
 ```
 
 With no arguments it runs, in order: isolated policy self-tests, native-source
-and checked-bindings verification, component package checks, a cuVS
-native-free compile check, `msrv-check`, `feature-isolation-check`, nightly
+and checked-bindings verification, extracted component package checks, a
+docs.rs-native-free workspace compile check, `msrv-check`, `feature-isolation-check`, nightly
 `rustfmt --check`, lane-catalog structure checks, live nextest inventory, GPU
 scheduling preflight, the CPU nextest lane, the shared-GPU and exclusive-GPU
 nextest lanes, doctests, strict rustdoc, public API surface snapshots, and

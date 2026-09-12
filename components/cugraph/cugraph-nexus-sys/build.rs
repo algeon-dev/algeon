@@ -3,6 +3,16 @@ use std::{env, path::PathBuf};
 #[path = "build_support.rs"]
 mod build_support;
 
+const NATIVE_COMPONENT: nexus_build_support::NativeComponent = nexus_build_support::NativeComponent {
+    crate_name: "cugraph-nexus-sys",
+    install_dir_name: "cugraph-install",
+    required_library: "lib/libcugraph.so",
+    override_env: None,
+    source_required_env: None,
+    source_tree_sentinel: Some("../cugraph/cpp/CMakeLists.txt"),
+    build_script: "scripts/build/build_libcugraph.sh",
+};
+
 fn emit_runtime_search_path(path: &std::path::Path) {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path.display());
 }
@@ -34,15 +44,50 @@ fn emit_cuvs_metadata(cuvs: &build_support::CanonicalCuvsContract) {
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let repo_root = manifest_dir.join("../../..");
-    let cudf_install_dir = env::var_os("CUDF_INSTALL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root.join("target/native/cudf-install"));
-    let cmake_build_dir_env = env::var_os("CUGRAPH_CMAKE_BUILD_DIR");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    println!("cargo:rerun-if-env-changed=NEXUS_NATIVE_DIR");
+    let linking =
+        nexus_build_support::resolve_native_linking(&NATIVE_COMPONENT, &manifest_dir, &|name| env::var_os(name));
+    if matches!(linking, nexus_build_support::NativeLinking::Skip) {
+        return;
+    }
     let explicit_contract_count = build_support::explicit_native_contract_count(
         env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS").as_ref(),
         env::var_os("CUGRAPH_NATIVE_LINK_DIRS").as_ref(),
         env::var_os("CUGRAPH_RUNTIME_LIB_DIRS").as_ref(),
     );
+    let prebuilt_prefix = if explicit_contract_count == 0 {
+        match linking {
+            nexus_build_support::NativeLinking::Prebuilt(prefix) => {
+                verify_prebuilt_version(&prefix);
+                Some(prefix)
+            },
+            nexus_build_support::NativeLinking::SourceTree => None,
+            nexus_build_support::NativeLinking::Missing(missing) => panic!("{missing}"),
+            nexus_build_support::NativeLinking::Skip => unreachable!(),
+        }
+    } else {
+        None
+    };
+    if let Some(prefix) = &prebuilt_prefix {
+        let include = prefix.join("include");
+        let lib = prefix.join("lib");
+        // SAFETY: Cargo build scripts are single-threaded, and native contract
+        // resolution reads these selectors only after this assignment.
+        unsafe {
+            env::set_var("CUGRAPH_NATIVE_INCLUDE_DIRS", &include);
+            env::set_var("CUGRAPH_NATIVE_LINK_DIRS", &lib);
+            env::set_var("CUGRAPH_RUNTIME_LIB_DIRS", &lib);
+        }
+        println!("cargo:rerun-if-changed={}", prefix.join(NATIVE_COMPONENT.required_library).display());
+        println!("cargo:rerun-if-changed={}", prefix.join("share/cugraph-nexus/crate-version").display());
+    }
+    let explicit_contract_count = if prebuilt_prefix.is_some() { 3 } else { explicit_contract_count };
+    let cudf_install_dir = env::var_os("CUDF_INSTALL_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("NEXUS_NATIVE_DIR").map(|root| PathBuf::from(root).join("cudf-install")))
+        .unwrap_or_else(|| repo_root.join("target/native/cudf-install"));
+    let cmake_build_dir_env = if prebuilt_prefix.is_some() { None } else { env::var_os("CUGRAPH_CMAKE_BUILD_DIR") };
     let effective_cmake_build_dir_env = if explicit_contract_count == 0 && cmake_build_dir_env.is_none() {
         Some(
             build_support::prepare_workspace_cmake_export_dir(
@@ -68,7 +113,24 @@ fn main() {
         effective_cmake_build_dir_env.clone(),
     )
     .unwrap_or_else(|err| panic!("{err}"));
-    let cuvs = build_support::resolve_canonical_cuvs_contract(&manifest_dir, env::var_os("CUVS_INSTALL_DIR"))
+    if prebuilt_prefix.is_some() {
+        let cudf_runtime_dir = [cudf_install_dir.join("lib"), cudf_install_dir.join("lib64")]
+            .into_iter()
+            .find(|dir| dir.join("librmm.so").is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "NEXUS_NATIVE_DIR selected cuGraph, but the matching cuDF prefix {} does not contain lib/librmm.so or lib64/librmm.so",
+                    cudf_install_dir.display()
+                )
+            });
+        if !contract.runtime_lib_dirs.iter().any(|path| path == &cudf_runtime_dir) {
+            contract.runtime_lib_dirs.push(cudf_runtime_dir);
+        }
+    }
+    let cuvs_install_dir = env::var_os("CUVS_INSTALL_DIR").or_else(|| {
+        env::var_os("NEXUS_NATIVE_DIR").map(|root| PathBuf::from(root).join("cuvs-install").into_os_string())
+    });
+    let cuvs = build_support::resolve_canonical_cuvs_contract(&manifest_dir, cuvs_install_dir)
         .unwrap_or_else(|err| panic!("{err}"));
     if explicit_contract_count == 0 {
         let cmake_export_dir = PathBuf::from(
@@ -123,7 +185,6 @@ fn main() {
     emit_native_link_metadata(&contract.native_link_dirs);
     emit_cuvs_metadata(&cuvs);
 
-    println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CUGRAPH_NATIVE_INCLUDE_DIRS");
     println!("cargo:rerun-if-env-changed=CUGRAPH_NATIVE_LINK_DIRS");
     println!("cargo:rerun-if-env-changed=CUGRAPH_RUNTIME_LIB_DIRS");
@@ -140,10 +201,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUDAToolkit_ROOT");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
-    println!("cargo:rerun-if-changed=wrapper.h");
-    for header in ["error_boundary.hpp", "memory_resource.h"] {
-        println!("cargo:rerun-if-changed={}", cudf_install_dir.join("include/cudf_rust").join(header).display());
-    }
     println!("cargo:rerun-if-changed={}", manifest_dir.join("../cugraph/cpp/CMakeLists.txt").display());
     println!("cargo:rerun-if-changed={}", cuvs.cmake_config_dir.join("cuvs-config.cmake").display());
     println!("cargo:rerun-if-changed={}", cuvs.library_selector_path.display());
@@ -153,58 +210,14 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", validated_loader.cugraph_library_selector_path.display());
     println!("cargo:rerun-if-changed={}", validated_loader.cugraph_library_path.display());
+}
 
-    // layout_algorithms.h is excluded from wrapper.h to avoid a generated type
-    // collision, so CargoCallbacks cannot track it. Track it explicitly so
-    // changes to the upstream layout API trigger binding regeneration.
-    for include_dir in &contract.native_include_dirs {
-        let layout_header = include_dir.join("cugraph_c/layout_algorithms.h");
-        if layout_header.exists() {
-            println!("cargo:rerun-if-changed={}", layout_header.display());
-        }
-    }
-
-    let mut builder = bindgen::Builder::default()
-        .header("wrapper.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .allowlist_function("cugraph_.*")
-        .allowlist_type("cugraph_.*")
-        .allowlist_type("bool_.*")
-        .allowlist_type("data_type_id_.*")
-        .allowlist_var("CUGRAPH_.*")
-        // Map the C enums
-        .allowlist_type("cugraph_error_code_.*")
-        .allowlist_type("cugraph_data_type_id_.*")
-        .allowlist_type("cugraph_graph_properties_t")
-        // Derive common traits
-        .derive_debug(true)
-        .derive_copy(true)
-        .derive_eq(true)
-        .derive_hash(true)
-        // Use newtype enums for FFI safety. Rust enums are UB-prone if C passes unknown values.
-        .newtype_enum("cugraph_error_code_")
-        .newtype_enum("cugraph_allocation_source_")
-        .newtype_enum("cugraph_error_failure_source_")
-        .newtype_enum("bool_")
-        .newtype_enum("data_type_id_");
-
-    for include_dir in &contract.native_include_dirs {
-        builder = builder.clang_arg(format!("-I{}", include_dir.display()));
-    }
-
-    // Probe the selected C compiler for its system include search path so bindgen's
-    // clang invocation follows the build toolchain instead of a hard-coded host GCC.
-    let system_include_dir =
-        build_support::detect_system_include_dir(env::var("CC").ok().as_deref()).unwrap_or_else(|err| panic!("{err}"));
-    builder = builder.clang_arg(format!("-isystem{}", system_include_dir.display()));
-
-    let bindings = builder.generate().expect("Unable to generate bindings");
-
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let bindings_path = out_path.join("bindings.rs");
-    bindings.write_to_file(&bindings_path).expect("Couldn't write bindings!");
-
-    // Expose the generated bindings path to integration tests so they can
-    // validate API coverage.
-    println!("cargo:rustc-env=CUGRAPH_SYS_BINDINGS_RS={}", bindings_path.display());
+fn verify_prebuilt_version(prefix: &std::path::Path) {
+    nexus_build_support::verify_prebuilt_crate_version(
+        &NATIVE_COMPONENT,
+        prefix,
+        "share/cugraph-nexus/crate-version",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }

@@ -290,7 +290,7 @@ PHASE_ORDER=(
   native-sources
   checked-bindings
   component-packages
-  cuvs-native-free
+  native-free-check
   msrv-check
   feature-isolation-check
   rustfmt
@@ -479,6 +479,7 @@ esac
 
 checked_bindings_command() {
   bash scripts/dev/bindings.sh cudf --check
+  bash scripts/dev/bindings.sh cugraph --check
   bash scripts/dev/bindings.sh cuvs --check
 }
 
@@ -503,11 +504,11 @@ else
 fi
 
 if [[ "${mode}" == full ]]; then
-  PHASE_COMMAND[checked-bindings]="scripts/dev/bindings.sh cudf --check + cuvs --check"
+  PHASE_COMMAND[checked-bindings]="scripts/dev/bindings.sh cudf --check + cugraph --check + cuvs --check"
   run_phase checked-bindings none - - checked_bindings_command || true
-  run_phase component-packages "literal:packages=3" - - bash scripts/ci/check_component_packages.sh || true
-  PHASE_COMMAND[cuvs-native-free]="CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys --all-targets --all-features"
-  run_phase cuvs-native-free none - - env CUVS_NEXUS_SYS_SKIP_NATIVE=1     cargo check --locked -p cuvs-nexus-sys --all-targets --all-features || true
+  run_phase component-packages "literal:packages=8" - - bash scripts/ci/check_component_packages.sh || true
+  PHASE_COMMAND[native-free-check]="DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check"
+  run_phase native-free-check none - - env DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check || true
   run_phase msrv-check none - - cargo hack check --workspace --all-features --locked     --rust-version --workspace-behavior=cargo || true
   run_phase feature-isolation-check none - - cargo hack check --workspace --each-feature     --exclude-features default --locked --keep-going || true
 fi

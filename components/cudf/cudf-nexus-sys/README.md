@@ -54,7 +54,8 @@ surface.
 The C headers under [`native/include/cudf_rust`](native/include/cudf_rust) are
 the single source of truth for the raw ABI. Checked-in Rust declarations in
 `src/bindings.rs` (and, for test hooks, `src/test_support.rs`) are generated
-from [`bindings/wrapper.h`](bindings/wrapper.h) with pinned bindgen-cli 0.72.1.
+from [`bindings/wrapper.h`](bindings/wrapper.h) with the bindgen-cli version
+pinned in `[package.metadata.bindgen-cli]` in `Cargo.toml`.
 Consumer builds never run bindgen.
 
 From the repository root, regenerate after a C-header ABI change and verify

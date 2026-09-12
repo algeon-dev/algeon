@@ -55,9 +55,9 @@ cargo +nightly fmt --all --check
 flock /tmp/cudf-gpu.lock cargo nextest run \
   -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast
 
-# Native-free sys and checked-binding contracts
-CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked \
-  -p cuvs-nexus-sys --all-targets --all-features
+# Native-free workspace and checked-binding contracts
+DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked \
+  --target-dir target/native-free-check
 scripts/dev/bindings.sh cuvs --check
 ```
 
@@ -72,9 +72,8 @@ validation.
   checked-binding maintenance. Do not add a component-local umbrella command.
 - `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` are the
   root-owned cuVS operational scripts.
-- Keep `CUVS_NEXUS_SYS_SKIP_NATIVE` and `DOCS_RS` as maintenance environments,
-  not additive `cuvs-nexus-sys` Cargo features. The sys crate must remain
-  usable for native-free linting, documentation, and package verification.
+- `DOCS_RS` is the single native-free maintenance environment. Keep the sys
+  crate usable for native-free linting, documentation, and package verification.
 - Rebuild the canonical prefix and rerun binding plus ABI checks after changing
   the source pin, native build flags, headers, discovery, loader metadata, or
   generated bindings.

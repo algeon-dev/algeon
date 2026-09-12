@@ -53,7 +53,8 @@ datafusion-nexus/
     ├── cudf-build/             # canonical cuDF CMake cache
     ├── cudf-install/           # canonical cuDF/RMM install prefix
     ├── cuvs-install/           # canonical cuVS install prefix
-    └── cugraph-build/          # canonical cuGraph CMake build tree
+    ├── cugraph-build/          # canonical cuGraph CMake build tree
+    └── cugraph-install/        # canonical cuGraph install prefix
 ```
 
 ## Build order
@@ -76,7 +77,8 @@ one command in [Building from Source](./from-source.md):
 2. **libcuvs** — `scripts/build/build_libcuvs.sh` consumes that RMM and installs
    into `target/native/cuvs-install`.
 3. **libcugraph** — `scripts/build/build_libcugraph.sh` consumes the same RMM
-   and cuVS installs and builds into `target/native/cugraph-build`.
+   and cuVS installs, builds in `target/native/cugraph-build`, and installs into
+   `target/native/cugraph-install`.
 4. **Rust workspace** — `cargo build --workspace --all-features`, then the
    single full gate `bash scripts/check_all.sh`, run bare.
 5. **Docker image** — optional. `docker/stage-docker-payload.sh` stages the

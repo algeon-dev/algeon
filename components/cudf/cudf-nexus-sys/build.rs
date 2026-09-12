@@ -5,12 +5,35 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const NATIVE_COMPONENT: nexus_build_support::NativeComponent = nexus_build_support::NativeComponent {
+    crate_name: "cudf-nexus-sys",
+    install_dir_name: "cudf-install",
+    required_library: "lib/libcudf_rust.so",
+    override_env: Some("CUDF_INSTALL_DIR"),
+    source_required_env: Some("CARGO_FEATURE_TEST_HOOKS"),
+    source_tree_sentinel: Some("../cudf/cmake/rapids_config.cmake"),
+    build_script: "scripts/build/build_libcudf.sh",
+};
+
 fn main() {
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    println!("cargo:rerun-if-env-changed=NEXUS_NATIVE_DIR");
+    println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
+    match nexus_build_support::resolve_native_linking(&NATIVE_COMPONENT, &manifest_dir, &|name| env::var_os(name)) {
+        nexus_build_support::NativeLinking::Skip => return,
+        nexus_build_support::NativeLinking::Prebuilt(prefix) => {
+            use_prebuilt(&prefix);
+            return;
+        },
+        nexus_build_support::NativeLinking::SourceTree => {},
+        nexus_build_support::NativeLinking::Missing(missing) => panic!("{missing}"),
+    }
+
     // Validate the Linux-only contract and resolve absolute compiler paths
     // before consulting the CMake cache, so cache invalidation and CMake see
     // the same toolchain identity.
     let (cc, cxx) = build_support::toolchain::prepare_cmake_toolchain();
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
     if env::var_os("CUDF_INSTALL_DIR").is_none() && env::var_os("CUDF_CPP_BUILD_DIR").is_none() {
         let default_install_dir =
             build_support::default_cudf_install_dir(&manifest_dir).unwrap_or_else(|error| panic!("{error}"));
@@ -46,7 +69,12 @@ fn main() {
             std::panic::resume_unwind(payload);
         },
     };
-    let runtime_shim = emit_shim_metadata(&install_dir, &manifest_dir, &native_dir);
+    let runtime_shim = emit_shim_link_metadata(&install_dir);
+    build_support::emit_build_fingerprints(
+        &manifest_dir,
+        &native_dir,
+        &build_support::lint::clang_format_config_path(&manifest_dir),
+    );
 
     // The `native_abi_contract` integration test validates the production
     // (test-hooks OFF) shim of the current Cargo unit: without `test-hooks`
@@ -67,6 +95,40 @@ fn main() {
     println!("cargo:cudf-rust-production-shim={}", production_shim.display());
     println!("cargo:rerun-if-changed={}", production_shim.display());
     println!("cargo:rustc-env=CUDF_RUST_PRODUCTION_SHIM={}", production_shim.display());
+}
+
+fn use_prebuilt(prefix: &Path) {
+    if env::var_os("CARGO_FEATURE_TEST_HOOKS").is_some() {
+        panic!(
+            "cudf-nexus-sys: the `test-hooks` feature requires a source-tree build; rebuild without NEXUS_NATIVE_DIR/CUDF_INSTALL_DIR or disable `test-hooks`"
+        );
+    }
+    verify_prebuilt_version(prefix);
+    if env::var_os("CUDF_INSTALL_DIR").is_none() {
+        // SAFETY: Cargo build scripts are single-threaded, and dependency
+        // discovery reads this selector only after this assignment.
+        unsafe { env::set_var("CUDF_INSTALL_DIR", prefix) };
+    }
+    let production_shim = emit_shim_link_metadata(prefix);
+    build_support::cmake::verify_primary_shim_identity(prefix, &production_shim)
+        .unwrap_or_else(|error| panic!("{error}"));
+    build_support::cmake::reassert_primary_root(prefix);
+    let cargo_link = prefix.join("share/cudf_rust/cargo-link.txt");
+    let crate_version = prefix.join("share/cudf_rust/crate-version");
+    println!("cargo:rerun-if-changed={}", cargo_link.display());
+    println!("cargo:rerun-if-changed={}", crate_version.display());
+    println!("cargo:cudf-rust-production-shim={}", production_shim.display());
+    println!("cargo:rustc-env=CUDF_RUST_PRODUCTION_SHIM={}", production_shim.display());
+}
+
+fn verify_prebuilt_version(prefix: &Path) {
+    nexus_build_support::verify_prebuilt_crate_version(
+        &NATIVE_COMPONENT,
+        prefix,
+        "share/cudf_rust/crate-version",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 }
 
 /// Build the sibling production (test-hooks OFF) shim, then restore the
@@ -143,7 +205,7 @@ fn configure_common(config: &mut cmake::Config, manifest_dir: &Path) {
 /// Replay the CMake link manifest for the shim install prefix and emit the
 /// runtime identity and native fingerprint metadata downstream consumers
 /// need. Returns the runtime shim path tracked as `cudf-rust-runtime-lib`.
-fn emit_shim_metadata(install_dir: &Path, manifest_dir: &Path, native_dir: &Path) -> PathBuf {
+fn emit_shim_link_metadata(install_dir: &Path) -> PathBuf {
     let directives =
         build_support::cmake::read_cargo_link_directives(install_dir).unwrap_or_else(|error| panic!("{error}"));
     build_support::cmake::replay_cargo_link_directives(&directives);
@@ -158,12 +220,5 @@ fn emit_shim_metadata(install_dir: &Path, manifest_dir: &Path, native_dir: &Path
     println!("cargo:metadata=cudf-rust-runtime-lib={}", shim.display());
     build_support::cmake::emit_runtime_dep_library_metadata();
 
-    // Track all native, binding-generation, compiler, and discovery inputs
-    // from the canonical fingerprint contract.
-    build_support::emit_build_fingerprints(
-        manifest_dir,
-        native_dir,
-        &build_support::lint::clang_format_config_path(manifest_dir),
-    );
     shim
 }

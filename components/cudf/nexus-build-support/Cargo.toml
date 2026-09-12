@@ -12,5 +12,9 @@ readme = "../README.md"
 keywords = ["build-dependencies", "cuda", "gpu", "rapids"]
 categories = ["development-tools::build-utils"]
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
 [lints]
 workspace = true

@@ -425,7 +425,7 @@ assert_phase_contains "${tmp_dir}/default.output" gpu-shared-tests "gpu-shared-t
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclusive-tests | PASS | 0.100s | run=1 passed=1 failed=0 skipped=7"
 assert_phase_contains "${tmp_dir}/default.output" doctests "doctests | PASS | 0.100s | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0"
 assert_phase_contains "${tmp_dir}/default.output" public-api-surface "public-api-surface | PASS | 0.100s | crates=8"
-for phase_log in policy-selftests native-sources checked-bindings component-packages cuvs-native-free msrv-check feature-isolation-check cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc public-api-surface clippy; do
+for phase_log in policy-selftests native-sources checked-bindings component-packages native-free-check msrv-check feature-isolation-check cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc public-api-surface clippy; do
   [[ -f "${tmp_dir}/phase-logs/${phase_log}.log" ]] || {
     echo "FAIL: expected persistent phase log ${phase_log}.log" >&2
     exit 1

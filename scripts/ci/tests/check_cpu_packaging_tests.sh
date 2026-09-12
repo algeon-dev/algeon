@@ -29,10 +29,7 @@ import tomllib
 with open(sys.argv[1], "rb") as policy_file:
     policy = tomllib.load(policy_file)
 assert policy["clean_environment"]["explicit_inputs"] == [
-    "CUDF_INSTALL_DIR",
-    "CUVS_INSTALL_DIR",
-    "CUVS_ROOT",
-    "CUGRAPH_CMAKE_BUILD_DIR",
+    "NEXUS_NATIVE_DIR",
 ]
 cpu = policy["cpu"]
 assert cpu["baseline"] == "x86-64-v4"
@@ -111,10 +108,7 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
     --features 'nvml,iceberg' \
     --target-root "${target_root}" \
     --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
-    --explicit-env "CUDF_INSTALL_DIR=${tmp_dir}/cudf" \
-    --explicit-env "CUVS_INSTALL_DIR=${tmp_dir}/cuvs" \
-    --explicit-env "CUVS_ROOT=${tmp_dir}/cuvs" \
-    --explicit-env "CUGRAPH_CMAKE_BUILD_DIR=${tmp_dir}/cugraph" \
+    --explicit-env "NEXUS_NATIVE_DIR=${tmp_dir}/native" \
     >"${tmp_dir}/build.output"
 
 binary="${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
@@ -269,8 +263,9 @@ grep -Fq 'build-record' "${tmp_dir}/skip-without-provenance.output" \
 
 # Exercise the complete SKIP/stage/image-entry path with the fake canonical artifact,
 # fake native libraries, and an isolated dist directory.
-mkdir -p "${tmp_dir}/cudf/lib" \
+mkdir -p "${tmp_dir}/cudf/lib" "${tmp_dir}/native" \
   "${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
+ln -s ../cudf "${tmp_dir}/native/cudf-install"
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
@@ -306,7 +301,7 @@ cat >"${tmp_dir}/bin/ldd" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
 echo "librmm.so => ${CPU_PACKAGE_DIST_DIR}/lib/librmm.so (0x0001)"
-if [[ "$1" == */cugraph/libcugraph.so && -n "${FAKE_GRAPH_CUVS_REALPATH:-}" ]]; then
+if [[ "$1" == */cugraph-install/lib/libcugraph.so && -n "${FAKE_GRAPH_CUVS_REALPATH:-}" ]]; then
   echo "libcuvs.so => ${FAKE_GRAPH_CUVS_REALPATH} (0x0002)"
 elif [[ "${FAKE_CLOSURE_HAS_CUVS:-0}" == 1 ]]; then
   echo "libcuvs.so => ${CPU_PACKAGE_DIST_DIR}/lib/libcuvs.so (0x0002)"
@@ -334,8 +329,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
 FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LDD_AUXILIARY_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/full-skip-stage.output"
@@ -384,8 +378,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
 FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LOGGER_NEEDED=1 \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
@@ -399,8 +392,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-static-external-logger" \
 FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_LOGGER_REALPATH="${tmp_dir}/cudf/lib/librapids_logger.so" \
 PATH="${tmp_dir}/bin:${PATH}" \
@@ -410,11 +402,13 @@ grep -Fq 'without one canonical staged identity' "${tmp_dir}/static-external-log
   || fail "external shared logger diagnostic missing"
 echo "PASS: static and shared rapids_logger packaging contracts stay distinct"
 
-mkdir -p "${tmp_dir}/cuvs/lib" "${tmp_dir}/cugraph"
+mkdir -p "${tmp_dir}/cuvs/lib" "${tmp_dir}/cugraph/lib"
+ln -s ../cuvs "${tmp_dir}/native/cuvs-install"
+ln -s ../cugraph "${tmp_dir}/native/cugraph-install"
 printf 'fake canonical cuvs\n' >"${tmp_dir}/cuvs/lib/libcuvs.so"
 printf 'fake canonical cuvs C API\n' >"${tmp_dir}/cuvs/lib/libcuvs_c.so"
 for library in libcugraph.so libcugraph_c.so libcugraph_common.so libcugraph_mg.so; do
-  printf 'fake %s\n' "${library}" >"${tmp_dir}/cugraph/${library}"
+  printf 'fake %s\n' "${library}" >"${tmp_dir}/cugraph/lib/${library}"
 done
 
 build_fake_variant() {
@@ -424,10 +418,7 @@ build_fake_variant() {
       --features "${features}" \
       --target-root "${target_root}" \
       --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
-      --explicit-env "CUDF_INSTALL_DIR=${tmp_dir}/cudf" \
-      --explicit-env "CUVS_INSTALL_DIR=${tmp_dir}/cuvs" \
-      --explicit-env "CUVS_ROOT=${tmp_dir}/cuvs" \
-      --explicit-env "CUGRAPH_CMAKE_BUILD_DIR=${tmp_dir}/cugraph" \
+      --explicit-env "NEXUS_NATIVE_DIR=${tmp_dir}/native" \
       >"${tmp_dir}/variant-build.output"
 }
 
@@ -435,7 +426,7 @@ build_fake_variant cuvs
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cuvs" \
 FEATURES=cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_CLOSURE_HAS_CUVS=1 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/cuvs-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs.so" ]] || fail "cuVS-only package omitted canonical libcuvs.so"
@@ -445,8 +436,7 @@ build_fake_variant cugraph
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cugraph" \
 FEATURES=cugraph SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/cugraph-stage.output"
@@ -457,8 +447,7 @@ build_fake_variant cugraph,cuvs
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-combined" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/combined-stage.output"
@@ -470,8 +459,7 @@ printf 'fake divergent logger\n' >"${tmp_dir}/divergent-librapids_logger.so"
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent-logger" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 FAKE_LOGGER_NEEDED=1 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_SECOND_LOGGER_REALPATH="${tmp_dir}/divergent-librapids_logger.so" \
@@ -485,8 +473,7 @@ printf 'fake divergent cuvs\n' >"${tmp_dir}/divergent-libcuvs.so"
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/divergent-libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
@@ -497,8 +484,7 @@ grep -Fq 'different libcuvs.so identities' "${tmp_dir}/divergent-cuvs.output" \
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-not-found" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 FAKE_LDD_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
@@ -509,8 +495,7 @@ grep -Fq 'unresolved loader dependency' "${tmp_dir}/loader-not-found.output" \
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-raft" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
-CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
+NEXUS_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 FAKE_READELF_NEEDED=libraft.so PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?
