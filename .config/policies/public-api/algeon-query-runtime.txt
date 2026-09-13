@@ -1120,8 +1120,8 @@ pub query_runtime::observability::AttemptFinalDomainUsage::peak_allocations: u64
 pub query_runtime::observability::AttemptFinalDomainUsage::peak_bytes: u64
 pub query_runtime::observability::AttemptFinalDomainUsage::total_allocations: u64
 pub query_runtime::observability::AttemptFinalDomainUsage::total_bytes: u64
-impl core::convert::From<cudf::core::memory::QueryMemoryDomainUsage> for query_runtime::observability::AttemptFinalDomainUsage
-pub fn query_runtime::observability::AttemptFinalDomainUsage::from(cudf::core::memory::QueryMemoryDomainUsage) -> Self
+impl core::convert::From<cudf::core::memory::usage::QueryMemoryDomainUsage> for query_runtime::observability::AttemptFinalDomainUsage
+pub fn query_runtime::observability::AttemptFinalDomainUsage::from(cudf::core::memory::usage::QueryMemoryDomainUsage) -> Self
 pub struct query_runtime::observability::AttemptNativeFault
 pub query_runtime::observability::AttemptNativeFault::kind: query_runtime::observability::AttemptNativeFaultKind
 pub query_runtime::observability::AttemptNativeFault::status: core::option::Option<query_runtime::observability::AttemptNativeStatus>
@@ -2056,8 +2056,8 @@ pub fn query_runtime::runtime::resident::GpuResultHandle::device_placement(&self
 pub fn query_runtime::runtime::resident::GpuResultHandle::frame(&self) -> &cudf::frame::dataframe::owned::DataFrame
 pub fn query_runtime::runtime::resident::GpuResultHandle::graph_residency(&self) -> core::option::Option<&query_planning::plan::graph_algorithm::residency::GraphResidencyDescriptor>
 pub fn query_runtime::runtime::resident::GpuResultHandle::into_gpu_frame(self) -> query_runtime::runtime::resident::GpuDataFrame
-pub fn query_runtime::runtime::resident::GpuResultHandle::into_host_batch_cursor(self, query_runtime::runtime::ExecutionCancellation, cudf::frame::dataframe::gpu_record_batch::HostBatchCursorConfig) -> query_planning::error::Result<query_runtime::runtime::resident::GpuHostBatchCursor>
-pub fn query_runtime::runtime::resident::GpuResultHandle::into_host_batch_cursor_with_host_schema(self, arrow_schema::schema::SchemaRef, query_runtime::runtime::ExecutionCancellation, cudf::frame::dataframe::gpu_record_batch::HostBatchCursorConfig) -> query_planning::error::Result<query_runtime::runtime::resident::GpuHostBatchCursor>
+pub fn query_runtime::runtime::resident::GpuResultHandle::into_host_batch_cursor(self, query_runtime::runtime::ExecutionCancellation, cudf::frame::dataframe::gpu_record_batch::host_batch_cursor::HostBatchCursorConfig) -> query_planning::error::Result<query_runtime::runtime::resident::GpuHostBatchCursor>
+pub fn query_runtime::runtime::resident::GpuResultHandle::into_host_batch_cursor_with_host_schema(self, arrow_schema::schema::SchemaRef, query_runtime::runtime::ExecutionCancellation, cudf::frame::dataframe::gpu_record_batch::host_batch_cursor::HostBatchCursorConfig) -> query_planning::error::Result<query_runtime::runtime::resident::GpuHostBatchCursor>
 pub fn query_runtime::runtime::resident::GpuResultHandle::new(&query_runtime::runtime::ExecutionContext, query_runtime::runtime::resident::GpuDataFrame, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<Self>
 pub fn query_runtime::runtime::resident::GpuResultHandle::num_columns(&self) -> usize
 pub fn query_runtime::runtime::resident::GpuResultHandle::num_rows(&self) -> usize
@@ -2230,15 +2230,15 @@ impl query_runtime::runtime::AdmittedQueryContext
 pub fn query_runtime::runtime::AdmittedQueryContext::context(&self) -> &query_runtime::runtime::ExecutionContext
 pub struct query_runtime::runtime::AttemptAllocationDomain
 impl query_runtime::runtime::AttemptAllocationDomain
-pub fn query_runtime::runtime::AttemptAllocationDomain::as_cudf(&self) -> &alloc::sync::Arc<cudf::core::memory::QueryMemoryDomain>
+pub fn query_runtime::runtime::AttemptAllocationDomain::as_cudf(&self) -> &alloc::sync::Arc<cudf::core::memory::domain::QueryMemoryDomain>
 pub const fn query_runtime::runtime::AttemptAllocationDomain::cap_bytes(&self) -> u64
-pub fn query_runtime::runtime::AttemptAllocationDomain::create_member(&self, &cudf::runtime::stream::CudaStream) -> query_planning::error::Result<cudf::core::memory::StreamReservationLease>
+pub fn query_runtime::runtime::AttemptAllocationDomain::create_member(&self, &cudf::runtime::stream::CudaStream) -> query_planning::error::Result<cudf::core::memory::domain::StreamReservationLease>
 pub fn query_runtime::runtime::AttemptAllocationDomain::device_ordinal(&self) -> usize
 pub const fn query_runtime::runtime::AttemptAllocationDomain::domain_id(&self) -> u64
-pub fn query_runtime::runtime::AttemptAllocationDomain::freeze(&self) -> query_planning::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
+pub fn query_runtime::runtime::AttemptAllocationDomain::freeze(&self) -> query_planning::error::Result<cudf::core::memory::usage::QueryMemoryDomainUsage>
 pub const fn query_runtime::runtime::AttemptAllocationDomain::grant_identity(&self) -> GrantIdentity
-pub fn query_runtime::runtime::AttemptAllocationDomain::live_allocations(&self) -> query_planning::error::Result<alloc::vec::Vec<cudf::core::memory::QueryMemoryDomainAllocation>>
-pub fn query_runtime::runtime::AttemptAllocationDomain::usage(&self) -> query_planning::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
+pub fn query_runtime::runtime::AttemptAllocationDomain::live_allocations(&self) -> query_planning::error::Result<alloc::vec::Vec<cudf::core::memory::usage::QueryMemoryDomainAllocation>>
+pub fn query_runtime::runtime::AttemptAllocationDomain::usage(&self) -> query_planning::error::Result<cudf::core::memory::usage::QueryMemoryDomainUsage>
 pub struct query_runtime::runtime::BackendAdmissionMetricsSnapshot
 pub query_runtime::runtime::BackendAdmissionMetricsSnapshot::active_attempts: u64
 pub query_runtime::runtime::BackendAdmissionMetricsSnapshot::cache_evictable_resident_bytes: u64
@@ -2358,7 +2358,7 @@ impl query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::acquire_io_lease(&self, &'static str) -> query_planning::error::Result<core::option::Option<query_runtime::runtime::IoLifecycleLease>>
 pub fn query_runtime::runtime::ExecutionContext::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_id(&self) -> core::option::Option<u64>
-pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> query_planning::error::Result<core::option::Option<cudf::core::memory::QueryMemoryDomainUsage>>
+pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> query_planning::error::Result<core::option::Option<cudf::core::memory::usage::QueryMemoryDomainUsage>>
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_grant_identity(&self) -> core::option::Option<crate::runtime::gpu::GrantIdentity>
 pub fn query_runtime::runtime::ExecutionContext::boundary_policy(&self) -> query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub fn query_runtime::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
@@ -2366,20 +2366,13 @@ pub fn query_runtime::runtime::ExecutionContext::builder() -> query_runtime::run
 pub fn query_runtime::runtime::ExecutionContext::cancellation(&self) -> &query_runtime::runtime::ExecutionCancellation
 pub fn query_runtime::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::datafusion_order_tracking(&self) -> bool
-pub fn query_runtime::runtime::ExecutionContext::deployment_io_capability(&self) -> &query_runtime::runtime::DeploymentIoCapability
 pub fn query_runtime::runtime::ExecutionContext::device_memory_space(&self) -> query_planning::execution_contracts::MemorySpaceId
 pub fn query_runtime::runtime::ExecutionContext::device_placement(&self) -> query_planning::execution_contracts::DevicePlacement
-pub fn query_runtime::runtime::ExecutionContext::drain_lakehouse_cache_fill_event_snapshots(&self) -> alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
 pub fn query_runtime::runtime::ExecutionContext::execution_budget_token(&self, cudf::runtime::budget::ExecutionBudgetRequest) -> query_planning::error::Result<cudf::runtime::budget::ExecutionBudgetToken>
 pub fn query_runtime::runtime::ExecutionContext::from_runtime(cudf::runtime::owner::Runtime) -> query_planning::error::Result<Self>
 pub fn query_runtime::runtime::ExecutionContext::from_shared_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> query_planning::error::Result<Self>
 pub fn query_runtime::runtime::ExecutionContext::gpu_executor(&self) -> query_planning::error::Result<query_runtime::runtime::GpuExecutorLease>
 pub fn query_runtime::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
-pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_acquire_timeout(&self) -> core::time::Duration
-pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_budget(&self) -> query_runtime::runtime::CacheFillByteBudget
-pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_config(&self) -> &query_runtime::runtime::LakehouseCacheFillConfig
-pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_event_snapshots(&self) -> alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
-pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_max_concurrent_ops(&self) -> usize
 pub fn query_runtime::runtime::ExecutionContext::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
 pub fn query_runtime::runtime::ExecutionContext::memory_grant(&self) -> query_planning::error::Result<core::option::Option<MemoryGrant>>
 pub fn query_runtime::runtime::ExecutionContext::memory_policy(&self) -> query_planning::execution_contracts::MemoryResourcePolicy
@@ -2387,23 +2380,33 @@ pub fn query_runtime::runtime::ExecutionContext::query_id(&self) -> core::option
 pub fn query_runtime::runtime::ExecutionContext::runtime(&self) -> query_planning::error::Result<cudf::runtime::owner::Runtime>
 pub fn query_runtime::runtime::ExecutionContext::runtime_execution_scope(&self) -> core::option::Option<&query_runtime::observability::RuntimeExecutionObservationScope>
 pub fn query_runtime::runtime::ExecutionContext::runtime_observation(&self) -> &query_runtime::observability::RuntimeObservationHandle
-pub fn query_runtime::runtime::ExecutionContext::service_stream_pool(&self) -> query_runtime::runtime::QueryServiceStreamPool
 pub fn query_runtime::runtime::ExecutionContext::shared_runtime(&self) -> query_planning::error::Result<alloc::sync::Arc<cudf::runtime::owner::Runtime>>
 pub fn query_runtime::runtime::ExecutionContext::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn query_runtime::runtime::ExecutionContext::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
 pub fn query_runtime::runtime::ExecutionContext::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
 pub fn query_runtime::runtime::ExecutionContext::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn query_runtime::runtime::ExecutionContext::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
+pub fn query_runtime::runtime::ExecutionContext::with_datafusion_order_tracking(self, bool) -> Self
+pub fn query_runtime::runtime::ExecutionContext::with_io_lifecycle(self, query_runtime::runtime::IoLifecycle) -> Self
+pub fn query_runtime::runtime::ExecutionContext::with_query_id(&self, impl core::convert::Into<query_planning::correlation::QueryId>) -> query_planning::error::Result<Self>
+pub fn query_runtime::runtime::ExecutionContext::with_runtime_gpu_stream_scope(&self, query_runtime::observability::RuntimeStreamLeaseScope) -> Self
+pub fn query_runtime::runtime::ExecutionContext::with_trace_id(&self, impl core::convert::Into<query_planning::correlation::TraceId>) -> query_planning::error::Result<Self>
+impl query_runtime::runtime::ExecutionContext
+pub fn query_runtime::runtime::ExecutionContext::deployment_io_capability(&self) -> &query_runtime::runtime::DeploymentIoCapability
+pub fn query_runtime::runtime::ExecutionContext::drain_lakehouse_cache_fill_event_snapshots(&self) -> alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
+pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_acquire_timeout(&self) -> core::time::Duration
+pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_budget(&self) -> query_runtime::runtime::CacheFillByteBudget
+pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_config(&self) -> &query_runtime::runtime::LakehouseCacheFillConfig
+pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_event_snapshots(&self) -> alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
+pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_max_concurrent_ops(&self) -> usize
+pub fn query_runtime::runtime::ExecutionContext::service_stream_pool(&self) -> query_runtime::runtime::QueryServiceStreamPool
+impl query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &query_planning::plan::core::QueryPlan, &[alloc::string::String]) -> query_planning::error::Result<core::option::Option<query_planning::schedule_projection::AttemptComposedScheduleProjection>>
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::with_admitted_gpu_inputs(&self, &query_planning::plan::core::QueryPlan, &query_runtime::runtime::resident::GpuResidentInputMap) -> query_planning::error::Result<Self>
-pub fn query_runtime::runtime::ExecutionContext::with_datafusion_order_tracking(self, bool) -> Self
-pub fn query_runtime::runtime::ExecutionContext::with_io_lifecycle(self, query_runtime::runtime::IoLifecycle) -> Self
+impl query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::with_owned_stream_lease(&self, query_runtime::runtime::StreamLease) -> query_planning::error::Result<query_runtime::runtime::LeasedExecutionContext>
-pub fn query_runtime::runtime::ExecutionContext::with_query_id(&self, impl core::convert::Into<query_planning::correlation::QueryId>) -> query_planning::error::Result<Self>
-pub fn query_runtime::runtime::ExecutionContext::with_runtime_gpu_stream_scope(&self, query_runtime::observability::RuntimeStreamLeaseScope) -> Self
 pub fn query_runtime::runtime::ExecutionContext::with_stream_lease(&self, &query_runtime::runtime::StreamLease) -> query_planning::error::Result<Self>
-pub fn query_runtime::runtime::ExecutionContext::with_trace_id(&self, impl core::convert::Into<query_planning::correlation::TraceId>) -> query_planning::error::Result<Self>
 impl query_runtime::observability::RuntimeExecutionStageContext for query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::runtime_operator_stage_context(&self) -> (query_runtime::observability::RuntimeObservationHandle, core::option::Option<query_runtime::observability::PlanExecutionId>, core::option::Option<query_runtime::observability::RuntimeSpanId>)
 pub struct query_runtime::runtime::GpuBackendCloseSnapshot
@@ -2511,7 +2514,7 @@ pub query_runtime::runtime::GpuBackendDeviceStartupRecord::install_telemetry: bo
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::lane_count: usize
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::max_active_attempts: usize
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::memory_limit: query_runtime::runtime::GpuDeviceMemoryLimit
-pub query_runtime::runtime::GpuBackendDeviceStartupRecord::memory_manager_installation: cudf::core::memory::DeviceMemoryManagerInstallationState
+pub query_runtime::runtime::GpuBackendDeviceStartupRecord::memory_manager_installation: cudf::core::memory::installation::DeviceMemoryManagerInstallationState
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::memory_ownership: query_runtime::runtime::GpuMemoryOwnership
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::model_name: core::option::Option<alloc::string::String>
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::physical_total_bytes: core::option::Option<u64>

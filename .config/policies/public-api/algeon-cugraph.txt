@@ -574,8 +574,8 @@ pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph
 impl<T> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
-pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
-pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::ParkedGraph<T>> where T: core::marker::Send
 pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
 pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
@@ -585,37 +585,37 @@ pub fn cugraph::graph::Graph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> co
 impl<T> core::ops::drop::Drop for cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::drop(&mut self)
 pub struct cugraph::graph::GraphBuilder<'a>
-impl<'a> cugraph::graph::GraphBuilder<'a>
-pub fn cugraph::graph::GraphBuilder<'a>::build<T: cugraph::graph::Transposition>(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::graph::GraphBuilder<'a>::do_expensive_check(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::drop_multi_edges(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::drop_self_loops(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_end_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_start_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_type_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::new<V: cugraph::types::CugraphElement>(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::properties(self, cugraph::types::GraphProperties) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::renumber(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::symmetrize(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::vertices<V: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::weights<W: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, W>) -> Self
-impl core::clone::Clone for cugraph::graph::GraphBuilder<'_>
-pub fn cugraph::graph::GraphBuilder<'_>::clone(&self) -> Self
-impl core::marker::Copy for cugraph::graph::GraphBuilder<'_>
+impl<'a> cugraph::GraphBuilder<'a>
+pub fn cugraph::GraphBuilder<'a>::build<T: cugraph::graph::Transposition>(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::GraphBuilder<'a>::do_expensive_check(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::drop_multi_edges(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::drop_self_loops(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_end_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_start_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_type_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::new<V: cugraph::types::CugraphElement>(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::GraphBuilder<'a>::properties(self, cugraph::types::GraphProperties) -> Self
+pub fn cugraph::GraphBuilder<'a>::renumber(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::symmetrize(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::vertices<V: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::GraphBuilder<'a>::weights<W: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, W>) -> Self
+impl core::clone::Clone for cugraph::GraphBuilder<'_>
+pub fn cugraph::GraphBuilder<'_>::clone(&self) -> Self
+impl core::marker::Copy for cugraph::GraphBuilder<'_>
 pub struct cugraph::graph::ParkedGraph<T>
-impl<T> cugraph::graph::ParkedGraph<T>
-pub fn cugraph::graph::ParkedGraph<T>::device(&self) -> i32
-pub fn cugraph::graph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
-pub fn cugraph::graph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::graph::ParkedGraph<T>::resume_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::graph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
-pub fn cugraph::graph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
-impl<T: core::marker::Send> core::marker::Send for cugraph::graph::ParkedGraph<T>
-impl<T> core::fmt::Debug for cugraph::graph::ParkedGraph<T>
-pub fn cugraph::graph::ParkedGraph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<T> core::ops::drop::Drop for cugraph::graph::ParkedGraph<T>
-pub fn cugraph::graph::ParkedGraph<T>::drop(&mut self)
+impl<T> cugraph::ParkedGraph<T>
+pub fn cugraph::ParkedGraph<T>::device(&self) -> i32
+pub fn cugraph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
+pub fn cugraph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::ParkedGraph<T>::resume_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
+pub fn cugraph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
+impl<T: core::marker::Send> core::marker::Send for cugraph::ParkedGraph<T>
+impl<T> core::fmt::Debug for cugraph::ParkedGraph<T>
+pub fn cugraph::ParkedGraph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::ops::drop::Drop for cugraph::ParkedGraph<T>
+pub fn cugraph::ParkedGraph<T>::drop(&mut self)
 pub struct cugraph::graph::Transposed
 impl cugraph::graph::Transposition for cugraph::graph::Transposed
 pub trait cugraph::graph::Transposition: cugraph::graph::sealed::Sealed
@@ -1607,8 +1607,8 @@ pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph
 impl<T> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
-pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
-pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::ParkedGraph<T>> where T: core::marker::Send
 pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
 pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
@@ -1618,37 +1618,37 @@ pub fn cugraph::graph::Graph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> co
 impl<T> core::ops::drop::Drop for cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::drop(&mut self)
 pub struct cugraph::GraphBuilder<'a>
-impl<'a> cugraph::graph::GraphBuilder<'a>
-pub fn cugraph::graph::GraphBuilder<'a>::build<T: cugraph::graph::Transposition>(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::graph::GraphBuilder<'a>::do_expensive_check(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::drop_multi_edges(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::drop_self_loops(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_end_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_start_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::edge_type_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::new<V: cugraph::types::CugraphElement>(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::properties(self, cugraph::types::GraphProperties) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::renumber(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::symmetrize(self) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::vertices<V: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
-pub fn cugraph::graph::GraphBuilder<'a>::weights<W: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, W>) -> Self
-impl core::clone::Clone for cugraph::graph::GraphBuilder<'_>
-pub fn cugraph::graph::GraphBuilder<'_>::clone(&self) -> Self
-impl core::marker::Copy for cugraph::graph::GraphBuilder<'_>
+impl<'a> cugraph::GraphBuilder<'a>
+pub fn cugraph::GraphBuilder<'a>::build<T: cugraph::graph::Transposition>(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::GraphBuilder<'a>::do_expensive_check(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::drop_multi_edges(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::drop_self_loops(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_end_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_start_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::edge_type_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::GraphBuilder<'a>::new<V: cugraph::types::CugraphElement>(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::GraphBuilder<'a>::properties(self, cugraph::types::GraphProperties) -> Self
+pub fn cugraph::GraphBuilder<'a>::renumber(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::symmetrize(self) -> Self
+pub fn cugraph::GraphBuilder<'a>::vertices<V: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::GraphBuilder<'a>::weights<W: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, W>) -> Self
+impl core::clone::Clone for cugraph::GraphBuilder<'_>
+pub fn cugraph::GraphBuilder<'_>::clone(&self) -> Self
+impl core::marker::Copy for cugraph::GraphBuilder<'_>
 pub struct cugraph::ParkedGraph<T>
-impl<T> cugraph::graph::ParkedGraph<T>
-pub fn cugraph::graph::ParkedGraph<T>::device(&self) -> i32
-pub fn cugraph::graph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
-pub fn cugraph::graph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::graph::ParkedGraph<T>::resume_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
-pub fn cugraph::graph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
-pub fn cugraph::graph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
-impl<T: core::marker::Send> core::marker::Send for cugraph::graph::ParkedGraph<T>
-impl<T> core::fmt::Debug for cugraph::graph::ParkedGraph<T>
-pub fn cugraph::graph::ParkedGraph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<T> core::ops::drop::Drop for cugraph::graph::ParkedGraph<T>
-pub fn cugraph::graph::ParkedGraph<T>::drop(&mut self)
+impl<T> cugraph::ParkedGraph<T>
+pub fn cugraph::ParkedGraph<T>::device(&self) -> i32
+pub fn cugraph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
+pub fn cugraph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::ParkedGraph<T>::resume_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
+pub fn cugraph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
+impl<T: core::marker::Send> core::marker::Send for cugraph::ParkedGraph<T>
+impl<T> core::fmt::Debug for cugraph::ParkedGraph<T>
+pub fn cugraph::ParkedGraph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::ops::drop::Drop for cugraph::ParkedGraph<T>
+pub fn cugraph::ParkedGraph<T>::drop(&mut self)
 pub struct cugraph::ResourceHandle
 impl cugraph::handle::ResourceHandle
 pub unsafe fn cugraph::handle::ResourceHandle::adopt_raw_resource_handle(*mut cugraph_sys::cugraph_resource_handle_t) -> cugraph::error::Result<Self>
