@@ -18,10 +18,6 @@ pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) source_bytes: u64,
 }
 
-pub(in crate::exec::bounded::chunks) fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
-    values.into_iter().try_fold(0u64, |total, value| value.map(|value| total.saturating_add(value)))
-}
-
 pub(in crate::exec::bounded::chunks) fn release_committed_partials_reverse(mut partials: Vec<CommittedPartial>) {
     while partials.pop().is_some() {}
 }

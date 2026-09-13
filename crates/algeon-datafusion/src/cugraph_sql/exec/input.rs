@@ -22,8 +22,8 @@ use super::{
     RecordOutput, ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext, TryStreamExt,
     as_algeon_native_composed_exec, as_algeon_native_exec, counted_cudf_runtime, edge_source_output_rows,
     execute_gpu_resident_producer_with_context, execute_query_plan, finalize_graph_query_outcome,
-    get_record_batch_memory_size, gpu_resident_producer_input_name, native_gpu_resident_producer,
-    plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows,
+    get_record_batch_memory_size, gpu_resident_producer, gpu_resident_producer_input_name, plan_contains_algeon_native,
+    prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows,
 };
 use crate::native_exec::{lakehouse::resolve_query_plan, validate_host_wrapped_gpu_execution};
 
@@ -264,7 +264,7 @@ async fn stage_cugraph_source(
     staged_bytes: &AtomicUsize,
     reservation: &MemoryReservation,
 ) -> Result<StagedCugraphSource> {
-    if native_gpu_resident_producer(plan.as_ref()).is_some() {
+    if gpu_resident_producer(plan.as_ref()).is_some() {
         let plan = prepare_gpu_resident_producer_for_execution(plan, Arc::clone(&task_context)).await?;
         return Ok(StagedCugraphSource::Native { schema: plan.schema(), plan });
     }
@@ -775,7 +775,7 @@ pub(super) async fn execute_edge_source_to_gpu(
     task_context: Arc<TaskContext>,
     admitted_composed_plan: Option<QueryPlan>,
 ) -> Result<GpuDataFrame> {
-    if native_gpu_resident_producer(plan.as_ref()).is_some() {
+    if gpu_resident_producer(plan.as_ref()).is_some() {
         let (_, handle) =
             execute_gpu_resident_producer_with_context(plan.as_ref(), context, 0, Arc::clone(&task_context)).await?;
         return Ok(handle.into_gpu_frame());
@@ -834,7 +834,7 @@ pub(super) async fn execute_edge_source_to_gpu(
         })?;
         let mut gpu_inputs = GpuResidentInputMap::new();
         for child in native.gpu_inputs() {
-            let Some(producer) = native_gpu_resident_producer(child.as_ref()) else {
+            let Some(producer) = gpu_resident_producer(child.as_ref()) else {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
                     "algeon_datafusion.cugraph_sql.edge_source_composed",

@@ -180,8 +180,8 @@ impl SourceChunk {
             },
         };
 
-        if let Some(row_group_rows) = source_file.row_group_rows.as_deref() {
-            validate_selected_row_groups(source_file, file_index, &selected_row_groups, row_group_rows.len())?;
+        if let Some(row_group_count) = row_group_metadata_count(source_file) {
+            validate_selected_row_groups(source_file, file_index, &selected_row_groups, row_group_count)?;
         }
 
         let known_row_group_bytes =

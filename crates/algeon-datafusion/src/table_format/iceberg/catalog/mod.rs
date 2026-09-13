@@ -6,6 +6,12 @@
 //! startup via [`build_catalog_provider_from_backend`] or
 //! [`build_scoped_catalog_provider_from_backend`]; individual tables are loaded
 //! lazily on first access.
+//!
+//! AWS Glue and Iceberg REST catalog connection, FileIO construction, and the
+//! immutable [`SourceAccessPolicy`](iceberg_catalog::SourceAccessPolicy) belong
+//! to the DataFusion-free Iceberg leaf, which this module re-exports. The root
+//! catalog module only adapts a resolved leaf backend to DataFusion's catalog
+//! provider traits.
 
 use async_trait::async_trait;
 use datafusion::{
@@ -22,19 +28,16 @@ use crate::{
 };
 
 mod error;
-mod glue;
 mod provider;
-mod rest;
 
 use error::CATALOG_BACKEND_OP;
 pub(crate) use error::{
     apply_iceberg_catalog_error_facts, apply_opendal_scan_error_facts, classify_iceberg_scan_error,
     classify_opendal_scan_error,
 };
-pub use glue::{GlueCatalogBackend, GlueCatalogConfig};
+pub use iceberg_catalog::{GlueCatalogBackend, GlueCatalogConfig, RestCatalogBackend, RestCatalogConfig};
 pub use provider::{
     AlgeonIcebergCatalogProvider, AlgeonIcebergCatalogSource, AlgeonIcebergSchemaProvider, CatalogBackend,
     IcebergProviderOptions, build_catalog_provider_from_backend, build_catalog_provider_from_backend_with_options,
     build_scoped_catalog_provider_from_backend, build_scoped_catalog_provider_from_backend_with_options,
 };
-pub use rest::{RestCatalogBackend, RestCatalogConfig};

@@ -7,7 +7,7 @@ use crate::{
         error::{Error, ErrorCode, Result, invariant_violation},
         types::DataType,
     },
-    internal::hash::{FastHashMap, fast_hash_map_with_capacity},
+    hash::{FastHashMap, fast_hash_map_with_capacity},
     runtime::{
         BoundaryKind, BoundaryObservation, QueryMemoryObservation, QueryStageKind,
         record_boundary_observation_in_domain,

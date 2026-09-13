@@ -344,6 +344,6 @@ impl AttemptCapabilityEvidence {
     }
 }
 
-fn capability_labels(capabilities: &[ExecutionCapability]) -> String {
+pub fn capability_labels(capabilities: &[ExecutionCapability]) -> String {
     capabilities.iter().map(|capability| capability.as_str()).collect::<Vec<_>>().join(",")
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use arrow::{
     array::{Array, ArrayData},
-    compute::concat as arrow_concat,
+    compute::concat,
     datatypes::{DataType as ArrowDataType, Schema, TimeUnit},
     record_batch::{RecordBatch, RecordBatchOptions},
 };
@@ -23,7 +23,8 @@ use crate::{
         types::TypeId,
     },
     frame::dataframe::DataFrame,
-    internal::{hash::fast_index_map, resolve::missing_column_error},
+    hash::fast_index_map,
+    internal::resolve::missing_column_error,
     runtime::{
         BoundaryKind, CudaEvent, QueryStageKind, Runtime,
         device_guard::DeviceGuard,
@@ -380,7 +381,7 @@ pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch])
                     .map_err(|error| error.reanchor("arrow::dataframe_from_record_batches"))?
             },
             _ => {
-                let merged = arrow_concat(&arrays).map_err(|error| {
+                let merged = concat(&arrays).map_err(|error| {
                     error::foreign_invariant_violation(
                         "dataframe_from_record_batches",
                         error.to_string(),

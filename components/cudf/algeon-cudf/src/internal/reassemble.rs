@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::{
     core::{column::Column, error::Result, schema, table::Table},
     frame::dataframe::{DataFrame, resolve_frame_domain_from_authoritative_source},
-    internal::hash::{FastIndexMap, fast_index_map_with_capacity},
+    hash::{FastIndexMap, fast_index_map_with_capacity},
 };
 
 /// Create a `DataFrame` from a `Table` and a vector of column names.

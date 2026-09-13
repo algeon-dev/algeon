@@ -1,12 +1,9 @@
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Arc;
-use std::{
-    hash::Hasher,
-    path::{Path, PathBuf},
-};
 
 use cudf::io::parquet::{RemoteParquetBackendBuildStatus, remote_parquet_backend_build_status};
-use fnv::FnvHasher;
+use query_engine::{exec::sanitize_cache_component, util::fnv1a64};
 
 #[cfg(test)]
 use super::{DataType, Schema};
@@ -442,20 +439,6 @@ pub(super) fn redacted_scan_location_debug_value(location: &str) -> String {
 
 pub(super) fn redacted_scan_debug_value(kind: &str, value: &str) -> String {
     format!("{kind}:fnv64:{:016x}:len:{}", fnv1a64(value.as_bytes()), value.len())
-}
-
-fn sanitize_cache_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') { ch } else { '_' })
-        .collect::<String>();
-    if sanitized.is_empty() { "unknown".to_string() } else { sanitized }
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hasher = FnvHasher::default();
-    hasher.write(bytes);
-    hasher.finish()
 }
 
 #[cfg(test)]

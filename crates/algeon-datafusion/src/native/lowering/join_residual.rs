@@ -12,8 +12,11 @@ use datafusion::{
     },
     physical_plan::joins::utils::JoinFilter,
 };
-use query_engine::expr::{
-    BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue,
+use query_engine::{
+    expr::{
+        BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue,
+    },
+    validation::{is_string_type, substring_stop_position},
 };
 
 use super::{
@@ -27,9 +30,9 @@ use crate::{
     native::{
         expression_contract::{
             JoinResidualCastMode, ScalarFunctionKind, ValidatedJoinResidual, case_expr_data_type,
-            declared_decimal_divide_output_type, is_string_type, join_residual_cast_mode, physical_expr_data_type,
+            declared_decimal_divide_output_type, join_residual_cast_mode, physical_expr_data_type,
         },
-        literal::{literal_i32, substring_stop_position},
+        literal::literal_i32,
     },
 };
 

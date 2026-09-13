@@ -1,6 +1,7 @@
 use std::{fs, sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef;
+pub use lakehouse_cache::sanitize_cache_component;
 use parquet::file::reader::FileReader;
 
 use super::{
@@ -10,8 +11,8 @@ use super::{
     QueryErrorCode, Result, Schema, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode,
     SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN, append_source_order_columns, budgeted_value, col,
     comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
-    cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, execution_overrides, lit,
-    plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
+    cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
+    execution_overrides, lit, plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
 use crate::{

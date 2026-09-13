@@ -15,11 +15,14 @@ use std::{
 };
 
 use datafusion::common::DataFusionError;
-use query_engine::error::QueryError;
+use query_engine::{
+    error::QueryError,
+    native_error::{cudf_message_fact, query_error_code_for_cudf_error},
+};
 
 mod code;
 
-use code::code_for_native_error as adapter_code_for_native_error;
+use code::code_for_native_error;
 pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
@@ -614,7 +617,10 @@ impl Error {
     /// classification and a URI-redacted message are preserved as `cudf_*`
     /// facts.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
-        let code = code_for_cudf_error(&source);
+        // Server I/O lifecycle wraps cuDF errors without a native QueryError, so
+        // the adapter derives the code from the runtime's single cuDF
+        // classification rather than a second table.
+        let code = code_for_native_error(query_error_code_for_cudf_error(&source));
         let mut error = Self::new(code, operation, message)
             .with_log_safe_fact("cudf_code", source.code())
             .with_log_safe_fact("cudf_kind", source.kind())
@@ -648,7 +654,7 @@ impl Error {
     /// `operation` should be the stable dotted id for the adapter operation, and
     /// `message` should be human-facing adapter context.
     pub(crate) fn from_native(operation: &'static str, message: impl Into<String>, source: QueryError) -> Self {
-        let code = code_for_native_error(&source);
+        let code = code_for_native_error(source.code());
         let mut error = Self::new(code, operation, message)
             .with_log_safe_fact("native_code", source.code())
             .with_log_safe_fact("native_kind", source.kind())
@@ -798,60 +804,6 @@ impl From<Error> for DataFusionError {
     fn from(error: Error) -> Self {
         Self::External(Box::new(error))
     }
-}
-
-/// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
-fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
-    let message = source.message().trim();
-    if message.is_empty() {
-        return None;
-    }
-    Some(redact_uri_tokens(message))
-}
-
-/// Redacts whitespace-delimited `scheme://...` tokens and normalizes spaces.
-fn redact_uri_tokens(message: &str) -> String {
-    message
-        .split_whitespace()
-        .map(|token| if token.contains("://") { "<redacted-uri>" } else { token })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-// Allocation attribution is owned by `cudf`: the typed FFI failure
-// source proves a query-limit rejection or physical exhaustion, while a
-// budget-scope annotation is only a usage snapshot of the scope the error
-// passed through. See `cudf::allocation_attribution`. Attempt retry advice is
-// derived only from a sealed report; Persistent still records a condition
-// needing escalation or intervention. Notable permanent mappings:
-// `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
-// invariant violation, and unknown kinds fall back to dependency failure.
-fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
-    match cudf::allocation_attribution(error) {
-        cudf::CudfAllocationAttribution::ConfirmedQueryLimit => return ErrorCode::QueryMemoryLimitExceeded,
-        cudf::CudfAllocationAttribution::ConfirmedPhysical => return ErrorCode::DeviceOutOfMemory,
-        cudf::CudfAllocationAttribution::UnattributedAllocationFailure => return ErrorCode::DeviceAllocationFailed,
-        cudf::CudfAllocationAttribution::NonAllocationFailure => {},
-    }
-    match cudf::classify_cudf_error(error) {
-        cudf::CudfErrorClassification::SizeOverflow => ErrorCode::SizeOverflow,
-        cudf::CudfErrorClassification::HostMaterializationLimitExceeded => ErrorCode::HostMaterializationLimitExceeded,
-        cudf::CudfErrorClassification::ResourceExhausted => ErrorCode::DeviceAllocationFailed,
-        cudf::CudfErrorClassification::TemporaryFailure => ErrorCode::CudfTemporaryFailure,
-        cudf::CudfErrorClassification::PersistentFailure => ErrorCode::DeviceFault,
-        cudf::CudfErrorClassification::InvalidInput => ErrorCode::CudfInvalidInput,
-        cudf::CudfErrorClassification::Unsupported => ErrorCode::CudfUnsupported,
-        cudf::CudfErrorClassification::DependencyFailure => ErrorCode::CudfDependencyFailure,
-        cudf::CudfErrorClassification::InvariantViolation => ErrorCode::InternalInvariantViolation,
-    }
-}
-
-// Native-to-adapter mapping is intentionally lossy at the top-level code:
-// native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
-// the adapter has no shape-specific code. The exact native code remains
-// available in the `native_code` fact attached by `Error::from_native`.
-fn code_for_native_error(error: &QueryError) -> ErrorCode {
-    adapter_code_for_native_error(error.code())
 }
 
 fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
@@ -1482,11 +1434,10 @@ mod tests {
         failure_source: Option<cudf::CudfErrorFailureSource>,
         with_budget_scope: bool,
     ) -> cudf::Error {
-        use cudf::testing::error as cudf_test_error;
-        let mut error =
-            cudf_test_error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
+        use cudf::testing::error;
+        let mut error = error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
         if let Some(failure_source) = failure_source {
-            error = cudf_test_error::with_ffi_detail_for_test(
+            error = error::with_ffi_detail_for_test(
                 error,
                 cudf::CudfErrorDetail {
                     status: 0,
@@ -1502,9 +1453,9 @@ mod tests {
             );
         }
         if with_budget_scope {
-            error = cudf_test_error::with_budget_exhaustion_for_test(
+            error = error::with_budget_exhaustion_for_test(
                 error,
-                cudf_test_error::budget_exhaustion_detail_for_test(
+                error::budget_exhaustion_detail_for_test(
                     1024,
                     1024,
                     1024,

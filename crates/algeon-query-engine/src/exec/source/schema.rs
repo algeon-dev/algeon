@@ -1,11 +1,11 @@
 use std::time::Instant;
 
-use cudf::interop::arrow_host::all_null_list_series as cudf_all_null_list_series;
+use cudf::interop::arrow_host::all_null_list_series;
 
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
     QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, timestamp_unit_to_cudf_resolution,
+    cudf_query_error_with_budget_details, cudf_unsupported_type_error, timestamp_unit_to_cudf_resolution,
 };
 use crate::{
     datatypes::{arrow_decimal_scale_to_cudf_scale, is_supported_list_carry_type},
@@ -63,7 +63,7 @@ fn missing_column_series(
     }
 
     if is_supported_list_carry_type(&missing_column.data_type) {
-        return cudf_all_null_list_series(&context.runtime()?, &missing_column.data_type, rows).map_err(|error| {
+        return all_null_list_series(&context.runtime()?, &missing_column.data_type, rows).map_err(|error| {
             cudf_query_error(
                 "query_engine.local_parquet_source.missing_column",
                 "failed to construct native parquet missing nullable list column",
@@ -146,11 +146,11 @@ pub(super) fn coerce_local_parquet_source_schema(
         if !frame.column_names().contains(&field_name.as_str()) {
             continue;
         }
-        let expected_dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let expected_dtype = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.local_parquet_source.schema_coerce",
                 "local parquet source schema type is not supported by native execution",
+                error,
             )
             .with_fact("field_name", field_name.as_str())
             .with_fact("field_index", field_index)

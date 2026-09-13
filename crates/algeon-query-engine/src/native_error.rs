@@ -10,8 +10,9 @@ use std::{collections::BTreeMap, error::Error as StdError};
 #[cfg(feature = "cuvs")]
 use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
 pub use query_runtime::native_error::{
-    cudf_budget_exhaustion, cudf_query_error, cudf_query_error_with_budget_details, cudf_query_error_without_source,
-    cudf_query_error_without_source_with_budget_details, query_error_code_for_cudf_error,
+    cudf_budget_exhaustion, cudf_message_fact, cudf_query_error, cudf_query_error_with_budget_details,
+    cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
+    query_error_code_for_cudf_error,
 };
 
 /// Wraps a `cuvs::Error` at the native vector-execution boundary.

@@ -15,7 +15,7 @@ use super::{
     CugraphGraphPredicateTable, CugraphSqlConfig,
     definitions::{CugraphArgumentKind, arguments_for_algorithm},
     error::with_binding_fact,
-    options, plan_error,
+    options, plan,
     planning::{validate_edge_source_schema, validate_predicate_source_schema},
     result_schema_for_params, result_schema_for_vertex_domain,
 };
@@ -73,15 +73,13 @@ impl CugraphLogicalNode {
         config: &CugraphSqlConfig,
     ) -> Result<Self> {
         if roles.first() != Some(&CugraphRelationRole::Edges) || roles.len() != inputs.len() {
-            return Err(plan_error("cuGraph logical relation roles must begin with edges and match the child count"));
+            return Err(plan("cuGraph logical relation roles must begin with edges and match the child count"));
         }
         if algorithm == CugraphAlgorithm::Bfs {
             let selector_count =
                 usize::from(source.is_some()) + usize::from(roles.contains(&CugraphRelationRole::Sources));
             if selector_count != 1 {
-                return Err(plan_error(
-                    "cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources",
-                ));
+                return Err(plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources"));
             }
         }
         validate_contract_column_uniqueness(algorithm, &inputs, &roles)?;
@@ -95,10 +93,7 @@ impl CugraphLogicalNode {
             .map_err(|error| with_binding_fact(error, "argument", "directed"))?;
         if algorithm.native_algorithm().weight_policy().requires_weight() && !has_weight {
             return Err(with_binding_fact(
-                plan_error(format!(
-                    "{} requires the edges relation to contain a weight field",
-                    algorithm.function_name()
-                )),
+                plan(format!("{} requires the edges relation to contain a weight field", algorithm.function_name())),
                 "relation_role",
                 CugraphRelationRole::Edges.as_str(),
             ));
@@ -146,7 +141,7 @@ fn validate_inputs(
         .map_err(|error| with_binding_fact(error, "relation_role", CugraphRelationRole::Edges.as_str()))?;
     let source_specs = spec.predicate_source_specs();
     if source_specs.len() != inputs.len() - 1 {
-        return Err(plan_error(format!(
+        return Err(plan(format!(
             "{} expected {} side-input relation(s), received {}",
             spec.algorithm.function_name(),
             source_specs.len(),
@@ -186,7 +181,7 @@ fn validate_contract_column_uniqueness(
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(with_binding_fact(
-                    plan_error(format!(
+                    plan(format!(
                         "cuGraph {} relation column '{}' is ambiguous across qualifiers [{qualifiers}]; project one column",
                         role.as_str(),
                         column.name
@@ -223,50 +218,50 @@ fn apply_relation_role(
         CugraphRelationRole::Personalization => {},
         CugraphRelationRole::Sources => {
             let CugraphAlgorithmParams::Bfs(bfs) = params else {
-                return Err(plan_error("sources relation is only valid for cugraph_bfs"));
+                return Err(plan("sources relation is only valid for cugraph_bfs"));
             };
             bfs.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new());
         },
         CugraphRelationRole::IncludeVertices => {
             let CugraphAlgorithmParams::Bfs(bfs) = params else {
-                return Err(plan_error("include_vertices relation is only valid for cugraph_bfs"));
+                return Err(plan("include_vertices relation is only valid for cugraph_bfs"));
             };
             bfs.predicates.include_vertices = Some(CugraphGraphPredicateTable::new());
         },
         CugraphRelationRole::ExcludeVertices => {
             let CugraphAlgorithmParams::Bfs(bfs) = params else {
-                return Err(plan_error("exclude_vertices relation is only valid for cugraph_bfs"));
+                return Err(plan("exclude_vertices relation is only valid for cugraph_bfs"));
             };
             bfs.predicates.exclude_vertices = Some(CugraphGraphPredicateTable::new());
         },
         CugraphRelationRole::TargetVertices => {
             let CugraphAlgorithmParams::Bfs(bfs) = params else {
-                return Err(plan_error("target_vertices relation is only valid for cugraph_bfs"));
+                return Err(plan("target_vertices relation is only valid for cugraph_bfs"));
             };
             bfs.predicates.target_vertices = Some(CugraphGraphPredicateTable::new());
         },
         CugraphRelationRole::IncludeEdgeIds => {
             let CugraphAlgorithmParams::Bfs(bfs) = params else {
-                return Err(plan_error("include_edge_ids relation is only valid for cugraph_bfs"));
+                return Err(plan("include_edge_ids relation is only valid for cugraph_bfs"));
             };
             if !has_edge_id {
-                return Err(plan_error("cugraph_bfs include_edge_ids requires edges.edge_id"));
+                return Err(plan("cugraph_bfs include_edge_ids requires edges.edge_id"));
             }
             bfs.predicates.include_edge_ids = Some(CugraphGraphPredicateTable::new());
         },
         CugraphRelationRole::IncludeEdges => {
             let CugraphAlgorithmParams::Bfs(bfs) = params else {
-                return Err(plan_error("include_edges relation is only valid for cugraph_bfs"));
+                return Err(plan("include_edges relation is only valid for cugraph_bfs"));
             };
             let predicate_has_edge_id = input.schema().field_with_unqualified_name("edge_id").is_ok();
             if predicate_has_edge_id && !has_edge_id {
-                return Err(plan_error("cugraph_bfs include_edges.edge_id requires edges.edge_id"));
+                return Err(plan("cugraph_bfs include_edges.edge_id requires edges.edge_id"));
             }
             bfs.predicates.include_edges = Some(CugraphGraphEdgePredicateTable::new(predicate_has_edge_id));
         },
         CugraphRelationRole::VertexAttributes => {
             let CugraphAlgorithmParams::ForceAtlas2(force) = params else {
-                return Err(plan_error("vertex_attributes relation is only valid for cugraph_force_atlas2"));
+                return Err(plan("vertex_attributes relation is only valid for cugraph_force_atlas2"));
             };
             let attributes = CugraphForceAtlas2VertexAttributesTable {
                 has_radius: input.schema().field_with_unqualified_name("radius").is_ok(),
@@ -274,18 +269,18 @@ fn apply_relation_role(
                 has_mass: input.schema().field_with_unqualified_name("mass").is_ok(),
             };
             if !attributes.has_radius && !attributes.has_mobility && !attributes.has_mass {
-                return Err(plan_error("cugraph_force_atlas2 vertex_attributes requires radius, mobility, or mass"));
+                return Err(plan("cugraph_force_atlas2 vertex_attributes requires radius, mobility, or mass"));
             }
             force.vertex_attributes = Some(attributes);
         },
         CugraphRelationRole::InitialPositions => {
             let CugraphAlgorithmParams::ForceAtlas2(force) = params else {
-                return Err(plan_error("initial_positions relation is only valid for cugraph_force_atlas2"));
+                return Err(plan("initial_positions relation is only valid for cugraph_force_atlas2"));
             };
             force.initial_positions = Some(CugraphForceAtlas2InitialPositionsTable::new());
         },
         CugraphRelationRole::VertexPairs => {},
-        CugraphRelationRole::Edges => return Err(plan_error("edges may only be the first cuGraph relation role")),
+        CugraphRelationRole::Edges => return Err(plan("edges may only be the first cuGraph relation role")),
     }
     Ok(())
 }
@@ -294,22 +289,22 @@ fn validate_relation_combinations(params: &CugraphAlgorithmParams) -> Result<()>
     match params {
         CugraphAlgorithmParams::Bfs(bfs) => {
             if bfs.predicates.include_vertices.is_some() && bfs.predicates.exclude_vertices.is_some() {
-                return Err(plan_error("BFS include_vertices and exclude_vertices are mutually exclusive"));
+                return Err(plan("BFS include_vertices and exclude_vertices are mutually exclusive"));
             }
             if bfs.output.return_target_info && bfs.predicates.target_vertices.is_none() {
-                return Err(plan_error("BFS return_target_info requires target_vertices"));
+                return Err(plan("BFS return_target_info requires target_vertices"));
             }
             if bfs.output.mode == super::CugraphBfsOutputMode::Path && bfs.output.return_target_info {
-                return Err(plan_error("BFS path output cannot combine with return_target_info=true"));
+                return Err(plan("BFS path output cannot combine with return_target_info=true"));
             }
             if bfs.output.mode == super::CugraphBfsOutputMode::Path && bfs.predicates.target_vertices.is_none() {
-                return Err(plan_error("BFS path output requires target_vertices"));
+                return Err(plan("BFS path output requires target_vertices"));
             }
         },
         CugraphAlgorithmParams::ForceAtlas2(force)
             if force.prevent_overlapping && force.vertex_attributes.as_ref().is_none_or(|input| !input.has_radius) =>
         {
-            return Err(plan_error("ForceAtlas2 prevent_overlapping=true requires vertex_attributes.radius"));
+            return Err(plan("ForceAtlas2 prevent_overlapping=true requires vertex_attributes.radius"));
         },
         _ => {},
     }
@@ -382,12 +377,12 @@ impl UserDefinedLogicalNodeCore for CugraphLogicalNode {
 
     fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
         if !exprs.is_empty() {
-            return Err(plan_error("cuGraph logical nodes do not expose optimizer expressions"));
+            return Err(plan("cuGraph logical nodes do not expose optimizer expressions"));
         }
         #[cfg(not(feature = "cugraph"))]
         {
             if !inputs.is_empty() {
-                return Err(plan_error("feature-disabled cuGraph logical nodes must not receive input children"));
+                return Err(plan("feature-disabled cuGraph logical nodes must not receive input children"));
             }
             return Ok(self.clone());
         }

@@ -41,16 +41,16 @@ pub mod query_engine::datatypes
 pub use query_engine::datatypes::arrow_decimal_scale_to_cudf_scale
 pub use query_engine::datatypes::arrow_field_metadata_matches_except_parquet_field_id
 pub use query_engine::datatypes::arrow_fixed_width_byte_size
+pub use query_engine::datatypes::cudf_dtype_from_arrow_type
 pub use query_engine::datatypes::diagnostic_arrow_type
 pub use query_engine::datatypes::is_arrow_fixed_width
 pub use query_engine::datatypes::is_narrow_decimal_carry_type
 pub use query_engine::datatypes::is_supported_arrow_cast
 pub use query_engine::datatypes::is_supported_arrow_implicit_cast
+pub use query_engine::datatypes::is_supported_arrow_type
 pub use query_engine::datatypes::is_supported_list_carry_type
 pub use query_engine::datatypes::is_supported_numeric_widening_cast
 pub use query_engine::datatypes::is_timestamp_with_timezone
-pub fn query_engine::datatypes::cudf_dtype_from_arrow_type(&arrow_schema::datatype::DataType) -> core::option::Option<cudf::core::types::DataType>
-pub fn query_engine::datatypes::is_supported_arrow_type(&arrow_schema::datatype::DataType) -> bool
 pub fn query_engine::datatypes::timestamp_unit_to_cudf_resolution(&arrow_schema::datatype::TimeUnit) -> cudf::core::types::TimestampResolution
 pub mod query_engine::dimension_pruning
 pub struct query_engine::dimension_pruning::LocalDimensionPruningResolver
@@ -100,10 +100,12 @@ pub mod query_engine::harness
 pub use query_engine::harness::StableFnv1a64
 pub mod query_engine::native_error
 pub use query_engine::native_error::cudf_budget_exhaustion
+pub use query_engine::native_error::cudf_message_fact
 pub use query_engine::native_error::cudf_query_error
 pub use query_engine::native_error::cudf_query_error_with_budget_details
 pub use query_engine::native_error::cudf_query_error_without_source
 pub use query_engine::native_error::cudf_query_error_without_source_with_budget_details
+pub use query_engine::native_error::cudf_unsupported_type_error
 pub use query_engine::native_error::query_error_code_for_cudf_error
 pub fn query_engine::native_error::cudf_interop_query_error<E>(&'static str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, E) -> query_planning::error::QueryError where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
 pub fn query_engine::native_error::cuvs_query_error(&'static str, impl core::convert::Into<alloc::string::String>, cuvs::error::Error) -> query_planning::error::QueryError

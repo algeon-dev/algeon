@@ -40,7 +40,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::validate_physical_expr,
+        expression_contract::validate_physical_expr_contract,
         normalize::{
             NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan, NormalizedNativeSortExprs,
             PostAggregateProjectionOrder,
@@ -435,7 +435,7 @@ pub(super) fn lower_input_root_plan(
     if let Some(projection) = root.projection {
         validate_schema(projection.schema())?;
         for projection_expr in projection.expr() {
-            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
+            validate_physical_expr_contract(&projection_expr.expr, &projection.input().schema())?;
         }
     }
     if let Some(sort) = normalized.sort.as_ref() {

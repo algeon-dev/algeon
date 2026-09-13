@@ -12,8 +12,8 @@ use super::{
     CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataFusionError, DataType, Error, ErrorCode,
     GraphAlgorithm, GraphAlgorithmParams, GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
     LiteralBatchSource, NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result,
-    Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan_error,
-    result_schema_for_params, vertex_id_domain_for_call,
+    Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan, result_schema_for_params,
+    vertex_id_domain_for_call,
 };
 use crate::cugraph_sql::registry::CugraphLogicalOutputColumn;
 
@@ -31,10 +31,10 @@ pub(super) struct LogicalMappingPlan {
 pub(super) fn graph_uses_logical_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<bool> {
     let source = edge_schema
         .field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN)
-        .map_err(|_| plan_error("cuGraph logical vertex mapping could not find canonical edge source column 'src'"))?;
-    let destination = edge_schema.field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN).map_err(|_| {
-        plan_error("cuGraph logical vertex mapping could not find canonical edge destination column 'dst'")
-    })?;
+        .map_err(|_| plan("cuGraph logical vertex mapping could not find canonical edge source column 'src'"))?;
+    let destination = edge_schema
+        .field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN)
+        .map_err(|_| plan("cuGraph logical vertex mapping could not find canonical edge destination column 'dst'"))?;
     Ok(vertex_id_domain_for_call(spec.algorithm, &spec.params, source.data_type(), destination.data_type())?
         .is_string_logical())
 }
@@ -56,10 +56,7 @@ pub(super) fn add_logical_mapping_plan(
         .definition()
         .logical_string_contract()
         .ok_or_else(|| {
-            plan_error(format!(
-                "cuGraph {} does not opt in to logical string vertex mapping",
-                spec.algorithm.function_name()
-            ))
+            plan(format!("cuGraph {} does not opt in to logical string vertex mapping", spec.algorithm.function_name()))
         })?
         .native_id_type
         .data_type();
@@ -72,7 +69,7 @@ pub(super) fn add_logical_mapping_plan(
     }
     let source_specs = spec.predicate_source_specs();
     if predicate_nodes.len() != predicate_schemas.len() || predicate_nodes.len() != source_specs.len() {
-        return Err(plan_error(format!(
+        return Err(plan(format!(
             "cuGraph {} logical mapping side-input contract has {} nodes, {} schemas, and {} role specifications",
             spec.algorithm.function_name(),
             predicate_nodes.len(),
@@ -170,10 +167,7 @@ pub(super) fn decode_logical_graph_result(
     codebook: NodeId,
 ) -> Result<(NodeId, SchemaRef)> {
     let contract = spec.algorithm.definition().logical_string_contract().ok_or_else(|| {
-        plan_error(format!(
-            "cuGraph {} does not opt in to logical string vertex mapping",
-            spec.algorithm.function_name()
-        ))
+        plan(format!("cuGraph {} does not opt in to logical string vertex mapping", spec.algorithm.function_name()))
     })?;
     let bfs_path_outputs = [
         CugraphLogicalOutputColumn {
@@ -213,7 +207,7 @@ fn project_logical_vertex(
 ) -> Result<NodeId> {
     let field = schema
         .field_with_name(column)
-        .map_err(|_| plan_error(format!("cuGraph logical vertex mapping could not find vertex column '{column}'")))?;
+        .map_err(|_| plan(format!("cuGraph logical vertex mapping could not find vertex column '{column}'")))?;
     let input = if field.is_nullable() {
         builder.add_filter(input, NativeExpr::is_not_null(NativeExpr::column(column)), Arc::clone(schema))
     } else {
@@ -240,9 +234,9 @@ fn encode_relation_columns(
     native_id_type: &DataType,
 ) -> Result<(NodeId, SchemaRef)> {
     for column in columns {
-        let field = schema.field_with_name(column).map_err(|_| {
-            plan_error(format!("cuGraph logical vertex mapping could not encode missing column '{column}'"))
-        })?;
+        let field = schema
+            .field_with_name(column)
+            .map_err(|_| plan(format!("cuGraph logical vertex mapping could not encode missing column '{column}'")))?;
         let left_key = if field.data_type() == &DataType::Utf8 {
             column.clone()
         } else {
@@ -316,7 +310,7 @@ fn decode_relation_column(
     preserves_total_payload_bound: bool,
 ) -> Result<(NodeId, SchemaRef)> {
     schema.field_with_name(column).map_err(|_| {
-        plan_error(format!("cuGraph logical vertex mapping could not decode missing result column '{column}'"))
+        plan(format!("cuGraph logical vertex mapping could not decode missing result column '{column}'"))
     })?;
     let output_schema = Arc::new(Schema::new(
         schema
@@ -380,9 +374,7 @@ pub(super) fn logical_literal_vertex_batch(spec: &CugraphAlgorithmSpec) -> Resul
                 .iter()
                 .map(|value| match value {
                     CugraphBfsSourceVertex::Utf8(value) => Ok(value.as_str()),
-                    CugraphBfsSourceVertex::Int64(_) => {
-                        Err(plan_error("string BFS source list contained a numeric value"))
-                    },
+                    CugraphBfsSourceVertex::Int64(_) => Err(plan("string BFS source list contained a numeric value")),
                 })
                 .collect::<Result<Vec<_>>>()?;
             ("__source_vertex", values)
@@ -416,7 +408,7 @@ fn logical_betweenness_seed_values(seeds: &CugraphBetweennessSeeds) -> Result<(&
         .iter()
         .map(|vertex| match vertex {
             CugraphVertexSelector::Utf8(value) => Ok(value.as_str()),
-            CugraphVertexSelector::Int64(_) => Err(plan_error("string betweenness seeds contained a numeric value")),
+            CugraphVertexSelector::Int64(_) => Err(plan("string betweenness seeds contained a numeric value")),
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(("__seed_vertex", values))

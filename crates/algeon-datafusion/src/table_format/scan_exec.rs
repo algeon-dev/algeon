@@ -24,6 +24,8 @@ use iceberg::{Error as IcebergError, ErrorKind as IcebergErrorKind};
 use object_store::Error as ObjectStoreError;
 #[cfg(feature = "iceberg")]
 use opendal::{Error as OpendalError, ErrorKind as OpendalErrorKind};
+#[cfg(feature = "iceberg")]
+use query_engine::object_store_error::object_store_error_kind;
 
 use crate::{
     capability::CapabilityReason,
@@ -670,25 +672,6 @@ fn classify_object_store_error(source: &ObjectStoreError) -> ErrorCode {
         ObjectStoreError::PermissionDenied { .. } => ErrorCode::SourceAccessDenied,
         ObjectStoreError::Unauthenticated { .. } => ErrorCode::SourceUnauthenticated,
         _ => ErrorCode::SourceDependencyFailure,
-    }
-}
-
-#[cfg(feature = "iceberg")]
-fn object_store_error_kind(source: &ObjectStoreError) -> &'static str {
-    match source {
-        ObjectStoreError::NotFound { .. } => "not_found",
-        ObjectStoreError::PermissionDenied { .. } => "permission_denied",
-        ObjectStoreError::Unauthenticated { .. } => "unauthenticated",
-        ObjectStoreError::Generic { .. } => "generic",
-        ObjectStoreError::InvalidPath { .. } => "invalid_path",
-        ObjectStoreError::JoinError { .. } => "join_error",
-        ObjectStoreError::NotSupported { .. } => "not_supported",
-        ObjectStoreError::AlreadyExists { .. } => "already_exists",
-        ObjectStoreError::Precondition { .. } => "precondition",
-        ObjectStoreError::NotModified { .. } => "not_modified",
-        ObjectStoreError::NotImplemented { .. } => "not_implemented",
-        ObjectStoreError::UnknownConfigurationKey { .. } => "unknown_configuration_key",
-        _ => "unknown",
     }
 }
 

@@ -17,6 +17,7 @@ use crate::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
     rapids_backend::rapids_analysis_context,
+    util::sum_optional_u64,
 };
 
 /// Source and aggregate ownership needed by a batch worker; downstream plan
@@ -1130,10 +1131,6 @@ fn source_adjacent_aggregate_partitioner(bounded: &BoundedPlan<'_>) -> SourceAdj
     // Variable-width keys always hash-partition by group key. Chunk-count no longer
     // demotes the path to a row-balanced streaming partition.
     SourceAdjacentAggregatePartitioner::GroupKey { key_columns: lowered_keys.key_columns }
-}
-
-fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
-    values.into_iter().try_fold(0u64, |total, value| value.map(|value| total.saturating_add(value)))
 }
 
 /// Hash-partitioned chunk handed from the partition step to the slice loop.

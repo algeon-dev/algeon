@@ -98,7 +98,11 @@ fn column_upper_bound_bytes(output_rows: usize, column: &MaterializedColumnUpper
     )
 }
 
-fn null_mask_bytes(rows: usize) -> Result<usize> {
+/// Device bytes of a null mask covering `rows` rows: one bit per row, padded
+/// to 64-byte allocation blocks; zero rows need no mask.
+///
+/// Fails with `SizeOverflow` when the padded size exceeds `usize`.
+pub fn null_mask_bytes(rows: usize) -> Result<usize> {
     if rows == 0 {
         return Ok(0);
     }

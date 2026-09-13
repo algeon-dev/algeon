@@ -13,7 +13,8 @@ use datafusion::{
 };
 
 use super::{
-    ExpressionCapability, ExpressionRejection, ScalarFunctionKind, ValidatedPhysicalExpr, validate_physical_expr,
+    ExpressionCapability, ExpressionRejection, ScalarFunctionKind, ValidatedPhysicalExpr,
+    validate_physical_expr_contract,
 };
 
 /// Representation selected by the join-residual-specific cast contract.
@@ -60,7 +61,7 @@ pub(in crate::native) fn validate_join_residual<'a>(
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
 ) -> Result<ValidatedJoinResidual<'a>, ExpressionRejection> {
-    let expression = validate_physical_expr(filter.expression(), filter.schema())?;
+    let expression = validate_physical_expr_contract(filter.expression(), filter.schema())?;
     validate_join_residual_expr(filter.expression(), filter)?;
     validate_join_residual_side_indices(filter.expression(), filter, left_schema, right_schema)?;
 

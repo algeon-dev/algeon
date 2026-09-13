@@ -48,7 +48,34 @@ pub fn cudf_query_error_without_source(
     message: impl Into<String>,
     source: &cudf::Error,
 ) -> QueryError {
-    let code = query_error_code_for_cudf_error(source);
+    cudf_query_error_with_code(query_error_code_for_cudf_error(source), operation, message, source)
+}
+
+/// Wraps a rejected Arrow-to-cuDF dtype conversion as
+/// [`QueryErrorCode::UnsupportedType`].
+///
+/// Native type support reports unsupported Arrow types as `UnsupportedType`
+/// rather than the `CudfUnsupported` code [`query_error_code_for_cudf_error`]
+/// assigns to cuDF `UnsupportedDtype`. The `cudf_*` facts and source chain
+/// match [`cudf_query_error`], plus `cudf_reason` when cuDF attached one.
+pub fn cudf_unsupported_type_error(
+    operation: &'static str,
+    message: impl Into<String>,
+    source: cudf::Error,
+) -> QueryError {
+    let mut error = cudf_query_error_with_code(QueryErrorCode::UnsupportedType, operation, message, &source);
+    if let Some(reason) = source.detail_value("reason") {
+        error = error.with_fact("cudf_reason", reason);
+    }
+    error.with_source(source)
+}
+
+fn cudf_query_error_with_code(
+    code: QueryErrorCode,
+    operation: &'static str,
+    message: impl Into<String>,
+    source: &cudf::Error,
+) -> QueryError {
     let mut error = QueryError::new(code, operation, message)
         .with_fact("cudf_code", source.code())
         .with_fact("cudf_kind", source.kind())
@@ -122,7 +149,7 @@ pub fn query_error_code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
 }
 
 /// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
-fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
+pub fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     let message = source.message().trim();
     if message.is_empty() {
         return None;

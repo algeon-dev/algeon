@@ -8,7 +8,8 @@ use crate::{
         row_range,
     },
     frame::series::Series,
-    internal::{hash::fast_index_map_with_capacity, resolve::missing_column_error},
+    hash::fast_index_map_with_capacity,
+    internal::resolve::missing_column_error,
     ops::{self, copying, filter},
     runtime::{
         BudgetedExecutionOutcome, ExecutionBudgetToken, Runtime, execution_context::ExecutionOverrides,

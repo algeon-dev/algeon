@@ -11,10 +11,8 @@ use crate::{
         column::Column,
         error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
     },
-    internal::{
-        hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
-        temp_table::TempTableView,
-    },
+    hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
+    internal::temp_table::TempTableView,
 };
 
 pub(crate) fn missing_column_error(operation: &'static str, name: impl Into<String>) -> Error {
@@ -146,7 +144,7 @@ mod tests {
             error::{ErrorKind, FactKeyName, FactValue},
             types::TypeId,
         },
-        internal::hash::fast_index_map,
+        hash::fast_index_map,
         runtime::Runtime,
     };
 

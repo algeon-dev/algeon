@@ -23,40 +23,54 @@ fn empty_i32_column_in_domain(output_domain: &Arc<ExecutionDomain>, operation: &
         .map_err(|e| e.reanchor(operation))
 }
 
-pub(crate) fn trigger_groupby_request_count_limit_error_for_test() -> Result<()> {
+/// Trigger the low-level groupby request-count limit validation path used by
+/// integration tests.
+pub fn trigger_groupby_request_count_limit_error_for_test() -> Result<()> {
     Err(groupby_request_count_limit_error("groupby::groupby_aggregate", usize::MAX))
 }
 
-pub(crate) fn trigger_groupby_request_agg_count_limit_error_for_test() -> Result<()> {
+/// Trigger the low-level groupby per-request aggregation-count limit
+/// validation path used by integration tests.
+pub fn trigger_groupby_request_agg_count_limit_error_for_test() -> Result<()> {
     Err(groupby_request_agg_count_limit_error("groupby::groupby_aggregate", 0, usize::MAX, 1))
 }
 
-pub(crate) fn trigger_groupby_total_agg_handle_count_limit_error_for_test() -> Result<()> {
+/// Trigger the low-level groupby total aggregation-handle count limit
+/// validation path used by integration tests.
+pub fn trigger_groupby_total_agg_handle_count_limit_error_for_test() -> Result<()> {
     Err(groupby_total_agg_handle_count_limit_error("groupby::groupby_aggregate", usize::MAX, 1))
 }
 
-pub(crate) fn trigger_groupby_result_group_index_out_of_bounds_for_test() -> Result<()> {
+/// Trigger the high-level groupby result-group-index invariant path used by
+/// integration tests.
+pub fn trigger_groupby_result_group_index_out_of_bounds_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     let col = Column::from_slice_in_domain(&[1i32], runtime.execution_domain())?;
     let grouped_results = vec![vec![Some(col)]];
     take_groupby_result_columns_for_output(grouped_results, &[(1, 0)], "groupby::GroupBy::agg").map(|_| ())
 }
 
-pub(crate) fn trigger_groupby_result_column_index_out_of_bounds_for_test() -> Result<()> {
+/// Trigger the high-level groupby result-column-index invariant path used by
+/// integration tests.
+pub fn trigger_groupby_result_column_index_out_of_bounds_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     let col = Column::from_slice_in_domain(&[1i32], runtime.execution_domain())?;
     let grouped_results = vec![vec![Some(col)]];
     take_groupby_result_columns_for_output(grouped_results, &[(0, 1)], "groupby::GroupBy::agg").map(|_| ())
 }
 
-pub(crate) fn trigger_groupby_duplicate_result_column_consumption_for_test() -> Result<()> {
+/// Trigger the high-level groupby duplicate result-column consumption
+/// invariant path used by integration tests.
+pub fn trigger_groupby_duplicate_result_column_consumption_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     let col = Column::from_slice_in_domain(&[1i32], runtime.execution_domain())?;
     let grouped_results = vec![vec![Some(col)]];
     take_groupby_result_columns_for_output(grouped_results, &[(0, 0), (0, 0)], "groupby::GroupBy::agg").map(|_| ())
 }
 
-pub(crate) fn trigger_value_counts_missing_key_columns_for_test() -> Result<DataFrame> {
+/// Trigger the `Series::value_counts` missing-key-columns result-shape path
+/// used by integration tests.
+pub fn trigger_value_counts_missing_key_columns_for_test() -> Result<DataFrame> {
     let operation = "series::value_counts";
     let runtime = Runtime::new()?;
     let output_domain = Arc::clone(runtime.execution_domain());
@@ -71,7 +85,9 @@ pub(crate) fn trigger_value_counts_missing_key_columns_for_test() -> Result<Data
     .map_err(|e| e.reanchor(operation))
 }
 
-pub(crate) fn trigger_value_counts_missing_count_results_for_test() -> Result<DataFrame> {
+/// Trigger the `Series::value_counts` missing-count-results result-shape path
+/// used by integration tests.
+pub fn trigger_value_counts_missing_count_results_for_test() -> Result<DataFrame> {
     let operation = "series::value_counts";
     let runtime = Runtime::new()?;
     let output_domain = Arc::clone(runtime.execution_domain());
@@ -87,7 +103,9 @@ pub(crate) fn trigger_value_counts_missing_count_results_for_test() -> Result<Da
     .map_err(|e| e.reanchor(operation))
 }
 
-pub(crate) fn trigger_value_counts_empty_count_result_for_test() -> Result<DataFrame> {
+/// Trigger the `Series::value_counts` empty-count-result result-shape path
+/// used by integration tests.
+pub fn trigger_value_counts_empty_count_result_for_test() -> Result<DataFrame> {
     let operation = "series::value_counts";
     let runtime = Runtime::new()?;
     let output_domain = Arc::clone(runtime.execution_domain());

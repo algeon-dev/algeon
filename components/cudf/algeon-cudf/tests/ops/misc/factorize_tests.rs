@@ -16,7 +16,7 @@ use cudf::{
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns, error_context_value,
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    run_named_cases, series as common_series,
+    run_named_cases, series,
 };
 
 fn factorize_column(column: Column) -> (Series, Series) {
@@ -252,7 +252,7 @@ fn test_dataframe_factorize_missing_column() {
 }
 
 fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
-    let lookup_source = common_series("lookup_source", &["b", "b", "a", "c"]).unwrap();
+    let lookup_source = series("lookup_source", &["b", "b", "a", "c"]).unwrap();
     let factorized = lookup_source.factorize().unwrap();
     let row_codes = factorized.row_codes();
     let uniques = factorized.codebook().keys();
@@ -260,7 +260,7 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     // This is the tempting but invalid pattern: slice row-aligned factorize
     // codes down to uniques.len() and reuse them as if they were a stable key
     // to code mapping.
-    let first_positions = common_series("first_positions", &[0i32, 1, 2]).unwrap();
+    let first_positions = series("first_positions", &[0i32, 1, 2]).unwrap();
     let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());
     assert_ne!(wrong_lookup_values.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
@@ -270,7 +270,7 @@ fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     let lookup_source = Series::from_column(column_from_strs(&["b", "a", "c", "a"]).unwrap()).unwrap();
     let factorized = lookup_source.factorize().unwrap();
     let codebook = factorized.codebook();
-    let query = common_series("query", &["a", "b", "c"]).unwrap();
+    let query = series("query", &["a", "b", "c"]).unwrap();
     let encoded = codebook.encode(&query).unwrap();
     let decoded = codebook.decode(&encoded).unwrap();
 

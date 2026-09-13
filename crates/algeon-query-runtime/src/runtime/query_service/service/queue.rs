@@ -21,7 +21,7 @@ use std::{
 };
 
 use query_planning::{
-    admission::{AttemptRequirement, ExecutionCapability},
+    admission::{AttemptRequirement, ExecutionCapability, capability_labels},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -663,11 +663,6 @@ pub(super) fn admission_mutex_poisoned_error() -> QueryError {
         "query service admission mutex was poisoned",
     )
     .with_fact("reason", "admission_mutex_poisoned")
-}
-
-/// Formats capability requirements for a structured diagnostic fact.
-fn capability_labels(capabilities: &[ExecutionCapability]) -> String {
-    capabilities.iter().map(|capability| capability.as_str()).collect::<Vec<_>>().join(",")
 }
 
 pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout(

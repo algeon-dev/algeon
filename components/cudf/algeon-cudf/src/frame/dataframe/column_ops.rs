@@ -8,10 +8,8 @@ use crate::{
         types::DataType,
     },
     frame::series::{IntoSeries, Series},
-    internal::{
-        hash::{FastIndexMap, fast_index_map_with_capacity},
-        resolve::missing_column_error,
-    },
+    hash::{FastIndexMap, fast_index_map_with_capacity},
+    internal::resolve::missing_column_error,
     ops::{self, replace::replace_nulls_with_exec_options, unary},
     runtime::{
         BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, execution_domain::ExecutionDomain,

@@ -3285,6 +3285,7 @@ pub fn query_planning::source::LocalParquetFile::has_position_delete_files(&self
 pub fn query_planning::source::LocalParquetFile::has_row_delete_files(&self) -> bool
 pub fn query_planning::source::LocalParquetFile::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn query_planning::source::LocalParquetFile::object_store_uri(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
+pub fn query_planning::source::LocalParquetFile::selected_or_all_row_groups(&self, usize) -> alloc::vec::Vec<usize>
 pub fn query_planning::source::LocalParquetFile::selected_row_group_count(&self) -> usize
 pub fn query_planning::source::LocalParquetFile::selected_row_groups_have_no_nulls(&self, usize) -> bool
 pub fn query_planning::source::LocalParquetFile::variable_width_payload_evidence(&self) -> &alloc::collections::btree::map::BTreeMap<usize, query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence>

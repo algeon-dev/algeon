@@ -40,7 +40,13 @@ pub use aggregate::{
     validate_global_valid_count_state_alias_collisions,
 };
 use expressions::{comma_separated, validate_expr, validate_projection_output_expr};
+#[doc(hidden)]
+pub use expressions::{substring_stop_position, target_integral_max};
 use join::validate_join_capability;
+#[doc(hidden)]
+pub use join::walk_join_residual_column_sides;
+#[doc(hidden)]
+pub use types::{is_integral_type, is_string_type};
 use types::{require_boolean, require_scalar_operator_value, require_timezone_free_operator_key};
 
 #[doc(hidden)]
@@ -461,7 +467,8 @@ fn validate_output_names_unique(node: &QueryNode) -> Result<()> {
     Ok(())
 }
 
-fn plan_node_kind(node: &PlanNode) -> &'static str {
+#[doc(hidden)]
+pub fn plan_node_kind(node: &PlanNode) -> &'static str {
     match node {
         PlanNode::Source(_) => "source",
         PlanNode::Filter(_) => "filter",

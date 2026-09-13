@@ -322,7 +322,7 @@ fn aggregate_expr_input_data_type<'a>(expr: &'a Expr, input_schema: &'a ArrowSch
     }
 }
 
-fn is_cudf_median_input_type(data_type: &ArrowDataType) -> bool {
+pub fn is_cudf_median_input_type(data_type: &ArrowDataType) -> bool {
     matches!(
         data_type,
         ArrowDataType::Int8

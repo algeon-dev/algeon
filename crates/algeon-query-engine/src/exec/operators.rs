@@ -11,13 +11,13 @@ use super::{
     QueryErrorCode, RecordBatch, ReduceAgg, Result, ScanAgg, Schema, SortNode, WindowFrame, WindowNode,
     aggregate_expr_is_exact_nunique, aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, col, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, datafusion_order_columns, execution_overrides, global_count_star_expr,
-    global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit, lit_null,
-    lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_filter_predicate_expr,
-    lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec, lower_projection_output_expr,
-    lower_single_stage_grouped_aggregate_spec, lower_sort_spec, projection_schema_mismatch_error,
-    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
-    validate_global_aggregate_capability, when,
+    cudf_query_error_with_budget_details, cudf_unsupported_type_error, datafusion_order_columns, execution_overrides,
+    global_count_star_expr, global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit,
+    lit_null, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr,
+    lower_filter_predicate_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
+    lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec, lower_sort_spec,
+    projection_schema_mismatch_error, schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
+    validate_avg_output_fields, validate_global_aggregate_capability, when,
 };
 use crate::{
     expression_lowering_policy::ExpressionLoweringPolicy,
@@ -993,11 +993,11 @@ fn build_lag_lead_value_fill_scalar(
 ) -> Result<CudfScalar> {
     let runtime = context.runtime()?;
     let null_for_output = || {
-        let cudf_dtype = cudf_dtype_from_arrow_type(output_arrow_dtype).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let cudf_dtype = cudf_dtype_from_arrow_type(output_arrow_dtype).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.window.lag_lead.fill_null",
                 "LAG / LEAD output Arrow type is not supported by the native engine",
+                error,
             )
             .with_fact("dtype", format!("{output_arrow_dtype:?}"))
         })?;

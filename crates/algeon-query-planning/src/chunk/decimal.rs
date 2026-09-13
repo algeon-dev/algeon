@@ -209,6 +209,14 @@ fn collect_reader_predicate_decimal_columns(source: &LocalParquetSource, expr: &
     }
 }
 
+/// Footer-derived reader decimal types for the source's Decimal128 read
+/// columns.
+///
+/// A column whose footer precision, scale, or physical width has no cuDF
+/// decimal storage is omitted. Consumers that require the type fail closed:
+/// [`validate_object_store_reader_decimal_types`] reports it as
+/// `reader_decimal_type_metadata_unavailable`, and the cuDF local reader
+/// rejects the same footer with a typed `UnsupportedDtype` error.
 #[doc(hidden)]
 pub fn parquet_reader_decimal_types(
     metadata: &ParquetMetaData,

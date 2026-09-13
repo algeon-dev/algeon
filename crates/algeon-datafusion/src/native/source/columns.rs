@@ -11,6 +11,7 @@ use parquet::{
     file::reader::{FileReader, SerializedFileReader},
 };
 use query_engine::{
+    datatypes::is_supported_arrow_type,
     expr::LiteralValue as NativeLiteralValue,
     source::{
         MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
@@ -21,7 +22,6 @@ use query_engine::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::is_supported_native_type,
         pruning::{
             local_object_path_to_filesystem, scan_predicate_is_dynamic_filter_hint,
             scan_predicate_without_dynamic_filter_hints,
@@ -418,7 +418,7 @@ fn first_supported_physical_file_column(file_schema: &SchemaRef) -> Result<Strin
     file_schema
         .fields()
         .iter()
-        .find(|field| is_supported_native_type(field.data_type()))
+        .find(|field| is_supported_arrow_type(field.data_type()))
         .map(|field| field.name().clone())
         .ok_or(CapabilityReason::UnsupportedType)
 }
@@ -474,7 +474,7 @@ fn native_required_partition_columns(
     let mut indices = Vec::new();
     for (index, field) in file_scan.table_partition_cols().iter().enumerate() {
         if required_columns.contains(field.name()) {
-            if !is_supported_native_type(field.data_type()) {
+            if !is_supported_arrow_type(field.data_type()) {
                 return Err(CapabilityReason::UnsupportedType);
             }
             columns.push(NativePartitionColumn::new(field.name(), field.data_type().clone(), field.is_nullable()));
@@ -501,7 +501,7 @@ fn native_required_missing_columns(
         if !field.is_nullable() {
             return Err(CapabilityReason::NativeSourceSchemaMapping);
         }
-        if !is_supported_native_type(field.data_type()) {
+        if !is_supported_arrow_type(field.data_type()) {
             return Err(CapabilityReason::UnsupportedType);
         }
         columns.push(NativeMissingColumn::new(column.as_str(), field.data_type().clone(), field.is_nullable()));

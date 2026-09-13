@@ -21,7 +21,7 @@ pub use diagnostics::{
 #[doc(hidden)]
 pub use evidence::{
     AttemptCapabilityEvidence, AttemptCapabilityEvidence as AttemptRequirement, AttestedCugraphGraphExecutionScope,
-    CUGRAPH_GRAPH_EXECUTION_CAPABILITY, ExecutionCapability,
+    CUGRAPH_GRAPH_EXECUTION_CAPABILITY, ExecutionCapability, capability_labels,
 };
 #[doc(hidden)]
 pub use scope::{

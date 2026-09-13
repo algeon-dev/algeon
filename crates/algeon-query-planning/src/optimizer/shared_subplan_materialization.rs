@@ -7,10 +7,8 @@ use arrow::datatypes::{DataType, Field, Schema};
 
 use super::rewrite;
 use crate::{
-    expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, Expr,
-        LiteralValue,
-    },
+    error::QueryError,
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
     plan::{
         AggregateNode, FilterNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
         ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
@@ -19,7 +17,8 @@ use crate::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
         SourceColumnRef, SourceNode,
     },
-    util::fnv1a64,
+    util::{fnv1a64, sum_optional_u64},
+    validation::walk_join_residual_column_sides,
 };
 
 // Shared-subplan materialization is kept as one private module surface while

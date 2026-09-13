@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType as ArrowDataType;
-use cudf::interop::arrow_host::arrow_type_from_cudf_dtype as cudf_arrow_type_from_cudf_dtype;
+use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
 
 use super::{
     BoundedExecutionAttempt, DataFrame, GpuDataFrame, JoinOutputColumn, JoinOutputColumnUpperBoundInput, JoinSide,
@@ -239,7 +239,7 @@ fn join_output_upper_bound_column_for_frame_column(
         })?;
         return Ok(JoinOutputColumnBound::List { input_column_bytes });
     }
-    let data_type = cudf_arrow_type_from_cudf_dtype(cudf_dtype).map_err(|error| {
+    let data_type = arrow_type_from_cudf_dtype(cudf_dtype).map_err(|error| {
         cudf_query_error(
             "query_engine.bounded.join.output_upper_bound",
             "failed to convert join output source column dtype for closed-form sizing",

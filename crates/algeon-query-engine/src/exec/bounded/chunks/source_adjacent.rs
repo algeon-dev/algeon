@@ -6,14 +6,14 @@ use super::{
     PartialAggregateInputEvidence, ProjectionNode, Result, ScheduledLocalParquetReadOutput, SourceChunk,
     SourceChunkBatch, attach_chunk_resource_facts, execute_filter_with_budget, execute_partial_aggregate_with_budget,
     execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    execution::{release_committed_partials_reverse, sum_optional_u64},
-    execution_budget_token_for_boundary, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
-    observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, plan_source_chunk_batches,
-    projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
-    record_chunk_retry_error,
+    execution::release_committed_partials_reverse, execution_budget_token_for_boundary, is_retryable_chunk_error,
+    is_source_adjacent_grouped_aggregate, observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint,
+    plan_source_chunk_batches, projection_regexp_replace_prepare,
+    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
 };
 use crate::{
     exec::retry::backoff_before_retry, observability::SourceReadFact, rapids_backend::rapids_analysis_context,
+    util::sum_optional_u64,
 };
 
 pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(

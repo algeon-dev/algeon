@@ -909,7 +909,7 @@ fn prune_source_row_groups_by_key_filter(
             selections.push(file.row_groups.clone());
             continue;
         };
-        let selected = selected_or_all_row_groups(file.row_groups.as_ref(), metadata.num_row_groups());
+        let selected = file.selected_or_all_row_groups(metadata.num_row_groups());
         selected_total = selected_total.saturating_add(selected.len());
         let mut retained = Vec::new();
         for row_group_index in selected {
@@ -953,10 +953,6 @@ fn mark_source_row_groups_empty(source: &mut LocalParquetSource) {
     for file in &mut source.files {
         file.row_groups = Some(Vec::new());
     }
-}
-
-fn selected_or_all_row_groups(selected: Option<&Vec<usize>>, row_group_count: usize) -> Vec<usize> {
-    selected.cloned().unwrap_or_else(|| (0..row_group_count).collect())
 }
 
 fn contiguous_row_group_cover(row_groups: Vec<usize>) -> Vec<usize> {
@@ -1033,7 +1029,7 @@ fn selected_source_i64_range(
         let Some(metadata) = footers.footer(file_index) else {
             return Ok(None);
         };
-        for row_group_index in selected_or_all_row_groups(file.row_groups.as_ref(), metadata.num_row_groups()) {
+        for row_group_index in file.selected_or_all_row_groups(metadata.num_row_groups()) {
             let row_group = metadata.row_group(row_group_index);
             let Some(row_group_range) =
                 row_group_i64_range_for_root_column(row_group, metadata.file_metadata().schema_descr(), column_index)

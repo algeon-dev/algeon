@@ -9,8 +9,8 @@ use crate::{
         error::{self, Result},
     },
     frame::series::Series,
+    hash::FastIndexMap,
     internal::{
-        hash::FastIndexMap,
         resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
         temp_table::TempTableView,
     },

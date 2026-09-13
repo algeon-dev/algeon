@@ -26,8 +26,8 @@ mod registry;
 mod relation_planner;
 mod types;
 #[cfg(not(feature = "cugraph"))]
-use error::feature_disabled as cugraph_feature_disabled;
-use error::plan as plan_error;
+use error::feature_disabled;
+use error::plan;
 #[cfg(feature = "cugraph")]
 pub use exec::CugraphAlgoExec;
 #[cfg(feature = "cugraph")]

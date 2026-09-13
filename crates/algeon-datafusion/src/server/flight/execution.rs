@@ -677,7 +677,7 @@ impl DatafusionAlgeonFlightSqlService {
             Some(attempt) => attempt
                 .execute_physical_plan(Arc::clone(&plan), &query_ctx)
                 .map(|stream| Box::pin(stream) as SendableRecordBatchStream),
-            None => execute_physical_stream(Arc::clone(&plan), Arc::new(df.task_ctx())),
+            None => execute_stream(Arc::clone(&plan), Arc::new(df.task_ctx())),
         };
         let stream = match stream_result {
             Ok(stream) => stream,

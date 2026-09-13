@@ -55,6 +55,8 @@ pub mod harness;
 pub use query_planning::naming;
 /// Native error projection: cuDF from the runtime boundary, cuVS from here.
 pub mod native_error;
+#[doc(hidden)]
+pub mod object_store_error;
 /// RAPIDS implementation of the planning backend capability contract.
 pub mod rapids_backend;
 /// Shared Parquet footer/statistics helpers for native pruning and sizing.
@@ -67,7 +69,8 @@ pub mod materialization_sizing;
 pub use query_planning::{mode, optimizer, pipeline, source, triage, validate_query_plan};
 /// Native cuDF expression, aggregate, and sort lowering.
 pub(crate) mod prepared;
-pub(crate) use query_planning::{util, validation};
+#[doc(hidden)]
+pub use query_planning::{util, validation};
 pub(crate) mod parquet_metadata;
 pub use query_runtime::{metrics, observability, runtime};
 

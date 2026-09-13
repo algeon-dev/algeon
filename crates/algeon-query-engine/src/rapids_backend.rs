@@ -7,7 +7,7 @@
 
 use arrow::datatypes::DataType as ArrowDataType;
 use cudf::{
-    interop::arrow_host::arrow_type_from_cudf_dtype as cudf_arrow_type_from_cudf_dtype,
+    interop::arrow_host::arrow_type_from_cudf_dtype,
     ops::binary::{BinaryOperator, infer_binary_output_dtype},
 };
 use query_planning::backend::{AggregateBinding, AnalysisContext, BackendCapabilities, ExpressionUse};
@@ -16,7 +16,7 @@ use crate::{
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateSpec, BinaryOp, Expr},
-    native_error::cudf_query_error,
+    native_error::{cudf_query_error, cudf_unsupported_type_error},
     plan::ProjectionOutput,
     prepared::{
         lower_aggregate_spec, lower_expr, lower_filter_predicate_expr, lower_final_aggregate_spec,
@@ -44,19 +44,19 @@ impl BackendCapabilities for RapidsBackend {
     }
 
     fn binary_output_type(&self, op: BinaryOp, left: &ArrowDataType, right: &ArrowDataType) -> Result<ArrowDataType> {
-        let left_dtype = cudf_dtype_from_arrow_type(left).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let left_dtype = cudf_dtype_from_arrow_type(left).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.plan.validate_expr",
                 "native decimal arithmetic left operand type is not supported",
+                error,
             )
             .with_fact("left_type", format!("{left:?}"))
         })?;
-        let right_dtype = cudf_dtype_from_arrow_type(right).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let right_dtype = cudf_dtype_from_arrow_type(right).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.plan.validate_expr",
                 "native decimal arithmetic right operand type is not supported",
+                error,
             )
             .with_fact("right_type", format!("{right:?}"))
         })?;
@@ -71,7 +71,7 @@ impl BackendCapabilities for RapidsBackend {
                 .with_fact("right_type", format!("{right:?}"))
                 .with_fact("operator", op.to_string())
             })?;
-        cudf_arrow_type_from_cudf_dtype(output_dtype).map_err(|error| {
+        arrow_type_from_cudf_dtype(output_dtype).map_err(|error| {
             cudf_query_error(
                 "query_engine.plan.validate_expr",
                 "failed to map inferred native decimal arithmetic output type to Arrow",

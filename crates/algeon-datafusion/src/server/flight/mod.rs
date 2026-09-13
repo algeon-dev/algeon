@@ -26,7 +26,7 @@ use datafusion::{
     error::DataFusionError,
     execution::SessionStateBuilder,
     logical_expr::{DdlStatement, LogicalPlan, Statement},
-    physical_plan::{SendableRecordBatchStream, execute_stream as execute_physical_stream},
+    physical_plan::{SendableRecordBatchStream, execute_stream},
     prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};

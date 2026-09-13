@@ -3,6 +3,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateFunction, AggregateSpec, DataFrame, ExecutionBudgetToken, ExecutionMetrics, QueryError, QueryErrorCode,
     Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
+    cudf_unsupported_type_error,
 };
 
 pub(in crate::exec) fn cast_count_output_columns(
@@ -42,11 +43,11 @@ fn cast_count_output_columns_impl(
             )
             .with_fact("alias", expr.alias.as_str())
         })?;
-        let target_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let target_type = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.aggregate.cast_count",
                 "count aggregate output schema type is not supported by native execution",
+                error,
             )
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
@@ -127,11 +128,11 @@ fn cast_reduction_output_columns_impl(
             )
             .with_fact("alias", expr.alias.as_str())
         })?;
-        let target_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let target_type = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.aggregate.cast_reduction",
                 "reduction output schema type is not supported by native execution",
+                error,
             )
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))

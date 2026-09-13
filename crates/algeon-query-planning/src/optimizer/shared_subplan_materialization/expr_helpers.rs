@@ -205,66 +205,27 @@ fn collect_expr_column_names(expr: &Expr, columns: &mut BTreeSet<String>) {
     collect_expr_columns(expr, columns);
 }
 
-fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &mut BTreeSet<String>) {
-    match expr {
-        Expr::Column(column) => match column.qualifier() {
-            Some(ColumnQualifier::Input { index: 0 }) => {
-                left.insert(column.name().to_string());
-            },
-            Some(ColumnQualifier::Input { index: 1 }) => {
-                right.insert(column.name().to_string());
-            },
-            _ => {},
-        },
-        Expr::Literal(_) => {},
-        Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::TryCast { expr, .. }
-        | Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Trim { expr, .. }
-        | Expr::LTrim { expr, .. }
-        | Expr::RTrim { expr, .. }
-        | Expr::StringContains { expr, .. }
-        | Expr::StartsWith { expr, .. }
-        | Expr::EndsWith { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
-        | Expr::Alias { expr, .. }
-        | Expr::RegexpReplace { expr, .. } => collect_join_expr_columns(expr, left, right),
-        Expr::Concat(exprs) => {
-            for expr in exprs {
-                collect_join_expr_columns(expr, left, right);
+/// Collects the input-qualified columns a join residual reads, per side.
+///
+/// Fails with the validation walker's `UnsupportedExpression` when a column
+/// has no input qualifier and so cannot be attributed to one side.
+fn collect_join_expr_columns(
+    expr: &Expr,
+    left: &mut BTreeSet<String>,
+    right: &mut BTreeSet<String>,
+) -> Result<(), QueryError> {
+    walk_join_residual_column_sides(
+        expr,
+        "query_engine.optimizer.shared_subplan_materialization.join_residual_columns",
+        "join residual column must be input-qualified",
+        &mut |input, name| {
+            if input == 0 {
+                left.insert(name.to_string());
+            } else {
+                right.insert(name.to_string());
             }
         },
-        Expr::Binary { left: lhs, right: rhs, .. }
-        | Expr::IsDistinctFrom { left: lhs, right: rhs }
-        | Expr::IsNotDistinctFrom { left: lhs, right: rhs } => {
-            collect_join_expr_columns(lhs, left, right);
-            collect_join_expr_columns(rhs, left, right);
-        },
-        Expr::InList { expr, list, .. } => {
-            collect_join_expr_columns(expr, left, right);
-            for expr in list {
-                collect_join_expr_columns(expr, left, right);
-            }
-        },
-        Expr::Case { branches, else_expr } => {
-            for branch in branches {
-                collect_join_expr_columns(&branch.when, left, right);
-                collect_join_expr_columns(&branch.then, left, right);
-            }
-            collect_join_expr_columns(else_expr, left, right);
-        },
-    }
+    )
 }
 
 fn field_with_name<'a>(schema: &'a Arc<Schema>, name: &str) -> Option<&'a Field> {

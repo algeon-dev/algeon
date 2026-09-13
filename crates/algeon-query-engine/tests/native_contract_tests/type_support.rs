@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use arrow::datatypes::{Decimal32Type, Decimal64Type, UnionFields, UnionMode, validate_decimal_precision_and_scale};
 use query_engine::{
-    datatypes::is_narrow_decimal_carry_type, exec::preflight_query_plan, rapids_backend::rapids_analysis_context,
+    backend::BackendCapabilities,
+    datatypes::is_narrow_decimal_carry_type,
+    exec::preflight_query_plan,
+    rapids_backend::{rapids_analysis_context, rapids_backend},
 };
 
 use super::*;
@@ -14,12 +17,12 @@ fn decimal128_type_support_policy_accepts_valid_arrow_decimals() {
 
     assert!(is_supported_arrow_type(&decimal_with_fractional_scale));
     assert_eq!(
-        cudf_dtype_from_arrow_type(&decimal_with_fractional_scale),
+        cudf_dtype_from_arrow_type(&decimal_with_fractional_scale).ok(),
         Some(CudfDataType::fixed_point(TypeId::Decimal128, -2).unwrap())
     );
     assert!(is_supported_arrow_type(&decimal_with_negative_scale));
     assert_eq!(
-        cudf_dtype_from_arrow_type(&decimal_with_negative_scale),
+        cudf_dtype_from_arrow_type(&decimal_with_negative_scale).ok(),
         Some(CudfDataType::fixed_point(TypeId::Decimal128, 1).unwrap())
     );
 }
@@ -30,9 +33,9 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
     let invalid_scale = DataType::Decimal128(10, 11);
 
     assert!(!is_supported_arrow_type(&invalid_precision));
-    assert_eq!(cudf_dtype_from_arrow_type(&invalid_precision), None);
+    assert!(cudf_dtype_from_arrow_type(&invalid_precision).is_err());
     assert!(!is_supported_arrow_type(&invalid_scale));
-    assert_eq!(cudf_dtype_from_arrow_type(&invalid_scale), None);
+    assert!(cudf_dtype_from_arrow_type(&invalid_scale).is_err());
 }
 
 #[test]
@@ -49,7 +52,7 @@ fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
         assert!(is_supported_arrow_type(&arrow_type), "{arrow_type:?}");
         assert!(is_narrow_decimal_carry_type(&arrow_type), "{arrow_type:?}");
         assert_eq!(
-            cudf_dtype_from_arrow_type(&arrow_type),
+            cudf_dtype_from_arrow_type(&arrow_type).ok(),
             Some(CudfDataType::fixed_point(cudf_type_id, cudf_scale).unwrap()),
             "{arrow_type:?}"
         );
@@ -63,25 +66,25 @@ fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() 
     let invalid_decimal32_precision = DataType::Decimal32(10, 2);
     assert!(!is_supported_arrow_type(&invalid_decimal32_precision));
     assert!(!is_narrow_decimal_carry_type(&invalid_decimal32_precision));
-    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal32_precision), None);
+    assert!(cudf_dtype_from_arrow_type(&invalid_decimal32_precision).is_err());
 
     assert!(validate_decimal_precision_and_scale::<Decimal32Type>(9, 10).is_err());
     let invalid_decimal32_scale = DataType::Decimal32(9, 10);
     assert!(!is_supported_arrow_type(&invalid_decimal32_scale));
     assert!(!is_narrow_decimal_carry_type(&invalid_decimal32_scale));
-    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal32_scale), None);
+    assert!(cudf_dtype_from_arrow_type(&invalid_decimal32_scale).is_err());
 
     assert!(validate_decimal_precision_and_scale::<Decimal64Type>(19, 2).is_err());
     let invalid_decimal64_precision = DataType::Decimal64(19, 2);
     assert!(!is_supported_arrow_type(&invalid_decimal64_precision));
     assert!(!is_narrow_decimal_carry_type(&invalid_decimal64_precision));
-    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal64_precision), None);
+    assert!(cudf_dtype_from_arrow_type(&invalid_decimal64_precision).is_err());
 
     assert!(validate_decimal_precision_and_scale::<Decimal64Type>(18, 19).is_err());
     let invalid_decimal64_scale = DataType::Decimal64(18, 19);
     assert!(!is_supported_arrow_type(&invalid_decimal64_scale));
     assert!(!is_narrow_decimal_carry_type(&invalid_decimal64_scale));
-    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal64_scale), None);
+    assert!(cudf_dtype_from_arrow_type(&invalid_decimal64_scale).is_err());
 }
 
 #[test]
@@ -90,7 +93,7 @@ fn timestamp_with_timezone_type_support_policy_is_carry_only() {
     let timestamp_tz = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
     assert!(is_supported_arrow_type(&timestamp_tz));
-    assert_eq!(cudf_dtype_from_arrow_type(&timestamp_tz), Some(CudfDataType::new(TypeId::TimestampMicroseconds)));
+    assert_eq!(cudf_dtype_from_arrow_type(&timestamp_tz).ok(), Some(CudfDataType::new(TypeId::TimestampMicroseconds)));
     assert!(is_supported_arrow_implicit_cast(&timestamp_tz, &timestamp_tz, ctx));
     assert!(!is_supported_arrow_cast(&DataType::Timestamp(TimeUnit::Microsecond, None), &timestamp_tz, ctx));
     assert!(!is_supported_arrow_cast(&timestamp_tz, &DataType::Timestamp(TimeUnit::Microsecond, None), ctx));
@@ -109,7 +112,7 @@ fn temporal_type_support_policy_accepts_date64_and_time_types() {
 
     for (arrow_type, cudf_type_id) in cases {
         assert!(is_supported_arrow_type(&arrow_type), "{arrow_type:?}");
-        assert_eq!(cudf_dtype_from_arrow_type(&arrow_type), Some(CudfDataType::new(cudf_type_id)));
+        assert_eq!(cudf_dtype_from_arrow_type(&arrow_type).ok(), Some(CudfDataType::new(cudf_type_id)));
         assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type, ctx), "{arrow_type:?}");
     }
 }
@@ -140,7 +143,7 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
         ] {
             assert!(is_supported_arrow_type(&list), "{list:?}");
             assert!(is_supported_list_carry_type(&list), "{list:?}");
-            assert_eq!(cudf_dtype_from_arrow_type(&list), Some(CudfDataType::new(TypeId::List)));
+            assert_eq!(cudf_dtype_from_arrow_type(&list).ok(), Some(CudfDataType::new(TypeId::List)));
             assert!(is_supported_arrow_implicit_cast(&list, &list, ctx), "{list:?}");
         }
     }
@@ -163,7 +166,7 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
         ] {
             assert!(!is_supported_arrow_type(&list), "{list:?}");
             assert!(!is_supported_list_carry_type(&list), "{list:?}");
-            assert_eq!(cudf_dtype_from_arrow_type(&list), None, "{list:?}");
+            assert!(cudf_dtype_from_arrow_type(&list).is_err(), "{list:?}");
         }
     }
 
@@ -197,7 +200,7 @@ fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
         let list = DataType::FixedSizeList(Arc::new(Field::new("item", child, true)), 3);
         assert!(is_supported_arrow_type(&list), "{list:?}");
         assert!(is_supported_list_carry_type(&list), "{list:?}");
-        assert_eq!(cudf_dtype_from_arrow_type(&list), Some(CudfDataType::new(TypeId::List)));
+        assert_eq!(cudf_dtype_from_arrow_type(&list).ok(), Some(CudfDataType::new(TypeId::List)));
         assert!(is_supported_arrow_implicit_cast(&list, &list, ctx), "{list:?}");
     }
 
@@ -214,14 +217,14 @@ fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
         let list = DataType::FixedSizeList(Arc::new(Field::new("item", child, true)), 3);
         assert!(!is_supported_arrow_type(&list), "{list:?}");
         assert!(!is_supported_list_carry_type(&list), "{list:?}");
-        assert_eq!(cudf_dtype_from_arrow_type(&list), None, "{list:?}");
+        assert!(cudf_dtype_from_arrow_type(&list).is_err(), "{list:?}");
     }
 
     for dimension in [0, -1] {
         let list = DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), dimension);
         assert!(!is_supported_arrow_type(&list), "{list:?}");
         assert!(!is_supported_list_carry_type(&list), "{list:?}");
-        assert_eq!(cudf_dtype_from_arrow_type(&list), None, "{list:?}");
+        assert!(cudf_dtype_from_arrow_type(&list).is_err(), "{list:?}");
     }
 }
 
@@ -652,4 +655,18 @@ fn float64_to_int64_cast_support_is_explicit_and_not_implicit() {
     assert!(!is_supported_arrow_implicit_cast(&float64_source, &int64_target, ctx));
     assert!(!is_supported_arrow_cast(&float64_source, &int32_target, ctx));
     assert!(!is_supported_arrow_cast(&float32_source, &int64_target, ctx));
+}
+
+#[test]
+fn backend_dtype_rejection_reports_unsupported_type_with_cudf_reason() {
+    let unsupported = DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Utf8, true)), 2);
+
+    let error = rapids_backend()
+        .binary_output_type(BinaryOp::Add, &unsupported, &DataType::Decimal128(10, 2))
+        .expect_err("FixedSizeList<Utf8> has no cuDF dtype");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.fact_value("left_type"), Some(format!("{unsupported:?}").as_str()));
+    assert!(error.fact_value("cudf_code").is_some());
+    assert_eq!(error.fact_value("cudf_reason"), Some("unsupported_fixed_size_list_child_type"));
 }

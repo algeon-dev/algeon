@@ -8,21 +8,15 @@
 //! user-facing API contract. They may change or disappear at any time.
 
 pub mod arrow;
-pub mod boundary;
 pub mod column;
-pub mod concatenate;
 pub mod core;
 pub mod dataframe;
 pub mod device_safety;
 pub mod dictionary;
 pub mod error;
-pub mod factorization;
-pub mod groupby;
 pub mod interop;
-pub mod join;
 pub mod memory;
 pub mod series;
-pub mod sorting;
 
 use crate::{
     AggSpec, MergeOptions, SortOptions,
@@ -46,6 +40,82 @@ pub mod prelude {
 }
 
 pub use crate::core::{column::ColumnView, table::TableView};
+
+pub mod boundary {
+    use crate::runtime::{BoundaryObservation, last_boundary_observation, record_boundary_observation};
+
+    /// Reset the last query-facing boundary observation used by integration tests.
+    pub fn reset_boundary_observation_for_test() {
+        record_boundary_observation(None);
+    }
+
+    /// Read the last query-facing boundary observation, if any.
+    pub fn last_boundary_observation_for_test() -> Option<BoundaryObservation> {
+        last_boundary_observation()
+    }
+}
+
+pub mod concatenate {
+    use crate::{core::Result, ops::concatenate};
+
+    /// Trigger the concatenate-column input-count limit validation contract.
+    pub fn trigger_concatenate_column_count_limit_error_for_test() -> Result<()> {
+        concatenate::trigger_concatenate_column_count_limit_error_for_test()
+    }
+
+    /// Trigger the concatenate-table input-count limit validation contract.
+    pub fn trigger_concatenate_table_count_limit_error_for_test() -> Result<()> {
+        concatenate::trigger_concatenate_table_count_limit_error_for_test()
+    }
+}
+
+pub mod factorization {
+    pub use crate::ops::factorization::testing_hooks::trigger_factorize_empty_row_code_dtype_error_for_test;
+    use crate::{core::Result, frame::factorization};
+
+    /// Trigger the Codebook key-count limit validation path used by integration
+    /// tests.
+    pub fn trigger_codebook_key_count_limit_error_for_test() -> Result<()> {
+        factorization::trigger_codebook_key_count_limit_error_for_test()
+    }
+}
+
+pub mod groupby {
+    pub use crate::ops::groupby::testing_hooks::{
+        trigger_groupby_duplicate_result_column_consumption_for_test,
+        trigger_groupby_request_agg_count_limit_error_for_test, trigger_groupby_request_count_limit_error_for_test,
+        trigger_groupby_result_column_index_out_of_bounds_for_test,
+        trigger_groupby_result_group_index_out_of_bounds_for_test,
+        trigger_groupby_total_agg_handle_count_limit_error_for_test, trigger_value_counts_empty_count_result_for_test,
+        trigger_value_counts_missing_count_results_for_test, trigger_value_counts_missing_key_columns_for_test,
+    };
+}
+
+pub mod join {
+    use crate::{core::Result, frame::dataframe::DataFrame, ops::join};
+
+    /// Trigger the merge-result reassembly invariant branch used by integration
+    /// tests to lock the downstream error contract.
+    pub fn trigger_merge_reassembly_key_count_error_for_test() -> Result<DataFrame> {
+        join::trigger_merge_reassembly_key_count_error_for_test()
+    }
+
+    /// Trigger projected cross-join output row-count overflow before reservation
+    /// or materialization.
+    pub fn trigger_projected_cross_join_output_row_overflow_for_test() -> Result<usize> {
+        join::trigger_projected_cross_join_output_row_overflow_for_test()
+    }
+
+    /// Trigger projected cross-join input row-count rejection when output rows
+    /// would otherwise be zero.
+    pub fn trigger_projected_cross_join_input_row_limit_for_test() -> Result<usize> {
+        join::trigger_projected_cross_join_input_row_limit_for_test()
+    }
+}
+
+pub mod sorting {
+    pub use crate::ops::sorting::testing_hooks::trigger_sort_key_count_limit_error_for_test;
+}
 
 /// Testing-only access to retained execution-domain metadata.
 pub trait ExecutionDomainTestingExt {

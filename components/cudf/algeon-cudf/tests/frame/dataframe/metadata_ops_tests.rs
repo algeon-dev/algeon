@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*};
 
 use crate::common::{
-    assert_duplicate_name_error, assert_missing_column_error, dataframe_device_ptr as device_ptr, error_context_value,
+    assert_duplicate_name_error, assert_missing_column_error, dataframe_device_ptr, error_context_value,
     last_exec_stream_value, lock_event_observation, reset_exec_observation, run_named_cases, series,
 };
 
@@ -45,13 +45,13 @@ fn test_without_columns_removes_multiple_columns() {
 
 fn test_without_columns_preserves_arc_sharing_for_retained_columns() {
     let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let flag_ptr = device_ptr(&df, "flag");
+    let id_ptr = dataframe_device_ptr(&df, "id");
+    let flag_ptr = dataframe_device_ptr(&df, "flag");
 
     let result = df.without_columns(["score"]).unwrap();
 
-    assert_eq!(id_ptr, device_ptr(&result, "id"));
-    assert_eq!(flag_ptr, device_ptr(&result, "flag"));
+    assert_eq!(id_ptr, dataframe_device_ptr(&result, "id"));
+    assert_eq!(flag_ptr, dataframe_device_ptr(&result, "flag"));
 }
 
 fn test_without_columns_nonexistent_column_returns_error() {
@@ -118,15 +118,15 @@ fn test_rename_columns_multiple_pairs() {
 
 fn test_rename_columns_preserves_arc_sharing() {
     let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let score_ptr = device_ptr(&df, "score");
-    let flag_ptr = device_ptr(&df, "flag");
+    let id_ptr = dataframe_device_ptr(&df, "id");
+    let score_ptr = dataframe_device_ptr(&df, "score");
+    let flag_ptr = dataframe_device_ptr(&df, "flag");
 
     let result = df.rename_columns([("id", "a"), ("score", "b")]).unwrap();
 
-    assert_eq!(id_ptr, device_ptr(&result, "a"));
-    assert_eq!(score_ptr, device_ptr(&result, "b"));
-    assert_eq!(flag_ptr, device_ptr(&result, "flag"));
+    assert_eq!(id_ptr, dataframe_device_ptr(&result, "a"));
+    assert_eq!(score_ptr, dataframe_device_ptr(&result, "b"));
+    assert_eq!(flag_ptr, dataframe_device_ptr(&result, "flag"));
 }
 
 fn test_rename_columns_nonexistent_source_returns_error() {
@@ -174,10 +174,10 @@ fn test_rename_columns_swap_is_allowed() {
     assert_eq!(result.column_names(), &["flag", "score", "id"]);
 
     // Data should follow the original column, not the new name
-    let original_id_ptr = device_ptr(&df, "id");
-    let original_flag_ptr = device_ptr(&df, "flag");
-    assert_eq!(original_id_ptr, device_ptr(&result, "flag"));
-    assert_eq!(original_flag_ptr, device_ptr(&result, "id"));
+    let original_id_ptr = dataframe_device_ptr(&df, "id");
+    let original_flag_ptr = dataframe_device_ptr(&df, "flag");
+    assert_eq!(original_id_ptr, dataframe_device_ptr(&result, "flag"));
+    assert_eq!(original_flag_ptr, dataframe_device_ptr(&result, "id"));
 }
 
 fn test_rename_columns_empty_iterator() {
@@ -213,24 +213,24 @@ fn test_select_wide_projection_reorders_columns_without_copying() {
 
     assert_eq!(selected.column_names(), &["c15", "c0", "c7", "c3"]);
     assert_eq!(selected.num_rows(), 2);
-    assert_eq!(device_ptr(&df, "c15"), device_ptr(&selected, "c15"));
-    assert_eq!(device_ptr(&df, "c0"), device_ptr(&selected, "c0"));
-    assert_eq!(device_ptr(&df, "c7"), device_ptr(&selected, "c7"));
-    assert_eq!(device_ptr(&df, "c3"), device_ptr(&selected, "c3"));
+    assert_eq!(dataframe_device_ptr(&df, "c15"), dataframe_device_ptr(&selected, "c15"));
+    assert_eq!(dataframe_device_ptr(&df, "c0"), dataframe_device_ptr(&selected, "c0"));
+    assert_eq!(dataframe_device_ptr(&df, "c7"), dataframe_device_ptr(&selected, "c7"));
+    assert_eq!(dataframe_device_ptr(&df, "c3"), dataframe_device_ptr(&selected, "c3"));
 }
 
 fn test_select_is_metadata_only_no_execution_or_device_copy() {
     let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let flag_ptr = device_ptr(&df, "flag");
+    let id_ptr = dataframe_device_ptr(&df, "id");
+    let flag_ptr = dataframe_device_ptr(&df, "flag");
     let _event_observation = lock_event_observation();
 
     reset_exec_observation();
     let selected = df.select(["flag", "id"]).unwrap();
 
     assert_eq!(last_exec_stream_value(), usize::MAX);
-    assert_eq!(device_ptr(&selected, "id"), id_ptr);
-    assert_eq!(device_ptr(&selected, "flag"), flag_ptr);
+    assert_eq!(dataframe_device_ptr(&selected, "id"), id_ptr);
+    assert_eq!(dataframe_device_ptr(&selected, "flag"), flag_ptr);
     assert_eq!(selected.testing_execution_domain_id(), df.testing_execution_domain_id());
     assert_eq!(selected.testing_execution_domain_stream_value(), df.testing_execution_domain_stream_value());
     assert_eq!(selected.testing_execution_domain_mr_value(), df.testing_execution_domain_mr_value());
@@ -263,14 +263,14 @@ fn test_with_column_replaces_existing_column() {
 
 fn test_with_column_preserves_arc_sharing_for_unchanged() {
     let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let flag_ptr = device_ptr(&df, "flag");
+    let id_ptr = dataframe_device_ptr(&df, "id");
+    let flag_ptr = dataframe_device_ptr(&df, "flag");
 
     let extra = series::<i64>("extra", &[100, 200, 300]).unwrap();
     let result = df.with_column("extra", extra).unwrap();
 
-    assert_eq!(id_ptr, device_ptr(&result, "id"));
-    assert_eq!(flag_ptr, device_ptr(&result, "flag"));
+    assert_eq!(id_ptr, dataframe_device_ptr(&result, "id"));
+    assert_eq!(flag_ptr, dataframe_device_ptr(&result, "flag"));
 }
 
 fn test_with_column_shares_arc_from_input_series() {
@@ -340,14 +340,14 @@ fn test_assign_mix_of_add_and_replace() {
 
 fn test_assign_preserves_arc_sharing_for_unchanged() {
     let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let flag_ptr = device_ptr(&df, "flag");
+    let id_ptr = dataframe_device_ptr(&df, "id");
+    let flag_ptr = dataframe_device_ptr(&df, "flag");
 
     let new_score = series::<f64>("s", &[99.0, 88.0, 77.0]).unwrap();
     let result = df.assign([("score", new_score)]).unwrap();
 
-    assert_eq!(id_ptr, device_ptr(&result, "id"));
-    assert_eq!(flag_ptr, device_ptr(&result, "flag"));
+    assert_eq!(id_ptr, dataframe_device_ptr(&result, "id"));
+    assert_eq!(flag_ptr, dataframe_device_ptr(&result, "flag"));
 }
 
 fn test_assign_shares_arc_from_input_series() {
@@ -441,23 +441,23 @@ fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
 
 fn test_without_columns_then_assign_preserves_sharing() {
     let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
+    let id_ptr = dataframe_device_ptr(&df, "id");
 
     let dropped = df.without_columns(["score", "flag"]).unwrap();
     let extra = series::<f64>("extra", &[1.0, 2.0, 3.0]).unwrap();
     let result = dropped.assign([("extra", extra)]).unwrap();
 
-    assert_eq!(id_ptr, device_ptr(&result, "id"));
+    assert_eq!(id_ptr, dataframe_device_ptr(&result, "id"));
 }
 
 fn test_rename_columns_then_without_columns_preserves_sharing() {
     let df = sample_df();
-    let score_ptr = device_ptr(&df, "score");
+    let score_ptr = dataframe_device_ptr(&df, "score");
 
     let renamed = df.rename_columns([("id", "identifier")]).unwrap();
     let result = renamed.without_columns(["flag"]).unwrap();
 
-    assert_eq!(score_ptr, device_ptr(&result, "score"));
+    assert_eq!(score_ptr, dataframe_device_ptr(&result, "score"));
 }
 
 fn test_with_series_then_rename_columns_preserves_sharing() {

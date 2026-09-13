@@ -68,6 +68,8 @@ pub(crate) use execution_metrics::ExecutionMetrics;
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
 use query_planning::validate_query_plan;
+#[doc(hidden)]
+pub use source::sanitize_cache_component;
 use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};
 
 use self::{
@@ -100,6 +102,7 @@ use crate::{
     native_error::{
         cudf_budget_exhaustion, cudf_query_error, cudf_query_error_with_budget_details,
         cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details,
+        cudf_unsupported_type_error,
     },
     observability::{
         PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
@@ -345,23 +348,6 @@ fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &Q
                 })
             });
         }
-    }
-}
-
-fn plan_node_kind(node: &PlanNode) -> &'static str {
-    match node {
-        PlanNode::Source(_) => "source",
-        PlanNode::Filter(_) => "filter",
-        PlanNode::Projection(_) => "projection",
-        PlanNode::Aggregate(_) => "aggregate",
-        PlanNode::Window(_) => "window",
-        PlanNode::Sort(_) => "sort",
-        PlanNode::Limit(_) => "limit",
-        PlanNode::Join(_) => "join",
-        PlanNode::Union(_) => "union",
-        PlanNode::EdgeNormalize(_) => "edge_normalize",
-        PlanNode::GraphAlgorithm(_) => "graph_algorithm",
-        PlanNode::VectorAlgorithm(_) => "vector_algorithm",
     }
 }
 

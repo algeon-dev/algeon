@@ -4,13 +4,13 @@ use std::{
 };
 
 use datafusion::physical_plan::filter::FilterExec;
+use query_engine::datatypes::is_supported_arrow_type;
 
 use super::{
     AlgeonIcebergScanExec, CapabilityReason, ExecutionPlan, NativeLiteralValue, NativeMissingColumn,
     NativeParquetColumnRequirements, NativePartitionColumn, NativeSourceColumnRef, NormalizedNativeSource,
     RequiredFields, SchemaRef, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatScanPlan,
-    collect_required_columns, is_supported_native_type, required_source_scan_output_indices,
-    table_format_count_star_fallback_column,
+    collect_required_columns, required_source_scan_output_indices, table_format_count_star_fallback_column,
 };
 
 pub(in crate::native::lowering) fn table_format_scan_rejection(
@@ -141,7 +141,7 @@ pub(super) fn table_format_column_requirements(
                 }
             },
             TableFormatColumnSource::IdentityPartitionValue => {
-                if !is_supported_native_type(&mapping.data_type) {
+                if !is_supported_arrow_type(&mapping.data_type) {
                     return Err(CapabilityReason::UnsupportedType);
                 }
                 if partition_columns_seen.insert(mapping.logical_name.clone()) {
@@ -157,7 +157,7 @@ pub(super) fn table_format_column_requirements(
                 if !mapping.nullable {
                     return Err(CapabilityReason::NativeSourceSchemaMapping);
                 }
-                if !is_supported_native_type(&mapping.data_type) {
+                if !is_supported_arrow_type(&mapping.data_type) {
                     return Err(CapabilityReason::UnsupportedType);
                 }
                 if missing_columns_seen.insert(mapping.logical_name.clone()) {

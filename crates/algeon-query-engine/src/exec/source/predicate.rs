@@ -304,7 +304,11 @@ fn source_reader_column_dtype(source: &LocalParquetSource, expr: &Expr) -> Optio
         Expr::Alias { expr, .. } => return source_reader_column_dtype(source, expr),
         _ => return None,
     };
-    source.schema.field_with_name(column.name()).ok().and_then(|field| cudf_dtype_from_arrow_type(field.data_type()))
+    source
+        .schema
+        .field_with_name(column.name())
+        .ok()
+        .and_then(|field| cudf_dtype_from_arrow_type(field.data_type()).ok())
 }
 
 fn lower_cudf_source_reader_predicate(source: &LocalParquetSource, expr: &Expr) -> Result<CudfSourceReaderPredicate> {

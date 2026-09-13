@@ -15,7 +15,7 @@ use cudf::{
 use tempfile::TempDir;
 
 use crate::common::{
-    dataframe_device_ptr as device_ptr, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    dataframe_device_ptr, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, observed_exec_mr_overflowed,
     observed_exec_mr_values, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
     run_named_cases, sample_runtime, series, series_device_ptr,
@@ -280,7 +280,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
 
     reset_dependency_observation();
     reset_exec_observation();
-    let keep_before = device_ptr(&df, "val");
+    let keep_before = dataframe_device_ptr(&df, "val");
     let with_columns = df
         .with_execution(&ctx)
         .with_columns([
@@ -295,7 +295,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     assert_frame_residency(&with_columns, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(with_columns.series("val").unwrap().as_column().testing_execution_domain_stream_value(), ctx_stream);
     assert_ne!(
-        device_ptr(&with_columns, "val"),
+        dataframe_device_ptr(&with_columns, "val"),
         keep_before,
         "scoped with_columns must relocate unchanged columns when the override changes retained provenance"
     );
@@ -312,7 +312,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
 
     let default_with_columns = df.with_columns([("score", col("id") + col("val"))]).unwrap();
     assert_eq!(
-        device_ptr(&default_with_columns, "val"),
+        dataframe_device_ptr(&default_with_columns, "val"),
         keep_before,
         "ordinary with_columns should keep unchanged columns Arc-shared when no override changes provenance"
     );
@@ -480,7 +480,7 @@ fn copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possi
     .unwrap();
     let series = source_rt.series(&[1i32, 2, 3]).unwrap();
 
-    let original_df_ptr = device_ptr(&df, "id");
+    let original_df_ptr = dataframe_device_ptr(&df, "id");
     let original_series_ptr = series_device_ptr(&series);
 
     reset_exec_observation();
@@ -492,7 +492,7 @@ fn copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possi
         target_rt.stream().testing_raw_handle_value(),
         target_rt.memory_resource().testing_raw_handle_value(),
     );
-    assert_ne!(device_ptr(&copied_df, "id"), original_df_ptr);
+    assert_ne!(dataframe_device_ptr(&copied_df, "id"), original_df_ptr);
 
     reset_exec_observation();
     let copied_series = series.copy_into_runtime(&target_rt).unwrap();
@@ -567,7 +567,7 @@ fn schema_only_assign_after_copy_into_runtime_preserves_target_residency() {
     let df = df.copy_into_runtime(&target_rt).unwrap();
     let replacement = replacement.copy_into_runtime(&target_rt).unwrap();
     let bonus = bonus.copy_into_runtime(&target_rt).unwrap();
-    let id_ptr = device_ptr(&df, "id");
+    let id_ptr = dataframe_device_ptr(&df, "id");
     let replacement_ptr = series_device_ptr(&replacement);
     let bonus_ptr = series_device_ptr(&bonus);
 
@@ -580,9 +580,9 @@ fn schema_only_assign_after_copy_into_runtime_preserves_target_residency() {
         target_rt.stream().testing_raw_handle_value(),
         target_rt.memory_resource().testing_raw_handle_value(),
     );
-    assert_eq!(device_ptr(&result, "id"), id_ptr);
-    assert_eq!(device_ptr(&result, "val"), replacement_ptr);
-    assert_eq!(device_ptr(&result, "bonus"), bonus_ptr);
+    assert_eq!(dataframe_device_ptr(&result, "id"), id_ptr);
+    assert_eq!(dataframe_device_ptr(&result, "val"), replacement_ptr);
+    assert_eq!(dataframe_device_ptr(&result, "bonus"), bonus_ptr);
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 }
 

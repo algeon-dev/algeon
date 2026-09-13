@@ -1,3 +1,5 @@
+use query_planning::chunk::assembly::proportional_bytes;
+
 use super::{BoundedExecutionAttempt, ExecutionMetrics, QueryError, RetryFacts, SourceChunk};
 use crate::exec::retry::{is_retryable_resource_error, record_retryable_resource_error};
 
@@ -154,21 +156,6 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
 
 fn checked_row_group_sum(values: Option<&[u64]>, row_group_indexes: &[usize]) -> Option<u64> {
     row_group_indexes.iter().try_fold(0u64, |total, row_group| total.checked_add(*values?.get(*row_group)?))
-}
-
-pub(in crate::exec::bounded) fn proportional_bytes(
-    total_bytes: Option<u64>,
-    child_row_groups: usize,
-    parent_row_groups: usize,
-) -> Option<u64> {
-    let total_bytes = total_bytes?;
-    if parent_row_groups == 0 {
-        return Some(total_bytes);
-    }
-
-    let numerator = u128::from(total_bytes) * child_row_groups as u128;
-    let denominator = parent_row_groups as u128;
-    Some(numerator.div_ceil(denominator).min(u128::from(u64::MAX)) as u64)
 }
 
 pub(in crate::exec::bounded) fn chunk_retry_facts(

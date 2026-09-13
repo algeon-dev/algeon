@@ -13,8 +13,8 @@ use std::sync::Arc;
 use cudf::{DataFrame, ErrorCode, TypeId, core::Column};
 
 use crate::common::{
-    column_from_slice, dataframe_device_ptr as device_ptr, dataframe_from_columns, error_context_value,
-    fail_next_column_view_metadata_read, run_named_cases, series as common_series,
+    column_from_slice, dataframe_device_ptr, dataframe_from_columns, error_context_value,
+    fail_next_column_view_metadata_read, run_named_cases, series,
 };
 
 // ===========================================================================
@@ -23,8 +23,8 @@ use crate::common::{
 
 /// Build a 3-row, 2-column DataFrame.
 fn sample_df() -> DataFrame {
-    let ids = common_series::<i32>("id", &[1, 2, 3]).unwrap();
-    let scores = common_series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
+    let ids = series::<i32>("id", &[1, 2, 3]).unwrap();
+    let scores = series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
     DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
@@ -177,7 +177,7 @@ fn df_to_table_deep_copies() {
     // The table's column 0 ("id") must have a DIFFERENT device pointer
     let table_col0 = &table_columns[0];
     let table_ptr = table_col0.device_data_ptr().unwrap();
-    let df_ptr = device_ptr(&df, "id");
+    let df_ptr = dataframe_device_ptr(&df, "id");
     assert_ne!(table_ptr, df_ptr, "to_table() must deep-copy; pointers should differ");
 
     // Data values should still match
@@ -203,7 +203,7 @@ fn df_to_table_source_still_usable() {
 fn df_into_table_unique_owner_no_extra_copy() {
     let df = dataframe_from_columns(vec!["a".into()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
-    let original_ptr = device_ptr(&df, "a");
+    let original_ptr = dataframe_device_ptr(&df, "a");
     let (table, names) = df.try_into_table().unwrap();
 
     assert_eq!(names, vec!["a"]);
@@ -222,7 +222,7 @@ fn df_into_table_shared_columns_deep_copies() {
     let external_series = df.series("id").unwrap();
     let external_ptr = external_series.as_column().device_data_ptr().unwrap();
 
-    let original_ptr = device_ptr(&df, "id");
+    let original_ptr = dataframe_device_ptr(&df, "id");
     assert_eq!(original_ptr, external_ptr, "series shares same Arc");
 
     let (table, names) = df.try_into_table().unwrap();
@@ -255,12 +255,12 @@ fn df_into_table_values_preserved() {
 /// `filter(&Series)` produces a new GPU allocation.
 fn filter_allocates_new_gpu_data() {
     let df = sample_df();
-    let original_ptr = device_ptr(&df, "id");
+    let original_ptr = dataframe_device_ptr(&df, "id");
 
-    let mask = common_series::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = series::<bool>("mask", &[true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
-    let filtered_ptr = device_ptr(&filtered, "id");
+    let filtered_ptr = dataframe_device_ptr(&filtered, "id");
     assert_ne!(original_ptr, filtered_ptr);
 }
 
@@ -281,10 +281,10 @@ fn sort_values_consistent_results() {
 /// `select` is schema-only and Arc-shares selected columns.
 fn select_shares_arc() {
     let df = sample_df();
-    let original_ptr = device_ptr(&df, "id");
+    let original_ptr = dataframe_device_ptr(&df, "id");
 
     let selected = df.select(["id"]).unwrap();
-    let selected_ptr = device_ptr(&selected, "id");
+    let selected_ptr = dataframe_device_ptr(&selected, "id");
 
     assert_eq!(original_ptr, selected_ptr);
 }
@@ -292,10 +292,10 @@ fn select_shares_arc() {
 /// `rename_column` is a pure schema rewrite that Arc-shares columns.
 fn rename_column_shares_arc() {
     let df = sample_df();
-    let original_ptr = device_ptr(&df, "id");
+    let original_ptr = dataframe_device_ptr(&df, "id");
 
     let renamed = df.rename_column("id", "identifier").unwrap();
-    let renamed_ptr = device_ptr(&renamed, "identifier");
+    let renamed_ptr = dataframe_device_ptr(&renamed, "identifier");
 
     assert_eq!(original_ptr, renamed_ptr);
 }
@@ -307,7 +307,7 @@ fn rename_column_shares_arc() {
 /// `Series::as_column()` returns a `Column` reference that points to the
 /// same device data across repeated access.
 fn series_as_column_same_device_ptr_on_repeated_access() {
-    let s = common_series::<i32>("x", &[1, 2]).unwrap();
+    let s = series::<i32>("x", &[1, 2]).unwrap();
     let col = s.as_column();
 
     assert_eq!(col.device_data_ptr().unwrap(), s.as_column().device_data_ptr().unwrap());
@@ -315,7 +315,7 @@ fn series_as_column_same_device_ptr_on_repeated_access() {
 
 /// `Series::as_column()` returns `&Column`; a direct borrow.
 fn series_column_returns_ref() {
-    let s = common_series::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("c", &[1, 2, 3]).unwrap();
     let col_ref: &Column = s.as_column();
     assert_eq!(col_ref.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -323,7 +323,7 @@ fn series_column_returns_ref() {
 /// `Series::into_inner()` consumes the Series and returns the `Arc<Column>`.
 /// A clone of the Series shares the same device data.
 fn series_into_inner_shares_arc() {
-    let s = common_series::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("c", &[1, 2, 3]).unwrap();
 
     let arc1 = s.clone().into_inner();
     let arc2 = s.into_inner();
@@ -336,7 +336,7 @@ fn series_into_inner_shares_arc() {
 
 /// `Series::arc()` returns a cloned `Arc<Column>` without consuming the Series.
 fn series_arc_accessor_shares_arc_without_consuming() {
-    let s = common_series::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("c", &[1, 2, 3]).unwrap();
 
     let cloned_arc = s.arc();
     let consumed_arc = s.clone().into_inner();
@@ -355,7 +355,7 @@ fn series_arc_accessor_shares_arc_without_consuming() {
 
 /// `Series::clone()` is a cheap Arc bump; same device pointer.
 fn series_clone_shares_gpu_data() {
-    let s = common_series::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
 
     let ptr1 = s.as_column().device_data_ptr().unwrap();
@@ -370,34 +370,34 @@ fn series_clone_shares_gpu_data() {
 /// `filter()` with a Series mask produces a new GPU allocation.
 fn df_filter_gpu_allocates() {
     let df = sample_df();
-    let mask = common_series::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = series::<bool>("mask", &[true, false, true]).unwrap();
 
     let filtered = df.filter(&mask).unwrap();
     assert_eq!(filtered.num_rows(), 2);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 
     // New allocation; different device pointer
-    assert_ne!(device_ptr(&df, "id"), device_ptr(&filtered, "id"));
+    assert_ne!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&filtered, "id"));
 }
 
 /// `head()` / `tail()` / `slice()` all produce new GPU allocations.
 fn df_slicing_ops_gpu_allocate() {
     let df = sample_df();
-    let original_ptr = device_ptr(&df, "id");
+    let original_ptr = dataframe_device_ptr(&df, "id");
 
     let h = df.head(2).unwrap();
-    assert_ne!(original_ptr, device_ptr(&h, "id"));
+    assert_ne!(original_ptr, dataframe_device_ptr(&h, "id"));
 
     let t = df.tail(2).unwrap();
-    assert_ne!(original_ptr, device_ptr(&t, "id"));
+    assert_ne!(original_ptr, dataframe_device_ptr(&t, "id"));
 
     let s = df.slice(1, 1).unwrap();
-    assert_ne!(original_ptr, device_ptr(&s, "id"));
+    assert_ne!(original_ptr, dataframe_device_ptr(&s, "id"));
 }
 
 /// GPU-allocating unary ops on Series produce new columns.
 fn series_ops_gpu_allocate() {
-    let s = common_series::<i32>("v", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("v", &[1, 2, 3]).unwrap();
     let original_ptr = s.as_column().device_data_ptr().unwrap();
 
     let mask = s.gt_scalar(1i32).unwrap();

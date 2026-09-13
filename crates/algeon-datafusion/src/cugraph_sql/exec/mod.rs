@@ -73,8 +73,7 @@ use super::{
     CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
     CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsParams, CugraphBfsSourceVertex,
     CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, CugraphLogicalOutputMultiplicity, CugraphVertexSelector,
-    GpuIslandHostBoundaryConfig, PredicateSourceColumnRole, plan_error, result_schema_for_params,
-    vertex_id_domain_for_call,
+    GpuIslandHostBoundaryConfig, PredicateSourceColumnRole, plan, result_schema_for_params, vertex_id_domain_for_call,
 };
 use crate::{
     error::{Error, ErrorCode},
@@ -82,7 +81,7 @@ use crate::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
         AlgeonNativeMetrics, GpuResidentProducer, NativeExecutionMetricsCapture,
         admission::task_context_with_query_admission_ticket,
-        execute_gpu_resident_producer_with_context, gpu_resident_producer as native_gpu_resident_producer,
+        execute_gpu_resident_producer_with_context, gpu_resident_producer,
         gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
         graph::{
             GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader, GraphBfsPublishedResult,

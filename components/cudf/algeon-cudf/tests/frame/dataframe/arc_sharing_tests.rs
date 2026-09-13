@@ -8,7 +8,7 @@
 
 use cudf::{DataFrame, FrameMemoryEffect};
 
-use crate::common::{column_from_slice, dataframe_device_ptr as device_ptr, dataframe_from_columns, run_named_cases};
+use crate::common::{column_from_slice, dataframe_device_ptr, dataframe_from_columns, run_named_cases};
 
 /// Helper: build a 3-row, 3-column DataFrame with distinct column types.
 fn sample_df() -> DataFrame {
@@ -28,9 +28,9 @@ fn test_clone_shares_all_columns() {
     let copied = df.clone();
 
     // Both DataFrames should point to the same GPU memory for every column.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&copied, "id"));
-    assert_eq!(device_ptr(&df, "score"), device_ptr(&copied, "score"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&copied, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&copied, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "score"), dataframe_device_ptr(&copied, "score"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&copied, "flag"));
 }
 
 fn test_clone_both_dfs_independently_readable() {
@@ -66,8 +66,8 @@ fn test_select_shares_selected_columns() {
     let selected = df.select(["id", "flag"]).unwrap();
 
     // Selected columns should point to the same GPU memory.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&selected, "id"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&selected, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&selected, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&selected, "flag"));
 }
 
 fn test_select_original_still_usable() {
@@ -90,8 +90,8 @@ fn test_select_reorder_shares_columns() {
     let reordered = df.select(["flag", "id"]).unwrap();
 
     // Even after reordering, the GPU memory is shared.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&reordered, "id"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&reordered, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&reordered, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&reordered, "flag"));
 }
 
 fn test_select_memory_effect_reports_retained_owner_aliases() {
@@ -137,7 +137,7 @@ fn test_select_as_allows_multiple_output_aliases_for_one_owner() {
     let effect = df.select_as_memory_effect([("score", "sum_score"), ("score", "min_score")]).unwrap();
 
     assert_eq!(selected.column_names(), &["sum_score", "min_score"]);
-    assert_eq!(device_ptr(&selected, "sum_score"), device_ptr(&selected, "min_score"));
+    assert_eq!(dataframe_device_ptr(&selected, "sum_score"), dataframe_device_ptr(&selected, "min_score"));
     let FrameMemoryEffect::AliasOfInput { output_columns, .. } = effect else {
         panic!("select_as should report an alias-of-input memory effect");
     };
@@ -162,11 +162,11 @@ fn test_rename_shares_all_column_data() {
     let renamed = df.rename_column("id", "identifier").unwrap();
 
     // The renamed column should share the same GPU memory.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&renamed, "identifier"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&renamed, "identifier"));
 
     // Other columns should also be shared.
-    assert_eq!(device_ptr(&df, "score"), device_ptr(&renamed, "score"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&renamed, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "score"), dataframe_device_ptr(&renamed, "score"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&renamed, "flag"));
 }
 
 fn test_rename_original_unchanged() {
@@ -192,24 +192,24 @@ fn test_with_column_unchanged_columns_shared() {
     let result = df.with_column("extra", new_col).unwrap();
 
     // Existing columns should share GPU memory.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&result, "id"));
-    assert_eq!(device_ptr(&df, "score"), device_ptr(&result, "score"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&result, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&result, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "score"), dataframe_device_ptr(&result, "score"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&result, "flag"));
 }
 
 fn test_with_column_replaced_column_has_new_allocation() {
     let df = sample_df();
-    let original_score_ptr = device_ptr(&df, "score");
+    let original_score_ptr = dataframe_device_ptr(&df, "score");
 
     let new_score = column_from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
     let result = df.with_column("score", new_score).unwrap();
 
     // The replaced column should have a DIFFERENT device pointer (new GPU allocation).
-    assert_ne!(original_score_ptr, device_ptr(&result, "score"));
+    assert_ne!(original_score_ptr, dataframe_device_ptr(&result, "score"));
 
     // Unchanged columns should still be shared.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&result, "id"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&result, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&result, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&result, "flag"));
 }
 
 fn test_with_column_replaced_column_has_correct_data() {
@@ -241,9 +241,9 @@ fn test_many_clones_are_zero_cost() {
     }
 
     // Spot-check a few copies share the same GPU pointers.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&copies[0], "id"));
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&copies[500], "id"));
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&copies[999], "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&copies[0], "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&copies[500], "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&copies[999], "id"));
 }
 
 fn test_many_clones_readable_after_original_dropped() {
@@ -271,8 +271,8 @@ fn test_clone_then_select_shares_columns() {
     let selected = copied.select(["id"]).unwrap();
 
     // All three DataFrames share the "id" column.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&copied, "id"));
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&selected, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&copied, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&selected, "id"));
 }
 
 fn test_rename_then_select_shares_columns() {
@@ -281,8 +281,8 @@ fn test_rename_then_select_shares_columns() {
     let selected = renamed.select(["identifier", "flag"]).unwrap();
 
     // The "identifier" column in selected is the same as "id" in original.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&selected, "identifier"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&selected, "flag"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&selected, "identifier"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&selected, "flag"));
 }
 
 fn test_with_column_then_clone_shares_new_and_old() {
@@ -292,11 +292,11 @@ fn test_with_column_then_clone_shares_new_and_old() {
     let copied = with_extra.clone();
 
     // Original columns are shared across all three DataFrames.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&with_extra, "id"));
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&copied, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&with_extra, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&copied, "id"));
 
     // The new column is shared between with_extra and copied.
-    assert_eq!(device_ptr(&with_extra, "extra"), device_ptr(&copied, "extra"));
+    assert_eq!(dataframe_device_ptr(&with_extra, "extra"), dataframe_device_ptr(&copied, "extra"));
 }
 
 fn test_chained_renames_share_all_data() {
@@ -306,9 +306,9 @@ fn test_chained_renames_share_all_data() {
     let r3 = r2.rename_column("flag", "c").unwrap();
 
     // Despite three renames, all columns share the same GPU data.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&r3, "a"));
-    assert_eq!(device_ptr(&df, "score"), device_ptr(&r3, "b"));
-    assert_eq!(device_ptr(&df, "flag"), device_ptr(&r3, "c"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&r3, "a"));
+    assert_eq!(dataframe_device_ptr(&df, "score"), dataframe_device_ptr(&r3, "b"));
+    assert_eq!(dataframe_device_ptr(&df, "flag"), dataframe_device_ptr(&r3, "c"));
 }
 
 fn test_select_subset_then_with_column_shares_retained() {
@@ -318,8 +318,8 @@ fn test_select_subset_then_with_column_shares_retained() {
     let result = selected.with_column("new_flag", new_flag).unwrap();
 
     // "id" and "score" are shared all the way through.
-    assert_eq!(device_ptr(&df, "id"), device_ptr(&result, "id"));
-    assert_eq!(device_ptr(&df, "score"), device_ptr(&result, "score"));
+    assert_eq!(dataframe_device_ptr(&df, "id"), dataframe_device_ptr(&result, "id"));
+    assert_eq!(dataframe_device_ptr(&df, "score"), dataframe_device_ptr(&result, "score"));
 }
 
 #[test]

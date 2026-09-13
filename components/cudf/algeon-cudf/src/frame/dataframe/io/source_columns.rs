@@ -7,7 +7,7 @@ use crate::{
         types::{DataType, TimestampResolution, TypeId},
     },
     frame::{dataframe::owned::DataFrame, series::Series},
-    internal::hash::{FastHashSet, fast_hash_set_with_capacity},
+    hash::{FastHashSet, fast_hash_set_with_capacity},
     interop::arrow_host::all_null_list_series,
     io::source::{
         LocalParquetSource, PartitionValue, SourceChunk, SourceColumn, SourceColumnRef, SourceReadMode,

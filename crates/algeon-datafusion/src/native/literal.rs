@@ -187,11 +187,6 @@ pub(crate) fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, Capabilit
     }
 }
 
-pub(crate) fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
-    let zero_based_start = start.checked_sub(1)?;
-    zero_based_start.checked_add(length)
-}
-
 pub(crate) fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
     expr.downcast_ref::<Literal>()
         .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))

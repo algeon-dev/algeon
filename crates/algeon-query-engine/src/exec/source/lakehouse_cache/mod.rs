@@ -16,6 +16,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+pub use cache::sanitize_cache_component;
 pub(super) use cache::{
     BackgroundLakehouseCacheFillEnqueue, LakehouseOptimizedBatchCacheEntry, acquire_lakehouse_cache_chunk_read_pin,
     acquire_lakehouse_cache_file_read_pin, acquire_lakehouse_optimized_batch_read_pin,

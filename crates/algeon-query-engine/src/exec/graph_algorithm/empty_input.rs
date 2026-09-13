@@ -4,7 +4,7 @@ use arrow::datatypes::SchemaRef;
 
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionResult, NodeId, QueryError, QueryErrorCode,
-    Result, cudf_query_error, traversal,
+    Result, cudf_query_error, cudf_unsupported_type_error, traversal,
 };
 use crate::{
     datatypes::cudf_dtype_from_arrow_type,
@@ -231,11 +231,11 @@ pub(super) fn empty_graph_result_frame(runtime: &cudf::Runtime, schema: &SchemaR
         .fields()
         .iter()
         .map(|field| {
-            let dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.graph_algorithm.empty_input",
                     "empty graph result column type is not supported by native execution",
+                    error,
                 )
                 .with_fact("column", field.name().as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))

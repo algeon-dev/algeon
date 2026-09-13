@@ -42,10 +42,18 @@ impl StableFnv1a64 {
     }
 }
 
-pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
+#[doc(hidden)]
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hasher = FnvHasher::default();
     hasher.write(bytes);
     hasher.finish()
+}
+
+/// Sums known byte or row counts; `None` when any input is unknown or the sum
+/// overflows `u64`, so an overflowed total is never reported as known.
+#[doc(hidden)]
+pub fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
+    values.into_iter().try_fold(0_u64, |sum, value| sum.checked_add(value?))
 }
 
 impl Default for StableFnv1a64 {

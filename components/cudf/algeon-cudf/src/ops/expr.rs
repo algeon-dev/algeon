@@ -84,10 +84,8 @@ use crate::{
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
-    internal::{
-        hash::{FastHashMap, fast_hash_map_with_capacity},
-        resolve::missing_column_error,
-    },
+    hash::{FastHashMap, fast_hash_map_with_capacity},
+    internal::resolve::missing_column_error,
     runtime::{
         ExecutionOverrides,
         execution_domain::{EnteredExecution, ExecutionDomain},

@@ -1,12 +1,11 @@
 use crate::observability::{AttemptFailureFactKey, AttemptFailureFactValue, AttemptFailureOperation};
-use cudf::testing::device_safety::injected_device_id as observation_injected_device_id;
 
 #[test]
 fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
     let service = runtime_test_service(1, 8);
     let scope = DeviceSafetyTestScope::install([]);
     let device_ordinal = service.device_ledger_reports().unwrap()[0].device_ordinal;
-    let device = observation_injected_device_id(device_ordinal as i32).expect("isolated device health owner");
+    let device = injected_device_id(device_ordinal as i32).expect("isolated device health owner");
     report_device_fault(
         device,
         DeviceFaultKind::FatalDeviceOperation,
