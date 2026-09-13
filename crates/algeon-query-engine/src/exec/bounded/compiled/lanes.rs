@@ -429,10 +429,10 @@ pub fn run_lane_dispatched(
     }
     // Share the run's lanes with coordinator-owned join probe work through
     // an owned dispatcher: probe chunks reuse these same leases (and fork
-    // subsets) via `execute_work` instead of acquiring a second lane set
-    // behind the run's back. Lane-produced frames stay valid because every
-    // lease underpinning them is held for the whole run, on these leases
-    // and the dispatcher's clones alike.
+    // subsets) via `execute_work`, so the run never acquires a second lane
+    // set. Lane-produced frames stay valid because every lease underpinning
+    // them is held for the whole run, on these leases and the dispatcher's
+    // clones alike.
     executor.aggregate_dispatch = Some(AggregateLaneDispatch::new(support, &lane_leases, observation_scope));
     let mut state = CompiledPipelineState::new(&support.pipeline)?;
     let mut flights = CompiledFlightBoard::default();

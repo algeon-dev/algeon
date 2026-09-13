@@ -1270,15 +1270,12 @@ fn literal_union_count_plan() -> QueryPlan {
     builder.finish_with_host_sink(aggregate)
 }
 
-/// E2: a union feeding a stream consumer chains branch frames instead of a full concat copy,
-/// while a union feeding a frame-only consumer keeps the concat. The contract assertion pins
-/// the planning decision (it fails when the union declaration is reverted); serial, inline,
-/// and lane widths agree on the rows end to end. Byte accounting for the streamed path: the
-/// payload retains exactly the branch frames (no output copy is allocated and no concat
-/// kernel runs), and the downstream partial aggregate consumes them frame by frame through
-/// the existing incremental merge. The executor deliberately stays compatible by producing
-/// a frame where the contract requires one, so behavior parity — not a peak counter — is
-/// what this test observes.
+/// A union whose consumer is a streaming aggregate declares a frame-stream output, while a
+/// union whose consumer is a frame-only limit keeps the concatenated frame; both contract
+/// assertions fail when the union declaration is reverted. The streamed form is then executed
+/// serially, inline, and with two lanes, and every run must produce the same count and release
+/// every resource. The test observes planning contracts and result parity; it does not measure
+/// allocations.
 #[test]
 fn union_streaming_output_contract_matches_its_consumer_form() {
     let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
@@ -1345,7 +1342,7 @@ fn union_streaming_output_contract_matches_its_consumer_form() {
     let expected = vec![Some(3)];
     assert_eq!(run(None), expected, "serial baseline counts every branch row once");
     assert_eq!(run(Some(1)), expected, "width 1 streams through the same protocol");
-    assert_eq!(run(Some(2)), expected, "width 2 agrees without a concat copy");
+    assert_eq!(run(Some(2)), expected, "width 2 agrees with the serial baseline");
 }
 
 fn row_grouped_count_plan(path: &Path, schema: &Arc<Schema>) -> QueryPlan {

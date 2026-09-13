@@ -1,3 +1,14 @@
+//! Column-level evidence derived from a plan and its GPU-resident inputs.
+//!
+//! Every numeric field in this module is an upper bound, and `None` means no
+//! bound is known for that quantity; it never means zero. Evidence is derived
+//! per node by [`PlanColumnEvidenceAnalysis`] from parquet metadata, literal
+//! batches, filter predicates, join shape, and the resident evidence supplied
+//! for `GpuResident` sources. The runtime builds that resident evidence from
+//! admitted frames (`algeon_query_runtime::runtime::resident`); the plan
+//! builder and capability shapes consult the uniqueness facts through
+//! [`plan_node_is_unique_on`] and [`partial_plan_node_is_unique_on`].
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use arrow::{
@@ -19,6 +30,15 @@ use crate::{
     util::log_safe_fingerprint,
 };
 
+/// Identifies the physical payload a [`StringPayloadBound`] was measured from:
+/// a parquet column with its selected row groups, a literal or computed column
+/// of one plan node, or a resident input column within an execution scope.
+///
+/// `Resident` is produced by the runtime from an admitted frame whose string
+/// lengths were measured. `PendingResident` replaces the supplied lineages of
+/// a `GpuResident` source whose evidence carries no measured maximum value
+/// length, so a bound without that measurement is never attributed to a
+/// measured frame.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[doc(hidden)]
 pub enum StringPayloadLineage {
@@ -53,6 +73,14 @@ impl StringPayloadLineage {
     }
 }
 
+/// Upper bounds on the string payload of one output column.
+///
+/// The fields are independent: any of them may be `None` while the others are
+/// known. `row_multiplicity_upper_bound` bounds how many output rows one input
+/// row of the payload's origin can be duplicated into; a source column carries
+/// `Some(1)` and a join scales it by the opposite side's row bound. `lineages`
+/// accumulates every payload the bound covers, so unions and joins that sum
+/// bounds also merge lineages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct StringPayloadBound {
@@ -132,6 +160,12 @@ impl StringPayloadBound {
     }
 }
 
+/// Column facts for one plan node's output, keyed by output field name.
+///
+/// `unique_keys` lists column sets on which the node's output rows are unique.
+/// `equivalent_columns` lists column sets whose members carry the same values
+/// on every output row, which lets a bound for one member stand in for
+/// another. The default value claims nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct PlanColumnEvidence {
@@ -143,6 +177,13 @@ pub struct PlanColumnEvidence {
     pub equivalent_columns: Vec<BTreeSet<String>>,
 }
 
+/// Runtime-measured facts about one GPU-resident input, keyed by plan-local
+/// input name in [`ResidentInputEvidenceMap`].
+///
+/// The runtime builds this from the admitted frame: `row_count` is the
+/// frame's row count, `column_evidence` carries measured string payload
+/// bounds with `Resident` lineages, and `producer_execution_scope_fingerprint`
+/// is `None` when the producing attempt was unscoped.
 #[derive(Debug, Clone)]
 #[doc(hidden)]
 pub struct ResidentInputEvidence {
@@ -200,6 +241,11 @@ fn optional_bytes(value: Option<u64>) -> String {
     value.map_or_else(|| "none".to_owned(), |value| value.to_string())
 }
 
+/// Column evidence for every node of one plan, derived from the sources upward.
+///
+/// `resident_outputs` supplies evidence for `GpuResident` sources by input
+/// name and `resident_row_upper_bounds` supplies their row bounds; a node
+/// without an entry reports the default evidence.
 #[derive(Debug, Clone, Default)]
 #[doc(hidden)]
 pub struct PlanColumnEvidenceAnalysis {

@@ -937,6 +937,25 @@ pub(in crate::capability) fn expression_lineage_for_input(
     column_expr_lineage(plan, input_id, expr, "expression_lineage_requires_resolved_input_column")
 }
 
+/// Resolves the identity of one output field of `node_id`.
+///
+/// Lineage records which field a value came from and says nothing about the
+/// value itself; two lineages compare equal when they name the same source
+/// field, the same aggregate group or measure, or the same derived field of
+/// the same node. Filter, sort, and limit forward their input's lineage
+/// unchanged. A projection or join output that is a bare or aliased column
+/// reference resolves to the input field it selects, and a window
+/// pass-through column resolves to the window input. A projection output that
+/// aliases any other expression is rejected as unresolved. Every other
+/// projection expression, every window-computed field, and every union,
+/// edge-normalize, graph, and vector output is `Derived` under its own node
+/// and field index.
+///
+/// A scalar aggregate (no group expressions) retains its input's lineage so a
+/// consumer can check that a scalar measure reads one specific grouped
+/// measure. A grouped measure is identified by its aggregate node alone,
+/// because each of its output rows is a group and no single input field
+/// identifies it.
 pub(in crate::capability) fn output_lineage(
     plan: &QueryPlan,
     node_id: NodeId,

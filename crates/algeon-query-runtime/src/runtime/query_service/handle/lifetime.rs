@@ -452,6 +452,7 @@ impl QueryHandleLifetime {
         let mut state = self.root_context_setup.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         debug_assert_eq!(*state, RootContextSetupState::InFlight);
         *state = RootContextSetupState::Ready;
+        // Unlock before notifying so a woken waiter reacquires the state without waiting on this thread.
         drop(state);
         self.root_context_setup.changed.notify_all();
         self.root_context_setup.async_changed.notify_waiters();
@@ -462,6 +463,7 @@ impl QueryHandleLifetime {
         if *state == RootContextSetupState::InFlight {
             *state = RootContextSetupState::Unclaimed;
         }
+        // Unlock before notifying so a woken waiter reacquires the state without waiting on this thread.
         drop(state);
         self.root_context_setup.changed.notify_all();
         self.root_context_setup.async_changed.notify_waiters();

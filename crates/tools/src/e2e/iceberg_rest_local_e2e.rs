@@ -193,7 +193,7 @@ async fn rest_datafusion_scan_local() {
     let ctx = SessionContext::new_with_config(SessionConfig::new());
     ctx.register_catalog("lake", Arc::new(provider));
 
-    // Step 5: one DataFusion scan end-to-end through the REST backend.
+    // One DataFusion scan through the REST backend.
     let count_sql = format!("SELECT count(*) AS n FROM lake.\"{namespace}\".\"{table}\"");
     let batches = ctx.sql(&count_sql).await.expect("plan count").collect().await.expect("execute count");
     let n = batches

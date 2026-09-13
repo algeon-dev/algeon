@@ -145,7 +145,6 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
                      .lines(lines != 0)
                      .include_nulls(include_nulls != 0);
 
-    // Set column names via metadata.
     if (num_columns > 0) {
       cudf::io::table_metadata meta;
       meta.schema_info.resize(num_columns);

@@ -248,7 +248,6 @@ impl KMeansModel {
             };
             finish_params_call(call_result, params_handle.close(operation))
         })?;
-        drop(centroids_view);
         if !inertia.is_finite() || inertia < 0.0 {
             return Err(invalid_state(operation, "native KMeans fit returned non-finite or negative inertia"));
         }

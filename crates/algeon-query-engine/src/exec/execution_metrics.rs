@@ -171,8 +171,7 @@ impl PartialAggregateCardinality {
 }
 
 /// Latest valid evidence per (node, structural key) and per structural key;
-/// latest wins, as the retained decision history used to be scanned newest
-/// first.
+/// a later insert replaces the earlier entry for the same key.
 #[derive(Debug, Default)]
 struct PartialAggregateEvidence {
     by_node: HashMap<(String, String), PartialAggregateCardinality>,

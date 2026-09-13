@@ -330,6 +330,7 @@ impl QueryService {
             }
             let sweep = self.sweep_expired_queued_requests_locked(&mut state);
             if !sweep.is_empty() {
+                // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
                 drop(state);
                 sweep.finish();
                 state = match self.inner.admission.lock() {

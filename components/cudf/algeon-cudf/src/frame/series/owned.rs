@@ -137,36 +137,23 @@ impl Series {
         ExecutionDomain::same_provenance(self.column.execution_domain(), other.column.execution_domain())
     }
 
-    /// Advanced: drop to the core `Column` type.
-    ///
-    /// Returns a reference to the underlying `Column`. Use this when you need
-    /// to call low-level column operations that are not exposed on `Series`.
+    /// Borrows the underlying `Column` for operations not exposed on `Series`.
     pub fn as_column(&self) -> &Column {
         &self.column
     }
 
-    /// Returns a reference to the shared `Arc<Column>`.
-    ///
-    /// Crate-internal: used by `DataFrame` to clone the Arc into its column map.
-    /// External callers should use [`into_inner`](Self::into_inner) to take
-    /// ownership of the `Arc<Column>`.
+    /// Borrows the shared `Arc<Column>` so `DataFrame` can clone it into its
+    /// column map.
     pub(in crate::frame) fn column_arc(&self) -> &Arc<Column> {
         &self.column
     }
 
-    /// Clone and return the shared `Arc<Column>` without consuming the `Series`.
-    ///
-    /// This is the ownership-preserving accessor for callers that need to keep
-    /// a retained handle to the underlying column while also keeping the
-    /// `Series` wrapper alive.
+    /// Clones the shared `Arc<Column>` without consuming the `Series`.
     pub fn arc(&self) -> Arc<Column> {
         Arc::clone(&self.column)
     }
 
-    /// Consume this Series and return the underlying `Arc<Column>`.
-    ///
-    /// This is the idiomatic way to unwrap a Series when you no longer need
-    /// the Series wrapper.
+    /// Consumes the `Series` and returns the underlying `Arc<Column>`.
     pub fn into_inner(self) -> Arc<Column> {
         self.column
     }

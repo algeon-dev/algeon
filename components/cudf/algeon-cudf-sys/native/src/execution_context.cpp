@@ -153,9 +153,8 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
     return CUDF_ERROR_NULL;
   }
 
-  // Step 1: Null-options fast path; resolve the current device's defaults and
-  // return. This must come before any struct-field access since there is no
-  // struct.
+  // With no options struct there are no fields to read: resolve the calling
+  // thread's current device and its defaults.
   if (options == nullptr) {
     int32_t dev                        = 0;
     cudf_status_t const current_status = get_current_device_or_error(&dev);
@@ -172,10 +171,10 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
     return CUDF_SUCCESS;
   }
 
-  // Step 2: Validate the options struct before reading any fields beyond
-  // struct_size.  This prevents reading past a caller's valid prefix (ABI
-  // versioning) and avoids side-effects (e.g. device switching) on invalid
-  // data.
+  // ABI prefix rule: `struct_size` is the only field a caller built against an
+  // older layout is guaranteed to have written, so it is validated before any
+  // other field is read. Rejecting invalid options here also keeps them from
+  // switching the device below.
   if (options->struct_size < sizeof(cudf_exec_options_t)) {
     set_error("exec options struct_size is smaller than cudf_exec_options_t");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -184,10 +183,9 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
     return status;
   }
 
-  // Step 3: Resolve device.  If options carries CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
-  // activate that device via an RAII guard stored in `out` (restored when
-  // `out` is destroyed at the caller's scope exit).  Otherwise use whatever
-  // device is current on the calling thread.
+  // CUDF_EXEC_FLAG_DEVICE_EXPLICIT activates the requested device through the
+  // RAII guard stored in `out`, which restores the previous device when `out`
+  // is destroyed; otherwise the calling thread's current device is used.
   if ((options->flags & CUDF_EXEC_FLAG_DEVICE_EXPLICIT) != 0) {
     cudf_status_t const device_status = out->guard.activate(options->device);
     if (device_status != CUDF_SUCCESS) { return device_status; }
@@ -199,14 +197,14 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
     out->device = dev;
   }
 
-  // Step 4: Resolve stream and MR defaults on the now-active device.
+  // The default stream and memory resource belong to the active device, so
+  // they are resolved only after device activation.
   out->stream = cudf::get_default_stream();
   out->mr_raw = cudf_tracked_current_device_resource_raw();
   out->mr     = make_exec_mr_ref(out->mr_raw);
   out->mr_lifetime =
     make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_raw(out->mr_raw), out->mr);
 
-  // Step 5: Apply optional stream/MR overrides from the caller.
   if (options->stream != nullptr) {
     out->stream          = cudf_stream_view_from_handle(options->stream);
     out->stream_lifetime = cudf_stream_lifetime_from_handle(options->stream);

@@ -285,13 +285,6 @@ pub(crate) fn fit_transform_into(
             (Ok(()), close) => close,
         }
     })?;
-    drop(transformed_view);
-    drop(components_view);
-    drop(explained_variance_view);
-    drop(explained_variance_ratio_view);
-    drop(singular_values_view);
-    drop(mean_view);
-    drop(noise_variance_view);
     outputs.validate_native_outputs(operation)?;
 
     Ok(PcaFitTransform { rows, columns, n_components: params.n_components })

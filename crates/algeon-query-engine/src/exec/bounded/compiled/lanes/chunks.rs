@@ -28,12 +28,11 @@ use crate::{
 /// The dispatch owns its lane leases (cloned `Arc`s into the same attempt
 /// auxiliary permits and fork subsets the run holds), so it can be moved
 /// into executors and shared by reference without borrowing the run's
-/// lease table. Coordinator-owned join probe work reuses the run's
-/// dispatcher through the same [`execute_work`](Self::execute_work) window
-/// instead of acquiring a second lane set behind the run's back, and
-/// final-sort top-k candidates do the same: the name keeps its aggregate
-/// origin, but the dispatcher carries any owned lane work with stable
-/// ordinals, readiness events, and exactly-once ordered commit.
+/// lease table. Coordinator-owned join probe work and final-sort top-k
+/// candidates reuse the run's dispatcher through the same
+/// [`execute_work`](Self::execute_work) window, so a run never acquires a
+/// second lane set. Every owned work item carries a stable ordinal, a
+/// readiness event, and exactly-once ordered commit.
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct AggregateLaneDispatch {
     context: Arc<ExecutionContext>,
@@ -60,11 +59,11 @@ struct ChunkFlight<O> {
 
 /// One lane worker's private output with its device-side readiness.
 ///
-/// The worker records `readiness` on its lane stream after the last work enqueue instead of
-/// host-synchronizing, so the pool slot recycles while the lane's work drains. The coordinator
-/// synchronizes the head ordinal's event before commit, which observes the same completion
-/// the worker fence used to. `readiness` is `None` only when the worker already fell back to
-/// a host fence because the event itself could not be recorded; that output is verified.
+/// On success the worker records `readiness` on its lane stream after the last work enqueue
+/// and returns without host-synchronizing, so the pool slot recycles while the lane's work
+/// drains. The coordinator synchronizes that event before committing the head ordinal.
+/// `readiness` is `None` when the event could not be recorded; the worker then host-fenced
+/// its stream before returning, so the output is already verified.
 struct LaneWorkOutput<O> {
     output: O,
     readiness: Option<CudaEvent>,
@@ -281,9 +280,10 @@ impl AggregateLaneDispatch {
                 return Err(error);
             }
             while !exhausted && flights.jobs.len() + ready.len() < self.lanes.len() {
-                // A pull failure must still observe committed-but-unmerged
-                // outputs before aborting, or a late lane failure lands on
-                // an unrelated later fence. In-flight jobs drain through
+                // Before a pull failure aborts the run, every completed,
+                // uncommitted output has its readiness observed so that a
+                // late lane failure is attributed to its own ordinal and not
+                // to an unrelated later fence. In-flight jobs drain through
                 // their join below.
                 let input = match next(state, execution) {
                     Ok(input) => input,
@@ -370,10 +370,11 @@ impl AggregateLaneDispatch {
                 return Err(error);
             }
             while let Some(ready_output) = ready.remove(&committed) {
-                // The head ordinal's readiness observes the same completion the worker fence
-                // used to; a late lane failure surfaces here with its ordinal facts and the
-                // run aborts without committing this or any later ordinal. Source retry cannot
-                // replay input after any of its partials entered coordinator state.
+                // Synchronizing the head ordinal's readiness is the coordinator's completion
+                // observation for that lane's work: a late lane failure is reported here with
+                // its ordinal facts, and the run aborts without committing this or any later
+                // ordinal. Source retry cannot replay input after any of its partials entered
+                // coordinator state.
                 if let Some(readiness) = ready_output.output.readiness
                     && let Err(sync_error) = readiness.synchronize()
                 {
@@ -395,15 +396,15 @@ impl AggregateLaneDispatch {
     }
 }
 
-/// Completes one lane worker's chunk without host-synchronizing.
+/// Completes one lane worker's chunk.
 ///
 /// On success the worker records a readiness event on its lane stream after the last work
-/// enqueue; the coordinator synchronizes the head ordinal before commit. Cross-stream
-/// consumers order device-side through the retained provenance fences, so no lane blocks on
-/// its own stream. When the event itself cannot be recorded the worker falls back to the
-/// previous host fence rather than shipping unverified success. Work failures keep the
-/// previous host fence as well, preserving the exact error-surfacing behavior on the rare
-/// path while the steady-state success path never blocks a pool slot on GPU drain.
+/// enqueue and returns without host-synchronizing; the coordinator synchronizes the head
+/// ordinal before commit, and cross-stream consumers order device-side through the retained
+/// provenance fences. When the event cannot be recorded, the worker host-fences its stream
+/// and returns `readiness: None`, so success is never reported for unverified work. A work
+/// failure also host-fences the stream: the original error is returned, and a fault observed
+/// by that fence is recorded as a cleanup failure.
 fn finish_lane_work<O>(
     execution: &BoundedExecutionAttempt<'_>,
     result: Result<O>,
@@ -423,9 +424,8 @@ fn finish_lane_work<O>(
                 Ok(event) => Some(event),
                 Err(record_error) => {
                     // Event creation or recording can report a prior asynchronous error, so the
-                    // record failure is never silently dropped: it is reported like the fence
-                    // fallback warnings, then the previous host fence verifies the output before
-                    // it ships. A failed fallback fails the chunk with the fence error.
+                    // record failure is reported before the host fence verifies the output. A
+                    // failed fence fails the chunk with the fence error.
                     eprintln!(
                         "[query_engine::finish_lane_work] warning: failed to record chunk readiness on the lane stream, falling back to host synchronization: {record_error}"
                     );

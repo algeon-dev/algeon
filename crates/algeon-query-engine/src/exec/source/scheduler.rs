@@ -354,10 +354,9 @@ fn read_local_parquet_chunk_worker(
             .and_then(|frame| {
                 // Device-side consumers order through the frame's retained provenance fences;
                 // the worker records readiness instead of blocking on its stream so the pool
-                // slot recycles while decode drains. A record failure is never silently dropped:
-                // like the fence fallback warnings it is reported, then the previous host fence
-                // verifies the frame before it ships. Without a readiness event the worker
-                // falls back to that host fence rather than shipping unverified success.
+                // slot recycles while decode drains. When the event cannot be recorded, the
+                // record failure is reported and the worker host-fences its stream before the
+                // frame ships, so success is never reported for an unverified frame.
                 match ReadinessEvent::record_on_worker_stream(&context) {
                     Ok(readiness) => Ok((frame, Some(readiness))),
                     Err(record_error) => {
@@ -597,9 +596,9 @@ impl ScheduledLocalParquetRead {
         };
         match result.frame {
             Ok((frame, readiness)) => {
-                // The commit point observes the same completion the worker fence used to.
-                // Late decode failures surface here with this chunk's facts instead of
-                // silently deferring to an unrelated later host synchronize.
+                // Synchronizing the readiness event at the commit point is the coordinator's
+                // completion observation for this chunk, so a late decode failure is reported
+                // with this chunk's facts and not at an unrelated later host synchronize.
                 if let Some(readiness) = readiness {
                     readiness.synchronize_for_commit(&chunk)?;
                 }

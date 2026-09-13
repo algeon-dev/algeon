@@ -42,6 +42,13 @@ pub struct BruteForceIndex<'data> {
 }
 
 impl<'data> BruteForceIndex<'data> {
+    /// Builds an index over `dataset`, a contiguous row-major or column-major
+    /// matrix on the same exact runtime binding and CUDA device as `resources`.
+    ///
+    /// The index borrows `dataset` for `'data` and retains `resources`, so the
+    /// dataset memory stays valid until the index is closed or dropped. A
+    /// failed native build destroys the partial index before the error is
+    /// returned.
     pub fn build(
         resources: &CuvsResources,
         dataset: &ValidatedDeviceTensor<'data>,
@@ -71,6 +78,15 @@ impl<'data> BruteForceIndex<'data> {
         })
     }
 
+    /// Searches `queries` for their `k` nearest indexed rows and writes the
+    /// results into `neighbors` and `distances`.
+    ///
+    /// `k` must be nonzero and at most the indexed row count. `queries` must
+    /// have the index's column count and share its binding and device. Both
+    /// output buffers must contain exactly `n_queries * k` elements, laid out
+    /// as `[n_queries, k]` row-major. Success is returned only after the
+    /// native outputs pass validation on the buffers' execution binding: every
+    /// neighbor index lies in `0..rows()` and every distance is finite.
     pub fn search_into(
         &self,
         queries: &ValidatedDeviceTensor<'_>,
@@ -128,8 +144,6 @@ impl<'data> BruteForceIndex<'data> {
                 )
             }
         })?;
-        drop(neighbors_view);
-        drop(distances_view);
         let indexed_rows = i64::try_from(self.rows)
             .map_err(|_| invalid_input(operation, "indexed row count exceeds the Int64 neighbor range"))?;
         neighbors.validate_native_index_range(0, indexed_rows, operation)?;
@@ -145,6 +159,11 @@ impl<'data> BruteForceIndex<'data> {
         self.columns
     }
 
+    /// Destroys the native index and returns a destroy failure to the caller.
+    ///
+    /// `Drop` performs the same destroy but discards its result. When this
+    /// method fails, the handle is retained, so the drop of `self` on the way
+    /// out retries the destroy once and discards that second result.
     pub fn close(mut self) -> Result<()> {
         self.close_inner("BruteForceIndex::close")
     }
