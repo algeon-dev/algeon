@@ -4,6 +4,7 @@ assert_not_impl_any!(cuvs::CuvsResources: Send, Sync);
 assert_not_impl_any!(cuvs::BruteForceIndex<'static>: Send, Sync);
 assert_not_impl_any!(cuvs::KMeansModel: Send, Sync);
 assert_not_impl_any!(cuvs::IvfFlatIndex: Send, Sync);
+assert_not_impl_any!(cuvs::IvfPqIndex: Send, Sync);
 assert_not_impl_any!(cuvs::PreparedTensorLease<'static, 'static, 'static, f32>: Send, Sync);
 assert_not_impl_any!(cuvs::PreparedValidatedTensorLease<'static, 'static, 'static>: Send, Sync);
 
@@ -47,6 +48,24 @@ fn ivf_flat_uses_pinned_calls_and_validates_sentinel_aware_outputs() {
         "cuvsIvfFlatSearchParamsCreate",
     ] {
         assert!(source.contains(required), "IVF-Flat must use pinned {required}");
+    }
+    assert!(source.contains("neighbors.validate_native_index_range_or_sentinel("));
+    assert!(
+        source.contains("distances.validate_native_distances_for_valid_neighbors(neighbors, i64::MAX, operation)?")
+    );
+}
+
+#[test]
+fn ivf_pq_uses_pinned_calls_and_validates_sentinel_aware_outputs() {
+    let source = include_str!("../src/ivf_pq.rs");
+    for required in [
+        "cuvsIvfPqBuild(",
+        "cuvsIvfPqSearch(",
+        "cuvsIvfPqIndexDestroy(",
+        "cuvsIvfPqIndexParamsCreate",
+        "cuvsIvfPqSearchParamsCreate",
+    ] {
+        assert!(source.contains(required), "IVF-PQ must use pinned {required}");
     }
     assert!(source.contains("neighbors.validate_native_index_range_or_sentinel("));
     assert!(

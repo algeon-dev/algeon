@@ -14,10 +14,10 @@ relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
 session, with no separate vector store and no copy to keep in sync.
 
-Six functions are available: exact brute-force kNN (`cuvs_brute_force_knn`),
-query-local approximate IVF-Flat search (`cuvs_ivf_flat`), pairwise distances
-(`cuvs_pairwise_distance`), per-row vector selection (`cuvs_top_k`),
-KMeans clustering (`cuvs_kmeans`), and PCA (`cuvs_pca`). They execute on
+Seven functions are available: exact brute-force kNN (`cuvs_brute_force_knn`),
+query-local approximate IVF-Flat (`cuvs_ivf_flat`) and IVF-PQ (`cuvs_ivf_pq`)
+search, pairwise distances (`cuvs_pairwise_distance`), per-row vector selection
+(`cuvs_top_k`), KMeans clustering (`cuvs_kmeans`), and PCA (`cuvs_pca`). They execute on
 GPU when the prerequisites in [Execution](#execution) are met. Persistent
 indexes are not exposed.
 
@@ -76,10 +76,10 @@ executing GPU work. At runtime, `cuvs_*` calls use the admitted query memory
 domain, and its allocator enforces the configured cap; an input that does not
 fit that cap fails with a typed allocation error rather than spilling.
 
-cuVS SQL has no persistent cross-statement cache for brute-force or IVF-Flat
-indexes, KMeans models, PCA transforms, or result relations. Pairwise distances
+cuVS SQL has no persistent cross-statement cache for brute-force, IVF-Flat, or
+IVF-PQ indexes, KMeans models, PCA transforms, or result relations. Pairwise distances
 and Top-K selections likewise produce query-local results. Exact kNN and
-IVF-Flat each build and destroy an index within one evaluated statement.
+IVF-Flat and IVF-PQ each build and destroy an index within one evaluated statement.
 KMeans fits its model, and PCA fits and transforms its input.
 
 The server's source and graph caches do not cache cuVS artifacts. See

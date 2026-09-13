@@ -19,7 +19,7 @@ pub use logical::CuvsLogicalNode;
 pub use options::{CuvsValidatedOptions, CuvsVectorRelationBinding};
 pub use query_planner::{AlgeonQueryPlanner, CuvsExtensionPlanner};
 pub use registry::{
-    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_IVF_FLAT_FUNCTION, CUVS_KMEANS_FUNCTION,
+    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION, CUVS_KMEANS_FUNCTION,
     CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION,
     CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,
     CuvsOptionValidationError, CuvsOutputContract, CuvsRelationRole, CuvsVectorElementType, canonicalize_cuvs_options,

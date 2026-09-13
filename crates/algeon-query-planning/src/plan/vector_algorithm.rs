@@ -13,6 +13,7 @@ use super::{DataType, Field, NodeId, Schema, SchemaRef};
 /// Public SQL names for the query-local cuVS operations.
 pub const CUVS_BRUTE_FORCE_KNN_FUNCTION: &str = "cuvs_brute_force_knn";
 pub const CUVS_IVF_FLAT_FUNCTION: &str = "cuvs_ivf_flat";
+pub const CUVS_IVF_PQ_FUNCTION: &str = "cuvs_ivf_pq";
 pub const CUVS_KMEANS_FUNCTION: &str = "cuvs_kmeans";
 pub const CUVS_PCA_FUNCTION: &str = "cuvs_pca";
 pub const CUVS_PAIRWISE_DISTANCE_FUNCTION: &str = "cuvs_pairwise_distance";
@@ -368,6 +369,41 @@ const IVF_FLAT_OPTIONS: &[CuvsOptionDefinition] = &[
         description: "Fraction of the dataset used for training centers; native default 0.5.",
     },
 ];
+const IVF_PQ_METRICS: &[&str] = KNN_METRICS;
+const IVF_PQ_CODEBOOK_KINDS: &[&str] = &["per_subspace", "per_cluster"];
+const IVF_PQ_OPTIONS: &[CuvsOptionDefinition] = &[
+    IVF_FLAT_OPTIONS[0],
+    IVF_FLAT_OPTIONS[1],
+    IVF_FLAT_OPTIONS[2],
+    CuvsOptionDefinition {
+        name: "metric",
+        required: true,
+        kind: CuvsOptionKind::Enum { values: IVF_PQ_METRICS, default: None },
+        description: "Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first.",
+    },
+    IVF_FLAT_OPTIONS[4],
+    IVF_FLAT_OPTIONS[5],
+    IVF_FLAT_OPTIONS[6],
+    IVF_FLAT_OPTIONS[7],
+    CuvsOptionDefinition {
+        name: "pq_dim",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 0, maximum: u32::MAX as u64, default: Some(0) },
+        description: "Compressed dimensions; native default 0 selects the dimension automatically. pq_dim * pq_bits must be divisible by 8.",
+    },
+    CuvsOptionDefinition {
+        name: "pq_bits",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 4, maximum: 8, default: Some(8) },
+        description: "Bits per PQ code; native default 8.",
+    },
+    CuvsOptionDefinition {
+        name: "codebook_kind",
+        required: false,
+        kind: CuvsOptionKind::Enum { values: IVF_PQ_CODEBOOK_KINDS, default: Some("per_subspace") },
+        description: "PQ codebook training scope; native default per_subspace.",
+    },
+];
 const PAIRWISE_OPTIONS: &[CuvsOptionDefinition] = &[
     CuvsOptionDefinition {
         name: "x",
@@ -669,6 +705,7 @@ const PCA_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
 pub enum CuvsOperation {
     BruteForceKnn,
     IvfFlat,
+    IvfPq,
     PairwiseDistance,
     TopK,
     KMeans,
@@ -743,6 +780,35 @@ ORDER BY query_ordinal, rank;"#,
             "Results are approximate unless all lists are probed. Fewer than k neighbors may be returned for a query; missing (query, rank) rows are omitted and valid ranks remain contiguous.",
             "The evaluated dataset must be non-empty, k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.",
             "Dataset and query dimensions and element types must match. Cosine requires at least two dimensions.",
+        ],
+    },
+    CuvsOperationDescriptor {
+        operation: CuvsOperation::IvfPq,
+        sql_function_name: CUVS_IVF_PQ_FUNCTION,
+        display_name: "IVF-PQ",
+        summary: "Query-local product-quantized inverted-file nearest-neighbor search.",
+        use_this_when: "Use this when a query-local compressed index can reduce vector search memory, subject to lossy recall.",
+        relation_roles: KNN_RELATIONS,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        output_contract: CuvsOutputContract::KnnNeighbors,
+        options: IVF_PQ_OPTIONS,
+        output_fields: KNN_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT *
+FROM cuvs_ivf_pq(
+  dataset => (SELECT id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT id, d0, d1 FROM query_vectors),
+  k => 8,
+  metric => 'l2_expanded',
+  n_lists => 16,
+  n_probes => 16,
+  pq_dim => 2
+)
+ORDER BY query_ordinal, rank;"#,
+        limitations: &[
+            "Builds and destroys its query-local index within the statement; no index persists across statements.",
+            "Product quantization is lossy even when all lists are probed. Missing neighbors are omitted and valid ranks remain contiguous.",
+            "The dataset must be non-empty; k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.",
+            "Dataset and query dimensions and element types must match. Cosine requires at least two dimensions. Nonzero pq_dim * pq_bits must be divisible by 8; dimensions are padded when needed.",
         ],
     },
     CuvsOperationDescriptor {
@@ -933,13 +999,21 @@ pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<
         };
         validate_option_value(option, value).map_err(|error| error.for_argument(option.name))?;
     }
-    if operation == CuvsOperation::IvfFlat {
+    if matches!(operation, CuvsOperation::IvfFlat | CuvsOperation::IvfPq) {
         let n_probes = object.get("n_probes").and_then(Value::as_u64).expect("validated n_probes");
         let n_lists = object.get("n_lists").and_then(Value::as_u64).expect("validated n_lists");
         if n_probes > n_lists {
             return Err(
                 option_error("missing_or_invalid_option", "n_probes must not exceed n_lists").for_argument("n_probes")
             );
+        }
+    }
+    if operation == CuvsOperation::IvfPq {
+        let pq_dim = object.get("pq_dim").and_then(Value::as_u64).expect("validated pq_dim");
+        let pq_bits = object.get("pq_bits").and_then(Value::as_u64).expect("validated pq_bits");
+        if pq_dim != 0 && (pq_dim * pq_bits) % 8 != 0 {
+            return Err(option_error("missing_or_invalid_option", "pq_dim * pq_bits must be divisible by 8")
+                .for_argument("pq_dim"));
         }
     }
     Ok(Value::Object(object))
@@ -1058,6 +1132,8 @@ pub enum VectorAlgorithm {
     BruteForceKnn,
     /// Query-local IVF-Flat approximate nearest-neighbor search.
     IvfFlat,
+    /// Query-local IVF-PQ compressed nearest-neighbor search.
+    IvfPq,
     /// Pairwise metric values between two relations.
     PairwiseDistance,
     /// Ranked values selected within each input vector.
@@ -1074,6 +1150,7 @@ impl VectorAlgorithm {
         match self {
             Self::BruteForceKnn => "brute_force_knn",
             Self::IvfFlat => "ivf_flat",
+            Self::IvfPq => "ivf_pq",
             Self::PairwiseDistance => "pairwise_distance",
             Self::TopK => "top_k",
             Self::KMeans => "kmeans",
@@ -1260,6 +1337,63 @@ impl VectorIvfFlatParams {
                 .option("kmeans_trainset_fraction")
                 .and_then(|option| option.kind.default_f64())
                 .expect("IVF-Flat training fraction default"),
+        }
+    }
+}
+
+/// PQ codebook training scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorIvfPqCodebookKind {
+    PerSubspace,
+    PerCluster,
+}
+
+/// Query-local IVF-PQ build and search parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorIvfPqParams {
+    pub dataset: VectorRelationBinding,
+    pub queries: VectorRelationBinding,
+    pub k: usize,
+    pub metric: VectorDistanceMetric,
+    pub n_lists: u32,
+    pub n_probes: u32,
+    pub kmeans_n_iters: u32,
+    pub kmeans_trainset_fraction: f64,
+    pub pq_dim: u32,
+    pub pq_bits: u32,
+    pub codebook_kind: VectorIvfPqCodebookKind,
+}
+
+impl VectorIvfPqParams {
+    pub fn new(
+        dataset: VectorRelationBinding,
+        queries: VectorRelationBinding,
+        k: usize,
+        metric: VectorDistanceMetric,
+        n_lists: u32,
+    ) -> Self {
+        let descriptor = CuvsOperation::IvfPq.descriptor();
+        let int = |name| {
+            descriptor
+                .option(name)
+                .and_then(|option| option.kind.default_u64())
+                .expect("canonical IVF-PQ integer default") as u32
+        };
+        Self {
+            dataset,
+            queries,
+            k,
+            metric,
+            n_lists,
+            n_probes: int("n_probes"),
+            kmeans_n_iters: int("kmeans_n_iters"),
+            kmeans_trainset_fraction: descriptor
+                .option("kmeans_trainset_fraction")
+                .and_then(|option| option.kind.default_f64())
+                .expect("canonical IVF-PQ fraction default"),
+            pq_dim: int("pq_dim"),
+            pq_bits: int("pq_bits"),
+            codebook_kind: VectorIvfPqCodebookKind::PerSubspace,
         }
     }
 }
@@ -1473,6 +1607,8 @@ pub enum VectorAlgorithmParams {
     BruteForceKnn(VectorBruteForceKnnParams),
     /// Query-local IVF-Flat search parameters.
     IvfFlat(VectorIvfFlatParams),
+    /// Query-local IVF-PQ search parameters.
+    IvfPq(VectorIvfPqParams),
     /// Pairwise metric values between two relations.
     PairwiseDistance(VectorPairwiseDistanceParams),
     /// Ranked values selected within each input vector.
@@ -1490,6 +1626,7 @@ impl VectorAlgorithmParams {
             (self, algorithm),
             (Self::BruteForceKnn(_), VectorAlgorithm::BruteForceKnn)
                 | (Self::IvfFlat(_), VectorAlgorithm::IvfFlat)
+                | (Self::IvfPq(_), VectorAlgorithm::IvfPq)
                 | (Self::PairwiseDistance(_), VectorAlgorithm::PairwiseDistance)
                 | (Self::TopK(_), VectorAlgorithm::TopK)
                 | (Self::KMeans(_), VectorAlgorithm::KMeans)
@@ -1502,6 +1639,7 @@ impl VectorAlgorithmParams {
         match self {
             Self::BruteForceKnn(params) => Box::new([&params.dataset, &params.queries].into_iter()),
             Self::IvfFlat(params) => Box::new([&params.dataset, &params.queries].into_iter()),
+            Self::IvfPq(params) => Box::new([&params.dataset, &params.queries].into_iter()),
             Self::PairwiseDistance(params) => Box::new([&params.x, &params.y].into_iter()),
             Self::TopK(params) => Box::new(std::iter::once(&params.input)),
             Self::KMeans(params) => Box::new(std::iter::once(&params.input).chain(params.initial_centroids.iter())),
@@ -1517,6 +1655,10 @@ impl VectorAlgorithmParams {
                 params.queries.input = remap(params.queries.input);
             },
             Self::IvfFlat(params) => {
+                params.dataset.input = remap(params.dataset.input);
+                params.queries.input = remap(params.queries.input);
+            },
+            Self::IvfPq(params) => {
                 params.dataset.input = remap(params.dataset.input);
                 params.queries.input = remap(params.queries.input);
             },
@@ -1650,6 +1792,31 @@ mod tests {
             let error = canonicalize_cuvs_options(CuvsOperation::IvfFlat, &invalid.to_string()).unwrap_err();
             assert_eq!(error.argument(), Some("kmeans_trainset_fraction"));
         }
+    }
+
+    #[test]
+    fn ivf_pq_rejects_invalid_bit_packing_and_probe_count_with_argument_attribution() {
+        let mut raw = json!({
+            "dataset": {"id": "id", "vector": {"columns": ["d0", "d1"]}},
+            "queries": {"id": "id", "vector": {"columns": ["d0", "d1"]}},
+            "k": 1, "metric": "l2_expanded", "n_lists": 2,
+            "n_probes": 2, "pq_dim": 1, "pq_bits": 5
+        });
+        let error = canonicalize_cuvs_options(CuvsOperation::IvfPq, &raw.to_string()).unwrap_err();
+        assert_eq!(error.argument(), Some("pq_dim"));
+        assert!(error.message().contains("divisible by 8"));
+        raw["pq_dim"] = json!(8);
+        raw["n_probes"] = json!(3);
+        assert_eq!(
+            canonicalize_cuvs_options(CuvsOperation::IvfPq, &raw.to_string()).unwrap_err().argument(),
+            Some("n_probes")
+        );
+        raw["n_probes"] = json!(2);
+        raw["pq_bits"] = json!(9);
+        assert_eq!(
+            canonicalize_cuvs_options(CuvsOperation::IvfPq, &raw.to_string()).unwrap_err().argument(),
+            Some("pq_bits")
+        );
     }
 
     #[test]

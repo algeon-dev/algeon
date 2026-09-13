@@ -1,10 +1,11 @@
-use std::{ptr, ptr::NonNull};
+use std::ptr;
 
 use crate::{
     brute_force::{matrix_layout, validate_matrix_binding},
     device::{DeviceBuffer, MatrixLayout, OwnedFloat32Matrix, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
     error::{Result, check_cuvs, invalid_input, invalid_state, require_nonzero},
+    params_handle::ParamsHandle,
     resources::CuvsResources,
 };
 
@@ -84,55 +85,27 @@ pub struct KMeansModel {
     fit: KMeansFit,
 }
 
-struct ParamsHandle {
-    raw: Option<NonNull<cuvs_sys::cuvsKMeansParams>>,
-}
-
-impl ParamsHandle {
-    fn new(params: &KMeansParams, operation: &'static str) -> Result<Self> {
-        validate_params(params, operation)?;
-        let mut raw = ptr::null_mut();
-        unsafe { check_cuvs(cuvs_sys::cuvsKMeansParamsCreate(&mut raw), operation)? };
-        let raw = NonNull::new(raw).ok_or_else(|| invalid_state(operation, "cuVS returned null KMeans params"))?;
-        unsafe {
-            let native = raw.as_ptr();
-            (*native).metric = params.metric.raw();
-            (*native).n_clusters = params.n_clusters as i32;
-            (*native).init = params.init.raw();
-            (*native).max_iter = params.max_iter;
-            (*native).tol = params.tol;
-            (*native).n_init = params.n_init;
-            (*native).hierarchical = false;
-            (*native).device_buffer_samples = 0;
-            (*native).init_size = 0;
-        }
-        Ok(Self { raw: Some(raw) })
+fn create_params(params: &KMeansParams, operation: &'static str) -> Result<ParamsHandle<cuvs_sys::cuvsKMeansParams>> {
+    validate_params(params, operation)?;
+    let handle = ParamsHandle::new(
+        cuvs_sys::cuvsKMeansParamsCreate,
+        cuvs_sys::cuvsKMeansParamsDestroy,
+        operation,
+        "KMeans params",
+    )?;
+    unsafe {
+        let native = handle.as_ptr();
+        (*native).metric = params.metric.raw();
+        (*native).n_clusters = params.n_clusters as i32;
+        (*native).init = params.init.raw();
+        (*native).max_iter = params.max_iter;
+        (*native).tol = params.tol;
+        (*native).n_init = params.n_init;
+        (*native).hierarchical = false;
+        (*native).device_buffer_samples = 0;
+        (*native).init_size = 0;
     }
-
-    fn as_ptr(&self, operation: &'static str) -> Result<cuvs_sys::cuvsKMeansParams_t> {
-        self.raw.map(NonNull::as_ptr).ok_or_else(|| invalid_state(operation, "KMeans params have already been closed"))
-    }
-
-    fn close(&mut self, operation: &'static str) -> Result<()> {
-        let Some(raw) = self.raw.take() else {
-            return Ok(());
-        };
-        let result = unsafe { check_cuvs(cuvs_sys::cuvsKMeansParamsDestroy(raw.as_ptr()), operation) };
-        if result.is_err() {
-            self.raw = Some(raw);
-        }
-        result
-    }
-}
-
-impl Drop for ParamsHandle {
-    fn drop(&mut self) {
-        if let Some(raw) = self.raw.take() {
-            unsafe {
-                let _ = cuvs_sys::cuvsKMeansParamsDestroy(raw.as_ptr());
-            }
-        }
-    }
+    Ok(handle)
 }
 
 impl KMeansModel {
@@ -229,14 +202,14 @@ impl KMeansModel {
         let mut inertia = 0.0;
         let mut n_iter = 0;
         resources.with_native(operation, |native| {
-            let mut params_handle = ParamsHandle::new(&params, operation)?;
+            let mut params_handle = create_params(&params, operation)?;
             let mut data_tensor = DlpackTensor::from_const(data.as_tensor());
             let mut centroids_tensor = DlpackTensor::from_mut(&mut centroids_view);
             let call_result = unsafe {
                 check_cuvs(
                     cuvs_sys::cuvsKMeansFit(
                         native,
-                        params_handle.as_ptr(operation)?,
+                        params_handle.as_ptr(),
                         data_tensor.as_mut_ptr(),
                         ptr::null_mut(),
                         centroids_tensor.as_mut_ptr(),
@@ -292,7 +265,7 @@ impl KMeansModel {
         let centroids_view = self.centroids.as_validated_tensor(&self.resources)?;
         let mut inertia = 0.0;
         self.resources.with_native(operation, |native| {
-            let mut params_handle = ParamsHandle::new(&self.params, operation)?;
+            let mut params_handle = create_params(&self.params, operation)?;
             let mut data_tensor = DlpackTensor::from_const(data.as_tensor());
             let mut centroids_tensor = DlpackTensor::from_const(centroids_view.as_tensor());
             let mut labels_tensor = DlpackTensor::from_mut(&mut labels_view);
@@ -300,7 +273,7 @@ impl KMeansModel {
                 check_cuvs(
                     cuvs_sys::cuvsKMeansPredict(
                         native,
-                        params_handle.as_ptr(operation)?,
+                        params_handle.as_ptr(),
                         data_tensor.as_mut_ptr(),
                         ptr::null_mut(),
                         centroids_tensor.as_mut_ptr(),

@@ -102,6 +102,35 @@ async fn ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors() {
 }
 
 #[tokio::test]
+async fn ivf_pq_sql_executes_and_omits_missing_neighbors() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    let sql = "SELECT query_id, neighbor_id, rank FROM cuvs_ivf_pq(\
+        dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+        queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+        k => 1, metric => 'l2_expanded', n_lists => 2, n_probes => 2, pq_dim => 2)";
+    let batches = collect(plan_sql(&ctx, sql).await, ctx.task_ctx()).await.expect("IVF-PQ SQL");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let partial = "SELECT query_ordinal, rank, neighbor_id FROM cuvs_ivf_pq(\
+        dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+        queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+        k => 4, metric => 'l2_expanded', n_lists => 2, n_probes => 1, pq_dim => 2)";
+    let batches = collect(plan_sql(&ctx, partial).await, ctx.task_ctx()).await.expect("IVF-PQ sentinel omission");
+    let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    assert!((1..4).contains(&rows), "one probed list has fewer than four dataset rows");
+    let cosine = "SELECT neighbor_id, distance FROM cuvs_ivf_pq(\
+        dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+        queries => (SELECT item_id AS id, d0, d1 FROM dataset_vectors WHERE item_id = 1), \
+        k => 1, metric => 'cosine', n_lists => 2, n_probes => 2, pq_dim => 2)";
+    let cosine = collect(plan_sql(&ctx, cosine).await, ctx.task_ctx()).await.expect("IVF-PQ cosine SQL");
+    assert_eq!(cosine.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let row = &cosine[0];
+    let distance = row.column(1).as_any().downcast_ref::<Float32Array>().unwrap().value(0);
+    assert!((0.0..=2.0).contains(&distance), "cosine distance must be nonnegative, got {distance}");
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
 async fn pairwise_and_top_k_sql_produce_ranked_device_results() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);

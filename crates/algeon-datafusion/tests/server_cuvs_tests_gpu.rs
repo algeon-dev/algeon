@@ -64,6 +64,7 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
         vec![
             "cuvs_brute_force_knn",
             "cuvs_ivf_flat",
+            "cuvs_ivf_pq",
             "cuvs_kmeans",
             "cuvs_pairwise_distance",
             "cuvs_pca",
@@ -93,6 +94,17 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     )
     .await;
     assert_nonempty(&ivf);
+
+    let ivf_pq = execute_batches(
+        &mut client,
+        "SELECT query_id, neighbor_id, rank FROM cuvs_ivf_pq(\
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'l2_expanded', n_lists => 2, n_probes => 2, pq_dim => 2) \
+         ORDER BY query_ordinal, rank",
+    )
+    .await;
+    assert_nonempty(&ivf_pq);
 
     let pairwise = execute_batches(
         &mut client,

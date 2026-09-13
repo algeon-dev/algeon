@@ -2097,6 +2097,7 @@ pub fn query_planning::plan::CuvsIdType::from_data_type(&arrow_schema::datatype:
 pub enum query_planning::plan::CuvsOperation
 pub query_planning::plan::CuvsOperation::BruteForceKnn
 pub query_planning::plan::CuvsOperation::IvfFlat
+pub query_planning::plan::CuvsOperation::IvfPq
 pub query_planning::plan::CuvsOperation::KMeans
 pub query_planning::plan::CuvsOperation::PairwiseDistance
 pub query_planning::plan::CuvsOperation::Pca
@@ -2427,6 +2428,7 @@ pub query_planning::plan::ShiftDirection::Lead
 pub enum query_planning::plan::VectorAlgorithm
 pub query_planning::plan::VectorAlgorithm::BruteForceKnn
 pub query_planning::plan::VectorAlgorithm::IvfFlat
+pub query_planning::plan::VectorAlgorithm::IvfPq
 pub query_planning::plan::VectorAlgorithm::KMeans
 pub query_planning::plan::VectorAlgorithm::PairwiseDistance
 pub query_planning::plan::VectorAlgorithm::Pca
@@ -2438,6 +2440,7 @@ pub fn query_planning::plan::VectorAlgorithm::fmt(&self, &mut core::fmt::Formatt
 pub enum query_planning::plan::VectorAlgorithmParams
 pub query_planning::plan::VectorAlgorithmParams::BruteForceKnn(query_planning::plan::VectorBruteForceKnnParams)
 pub query_planning::plan::VectorAlgorithmParams::IvfFlat(query_planning::plan::VectorIvfFlatParams)
+pub query_planning::plan::VectorAlgorithmParams::IvfPq(query_planning::plan::VectorIvfPqParams)
 pub query_planning::plan::VectorAlgorithmParams::KMeans(query_planning::plan::VectorKMeansParams)
 pub query_planning::plan::VectorAlgorithmParams::PairwiseDistance(query_planning::plan::VectorPairwiseDistanceParams)
 pub query_planning::plan::VectorAlgorithmParams::Pca(query_planning::plan::VectorPcaParams)
@@ -2454,6 +2457,9 @@ impl query_planning::plan::VectorDistanceMetric
 pub const fn query_planning::plan::VectorDistanceMetric::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::plan::VectorDistanceMetric
 pub fn query_planning::plan::VectorDistanceMetric::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::plan::VectorIvfPqCodebookKind
+pub query_planning::plan::VectorIvfPqCodebookKind::PerCluster
+pub query_planning::plan::VectorIvfPqCodebookKind::PerSubspace
 pub enum query_planning::plan::VectorKMeansInit
 pub query_planning::plan::VectorKMeansInit::KMeansPlusPlus
 pub query_planning::plan::VectorKMeansInit::Random
@@ -3042,6 +3048,20 @@ pub query_planning::plan::VectorIvfFlatParams::n_probes: u32
 pub query_planning::plan::VectorIvfFlatParams::queries: query_planning::plan::VectorRelationBinding
 impl query_planning::plan::VectorIvfFlatParams
 pub fn query_planning::plan::VectorIvfFlatParams::new(query_planning::plan::VectorRelationBinding, query_planning::plan::VectorRelationBinding, usize, query_planning::plan::VectorDistanceMetric, u32) -> Self
+pub struct query_planning::plan::VectorIvfPqParams
+pub query_planning::plan::VectorIvfPqParams::codebook_kind: query_planning::plan::VectorIvfPqCodebookKind
+pub query_planning::plan::VectorIvfPqParams::dataset: query_planning::plan::VectorRelationBinding
+pub query_planning::plan::VectorIvfPqParams::k: usize
+pub query_planning::plan::VectorIvfPqParams::kmeans_n_iters: u32
+pub query_planning::plan::VectorIvfPqParams::kmeans_trainset_fraction: f64
+pub query_planning::plan::VectorIvfPqParams::metric: query_planning::plan::VectorDistanceMetric
+pub query_planning::plan::VectorIvfPqParams::n_lists: u32
+pub query_planning::plan::VectorIvfPqParams::n_probes: u32
+pub query_planning::plan::VectorIvfPqParams::pq_bits: u32
+pub query_planning::plan::VectorIvfPqParams::pq_dim: u32
+pub query_planning::plan::VectorIvfPqParams::queries: query_planning::plan::VectorRelationBinding
+impl query_planning::plan::VectorIvfPqParams
+pub fn query_planning::plan::VectorIvfPqParams::new(query_planning::plan::VectorRelationBinding, query_planning::plan::VectorRelationBinding, usize, query_planning::plan::VectorDistanceMetric, u32) -> Self
 pub struct query_planning::plan::VectorKMeansParams
 pub query_planning::plan::VectorKMeansParams::init: query_planning::plan::VectorKMeansInit
 pub query_planning::plan::VectorKMeansParams::initial_centroids: core::option::Option<query_planning::plan::VectorRelationBinding>
@@ -3091,6 +3111,7 @@ pub fn query_planning::plan::WindowSpec::new(alloc::vec::Vec<query_planning::exp
 pub const query_planning::plan::CUVS_BRUTE_FORCE_KNN_FUNCTION: &str
 pub const query_planning::plan::CUVS_ID_TYPES: &[query_planning::plan::CuvsIdType]
 pub const query_planning::plan::CUVS_IVF_FLAT_FUNCTION: &str
+pub const query_planning::plan::CUVS_IVF_PQ_FUNCTION: &str
 pub const query_planning::plan::CUVS_KMEANS_FUNCTION: &str
 pub const query_planning::plan::CUVS_OPERATION_REGISTRY: &[query_planning::plan::CuvsOperationDescriptor]
 pub const query_planning::plan::CUVS_PAIRWISE_DISTANCE_FUNCTION: &str

@@ -25,6 +25,9 @@ for the bounded-preflight and server-cache boundary.
 - [IVF-Flat](./cuvs_ivf_flat.mdx) builds a query-local inverted-file index
   over the evaluated dataset. Search is approximate when fewer than all lists
   are probed, and may return fewer than k neighbors per query.
+- [IVF-PQ](./cuvs_ivf_pq.mdx) compresses the query-local inverted-file index
+  with product quantization. It supports L2, cosine distance, and inner
+  product; omitted neighbor slots do not emit rows.
 
 ## Distances and Selection
 

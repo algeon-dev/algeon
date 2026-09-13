@@ -227,7 +227,7 @@ impl DeviceBuffer<f32> {
         operation: &'static str,
     ) -> Result<()> {
         self.inner
-            .validate_finite_float32_for_valid_neighbors(neighbors.inner(), sentinel)
+            .validate_finite_float32_unless_int64_equals(neighbors.inner(), sentinel)
             .map_err(|error| from_cudf(operation, error))
     }
 
