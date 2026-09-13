@@ -42,7 +42,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let input = single_input_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
         let build = if state.can_consume_task_input_resource(task, input) {
-            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let input_payload = state.consume_task_input_resource(task, input)?;
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
@@ -219,7 +219,7 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         let lazy_output = self.join_probe_output_consumed_as_stream(node_id);
         let probe = if state.can_consume_task_input_resource(task, input) {
-            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let input_payload = state.consume_task_input_resource(task, input)?;
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream)?;

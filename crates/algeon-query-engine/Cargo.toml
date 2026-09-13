@@ -35,7 +35,7 @@ cuvs = ["dep:cuvs", "dep:cuvs-sys"]
 nvml = ["query-runtime/nvml"]
 # Forwards the controlled device-quarantine qualification capability the DataFusion adapter exposes.
 qualification = ["query-runtime/qualification"]
-# Enables the crate-private seams consumed by the registered GPU execution harness.
+# Enables the test seams consumed by registered GPU execution harnesses.
 test-hooks = ["query-planning/test-hooks", "query-runtime/test-hooks", "cudf-sys/test-hooks", "cugraph?/test-hooks"]
 
 [lints]

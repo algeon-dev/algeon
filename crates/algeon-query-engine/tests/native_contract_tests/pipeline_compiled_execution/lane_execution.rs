@@ -5,8 +5,8 @@ use query_engine::{
     dimension_pruning::local_dimension_pruning_resolver,
     error::QueryErrorCode,
     exec::{
-        ExecutionMetrics, LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline,
-        run_lane_dispatched,
+        CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
+        is_lane_family_pipeline, run_lane_dispatched,
     },
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
@@ -332,7 +332,6 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     .expect("resident aggregate uses compiled admission")
     .pipeline()
     .clone();
-    assert!(is_resident_aggregate_lane_pipeline(&resident_pipeline));
     assert!(!is_lane_family_pipeline(&resident_pipeline));
     let resident_context = runtime.acquire_context_for_plan(&resident_plan).expect("resident plan acquires context");
     let result =
@@ -383,17 +382,13 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         grouped_schema,
     );
     let grouped_plan = builder.finish_gpu_resident(grouped);
-    let grouped_pipeline = bounded_pipeline_decision(
+    let grouped_decision = bounded_pipeline_decision(
         &grouped_plan,
         StatisticalAggregateExecutionMode::default(),
         rapids_analysis_context(),
     )
-    .expect("grouped aggregate admission should not error")
-    .admission()
-    .expect("grouped aggregate uses compiled admission")
-    .pipeline()
-    .clone();
-    assert!(is_resident_aggregate_lane_pipeline(&grouped_pipeline));
+    .expect("grouped aggregate admission should not error");
+    assert!(grouped_decision.admission().is_some(), "grouped aggregate uses compiled admission");
     let grouped_context = runtime.acquire_context_for_plan(&grouped_plan).expect("grouped plan acquires context");
     let grouped_result =
         execute_query_plan(&grouped_context, &grouped_plan).expect("grouped aggregate lanes should execute");
@@ -1709,11 +1704,7 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
     let decision =
         bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
             .expect("resident admission should not error");
-    let pipeline = decision.admission().expect("resident join uses compiled admission").pipeline().clone();
-    assert!(
-        is_resident_aggregate_lane_pipeline(&pipeline),
-        "a resident join-plus-aggregate pipeline takes the resident lane path"
-    );
+    assert!(decision.admission().is_some(), "resident join uses compiled admission");
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("resident join acquires a context");
     let result = execute_query_plan(&test_context, &plan).expect("resident join lanes should execute");

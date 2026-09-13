@@ -4,12 +4,12 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
+#[cfg(feature = "test-hooks")]
+use crate::{error::Result, observability::RuntimeExecutionObservationScope, runtime::ExecutionContext};
 use crate::{
-    error::Result,
     metrics::QueryMetrics,
-    observability::{MetricsRecorder, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle},
+    observability::{MetricsRecorder, PlanExecutionId, RuntimeObservationHandle},
     plan::NodeId,
-    runtime::ExecutionContext,
 };
 
 /// Where one plan execution reports metrics, plus the evidence the engine
@@ -54,6 +54,7 @@ impl ExecutionMetrics {
 
     /// A plan execution with a private metrics owner, for callers that drive
     /// engine stages without a query.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn detached(label: &str) -> Self {
         Self::bind(&RuntimeObservationHandle::disabled(), PlanExecutionId::new(label), label, None)
     }
@@ -61,6 +62,7 @@ impl ExecutionMetrics {
     /// `context` scoped to this plan execution, so work that reports through
     /// the context reaches the same owner. For callers that drive engine
     /// stages without [`crate::exec::execute_query_plan`].
+    #[cfg(feature = "test-hooks")]
     pub fn scope_context(&self, context: &ExecutionContext) -> Result<ExecutionContext> {
         context.with_runtime_execution_scope(RuntimeExecutionObservationScope::for_metrics(
             context.runtime_observation().clone(),
@@ -77,6 +79,7 @@ impl ExecutionMetrics {
     }
 
     /// The owner's current metrics as a detached value.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn snapshot(&self) -> QueryMetrics {
         let mut metrics = QueryMetrics::default();
         self.project_onto(&mut metrics);
@@ -111,6 +114,7 @@ impl ExecutionMetrics {
     }
 
     /// Edge rows the null filters of `node_id` dropped so far.
+    #[cfg(feature = "cugraph")]
     pub(in crate::exec) fn null_edge_rows_dropped(&self, node_id: NodeId) -> u64 {
         self.evidence().null_edge_rows_dropped.get(&node_id.to_string()).copied().unwrap_or(0)
     }

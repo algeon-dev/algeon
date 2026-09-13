@@ -30,7 +30,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let output = single_output_resource(task)?;
         let limit = limit_node(self.plan, task, node_id)?;
         if state.resource_payload(input)?.applied_limit() == Some(node_id) {
-            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let input_payload = state.consume_task_input_resource(task, input)?;
             let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
                 return Err(invalid("compiled fused limit can only pass through resident frame input")
                     .with_fact("compiled_task_id", task.id())
@@ -98,7 +98,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let mut inputs = Vec::new();
         for resource in task.input_resources() {
             if state.can_consume_task_input_resource(task, *resource) {
-                let payload = state.consume_task_input_resource(task, *resource)?.into_payload();
+                let payload = state.consume_task_input_resource(task, *resource)?;
                 self.union_payload_to_inputs(task, node_id, *resource, payload, true, &mut inputs)?;
             } else {
                 let payload = state.resource_payload(*resource)?;

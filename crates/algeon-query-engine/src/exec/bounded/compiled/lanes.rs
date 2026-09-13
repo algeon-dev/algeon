@@ -40,9 +40,9 @@ use super::{
     executor::CompiledGpuTaskExecutor,
     resource::CompiledGpuResource,
     scheduler::{
-        CompiledFlightBoard, CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor,
-        CompiledTaskOutput, cleanup_preserving_primary, fail_task_lifecycle, record_cleanup_failure,
-        release_completed_resources, release_live_resources_on_error,
+        CompiledFlightBoard, CompiledPipelineScheduler, CompiledTaskExecutor, CompiledTaskOutput,
+        cleanup_preserving_primary, fail_task_lifecycle, record_cleanup_failure, release_completed_resources,
+        release_live_resources_on_error,
     },
     state::CompiledPipelineState,
 };
@@ -87,8 +87,7 @@ pub fn is_lane_family_pipeline(pipeline: &CompiledPipeline) -> bool {
 /// aggregate source chunks may use lanes; the compiled DAG and sink still
 /// execute on the root coordinator. Sort borrowing has its own predicate
 /// below.
-#[doc(hidden)]
-pub fn is_resident_aggregate_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
+pub(in crate::exec::bounded) fn is_resident_aggregate_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
     pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput
         && pipeline_tasks_within_migrated_contract(pipeline)
         && pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Aggregate)
@@ -105,8 +104,7 @@ pub fn is_resident_aggregate_lane_pipeline(pipeline: &CompiledPipeline) -> bool 
 /// sort, so they keep the pure serial path without the adoption copy.
 /// Already-resident inputs are one frame with no chunk expansion behind
 /// them, so they stay out for the same reason.
-#[doc(hidden)]
-pub fn is_resident_sort_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
+pub(in crate::exec::bounded) fn is_resident_sort_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
     pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput
         && pipeline_tasks_within_migrated_contract(pipeline)
         && pipeline.tasks().iter().any(|task| {
@@ -154,9 +152,9 @@ pub struct LaneDispatchSupport {
     pub pipeline: Arc<CompiledPipeline>,
     pub gpu_inputs: Arc<GpuResidentInputMap>,
     pub metrics: Arc<ExecutionMetrics>,
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(feature = "test-hooks")]
     lane_completion_gate: Option<LaneCompletionGate>,
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(feature = "test-hooks")]
     aggregate_chunk_completion_gate: Option<AggregateChunkCompletionGate>,
 }
 
@@ -196,16 +194,16 @@ impl LaneDispatchSupport {
             pipeline: Arc::new(pipeline),
             gpu_inputs: Arc::new(gpu_inputs),
             metrics: Arc::new(metrics),
-            #[cfg(any(test, feature = "test-hooks"))]
+            #[cfg(feature = "test-hooks")]
             lane_completion_gate: None,
-            #[cfg(any(test, feature = "test-hooks"))]
+            #[cfg(feature = "test-hooks")]
             aggregate_chunk_completion_gate: None,
         }
     }
 
     /// Observes a completed but uncommitted aggregate chunk, with its stable
     /// ordinal, lane index, and claimed fork. Width 1 invokes this inline.
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(feature = "test-hooks")]
     pub fn with_aggregate_chunk_completion_gate(mut self, gate: AggregateChunkCompletionGate) -> Self {
         self.aggregate_chunk_completion_gate = Some(gate);
         self
@@ -213,7 +211,7 @@ impl LaneDispatchSupport {
 
     /// Overrides the dispatch width. Tests pin a width to exercise the inline
     /// and pool-worker arms against the same fork pool.
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(feature = "test-hooks")]
     pub fn with_requested_lanes(mut self, requested_lanes: usize) -> Self {
         self.requested_lanes = requested_lanes;
         self
@@ -228,7 +226,7 @@ impl LaneDispatchSupport {
     /// an attempt cancelled between task completion and the coordinator's
     /// join, and for observing which fork the route served each lane. It is
     /// the caller's job to release the gate.
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(feature = "test-hooks")]
     pub fn with_lane_completion_gate(mut self, gate: LaneCompletionGate) -> Self {
         self.lane_completion_gate = Some(gate);
         self
@@ -237,11 +235,11 @@ impl LaneDispatchSupport {
 
 /// Observes each lane worker's completion: the lane index and the fork index
 /// that lane's alias holds, if it holds one.
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(feature = "test-hooks")]
 pub type LaneCompletionGate = Arc<dyn Fn(usize, Option<usize>) + Send + Sync>;
 
 /// Aggregate chunk ordinal, lane index, and lane-local fork identity.
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(feature = "test-hooks")]
 pub type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<usize>) + Send + Sync>;
 
 /// One execution lane's attempt work lease, held for the whole dispatched run.
@@ -454,19 +452,16 @@ pub fn run_lane_dispatched(
             );
             return Err(error);
         }
-        let cycle = match executor.before_scheduling_cycle() {
-            Ok(cycle) => cycle,
-            Err(error) => {
-                cleanup_preserving_primary(
-                    executor,
-                    &mut state,
-                    observation_scope,
-                    CleanupFailurePhase::SchedulingCycle,
-                    &error,
-                );
-                return Err(error);
-            },
-        };
+        if let Err(error) = executor.before_scheduling_cycle() {
+            cleanup_preserving_primary(
+                executor,
+                &mut state,
+                observation_scope,
+                CleanupFailurePhase::SchedulingCycle,
+                &error,
+            );
+            return Err(error);
+        }
         let mut round = claim_lane_round(
             scheduler,
             executor,
@@ -474,7 +469,6 @@ pub fn run_lane_dispatched(
             width,
             &mut state,
             &mut flights,
-            cycle,
             observation_scope,
         )?;
         if round.claims.is_empty() && round.coordinator.is_empty() && round.sink.is_none() {
@@ -590,10 +584,6 @@ pub fn run_lane_dispatched(
 /// Dependency gating falls out of the claim protocol: a task whose producer
 /// was claimed but not committed this round is not completed, hence not
 /// runnable, hence never claimed twice.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "lane dispatch threads scheduler, executor, pipeline, width, state, flights, and scope explicitly"
-)]
 fn claim_lane_round(
     scheduler: &CompiledPipelineScheduler,
     executor: &mut CompiledGpuTaskExecutor,
@@ -601,7 +591,6 @@ fn claim_lane_round(
     width: usize,
     state: &mut CompiledPipelineState<CompiledGpuResource>,
     flights: &mut CompiledFlightBoard,
-    cycle: CompiledSchedulingCycle,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<LaneRound> {
     let mut round = LaneRound { claims: Vec::new(), coordinator: Vec::new(), sink: None };
@@ -615,7 +604,7 @@ fn claim_lane_round(
     // build-priority/dynamic-filter ordering decides whether a probe-side
     // branch waits for its build instead of reading eagerly.
     while round.claims.len() < width {
-        let selected = match scheduler.claim_next_runnable_task(state, flights, cycle) {
+        let selected = match scheduler.claim_next_runnable_task(state, flights) {
             Ok(task) => task.clone(),
             Err(error) => {
                 if round.claims.is_empty() && round.coordinator.is_empty() && round.sink.is_none() {
@@ -685,7 +674,7 @@ fn build_lane_scratch(
     let mut scratch = CompiledPipelineState::new(pipeline)?;
     for resource in task.input_resources() {
         let payload = if state.can_consume_task_input_resource(task, *resource) {
-            state.consume_task_input_resource(task, *resource)?.into_payload()
+            state.consume_task_input_resource(task, *resource)?
         } else {
             state.resource_payload(*resource)?.snapshot_for_lane_claim()?
         };
@@ -834,7 +823,7 @@ fn run_lane_claims(
         let gpu_inputs = Arc::clone(&support.gpu_inputs);
         let metrics = Arc::clone(&support.metrics);
         let dynamic_filter_snapshot = dynamic_filter_snapshot.clone();
-        #[cfg(any(test, feature = "test-hooks"))]
+        #[cfg(feature = "test-hooks")]
         let lane_completion_gate = support.lane_completion_gate.clone();
         let observation = support.context.runtime_observation().clone();
         match pool.submit_blocking(GpuExecutionJobKind::AttemptWork, observation, move || {
@@ -844,7 +833,7 @@ fn run_lane_claims(
                     lane_executor.dynamic_filters = dynamic_filter_snapshot;
                     let completion =
                         LaneTaskRunner { executor: lane_executor, scratch: Some(scratch) }.run_lane_task(lane, &task);
-                    #[cfg(any(test, feature = "test-hooks"))]
+                    #[cfg(feature = "test-hooks")]
                     if let Some(gate) = lane_completion_gate {
                         gate(lane, context.attempt_claimed_fork_index());
                     }
@@ -926,7 +915,7 @@ fn run_lane_claim_inline(
             lane_executor.dynamic_filters = dynamic_filter_snapshot.clone();
             let completion = LaneTaskRunner { executor: lane_executor, scratch: Some(claim.take_scratch()) }
                 .run_lane_task(LANE, &claim.task);
-            #[cfg(any(test, feature = "test-hooks"))]
+            #[cfg(feature = "test-hooks")]
             if let Some(gate) = &support.lane_completion_gate {
                 gate(LANE, support.context.attempt_claimed_fork_index());
             }
@@ -1427,5 +1416,19 @@ mod lane_width_tests {
             2,
             "two independent branches can overlap, so both lanes earn their lease"
         );
+    }
+
+    #[test]
+    fn resident_lane_borrow_predicates_distinguish_resident_aggregates_and_sorts() {
+        use super::{is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let single = literal_branch(&mut builder, &schema, vec![1, 2, 3]);
+        let resident_plan = builder.finish_gpu_resident(single);
+        let resident_pipe = admitted_pipeline(&resident_plan);
+        assert!(!super::is_lane_family_pipeline(&resident_pipe));
+        assert!(!is_resident_aggregate_lane_pipeline(&resident_pipe));
+        assert!(!is_resident_sort_lane_pipeline(&resident_pipe));
     }
 }

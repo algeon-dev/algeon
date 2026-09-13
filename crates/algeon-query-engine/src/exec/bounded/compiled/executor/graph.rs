@@ -47,7 +47,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let mut inputs = BTreeMap::new();
         for (input_id, resource) in graph.inputs.iter().copied().zip(task.input_resources().iter().copied()) {
             let frame = if state.can_consume_task_input_resource(task, resource) {
-                let payload = state.consume_task_input_resource(task, resource)?.into_payload();
+                let payload = state.consume_task_input_resource(task, resource)?;
                 let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = payload.payload else {
                     self.release_graph_task_inputs(inputs);
                     return Err(invalid("compiled graph task requires resident frame inputs")
