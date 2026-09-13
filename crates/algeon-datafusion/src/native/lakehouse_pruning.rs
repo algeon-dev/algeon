@@ -4,21 +4,21 @@ mod object_store;
 #[cfg(test)]
 mod product_path_tests;
 
-use std::{ops::Range, sync::Arc};
+use std::{cmp::Ordering, env, mem, ops::Range, sync::Arc};
 
 use arrow::datatypes::DataType;
 use bytes::Bytes;
 use datafusion::{
     execution::runtime_env::RuntimeEnv,
-    object_store::{ObjectStoreExt, path::Path as ObjectStorePath},
+    object_store::{Error as ObjectStoreError, ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath},
     parquet::{
         arrow::{
             ParquetRecordBatchStreamBuilder, ProjectionMask, arrow_reader::ArrowReaderOptions,
             async_reader::AsyncFileReader,
         },
-        errors::ParquetError,
+        errors::{ParquetError, Result as ParquetResult},
         file::{
-            metadata::{ParquetMetaData, ParquetMetaDataReader},
+            metadata::{ColumnChunkMetaData, ParquetMetaData, ParquetMetaDataReader, RowGroupMetaData},
             statistics::Statistics,
         },
         schema::types::SchemaDescriptor,
@@ -36,6 +36,7 @@ use query_engine::{
         integer_statistics_range, leaf_column_chunk, leaf_column_statistics, row_group_i64_range_for_root_column,
     },
     plan::{NodeId, QueryPlan},
+    rapids_backend::rapids_analysis_context,
     runtime::SourceStorageProfile,
     source::{LocalParquetSource, SourceColumnRef},
 };
@@ -46,19 +47,22 @@ use self::object_store::{
     FooterObjectStoreRegistry, foreign_error_diagnostic, object_error_context, object_store_file,
     object_store_pruning_error, stable_log_field,
 };
-use crate::native::table_format_pruning_policy::TableFormatPruningPolicy;
+use crate::{
+    error::{Error, ErrorCode, Result},
+    native::table_format_pruning_policy::TableFormatPruningPolicy,
+};
 
-pub(crate) fn enabled_from_env() -> crate::error::Result<bool> {
+pub(crate) fn enabled_from_env() -> Result<bool> {
     const ALGEON_ICEBERG_FOOTER_PRUNING_ENV: &str = "ALGEON_ICEBERG_FOOTER_PRUNING";
-    let Ok(raw) = std::env::var(ALGEON_ICEBERG_FOOTER_PRUNING_ENV) else {
+    let Ok(raw) = env::var(ALGEON_ICEBERG_FOOTER_PRUNING_ENV) else {
         return Ok(false);
     };
     match raw.trim().to_ascii_lowercase().as_str() {
         "" => Ok(false),
         "1" | "true" => Ok(true),
         "0" | "false" => Ok(false),
-        other => Err(crate::error::Error::new(
-            crate::error::ErrorCode::InvalidRequest,
+        other => Err(Error::new(
+            ErrorCode::InvalidRequest,
             "algeon_datafusion.native.lakehouse_pruning_config",
             format!("{ALGEON_ICEBERG_FOOTER_PRUNING_ENV} must be `true`, `false`, `1`, or `0`, got `{other}`"),
         )
@@ -84,7 +88,7 @@ pub(crate) async fn prune_native_query_plan(
         plan,
         LakehouseFooterPruningOptions::new(policy.max_target_files_across_requests()),
         &mut resolver,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
     )
     .await;
 
@@ -215,7 +219,7 @@ async fn static_reader_predicate_row_group_selections(
                     )
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let candidates = selected_or_all_row_groups(file.row_groups.as_deref(), total_row_groups);
         let mut row_groups = Vec::with_capacity(candidates.len());
         for row_group_index in candidates {
@@ -454,12 +458,12 @@ fn static_pruning_literal(value: &LiteralValue, column_type: &DataType) -> Optio
 
 fn rescale_decimal_raw(raw: i128, source_scale: i8, target_scale: i8) -> Option<i128> {
     match target_scale.cmp(&source_scale) {
-        std::cmp::Ordering::Equal => Some(raw),
-        std::cmp::Ordering::Greater => {
+        Ordering::Equal => Some(raw),
+        Ordering::Greater => {
             let factor = decimal_scale_factor(target_scale.checked_sub(source_scale)?)?;
             raw.checked_mul(factor)
         },
-        std::cmp::Ordering::Less => {
+        Ordering::Less => {
             let factor = decimal_scale_factor(source_scale.checked_sub(target_scale)?)?;
             (raw % factor == 0).then_some(raw / factor)
         },
@@ -472,7 +476,7 @@ fn decimal_scale_factor(scale_delta: i8) -> Option<i128> {
 }
 
 fn static_row_group_may_satisfy_expr(
-    row_group: &parquet::file::metadata::RowGroupMetaData,
+    row_group: &RowGroupMetaData,
     schema: &SchemaDescriptor,
     expr: &StaticRowGroupPruningExpr,
 ) -> Option<bool> {
@@ -492,7 +496,7 @@ fn static_row_group_may_satisfy_expr(
 }
 
 fn static_row_group_may_satisfy_atom(
-    row_group: &parquet::file::metadata::RowGroupMetaData,
+    row_group: &RowGroupMetaData,
     schema: &SchemaDescriptor,
     atom: &StaticRowGroupPruningAtom,
 ) -> Option<bool> {
@@ -518,7 +522,7 @@ fn static_row_group_may_satisfy_atom(
 }
 
 fn static_row_group_may_satisfy_in_list(
-    column: &parquet::file::metadata::ColumnChunkMetaData,
+    column: &ColumnChunkMetaData,
     literals: &[StaticPruningLiteral],
 ) -> Option<bool> {
     if literals.is_empty() {
@@ -536,7 +540,7 @@ fn static_row_group_may_satisfy_in_list(
 }
 
 fn static_row_group_may_satisfy_comparison(
-    column: &parquet::file::metadata::ColumnChunkMetaData,
+    column: &ColumnChunkMetaData,
     op: BinaryOp,
     literal: &StaticPruningLiteral,
 ) -> Option<bool> {
@@ -599,12 +603,12 @@ fn static_integer_or_decimal_literal(literal: &StaticPruningLiteral) -> Option<i
 }
 
 fn decimal_i128_from_be_bytes(bytes: &[u8]) -> Option<i128> {
-    if bytes.is_empty() || bytes.len() > std::mem::size_of::<i128>() {
+    if bytes.is_empty() || bytes.len() > mem::size_of::<i128>() {
         return None;
     }
     let sign_extension = if bytes[0] & 0x80 == 0 { 0x00 } else { 0xff };
-    let mut value = [sign_extension; std::mem::size_of::<i128>()];
-    value[std::mem::size_of::<i128>() - bytes.len()..].copy_from_slice(bytes);
+    let mut value = [sign_extension; mem::size_of::<i128>()];
+    value[mem::size_of::<i128>() - bytes.len()..].copy_from_slice(bytes);
     Some(i128::from_be_bytes(value))
 }
 
@@ -695,7 +699,7 @@ async fn derive_dimension_key_filter(
 }
 
 async fn parquet_metadata(
-    store: Arc<dyn datafusion::object_store::ObjectStore>,
+    store: Arc<dyn ObjectStore>,
     path: ObjectStorePath,
     file_size_bytes: Option<u64>,
     source_node_id: NodeId,
@@ -714,37 +718,34 @@ async fn parquet_metadata(
 /// is known from the preceding `head`, so the footer loads without suffix
 /// probing.
 struct ObjectStoreParquetReader {
-    store: Arc<dyn datafusion::object_store::ObjectStore>,
+    store: Arc<dyn ObjectStore>,
     path: ObjectStorePath,
     file_size: u64,
 }
 
 impl ObjectStoreParquetReader {
-    fn new(store: Arc<dyn datafusion::object_store::ObjectStore>, path: ObjectStorePath, file_size: u64) -> Self {
+    fn new(store: Arc<dyn ObjectStore>, path: ObjectStorePath, file_size: u64) -> Self {
         Self { store, path, file_size }
     }
 }
 
-fn object_store_parquet_error(error: datafusion::object_store::Error) -> ParquetError {
+fn object_store_parquet_error(error: ObjectStoreError) -> ParquetError {
     ParquetError::External(Box::new(error))
 }
 
 impl AsyncFileReader for ObjectStoreParquetReader {
-    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, datafusion::parquet::errors::Result<Bytes>> {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, ParquetResult<Bytes>> {
         async move { self.store.get_range(&self.path, range).await.map_err(object_store_parquet_error) }.boxed()
     }
 
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<Range<u64>>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Vec<Bytes>>> {
+    fn get_byte_ranges(&mut self, ranges: Vec<Range<u64>>) -> BoxFuture<'_, ParquetResult<Vec<Bytes>>> {
         async move { self.store.get_ranges(&self.path, &ranges).await.map_err(object_store_parquet_error) }.boxed()
     }
 
     fn get_metadata<'a>(
         &'a mut self,
         options: Option<&'a ArrowReaderOptions>,
-    ) -> BoxFuture<'a, datafusion::parquet::errors::Result<Arc<ParquetMetaData>>> {
+    ) -> BoxFuture<'a, ParquetResult<Arc<ParquetMetaData>>> {
         let file_size = self.file_size;
         async move {
             let metadata = ParquetMetaDataReader::new()
@@ -788,6 +789,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use ::object_store::memory::InMemory;
     use arrow::{
         array::{ArrayRef, Int64Array, StructArray, UInt32Array},
         datatypes::{Field, Fields, Schema},
@@ -894,10 +896,8 @@ mod tests {
     fn object_store_pruning_error_redacts_object_path_from_source_chain() {
         let path =
             ObjectStorePath::parse("warehouse/private/table/data.parquet").expect("test object path should parse");
-        let error = datafusion::object_store::Error::NotFound {
-            path: path.to_string(),
-            source: Box::new(TestSourceError::leaf("not found")),
-        };
+        let error =
+            ObjectStoreError::NotFound { path: path.to_string(), source: Box::new(TestSourceError::leaf("not found")) };
         let diagnostic = object_store_pruning_error(
             error,
             &[("object_path_leaf", "data.parquet".to_string()), ("object_path_hash", stable_hash_hex(path.as_ref()))],
@@ -1076,7 +1076,7 @@ mod tests {
         let bytes = fs::read(&path).expect("test parquet file bytes should be readable");
         let file_size = bytes.len() as u64;
 
-        let store = Arc::new(datafusion::object_store::memory::InMemory::new());
+        let store = Arc::new(InMemory::new());
         let object_path = ObjectStorePath::parse("warehouse/test.parquet").expect("valid path");
         store.put(&object_path, bytes.clone().into()).await.expect("put should succeed");
 
@@ -1099,7 +1099,7 @@ mod tests {
 
     #[tokio::test]
     async fn object_store_parquet_reader_maps_errors_to_parquet_external() {
-        let store = Arc::new(datafusion::object_store::memory::InMemory::new());
+        let store = Arc::new(InMemory::new());
         let missing_path = ObjectStorePath::parse("warehouse/missing.parquet").expect("valid path");
         let mut reader = ObjectStoreParquetReader::new(store, missing_path, 100);
 

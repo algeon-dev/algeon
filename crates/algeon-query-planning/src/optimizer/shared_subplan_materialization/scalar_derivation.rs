@@ -240,7 +240,7 @@ fn rowset_signature_uncached(
             .map(|input| format!("filter({input};predicate={})", filter.predicate)),
         PlanNode::Projection(projection) => rowset_signature(plan, projection.input, memo, visiting),
         PlanNode::Join(join) => {
-            if !matches!(join.spec.join_type, crate::plan::JoinType::Inner | crate::plan::JoinType::Cross) {
+            if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Cross) {
                 return None;
             }
             let left = rowset_signature(plan, join.inputs[0], memo, visiting)?;
@@ -272,7 +272,7 @@ fn local_parquet_rowset_signature(source: &LocalParquetSource) -> String {
     )
 }
 
-fn local_parquet_file_rowset_signature(file: &crate::source::LocalParquetFile) -> String {
+fn local_parquet_file_rowset_signature(file: &LocalParquetFile) -> String {
     let row_groups = file
         .row_groups
         .as_ref()

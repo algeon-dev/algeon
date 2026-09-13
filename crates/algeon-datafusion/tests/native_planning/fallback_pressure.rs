@@ -9,8 +9,9 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{
         CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
-        NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+        NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport, NativeFallbackPressureRow,
+        NativeFallbackPressureWorkloadItem,
     },
     planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, NativePlanningDiagnostics},
     report::{GpuCandidate, PlanningReport},
@@ -29,7 +30,7 @@ use datafusion::{
     logical_expr::Operator,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_expr::{
-        LexOrdering, PhysicalSortExpr,
+        LexOrdering, PhysicalExpr, PhysicalSortExpr,
         aggregate::AggregateExprBuilder,
         expressions::{TryCastExpr, binary, col, lit},
     },

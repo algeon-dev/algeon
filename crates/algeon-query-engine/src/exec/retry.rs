@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn retry_evidence_counts_only_recoverable_failures() {
-        let metrics = crate::exec::ExecutionMetrics::detached("retry-evidence");
+        let metrics = ExecutionMetrics::detached("retry-evidence");
         record_retryable_resource_error(&error(QueryErrorCode::QueryMemoryLimitExceeded), &metrics);
         record_retryable_resource_error(&error(QueryErrorCode::DeviceOutOfMemory), &metrics);
         record_retryable_resource_error(&error(QueryErrorCode::DeviceAllocationFailed), &metrics);

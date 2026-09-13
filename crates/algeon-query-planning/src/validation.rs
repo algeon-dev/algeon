@@ -7,12 +7,24 @@ use crate::{
     datatypes::{arrow_data_types_match_except_list_child_names, is_supported_arrow_implicit_cast},
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue},
-    plan::{AggregateNode, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, ResultSink, UnionNode},
+    plan::{
+        AggregateNode, EdgeNormalizeNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
+        GraphEdgePredicateInput, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2VertexAttributesInput,
+        GraphPageRankPersonalizationInput, GraphPredicateInput, GraphVertexPairInput, NodeId, PlanNode, ProjectionNode,
+        ProjectionOutput, QueryNode, QueryPlan, ResultSink, UnionNode, WindowFrame, WindowFunction, WindowNode,
+        graph_result_schema_for_vertex_type,
+    },
     prepared::{
         AvgStateAliases, aggregate_spec_has_avg, aggregate_spec_has_distinct,
         aggregate_spec_has_floating_statistical_aggregate, lower_column_expr, lower_named_column_expr, lower_sort_spec,
     },
-    source::{local_parquet_execution_frame_schema, validate_literal_batch_source, validate_local_parquet_source},
+    source::{
+        SourceNode, local_parquet_execution_frame_schema, validate_literal_batch_source, validate_local_parquet_source,
+    },
+    vector_validation::{
+        validate_schema_supported_with_vector_ingress, validate_vector_algorithm_node,
+        validate_vector_ingress_projection_output, vector_ingress_columns_by_input,
+    },
 };
 
 mod aggregate;
@@ -106,7 +118,7 @@ pub fn topk_candidate_rows(spec: LimitSpec) -> Result<usize> {
 pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result<()> {
     validate_reachability(plan)?;
     let mut available_columns_by_node = Vec::with_capacity(plan.node_count());
-    let vector_ingress_columns = crate::vector_validation::vector_ingress_columns_by_input(plan);
+    let vector_ingress_columns = vector_ingress_columns_by_input(plan);
 
     for (index, node) in plan.nodes().iter().enumerate() {
         if node.id.index() != index {
@@ -119,7 +131,7 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
             .with_fact("position", index));
         }
 
-        crate::vector_validation::validate_schema_supported_with_vector_ingress(
+        validate_schema_supported_with_vector_ingress(
             node.output_schema(),
             "query_engine.plan.validate_schema",
             vector_ingress_columns.get(&node.id),
@@ -144,7 +156,7 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
                         .get(&node.id)
                         .is_some_and(|columns| columns.contains(output.field.name()))
                     {
-                        crate::vector_validation::validate_vector_ingress_projection_output(
+                        validate_vector_ingress_projection_output(
                             output,
                             input.output_schema(),
                             input_available,
@@ -202,12 +214,12 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
                 }
                 for function in &window.spec.functions {
                     match function {
-                        crate::plan::WindowFunction::Aggregate { expr, .. } => {
+                        WindowFunction::Aggregate { expr, .. } => {
                             let data_type = validate_expr(expr, input.output_schema(), input_available, ctx)?;
                             require_scalar_operator_value(&data_type, "window aggregate input")?;
                         },
-                        crate::plan::WindowFunction::Rank { .. } | crate::plan::WindowFunction::RowNumber { .. } => {},
-                        crate::plan::WindowFunction::LagLead { expr, .. } => {
+                        WindowFunction::Rank { .. } | WindowFunction::RowNumber { .. } => {},
+                        WindowFunction::LagLead { expr, .. } => {
                             let data_type = validate_expr(expr, input.output_schema(), input_available, ctx)?;
                             require_scalar_operator_value(&data_type, "window LAG / LEAD input")?;
                         },
@@ -273,12 +285,7 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
                 schema_column_names(node.output_schema())
             },
             PlanNode::VectorAlgorithm(vector) => {
-                crate::vector_validation::validate_vector_algorithm_node(
-                    vector,
-                    plan,
-                    &available_columns_by_node,
-                    node.id,
-                )?;
+                validate_vector_algorithm_node(vector, plan, &available_columns_by_node, node.id)?;
                 schema_column_names(node.output_schema())
             },
         };
@@ -362,13 +369,13 @@ fn validate_reachability(plan: &QueryPlan) -> Result<()> {
     Ok(())
 }
 
-fn validate_source_node(source: &crate::source::SourceNode, ctx: AnalysisContext<'_>) -> Result<BTreeSet<String>> {
+fn validate_source_node(source: &SourceNode, ctx: AnalysisContext<'_>) -> Result<BTreeSet<String>> {
     match source {
-        crate::source::SourceNode::LocalParquet(source) => {
+        SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source, ctx)?;
             Ok(schema_column_names(&local_parquet_execution_frame_schema(source)?))
         },
-        crate::source::SourceNode::GpuResident(source) => {
+        SourceNode::GpuResident(source) => {
             if source.input_name.is_empty() {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -379,7 +386,7 @@ fn validate_source_node(source: &crate::source::SourceNode, ctx: AnalysisContext
             }
             Ok(schema_column_names(&source.schema))
         },
-        crate::source::SourceNode::LiteralBatch(source) => {
+        SourceNode::LiteralBatch(source) => {
             validate_literal_batch_source(source, ctx)?;
             Ok(schema_column_names(&source.schema))
         },
@@ -400,10 +407,10 @@ fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&Quer
 
 #[doc(hidden)]
 pub fn projection_output_type(
-    output: &crate::plan::ProjectionOutput,
+    output: &ProjectionOutput,
     input_schema: &SchemaRef,
     ctx: AnalysisContext<'_>,
-) -> Result<arrow::datatypes::DataType> {
+) -> Result<ArrowDataType> {
     validate_projection_output_expr(output, input_schema, &schema_column_names(input_schema), ctx)
 }
 
@@ -472,7 +479,7 @@ fn plan_node_kind(node: &PlanNode) -> &'static str {
 }
 
 fn validate_edge_normalize_node(
-    edge_normalize: &crate::plan::EdgeNormalizeNode,
+    edge_normalize: &EdgeNormalizeNode,
     input_schema: &SchemaRef,
     input_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
@@ -513,7 +520,7 @@ fn validate_edge_normalize_node(
 }
 
 fn validate_graph_algorithm_node(
-    graph: &crate::plan::GraphAlgorithmNode,
+    graph: &GraphAlgorithmNode,
     input_schema: &SchemaRef,
     input_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
@@ -534,11 +541,8 @@ fn validate_graph_algorithm_node(
     validate_graph_vertex_column("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
     validate_graph_vertex_column("destination", &graph.spec.edge_columns.destination, input_schema, input_available)?;
     let source_field = graph_edge_field("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
-    let expected_output = crate::plan::graph_result_schema_for_vertex_type(
-        graph.spec.algorithm,
-        &graph.spec.params,
-        source_field.data_type(),
-    );
+    let expected_output =
+        graph_result_schema_for_vertex_type(graph.spec.algorithm, &graph.spec.params, source_field.data_type());
     if output_schema.as_ref() != expected_output.as_ref() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -586,7 +590,7 @@ fn validate_graph_algorithm_node(
 }
 
 fn validate_graph_algorithm_side_inputs(
-    graph: &crate::plan::GraphAlgorithmNode,
+    graph: &GraphAlgorithmNode,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -618,7 +622,7 @@ fn validate_graph_algorithm_side_inputs(
             ));
     }
     match &graph.spec.params {
-        crate::plan::GraphAlgorithmParams::Bfs(params) => {
+        GraphAlgorithmParams::Bfs(params) => {
             if let Some(path_output) = params.path_output {
                 if path_output.max_output_rows == 0 {
                     return Err(graph_algorithm_error("BFS path output requires a positive row bound")
@@ -684,21 +688,21 @@ fn validate_graph_algorithm_side_inputs(
             }
             Ok(())
         },
-        crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) => validate_graph_personalization_input(
+        GraphAlgorithmParams::PersonalizedPageRank(params) => validate_graph_personalization_input(
             &params.personalization,
             &vertex_type,
             plan,
             available_columns_by_node,
             node_id,
         ),
-        crate::plan::GraphAlgorithmParams::Similarity(params) => validate_graph_vertex_pair_input(
+        GraphAlgorithmParams::Similarity(params) => validate_graph_vertex_pair_input(
             &params.vertex_pairs,
             &vertex_type,
             plan,
             available_columns_by_node,
             node_id,
         ),
-        crate::plan::GraphAlgorithmParams::ForceAtlas2(params) => {
+        GraphAlgorithmParams::ForceAtlas2(params) => {
             if params.prevent_overlapping
                 && params.vertex_attributes.as_ref().is_none_or(|input| input.radius.is_none())
             {
@@ -718,8 +722,8 @@ fn validate_graph_algorithm_side_inputs(
 }
 
 fn validate_force_atlas2_vertex_attributes(
-    input: &crate::plan::GraphForceAtlas2VertexAttributesInput,
-    vertex_type: &arrow::datatypes::DataType,
+    input: &GraphForceAtlas2VertexAttributesInput,
+    vertex_type: &ArrowDataType,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -750,8 +754,8 @@ fn validate_force_atlas2_vertex_attributes(
 }
 
 fn validate_force_atlas2_initial_positions(
-    input: &crate::plan::GraphForceAtlas2InitialPositionsInput,
-    vertex_type: &arrow::datatypes::DataType,
+    input: &GraphForceAtlas2InitialPositionsInput,
+    vertex_type: &ArrowDataType,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -776,7 +780,7 @@ fn validate_force_atlas2_value_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field(role, column, input_schema, input_available)?;
-    if field.data_type() != &arrow::datatypes::DataType::Float32 {
+    if field.data_type() != &ArrowDataType::Float32 {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.graph_algorithm.validate",
@@ -791,8 +795,8 @@ fn validate_force_atlas2_value_column(
 }
 
 fn validate_graph_vertex_pair_input(
-    input: &crate::plan::GraphVertexPairInput,
-    vertex_type: &arrow::datatypes::DataType,
+    input: &GraphVertexPairInput,
+    vertex_type: &ArrowDataType,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -813,7 +817,7 @@ fn validate_graph_vertex_pair_input(
         .with_fact("second_column", &input.second_column)
         .with_fact("second_type", format!("{:?}", second.data_type())));
     }
-    if !matches!(first.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+    if !matches!(first.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.graph_algorithm.validate",
@@ -839,8 +843,8 @@ fn validate_graph_vertex_pair_input(
 }
 
 fn validate_graph_personalization_input(
-    input: &crate::plan::GraphPageRankPersonalizationInput,
-    vertex_type: &arrow::datatypes::DataType,
+    input: &GraphPageRankPersonalizationInput,
+    vertex_type: &ArrowDataType,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -855,7 +859,7 @@ fn validate_graph_personalization_input(
         vertex_type,
     )?;
     let field = graph_edge_field("personalization_value", &input.value, input_node.output_schema(), input_available)?;
-    if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+    if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.graph_algorithm.validate",
@@ -869,9 +873,9 @@ fn validate_graph_personalization_input(
 }
 
 fn validate_graph_predicate_input(
-    input: Option<&crate::plan::GraphPredicateInput>,
+    input: Option<&GraphPredicateInput>,
     role: &'static str,
-    expected_type: &arrow::datatypes::DataType,
+    expected_type: &ArrowDataType,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -885,8 +889,8 @@ fn validate_graph_predicate_input(
 }
 
 fn validate_graph_edge_predicate_input(
-    input: &crate::plan::GraphEdgePredicateInput,
-    expected_type: &arrow::datatypes::DataType,
+    input: &GraphEdgePredicateInput,
+    expected_type: &ArrowDataType,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
@@ -924,7 +928,7 @@ fn validate_graph_predicate_column(
     column: &str,
     input_schema: &SchemaRef,
     input_available: &BTreeSet<String>,
-    expected_type: &arrow::datatypes::DataType,
+    expected_type: &ArrowDataType,
 ) -> Result<()> {
     let field = graph_edge_field(role, column, input_schema, input_available)?;
     if field.data_type() != expected_type {
@@ -949,7 +953,7 @@ fn validate_graph_vertex_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field(role, column, input_schema, input_available)?;
-    if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+    if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.graph_algorithm.validate",
@@ -964,10 +968,10 @@ fn validate_graph_vertex_column(
 }
 
 fn validate_graph_algorithm_vertex_id_support(
-    algorithm: crate::plan::GraphAlgorithm,
+    algorithm: GraphAlgorithm,
     role: &'static str,
     column: &str,
-    data_type: &arrow::datatypes::DataType,
+    data_type: &ArrowDataType,
 ) -> Result<()> {
     let support = algorithm.vertex_id_type_support();
     if support.accepts_arrow_data_type(data_type) {
@@ -993,7 +997,7 @@ fn validate_graph_weight_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field("weight", column, input_schema, input_available)?;
-    if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+    if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.graph_algorithm.validate",
@@ -1013,7 +1017,7 @@ fn validate_graph_edge_id_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field("edge_id", column, input_schema, input_available)?;
-    if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+    if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.graph_algorithm.validate",
@@ -1139,11 +1143,7 @@ fn validate_union_node(
     Ok(())
 }
 
-fn validate_window_capability(
-    window: &crate::plan::WindowNode,
-    input_schema: &SchemaRef,
-    output_schema: &SchemaRef,
-) -> Result<()> {
+fn validate_window_capability(window: &WindowNode, input_schema: &SchemaRef, output_schema: &SchemaRef) -> Result<()> {
     if window.spec.functions.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -1193,9 +1193,9 @@ fn validate_window_capability(
             .with_fact("field", field.name()));
         }
         match function {
-            crate::plan::WindowFunction::Aggregate { function, frame, .. } => {
+            WindowFunction::Aggregate { function, frame, .. } => {
                 match frame {
-                    crate::plan::WindowFrame::WholePartition => {
+                    WindowFrame::WholePartition => {
                         if window.spec.partition_by.is_empty() {
                             return Err(QueryError::new(
                                 QueryErrorCode::UnsupportedOperator,
@@ -1211,7 +1211,7 @@ fn validate_window_capability(
                             ));
                         }
                     },
-                    crate::plan::WindowFrame::RowsUnboundedPrecedingToCurrent => {
+                    WindowFrame::RowsUnboundedPrecedingToCurrent => {
                         if window.spec.order_by.is_empty() {
                             return Err(QueryError::new(
                                 QueryErrorCode::UnsupportedOperator,
@@ -1219,12 +1219,8 @@ fn validate_window_capability(
                                 "native cumulative aggregate windows require ORDER BY",
                             ));
                         }
-                        if !matches!(
-                            function,
-                            crate::expr::AggregateFunction::Sum
-                                | crate::expr::AggregateFunction::Min
-                                | crate::expr::AggregateFunction::Max
-                        ) {
+                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+                        {
                             return Err(QueryError::new(
                                 QueryErrorCode::UnsupportedOperator,
                                 "query_engine.window.validate",
@@ -1238,7 +1234,7 @@ fn validate_window_capability(
                     lower_column_expr(expr, "query_engine.window.validate_partition")?;
                 }
             },
-            crate::plan::WindowFunction::Rank { .. } => {
+            WindowFunction::Rank { .. } => {
                 if window.spec.order_by.is_empty() {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedOperator,
@@ -1246,7 +1242,7 @@ fn validate_window_capability(
                         "native rank windows require ORDER BY",
                     ));
                 }
-                if !matches!(field.data_type(), arrow::datatypes::DataType::UInt64) {
+                if !matches!(field.data_type(), ArrowDataType::UInt64) {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedType,
                         "query_engine.window.validate",
@@ -1256,8 +1252,8 @@ fn validate_window_capability(
                     .with_fact("data_type", format!("{:?}", field.data_type())));
                 }
             },
-            crate::plan::WindowFunction::RowNumber { output_type, .. } => {
-                if !matches!(output_type, arrow::datatypes::DataType::UInt64 | arrow::datatypes::DataType::Int64) {
+            WindowFunction::RowNumber { output_type, .. } => {
+                if !matches!(output_type, ArrowDataType::UInt64 | ArrowDataType::Int64) {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedType,
                         "query_engine.window.validate",
@@ -1285,7 +1281,7 @@ fn validate_window_capability(
                     .with_fact("field", field.name()));
                 }
             },
-            crate::plan::WindowFunction::LagLead { expr, default, .. } => {
+            WindowFunction::LagLead { expr, default, .. } => {
                 if window.spec.order_by.is_empty() {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedOperator,

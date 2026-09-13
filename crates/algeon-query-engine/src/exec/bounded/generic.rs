@@ -1,4 +1,8 @@
-use std::{sync::Arc, time::Instant};
+#[cfg(any(feature = "cugraph", feature = "cuvs"))]
+use std::collections::BTreeMap;
+#[cfg(feature = "cugraph")]
+use std::iter::once;
+use std::{slice::from_ref, sync::Arc, time::Instant};
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, FilterNode,
@@ -20,9 +24,20 @@ use super::{DataFrame, execute_graph_algorithm_sanitized, graph_preparation_bypa
 use crate::exec::graph_algorithm::{bounded_betweenness::*, graph_empty_input_prevalidated, statistics::*};
 #[cfg(not(feature = "cugraph"))]
 use crate::exec::graph_algorithm_feature_disabled;
+#[cfg(feature = "cuvs")]
+use crate::exec::validate_vector_algorithm_execution;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphAlgorithmSpec;
 use crate::{
-    exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics},
+    admission::canonical_execution_scope_fingerprint,
+    exec::{
+        execute_vector_algorithm,
+        source::{ScheduledLocalParquetReadOutput, read_local_parquet_source, record_bounded_parquet_source_metrics},
+    },
     observability::SourceReadFact,
+    plan::{EdgeNormalizeNode, GraphAlgorithmNode},
+    rapids_backend::rapids_analysis_context,
+    source::{LiteralBatchSource, SourceNode},
 };
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
@@ -46,9 +61,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
         ResultSink::GpuResident { .. } => {
             let output_bytes = committed.frame.device_allocated_size_bytes()?;
             let resident_owner = execution.context().retain_resident_output_owner(output_bytes)?;
-            let frame = committed
-                .frame
-                .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));
+            let frame = committed.frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(plan));
             let handle = match GpuResultHandle::new_with_resident_owner(
                 execution.context(),
                 frame,
@@ -85,13 +98,13 @@ fn execute_bounded_generic_node(
     let node = plan.node(id).expect("validated bounded generic node exists");
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => {
+            SourceNode::LocalParquet(source) => {
                 execute_bounded_generic_local_parquet_source(execution, source, id)
             },
-            crate::source::SourceNode::GpuResident(source) => {
+            SourceNode::GpuResident(source) => {
                 execute_bounded_generic_gpu_resident_source(execution, source, gpu_inputs)
             },
-            crate::source::SourceNode::LiteralBatch(source) => {
+            SourceNode::LiteralBatch(source) => {
                 execute_bounded_generic_literal_batch_source(execution, source)
             },
         },
@@ -160,21 +173,21 @@ fn execute_bounded_generic_node(
         PlanNode::VectorAlgorithm(vector) => {
             #[cfg(feature = "cuvs")]
             {
-                crate::exec::validate_vector_algorithm_execution(id, vector)?;
-                let mut inputs = std::collections::BTreeMap::new();
+                validate_vector_algorithm_execution(id, vector)?;
+                let mut inputs = BTreeMap::new();
                 for input_id in &vector.inputs {
                     if !inputs.contains_key(input_id) {
                         let input = execute_bounded_generic_node(execution, plan, *input_id, gpu_inputs)?;
                         inputs.insert(*input_id, input.frame);
                     }
                 }
-                let frame = crate::exec::execute_vector_algorithm(execution.context(), plan, id, vector, &inputs)?;
+                let frame = execute_vector_algorithm(execution.context(), plan, id, vector, &inputs)?;
                 let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
                 Ok(ResidentGpuFrame { frame, device_bytes })
             }
             #[cfg(not(feature = "cuvs"))]
             {
-                match crate::exec::execute_vector_algorithm(id, vector) {
+                match execute_vector_algorithm(id, vector) {
                     Ok(_) => unreachable!("cuVS-disabled execution cannot produce a GPU frame"),
                     Err(error) => Err(error),
                 }
@@ -222,7 +235,7 @@ fn execute_bounded_generic_node(
 pub(in crate::exec::bounded) fn execute_bounded_edge_normalize_from_input(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
-    edge_normalize: &crate::plan::EdgeNormalizeNode,
+    edge_normalize: &EdgeNormalizeNode,
     input: ResidentGpuFrame,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_generic_unary(
@@ -289,7 +302,7 @@ fn execute_bounded_generic_graph_algorithm(
     _execution: &mut BoundedExecutionAttempt<'_>,
     _plan: &QueryPlan,
     node_id: NodeId,
-    graph: &crate::plan::GraphAlgorithmNode,
+    graph: &GraphAlgorithmNode,
     _gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ResidentGpuFrame> {
     Err(graph_algorithm_feature_disabled(node_id, graph))
@@ -300,7 +313,7 @@ fn execute_bounded_generic_graph_algorithm(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: &QueryPlan,
     node_id: NodeId,
-    graph: &crate::plan::GraphAlgorithmNode,
+    graph: &GraphAlgorithmNode,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ResidentGpuFrame> {
     let input = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
@@ -314,14 +327,14 @@ fn execute_bounded_generic_graph_algorithm(
     } else {
         execute_bounded_generic_node(execution, plan, graph.input, gpu_inputs)?
     };
-    let mut side_inputs = std::collections::BTreeMap::new();
+    let mut side_inputs = BTreeMap::new();
     for input_id in graph.inputs.iter().skip(1) {
         match execute_bounded_generic_node(execution, plan, *input_id, gpu_inputs) {
             Ok(frame) => {
                 side_inputs.insert(*input_id, frame);
             },
             Err(error) => {
-                release_resident_frames_reverse(std::iter::once(input).chain(side_inputs.into_values()).collect());
+                release_resident_frames_reverse(once(input).chain(side_inputs.into_values()).collect());
                 return Err(error);
             },
         }
@@ -333,9 +346,9 @@ fn execute_bounded_generic_graph_algorithm(
 pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
-    graph: &crate::plan::GraphAlgorithmNode,
+    graph: &GraphAlgorithmNode,
     input: ResidentGpuFrame,
-    side_input_frames: std::collections::BTreeMap<NodeId, ResidentGpuFrame>,
+    side_input_frames: BTreeMap<NodeId, ResidentGpuFrame>,
 ) -> Result<ResidentGpuFrame> {
     let ResidentGpuFrame { frame: mut input_frame, .. } = input;
     let _retained_normalization_source = input_frame.take_retained_normalization_source();
@@ -370,7 +383,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     {
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
-    let mut side_inputs = std::collections::BTreeMap::new();
+    let mut side_inputs = BTreeMap::new();
     for (input_id, frame) in side_input_frames {
         side_inputs.insert(input_id, frame.frame);
     }
@@ -450,7 +463,7 @@ pub(in crate::exec::bounded) fn release_resident_frames_reverse(mut frames: Vec<
 #[cfg(feature = "cugraph")]
 fn graph_runtime_vertex_count_probe(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     input: &DataFrame,
 ) -> Result<Option<u64>> {
     match runtime_graph_statistics_probe(context, input, spec) {
@@ -508,7 +521,7 @@ fn collect_bounded_generic_source_adjacent_stages(
                 current_id = projection.input;
             },
             PlanNode::Source(source) => match source.as_ref() {
-                crate::source::SourceNode::LocalParquet(source) if !stages.is_empty() => {
+                SourceNode::LocalParquet(source) if !stages.is_empty() => {
                     stages.reverse();
                     return Ok(Some((current_id, source, stages)));
                 },
@@ -524,7 +537,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     source: &LocalParquetSource,
     node_id: NodeId,
 ) -> Result<ResidentGpuFrame> {
-    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
+    validate_local_parquet_source(source, rapids_analysis_context())?;
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,
@@ -540,8 +553,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
         execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
     }
     if chunk_plan.chunks.is_empty() {
-        let frame =
-            crate::exec::source::read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
+        let frame = read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
         let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
         return Ok(ResidentGpuFrame { frame, device_bytes: requested_bytes });
     }
@@ -565,7 +577,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     node_id: NodeId,
     stages: &[BoundedGenericSourceAdjacentStage<'_>],
 ) -> Result<ResidentGpuFrame> {
-    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
+    validate_local_parquet_source(source, rapids_analysis_context())?;
     let planning_policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
         source,
         execution.context().memory_control_policy(),
@@ -578,8 +590,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
         execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
     }
     if chunk_plan.chunks.is_empty() {
-        let frame =
-            crate::exec::source::read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
+        let frame = read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
         let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
         let mut resident = ResidentGpuFrame { frame, device_bytes: requested_bytes };
         for stage in stages {
@@ -635,7 +646,7 @@ fn read_bounded_generic_source_adjacent_chunks(
         let source_chunk = match read_local_parquet_chunks_required_only(
             execution,
             source,
-            std::slice::from_ref(chunk),
+            from_ref(chunk),
             "bounded_generic_source_read",
         ) {
             Ok(source_chunk) => source_chunk,
@@ -724,7 +735,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_literal_batch_source(
     execution: &mut BoundedExecutionAttempt<'_>,
-    source: &crate::source::LiteralBatchSource,
+    source: &LiteralBatchSource,
 ) -> Result<ResidentGpuFrame> {
     let frame = read_literal_batch_source(execution.context(), source, execution.metrics())?;
     let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;

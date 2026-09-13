@@ -1,8 +1,10 @@
 //! Smoke tests for Series Display and Debug formatting.
 
+use crate::common::{nullable_series, series};
+
 #[test]
 fn test_display_smoke_reports_series_metadata_without_materializing_values() {
-    let series = crate::common::nullable_series("score", &[111i32, 0, 333], &[true, false, true]).unwrap();
+    let series = nullable_series("score", &[111i32, 0, 333], &[true, false, true]).unwrap();
 
     let output = format!("{}", series);
 
@@ -22,7 +24,7 @@ fn test_display_smoke_reports_series_metadata_without_materializing_values() {
 
 #[test]
 fn test_debug_smoke_reports_series_metadata_without_materializing_values() {
-    let series = crate::common::series("city", &["tokyo", "paris", "taipei"]).unwrap();
+    let series = series("city", &["tokyo", "paris", "taipei"]).unwrap();
 
     let output = format!("{:?}", series);
 

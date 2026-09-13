@@ -2,18 +2,19 @@ use std::{fs, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray, Float32Array, Float64Array, Int64Array, RecordBatch, StringArray},
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Field, Schema, SchemaRef},
 };
+use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
     catalog::MemTable,
     execution::SessionStateBuilder,
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use parquet::arrow::ArrowWriter;
 use query_engine::{
     expr::Expr,
-    plan::{PlanNode, QueryPlanBuilder},
+    plan::{JoinType, PlanNode, QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 
@@ -252,11 +253,11 @@ fn write_tiny_directed_edges(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-fn schema_field_names(schema: &arrow::datatypes::Schema) -> Vec<&str> {
+fn schema_field_names(schema: &Schema) -> Vec<&str> {
     schema.fields().iter().map(|field| field.name().as_str()).collect()
 }
 
-fn producer_plan(schema: &arrow::datatypes::SchemaRef) -> query_engine::plan::QueryPlan {
+fn producer_plan(schema: &SchemaRef) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(schema))));
     builder.finish_gpu_resident(source)
@@ -340,8 +341,7 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
 
 #[test]
 fn synthetic_n3_composed_fixture_preserves_equal_producer_occurrences() {
-    let schema =
-        Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new("vertex", DataType::Int64, false)]));
+    let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
     let producers = ["producer-0", "producer-1", "producer-2"]
         .into_iter()
         .map(|name| {
@@ -516,7 +516,7 @@ async fn bare_limit_plans_keep_source_limit_structure_per_algorithm() {
         assert!(
             matches!(&limit.kind, PlanNode::Limit(limit) if limit.input == source.id && limit.spec.fetch == Some(3))
         );
-        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+        let batches = collect(plan, ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{algorithm} bare limit must execute: {error}"));
         assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
@@ -551,7 +551,7 @@ async fn string_vertex_pagerank_limits_stay_single_source_consumers() {
 
 #[tokio::test]
 async fn large_numeric_pagerank_top_k_keeps_source_sort_limit_structure() {
-    let large_limit = cudf::frame::dataframe::HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
+    let large_limit = HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
     let (_backend, ctx) = backend_context();
     register_large_string_pagerank_edges(&ctx, "large_string_edges", "large_numeric_edges", large_limit);
 
@@ -653,7 +653,7 @@ async fn ranked_metadata_enrichment_shares_one_top_k_occurrence() {
         native_plan.nodes().iter().any(|node| {
             matches!(
                 &node.kind,
-                PlanNode::Join(join) if join.spec.join_type == query_engine::plan::JoinType::LeftSemi
+                PlanNode::Join(join) if join.spec.join_type == JoinType::LeftSemi
             )
         }),
         "the IN subquery must lower to a bounded native LeftSemi join"

@@ -6,14 +6,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cudf::{DeviceId, DeviceMemoryManager, ErrorKind};
+use cudf::{DeviceId, DeviceMemoryManager, ErrorKind, testing::memory::PhysicalMemoryPressureLease};
 use query_engine::{
     attempt::{AttemptBegin, AttemptCompletion, AttemptOwner, BeginAttemptRequest},
     error::QueryErrorCode,
     native_error::cudf_query_error,
     observability::{
         AttemptAdmissionFact, AttemptAllocatorEventSource, AttemptCapacityDisposition, AttemptCleanupDisposition,
-        AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
+        AttemptDisposition, AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
     },
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
@@ -70,7 +70,7 @@ fn admit_attempt(core: &GpuBackendCore) -> AdmittedAttempt {
     let attempt = owner.handle();
     attempt.record_planning_started().expect("planning starts");
     attempt.record_planning_finished().expect("planning finishes");
-    attempt.set_disposition(query_engine::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt.set_disposition(AttemptDisposition::Native).expect("native disposition");
     attempt.record_admission_requested().expect("admission request records");
 
     let handle = core
@@ -189,7 +189,7 @@ async fn overlapping_query_domains_keep_real_physical_allocator_events_exact_and
     assert_eq!(first_domain_cap_bytes, first.handle.device_budget_bytes());
     assert_eq!(second_domain_cap_bytes, second.handle.device_budget_bytes());
 
-    let pressure = cudf::testing::memory::PhysicalMemoryPressureLease::establish(device)
+    let pressure = PhysicalMemoryPressureLease::establish(device)
         .expect("real device pressure is established without an injected allocator failure");
     assert_eq!(pressure.device(), device, "pressure lease remains on the attempt device");
     let pressure_facts = pressure.facts();

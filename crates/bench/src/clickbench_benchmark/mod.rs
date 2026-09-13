@@ -9,7 +9,7 @@ use std::{
 };
 
 use algeon_datafusion::{planner::AlgeonNativePhysicalOptimizerRule, session::AlgeonSessionStateBuilderExt};
-use arrow::{array::RecordBatch, util::display::array_value_to_string};
+use arrow::{array::RecordBatch, error::ArrowError, util::display::array_value_to_string};
 use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
     execution::SessionStateBuilder,
@@ -588,7 +588,7 @@ fn dump_record_batches_to_tsv(batches: &[RecordBatch], path: PathBuf) -> Result<
 /// results may differ in row order. Column indexes remain encoded.
 ///
 /// Values are tagged so `NULL` and `""` do not collide in Arrow string output.
-fn fingerprint_batches(batches: &[RecordBatch]) -> Result<String, arrow::error::ArrowError> {
+fn fingerprint_batches(batches: &[RecordBatch]) -> Result<String, ArrowError> {
     use std::{
         collections::hash_map::DefaultHasher,
         hash::{Hash, Hasher},
@@ -967,6 +967,8 @@ fn invalid_env(message: String) -> WorkloadError {
 
 #[cfg(test)]
 mod tests {
+    use query_engine::runtime::SourceChunkPlanningMode;
+
     use super::*;
 
     #[test]
@@ -1096,7 +1098,7 @@ mod tests {
                 max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
                 max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
                 min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-                source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+                source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
             },
             progress: false,
             dump_rows_dir: None,

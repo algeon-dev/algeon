@@ -446,7 +446,7 @@ fn validate_controller_policy_preflight(
 #[cfg(test)]
 mod construction_tests {
     use super::*;
-    use crate::runtime::DeviceFacts;
+    use crate::runtime::{DeviceCapabilities, DeviceFacts};
 
     #[derive(Debug)]
     struct FrozenPlanInventory(Vec<DeviceFacts>);
@@ -503,7 +503,7 @@ mod construction_tests {
         ]);
         let whole_device_profile = |limit_bytes, default_query_limit_bytes| DeviceRegistryInstallProfile {
             stream_pool_size: 2,
-            device_capabilities: crate::runtime::DeviceCapabilities::default(),
+            device_capabilities: DeviceCapabilities::default(),
             max_active_attempts: 1,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
             backend_reserve_bytes: 0,

@@ -115,32 +115,30 @@ fn shared_aggregate_value_width_and_nullability(
                 )
             })
             .unwrap_or((policy.unknown_value_width_bytes(), true)),
-        Expr::Literal(value) => (shared_literal_width(value), matches!(value, crate::expr::LiteralValue::Null(_))),
+        Expr::Literal(value) => (shared_literal_width(value), matches!(value, LiteralValue::Null(_))),
         _ => (policy.unknown_value_width_bytes(), true),
     }
 }
 
-fn shared_literal_width(value: &crate::expr::LiteralValue) -> u64 {
+fn shared_literal_width(value: &LiteralValue) -> u64 {
     match value {
-        crate::expr::LiteralValue::Boolean(_) => 1,
-        crate::expr::LiteralValue::Int8(_) | crate::expr::LiteralValue::UInt8(_) => 1,
-        crate::expr::LiteralValue::Int16(_) | crate::expr::LiteralValue::UInt16(_) => 2,
-        crate::expr::LiteralValue::Int32(_)
-        | crate::expr::LiteralValue::UInt32(_)
-        | crate::expr::LiteralValue::Float32(_)
-        | crate::expr::LiteralValue::Date32(_)
-        | crate::expr::LiteralValue::Time32 { .. } => 4,
-        crate::expr::LiteralValue::Int64(_)
-        | crate::expr::LiteralValue::UInt64(_)
-        | crate::expr::LiteralValue::Float64(_)
-        | crate::expr::LiteralValue::Date64(_)
-        | crate::expr::LiteralValue::Time64 { .. }
-        | crate::expr::LiteralValue::Timestamp { .. }
-        | crate::expr::LiteralValue::Duration { .. } => 8,
-        crate::expr::LiteralValue::Decimal128 { .. } | crate::expr::LiteralValue::IntervalMonthDayNano { .. } => 16,
-        crate::expr::LiteralValue::Null(_)
-        | crate::expr::LiteralValue::Utf8(_)
-        | crate::expr::LiteralValue::LargeUtf8(_) => 16,
+        LiteralValue::Boolean(_) => 1,
+        LiteralValue::Int8(_) | LiteralValue::UInt8(_) => 1,
+        LiteralValue::Int16(_) | LiteralValue::UInt16(_) => 2,
+        LiteralValue::Int32(_)
+        | LiteralValue::UInt32(_)
+        | LiteralValue::Float32(_)
+        | LiteralValue::Date32(_)
+        | LiteralValue::Time32 { .. } => 4,
+        LiteralValue::Int64(_)
+        | LiteralValue::UInt64(_)
+        | LiteralValue::Float64(_)
+        | LiteralValue::Date64(_)
+        | LiteralValue::Time64 { .. }
+        | LiteralValue::Timestamp { .. }
+        | LiteralValue::Duration { .. } => 8,
+        LiteralValue::Decimal128 { .. } | LiteralValue::IntervalMonthDayNano { .. } => 16,
+        LiteralValue::Null(_) | LiteralValue::Utf8(_) | LiteralValue::LargeUtf8(_) => 16,
     }
 }
 

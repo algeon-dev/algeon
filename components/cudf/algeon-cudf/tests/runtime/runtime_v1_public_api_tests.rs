@@ -6,7 +6,7 @@
 use cudf::{
     AggSpec, DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionBudgetStatus, ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
-    core::memory::DeviceMemoryResource,
+    core::{Scalar, memory::DeviceMemoryResource},
     frame::dataframe::{JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
     runtime::CudaStream,
@@ -18,7 +18,7 @@ use crate::common::{
     dataframe_device_ptr as device_ptr, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
     last_exec_stream_value, last_sync_stream_value, lock_event_observation, observed_exec_mr_overflowed,
     observed_exec_mr_values, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    sample_runtime, series_device_ptr,
+    run_named_cases, sample_runtime, series, series_device_ptr,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -37,7 +37,7 @@ fn assert_frame_residency(df: &DataFrame, expected_id: u64, expected_stream: usi
     assert_eq!(df.testing_execution_domain_mr_value(), expected_mr);
 }
 
-fn assert_scalar_residency(scalar: &cudf::core::Scalar, expected_id: u64, expected_stream: usize) {
+fn assert_scalar_residency(scalar: &Scalar, expected_id: u64, expected_stream: usize) {
     assert_eq!(scalar.testing_execution_domain_kind(), "explicit");
     assert_eq!(scalar.testing_execution_domain_id(), expected_id);
     assert_eq!(scalar.testing_execution_domain_stream_value(), expected_stream);
@@ -390,7 +390,7 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
 }
 
 fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
-    let series = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
+    let series = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = DataFrame::from_series([("id", series.clone())]).unwrap();
     let override_stream = CudaStream::new().unwrap();
     let ctx = ExecutionOverrides::new().with_stream(&override_stream);
@@ -880,7 +880,7 @@ fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
 
 #[test]
 fn runtime_v1_public_api_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "runtime_and_execution_context_are_public_and_send_sync",
             runtime_and_execution_context_are_public_and_send_sync,

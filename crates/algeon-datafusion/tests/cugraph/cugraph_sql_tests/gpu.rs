@@ -1,10 +1,20 @@
 use std::{fs, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
+    attempt::AttemptOptions,
+    backend::{AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit},
     gpu_coverage::validate_query,
     planner::{
-        AlgeonFinalPlanRequirementRule, AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy,
-        FinalPlanDisposition, classify_final_plan,
+        AlgeonFinalPlanRequirementRule, AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig,
+        DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan,
+    },
+};
+use arrow::{array::ListArray, buffer::OffsetBuffer};
+use cudf::{
+    frame::dataframe::HostBatchCursorConfig,
+    testing::arrow::{
+        arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+        reset_arrow_host_interop_observation_for_test,
     },
 };
 use datafusion::{
@@ -13,9 +23,17 @@ use datafusion::{
         file_format::parquet::ParquetFormat,
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
+    execution::SessionStateBuilder,
     physical_optimizer::PhysicalOptimizerRule,
+    physical_plan::{ExecutionPlan, collect},
 };
 use futures::StreamExt;
+use query_engine::observability::{AttemptCapacityDisposition, AttemptCleanupDisposition, RuntimeTerminalOutcome};
+use tokio::{
+    sync::Barrier,
+    task::yield_now,
+    time::{sleep, timeout},
+};
 
 use super::{support::*, *};
 
@@ -51,7 +69,7 @@ const PAGERANK_FORCEATLAS2_JOIN_SQL: &str = "WITH pagerank AS (\n\
     FROM layout l JOIN pagerank p ON p.vertex = l.vertex\n\
     WHERE p.pagerank_value > 0";
 
-fn cugraph_input_is_runtime_native(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+fn cugraph_input_is_runtime_native(plan: &dyn ExecutionPlan) -> bool {
     if plan.downcast_ref::<AlgeonNativeExec>().is_some() {
         return true;
     }
@@ -90,7 +108,7 @@ async fn identity_rows(ctx: &SessionContext, sql: &str, identity_columns: usize)
     rows
 }
 
-fn plan_contains_named_node(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> bool {
+fn plan_contains_named_node(plan: &dyn ExecutionPlan, name: &str) -> bool {
     plan.name() == name || plan.children().into_iter().any(|child| plan_contains_named_node(child.as_ref(), name))
 }
 
@@ -101,9 +119,9 @@ fn register_edges_with_upstream_only_list(ctx: &SessionContext, table_name: &str
         Field::new("dst", DataType::Int64, false),
         Field::new("tags", DataType::List(Arc::clone(&tag_field)), false),
     ]));
-    let tags = arrow::array::ListArray::new(
+    let tags = ListArray::new(
         tag_field,
-        arrow::buffer::OffsetBuffer::new(vec![0_i32, 1, 2, 3].into()),
+        OffsetBuffer::new(vec![0_i32, 1, 2, 3].into()),
         Arc::new(Int64Array::from(vec![1_i64, 2, 3])),
         None,
     );
@@ -148,8 +166,8 @@ fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_t
 #[tokio::test]
 async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type() {
     let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
-        datafusion::execution::SessionStateBuilder::new_with_default_features(),
-        algeon_datafusion::planner::AlgeonGpuExecutionMode::FunctionsOnly,
+        SessionStateBuilder::new_with_default_features(),
+        AlgeonGpuExecutionMode::FunctionsOnly,
     );
     register_edges_with_upstream_only_list(&ctx, "raw_edges");
     ctx.sql(
@@ -205,11 +223,11 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     assert_eq!(algeon.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(algeon.fact_value("observed_final_plan_disposition"), Some("mixed"));
 
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    reset_arrow_host_interop_observation_for_test();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
     assert!(
-        cudf::testing::arrow::arrow_host_import_call_count_for_test() >= 1,
+        arrow_host_import_call_count_for_test() >= 1,
         "the CPU edge view must cross the explicit host-to-GPU boundary"
     );
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
@@ -222,8 +240,8 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
 #[tokio::test]
 async fn functions_only_keeps_sql_limit_outside_the_cugraph_function() {
     let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
-        datafusion::execution::SessionStateBuilder::new_with_default_features(),
-        algeon_datafusion::planner::AlgeonGpuExecutionMode::FunctionsOnly,
+        SessionStateBuilder::new_with_default_features(),
+        AlgeonGpuExecutionMode::FunctionsOnly,
     );
     register_edge_memtable(&ctx, "limit_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let plan = ctx
@@ -239,18 +257,12 @@ async fn functions_only_keeps_sql_limit_outside_the_cugraph_function() {
             || plan_contains_named_node(plan.as_ref(), "LocalLimitExec"),
         "the SQL LIMIT must remain a DataFusion operator outside the cuGraph function"
     );
-    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+    let batches = collect(plan, ctx.task_ctx()).await.unwrap();
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
 }
 
-async fn assert_repeated_cugraph_cte_executes(
-    mode: algeon_datafusion::planner::AlgeonGpuExecutionMode,
-    expected_gpu_executions: usize,
-) {
-    let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
-        datafusion::execution::SessionStateBuilder::new_with_default_features(),
-        mode,
-    );
+async fn assert_repeated_cugraph_cte_executes(mode: AlgeonGpuExecutionMode, expected_gpu_executions: usize) {
+    let (_backend, ctx) = backend_cugraph_sql_context_with_mode(SessionStateBuilder::new_with_default_features(), mode);
     register_edge_memtable(&ctx, "shared_cte_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let plan = ctx
         .sql(
@@ -273,7 +285,7 @@ async fn assert_repeated_cugraph_cte_executes(
         expected_gpu_executions,
         "the execution policy must preserve its declared CTE sharing behavior:\n{rendered}"
     );
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx())
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx())
         .await
         .expect("both references to one cuGraph table provider must execute");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
@@ -287,12 +299,12 @@ async fn assert_repeated_cugraph_cte_executes(
 
 #[tokio::test]
 async fn functions_only_executes_repeated_cugraph_cte_occurrences() {
-    assert_repeated_cugraph_cte_executes(algeon_datafusion::planner::AlgeonGpuExecutionMode::FunctionsOnly, 2).await;
+    assert_repeated_cugraph_cte_executes(AlgeonGpuExecutionMode::FunctionsOnly, 2).await;
 }
 
 #[tokio::test]
 async fn native_preferred_executes_repeated_cugraph_cte_occurrences() {
-    assert_repeated_cugraph_cte_executes(algeon_datafusion::planner::AlgeonGpuExecutionMode::NativePreferred, 1).await;
+    assert_repeated_cugraph_cte_executes(AlgeonGpuExecutionMode::NativePreferred, 1).await;
 }
 
 #[tokio::test]
@@ -312,15 +324,15 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
         "backend-managed edge and side inputs should remain native or transparently cooperative:\n{cugraph_display}"
     );
 
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+    reset_arrow_host_interop_observation_for_test();
+    let batches = collect(plan, ctx.task_ctx()).await.unwrap();
     assert_eq!(
-        cudf::testing::arrow::arrow_host_import_call_count_for_test(),
+        arrow_host_import_call_count_for_test(),
         1,
         "the native edge source should import once without an extra cuGraph boundary"
     );
     assert_eq!(
-        cudf::testing::arrow::arrow_host_export_call_count_for_test(),
+        arrow_host_export_call_count_for_test(),
         1,
         "cuGraph output must stay device-resident until the composed root materializes"
     );
@@ -331,7 +343,7 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     assert_eq!(bfs_distance_for(batch, 2), Some(1));
     assert_eq!(bfs_distance_for(batch, 3), Some(2));
 
-    let top_k_attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let top_k_attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let top_k_completion = top_k_attempt.completion();
     let top_k_plan = top_k_attempt.plan_sql(&ctx, RAW_BFS_TOP_K_SQL).await.unwrap();
     assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "distance", "predecessor"]);
@@ -342,7 +354,7 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
         top_k_batches.push(batch.expect("raw BFS top-k must execute through the admitted composed schedule"));
     }
     let report = top_k_completion.await;
-    assert!(matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some(), "raw BFS top-k must execute under one admitted fixed cap");
     assert_eq!(top_k_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 100);
     let distances = top_k_batches
@@ -365,8 +377,8 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         find_composed_exec(plan.as_ref()).expect("the canonical two-producer topology lowers to one composed root");
     assert_eq!(composed.children().len(), 2, "the composed root keeps both scheduled graph occurrences");
 
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+    reset_arrow_host_interop_observation_for_test();
+    let batches = collect(plan, ctx.task_ctx())
         .await
         .expect("the complete composed schedule must execute both graph producers and their join");
     let batch = single_batch(&batches);
@@ -387,7 +399,7 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
     for (_weight_type, sql) in
         [(DataType::Float32, PAGERANK_FLOAT32_TOP_K_SQL), (DataType::Float64, PAGERANK_TOP_K_SQL)]
     {
-        let top_k_attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+        let top_k_attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
         let top_k_completion = top_k_attempt.completion();
         let top_k_plan = top_k_attempt.plan_sql(&ctx, sql).await.unwrap();
         assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "value"]);
@@ -398,7 +410,7 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
             top_k_batches.push(batch.expect("PageRank top-k must execute through the admitted composed schedule"));
         }
         let report = top_k_completion.await;
-        assert!(matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
         assert!(report.admission.is_some(), "PageRank top-k must execute under one admitted fixed cap");
         let rows = pagerank_rows(&top_k_batches);
         assert_eq!(rows.len(), 100);
@@ -418,7 +430,7 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         ),
     ] {
         let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
-        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+        let batches = collect(plan, ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{algorithm} bare limit must execute: {error}"));
         assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
@@ -430,9 +442,9 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
     let (backend, ctx) = default_backend_cugraph_sql_context();
     register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
-    let attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let plan = attempt.plan_sql(&ctx, PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap();
     let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
 
@@ -473,7 +485,7 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
         "one dynamic-filter key export plus the deferred composed consumer output must be the only D2H boundaries",
     );
     assert_eq!(
-        cudf::testing::arrow::arrow_host_export_call_count_for_test(),
+        arrow_host_export_call_count_for_test(),
         metrics.device_to_host_materializations,
         "the cuDF interop observation must match the categorized native D2H boundaries",
     );
@@ -494,15 +506,15 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
         batch.expect("the composed consumer stream must complete without a second execution path");
     }
     let report = completion.await;
-    assert!(matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert_eq!(
         report.cleanup_disposition,
-        query_engine::observability::AttemptCleanupDisposition::Completed,
+        AttemptCleanupDisposition::Completed,
         "the terminal owner must complete one context/grant cleanup before it seals",
     );
     assert_eq!(
         report.capacity_disposition,
-        query_engine::observability::AttemptCapacityDisposition::Released,
+        AttemptCapacityDisposition::Released,
         "the successful attempt must release rather than retain its immutable grant",
     );
     assert_eq!(report.cleanup_failure_count, 0);
@@ -513,7 +525,7 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
     assert_eq!(admission_fact.device_ordinal, live_ledger.device_ordinal);
     assert_eq!(admission_fact.grant_bytes, live_grant.grant_bytes);
 
-    tokio::time::timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(5), async {
         loop {
             let admission = backend.admission_snapshot().unwrap();
             let released_ledgers = backend.device_ledger_reports().unwrap();
@@ -522,7 +534,7 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
             {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            sleep(Duration::from_millis(1)).await;
         }
     })
     .await
@@ -550,7 +562,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     let path = dir.join("graph_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let profile = algeon_datafusion::backend::AlgeonGpuDeviceProfile::new(0)
+    let profile = AlgeonGpuDeviceProfile::new(0)
         .with_default_query_limit_bytes(128 * 1024 * 1024)
         .with_cache_cap_bytes(CACHE_CAP_BYTES);
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
@@ -574,14 +586,14 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     // Prime the graph cache from the production two-producer SQL shape. The
     // local Parquet source gives PageRank a stable cacheable identity;
     // ForceAtlas2 currently stays on its owning uncached graph-builder path.
-    let primer = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let primer = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let primer_completion = primer.completion();
     let mut primer_stream = primer.sql(&ctx, PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap();
     while let Some(batch) = primer_stream.next().await {
         batch.expect("the cache-primer attempt must complete");
     }
     let primer_report = primer_completion.await;
-    assert!(matches!(primer_report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert!(matches!(primer_report.outcome, RuntimeTerminalOutcome::Succeeded));
 
     let primed_ledgers = backend.device_ledger_reports().unwrap();
     let [primed_ledger] = primed_ledgers.as_slice() else {
@@ -603,7 +615,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     assert_eq!(primed_cache.graph.checked_out_entries, 0);
     assert_eq!(primed_cache.graph.preparation_pins, 0);
 
-    let attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let plan = attempt.plan_sql(&ctx, PAGERANK_FORCEATLAS2_JOIN_SQL).await.unwrap();
     let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
@@ -682,10 +694,7 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     let path = dir.join("tiny_directed_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let device = AlgeonGpuDeviceConfig::new(
-        algeon_datafusion::backend::AlgeonGpuDeviceProfile::new(0),
-        GpuMemoryOwnership::WholeDeviceExclusive,
-    );
+    let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
     let cugraph = CugraphSqlConfig::default();
     let mut config = SessionConfig::new()
@@ -703,7 +712,7 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
 
-    let attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let plan =
         attempt.plan_sql(&ctx, "SELECT * FROM cugraph_degrees_all('tiny_directed_edges', 'src', 'dst')").await.unwrap();
@@ -735,9 +744,9 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     assert_eq!(plan_metric_usize(plan.as_ref(), "admission_sequence_observed"), 1);
     assert_eq!(plan_metric_usize(plan.as_ref(), "admission_wait_time_observed"), 1);
     assert_eq!(plan_metric_usize(plan.as_ref(), "query_grant_bytes_observed"), 1);
-    tokio::time::timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(5), async {
         while backend.admission_snapshot().unwrap().active_queries != 0 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            sleep(Duration::from_millis(1)).await;
         }
     })
     .await
@@ -751,9 +760,8 @@ async fn filtered_local_parquet_context(
     path: &std::path::Path,
     device_capacity_bytes: u64,
 ) -> (AlgeonGpuBackend, SessionContext) {
-    let profile = algeon_datafusion::backend::AlgeonGpuDeviceProfile::new(0).with_memory_limit(
-        algeon_datafusion::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: device_capacity_bytes },
-    );
+    let profile = AlgeonGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: device_capacity_bytes });
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
     let cugraph = CugraphSqlConfig::default();
@@ -838,10 +846,10 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     let path = dir.join("overlap_edges.parquet");
     write_overlap_cycle_chord_edges(&path, VERTICES);
 
-    let profile = algeon_datafusion::backend::AlgeonGpuDeviceProfile::new(0)
+    let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_CAPACITY_BYTES })
         .with_max_active_attempts(2)
-        .with_installation_bounds(algeon_datafusion::backend::AlgeonGpuDeviceInstallationBounds::new(8, 8, 2));
+        .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(8, 8, 2));
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
     let state = backend
@@ -863,7 +871,7 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     // pass, and the first lost race quarantines the device so later rounds
     // fail fast instead of passing independently.
     for round in 0..8 {
-        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let barrier = Arc::new(Barrier::new(3));
         let leader_barrier = Arc::clone(&barrier);
         let follower_barrier = Arc::clone(&barrier);
         let leader_ctx = ctx.clone();
@@ -922,13 +930,13 @@ async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1024);
 
     drop_session_context_on_blocking_thread(ctx).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(5), async {
         loop {
             let reports = backend.device_ledger_reports().unwrap();
             if reports.iter().all(|report| report.active_attempts == 0 && report.grants.is_empty()) {
                 break;
             }
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     })
     .await
@@ -947,8 +955,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and
 #[tokio::test]
 async fn cugraph_sql_gpu_actual_allocation_exceeding_query_cap_reports_memory_limit() {
     let device = AlgeonGpuDeviceConfig::new(
-        algeon_datafusion::backend::AlgeonGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 1024 }),
+        AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 1024 }),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     let backend = AlgeonGpuBackend::builder().devices([device]).build().unwrap();
@@ -1031,10 +1038,10 @@ pub async fn run_pagerank_filter_sort_limit_acceptance() {
         "composed native plan should keep cuGraph as the GPU-resident producer child:\n{plan_display}"
     );
 
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    reset_arrow_host_interop_observation_for_test();
+    let batches = collect(plan, ctx.task_ctx()).await.unwrap();
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     let actual = pagerank_rows(&batches);
     let mut expected = oracle.rows.clone();
@@ -1223,7 +1230,7 @@ async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers
     let plan = df.create_physical_plan().await.unwrap();
     assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
     assert!(find_composed_exec(plan.as_ref()).is_some(), "string Jaccard must remain one native composed GPU island");
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     let output_rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
     assert_eq!(output_rows, 70, "explicit pair multiplicity must be preserved without exceeding the 70-row bound");
     let schema = plan.schema();
@@ -1265,7 +1272,7 @@ async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers
         find_composed_exec(values_plan.as_ref()).is_some(),
         "VALUES-backed string Jaccard must remain one native composed GPU island",
     );
-    let values_batches = datafusion::physical_plan::collect(Arc::clone(&values_plan), ctx.task_ctx()).await.unwrap();
+    let values_batches = collect(Arc::clone(&values_plan), ctx.task_ctx()).await.unwrap();
     let values_batch = single_batch(&values_batches);
     assert_eq!(values_batch.num_rows(), 6);
     assert_eq!(values_batch.schema().field(0).data_type(), &DataType::Utf8);
@@ -1343,7 +1350,7 @@ async fn cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64
                )";
     let df = ctx.sql(sql).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     let batch = single_batch(&batches);
     assert_eq!(batch.schema().field(0).data_type(), &DataType::Int64);
     assert_eq!(batch.schema().field(1).data_type(), &DataType::Int64);
@@ -1373,7 +1380,7 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
                    )";
     let empty_df = ctx.sql(empty_sql).await.unwrap();
     let empty_plan = empty_df.create_physical_plan().await.unwrap();
-    let empty_batches = datafusion::physical_plan::collect(Arc::clone(&empty_plan), ctx.task_ctx()).await.unwrap();
+    let empty_batches = collect(Arc::clone(&empty_plan), ctx.task_ctx()).await.unwrap();
     let empty = single_batch(&empty_batches);
     assert_eq!(empty.schema().field(0).data_type(), &DataType::Int64);
     assert_eq!(empty.schema().field(1).data_type(), &DataType::Int64);
@@ -1418,7 +1425,7 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     let batch = single_batch(&batches);
     assert_eq!(bfs_distance_for(batch, 0), Some(0));
     assert_eq!(bfs_distance_for(batch, 2), Some(1));
@@ -1669,7 +1676,7 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     requirement
         .optimize(Arc::clone(&plan), &ConfigOptions::default())
         .expect("path_index ordering must satisfy NoDataFusionCpu without a DataFusion sort");
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     let batch = single_batch(&batches);
     assert_eq!(int64_column(batch, 0), (0_i64..=6).collect::<Vec<_>>());
     let path = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
@@ -1694,7 +1701,7 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     let joined_plan = joined.create_physical_plan().await.unwrap();
     assert_eq!(classify_final_plan(joined_plan.as_ref()), FinalPlanDisposition::Native);
     assert!(find_composed_exec(joined_plan.as_ref()).is_some(), "BFS path join must form one composed GPU island");
-    let joined_batches = datafusion::physical_plan::collect(joined_plan, ctx.task_ctx()).await.unwrap();
+    let joined_batches = collect(joined_plan, ctx.task_ctx()).await.unwrap();
     let joined = single_batch(&joined_batches);
     assert_eq!(joined.num_rows(), 7);
     let labels = joined.column(1);
@@ -2144,7 +2151,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
         "{}",
         displayable(outer_plan.as_ref()).indent(false)
     );
-    let outer_batches = datafusion::physical_plan::collect(outer_plan, ctx.task_ctx()).await.unwrap();
+    let outer_batches = collect(outer_plan, ctx.task_ctx()).await.unwrap();
     assert!(outer_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
 
     ctx.sql(
@@ -2176,7 +2183,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
         "{}",
         displayable(personalized_plan.as_ref()).indent(false)
     );
-    let personalized_batches = datafusion::physical_plan::collect(personalized_plan, ctx.task_ctx()).await.unwrap();
+    let personalized_batches = collect(personalized_plan, ctx.task_ctx()).await.unwrap();
     assert!(personalized_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
 
     ctx.sql(
@@ -2208,8 +2215,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
         "{}",
         displayable(string_personalized_plan.as_ref()).indent(false)
     );
-    let string_personalized_batches =
-        datafusion::physical_plan::collect(string_personalized_plan, ctx.task_ctx()).await.unwrap();
+    let string_personalized_batches = collect(string_personalized_plan, ctx.task_ctx()).await.unwrap();
     assert!(string_personalized_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
     drop_session_context_on_blocking_thread(ctx).await;
 }
@@ -2260,9 +2266,8 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
             "{label}\n{}",
             displayable(plan.as_ref()).indent(false),
         );
-        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
-            .await
-            .unwrap_or_else(|error| panic!("{label} must execute: {error}"));
+        let batches =
+            collect(plan, ctx.task_ctx()).await.unwrap_or_else(|error| panic!("{label} must execute: {error}"));
         let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
         if label == "global row number limit" {
             assert_eq!(row_count, 3);
@@ -2339,7 +2344,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
     register_string_vertex_memtable(&ctx, "node_universe", "vertex", &["a", "b", "c", "d", "isolated"]);
-    let large_limit = cudf::frame::dataframe::HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
+    let large_limit = HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
     register_large_string_pagerank_edges(&ctx, "large_string_edges", "large_numeric_edges", large_limit);
     let string_sql = "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst')";
 
@@ -2353,7 +2358,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     assert_eq!(string_df.schema().field(0).data_type(), &DataType::Utf8);
     let string_plan = string_df.create_physical_plan().await.unwrap();
     assert_eq!(classify_final_plan(string_plan.as_ref()), FinalPlanDisposition::Native);
-    let string_batches = datafusion::physical_plan::collect(Arc::clone(&string_plan), ctx.task_ctx()).await.unwrap();
+    let string_batches = collect(Arc::clone(&string_plan), ctx.task_ctx()).await.unwrap();
 
     let numeric_batches = ctx
         .sql("SELECT vertex, value FROM cugraph_pagerank('numeric_edges', 'src', 'dst')")
@@ -2365,7 +2370,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let limited_df =
         ctx.sql("SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') LIMIT 2").await.unwrap();
     let limited_plan = limited_df.create_physical_plan().await.unwrap();
-    let limited_rows = datafusion::physical_plan::collect(limited_plan, ctx.task_ctx()).await.unwrap();
+    let limited_rows = collect(limited_plan, ctx.task_ctx()).await.unwrap();
     assert_eq!(limited_rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     let top_k_df = ctx
         .sql(
@@ -2375,7 +2380,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
         .await
         .unwrap();
     let top_k_plan = top_k_df.create_physical_plan().await.unwrap();
-    let top_k_rows = datafusion::physical_plan::collect(top_k_plan, ctx.task_ctx()).await.unwrap();
+    let top_k_rows = collect(top_k_plan, ctx.task_ctx()).await.unwrap();
     let top_k_batch = single_batch(&top_k_rows);
     let top_k_values = top_k_batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
     assert_eq!(top_k_batch.num_rows(), 2);
@@ -2410,7 +2415,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
         assert_eq!(df.schema().field(0).data_type(), &DataType::Utf8, "{shape} PageRank schema");
         let plan = df.create_physical_plan().await.unwrap();
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native, "{shape} PageRank plan");
-        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+        let batches = collect(plan, ctx.task_ctx()).await.unwrap();
         assert!(batches.len() > 1, "{shape} string PageRank top-k must span multiple host batches");
         let values = pagerank_values(&batches);
         assert_eq!(values.len(), large_limit, "{shape} string PageRank top-k row count");
@@ -2434,7 +2439,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     );
     let numeric_large_df = ctx.sql(&numeric_large_sql).await.unwrap();
     let numeric_large_plan = numeric_large_df.create_physical_plan().await.unwrap();
-    let numeric_large_batches = datafusion::physical_plan::collect(numeric_large_plan, ctx.task_ctx()).await.unwrap();
+    let numeric_large_batches = collect(numeric_large_plan, ctx.task_ctx()).await.unwrap();
     assert!(numeric_large_batches.len() > 1, "numeric PageRank top-k must span multiple host batches");
     let numeric_large_values = pagerank_values(&numeric_large_batches);
     assert_eq!(numeric_large_values.len(), large_limit);
@@ -2597,7 +2602,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
             "{algorithm} metadata join\n{}",
             displayable(plan.as_ref()).indent(false)
         );
-        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+        let batches = collect(plan, ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{algorithm} metadata join must execute: {error}"));
         assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
@@ -2628,7 +2633,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
          LEFT JOIN roles a ON a.\"vertexId\" = s.first \
          LEFT JOIN roles b ON b.\"vertexId\" = s.second \
          ORDER BY s.similarity DESC, s.first, s.second";
-    let attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let plan = attempt.plan_sql(&ctx, filtered_roles_sql).await.unwrap();
     assert_eq!(
@@ -2643,7 +2648,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         batches.push(batch.expect("filtered two-alias role enrichment must execute"));
     }
     let report = completion.await;
-    assert!(matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some(), "the retained filtered producers must execute under one admitted fixed cap");
     let batch = single_batch(&batches);
     assert_eq!(batch.num_rows(), 3, "duplicate role metadata must preserve left-join multiplicity");
@@ -2664,7 +2669,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
          FROM ranked r \
          LEFT JOIN metadata a ON a.\"vertexId\" = r.vertex \
          ORDER BY r.value DESC, r.vertex";
-    let attempt = backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions::default()).unwrap();
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let plan = attempt.plan_sql(&ctx, ranked_metadata_sql).await.unwrap();
     assert_eq!(
@@ -2683,7 +2688,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         batches.push(batch.expect("ranked metadata enrichment must finish"));
     }
     let report = completion.await;
-    assert!(matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some(), "shared graph Top-K must execute under one admitted fixed cap");
     let batch = single_batch(&batches);
     assert_eq!(batch.num_rows(), 5, "duplicate metadata must preserve LEFT JOIN multiplicity");
@@ -2766,7 +2771,7 @@ async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempt
                 "{sql}\n{}",
                 displayable(plan.as_ref()).indent(false)
             );
-            let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+            let batches = collect(plan, ctx.task_ctx()).await.unwrap();
             assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), expected_rows, "{sql}");
         }
     }
@@ -2794,7 +2799,7 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     drop_session_context_on_blocking_thread(ctx).await;
     let batch = single_batch(&batches);
     assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
@@ -2851,7 +2856,7 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     drop_session_context_on_blocking_thread(ctx).await;
     let batch = single_batch(&batches);
     assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
@@ -2932,7 +2937,7 @@ async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() 
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    let error = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
     let algeon = typed_algeon_error(&error);
     assert_eq!(algeon.fact_value("predicate_role"), Some("include_edges"));
     assert_eq!(algeon.fact_value("input_rows"), Some("2"));

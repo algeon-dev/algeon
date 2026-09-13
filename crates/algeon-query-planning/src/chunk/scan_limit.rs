@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    source::{LocalParquetFile, LocalParquetSource},
+    source::{LocalParquetFile, LocalParquetSource, parquet_source_path_fact},
 };
 
 #[doc(hidden)]
@@ -44,7 +44,7 @@ pub fn apply_source_scan_limit_to_chunks(
                 "query_engine.source_chunk.scan_limit",
                 "source scan limit requires row-count metadata for planned chunks",
             )
-            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+            .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
         })?;
@@ -113,7 +113,7 @@ pub fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Resul
             "query_engine.source_chunk.scan_limit",
             "source scan limit requires per-row-group row-count metadata for chunk prefix trimming",
         )
-        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+        .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index)
     })?;
@@ -127,7 +127,7 @@ pub fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Resul
                 "query_engine.source_chunk.scan_limit",
                 "source scan limit row group is outside row-count metadata",
             )
-            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+            .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("row_group", row_group)
@@ -140,7 +140,7 @@ pub fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Resul
                 "query_engine.source_chunk.scan_limit",
                 "source scan limit row group row counts overflow native range",
             )
-            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+            .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
         })?;
@@ -154,7 +154,7 @@ pub fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Resul
         "query_engine.source_chunk.scan_limit",
         "planned chunk row groups do not cover the requested source scan limit",
     )
-    .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+    .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
     .with_fact("file_index", chunk.file_index)
     .with_fact("chunk_index", chunk.chunk_index)
     .with_fact("requested_rows", keep_rows)

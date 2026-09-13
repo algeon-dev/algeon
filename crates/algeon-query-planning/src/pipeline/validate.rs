@@ -9,10 +9,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, Result},
     pipeline::model::{
-        CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
-        PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundaryKind, SortStrategy,
+        CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
+        PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundaryKind,
+        SortStrategy,
     },
     plan::NodeId,
 };
@@ -44,11 +45,11 @@ impl ScheduleRejection {
     }
 }
 
-pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> Result<()> {
     validate_schedule(pipeline).map_err(ScheduleRejection::into_error)
 }
 
-pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> Result<(), ScheduleRejection> {
+pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> std::result::Result<(), ScheduleRejection> {
     let task_ids = named("compiled_pipeline_task_identity_invalid", validate_tasks(pipeline))?;
     named("compiled_pipeline_edge_identity_invalid", validate_edges(pipeline, &task_ids))?;
     named("compiled_pipeline_barrier_identity_invalid", validate_barriers(pipeline, &task_ids))?;
@@ -75,11 +76,11 @@ pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> Result<(), Sched
     Ok(())
 }
 
-fn named<T>(reason: &'static str, result: crate::error::Result<T>) -> Result<T, ScheduleRejection> {
+fn named<T>(reason: &'static str, result: Result<T>) -> std::result::Result<T, ScheduleRejection> {
     result.map_err(|error| ScheduleRejection { reason, error })
 }
 
-fn validate_tasks(pipeline: &CompiledPipeline) -> crate::error::Result<BTreeSet<PipelineTaskId>> {
+fn validate_tasks(pipeline: &CompiledPipeline) -> Result<BTreeSet<PipelineTaskId>> {
     let mut ids = BTreeSet::new();
     for (index, task) in pipeline.tasks().iter().enumerate() {
         if task.id().index() != index {
@@ -97,7 +98,7 @@ fn validate_tasks(pipeline: &CompiledPipeline) -> crate::error::Result<BTreeSet<
 fn validate_edges(
     pipeline: &CompiledPipeline,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::error::Result<BTreeSet<PipelineEdgeId>> {
+) -> Result<BTreeSet<PipelineEdgeId>> {
     let mut ids = BTreeSet::new();
     for (index, edge) in pipeline.edges().iter().enumerate() {
         if edge.id().index() != index {
@@ -125,7 +126,7 @@ fn validate_edges(
 fn validate_barriers(
     pipeline: &CompiledPipeline,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::error::Result<BTreeSet<PipelineBarrierId>> {
+) -> Result<BTreeSet<PipelineBarrierId>> {
     let mut ids = BTreeSet::new();
     for (index, barrier) in pipeline.barriers().iter().enumerate() {
         if barrier.id().index() != index {
@@ -150,7 +151,7 @@ fn validate_barriers(
 fn validate_resources(
     pipeline: &CompiledPipeline,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::error::Result<BTreeSet<ResidentResourceId>> {
+) -> Result<BTreeSet<ResidentResourceId>> {
     let mut ids = BTreeSet::new();
     for (index, resource) in pipeline.resources().iter().enumerate() {
         if resource.id().index() != index {
@@ -182,7 +183,7 @@ fn validate_lifetime(
     resource: ResidentResourceId,
     lifetime: ResidentLifetime,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     match lifetime {
         ResidentLifetime::TaskLocal { task } => {
             if !task_ids.contains(&task) {
@@ -209,10 +210,7 @@ fn validate_lifetime(
     Ok(())
 }
 
-fn validate_task_dependencies(
-    pipeline: &CompiledPipeline,
-    task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::error::Result<()> {
+fn validate_task_dependencies(pipeline: &CompiledPipeline, task_ids: &BTreeSet<PipelineTaskId>) -> Result<()> {
     let mut incoming = BTreeSet::new();
     for edge in pipeline.edges() {
         incoming.insert(edge.to());
@@ -263,7 +261,7 @@ fn is_join_build_for_probe(pipeline: &CompiledPipeline, build_id: PipelineTaskId
         && (build.plan_node().is_none() || probe.plan_node().is_none() || build.plan_node() == probe.plan_node())
 }
 
-fn validate_task_graph_is_acyclic(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_task_graph_is_acyclic(pipeline: &CompiledPipeline) -> Result<()> {
     let adjacency = adjacency(pipeline);
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -279,7 +277,7 @@ fn visit_task(
     adjacency: &BTreeMap<PipelineTaskId, Vec<PipelineTaskId>>,
     visiting: &mut BTreeSet<PipelineTaskId>,
     visited: &mut BTreeSet<PipelineTaskId>,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     if visited.contains(&task) {
         return Ok(());
     }
@@ -297,7 +295,7 @@ fn visit_task(
 fn validate_task_resource_references(
     pipeline: &CompiledPipeline,
     resource_ids: &BTreeSet<ResidentResourceId>,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     for task in pipeline.tasks() {
         for resource in task.input_resources().iter().chain(task.output_resources()) {
             if !resource_ids.contains(resource) {
@@ -319,7 +317,7 @@ fn validate_task_resource_references(
     Ok(())
 }
 
-fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_resource_flow(pipeline: &CompiledPipeline) -> Result<()> {
     for resource in pipeline.resources() {
         let producer = task_by_id(pipeline, resource.producer())?;
         if !producer.output_resources().contains(&resource.id()) {
@@ -422,7 +420,7 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::error::Result<(
     Ok(())
 }
 
-fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> Result<()> {
     let sink_outputs = pipeline
         .resources()
         .iter()
@@ -466,10 +464,7 @@ fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> crate::error::
     Ok(())
 }
 
-fn validate_shared_resident_resource_edges(
-    pipeline: &CompiledPipeline,
-    resource: &ResidentResource,
-) -> crate::error::Result<()> {
+fn validate_shared_resident_resource_edges(pipeline: &CompiledPipeline, resource: &ResidentResource) -> Result<()> {
     let shared_edges = pipeline
         .edges()
         .iter()
@@ -530,7 +525,7 @@ fn validate_shared_resident_resource_edges(
     Ok(())
 }
 
-fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> Result<()> {
     for task in pipeline.tasks() {
         for resource_id in task.input_resources() {
             let resource = resource_by_id(pipeline, *resource_id)?;
@@ -553,7 +548,7 @@ fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate:
 
 /// Each task kind declares how many resident resources it consumes and
 /// produces; a schedule whose tasks disagree cannot be interpreted.
-fn validate_task_resource_arity(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_task_resource_arity(pipeline: &CompiledPipeline) -> Result<()> {
     for task in pipeline.tasks() {
         let inputs = task.input_resources().len();
         let outputs = task.output_resources().len();
@@ -588,7 +583,7 @@ fn validate_task_resource_arity(pipeline: &CompiledPipeline) -> crate::error::Re
 /// and consumed by exactly one limit pass-through, so two producers claiming
 /// the same limit, or a claim whose limit task does not consume the sort
 /// output, would apply the fetch/skip twice or not at all.
-fn validate_fused_topk_limit_binding(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_fused_topk_limit_binding(pipeline: &CompiledPipeline) -> Result<()> {
     let mut claimed_limits = BTreeMap::<(PipelineTaskId, NodeId), PipelineTaskId>::new();
     for task in pipeline.tasks() {
         let Some(SortStrategy::FusedTopK { limit_task, limit_node }) = task.sort_strategy() else {
@@ -636,7 +631,7 @@ fn validate_fused_topk_limit_binding(pipeline: &CompiledPipeline) -> crate::erro
 /// whole input, so its boundary barrier must gate every task that reads that
 /// output. The sink materialization edge is excluded: the sink boundary
 /// barrier gates the final output instead.
-fn validate_stage_boundary_coverage(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_stage_boundary_coverage(pipeline: &CompiledPipeline) -> Result<()> {
     for task in pipeline.tasks() {
         let barrier_kind = match task.kind() {
             PipelineTaskKind::Aggregate | PipelineTaskKind::Window => PipelineBarrierKind::AggregateBoundary,
@@ -663,7 +658,7 @@ fn validate_stage_boundary_coverage(pipeline: &CompiledPipeline) -> crate::error
 /// A probe reads retained build state, so the build task must complete before
 /// it starts. The compiler emits the barrier from the join task group; this
 /// check proves the emitted schedule actually carries it.
-fn validate_join_build_before_probe(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_join_build_before_probe(pipeline: &CompiledPipeline) -> Result<()> {
     for probe in pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinProbe) {
         let build = pipeline
             .tasks()
@@ -703,7 +698,7 @@ fn direct_data_consumers(pipeline: &CompiledPipeline, task: PipelineTaskId) -> B
         .collect()
 }
 
-fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> Result<()> {
     for barrier in pipeline.barriers() {
         if barrier.upstream_tasks().is_empty() {
             return Err(invalid("pipeline barrier has no upstream tasks").with_fact("barrier_id", barrier.id()));
@@ -795,7 +790,7 @@ fn validate_barrier_task_pair(
     expected_upstream: PipelineTaskKind,
     downstream_id: PipelineTaskId,
     expected_downstream: PipelineTaskKind,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     let upstream = task_by_id(pipeline, upstream_id)?;
     let downstream = task_by_id(pipeline, downstream_id)?;
     if upstream.kind() != expected_upstream {
@@ -829,7 +824,7 @@ fn validate_barrier_upstream_kinds(
     barrier: PipelineBarrierId,
     upstream_tasks: &[PipelineTaskId],
     expected: &[PipelineTaskKind],
-) -> crate::error::Result<()> {
+) -> Result<()> {
     for task_id in upstream_tasks {
         let task = task_by_id(pipeline, *task_id)?;
         if !expected.contains(&task.kind()) {
@@ -843,10 +838,7 @@ fn validate_barrier_upstream_kinds(
     Ok(())
 }
 
-fn task_by_id(
-    pipeline: &CompiledPipeline,
-    task_id: PipelineTaskId,
-) -> crate::error::Result<&crate::pipeline::model::PipelineTask> {
+fn task_by_id(pipeline: &CompiledPipeline, task_id: PipelineTaskId) -> Result<&PipelineTask> {
     pipeline
         .tasks()
         .iter()
@@ -854,10 +846,7 @@ fn task_by_id(
         .ok_or_else(|| invalid("pipeline task does not exist").with_fact("task_id", task_id))
 }
 
-fn resource_by_id(
-    pipeline: &CompiledPipeline,
-    resource_id: ResidentResourceId,
-) -> crate::error::Result<&crate::pipeline::model::ResidentResource> {
+fn resource_by_id(pipeline: &CompiledPipeline, resource_id: ResidentResourceId) -> Result<&ResidentResource> {
     pipeline
         .resources()
         .iter()

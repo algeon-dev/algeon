@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{BinaryOperator, Expr};
-use crate::core::{
-    error::{Error, ErrorCode, FACT_TYPE_ID, Result},
-    types::{DataType, TypeId, cudf_null_mask_allocation_size_bytes},
+use crate::{
+    core::{
+        error::{Error, ErrorCode, FACT_TYPE_ID, Result},
+        types::{DataType, TypeId, cudf_null_mask_allocation_size_bytes},
+    },
+    ops::binary::infer_binary_output_dtype,
 };
 
 pub const DATAFRAME_EXPRESSION_ALLOCATION_PREFLIGHT_CONTRACT: &str =
@@ -323,7 +326,7 @@ fn fixed_width_addition<'a>(
     };
     let lhs = comparison_operand(lhs, rows, inputs, components)?;
     let rhs = comparison_operand(rhs, rows, inputs, components)?;
-    let dtype = crate::ops::binary::infer_binary_output_dtype(lhs.dtype, rhs.dtype, BinaryOperator::Add)
+    let dtype = infer_binary_output_dtype(lhs.dtype, rhs.dtype, BinaryOperator::Add)
         .map_err(|error| error.reanchor_if_needed("expr::dataframe_expression_allocation_preflight"))?;
     let nullable = lhs.nullable || rhs.nullable;
     let retained_bytes = fixed_width_column_bytes(rows, dtype, nullable)?;

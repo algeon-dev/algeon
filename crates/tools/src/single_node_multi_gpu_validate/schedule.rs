@@ -387,6 +387,7 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::single_node_multi_gpu_validate::profile::ScheduleStepProfile;
 
     fn scheduling(mode: ArrivalMode, rate: Option<u64>, seed: u64) -> SchedulingProfile {
         SchedulingProfile {
@@ -533,13 +534,13 @@ mod tests {
         let mut profile = scheduling(ArrivalMode::Concurrency, None, 0);
         profile.measurement_seconds = 0;
         profile.steps = vec![
-            super::super::profile::ScheduleStepProfile {
+            ScheduleStepProfile {
                 concurrency: Some(2),
                 arrival_rate_per_second: None,
                 measurement_seconds: 5,
                 rate_overrun: None,
             },
-            super::super::profile::ScheduleStepProfile {
+            ScheduleStepProfile {
                 concurrency: Some(8),
                 arrival_rate_per_second: None,
                 measurement_seconds: 3,
@@ -563,13 +564,13 @@ mod tests {
         let mut profile = scheduling(ArrivalMode::Rate, None, 42);
         profile.measurement_seconds = 0;
         profile.steps = vec![
-            super::super::profile::ScheduleStepProfile {
+            ScheduleStepProfile {
                 concurrency: None,
                 arrival_rate_per_second: Some(1_000),
                 measurement_seconds: 4,
                 rate_overrun: Some(RateOverrunPolicy::Delay),
             },
-            super::super::profile::ScheduleStepProfile {
+            ScheduleStepProfile {
                 concurrency: None,
                 arrival_rate_per_second: Some(10_000),
                 measurement_seconds: 4,

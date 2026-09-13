@@ -1,8 +1,8 @@
 //! Tests for `cudf::ops::copying::shift`.
 
-use cudf::{ops::copying, testing::prelude::*};
+use cudf::{core::error::ErrorCode, ops::copying, testing::prelude::*};
 
-use crate::common::{column_from_slice, null_scalar, scalar};
+use crate::common::{column_from_slice, null_scalar, run_named_cases, scalar};
 
 fn shift_forward_with_null_fill() {
     let col = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
@@ -57,7 +57,7 @@ fn shift_dtype_mismatch_rejects_with_structured_error() {
     let wrong_fill = scalar(1.5f64).unwrap();
 
     let err = copying::shift(&cv, 1, &wrong_fill).unwrap_err();
-    assert_eq!(err.code(), cudf::core::error::ErrorCode::TypeMismatch);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
     let dump = format!("{err:?}");
     assert!(dump.contains("shift_fill_value"), "missing resource fact: {dump}");
     assert!(dump.contains("dtype_mismatch"), "missing reason: {dump}");
@@ -65,7 +65,7 @@ fn shift_dtype_mismatch_rejects_with_structured_error() {
 
 #[test]
 fn shift_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("shift_forward_with_null_fill", shift_forward_with_null_fill),
         ("shift_backward_with_value_fill", shift_backward_with_value_fill),
         ("shift_zero_offset_is_identity", shift_zero_offset_is_identity),

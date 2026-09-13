@@ -11,7 +11,10 @@ use std::{
 use super::{
     device::DeviceId, device_guard::DeviceEntryGuard, device_health::check_device_status_in, stream::CudaStream,
 };
-use crate::core::error::{self, Error, ErrorCode, Result};
+use crate::core::{
+    error::{self, Error, ErrorCode, Result},
+    native_teardown::drop_device_owned_handle,
+};
 
 /// An owned CUDA event.
 ///
@@ -131,12 +134,9 @@ impl CudaEvent {
 impl Drop for CudaEventHandle {
     fn drop(&mut self) {
         let raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        crate::core::native_teardown::drop_device_owned_handle(
-            raw,
-            self.device,
-            "CudaEventHandle::drop",
-            |owned| unsafe { cudf_sys::cudf_event_destroy(owned) },
-        );
+        drop_device_owned_handle(raw, self.device, "CudaEventHandle::drop", |owned| unsafe {
+            cudf_sys::cudf_event_destroy(owned)
+        });
     }
 }
 
@@ -158,7 +158,10 @@ impl std::fmt::Debug for CudaEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope};
+    use crate::{
+        runtime::DeviceHealthStatus,
+        testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope},
+    };
 
     #[test]
     fn drop_get_device_failure_quarantines_event_without_destructor_ffi() {
@@ -172,7 +175,7 @@ mod tests {
         drop(event);
 
         let snapshot = scope.health_snapshot(device);
-        assert_eq!(snapshot.status(), crate::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
         assert_eq!(snapshot.quarantined_teardown_count(), 1);
         assert_eq!(scope.remaining_call_count(), 0);
     }

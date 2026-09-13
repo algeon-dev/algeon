@@ -1,5 +1,7 @@
 use std::{fs::File, sync::Arc};
 
+use query_engine::expr::{CaseWhen, DatePart};
+
 use super::*;
 
 #[test]
@@ -122,9 +124,9 @@ fn native_query_executes_scalar_expression_families() {
         Expr::column("orderkey"),
         Expr::binary(Expr::column("orderkey"), BinaryOp::Modulo, Expr::literal(LiteralValue::Int64(2)))
             .alias("order_mod"),
-        Expr::extract(query_engine::expr::DatePart::Year, Expr::column("shipdate")).alias("ship_year"),
-        Expr::extract(query_engine::expr::DatePart::Month, Expr::column("shipdate")).alias("ship_month"),
-        Expr::extract(query_engine::expr::DatePart::Day, Expr::column("shipdate")).alias("ship_day"),
+        Expr::extract(DatePart::Year, Expr::column("shipdate")).alias("ship_year"),
+        Expr::extract(DatePart::Month, Expr::column("shipdate")).alias("ship_month"),
+        Expr::extract(DatePart::Day, Expr::column("shipdate")).alias("ship_day"),
         Expr::binary(
             Expr::column("event_ts"),
             BinaryOp::Subtract,
@@ -133,7 +135,7 @@ fn native_query_executes_scalar_expression_families() {
         .alias("event_ts_minus_interval"),
         Expr::substring(Expr::column("status"), 1, Some(1)).alias("status_prefix"),
         Expr::case(
-            vec![query_engine::expr::CaseWhen::new(
+            vec![CaseWhen::new(
                 Expr::binary(Expr::column("status"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("O".to_string()))),
                 Expr::literal(LiteralValue::Utf8("open".to_string())),
             )],
@@ -484,7 +486,7 @@ fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() 
         projection_outputs(
             vec![
                 Expr::date_trunc(
-                    query_engine::expr::DatePart::Microsecond,
+                    DatePart::Microsecond,
                     Expr::column("event_ts"),
                     DataType::Timestamp(TimeUnit::Millisecond, None),
                 )
@@ -678,7 +680,7 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
     let cases = [
         (
             "extract_date64",
-            vec![Expr::extract(query_engine::expr::DatePart::Year, Expr::column("event_date64")).alias("event_year")],
+            vec![Expr::extract(DatePart::Year, Expr::column("event_date64")).alias("event_year")],
             Arc::new(Schema::new(vec![Field::new("event_year", DataType::Int32, true)])),
         ),
         (
@@ -792,7 +794,7 @@ fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execut
         vec!["orderkey".to_string()],
     );
     let label = Expr::case(
-        vec![query_engine::expr::CaseWhen::new(
+        vec![CaseWhen::new(
             Expr::like(Expr::column("status"), "O%"),
             Expr::literal(LiteralValue::Utf8("open".to_string())),
         )],

@@ -39,20 +39,23 @@ use crate::{
     DataFrame, Series,
     core::{
         Column, Table,
+        column::ColumnView,
         error::{self, DeviceIdFact, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
+        native_teardown::{drop_device_owned_handle, quarantine_unknown_device_owned_handle},
+        table::TableView,
         types::TypeId,
     },
     ops::dictionary,
-    runtime::{BoundaryKind, BoundaryObservation, QueryStageKind, Runtime, record_boundary_observation_in_domain},
+    runtime::{
+        BoundaryKind, BoundaryObservation, DeviceId, QueryStageKind, Runtime, execution_domain::EnteredExecution,
+        record_boundary_observation_in_domain,
+    },
 };
 
 type ArrowDeviceArrayHandle = cudf_sys::cudf_arrow_device_array_handle_state;
 type ArrowDeviceSchemaHandle = cudf_sys::cudf_arrow_schema_handle_state;
 
-fn column_view_device_abi_observation(
-    view: &crate::core::column::ColumnView<'_>,
-    operation: &'static str,
-) -> Result<BoundaryObservation> {
+fn column_view_device_abi_observation(view: &ColumnView<'_>, operation: &'static str) -> Result<BoundaryObservation> {
     Ok(BoundaryObservation::new(
         BoundaryKind::DeviceAbiHandoff,
         view.execution_domain().placement(),
@@ -62,10 +65,7 @@ fn column_view_device_abi_observation(
     ))
 }
 
-fn table_view_device_abi_observation(
-    view: &crate::core::table::TableView<'_>,
-    operation: &'static str,
-) -> Result<BoundaryObservation> {
+fn table_view_device_abi_observation(view: &TableView<'_>, operation: &'static str) -> Result<BoundaryObservation> {
     Ok(BoundaryObservation::new(
         BoundaryKind::DeviceAbiHandoff,
         view.execution_domain().placement(),
@@ -158,9 +158,7 @@ fn import_materialization_from_raw(
     }
 }
 
-fn foreign_import_materialization_for_column_view(
-    view: &crate::core::column::ColumnView<'_>,
-) -> Result<DeviceArrowImportMaterialization> {
+fn foreign_import_materialization_for_column_view(view: &ColumnView<'_>) -> Result<DeviceArrowImportMaterialization> {
     match view.data_type()?.id() {
         TypeId::Bool8 => Ok(DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy),
         TypeId::List => foreign_import_materialization_for_column_view(&view.list_sliced_child()?),
@@ -179,9 +177,7 @@ fn foreign_import_materialization_for_column_view(
     }
 }
 
-fn foreign_import_materialization_for_table_view(
-    view: &crate::core::table::TableView<'_>,
-) -> Result<DeviceArrowImportMaterialization> {
+fn foreign_import_materialization_for_table_view(view: &TableView<'_>) -> Result<DeviceArrowImportMaterialization> {
     for index in 0..view.num_columns()? {
         if foreign_import_materialization_for_column_view(&view.column(index)?)?
             == DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy
@@ -424,14 +420,14 @@ fn validate_raw_abi_parts(
     Ok((schema, array))
 }
 
-fn device_id_for_native_teardown(array: NonNull<ArrowDeviceArrayHandle>) -> Option<crate::runtime::DeviceId> {
+fn device_id_for_native_teardown(array: NonNull<ArrowDeviceArrayHandle>) -> Option<DeviceId> {
     let mut raw = -1_i64;
     let status = unsafe { cudf_sys::cudf_arrow_device_array_device_id(array.as_ptr(), &mut raw) };
     if status != cudf_sys::CUDF_SUCCESS {
         return None;
     }
     let ordinal = i32::try_from(raw).ok()?;
-    (ordinal >= 0).then(|| crate::runtime::DeviceId::from_validated_ordinal_raw(ordinal))
+    (ordinal >= 0).then(|| DeviceId::from_validated_ordinal_raw(ordinal))
 }
 
 fn with_optional_column_index(mut err: Error, column_index: Option<usize>) -> Error {
@@ -673,25 +669,19 @@ unsafe fn table_child_array_for_fixed_width_ptr<'a>(
 struct DeviceArrowAbiRootInner {
     schema: NonNull<ArrowDeviceSchemaHandle>,
     array: NonNull<ArrowDeviceArrayHandle>,
-    device: Option<crate::runtime::DeviceId>,
+    device: Option<DeviceId>,
     materialization: DeviceArrowImportMaterialization,
     retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     ownership: DeviceArrowAbiOwnership,
 }
 
-fn drop_device_arrow_array(array: NonNull<ArrowDeviceArrayHandle>, device: Option<crate::runtime::DeviceId>) {
+fn drop_device_arrow_array(array: NonNull<ArrowDeviceArrayHandle>, device: Option<DeviceId>) {
     if let Some(device) = device {
-        crate::core::native_teardown::drop_device_owned_handle(
-            array.as_ptr(),
-            device,
-            "DeviceArrowAbiRootInner::drop",
-            |owned| unsafe { cudf_sys::cudf_arrow_device_array_destroy(owned) },
-        );
+        drop_device_owned_handle(array.as_ptr(), device, "DeviceArrowAbiRootInner::drop", |owned| unsafe {
+            cudf_sys::cudf_arrow_device_array_destroy(owned)
+        });
     } else {
-        crate::core::native_teardown::quarantine_unknown_device_owned_handle(
-            array.as_ptr(),
-            "DeviceArrowAbiRootInner::drop",
-        );
+        quarantine_unknown_device_owned_handle(array.as_ptr(), "DeviceArrowAbiRootInner::drop");
     }
 }
 
@@ -895,8 +885,8 @@ fn unwrap_abi_root(inner: Arc<DeviceArrowAbiRootInner>) -> DeviceArrowAbiRootInn
 }
 
 fn export_device_arrow_column_from_view(
-    view: &crate::core::column::ColumnView<'_>,
-    exec_options: crate::runtime::execution_domain::EnteredExecution,
+    view: &ColumnView<'_>,
+    exec_options: EnteredExecution,
     retained_owner: Arc<dyn Any + Send + Sync>,
     operation: &'static str,
     reported_materialization: Option<DeviceArrowExportMaterialization>,
@@ -939,8 +929,8 @@ fn export_device_arrow_column_from_view(
 }
 
 fn export_device_arrow_table_from_view(
-    view: &crate::core::table::TableView<'_>,
-    exec_options: crate::runtime::execution_domain::EnteredExecution,
+    view: &TableView<'_>,
+    exec_options: EnteredExecution,
     raw_names: Option<&[*const c_char]>,
     retained_owner: Arc<dyn Any + Send + Sync>,
     operation: &'static str,

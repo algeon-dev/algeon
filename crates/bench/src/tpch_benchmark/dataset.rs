@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use workloads::tpch::{TpchDefaultScale, default_tpch_parquet_root};
+
 use super::*;
 
 pub(super) async fn prepare_benchmark_dataset(
@@ -136,10 +138,10 @@ fn prepare_external_dataset(
 }
 
 fn default_root_for(scale_factor: NativeTpchScaleFactor) -> &'static str {
-    workloads::tpch::default_tpch_parquet_root(match scale_factor {
-        NativeTpchScaleFactor::Sf1 => workloads::tpch::TpchDefaultScale::Sf1,
-        NativeTpchScaleFactor::Sf10 => workloads::tpch::TpchDefaultScale::Sf10,
-        NativeTpchScaleFactor::Sf100 => workloads::tpch::TpchDefaultScale::Sf100Optimized,
+    default_tpch_parquet_root(match scale_factor {
+        NativeTpchScaleFactor::Sf1 => TpchDefaultScale::Sf1,
+        NativeTpchScaleFactor::Sf10 => TpchDefaultScale::Sf10,
+        NativeTpchScaleFactor::Sf100 => TpchDefaultScale::Sf100Optimized,
     })
 }
 

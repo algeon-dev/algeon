@@ -2,7 +2,7 @@
 
 use cudf::core::Table;
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, string_scalar};
 
 #[test]
 fn test_column_debug_smoke_report_metadata_without_values() {
@@ -59,7 +59,7 @@ fn test_table_debug_smoke_report_schema_without_values() {
 
 #[test]
 fn test_scalar_debug_smoke_reports_type_and_validity_without_value() {
-    let scalar = crate::common::string_scalar("secret-debug-payload").unwrap();
+    let scalar = string_scalar("secret-debug-payload").unwrap();
 
     let output = format!("{:?}", scalar);
 

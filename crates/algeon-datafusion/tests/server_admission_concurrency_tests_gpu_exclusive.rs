@@ -11,13 +11,16 @@ mod support;
 use std::time::{Duration, Instant};
 
 use arrow::record_batch::RecordBatch;
+use arrow_flight::{error::FlightError, sql::ActionCancelQueryRequest};
 use futures::TryStreamExt;
 use query_engine::observability::AttemptEvidenceProvenance;
 use support::{
     CONCURRENCY_SQL, ConcurrencyServer, GIB, MANAGED_CAPACITY_BYTES, MAX_ACTIVE_ATTEMPTS, QUERY_CAP_BYTES,
     SMALL_TABLE_ROWS, sealed_report_for,
 };
+use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
+use tonic::Code;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn three_simultaneous_query_caps_fill_the_device_and_the_fourth_query_waits_without_a_grant() {
@@ -51,7 +54,7 @@ async fn three_simultaneous_query_caps_fill_the_device_and_the_fourth_query_wait
     assert_eq!(report.live_grants_bytes, MANAGED_CAPACITY_BYTES);
 
     drop(holders);
-    let batches = tokio::time::timeout(Duration::from_secs(120), queued)
+    let batches = timeout(Duration::from_secs(120), queued)
         .await
         .expect("released capacity admits the waiting query")
         .expect("waiting query task should not panic")
@@ -97,7 +100,7 @@ async fn the_active_attempt_limit_holds_a_fourth_query_back_while_capacity_is_st
     );
 
     drop(holders);
-    let batches = tokio::time::timeout(Duration::from_secs(120), queued)
+    let batches = timeout(Duration::from_secs(120), queued)
         .await
         .expect("a freed slot admits the waiting query")
         .expect("waiting query task should not panic")
@@ -180,13 +183,13 @@ async fn one_query_exceeding_its_cap_leaves_the_other_query_and_the_ledger_intac
         .expect("the bounded query is unaffected by the other query's memory failure");
     assert_eq!(surviving.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
 
-    let error = tokio::time::timeout(Duration::from_secs(180), failing)
+    let error = timeout(Duration::from_secs(180), failing)
         .await
         .expect("the oversized query terminates")
         .expect("oversized query task should not panic")
         .expect_err("a sort that cannot fit the query cap must fail");
     let status = match error {
-        arrow_flight::error::FlightError::Tonic(status) => *status,
+        FlightError::Tonic(status) => *status,
         other => panic!("expected a tonic Status, got {other:?}"),
     };
     assert_eq!(
@@ -206,7 +209,7 @@ async fn one_query_exceeding_its_cap_leaves_the_other_query_and_the_ledger_intac
             break;
         }
         assert!(Instant::now() < deadline, "capacity was not returned after the failure: {report:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
     }
 
     server.shutdown().await;
@@ -236,7 +239,7 @@ async fn cancelling_a_streaming_flight_query_fails_it_whole_and_returns_its_capa
 
     let action_body = {
         use prost::Message as _;
-        arrow_flight::sql::ActionCancelQueryRequest { info: flight_info.encode_to_vec().into() }
+        ActionCancelQueryRequest { info: flight_info.encode_to_vec().into() }
     };
     let action = {
         use arrow_flight::sql::ProstMessageExt as _;
@@ -256,10 +259,10 @@ async fn cancelling_a_streaming_flight_query_fails_it_whole_and_returns_its_capa
         }
     }
     let status = match error.expect("cancelled stream reports an error") {
-        arrow_flight::error::FlightError::Tonic(status) => *status,
+        FlightError::Tonic(status) => *status,
         other => panic!("expected a tonic Status, got {other:?}"),
     };
-    assert_eq!(status.code(), tonic::Code::Cancelled);
+    assert_eq!(status.code(), Code::Cancelled);
 
     // Cancellation does not preempt launched kernels, but cleanup must still
     // drain and hand the whole cap back before the ledger reports it free.
@@ -271,7 +274,7 @@ async fn cancelling_a_streaming_flight_query_fails_it_whole_and_returns_its_capa
             break;
         }
         assert!(Instant::now() < deadline, "cancelled query did not return its capacity: {report:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
     }
 
     server.shutdown().await;
@@ -297,7 +300,7 @@ async fn a_slow_flight_consumer_keeps_the_query_cap_until_its_stream_drains() {
         batches += 1;
         // Read deliberately slowly so the server's bounded output channel has
         // to apply backpressure instead of buffering the whole result.
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sleep(Duration::from_millis(20)).await;
         let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
         if report.live_grants_bytes == QUERY_CAP_BYTES {
             saw_cap_held_mid_stream = true;
@@ -314,7 +317,7 @@ async fn a_slow_flight_consumer_keeps_the_query_cap_until_its_stream_drains() {
             break;
         }
         assert!(Instant::now() < deadline, "capacity was not released after the stream drained: {report:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
     }
 
     server.shutdown().await;
@@ -343,7 +346,7 @@ async fn a_backlog_of_failing_queries_never_lets_the_ledger_over_issue_capacity(
                 worst.0 = worst.0.max(report.grants.len());
                 worst.1 = worst.1.max(report.live_grants_bytes);
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
         }
         worst
     });
@@ -360,13 +363,13 @@ async fn a_backlog_of_failing_queries_never_lets_the_ledger_over_issue_capacity(
     }
 
     for (index, task) in failing.into_iter().enumerate() {
-        let error = tokio::time::timeout(Duration::from_secs(300), task)
+        let error = timeout(Duration::from_secs(300), task)
             .await
             .unwrap_or_else(|_| panic!("backlog query {index} did not terminate"))
             .unwrap_or_else(|error| panic!("backlog query {index} panicked: {error:?}"))
             .expect_err("every backlog query exceeds its cap");
         let status = match error {
-            arrow_flight::error::FlightError::Tonic(status) => *status,
+            FlightError::Tonic(status) => *status,
             other => panic!("expected a tonic Status, got {other:?}"),
         };
         assert_eq!(
@@ -395,7 +398,7 @@ async fn a_backlog_of_failing_queries_never_lets_the_ledger_over_issue_capacity(
             break;
         }
         assert!(Instant::now() < deadline, "cleanup backlog did not drain: {report:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
     }
 
     server.shutdown().await;

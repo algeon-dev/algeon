@@ -19,13 +19,13 @@ use cudf::{
     },
     ops::{
         expr::{col, lit_decimal128_raw, lit_timestamp_raw},
-        join::NullEquality,
+        join::{NullEquality, inner_join_indices},
     },
     testing::prelude::*,
 };
 use tempfile::TempDir;
 
-use crate::common::sample_runtime;
+use crate::common::{run_named_cases, sample_runtime};
 
 fn source_column(name: &str, dtype: DataType) -> SourceColumn {
     SourceColumn::new(name, dtype, false).unwrap()
@@ -143,7 +143,7 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
 
     let join_keys = key_table(&filtered, "orderkey");
     let order_keys = key_table(&orders, "orderkey");
-    let indices = cudf::ops::join::inner_join_indices(
+    let indices = inner_join_indices(
         &join_keys.testing_view().unwrap(),
         &order_keys.testing_view().unwrap(),
         NullEquality::Equal,
@@ -188,7 +188,7 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
 
 #[test]
 fn tpch_pipeline_contract_tests_cases() {
-    crate::common::run_named_cases(&[(
+    run_named_cases(&[(
         "mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export",
         mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export,
     )]);

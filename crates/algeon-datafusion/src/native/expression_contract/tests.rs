@@ -5,7 +5,7 @@ use datafusion::{
     common::{JoinSide, ScalarValue},
     config::ConfigOptions,
     functions::{core, datetime, math, regex, string, unicode},
-    logical_expr::Operator,
+    logical_expr::{Operator, ScalarUDF},
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
@@ -26,7 +26,7 @@ use crate::{capability::CapabilityReason, native::lowering::lower_physical_expr_
 
 fn scalar_function(
     name: &str,
-    function: Arc<datafusion::logical_expr::ScalarUDF>,
+    function: Arc<ScalarUDF>,
     args: Vec<Arc<dyn PhysicalExpr>>,
     output_type: DataType,
 ) -> Arc<dyn PhysicalExpr> {

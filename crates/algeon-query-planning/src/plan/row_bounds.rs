@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use super::{JoinSide, JoinType, NodeId, PlanNode, QueryPlan};
+use crate::source::SourceNode;
 
 /// Provenance for a row bound returned by this module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,10 +67,8 @@ pub fn hard_row_upper_bound_with_resident_rows(
     let input_bound = |input| hard_row_upper_bound_with_resident_rows(plan, input, resident_rows);
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LiteralBatch(source) => {
-                Some((source.row_count() as u64, RowBoundProvenance::PlanExact))
-            },
-            crate::source::SourceNode::LocalParquet(source) => {
+            SourceNode::LiteralBatch(source) => Some((source.row_count() as u64, RowBoundProvenance::PlanExact)),
+            SourceNode::LocalParquet(source) => {
                 let rows = source.exact_selected_row_count()?;
                 let rows = source.scan_limit.map_or(rows, |limit| rows.min(limit as u64));
                 Some((
@@ -77,7 +76,7 @@ pub fn hard_row_upper_bound_with_resident_rows(
                     RowBoundProvenance::PlanHardUpperBound,
                 ))
             },
-            crate::source::SourceNode::GpuResident(source) => resident_rows
+            SourceNode::GpuResident(source) => resident_rows
                 .get(&source.input_name)
                 .copied()
                 .or(source.row_count_upper_bound)

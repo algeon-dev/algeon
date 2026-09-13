@@ -1,13 +1,15 @@
+use object_store::path::Path as ObjectStorePath;
+
 use super::cache::stable_log_hash;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    source::{ParquetSourceLocation, ResolvedParquetSource},
+    source::{ParquetSourceLocation, ResolvedParquetSource, redacted_object_store_path_diagnostic},
 };
 
 pub(in crate::exec::source) struct CacheMaintenanceLocation {
     pub(in crate::exec::source) bucket: String,
     pub(in crate::exec::source) region: String,
-    pub(in crate::exec::source) key: ::object_store::path::Path,
+    pub(in crate::exec::source) key: ObjectStorePath,
     pub(in crate::exec::source) storage_profile_id: Option<String>,
 }
 
@@ -70,7 +72,7 @@ pub(in crate::exec::source) fn parse_s3_source_uri(
     Ok(CacheMaintenanceLocation {
         bucket: bucket.to_string(),
         region,
-        key: ::object_store::path::Path::from(key),
+        key: ObjectStorePath::from(key),
         storage_profile_id,
     })
 }
@@ -79,6 +81,6 @@ pub(super) fn object_store_bucket_fact(bucket: &str) -> String {
     format!("object_store_bucket:fnv64:{}", stable_log_hash(bucket))
 }
 
-pub(super) fn object_store_key_fact(location: &::object_store::path::Path) -> String {
-    crate::source::redacted_object_store_path_diagnostic(location.as_ref())
+pub(super) fn object_store_key_fact(location: &ObjectStorePath) -> String {
+    redacted_object_store_path_diagnostic(location.as_ref())
 }

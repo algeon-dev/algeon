@@ -3,28 +3,28 @@ use super::*;
 pub(super) fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,
-) -> &'a algeon_datafusion::native_report::NativeFallbackPressureRow {
+) -> &'a NativeFallbackPressureRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 
 pub(super) fn planning_rows<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> Vec<&'a algeon_datafusion::native_report::NativeDataFusionPlanningRow> {
+) -> Vec<&'a NativeDataFusionPlanningRow> {
     report.rows.iter().filter(|row| row.query_id == query_id).collect()
 }
 
 pub(super) fn whole_plan_planning_row<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> &'a algeon_datafusion::native_report::NativeDataFusionPlanningRow {
+) -> &'a NativeDataFusionPlanningRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 
 pub(super) fn planning_replacement_row<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
-) -> &'a algeon_datafusion::native_report::NativeDataFusionPlanningRow {
+) -> &'a NativeDataFusionPlanningRow {
     let rows = report.rows.iter().filter(|row| row.query_id == query_id);
     // Replacement assertions use the last accepted fragment row when bounded
     // whole-plan admission fails closed and child native fragments still
@@ -67,7 +67,7 @@ pub(super) fn typed_null_and_try_cast_reject_plan(scan: Arc<dyn ExecutionPlan>) 
 
 pub(super) fn aggregate_sort_limit_plan_with_filter(
     scan: Arc<dyn ExecutionPlan>,
-    predicate: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    predicate: Arc<dyn PhysicalExpr>,
 ) -> Arc<dyn ExecutionPlan> {
     let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
     let filter_schema = filter.schema();

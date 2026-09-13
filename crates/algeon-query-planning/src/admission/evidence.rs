@@ -11,6 +11,7 @@ use crate::{
     admission::scope::{AttemptExecutionManifest, AttemptExecutionScope, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result},
     plan::{DeferredGraphExecutionScopeIdentity, QueryPlan, canonical_execution_scope_fingerprint},
+    util::log_safe_fingerprint,
 };
 
 /// Immutable device execution capability required by an attempt.
@@ -251,8 +252,7 @@ impl AttemptCapabilityEvidence {
     #[doc(hidden)]
     pub fn validate_composed_occurrences(&self, plan: &QueryPlan, occurrence_ids: &[String]) -> Result<()> {
         let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
-        let expected_schema =
-            crate::admission::log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
+        let expected_schema = log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
         let matching = self
             .execution_scopes
             .iter()

@@ -117,10 +117,7 @@ pub(super) fn expected_tpch_physical_shape_marker(query_id: &str) -> &'static st
     }
 }
 
-pub(super) fn assert_tpch_join_diagnostics(
-    query_id: &str,
-    diagnostics: &[algeon_datafusion::native_report::NativeJoinDiagnosticSummary],
-) {
+pub(super) fn assert_tpch_join_diagnostics(query_id: &str, diagnostics: &[NativeJoinDiagnosticSummary]) {
     match query_id {
         "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q14" | "q15" | "q16"
         | "q17" | "q18" | "q19" | "q20" | "q21" => {
@@ -142,3 +139,4 @@ pub(super) fn assert_tpch_join_diagnostics(
         other => panic!("missing TPC-H join diagnostics expectation for {other}"),
     }
 }
+use algeon_datafusion::native_report::NativeJoinDiagnosticSummary;

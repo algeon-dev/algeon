@@ -11,14 +11,20 @@ use cudf::{
             filtered_join_allocation_preflight_for_metadata, filtered_join_probe_allocation_preflight,
         },
     },
-    testing::prelude::*,
+    testing::{
+        join::{
+            trigger_merge_reassembly_key_count_error_for_test, trigger_projected_cross_join_input_row_limit_for_test,
+            trigger_projected_cross_join_output_row_overflow_for_test,
+        },
+        prelude::*,
+    },
 };
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    column_from_strs_nullable, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_dependency_observation, reset_exec_observation,
-    reset_sync_observation, sample_runtime,
+    column_from_strs_nullable, dataframe_from_columns, dependency_wait_call_count_for_stream, error_context_value,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,26 +35,26 @@ fn left_df() -> DataFrame {
     // id: [1, 2, 3], score: [10, 20, 30]
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
-    crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df() -> DataFrame {
     // id: [2, 3, 4], value: [200, 300, 400]
     let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let values = column_from_slice(&[200i32, 300, 400]).unwrap();
-    crate::common::dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn left_df_asym() -> DataFrame {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
-    crate::common::dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df_asym() -> DataFrame {
     let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let values = column_from_slice(&[200i32, 300, 400]).unwrap();
-    crate::common::dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
+    dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
@@ -331,7 +337,7 @@ fn test_projected_cross_join_plan_reservation_and_materialize_use_execution_over
 }
 
 fn test_projected_cross_join_one_sided_projection_does_not_order_unselected_side() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = cross_left_df(&left_rt);
@@ -384,7 +390,7 @@ fn test_projected_cross_join_plan_rejects_zero_output_columns_explicitly() {
 }
 
 fn test_projected_cross_join_plan_rejects_row_count_overflow_before_execution() {
-    let err = cudf::testing::join::trigger_projected_cross_join_output_row_overflow_for_test().unwrap_err();
+    let err = trigger_projected_cross_join_output_row_overflow_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -393,7 +399,7 @@ fn test_projected_cross_join_plan_rejects_row_count_overflow_before_execution() 
 }
 
 fn test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_with_zero_output() {
-    let err = cudf::testing::join::trigger_projected_cross_join_input_row_limit_for_test().unwrap_err();
+    let err = trigger_projected_cross_join_input_row_limit_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -402,7 +408,7 @@ fn test_projected_cross_join_plan_rejects_input_row_count_above_cudf_limit_even_
 }
 
 fn test_dataframe_join_indices_materialization_reservation_orders_mixed_domains() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let data_rt = sample_runtime();
     let indices_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -538,7 +544,7 @@ fn test_dataframe_filtered_join_probe_state_materializes_without_second_size_pro
 }
 
 fn test_filtered_join_fixed_width_metadata_preflight_matches_built_owner() {
-    let build = crate::common::dataframe_from_columns(
+    let build = dataframe_from_columns(
         vec!["leftKey".to_string(), "rightKey".to_string()],
         vec![
             column_from_slice_nullable(&[2i64, 4, 8], &[true, true, true]).unwrap(),
@@ -580,7 +586,7 @@ fn test_filtered_join_string_metadata_and_probe_preflights_match_built_owners() 
     assert_eq!(probe_preflight.retained_probe_state_bytes(), probe_state.device_allocated_size_bytes().unwrap());
     assert_eq!(probe_preflight.gather_map_bytes(), probe_state.probe_gather_map_reservation_size_bytes().unwrap());
 
-    let nullable_build = crate::common::dataframe_from_columns(
+    let nullable_build = dataframe_from_columns(
         vec!["id".to_string()],
         vec![column_from_strs_nullable(&["a", "", "cc"], &[true, false, true]).unwrap()],
     )
@@ -723,10 +729,8 @@ fn test_dataframe_left_semi_join_honors_null_equality() {
     let left_ids = column_from_slice_nullable(&[1i32, 0, 2], &[true, false, true]).unwrap();
     let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
     let right_ids = column_from_slice_nullable(&[0i32, 3], &[false, true]).unwrap();
-    let left =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![left_ids, scores])
-            .unwrap();
-    let right = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![right_ids]).unwrap();
+    let left = dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![left_ids, scores]).unwrap();
+    let right = dataframe_from_columns(vec!["id".to_string()], vec![right_ids]).unwrap();
 
     let nulls_equal = left
         .left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).null_equality(cudf::NullEquality::Equal))
@@ -741,7 +745,7 @@ fn test_dataframe_left_semi_join_honors_null_equality() {
 }
 
 fn test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let data_rt = sample_runtime();
     let query_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -762,7 +766,7 @@ fn test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles() 
 }
 
 fn test_dataframe_inner_join_indices_with_execution_uses_borrowed_handles() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let data_rt = sample_runtime();
     let query_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -956,7 +960,7 @@ fn test_inner_merge_same_key() {
 }
 
 fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -971,7 +975,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
@@ -982,7 +986,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     // DataFrame guarantees one retained provenance bundle for all columns, so
     // one dependency from the right frame's stream orders both right keys and
     // payload before the left/output stream.
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let rows: Vec<_> = i32_column(&result, "id")
@@ -1038,11 +1042,8 @@ fn test_merge_suffix_overlapping_payload() {
     let left = left_df();
     let right_ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let right_scores = column_from_slice(&[200i32, 300, 400]).unwrap();
-    let right = crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "score".to_string()],
-        vec![right_ids, right_scores],
-    )
-    .unwrap();
+    let right =
+        dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
 
     let result = left.merge(&right, MergeOptions::new().on(["id"])).unwrap();
 
@@ -1063,11 +1064,8 @@ fn test_merge_custom_suffixes() {
     let left = left_df();
     let right_ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let right_scores = column_from_slice(&[200i32, 300, 400]).unwrap();
-    let right = crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "score".to_string()],
-        vec![right_ids, right_scores],
-    )
-    .unwrap();
+    let right =
+        dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![right_ids, right_scores]).unwrap();
 
     let result = left.merge(&right, MergeOptions::new().on(["id"]).suffixes("_x", "_y")).unwrap();
 
@@ -1117,7 +1115,7 @@ fn test_full_merge() {
 }
 
 fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -1132,7 +1130,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let result = left.merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
@@ -1142,7 +1140,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
     // DataFrame-level merge can order the whole right frame once because all
     // columns in a DataFrame share one retained provenance bundle.
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
     assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
         result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),
@@ -1181,7 +1179,7 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
 }
 
 fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_context_resources() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -1199,7 +1197,7 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
         ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());
     let expected_exec_stream = target_rt.stream().testing_raw_handle_value();
     let expected_exec_mr = target_rt.memory_resource().testing_raw_handle_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let result = left.with_execution(&ctx).merge(&right, MergeOptions::new().how_full().on(["id"])).unwrap();
 
@@ -1208,7 +1206,7 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 2);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 2);
     assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
         result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),
@@ -1353,7 +1351,7 @@ fn test_merge_in_context_no_keys_specified() {
 }
 
 fn test_merge_reassembly_key_count_invariant_uses_stable_error_contract() {
-    let err = cudf::testing::join::trigger_merge_reassembly_key_count_error_for_test().unwrap_err();
+    let err = trigger_merge_reassembly_key_count_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -1388,19 +1386,15 @@ fn test_merge_rejects_ambiguous_join_key_configuration() {
 fn test_merge_rejects_duplicate_output_names_after_reassembly() {
     let left_ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let left_conflicting = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let left = crate::common::dataframe_from_columns(
-        vec!["left_id".to_string(), "right_id".to_string()],
-        vec![left_ids, left_conflicting],
-    )
-    .unwrap();
+    let left =
+        dataframe_from_columns(vec!["left_id".to_string(), "right_id".to_string()], vec![left_ids, left_conflicting])
+            .unwrap();
 
     let right_ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let right_values = column_from_slice(&[200i32, 300, 400]).unwrap();
-    let right = crate::common::dataframe_from_columns(
-        vec!["right_id".to_string(), "value".to_string()],
-        vec![right_ids, right_values],
-    )
-    .unwrap();
+    let right =
+        dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![right_ids, right_values])
+            .unwrap();
 
     let err = left.merge(&right, MergeOptions::new().left_on(["left_id"]).right_on(["right_id"])).unwrap_err();
 
@@ -1417,20 +1411,14 @@ fn test_merge_multi_key_inner() {
     let lk0 = column_from_slice(&[1i32, 1, 2]).unwrap();
     let lk1 = column_from_slice(&[10i32, 20, 10]).unwrap();
     let lp = column_from_slice(&[100i32, 200, 300]).unwrap();
-    let left = crate::common::dataframe_from_columns(
-        vec!["a".to_string(), "b".to_string(), "val".to_string()],
-        vec![lk0, lk1, lp],
-    )
-    .unwrap();
+    let left =
+        dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "val".to_string()], vec![lk0, lk1, lp]).unwrap();
 
     let rk0 = column_from_slice(&[1i32, 2, 2]).unwrap();
     let rk1 = column_from_slice(&[10i32, 10, 20]).unwrap();
     let rp = column_from_slice(&[1000i32, 2000, 3000]).unwrap();
-    let right = crate::common::dataframe_from_columns(
-        vec!["a".to_string(), "b".to_string(), "rval".to_string()],
-        vec![rk0, rk1, rp],
-    )
-    .unwrap();
+    let right =
+        dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "rval".to_string()], vec![rk0, rk1, rp]).unwrap();
 
     let result = left.merge(&right, MergeOptions::new().on(["a", "b"])).unwrap();
 
@@ -1457,15 +1445,12 @@ fn test_merge_null_equality_unequal() {
     // With null_equality(Unequal), null keys should NOT match.
     let left_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let left_vals = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let left =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals])
-            .unwrap();
+    let left = dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals]).unwrap();
 
     let right_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let right_vals = column_from_slice(&[100i32, 200, 300]).unwrap();
     let right =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals])
-            .unwrap();
+        dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals]).unwrap();
 
     use cudf::NullEquality;
 
@@ -1496,7 +1481,7 @@ fn test_merge_null_equality_unequal() {
 
 #[test]
 fn dataframe_merge_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth",
             test_dataframe_left_semi_join_materializes_left_rows_without_right_duplicate_growth,

@@ -4,7 +4,7 @@ use std::{
 };
 
 use futures::future::BoxFuture;
-use query_engine::observability::RuntimeTerminalOutcome;
+use query_engine::{attempt::AttemptCancellation, observability::RuntimeTerminalOutcome};
 
 use super::*;
 use crate::server::coordinator::QueryKey;
@@ -162,7 +162,7 @@ pub(super) struct QueryExecutionGuard {
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) flight_token: CancellationToken,
     pub(super) native_cancellation: ExecutionCancellation,
-    pub(super) attempt_cancellation: Option<query_engine::attempt::AttemptCancellation>,
+    pub(super) attempt_cancellation: Option<AttemptCancellation>,
     pub(super) shutdown_token: CancellationToken,
     /// Set only after Flight has polled the execution body and therefore
     /// started response delivery beyond its schema frame.

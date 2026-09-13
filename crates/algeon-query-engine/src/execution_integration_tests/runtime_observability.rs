@@ -166,7 +166,7 @@ fn recorded_session_with_handle(
     (session, handle)
 }
 
-fn recover_recorded_owner(failure: RuntimeObservationBuildError) -> query_engine::error::QueryError {
+fn recover_recorded_owner(failure: RuntimeObservationBuildError) -> QueryError {
     let (error, observation) = failure.into_parts();
     let live = observation.live_snapshot().expect("failed build returns a live owner");
     assert_eq!(live.events().len(), 1, "records captured before the build failure remain available");

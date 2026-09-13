@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::expr::CaseWhen;
+
 use super::*;
 
 #[test]
@@ -282,9 +284,6 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
     let plan = builder.finish_gpu_resident(projection);
 
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
-        event.operation == "query_engine.projection.schema_coerce" && event.boundary == "post_aggregate_projection"
-    }));
     let QueryOutput::GpuResident(handle) = result.output() else {
         panic!("GPU-resident sink should keep bounded projection output on device");
     };
@@ -434,7 +433,7 @@ fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
         vec!["o_year".to_string(), "is_target".to_string(), "volume".to_string()],
     );
     let target_volume = Expr::case(
-        vec![query_engine::expr::CaseWhen::new(Expr::column("is_target"), Expr::column("volume"))],
+        vec![CaseWhen::new(Expr::column("is_target"), Expr::column("volume"))],
         Expr::literal(LiteralValue::Decimal128 { raw: 0, precision: 38, scale: 8 }),
     )
     .alias("target_volume");

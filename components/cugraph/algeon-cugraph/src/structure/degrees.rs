@@ -14,6 +14,7 @@ use cugraph_sys::{
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::{degrees_result_to_dataframe, in_degrees_result_to_dataframe, out_degrees_result_to_dataframe},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::{EnteredContext, ResourceHandleLease},
@@ -287,8 +288,7 @@ impl DegreesResult {
 
     /// Convert this degree result to a cudf DataFrame in the provided runtime.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::degrees_result_to_dataframe(self, runtime)
-            .map_err(|e| e.with_operation("DegreesResult::to_dataframe"))
+        degrees_result_to_dataframe(self, runtime).map_err(|e| e.with_operation("DegreesResult::to_dataframe"))
     }
 }
 
@@ -325,8 +325,7 @@ impl InDegreesResult {
 
     /// Convert this in-degree result to a cudf DataFrame in the provided runtime.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::in_degrees_result_to_dataframe(self, runtime)
-            .map_err(|e| e.with_operation("InDegreesResult::to_dataframe"))
+        in_degrees_result_to_dataframe(self, runtime).map_err(|e| e.with_operation("InDegreesResult::to_dataframe"))
     }
 }
 
@@ -363,8 +362,7 @@ impl OutDegreesResult {
 
     /// Convert this out-degree result to a cudf DataFrame in the provided runtime.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::out_degrees_result_to_dataframe(self, runtime)
-            .map_err(|e| e.with_operation("OutDegreesResult::to_dataframe"))
+        out_degrees_result_to_dataframe(self, runtime).map_err(|e| e.with_operation("OutDegreesResult::to_dataframe"))
     }
 }
 

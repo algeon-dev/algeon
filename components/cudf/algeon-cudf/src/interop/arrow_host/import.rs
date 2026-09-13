@@ -5,7 +5,14 @@ use std::{ffi::c_void, ptr, sync::Arc};
 use arrow::{
     array::*,
     buffer::NullBuffer,
-    datatypes::{DataType as ArrowDataType, Decimal32Type, Decimal64Type, FieldRef, TimeUnit},
+    datatypes::{
+        ArrowNativeType, ArrowPrimitiveType, DataType as ArrowDataType, Date32Type, Date64Type, Decimal32Type,
+        Decimal64Type, Decimal128Type, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
+        DurationSecondType, FieldRef, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+        Time32MillisecondType, Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimeUnit,
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type,
+        UInt16Type, UInt32Type, UInt64Type,
+    },
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 use rapids_interop::{
@@ -25,9 +32,10 @@ use crate::{
     core::{
         column::Column,
         error::{self, Error, ErrorCode, Result},
-        types::{DataType, TypeId, cudf_null_mask_allocation_size_bytes},
+        types::{CudfType, DataType, TypeId, cudf_null_mask_allocation_size_bytes},
     },
     frame::series::Series,
+    interop::host_export_diagnostics,
     runtime::Runtime,
 };
 
@@ -105,57 +113,55 @@ pub(super) fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_na
         ArrowDataType::Float32 => primitive_to_column::<f32>(runtime, arr),
         ArrowDataType::Float64 => primitive_to_column::<f64>(runtime, arr),
         ArrowDataType::Boolean => bool_to_column(runtime, arr),
-        ArrowDataType::Date32 => primitive_arrow_to_fixed_width_column::<arrow::datatypes::Date32Type>(
-            runtime,
-            arr,
-            DataType::new(TypeId::TimestampDays),
-        ),
-        ArrowDataType::Date64 => primitive_arrow_to_fixed_width_column::<arrow::datatypes::Date64Type>(
+        ArrowDataType::Date32 => {
+            primitive_arrow_to_fixed_width_column::<Date32Type>(runtime, arr, DataType::new(TypeId::TimestampDays))
+        },
+        ArrowDataType::Date64 => primitive_arrow_to_fixed_width_column::<Date64Type>(
             runtime,
             arr,
             DataType::new(TypeId::TimestampMilliseconds),
         ),
         ArrowDataType::Time32(TimeUnit::Second) => {
-            time32_arrow_to_duration_column::<arrow::datatypes::Time32SecondType>(
-                runtime,
-                arr,
-                DataType::new(TypeId::DurationSeconds),
-            )
+            time32_arrow_to_duration_column::<Time32SecondType>(runtime, arr, DataType::new(TypeId::DurationSeconds))
         },
-        ArrowDataType::Time32(TimeUnit::Millisecond) => time32_arrow_to_duration_column::<
-            arrow::datatypes::Time32MillisecondType,
-        >(
-            runtime, arr, DataType::new(TypeId::DurationMilliseconds)
+        ArrowDataType::Time32(TimeUnit::Millisecond) => time32_arrow_to_duration_column::<Time32MillisecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::DurationMilliseconds),
         ),
-        ArrowDataType::Time64(TimeUnit::Microsecond) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::Time64MicrosecondType,
-        >(
-            runtime, arr, DataType::new(TypeId::DurationMicroseconds)
+        ArrowDataType::Time64(TimeUnit::Microsecond) => primitive_arrow_to_fixed_width_column::<Time64MicrosecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::DurationMicroseconds),
         ),
-        ArrowDataType::Time64(TimeUnit::Nanosecond) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::Time64NanosecondType,
-        >(
-            runtime, arr, DataType::new(TypeId::DurationNanoseconds)
+        ArrowDataType::Time64(TimeUnit::Nanosecond) => primitive_arrow_to_fixed_width_column::<Time64NanosecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::DurationNanoseconds),
         ),
         ArrowDataType::Timestamp(unit, _) => timestamp_arrow_to_column(runtime, arr, unit),
-        ArrowDataType::Duration(TimeUnit::Second) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::DurationSecondType,
-        >(runtime, arr, DataType::new(TypeId::DurationSeconds)),
+        ArrowDataType::Duration(TimeUnit::Second) => primitive_arrow_to_fixed_width_column::<DurationSecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::DurationSeconds),
+        ),
         ArrowDataType::Duration(TimeUnit::Millisecond) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::DurationMillisecondType,
+            DurationMillisecondType,
         >(
             runtime, arr, DataType::new(TypeId::DurationMilliseconds)
         ),
         ArrowDataType::Duration(TimeUnit::Microsecond) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::DurationMicrosecondType,
+            DurationMicrosecondType,
         >(
             runtime, arr, DataType::new(TypeId::DurationMicroseconds)
         ),
-        ArrowDataType::Duration(TimeUnit::Nanosecond) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::DurationNanosecondType,
-        >(
-            runtime, arr, DataType::new(TypeId::DurationNanoseconds)
-        ),
+        ArrowDataType::Duration(TimeUnit::Nanosecond) => {
+            primitive_arrow_to_fixed_width_column::<DurationNanosecondType>(
+                runtime,
+                arr,
+                DataType::new(TypeId::DurationNanoseconds),
+            )
+        },
         ArrowDataType::Decimal128(_, scale) => {
             let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))?;
             decimal128_array_to_column(runtime, arr, dtype)
@@ -218,22 +224,22 @@ pub(super) fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_na
 
 fn timestamp_arrow_to_column(runtime: &Runtime, arr: &dyn Array, unit: &TimeUnit) -> Result<Column> {
     match unit {
-        TimeUnit::Second => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampSecondType>(
+        TimeUnit::Second => primitive_arrow_to_fixed_width_column::<TimestampSecondType>(
             runtime,
             arr,
             DataType::new(TypeId::TimestampSeconds),
         ),
-        TimeUnit::Millisecond => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMillisecondType>(
+        TimeUnit::Millisecond => primitive_arrow_to_fixed_width_column::<TimestampMillisecondType>(
             runtime,
             arr,
             DataType::new(TypeId::TimestampMilliseconds),
         ),
-        TimeUnit::Microsecond => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMicrosecondType>(
+        TimeUnit::Microsecond => primitive_arrow_to_fixed_width_column::<TimestampMicrosecondType>(
             runtime,
             arr,
             DataType::new(TypeId::TimestampMicroseconds),
         ),
-        TimeUnit::Nanosecond => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampNanosecondType>(
+        TimeUnit::Nanosecond => primitive_arrow_to_fixed_width_column::<TimestampNanosecondType>(
             runtime,
             arr,
             DataType::new(TypeId::TimestampNanoseconds),
@@ -309,7 +315,7 @@ where
         vec![list_column, child_column],
         bindings,
         ProducerReadiness::HostVisible,
-        super::super::host_export_diagnostics(),
+        host_export_diagnostics(),
     )
     .map_err(|error| error::from_interop_in(error, operation))?
     .with_retained_host_buffers(retained_buffers);
@@ -457,7 +463,7 @@ fn fixed_width_list_array_to_column(
         vec![list_column, child_column],
         bindings,
         ProducerReadiness::HostVisible,
-        super::super::host_export_diagnostics(),
+        host_export_diagnostics(),
     )
     .map_err(|error| error::from_interop_in(error, operation))?
     .with_retained_host_buffers(retained_buffers);
@@ -620,16 +626,16 @@ fn fixed_width_list_array_host_buffers(
             })?;
             Arc::<[u8]>::from(values.values().iter().map(u8::from).collect::<Vec<_>>())
         },
-        ArrowDataType::Int8 => primitive_bytes!(arrow::datatypes::Int8Type),
-        ArrowDataType::Int16 => primitive_bytes!(arrow::datatypes::Int16Type),
-        ArrowDataType::Int32 => primitive_bytes!(arrow::datatypes::Int32Type),
-        ArrowDataType::Int64 => primitive_bytes!(arrow::datatypes::Int64Type),
-        ArrowDataType::UInt8 => primitive_bytes!(arrow::datatypes::UInt8Type),
-        ArrowDataType::UInt16 => primitive_bytes!(arrow::datatypes::UInt16Type),
-        ArrowDataType::UInt32 => primitive_bytes!(arrow::datatypes::UInt32Type),
-        ArrowDataType::UInt64 => primitive_bytes!(arrow::datatypes::UInt64Type),
-        ArrowDataType::Float32 => primitive_bytes!(arrow::datatypes::Float32Type),
-        ArrowDataType::Float64 => primitive_bytes!(arrow::datatypes::Float64Type),
+        ArrowDataType::Int8 => primitive_bytes!(Int8Type),
+        ArrowDataType::Int16 => primitive_bytes!(Int16Type),
+        ArrowDataType::Int32 => primitive_bytes!(Int32Type),
+        ArrowDataType::Int64 => primitive_bytes!(Int64Type),
+        ArrowDataType::UInt8 => primitive_bytes!(UInt8Type),
+        ArrowDataType::UInt16 => primitive_bytes!(UInt16Type),
+        ArrowDataType::UInt32 => primitive_bytes!(UInt32Type),
+        ArrowDataType::UInt64 => primitive_bytes!(UInt64Type),
+        ArrowDataType::Float32 => primitive_bytes!(Float32Type),
+        ArrowDataType::Float64 => primitive_bytes!(Float64Type),
         _ => {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -778,7 +784,7 @@ where T: ArrowPrimitiveMapping {
 }
 
 fn primitive_arrow_to_fixed_width_column<A>(runtime: &Runtime, arr: &dyn Array, dtype: DataType) -> Result<Column>
-where A: arrow::datatypes::ArrowPrimitiveType {
+where A: ArrowPrimitiveType {
     let prim = arr.as_primitive::<A>();
     let values = prim.values().as_ref();
     let bytes = native_slice_as_bytes(values);
@@ -788,7 +794,7 @@ where A: arrow::datatypes::ArrowPrimitiveType {
 }
 
 fn time32_arrow_to_duration_column<A>(runtime: &Runtime, arr: &dyn Array, dtype: DataType) -> Result<Column>
-where A: arrow::datatypes::ArrowPrimitiveType<Native = i32> {
+where A: ArrowPrimitiveType<Native = i32> {
     let prim = arr.as_primitive::<A>();
     let values = prim.values().iter().map(|value| i64::from(*value)).collect::<Vec<_>>();
     let bytes = native_slice_as_bytes(&values);
@@ -798,7 +804,7 @@ where A: arrow::datatypes::ArrowPrimitiveType<Native = i32> {
 }
 
 fn decimal128_array_to_column(runtime: &Runtime, arr: &dyn Array, dtype: DataType) -> Result<Column> {
-    let decimal = arr.as_primitive::<arrow::datatypes::Decimal128Type>();
+    let decimal = arr.as_primitive::<Decimal128Type>();
     let values = decimal.values().as_ref();
     let bytes = native_slice_as_bytes(values);
     let validity = decimal.nulls().map(|null_buf| null_buf.iter().collect::<Vec<_>>());
@@ -905,46 +911,45 @@ fn string_view_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Col
 /// Trait to associate a `CudfType` with its Arrow primitive type.
 ///
 /// This avoids needing separate functions for each numeric type.
-pub(super) trait ArrowPrimitiveMapping:
-    crate::core::types::CudfType + arrow::datatypes::ArrowNativeType
-{
-    type ArrowPrimitive: arrow::datatypes::ArrowPrimitiveType<Native = Self>;
+pub(super) trait ArrowPrimitiveMapping: CudfType + ArrowNativeType {
+    type ArrowPrimitive: ArrowPrimitiveType<Native = Self>;
 }
 
 impl ArrowPrimitiveMapping for i8 {
-    type ArrowPrimitive = arrow::datatypes::Int8Type;
+    type ArrowPrimitive = Int8Type;
 }
 impl ArrowPrimitiveMapping for i16 {
-    type ArrowPrimitive = arrow::datatypes::Int16Type;
+    type ArrowPrimitive = Int16Type;
 }
 impl ArrowPrimitiveMapping for i32 {
-    type ArrowPrimitive = arrow::datatypes::Int32Type;
+    type ArrowPrimitive = Int32Type;
 }
 impl ArrowPrimitiveMapping for i64 {
-    type ArrowPrimitive = arrow::datatypes::Int64Type;
+    type ArrowPrimitive = Int64Type;
 }
 impl ArrowPrimitiveMapping for u8 {
-    type ArrowPrimitive = arrow::datatypes::UInt8Type;
+    type ArrowPrimitive = UInt8Type;
 }
 impl ArrowPrimitiveMapping for u16 {
-    type ArrowPrimitive = arrow::datatypes::UInt16Type;
+    type ArrowPrimitive = UInt16Type;
 }
 impl ArrowPrimitiveMapping for u32 {
-    type ArrowPrimitive = arrow::datatypes::UInt32Type;
+    type ArrowPrimitive = UInt32Type;
 }
 impl ArrowPrimitiveMapping for u64 {
-    type ArrowPrimitive = arrow::datatypes::UInt64Type;
+    type ArrowPrimitive = UInt64Type;
 }
 impl ArrowPrimitiveMapping for f32 {
-    type ArrowPrimitive = arrow::datatypes::Float32Type;
+    type ArrowPrimitive = Float32Type;
 }
 impl ArrowPrimitiveMapping for f64 {
-    type ArrowPrimitive = arrow::datatypes::Float64Type;
+    type ArrowPrimitive = Float64Type;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::error::ErrorStatus;
 
     #[test]
     fn list_offset_normalization_rejects_negative_non_monotonic_and_i32_overflow() {
@@ -959,7 +964,7 @@ mod tests {
         let outside_cudf_range =
             normalize_list_offsets(&[0_i64, i64::from(i32::MAX) + 1], "test::list_offsets", "values").unwrap_err();
         assert_eq!(outside_cudf_range.code(), ErrorCode::ValueOutOfRange);
-        assert_eq!(outside_cudf_range.status(), crate::core::error::ErrorStatus::Permanent);
+        assert_eq!(outside_cudf_range.status(), ErrorStatus::Permanent);
         assert_eq!(outside_cudf_range.detail_value("reason"), Some("list_offset_i32_overflow"));
     }
 }

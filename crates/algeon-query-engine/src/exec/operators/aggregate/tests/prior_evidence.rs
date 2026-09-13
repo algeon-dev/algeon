@@ -24,14 +24,14 @@ fn fixed_width_low_cardinality_prior_selects_prepared_sort_groupby() {
 fn prior_partial_evidence_selects_the_same_strategy_when_no_decision_row_is_retained() {
     let (schema, spec) = fixed_width_sum_spec();
     let node_id = NodeId::from_index_for_internal_use(7);
-    let session = crate::observability::RuntimeObservationSession::new(
+    let session = RuntimeObservationSession::new(
         "zero-retention",
         None,
-        crate::observability::RuntimeObservationConfig::bounded(0, 0),
+        RuntimeObservationConfig::bounded(0, 0),
     );
     let metrics = ExecutionMetrics::bind(
         &session.handle(),
-        crate::observability::PlanExecutionId::new("zero-retention-plan"),
+        PlanExecutionId::new("zero-retention-plan"),
         "zero-retention",
         None,
     );

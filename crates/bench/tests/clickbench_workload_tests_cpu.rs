@@ -7,12 +7,14 @@ use bench::report_workload::clickbench::{
     ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
     CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
     CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE, CLICKBENCH_NATIVE_PROFILE_CUSTOM, CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
-    clickbench_native_optimizer_config_with_profile_settings, clickbench_native_profile_settings_with_env,
+    ClickbenchNativeProfileSettings, clickbench_native_optimizer_config_with_profile_settings,
+    clickbench_native_profile_settings_with_env,
 };
+use query_engine::runtime::{MemoryControlPolicy, SourceChunkPlanningMode};
 
 fn clickbench_native_profile_settings_from<const N: usize>(
     env: [(&'static str, &str); N],
-) -> bench::report_workload::clickbench::ClickbenchNativeProfileSettings {
+) -> ClickbenchNativeProfileSettings {
     clickbench_native_profile_settings_with_env(|name| {
         env.iter().find_map(|(key, value)| (*key == name).then(|| (*value).to_string()))
     })
@@ -26,7 +28,7 @@ fn clickbench_native_profile_defaults_to_conservative() {
     assert_eq!(profile.profile_source, "default");
     assert_eq!(profile.max_source_chunk_bytes, AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(profile.source_chunk_planning_mode, query_engine::runtime::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
@@ -39,10 +41,7 @@ fn clickbench_native_profile_resolves_gpu_throughput() {
     assert_eq!(profile.device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
     assert_eq!(profile.max_source_chunk_bytes, CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(
-        profile.source_chunk_planning_mode,
-        query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-    );
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
 }
 
 #[test]
@@ -59,7 +58,7 @@ fn clickbench_native_profile_numeric_overrides_become_custom() {
     assert_eq!(profile.device_budget_bytes, 123456789);
     assert_eq!(profile.max_source_chunk_bytes, 268435456);
     assert_eq!(profile.max_row_groups_per_chunk, 8);
-    assert_eq!(profile.source_chunk_planning_mode, query_engine::runtime::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
@@ -71,10 +70,7 @@ fn clickbench_native_profile_source_chunk_planning_mode_override_becomes_custom(
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CUSTOM);
     assert_eq!(profile.profile_source, "custom_overrides");
-    assert_eq!(
-        profile.source_chunk_planning_mode,
-        query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-    );
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
 }
 
 #[test]
@@ -116,13 +112,8 @@ fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
     let config = clickbench_native_optimizer_config_with_profile_settings(&profile);
     let execution = config.native_execution_config();
 
-    assert_eq!(
-        execution.source_chunk_planning_mode(),
-        query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-    );
-    let query_engine::runtime::MemoryControlPolicy::Bounded { device_budget_bytes, .. } =
-        execution.memory_control_policy()
-    else {
+    assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = execution.memory_control_policy() else {
         panic!("clickbench native execution config must be bounded");
     };
     assert_eq!(device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);

@@ -10,8 +10,9 @@ use cudf::{
 };
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, column_from_slice_nullable, error_context_value,
-    last_exec_mr_value, observed_exec_mr_values, reset_exec_observation, sample_df, with_test_runtime,
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
+    error_context_value, last_exec_mr_value, observed_exec_mr_values, reset_exec_observation, run_named_cases,
+    sample_df, series, with_test_runtime,
 };
 
 fn assert_sort_options_validation_error(
@@ -118,8 +119,8 @@ fn test_sort_values_single_column_descending() {
 
 fn test_sort_values_multi_column() {
     // Sort by id ascending, then score descending within each id group.
-    let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
-    let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let ids = series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let sorted = df.sort_values(["id", "score"], SortOptions::new().with_descending(vec![false, true])).unwrap();
@@ -129,9 +130,9 @@ fn test_sort_values_multi_column() {
 }
 
 fn test_sort_values_multi_column_with_owned_string_keys() {
-    let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
-    let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
-    let tags = crate::common::series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let ids = series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let tags = series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
 
     let keys = vec!["id".to_string(), "score".to_string()];
@@ -148,8 +149,8 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
 
 fn test_sort_values_stable_preserves_order() {
     // All ids are the same; stable sort should preserve original row order.
-    let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
-    let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let ids = series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new().with_stable(true)).unwrap();
@@ -246,11 +247,8 @@ fn test_sort_values_empty_options_means_defaults() {
 fn test_sort_values_nulls_first() {
     let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
-    let df = crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids.unwrap(), vals.unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
     // Sort by id ascending, nulls first.
     let sorted = df.sort_values(["id"], SortOptions::new().with_nulls_first(vec![true])).unwrap();
@@ -267,11 +265,8 @@ fn test_sort_values_nulls_first() {
 fn test_sort_values_descending_null_placement() {
     let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
     let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
-    let df = crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids.unwrap(), vals.unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
     let nulls_first =
         df.sort_values(["id"], SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true])).unwrap();
@@ -293,11 +288,8 @@ fn test_sort_values_descending_null_placement() {
 fn test_sort_values_default_places_nulls_last() {
     let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
-    let df = crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids.unwrap(), vals.unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let id_col = sorted.series("id").unwrap();
@@ -347,9 +339,9 @@ fn test_prepare_sort_values_single_key_matches_sort_values() {
 }
 
 fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
-    let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
-    let scores = crate::common::series::<i32>("score", &[20, 10, 40, 30]).unwrap();
-    let tags = crate::common::series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let ids = series::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = series::<i32>("score", &[20, 10, 40, 30]).unwrap();
+    let tags = series::<i32>("tag", &[200, 100, 400, 300]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
     let options = SortOptions::new().with_descending(vec![false, true]);
     let expected = df.sort_values(["id", "score"], options.clone()).unwrap();
@@ -365,11 +357,8 @@ fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
 fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
     let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
     let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
-    let df = crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids.unwrap(), vals.unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
     let options = SortOptions::new().with_descending(vec![true]).with_nulls_first(vec![true]);
     let expected = df.sort_values(["id"], options.clone()).unwrap();
 
@@ -381,8 +370,8 @@ fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
 }
 
 fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
-    let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
-    let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let ids = series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
     let options = SortOptions::new().with_stable(true);
     let expected = df.sort_values(["id"], options.clone()).unwrap();
@@ -412,8 +401,8 @@ fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
 }
 
 fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
-    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let vals = crate::common::series::<i32>("val", &[30, 10, 20]).unwrap();
+    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
+    let vals = series::<i32>("val", &[30, 10, 20]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();
     let prepared = df.prepare_sort_values(["id"], SortOptions::new()).unwrap();
 
@@ -458,8 +447,8 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
 }
 
 fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties() {
-    let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
-    let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
+    let ids = series::<i32>("id", &[1, 1, 1, 1]).unwrap();
+    let tags = series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
     let options = SortOptions::new().with_stable(true);
     let expected = df.sort_values(["id"], options.clone()).unwrap();
@@ -558,7 +547,7 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
 
 #[test]
 fn dataframe_sort_values_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_sort_options_defaults", test_sort_options_defaults),
         ("test_sort_options_builder", test_sort_options_builder),
         ("test_sort_values_single_column_ascending", test_sort_values_single_column_ascending),

@@ -1,4 +1,7 @@
-use arrow::array::{Array, AsArray};
+use arrow::{
+    array::{Array, AsArray},
+    datatypes::DataType,
+};
 use datafusion::{
     common::{Result, ScalarValue},
     logical_expr::Expr,
@@ -255,8 +258,8 @@ fn source_list_values(array: &dyn Array) -> Result<Vec<CugraphBfsSourceVertex>> 
         return Err(plan_error("source_vertex_or_vertices list literal must not be null"));
     }
     let values = match array.data_type() {
-        arrow::datatypes::DataType::List(_) => array.as_list::<i32>().value(0),
-        arrow::datatypes::DataType::LargeList(_) => array.as_list::<i64>().value(0),
+        DataType::List(_) => array.as_list::<i32>().value(0),
+        DataType::LargeList(_) => array.as_list::<i64>().value(0),
         other => {
             return Err(plan_error(format!(
                 "source_vertex_or_vertices list literal has unsupported array type {other:?}"

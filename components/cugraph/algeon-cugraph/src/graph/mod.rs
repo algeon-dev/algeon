@@ -49,7 +49,10 @@ use std::{
     sync::Arc,
 };
 
-use cudf::interop::contract::{CompletionWitness, InteropError};
+use cudf::{
+    interop::contract::{CompletionWitness, InteropError},
+    runtime::{CudaEvent, ExecutionBindingId},
+};
 use cugraph_sys::{cugraph_decompress_to_edgelist, cugraph_edgelist_t, cugraph_error_t, cugraph_graph_t};
 
 use crate::{
@@ -57,6 +60,8 @@ use crate::{
     cuda::{DeviceGuard, DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error},
     handle::{EnteredContext, ResourceHandleLease},
+    random::RngState,
+    sampling::select_random_vertices,
     structure::{ResolvedVertexSelection, VertexSelection},
     types::{CugraphElement, DataType, GraphProperties, to_bool_t},
 };
@@ -150,7 +155,7 @@ pub struct Graph<T = Forward> {
     // enter under it so one park event keeps proving full stream ordering.
     // `None` until the first runtime-bound use of a graph built outside a
     // runtime binding.
-    ordered_binding: Cell<Option<cudf::runtime::ExecutionBindingId>>,
+    ordered_binding: Cell<Option<ExecutionBindingId>>,
     // A graph touched through local or external handles has work whose stream
     // is not represented by the runtime-bound lease ledger. Such a graph
     // cannot be parked because one runtime event cannot fence those uses.
@@ -348,7 +353,7 @@ impl<T> Graph<T> {
 
     fn park_recorded(self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<ParkedGraph<T>> {
         let _guard = DeviceGuard::enter_owner_device(self.device, operation)?;
-        let event = cudf::runtime::CudaEvent::new()
+        let event = CudaEvent::new()
             .map_err(|error| map_cudf_runtime_error(error, operation, "failed to create graph park CUDA event"))?;
         let runtime = handle.runtime().expect("validated runtime-bound handle");
         event
@@ -510,10 +515,10 @@ impl<T> Graph<T> {
     pub fn select_random_vertices<V: CugraphElement>(
         &self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         num_vertices: usize,
     ) -> Result<DeviceArray<V>> {
-        crate::sampling::select_random_vertices(handle, self, rng_state, num_vertices)
+        select_random_vertices(handle, self, rng_state, num_vertices)
     }
 
     pub(crate) fn as_ptr(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<*mut cugraph_graph_t> {

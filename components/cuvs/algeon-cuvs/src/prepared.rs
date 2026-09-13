@@ -1,11 +1,12 @@
 use std::{any::Any, marker::PhantomData, mem, sync::Arc};
 
 use cudf::{
+    core::Table,
     frame::dataframe::{ValidatedFixedSizeListFloat32Export, ValidatedUniformListFloat32Export},
     interop::contract::{
-        ActiveColumnReadLease, ColumnLayout, CompletionAuthority, CompletionWitness, IncompleteDropBehavior,
-        LeaseCompletionResult, PhysicalValidity, PreparedColumnExport, PreparedExportProfile, PreparedTableExport,
-        ReadStartAuthority,
+        ActiveColumnReadLease, BufferBinding, ColumnLayout, CompletionAuthority, CompletionWitness,
+        IncompleteDropBehavior, LeaseCompletionResult, PhysicalValidity, Placement, PreparedColumnExport,
+        PreparedExportProfile, PreparedTableExport, ReadStartAuthority,
     },
 };
 
@@ -405,7 +406,7 @@ impl CuvsResources {
     ) -> Result<OwnedFloat32Matrix> {
         let operation = "CuvsResources::pack_prepared_float32_table";
         self.validate_exact_binding(operation)?;
-        let table = cudf::core::Table::try_import_from_prepared_table_export_into_runtime(export, self.runtime())
+        let table = Table::try_import_from_prepared_table_export_into_runtime(export, self.runtime())
             .map_err(|error| from_interop(operation, error))?;
         let columns = table.into_columns().map_err(|error| from_cudf(operation, error))?;
         let column_refs = columns.iter().collect::<Vec<_>>();
@@ -430,14 +431,10 @@ fn require_device_export(export: &PreparedColumnExport<'_>, operation: &'static 
     Ok(())
 }
 
-fn require_binding_device(
-    binding: &cudf::interop::contract::BufferBinding<'_>,
-    expected_device: i32,
-    operation: &'static str,
-) -> Result<i32> {
+fn require_binding_device(binding: &BufferBinding<'_>, expected_device: i32, operation: &'static str) -> Result<i32> {
     let device = match binding.placement() {
-        cudf::interop::contract::Placement::CudaDevice { device } => *device,
-        cudf::interop::contract::Placement::Host => {
+        Placement::CudaDevice { device } => *device,
+        Placement::Host => {
             return Err(invalid_input(operation, "cuVS prepared tensor binding must be CUDA device memory"));
         },
     };

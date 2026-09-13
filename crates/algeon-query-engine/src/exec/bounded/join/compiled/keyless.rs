@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use cudf::ops::ast::AstExpression;
+
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     CompiledKeylessWork, DataFrame, ExecutionOverrides, JoinNode, JoinSide, KeylessConditionalJoinKind, NodeId,
@@ -95,7 +97,7 @@ pub(super) fn keyless_conditional_join_output_size(
     join_type: KeylessConditionalJoinKind,
     left: &DataFrame,
     right: &DataFrame,
-    predicate: &cudf::ops::ast::AstExpression,
+    predicate: &AstExpression,
     options: cudf::DataFramePredicateJoinOptions,
     overrides: &ExecutionOverrides<'_>,
     node: &JoinNode,
@@ -126,7 +128,7 @@ pub(super) fn keyless_conditional_join_indices_with_output_size(
     join_type: KeylessConditionalJoinKind,
     left: &DataFrame,
     right: &DataFrame,
-    predicate: &cudf::ops::ast::AstExpression,
+    predicate: &AstExpression,
     options: cudf::DataFramePredicateJoinOptions,
     output_size: usize,
     overrides: &ExecutionOverrides<'_>,

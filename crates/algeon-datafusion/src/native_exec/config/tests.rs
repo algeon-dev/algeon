@@ -5,6 +5,7 @@ use query_engine::error::QueryError;
 use super::*;
 use crate::{
     backend::InstalledTestGpuBackend,
+    error::ErrorCode,
     native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
 };
 
@@ -17,7 +18,7 @@ async fn async_execution_context_requires_gpu_backend_before_resolving_cuda_stat
         .await
         .unwrap_err();
 
-    assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.fact_value("reason"), Some("gpu_backend_required"));
     assert_eq!(error.fact_value("query_id"), Some("query-config"));
     assert_eq!(error.fact_value("trace_id"), Some("trace-config"));

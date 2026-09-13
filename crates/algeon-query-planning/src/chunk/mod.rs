@@ -10,7 +10,10 @@ use arrow::datatypes::DataType as ArrowDataType;
 use crate::{
     backend::AnalysisContext,
     error::{QueryError, QueryErrorCode, Result},
-    source::{LocalParquetFile, LocalParquetSource},
+    source::{
+        LocalParquetFile, LocalParquetSource, parquet_file_path_fact, parquet_file_stable_id_fact,
+        parquet_source_path_fact, parquet_source_stable_id_fact,
+    },
 };
 
 #[doc(hidden)]
@@ -91,8 +94,8 @@ pub fn source_file_for_chunk<'a>(
             "local parquet source chunk references a missing source file",
         )
         .with_fact("reason", "source_chunk_file_index_missing")
-        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
-        .with_fact("stable_id", crate::source::parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str()))
+        .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
+        .with_fact("stable_id", parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str()))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("source_files", source.files.len())
@@ -121,14 +124,14 @@ pub fn source_chunk_row_position_range(chunk: &SourceChunk) -> Result<Option<Sou
             "Iceberg position-delete row-group chunks require per-row-group row-count metadata",
         )
         .with_fact("reason", "position_deletes_require_row_group_rows")
-        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+        .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("row_groups", source_chunk_row_groups_fact(chunk))
     })?;
     contiguous_row_group_position_range(&chunk.row_group_indexes, row_group_rows).map(Some).map_err(|error| {
         error
-            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+            .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("row_groups", source_chunk_row_groups_fact(chunk))
@@ -251,10 +254,10 @@ pub(super) fn source_chunk_identity_mismatch_error(
     )
     .with_fact("reason", "source_chunk_identity_mismatch")
     .with_fact("field", field)
-    .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
-    .with_fact("source_file_path", crate::source::parquet_file_path_fact(file))
-    .with_fact("stable_id", crate::source::parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str()))
-    .with_fact("source_file_stable_id", crate::source::parquet_file_stable_id_fact(file))
+    .with_fact("path", parquet_source_path_fact(&chunk.location, &chunk.path))
+    .with_fact("source_file_path", parquet_file_path_fact(file))
+    .with_fact("stable_id", parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str()))
+    .with_fact("source_file_stable_id", parquet_file_stable_id_fact(file))
     .with_fact("chunk_index", chunk.chunk_index)
     .with_fact("file_index", chunk.file_index)
 }

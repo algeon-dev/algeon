@@ -4,9 +4,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::*;
+use arrow::datatypes::SchemaRef;
+use query_engine::observability::SealedRuntimeObservationSnapshot;
 
-pub(super) type ObservationCapture = Arc<Mutex<Option<query_engine::observability::SealedRuntimeObservationSnapshot>>>;
+use super::*;
+use crate::report_workload::tpch::tpch_tuned_cpu_session_config;
+
+pub(super) type ObservationCapture = Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>;
 
 #[derive(Debug, Clone)]
 pub(super) struct QueryMeasurement {
@@ -416,11 +420,11 @@ async fn collect_native_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionRes
 fn cpu_session_config() -> SessionConfig {
     match std::env::var("ALGEON_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
         Ok("untuned") | Ok("report") => tpch_report_session_config(),
-        _ => crate::report_workload::tpch::tpch_tuned_cpu_session_config(),
+        _ => tpch_tuned_cpu_session_config(),
     }
 }
 
-fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement> {
+fn measure_output(schema: &SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement> {
     Ok(QueryMeasurement {
         output_batches: batches.len(),
         output_rows: batches.iter().map(RecordBatch::num_rows).sum(),

@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, fmt};
 
 use arrow::{
     array::{Array, Date32Array, Int32Array, Int64Array, UInt32Array, UInt64Array},
-    datatypes::DataType,
+    datatypes::{DataType, Schema},
 };
 
 use crate::{
@@ -1069,11 +1069,7 @@ fn range_overlap_width(left: I64Range, right: I64Range) -> Option<u128> {
 /// This is intentionally schema-based rather than source-based so non-Parquet
 /// consumers, such as a hash-join probe input, can use the same payload
 /// semantics after decode.
-pub fn dynamic_filter_predicate_for_schema(
-    schema: &arrow::datatypes::Schema,
-    column: &str,
-    filter: &DynamicFilter,
-) -> Option<Expr> {
+pub fn dynamic_filter_predicate_for_schema(schema: &Schema, column: &str, filter: &DynamicFilter) -> Option<Expr> {
     let data_type = schema.field_with_name(column).ok()?.data_type();
     let column_expr = Expr::column(column);
     match filter {

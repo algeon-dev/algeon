@@ -8,7 +8,16 @@ use std::{
     },
 };
 
-use query_planning::error::{QueryError, QueryErrorCode, Result};
+use cudf::{
+    DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerInstallationCause,
+    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationRetry,
+    DeviceMemoryManagerInstallationStatus,
+    runtime::{DeviceHealthStatus, device_health_snapshot},
+};
+use query_planning::{
+    admission::ExecutionCapability,
+    error::{QueryError, QueryErrorCode, Result},
+};
 
 use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
@@ -293,7 +302,7 @@ impl DeviceRegistry {
         let discovered = discovered
             .into_iter()
             .map(|plan| {
-                let device = cudf::DeviceId::new(plan.device_ordinal).map_err(|error| {
+                let device = DeviceId::new(plan.device_ordinal).map_err(|error| {
                     cudf_query_error(
                         "query_engine.gpu.device_registry.device",
                         "failed to resolve CUDA device while installing registry",
@@ -312,16 +321,15 @@ impl DeviceRegistry {
         for (device, discovered) in discovered {
             let ordinal = discovered.device_ordinal;
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeMemoryManager { device_ordinal: ordinal })?;
-            let installation_before =
-                cudf::DeviceMemoryManager::installation_state_for_device(device).map_err(|error| {
-                    cudf_query_error(
-                        "query_engine.gpu.device_registry.memory_manager",
-                        "failed to inspect the process device-manager installation before reuse",
-                        error,
-                    )
-                    .with_fact("device_ordinal", ordinal)
-                    .with_fact("reason", "device_memory_manager_inspection_failed")
-                })?;
+            let installation_before = DeviceMemoryManager::installation_state_for_device(device).map_err(|error| {
+                cudf_query_error(
+                    "query_engine.gpu.device_registry.memory_manager",
+                    "failed to inspect the process device-manager installation before reuse",
+                    error,
+                )
+                .with_fact("device_ordinal", ordinal)
+                .with_fact("reason", "device_memory_manager_inspection_failed")
+            })?;
             let allocation_limit_bytes = discovered.profile.memory_partition.allocation_limit_bytes();
             let release_threshold_bytes =
                 usize::try_from(discovered.resource_profile.managed_capacity_bytes).map_err(|_| {
@@ -503,11 +511,7 @@ impl DeviceRegistry {
     /// requirement of an attempt. This reads only the profile frozen during
     /// installation; it never consults live CUDA state.
     #[doc(hidden)]
-    pub fn supports_capabilities(
-        &self,
-        device_ordinal: usize,
-        requirements: &[query_planning::admission::ExecutionCapability],
-    ) -> bool {
+    pub fn supports_capabilities(&self, device_ordinal: usize, requirements: &[ExecutionCapability]) -> bool {
         self.resource_profile(device_ordinal)
             .is_some_and(|profile| profile.device_capabilities.supports_all(requirements))
     }
@@ -522,8 +526,8 @@ fn bind_engine_device_health(
     installation: cudf::DeviceMemoryManagerInstallationState,
     backend_health_generation: u64,
 ) -> Result<EngineDeviceHealthIdentity> {
-    let health = cudf::runtime::device_health_snapshot(device);
-    if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+    let health = device_health_snapshot(device);
+    if health.status() == DeviceHealthStatus::Unhealthy {
         return Err(QueryError::new(
             QueryErrorCode::CudfPersistentFailure,
             "query_engine.gpu.device_registry.health",
@@ -706,13 +710,13 @@ fn install_device_memory_manager(
     options: cudf::DeviceMemoryManagerOptions,
 ) -> Result<(cudf::DeviceMemoryManager, cudf::DeviceMemoryManagerInstallationState)> {
     let callback_was_installed = memory_failure_tracker.report().callback_installed;
-    let identity = cudf::DeviceMemoryManagerInstallationIdentity::new(
+    let identity = DeviceMemoryManagerInstallationIdentity::new(
         *b"algeon-q-engine\0",
         1,
         partition_fingerprint(device.ordinal(), options.allocation_limit_bytes),
     );
     let (manager, outcome) =
-        match cudf::DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
+        match DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
             device,
             identity,
             memory_failure_tracker.failure_callback(),
@@ -735,7 +739,7 @@ fn install_device_memory_manager(
                 }
 
                 if let Some(state) = installation_state
-                    && state.cause == cudf::DeviceMemoryManagerInstallationCause::OptionsMismatch
+                    && state.cause == DeviceMemoryManagerInstallationCause::OptionsMismatch
                 {
                     return Err(device_memory_manager_options_conflict(device, state, options)
                         .with_source(failure.into_error()));
@@ -757,8 +761,8 @@ fn install_device_memory_manager(
                 });
             },
         };
-    if outcome.state.status != cudf::DeviceMemoryManagerInstallationStatus::Owned
-        || outcome.state.retry != cudf::DeviceMemoryManagerInstallationRetry::Reusable
+    if outcome.state.status != DeviceMemoryManagerInstallationStatus::Owned
+        || outcome.state.retry != DeviceMemoryManagerInstallationRetry::Reusable
     {
         if !callback_was_installed {
             memory_failure_tracker.mark_callback_install_unavailable();
@@ -812,7 +816,7 @@ fn canonical_device_memory_manager_options(
     release_threshold_bytes: Option<usize>,
 ) -> cudf::DeviceMemoryManagerOptions {
     cudf::DeviceMemoryManagerOptions {
-        base: cudf::DeviceMemoryManagerBase::CudaAsync {
+        base: DeviceMemoryManagerBase::CudaAsync {
             initial_pool_size: None,
             release_threshold: release_threshold_bytes,
         },

@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
 use cudf::{
-    DataType as CudfDataType, TypeId,
+    DataType as CudfDataType, Error as CudfError, TimestampResolution, TypeId,
+    core::Scalar as CudfScalar,
     io::source::{
+        LocalParquetSource as CudfLocalParquetSource, SourceChunk as CudfSourceChunk,
         SourceReaderPredicate as CudfSourceReaderPredicate,
         SourceReaderPredicateColumn as CudfSourceReaderPredicateColumn,
         SourceReaderPredicateLiteral as CudfSourceReaderPredicateLiteral,
-        SourceReaderPredicateOp as CudfSourceReaderPredicateOp,
+        SourceReaderPredicateOp as CudfSourceReaderPredicateOp, build_local_parquet_reader_batch_predicate,
+        build_local_parquet_reader_predicate,
     },
     ops::ast::{AstExpression, AstOperator},
 };
@@ -15,10 +18,14 @@ use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, LiteralValue, LocalParquetSource, QueryError, QueryErrorCode,
     Result, cudf_query_error, cudf_query_error_without_source, timestamp_unit_to_cudf_resolution,
 };
-use crate::source::{
-    ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
-    reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,
-    reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as,
+use crate::{
+    datatypes::{arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type},
+    rapids_backend::rapids_analysis_context,
+    source::{
+        ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
+        reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,
+        reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as,
+    },
 };
 
 const OP_READER_PREDICATE: &str = "query_engine.local_parquet_source.reader_predicate";
@@ -26,13 +33,13 @@ const OP_READER_PREDICATE: &str = "query_engine.local_parquet_source.reader_pred
 pub(super) fn lower_source_reader_predicate(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    cudf_source: &cudf::io::source::LocalParquetSource,
-    cudf_chunk: &cudf::io::source::SourceChunk,
+    cudf_source: &CudfLocalParquetSource,
+    cudf_chunk: &CudfSourceChunk,
 ) -> Result<Option<Arc<AstExpression>>> {
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
     };
-    if !source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()) {
+    if !source.reader_predicate_is_supported(predicate, rapids_analysis_context()) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,
@@ -51,13 +58,13 @@ pub(super) fn lower_source_reader_predicate(
 pub(super) fn lower_source_reader_batch_predicate(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    cudf_source: &cudf::io::source::LocalParquetSource,
-    cudf_chunks: &[cudf::io::source::SourceChunk],
+    cudf_source: &CudfLocalParquetSource,
+    cudf_chunks: &[CudfSourceChunk],
 ) -> Result<Option<Arc<AstExpression>>> {
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
     };
-    if !source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()) {
+    if !source.reader_predicate_is_supported(predicate, rapids_analysis_context()) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,
@@ -67,22 +74,17 @@ pub(super) fn lower_source_reader_batch_predicate(
     }
     if source.reader_predicate_requires_source_contract(predicate) {
         let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
-        return cudf::io::source::build_local_parquet_reader_batch_predicate(
-            &context.runtime()?,
-            cudf_source,
-            cudf_chunks,
-            &predicate,
-        )
-        .map_err(|error| {
-            cudf_reader_predicate_error(
-                source,
-                OP_READER_PREDICATE,
-                "failed to build batch-stable source-aware local parquet reader predicate",
-                error,
-            )
-        })
-        .map(Arc::new)
-        .map(Some);
+        return build_local_parquet_reader_batch_predicate(&context.runtime()?, cudf_source, cudf_chunks, &predicate)
+            .map_err(|error| {
+                cudf_reader_predicate_error(
+                    source,
+                    OP_READER_PREDICATE,
+                    "failed to build batch-stable source-aware local parquet reader predicate",
+                    error,
+                )
+            })
+            .map(Arc::new)
+            .map(Some);
     }
     lower_source_reader_ast_expr(context, source, predicate, None).map(Arc::new).map(Some)
 }
@@ -90,27 +92,26 @@ pub(super) fn lower_source_reader_batch_predicate(
 fn lower_source_reader_predicate_with_cudf_contract(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    cudf_source: &cudf::io::source::LocalParquetSource,
-    cudf_chunk: &cudf::io::source::SourceChunk,
+    cudf_source: &CudfLocalParquetSource,
+    cudf_chunk: &CudfSourceChunk,
     predicate: &Expr,
 ) -> Result<AstExpression> {
     let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
-    cudf::io::source::build_local_parquet_reader_predicate(&context.runtime()?, cudf_source, cudf_chunk, &predicate)
-        .map_err(|error| {
-            cudf_reader_predicate_error(
-                source,
-                OP_READER_PREDICATE,
-                "failed to build cudf source-aware local parquet reader predicate",
-                error,
-            )
-        })
+    build_local_parquet_reader_predicate(&context.runtime()?, cudf_source, cudf_chunk, &predicate).map_err(|error| {
+        cudf_reader_predicate_error(
+            source,
+            OP_READER_PREDICATE,
+            "failed to build cudf source-aware local parquet reader predicate",
+            error,
+        )
+    })
 }
 
 fn cudf_reader_predicate_error(
     source: &LocalParquetSource,
     operation: &'static str,
     message: &'static str,
-    error: cudf::Error,
+    error: CudfError,
 ) -> QueryError {
     if source.files.iter().any(|file| !file.location.is_local_path()) {
         cudf_query_error_without_source(operation, message, &error)
@@ -303,11 +304,7 @@ fn source_reader_column_dtype(source: &LocalParquetSource, expr: &Expr) -> Optio
         Expr::Alias { expr, .. } => return source_reader_column_dtype(source, expr),
         _ => return None,
     };
-    source
-        .schema
-        .field_with_name(column.name())
-        .ok()
-        .and_then(|field| crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()))
+    source.schema.field_with_name(column.name()).ok().and_then(|field| cudf_dtype_from_arrow_type(field.data_type()))
 }
 
 fn lower_cudf_source_reader_predicate(source: &LocalParquetSource, expr: &Expr) -> Result<CudfSourceReaderPredicate> {
@@ -447,7 +444,7 @@ fn cudf_source_reader_predicate_literal(expr: &Expr) -> Result<CudfSourceReaderP
         },
         LiteralValue::Decimal128 { raw, scale, .. } => Ok(CudfSourceReaderPredicateLiteral::Decimal128 {
             raw: *raw,
-            scale: crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
+            scale: arrow_decimal_scale_to_cudf_scale(*scale),
         }),
         LiteralValue::Date32(value) => Ok(CudfSourceReaderPredicateLiteral::Date32(*value)),
         LiteralValue::Date64(_)
@@ -575,15 +572,15 @@ fn lower_source_reader_ast_literal(
             Some(target_type) if target_type.id().is_decimal() => {
                 let raw = rescale_decimal_raw_or_query_error(
                     *raw,
-                    crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
+                    arrow_decimal_scale_to_cudf_scale(*scale),
                     target_type.scale(),
                 )?;
                 runtime.decimal_raw_scalar(raw, target_type)
             },
-            _ => runtime.decimal128_raw_scalar(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale)),
+            _ => runtime.decimal128_raw_scalar(*raw, arrow_decimal_scale_to_cudf_scale(*scale)),
         },
-        LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days),
-        LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, cudf::TimestampResolution::Milliseconds),
+        LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days),
+        LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, TimestampResolution::Milliseconds),
         LiteralValue::Time32 { raw, unit } => {
             runtime.duration_raw_scalar(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit))
         },
@@ -625,7 +622,7 @@ fn lower_source_reader_ast_literal_with_target(
     context: &ExecutionContext,
     value: &LiteralValue,
     target_type: CudfDataType,
-) -> Result<Option<cudf::core::Scalar>> {
+) -> Result<Option<CudfScalar>> {
     let runtime = context.runtime()?;
     match target_type.id() {
         TypeId::Bool8 => match value {
@@ -670,7 +667,7 @@ fn lower_source_reader_ast_literal_with_target(
             } else if let LiteralValue::Decimal128 { raw, scale, .. } = value {
                 rescale_decimal_raw_or_query_error(
                     *raw,
-                    crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
+                    arrow_decimal_scale_to_cudf_scale(*scale),
                     target_type.scale(),
                 )?
             } else {
@@ -680,7 +677,7 @@ fn lower_source_reader_ast_literal_with_target(
         },
         TypeId::TimestampDays => match value {
             LiteralValue::Date32(value) => {
-                runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days).map(Some)
+                runtime.timestamp_raw_scalar(i64::from(*value), TimestampResolution::Days).map(Some)
             },
             _ => Ok(None),
         },

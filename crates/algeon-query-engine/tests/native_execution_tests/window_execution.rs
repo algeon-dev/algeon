@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use arrow::datatypes::UInt64Type;
+
 use super::{
     core_execution::{assert_basic_list_payload_rows, basic_list_payload_batch},
     *,
@@ -50,7 +52,7 @@ fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
     };
     assert_eq!(batch.schema(), output_schema);
     assert_basic_list_payload_rows(batch, 0, 2, &[1, 2, 3, 4]);
-    assert_eq!(batch.column(6).as_primitive::<arrow::datatypes::UInt64Type>().values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(batch.column(6).as_primitive::<UInt64Type>().values().as_ref(), &[1, 2, 3, 4]);
     admitted.finish();
 }
 
@@ -298,12 +300,7 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
         WindowSpec::new(
             vec![Expr::column("grp")],
             vec![SortExpr::new(Expr::column("ord"), false, false)],
-            vec![WindowFunction::lead(
-                Expr::column("value"),
-                1,
-                Some(query_engine::expr::LiteralValue::Int64(-1)),
-                "next_value",
-            )],
+            vec![WindowFunction::lead(Expr::column("value"), 1, Some(LiteralValue::Int64(-1)), "next_value")],
         ),
         Arc::clone(&output_schema),
     );

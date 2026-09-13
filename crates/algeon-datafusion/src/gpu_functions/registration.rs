@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use datafusion::{common::Result, execution::SessionStateBuilder};
+use datafusion::{
+    common::{DataFusionError, Result},
+    execution::SessionStateBuilder,
+};
 
 use super::{GpuFunctionCatalog, GpuFunctionFamily, gpu_metadata_table_functions};
 use crate::error::{Error, ErrorCode};
@@ -41,7 +44,7 @@ pub(crate) fn install_gpu_function_family(
     Ok(())
 }
 
-fn install_error(message: impl Into<String>) -> datafusion::common::DataFusionError {
+fn install_error(message: impl Into<String>) -> DataFusionError {
     Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.install", message).into()
 }
 
@@ -49,7 +52,7 @@ fn install_error(message: impl Into<String>) -> datafusion::common::DataFusionEr
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::execution::SessionStateBuilder;
+    use datafusion::{catalog::Session, execution::SessionStateBuilder};
     use serde_json::json;
 
     use super::*;
@@ -84,12 +87,7 @@ mod tests {
             }]
         }
 
-        async fn validate(
-            &self,
-            _: &dyn datafusion::catalog::Session,
-            function_name: &str,
-            request: &GpuCallRequest,
-        ) -> GpuCallValidation {
+        async fn validate(&self, _: &dyn Session, function_name: &str, request: &GpuCallRequest) -> GpuCallValidation {
             GpuCallValidation::invalid("fake", "fake", function_name, request.normalized_json())
         }
     }

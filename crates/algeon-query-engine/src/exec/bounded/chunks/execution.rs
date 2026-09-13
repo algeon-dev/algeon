@@ -1,4 +1,4 @@
-use parquet::file::reader::FileReader;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, CommittedPartial, LocalParquetSource, Result,
@@ -122,7 +122,7 @@ pub(in crate::exec::bounded::chunks) fn source_chunk_static_read_row_groups(chun
         return Some(row_groups as u64);
     }
     if chunk.reads_all_row_groups && chunk.path.is_file() {
-        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+        return SerializedFileReader::try_from(chunk.path.as_path())
             .ok()
             .map(|reader| reader.metadata().num_row_groups() as u64);
     }

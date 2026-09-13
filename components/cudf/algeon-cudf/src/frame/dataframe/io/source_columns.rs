@@ -1,15 +1,18 @@
 //! Source frame projection and missing column materialization.
 
-use super::super::owned::DataFrame;
 use crate::{
     core::{
         error::{Error, ErrorCode, Result},
         scalar::Scalar,
         types::{DataType, TimestampResolution, TypeId},
     },
-    frame::series::Series,
+    frame::{dataframe::owned::DataFrame, series::Series},
     internal::hash::{FastHashSet, fast_hash_set_with_capacity},
-    io::source::{LocalParquetSource, PartitionValue, SourceChunk, SourceColumn, SourceColumnRef, SourceReadMode},
+    interop::arrow_host::all_null_list_series,
+    io::source::{
+        LocalParquetSource, PartitionValue, SourceChunk, SourceColumn, SourceColumnRef, SourceReadMode,
+        ZERO_COLUMN_COUNT_COLUMN,
+    },
     runtime::Runtime,
 };
 
@@ -61,7 +64,7 @@ fn source_ref_series(
             })?;
             frame.series(column.name())
         },
-        SourceColumnRef::ZeroColumnCount => frame.series(crate::io::source::ZERO_COLUMN_COUNT_COLUMN),
+        SourceColumnRef::ZeroColumnCount => frame.series(ZERO_COLUMN_COUNT_COLUMN),
         SourceColumnRef::MissingNull => frame.series(materialized_name),
     }
 }
@@ -206,14 +209,14 @@ fn null_source_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> 
 
 fn empty_source_series(runtime: &Runtime, column: &SourceColumn) -> Result<Series> {
     match column.arrow_data_type() {
-        Some(data_type) => crate::interop::arrow_host::all_null_list_series(runtime, data_type, 0),
+        Some(data_type) => all_null_list_series(runtime, data_type, 0),
         None => runtime.empty_series(column.data_type()),
     }
 }
 
 fn all_null_source_series(runtime: &Runtime, column: &SourceColumn, rows: usize) -> Result<Series> {
     match column.arrow_data_type() {
-        Some(data_type) => crate::interop::arrow_host::all_null_list_series(runtime, data_type, rows),
+        Some(data_type) => all_null_list_series(runtime, data_type, rows),
         None => {
             let scalar = null_source_scalar(runtime, column.data_type())?;
             runtime.series_from_scalar(&scalar, rows)

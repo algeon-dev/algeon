@@ -4,6 +4,7 @@ use datafusion::execution::context::TaskContext;
 use query_engine::plan::QueryPlan;
 
 use super::config::AlgeonNativeExecutionConfig;
+use crate::native::lakehouse_pruning::prune_native_query_plan;
 
 pub(crate) async fn resolve_query_plan(
     execution_config: &AlgeonNativeExecutionConfig,
@@ -14,10 +15,5 @@ pub(crate) async fn resolve_query_plan(
         return plan;
     }
     let runtime_env = task_context.runtime_env();
-    crate::native::lakehouse_pruning::prune_native_query_plan(
-        plan,
-        &runtime_env,
-        execution_config.source_storage_profiles(),
-    )
-    .await
+    prune_native_query_plan(plan, &runtime_env, execution_config.source_storage_profiles()).await
 }

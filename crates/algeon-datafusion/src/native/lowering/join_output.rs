@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
-use datafusion::{common::JoinSide as DataFusionJoinSide, logical_expr::JoinType, physical_plan::ExecutionPlan};
+use datafusion::{
+    common::JoinSide as DataFusionJoinSide, logical_expr::JoinType as DataFusionJoinType, physical_plan::ExecutionPlan,
+};
 use query_engine::{
     expr::ColumnRef as NativeColumnRef,
-    plan::{JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide},
+    plan::{JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide, JoinType as NativeJoinType},
 };
 
 use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, join::CanonicalJoin};
@@ -127,10 +129,7 @@ fn hidden_row_count_input<'a>(
     right: &'a LoweredNativeInput,
     canonical: CanonicalJoin,
 ) -> Option<(DataFusionJoinSide, &'a LoweredNativeInput, &'a FieldBinding)> {
-    if matches!(
-        canonical.native_join_type(),
-        query_engine::plan::JoinType::LeftSemi | query_engine::plan::JoinType::LeftAnti
-    ) {
+    if matches!(canonical.native_join_type(), NativeJoinType::LeftSemi | NativeJoinType::LeftAnti) {
         return first_binding_for_side(left, right, canonical.datafusion_side_for_native_left());
     }
     first_binding_for_side(left, right, DataFusionJoinSide::Left)
@@ -194,7 +193,7 @@ pub(super) fn cross_join_output_requests(
         &join.join.right().schema(),
         &join.join.schema(),
         None,
-        &JoinType::Inner,
+        &DataFusionJoinType::Inner,
     )
 }
 
@@ -204,7 +203,7 @@ fn join_output_requests(
     right_schema: &SchemaRef,
     output_schema: &SchemaRef,
     projection_indices: Option<&[usize]>,
-    datafusion_join_type: &JoinType,
+    datafusion_join_type: &DataFusionJoinType,
 ) -> Result<JoinOutputRequests, CapabilityReason> {
     // DataFusion owns output ordering, projection, aliases, and semi/anti
     // output-side rules. Convert each requested DataFusion output field into a
@@ -246,31 +245,35 @@ fn join_output_requests(
 }
 
 pub(super) fn datafusion_join_output_side(
-    join_type: &JoinType,
+    join_type: &DataFusionJoinType,
     join_schema_index: usize,
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
 ) -> Result<(DataFusionJoinSide, usize), CapabilityReason> {
     match join_type {
-        JoinType::RightSemi | JoinType::RightAnti => Ok((DataFusionJoinSide::Right, join_schema_index)),
-        JoinType::LeftSemi | JoinType::LeftAnti => Ok((DataFusionJoinSide::Left, join_schema_index)),
+        DataFusionJoinType::RightSemi | DataFusionJoinType::RightAnti => {
+            Ok((DataFusionJoinSide::Right, join_schema_index))
+        },
+        DataFusionJoinType::LeftSemi | DataFusionJoinType::LeftAnti => {
+            Ok((DataFusionJoinSide::Left, join_schema_index))
+        },
         // LeftMark output schema (DataFusion): [left_fields..., mark]. The
         // trailing index is the mark column (JoinSide::None); 0..left_len are
         // left-side columns.
-        JoinType::LeftMark if join_schema_index >= left_schema.fields().len() => {
+        DataFusionJoinType::LeftMark if join_schema_index >= left_schema.fields().len() => {
             Ok((DataFusionJoinSide::None, join_schema_index))
         },
-        JoinType::LeftMark => Ok((DataFusionJoinSide::Left, join_schema_index)),
+        DataFusionJoinType::LeftMark => Ok((DataFusionJoinSide::Left, join_schema_index)),
         // RightMark output schema (DataFusion): [right_fields..., mark]. The
         // trailing index is the mark column (JoinSide::None); 0..right_len are
         // right-side columns. RightMark is canonicalized through input swap in
         // canonical_join, but the DataFusion-original side names are kept here
         // so callers select the correct DataFusion input schema for binding
         // lookups.
-        JoinType::RightMark if join_schema_index >= right_schema.fields().len() => {
+        DataFusionJoinType::RightMark if join_schema_index >= right_schema.fields().len() => {
             Ok((DataFusionJoinSide::None, join_schema_index))
         },
-        JoinType::RightMark => Ok((DataFusionJoinSide::Right, join_schema_index)),
+        DataFusionJoinType::RightMark => Ok((DataFusionJoinSide::Right, join_schema_index)),
         _ if join_schema_index < left_schema.fields().len() => Ok((DataFusionJoinSide::Left, join_schema_index)),
         _ => Ok((DataFusionJoinSide::Right, join_schema_index - left_schema.fields().len())),
     }

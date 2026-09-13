@@ -119,9 +119,7 @@ pub(super) fn basic_list_payload_batch(keys: &[i32]) -> RecordBatch {
             Arc::new(ListArray::new(
                 float_child,
                 OffsetBuffer::new(ScalarBuffer::from((0..=keys.len() as i32).collect::<Vec<_>>())),
-                Arc::new(Float32Array::from(
-                    keys.iter().map(|key| *key as f32 + 0.25).collect::<Vec<_>>(),
-                )),
+                Arc::new(Float32Array::from(keys.iter().map(|key| *key as f32 + 0.25).collect::<Vec<_>>())),
                 None,
             )),
         ],
@@ -135,10 +133,10 @@ pub(super) fn assert_basic_list_payload_rows(batch: &RecordBatch, key_column: us
     let flags = batch.column(list_start + 1).as_any().downcast_ref::<ListArray>().unwrap();
     let tags = batch.column(list_start + 2).as_any().downcast_ref::<ListArray>().unwrap();
     let scores = batch.column(list_start + 3).as_any().downcast_ref::<ListArray>().unwrap();
-    let int_values = ints.values().as_primitive::<arrow::datatypes::Int64Type>();
+    let int_values = ints.values().as_primitive::<Int64Type>();
     let flag_values = flags.values().as_any().downcast_ref::<BooleanArray>().unwrap();
     let tag_values = tags.values().as_any().downcast_ref::<StringArray>().unwrap();
-    let score_values = scores.values().as_primitive::<arrow::datatypes::Float32Type>();
+    let score_values = scores.values().as_primitive::<Float32Type>();
     assert_eq!(int_values.values().as_ref(), &keys.iter().map(|key| i64::from(*key) * 10).collect::<Vec<_>>());
     assert_eq!(flag_values.iter().collect::<Vec<_>>(), keys.iter().map(|key| Some(key % 2 == 0)).collect::<Vec<_>>());
     assert_eq!(
@@ -150,18 +148,12 @@ pub(super) fn assert_basic_list_payload_rows(batch: &RecordBatch, key_column: us
             .map(|value| value.as_deref())
             .collect::<Vec<_>>()
     );
-    assert_eq!(
-        score_values.values().as_ref(),
-        &keys.iter().map(|key| *key as f32 + 0.25).collect::<Vec<_>>()
-    );
+    assert_eq!(score_values.values().as_ref(), &keys.iter().map(|key| *key as f32 + 0.25).collect::<Vec<_>>());
 }
 
 pub(super) fn fixed_size_list_payload_batch(keys: &[i32]) -> RecordBatch {
     let child = Arc::new(Field::new("element", DataType::Float64, false));
-    let values = keys
-        .iter()
-        .flat_map(|key| [f64::from(*key) + 0.25, f64::from(*key) + 0.5])
-        .collect::<Vec<_>>();
+    let values = keys.iter().flat_map(|key| [f64::from(*key) + 0.25, f64::from(*key) + 0.5]).collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("coordinates", DataType::FixedSizeList(Arc::clone(&child), 2), false),
@@ -176,17 +168,19 @@ pub(super) fn fixed_size_list_payload_batch(keys: &[i32]) -> RecordBatch {
     .unwrap()
 }
 
-pub(super) fn assert_fixed_size_list_payload_rows(batch: &RecordBatch, key_column: usize, list_column: usize, keys: &[i32]) {
+pub(super) fn assert_fixed_size_list_payload_rows(
+    batch: &RecordBatch,
+    key_column: usize,
+    list_column: usize,
+    keys: &[i32],
+) {
     assert_eq!(int32_array(batch, key_column).values().as_ref(), keys);
     let coordinates = batch.column(list_column).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
     assert_eq!(coordinates.value_length(), 2);
-    let values = coordinates.values().as_primitive::<arrow::datatypes::Float64Type>();
+    let values = coordinates.values().as_primitive::<Float64Type>();
     assert_eq!(
         values.values().as_ref(),
-        &keys
-            .iter()
-            .flat_map(|key| [f64::from(*key) + 0.25, f64::from(*key) + 0.5])
-            .collect::<Vec<_>>()
+        &keys.iter().flat_map(|key| [f64::from(*key) + 0.25, f64::from(*key) + 0.5]).collect::<Vec<_>>()
     );
 }
 
@@ -276,14 +270,8 @@ fn native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payl
         panic!("host sink should materialize narrow decimal Parquet output");
     };
     assert_eq!(actual.schema(), output_schema);
-    assert_eq!(
-        actual.column(0).as_primitive::<arrow::datatypes::Decimal32Type>().iter().collect::<Vec<_>>(),
-        vec![None, Some(-5)]
-    );
-    assert_eq!(
-        actual.column(1).as_primitive::<arrow::datatypes::Decimal64Type>().iter().collect::<Vec<_>>(),
-        vec![Some(42), None]
-    );
+    assert_eq!(actual.column(0).as_primitive::<Decimal32Type>().iter().collect::<Vec<_>>(), vec![None, Some(-5)]);
+    assert_eq!(actual.column(1).as_primitive::<Decimal64Type>().iter().collect::<Vec<_>>(), vec![Some(42), None]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -294,29 +282,19 @@ fn native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128
         (
             "decimal32",
             DataType::Decimal32(8, 2),
-            Arc::new(
-                Decimal32Array::from(vec![Some(12345), None, Some(-5)])
-                    .with_precision_and_scale(8, 2)
-                    .unwrap(),
-            ) as ArrayRef,
-            Arc::new(
-                Decimal128Array::from(vec![Some(12345), None, Some(-5)])
-                    .with_precision_and_scale(8, 2)
-                    .unwrap(),
-            ) as ArrayRef,
+            Arc::new(Decimal32Array::from(vec![Some(12345), None, Some(-5)]).with_precision_and_scale(8, 2).unwrap())
+                as ArrayRef,
+            Arc::new(Decimal128Array::from(vec![Some(12345), None, Some(-5)]).with_precision_and_scale(8, 2).unwrap())
+                as ArrayRef,
         ),
         (
             "decimal64",
             DataType::Decimal64(17, 4),
             Arc::new(
-                Decimal64Array::from(vec![Some(-987654321), None, Some(42)])
-                    .with_precision_and_scale(17, 4)
-                    .unwrap(),
+                Decimal64Array::from(vec![Some(-987654321), None, Some(42)]).with_precision_and_scale(17, 4).unwrap(),
             ) as ArrayRef,
             Arc::new(
-                Decimal128Array::from(vec![Some(-987654321), None, Some(42)])
-                    .with_precision_and_scale(17, 4)
-                    .unwrap(),
+                Decimal128Array::from(vec![Some(-987654321), None, Some(42)]).with_precision_and_scale(17, 4).unwrap(),
             ) as ArrayRef,
         ),
     ];
@@ -355,7 +333,8 @@ fn native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128
             DataType::Decimal32(precision, scale) | DataType::Decimal64(precision, scale) => (precision, scale),
             _ => unreachable!(),
         };
-        let wide_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(precision, scale), true)]));
+        let wide_schema =
+            Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(precision, scale), true)]));
         let wide_batch = RecordBatch::try_new(Arc::clone(&wide_schema), vec![wide_array]).unwrap();
         assert_record_batch_columns_equal(&execute(wide_schema), &wide_batch);
 
@@ -404,7 +383,7 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     };
     assert_eq!(batch.schema(), schema);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
-    let event_ts = batch.column(1).as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+    let event_ts = batch.column(1).as_primitive::<TimestampMicrosecondType>();
     assert_eq!(event_ts.values().as_ref(), &[1_700_000_000_000_000, 0, 1_700_000_000_000_123]);
     assert!(event_ts.is_valid(0));
     assert!(!event_ts.is_valid(1));
@@ -500,12 +479,7 @@ fn native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_
         Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(Vec::<i32>::new())),
-            Arc::new(FixedSizeListArray::new(
-                child,
-                3,
-                Arc::new(Float64Array::from(Vec::<f64>::new())),
-                None,
-            )),
+            Arc::new(FixedSizeListArray::new(child, 3, Arc::new(Float64Array::from(Vec::<f64>::new())), None)),
         ],
     )
     .unwrap();
@@ -557,11 +531,7 @@ fn native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_li
     );
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
-        Field::new(
-            "features",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2),
-            true,
-        ),
+        Field::new("features", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2), true),
     ]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
@@ -587,7 +557,7 @@ fn native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_li
     assert_eq!(features.value_length(), 2);
     assert!(features.is_null(0));
     assert!(features.is_valid(1));
-    assert_eq!(features.value(1).as_primitive::<arrow::datatypes::Int32Type>().values(), &[5, 6]);
+    assert_eq!(features.value(1).as_primitive::<Int32Type>().values(), &[5, 6]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -778,10 +748,7 @@ fn native_local_parquet_limit_materializes_basic_list_shape() {
     }
     let ports = batch.column(3).as_any().downcast_ref::<ListArray>().unwrap();
     assert_eq!(ports.len(), 10);
-    assert_eq!(
-        ports.values().as_primitive::<arrow::datatypes::Int64Type>().values().as_ref(),
-        &(100..110).collect::<Vec<_>>()
-    );
+    assert_eq!(ports.values().as_primitive::<Int64Type>().values().as_ref(), &(100..110).collect::<Vec<_>>());
 
     fs::remove_dir_all(dir).unwrap();
 }

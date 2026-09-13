@@ -8,7 +8,7 @@ use cudf::{
 
 use crate::common::{
     error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, nullable_series,
-    reset_exec_observation, reset_sync_observation, series,
+    reset_exec_observation, reset_sync_observation, run_named_cases, series,
 };
 
 fn timestamp_days_series(values: &[i32]) -> cudf::Result<cudf::Series> {
@@ -127,7 +127,7 @@ fn test_datetime_extract_in_uses_explicit_execution_context_and_output_provenanc
 
 #[test]
 fn datetime_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "test_datetime_extract_year_month_day_from_timestamp_days",
             test_datetime_extract_year_month_day_from_timestamp_days,

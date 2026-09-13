@@ -85,7 +85,7 @@ async fn prepared_statement_rejects_transaction_id() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let txn_id = prost::bytes::Bytes::from_static(b"fake-txn");
+    let txn_id = Bytes::from_static(b"fake-txn");
     let error = client.prepare("select 1".to_string(), Some(txn_id)).await.unwrap_err();
     let status = unwrap_flight_status(error);
     assert_eq!(status.code(), Code::Unimplemented);
@@ -110,7 +110,7 @@ async fn prepared_statement_close_is_idempotent_via_raw_action() {
     use arrow_flight::sql::{ActionClosePreparedStatementRequest, ProstMessageExt};
     use prost::Message;
     let action_body =
-        ActionClosePreparedStatementRequest { prepared_statement_handle: prost::bytes::Bytes::from_static(b"ghost") };
+        ActionClosePreparedStatementRequest { prepared_statement_handle: Bytes::from_static(b"ghost") };
     let action = arrow_flight::Action {
         r#type: "ClosePreparedStatement".to_string(),
         body: action_body.as_any().encode_to_vec().into(),
@@ -159,7 +159,7 @@ async fn unknown_prepared_statement_query_stats_remains_resolvable() {
     let mut client = connect_with_retry(addr).await;
 
     let command =
-        CommandPreparedStatementQuery { prepared_statement_handle: prost::bytes::Bytes::from_static(b"ghost") };
+        CommandPreparedStatementQuery { prepared_statement_handle: Bytes::from_static(b"ghost") };
     let descriptor = arrow_flight::FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
     let status = client.inner_mut().get_flight_info(descriptor).await.unwrap_err();
     assert_eq!(status.code(), Code::NotFound);

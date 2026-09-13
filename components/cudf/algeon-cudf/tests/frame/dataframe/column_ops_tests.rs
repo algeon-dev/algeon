@@ -10,12 +10,13 @@ use cudf::{
 };
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value,
-    lock_event_observation, observed_exec_mr_values, reset_exec_observation, scalar, with_test_runtime,
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs,
+    dataframe_from_columns, error_context_value, lock_event_observation, observed_exec_mr_values,
+    reset_exec_observation, run_named_cases, scalar, series, with_test_runtime,
 };
 
 fn decimal128_scale_zero_frame() -> DataFrame {
-    let amount = crate::common::series::<i64>("amount", &[1, -2, 0])
+    let amount = series::<i64>("amount", &[1, -2, 0])
         .unwrap()
         .astype(DataType::fixed_point(TypeId::Decimal128, 0).unwrap())
         .unwrap();
@@ -38,9 +39,7 @@ fn assert_amount_decimal128_scale_8(df: &DataFrame) {
 // ---------------------------------------------------------------------------
 
 fn test_with_column_adds_new_column() {
-    let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let new_col = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let result = df.with_column("b", new_col).unwrap();
@@ -59,7 +58,7 @@ fn test_with_column_adds_new_column() {
 }
 
 fn test_with_column_replaces_existing_column() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
@@ -81,7 +80,7 @@ fn test_with_column_replaces_existing_column() {
 }
 
 fn test_with_column_preserves_schema_order_on_replace() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
         vec![
             column_from_slice(&[1i32]).unwrap(),
@@ -102,9 +101,7 @@ fn test_with_column_preserves_schema_order_on_replace() {
 }
 
 fn test_with_column_mismatched_row_count_returns_error() {
-    let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     // New column has 2 rows, DataFrame has 3.
     let new_col = column_from_slice(&[10i32, 20]).unwrap();
@@ -121,7 +118,7 @@ fn test_fillna_with_scalar_fills_values() {
     let col_a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let col_b = column_from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
 
     let fill = scalar(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
@@ -139,8 +136,7 @@ fn test_fillna_with_scalar_fills_values() {
 }
 
 fn test_fillna_with_scalar_nonexistent_column_returns_error() {
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
-        .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
 
     let fill = scalar(0i32).unwrap();
     let err = df.fillna_with_scalar("missing", &fill).expect_err("expected error");
@@ -152,11 +148,8 @@ fn test_fillna_with_scalar_preserves_other_columns() {
     let col_b = column_from_slice_nullable(&[10i32, 0], &[true, false]).unwrap();
     let col_c = column_from_slice(&[100i64, 200]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(
-        vec!["a".to_string(), "b".to_string(), "c".to_string()],
-        vec![col_a, col_b, col_c],
-    )
-    .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "c".to_string()], vec![col_a, col_b, col_c])
+        .unwrap();
 
     let fill = scalar(99i32).unwrap();
     let result = df.fillna_with_scalar("b", &fill).unwrap();
@@ -171,7 +164,7 @@ fn test_fillna_with_scalar_preserves_other_columns() {
 }
 
 fn test_cast_column_changes_type() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -195,8 +188,7 @@ fn test_cast_column_changes_type() {
 }
 
 fn test_cast_column_nonexistent_returns_error() {
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
-        .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
 
     let target = DataType::new(TypeId::Float64);
     let err = df.cast_column("missing", target).expect_err("expected error");
@@ -204,7 +196,7 @@ fn test_cast_column_nonexistent_returns_error() {
 }
 
 fn test_cast_column_preserves_schema_order() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
         vec![
             column_from_slice(&[1i32]).unwrap(),
@@ -227,7 +219,7 @@ fn test_cast_column_preserves_schema_order() {
 }
 
 fn test_with_column_add_preserves_existing_string_column() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["name".to_string(), "a".to_string()],
         vec![column_from_strs(&["alice", "bob", "cara"]).unwrap(), column_from_slice(&[1i32, 2, 3]).unwrap()],
     )
@@ -248,7 +240,7 @@ fn test_with_column_add_preserves_existing_string_column() {
 }
 
 fn test_fillna_with_scalar_with_string_sibling_column() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["name".to_string(), "b".to_string()],
         vec![
             column_from_strs(&["x", "y", "z"]).unwrap(),
@@ -268,7 +260,7 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
 }
 
 fn test_cast_column_with_string_sibling_column() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["name".to_string(), "qty".to_string()],
         vec![column_from_strs(&["a", "b", "c"]).unwrap(), column_from_slice(&[1i32, 2, 3]).unwrap()],
     )
@@ -309,7 +301,7 @@ fn assert_all_observed_exec_mrs_are_manager_mr(token: &cudf::ExecutionBudgetToke
 }
 
 fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -322,7 +314,7 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = df.with_columns_with_budget([("sum", cudf::ops::col("a") + cudf::ops::col("b"))], &token).unwrap();
+    let outcome = df.with_columns_with_budget([("sum", col("a") + col("b"))], &token).unwrap();
     let result = outcome.value();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(result);
@@ -340,7 +332,7 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
 }
 
 fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["score".to_string(), "fallback".to_string()],
         vec![column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap(), column_from_slice(&[1.0f64, 9.0, 3.0]).unwrap()],
     )
@@ -368,7 +360,7 @@ fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
 }
 
 fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["id".to_string(), "qty".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -438,7 +430,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
 }
 
 fn test_with_columns_with_budget_reports_exceeded_budget_details() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -448,7 +440,7 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     });
 
     let err = expect_cudf_err(
-        df.with_columns_with_budget([("sum", cudf::ops::col("a") + cudf::ops::col("b"))], &token),
+        df.with_columns_with_budget([("sum", col("a") + col("b"))], &token),
         "one-byte budget should not cover with_columns allocations",
     );
 
@@ -461,7 +453,7 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
 }
 
 fn test_cast_column_with_budget_reports_exceeded_budget_details() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["id".to_string(), "qty".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -506,7 +498,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
 
 #[test]
 fn column_ops_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_with_column_adds_new_column", test_with_column_adds_new_column),
         ("test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
         ("test_with_column_preserves_schema_order_on_replace", test_with_column_preserves_schema_order_on_replace),

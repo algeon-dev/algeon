@@ -1,8 +1,14 @@
 use std::sync::Arc;
 
+use query_engine::error::{QueryError, Result as QueryEngineResult};
+
 use super::{
-    AlgeonNativeExecutionConfig, AlgeonNativeExecutionContext, Error, ExecutionContext, IoLifecycle,
-    QueryAdmissionFacts, QueryId, TaskContext, TicketAdmissionContext, TraceId,
+    AlgeonNativeExecutionConfig, AlgeonNativeExecutionContext, ExecutionContext, IoLifecycle, QueryAdmissionFacts,
+    QueryId, TaskContext, TicketAdmissionContext, TraceId,
+};
+use crate::{
+    error::{Error, ErrorCode, Result},
+    native_exec::admission::task_context_with_query_admission_ticket,
 };
 
 impl AlgeonNativeExecutionContext {
@@ -18,12 +24,12 @@ impl AlgeonNativeExecutionContext {
         }
     }
 
-    pub(super) fn with_query_id(mut self, query_id: QueryId) -> query_engine::error::Result<Self> {
+    pub(super) fn with_query_id(mut self, query_id: QueryId) -> QueryEngineResult<Self> {
         self.context = self.context.with_query_id(query_id)?;
         Ok(self)
     }
 
-    pub(super) fn with_trace_id(mut self, trace_id: TraceId) -> query_engine::error::Result<Self> {
+    pub(super) fn with_trace_id(mut self, trace_id: TraceId) -> QueryEngineResult<Self> {
         self.context = self.context.with_trace_id(trace_id)?;
         Ok(self)
     }
@@ -51,11 +57,10 @@ impl AlgeonNativeExecutionConfig {
     pub(crate) async fn execution_context_async(
         &self,
         task_context: Arc<TaskContext>,
-    ) -> crate::error::Result<AlgeonNativeExecutionContext> {
+    ) -> Result<AlgeonNativeExecutionContext> {
         self.validate_query_policies()?;
         if let Some(ticket) = self.query_admission_ticket_for_task_context(&task_context) {
-            let task_context =
-                super::super::admission::task_context_with_query_admission_ticket(task_context, Arc::clone(&ticket));
+            let task_context = task_context_with_query_admission_ticket(task_context, Arc::clone(&ticket));
             return ticket
                 .acquire_context(task_context, self.cancellation.clone())
                 .await
@@ -75,7 +80,7 @@ impl AlgeonNativeExecutionConfig {
 
     fn gpu_backend_required_error(&self) -> Error {
         let mut error = Error::new(
-            crate::error::ErrorCode::InvalidRequest,
+            ErrorCode::InvalidRequest,
             "algeon_datafusion.native_exec.context",
             "GPU native execution requires admission from an installed AlgeonGpuBackend",
         )
@@ -93,7 +98,7 @@ impl AlgeonNativeExecutionConfig {
     pub(super) fn stamp_acquired_service_context(
         &self,
         mut context: AlgeonNativeExecutionContext,
-    ) -> query_engine::error::Result<AlgeonNativeExecutionContext> {
+    ) -> QueryEngineResult<AlgeonNativeExecutionContext> {
         // An ambient composed-query ticket owns the canonical identity. Child
         // fragment configs may carry independently minted planning ids and
         // must not overwrite the pre-admission observation identity.
@@ -113,10 +118,7 @@ impl AlgeonNativeExecutionConfig {
         Ok(context)
     }
 
-    pub(super) fn stamp_native_error_correlation(
-        &self,
-        mut error: query_engine::error::QueryError,
-    ) -> query_engine::error::QueryError {
+    pub(super) fn stamp_native_error_correlation(&self, mut error: QueryError) -> QueryError {
         if let Some(query_id) = &self.query_id {
             error = error.with_query_id(query_id.clone());
         }

@@ -308,13 +308,8 @@ fn empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_lit
     let predicate =
         binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
             .unwrap();
-    let plan: Arc<dyn ExecutionPlan> = Arc::new(
-        datafusion::physical_plan::filter::FilterExecBuilder::new(predicate, scan)
-            .apply_projection(Some(vec![0, 2]))
-            .unwrap()
-            .build()
-            .unwrap(),
-    );
+    let plan: Arc<dyn ExecutionPlan> =
+        Arc::new(FilterExecBuilder::new(predicate, scan).apply_projection(Some(vec![0, 2])).unwrap().build().unwrap());
 
     let result = lower_physical_plan_to_native(plan);
 
@@ -848,7 +843,7 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_s3_remote_native_source(source: &query_engine::source::LocalParquetSource, expected_uri: &str) {
+fn assert_s3_remote_native_source(source: &LocalParquetSource, expected_uri: &str) {
     assert_eq!(source.file_count(), 1);
     let file = &source.files[0];
     assert_eq!(file.location.read_capability(), "object_store:s3");

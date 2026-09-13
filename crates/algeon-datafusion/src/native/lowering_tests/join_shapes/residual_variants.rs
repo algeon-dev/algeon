@@ -289,7 +289,7 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: query_engine::expr::BinaryOp::And, .. }
+        Expr::Binary { left, right, op: BinaryOp::And, .. }
             if matches!(
                 left.as_ref(),
                 Expr::InList { expr, list, negated: false }
@@ -496,7 +496,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: query_engine::expr::BinaryOp::Or, .. }
+        Expr::Binary { left, right, op: BinaryOp::Or, .. }
             if matches!(
                 left.as_ref(),
                 Expr::InList { expr, list, negated: false }
@@ -508,7 +508,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Binary { left, right, op: query_engine::expr::BinaryOp::NotEq, .. }
+                    Expr::Binary { left, right, op: BinaryOp::NotEq, .. }
                         if matches!(
                             left.as_ref(),
                             Expr::Column(column) if column.to_string() == "input0.__algeon_native_join_residual_left_1"
@@ -559,7 +559,7 @@ fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predica
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: query_engine::expr::BinaryOp::NotEq, .. }
+        Expr::Binary { left, right, op: BinaryOp::NotEq, .. }
             if matches!(left.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_country")
                 && matches!(
                     right.as_ref(),
@@ -736,7 +736,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
         &[(NativeJoinSide::Left, "input0.key", "__algeon_native_join_row_presence")],
     );
     assert!(
-        !native_plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).has_rejections(),
+        !native_plan.capability_analysis(rapids_analysis_context()).has_rejections(),
         "capability analysis should accept hidden preserved-side semi/anti output"
     );
 
@@ -768,7 +768,7 @@ fn nested_loop_join_filter_lowers_to_native_residual_predicate() {
             _ => None,
         })
         .expect("native plan should contain a join node");
-    assert!(matches!(join.spec.join_type, query_engine::plan::JoinType::Inner));
+    assert!(matches!(join.spec.join_type, NativeJoinType::Inner));
     assert!(join.spec.keys.is_empty());
     let residual = join.spec.residual_predicate.as_ref().expect("nested loop filter should lower as residual");
     assert!(matches!(
@@ -806,7 +806,7 @@ fn full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
             _ => None,
         })
         .expect("native plan should contain a join node");
-    assert!(matches!(join.spec.join_type, query_engine::plan::JoinType::Full));
+    assert!(matches!(join.spec.join_type, NativeJoinType::Full));
     assert!(join.spec.keys.is_empty());
     assert!(join.spec.residual_predicate.is_some());
 
@@ -838,7 +838,7 @@ fn inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
             _ => None,
         })
         .expect("native plan should contain a join node");
-    assert!(matches!(join.spec.join_type, query_engine::plan::JoinType::Cross));
+    assert!(matches!(join.spec.join_type, NativeJoinType::Cross));
     assert!(join.spec.keys.is_empty());
     assert!(join.spec.residual_predicate.is_none());
 

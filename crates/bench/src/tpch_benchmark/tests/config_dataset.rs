@@ -1,6 +1,10 @@
 use std::fs;
 
+use algeon_datafusion::planner::DataFusionCpuExecutionPolicy;
+use query_engine::runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode};
+
 use super::*;
+use crate::report_workload::RelationalExecutionSelection;
 
 #[test]
 fn default_config_selects_all_tpch_queries() {
@@ -13,11 +17,8 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(config.native_memory_policy.as_str(), "bounded");
     assert_eq!(config.native_memory_policy.profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
     assert_eq!(config.native_memory_policy.profile_source, "default");
-    assert_eq!(
-        config.native_memory_policy.source_chunk_planning_mode,
-        query_engine::runtime::SourceChunkPlanningMode::Conservative
-    );
-    assert_eq!(config.native_execution, crate::report_workload::RelationalExecutionSelection::strict_native());
+    assert_eq!(config.native_memory_policy.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
+    assert_eq!(config.native_execution, RelationalExecutionSelection::strict_native());
     config.validate().unwrap();
 }
 
@@ -28,10 +29,7 @@ fn native_planning_uses_the_strict_final_plan_policy_frozen_in_benchmark_config(
 
     let optimizer = execution::native_optimizer_config(&config, &resources, None);
 
-    assert_eq!(
-        optimizer.datafusion_cpu_execution_policy(),
-        algeon_datafusion::planner::DataFusionCpuExecutionPolicy::Reject
-    );
+    assert_eq!(optimizer.datafusion_cpu_execution_policy(), DataFusionCpuExecutionPolicy::Reject);
 }
 
 #[test]
@@ -45,7 +43,7 @@ fn native_profile_defaults_to_conservative() {
     assert_eq!(profile.max_row_groups_per_chunk, DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
     assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(profile.source_chunk_planning_mode, query_engine::runtime::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
@@ -60,10 +58,7 @@ fn native_profile_resolves_sf100_gpu_throughput() {
     assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
     assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(
-        profile.source_chunk_planning_mode,
-        query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-    );
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
 }
 
 #[test]
@@ -78,10 +73,7 @@ fn native_profile_source_chunk_planning_reaches_execution_config() {
 
     let execution = config.native_execution_config_with_resources(&resources);
 
-    assert_eq!(
-        execution.source_chunk_planning_mode(),
-        query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-    );
+    assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
 }
 
 #[test]
@@ -110,23 +102,14 @@ fn explicit_device_budget_override_is_custom_and_explicit() {
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CUSTOM);
     assert_eq!(profile.profile_source, "custom_overrides");
     assert_eq!(profile.device_budget, NativeTpchDeviceBudget::Explicit { bytes: 15_032_385_536 });
-    assert_eq!(
-        profile.device_budget.memory_limit(),
-        query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: 15_032_385_536 }
-    );
+    assert_eq!(profile.device_budget.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 15_032_385_536 });
     assert_eq!(profile.max_source_chunk_bytes, TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
     assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(
-        profile.source_chunk_planning_mode,
-        query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-    );
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::LocalParquetThroughput);
 
-    assert_eq!(
-        NativeTpchDeviceBudget::Automatic.memory_limit(),
-        query_engine::runtime::GpuDeviceMemoryLimit::default()
-    );
+    assert_eq!(NativeTpchDeviceBudget::Automatic.memory_limit(), GpuDeviceMemoryLimit::default());
 }
 
 #[test]
@@ -141,7 +124,7 @@ fn native_profile_overrides_become_custom() {
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CUSTOM);
     assert_eq!(profile.profile_source, "custom_overrides");
     assert_eq!(profile.max_source_chunk_bytes, 123_456);
-    assert_eq!(profile.source_chunk_planning_mode, query_engine::runtime::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
 }
 
 #[test]

@@ -11,6 +11,10 @@ use super::{
         RootHashJoinMaterializeStreamSource, is_retryable_join_stream_slice_error, record_join_stream_slice_retry_error,
     },
 };
+use crate::{
+    exec::retry::backoff_before_retry,
+    metrics::{JoinOperatorMetrics, OperatorMetrics},
+};
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -144,9 +148,9 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             return Err(error);
         },
     };
-    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(OperatorMetrics::join(
         node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: reusable_hash_join_execution_strategy(node, build).to_string(),
@@ -210,10 +214,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
         Ok(output) => Ok(vec![output]),
         Err(error) if len > 1 && is_retryable_join_stream_slice_error(&error) => {
             record_join_stream_slice_retry_error(&error, execution.metrics());
-            crate::exec::retry::backoff_before_retry(
-                execution.context(),
-                "query_engine.exec.bounded.hash_join_slice_retry",
-            )?;
+            backoff_before_retry(execution.context(), "query_engine.exec.bounded.hash_join_slice_retry")?;
             let left_len = len / 2;
             let right_len = len - left_len;
             let mut outputs = materialize_bounded_root_hash_join_index_slice(

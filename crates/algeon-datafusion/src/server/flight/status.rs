@@ -1,7 +1,11 @@
 use std::time::Instant;
 
+use arrow::error::ArrowError;
+use arrow_flight::error::FlightError;
+use prost::bytes::Bytes;
+
 use super::*;
-use crate::server::observability::RedactedSql;
+use crate::{error::Result, server::observability::RedactedSql};
 
 pub(super) fn datafusion_error_to_flight_error(
     error: DataFusionError,
@@ -31,7 +35,7 @@ pub(super) fn adapter_error_to_status_and_capture(error: Error) -> (Status, Capt
 }
 
 pub(super) fn arrow_error_to_status_and_capture(
-    error: arrow::error::ArrowError,
+    error: ArrowError,
     operation: &'static str,
     message: &'static str,
 ) -> (Status, CapturedError) {
@@ -39,12 +43,12 @@ pub(super) fn arrow_error_to_status_and_capture(
 }
 
 pub(super) fn arrow_flight_error_to_status_and_capture(
-    error: arrow_flight::error::FlightError,
+    error: FlightError,
     operation: &'static str,
     message: &'static str,
 ) -> (Status, CapturedError) {
     match error {
-        arrow_flight::error::FlightError::Tonic(status) => {
+        FlightError::Tonic(status) => {
             let status = *status;
             let captured = CapturedError::from_status(&status);
             (status, captured)
@@ -55,10 +59,7 @@ pub(super) fn arrow_flight_error_to_status_and_capture(
     }
 }
 
-pub(super) fn verify_flight_info_plan(
-    plan: &LogicalPlan,
-    ticket_kind: StatementTicketKind,
-) -> crate::server::adapter_error::Result<()> {
+pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: StatementTicketKind) -> Result<()> {
     match ticket_kind {
         StatementTicketKind::Statement => verify_statement_query_plan(plan),
         StatementTicketKind::PreparedStatement => verify_prepared_query_plan(plan),
@@ -79,7 +80,7 @@ pub(super) fn flight_info_result_schema(plan: &LogicalPlan) -> Schema {
     }
 }
 
-pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::server::adapter_error::Result<()> {
+pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> Result<()> {
     match plan {
         LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
@@ -95,7 +96,7 @@ pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::server::
     }
 }
 
-pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> crate::server::adapter_error::Result<()> {
+pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<()> {
     match plan {
         // DDL carries no result set, but DataFusion executes it eagerly in
         // `execute_logical_plan` and yields an empty stream. The shared do_get
@@ -124,7 +125,7 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> crate::server::a
     }
 }
 
-pub(super) fn verify_update_plan(plan: &LogicalPlan) -> crate::server::adapter_error::Result<()> {
+pub(super) fn verify_update_plan(plan: &LogicalPlan) -> Result<()> {
     match plan {
         LogicalPlan::Ddl(ddl) => verify_update_ddl(ddl, "algeon_datafusion.server.flight.do_put_update.verify_plan"),
         LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
@@ -149,7 +150,7 @@ pub(super) fn verify_sql_statement_namespace(
     statement: &Statement,
     operation: &'static str,
     session_update_message: &'static str,
-) -> crate::server::adapter_error::Result<()> {
+) -> Result<()> {
     match statement {
         Statement::SetVariable(set) if operation == "algeon_datafusion.server.flight.do_put_update.verify_plan" => {
             reject_flight_algeon_datafusion_session_key(&set.variable, operation)
@@ -172,10 +173,7 @@ pub(super) fn verify_sql_statement_namespace(
     }
 }
 
-fn reject_flight_algeon_datafusion_session_key(
-    variable: &str,
-    operation: &'static str,
-) -> crate::server::adapter_error::Result<()> {
+fn reject_flight_algeon_datafusion_session_key(variable: &str, operation: &'static str) -> Result<()> {
     let normalized = variable.trim().to_ascii_lowercase();
     if normalized != "algeon_datafusion" && !normalized.starts_with("algeon_datafusion.") {
         return Ok(());
@@ -190,10 +188,7 @@ fn reject_flight_algeon_datafusion_session_key(
     .with_log_safe_fact("configuration_scope", "server_or_admission_defaults"))
 }
 
-pub(super) fn verify_update_ddl(
-    ddl: &DdlStatement,
-    operation: &'static str,
-) -> crate::server::adapter_error::Result<()> {
+pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> Result<()> {
     match ddl {
         DdlStatement::CreateMemoryTable(_) | DdlStatement::CreateIndex(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
@@ -204,7 +199,10 @@ pub(super) fn verify_update_ddl(
     }
 }
 
-pub(super) fn reject_parameterized_plan(plan: &LogicalPlan, operation: &'static str) -> Result<(), DataFusionError> {
+pub(super) fn reject_parameterized_plan(
+    plan: &LogicalPlan,
+    operation: &'static str,
+) -> std::result::Result<(), DataFusionError> {
     let parameter_names = plan.get_parameter_names()?;
     if parameter_names.is_empty() {
         return Ok(());
@@ -218,7 +216,7 @@ pub(super) fn reject_parameterized_plan(plan: &LogicalPlan, operation: &'static 
 }
 
 pub(super) fn arrow_error_to_status_for_operation(
-    error: arrow::error::ArrowError,
+    error: ArrowError,
     operation: &'static str,
     message: &'static str,
 ) -> Status {
@@ -229,19 +227,19 @@ pub(super) fn arrow_error_to_status_for_operation(
 /// uses for `ActionCreatePreparedStatementResult.dataset_schema` and
 /// `parameter_schema`. Returns the `prost::bytes::Bytes` payload ready to drop
 /// into the proto message.
-pub(super) fn schema_to_ipc_bytes(schema: &Schema) -> Result<prost::bytes::Bytes, arrow::error::ArrowError> {
+pub(super) fn schema_to_ipc_bytes(schema: &Schema) -> std::result::Result<Bytes, ArrowError> {
     let options = IpcWriteOptions::default();
     let IpcMessage(bytes) = IpcMessage::try_from(SchemaAsIpc::new(schema, &options))?;
     Ok(bytes)
 }
 
 pub(super) fn arrow_flight_error_to_status_for_operation(
-    error: arrow_flight::error::FlightError,
+    error: FlightError,
     operation: &'static str,
     message: &'static str,
 ) -> Status {
     match error {
-        arrow_flight::error::FlightError::Tonic(status) => *status,
+        FlightError::Tonic(status) => *status,
         error => adapter_error_to_status(&Error::new(ErrorCode::Internal, operation, message).with_source(error)),
     }
 }
@@ -340,12 +338,13 @@ pub(super) fn log_statement_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::error::ERROR_CODE_METADATA_KEY;
 
     #[test]
     fn arrow_flight_tonic_status_is_passed_through() {
         let mut status = Status::permission_denied("source credentials rejected");
         status.metadata_mut().insert(
-            crate::server::error::ERROR_CODE_METADATA_KEY,
+            ERROR_CODE_METADATA_KEY,
             MetadataValue::try_from("source_access_denied").expect("metadata value should be valid"),
         );
 
@@ -358,10 +357,7 @@ mod tests {
         assert_eq!(projected.code(), status.code());
         assert_eq!(projected.message(), status.message());
         assert_eq!(
-            projected
-                .metadata()
-                .get(crate::server::error::ERROR_CODE_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
+            projected.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("source_access_denied")
         );
     }

@@ -4,6 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, marker::PhantomData, sync::Arc};
 
 use crate::runtime::{
     DeviceHealthSnapshot, DeviceId,
+    device_guard::reset_thread_authority_for_testing,
     device_health::{DeviceHealthRegistry, new_test_registry},
 };
 
@@ -34,7 +35,7 @@ pub struct DeviceSafetyTestScope {
 impl DeviceSafetyTestScope {
     /// Install one isolated same-thread test registry and call sequence.
     pub fn install(calls: impl IntoIterator<Item = DeviceEntryTestCall>) -> Self {
-        crate::runtime::device_guard::reset_thread_authority_for_testing();
+        reset_thread_authority_for_testing();
         let registry = new_test_registry();
         INJECTED.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -65,7 +66,7 @@ impl Drop for DeviceSafetyTestScope {
         INJECTED.with(|slot| {
             slot.borrow_mut().take();
         });
-        crate::runtime::device_guard::reset_thread_authority_for_testing();
+        reset_thread_authority_for_testing();
     }
 }
 

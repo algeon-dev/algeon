@@ -7,8 +7,9 @@ use std::{
 use crate::{
     helpers::read_string_column_data,
     support::{
-        current_device_resource_raw, last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value,
-        lock_shim_state, make_stats_memory_resource, required_exec_options, reset_exec_observation, stream_value,
+        OwnedStream, current_device_resource_raw, last_exec_mr_raw, last_exec_stream_value,
+        last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource, required_exec_options,
+        reset_exec_observation, stream_value,
     },
 };
 
@@ -96,7 +97,7 @@ fn test_arrow_host_column_import_ex_imports_utf8_and_synchronizes() {
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
-    let stream = crate::support::OwnedStream::new();
+    let stream = OwnedStream::new();
     let explicit_stream = stream_value(stream.as_raw());
     let mr = make_stats_memory_resource();
     let default_mr = current_device_resource_raw();

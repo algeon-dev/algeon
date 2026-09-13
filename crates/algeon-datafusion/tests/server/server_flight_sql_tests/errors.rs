@@ -29,7 +29,7 @@ async fn statement_update_rejects_transaction_id_with_structured_error() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let txn_id = prost::bytes::Bytes::from_static(b"fake-txn");
+    let txn_id = Bytes::from_static(b"fake-txn");
     let error = client
         .execute_update("CREATE VIEW tx_update_probe AS SELECT 1 AS x".to_string(), Some(txn_id))
         .await

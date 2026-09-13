@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
 
+use arrow::datatypes::DataType;
+
 use super::CompiledGpuTaskExecutor;
 use crate::{
     exec::bounded::SourceAdjacentAggregateChunkCapHints,
+    expr::Expr,
     pipeline::{
         PipelineEdgeKind, PipelineTaskId, PipelineTaskKind, ResidentDataForm, ResidentResourceId, ResourceSharing,
     },
-    plan::{NodeId, PlanNode},
+    plan::{AggregateNode, NodeId, PlanNode},
     source::SourceNode,
 };
 
@@ -99,7 +102,7 @@ impl CompiledGpuTaskExecutor<'_> {
         None
     }
 
-    fn aggregate_has_string_group_key(&self, aggregate: &crate::plan::AggregateNode) -> bool {
+    fn aggregate_has_string_group_key(&self, aggregate: &AggregateNode) -> bool {
         let Some(input_node) = self.plan.node(aggregate.input) else {
             return false;
         };
@@ -109,12 +112,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 continue;
             };
             if input_schema.field_with_name(column_name).is_ok_and(|field| {
-                matches!(
-                    field.data_type(),
-                    arrow::datatypes::DataType::Utf8
-                        | arrow::datatypes::DataType::LargeUtf8
-                        | arrow::datatypes::DataType::Utf8View
-                )
+                matches!(field.data_type(), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
             }) {
                 return true;
             }
@@ -122,10 +120,10 @@ impl CompiledGpuTaskExecutor<'_> {
         false
     }
 
-    fn plain_group_key_column_name<'a>(&self, expr: &'a crate::expr::Expr) -> Option<&'a str> {
+    fn plain_group_key_column_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
-            crate::expr::Expr::Column(column) => Some(column.name()),
-            crate::expr::Expr::Alias { expr, .. } => self.plain_group_key_column_name(expr),
+            Expr::Column(column) => Some(column.name()),
+            Expr::Alias { expr, .. } => self.plain_group_key_column_name(expr),
             _ => None,
         }
     }

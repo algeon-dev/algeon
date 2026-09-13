@@ -84,7 +84,7 @@ pub(super) fn validate_list_schema_contract(
 
 pub(super) fn validate_fixed_size_list_offsets(
     view: &ColumnView<'_>,
-    producer: &Arc<crate::core::Column>,
+    producer: &Arc<Column>,
     dimension: i32,
     field_name: &str,
     field_index: usize,
@@ -282,7 +282,7 @@ fn fixed_size_list_row_widths(
 fn fixed_size_list_width_bounds(
     widths: &Column,
     view: &ColumnView<'_>,
-    producer: &Arc<crate::core::Column>,
+    producer: &Arc<Column>,
     rows: usize,
     dimension: i32,
     field_name: &str,
@@ -348,7 +348,7 @@ fn fixed_size_list_width_bounds(
 
 pub(super) fn validate_uniform_list_float32_offsets(
     view: &ColumnView<'_>,
-    producer: &Arc<crate::core::Column>,
+    producer: &Arc<Column>,
     field_index: usize,
     operation: &'static str,
 ) -> Result<UniformListFloat32Proof> {
@@ -495,7 +495,7 @@ fn uniform_list_offset_widths(
 
 fn uniform_list_reduced_width_range(
     widths: &Column,
-    producer: &Arc<crate::core::Column>,
+    producer: &Arc<Column>,
     rows: usize,
     operation: &'static str,
 ) -> Result<(i32, i32, BoundaryObservation)> {
@@ -571,7 +571,7 @@ fn record_fixed_size_list_structural_proof(
     rows: usize,
     child_offset: usize,
     child_len: usize,
-    producer: &Arc<crate::core::Column>,
+    producer: &Arc<Column>,
     observation: Option<BoundaryObservation>,
 ) -> FixedSizeListStructuralProof {
     FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(count.get() + 1));

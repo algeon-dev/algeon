@@ -13,6 +13,12 @@ use super::{
     record_grouped_aggregate_strategy_decision, reduce_merge_fan_in, release_nested_partials_reverse,
     release_partials_reverse,
 };
+use crate::{
+    exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
+};
 
 pub(in crate::exec::bounded::aggregate) fn execute_incremental_source_adjacent_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -152,7 +158,7 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
                     {
                         merge_fan_in = reduced_fan_in;
                         attempt += 1;
-                        crate::exec::retry::backoff_before_retry(
+                        backoff_before_retry(
                             execution.context(),
                             "query_engine.exec.bounded.final_merge_fan_in_retry",
                         )?;
@@ -233,14 +239,13 @@ fn execute_final_merge_group_attempt(
 
     let timer = Instant::now();
     let input_rows = partials.iter().map(|partial| partial.frame.num_rows() as u64).sum::<u64>();
-    let (observation, plan_execution_id, parent_span_id) =
-        crate::observability::stage_context_from_execution(execution.context());
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::FinalMerge,
-        crate::observability::RuntimeOperatorStageIdentity::new()
+        RuntimeOperatorStageKind::FinalMerge,
+        RuntimeOperatorStageIdentity::new()
             .with_node_id(bounded.aggregate_id.to_string())
             .with_attempt(u32::try_from(attempt).unwrap_or(u32::MAX))
             .with_input_rows(input_rows),
@@ -567,9 +572,9 @@ fn release_merge_level_items(mut items: Vec<MergeLevelItem>) {
 }
 
 fn is_retryable_final_merge_error(error: &QueryError) -> bool {
-    crate::exec::retry::is_retryable_resource_error(error)
+    is_retryable_resource_error(error)
 }
 
 fn record_final_merge_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
-    crate::exec::retry::record_retryable_resource_error(error, metrics);
+    record_retryable_resource_error(error, metrics);
 }

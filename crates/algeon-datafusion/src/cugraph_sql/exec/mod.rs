@@ -33,6 +33,7 @@ use datafusion::{
 };
 use futures::{Stream, TryStreamExt, future::BoxFuture};
 use query_engine::{
+    error::QueryError,
     exec::{
         QueryExecutionRequest, execute_query_plan,
         output::{QueryExecutionOutcome, QueryOutput},
@@ -41,6 +42,7 @@ use query_engine::{
         AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr as NativeExpr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
+    observability::SealedRuntimeObservationSnapshot,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
         GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
@@ -158,11 +160,7 @@ impl<'a> GraphExecutionMetrics<'a> {
         Self { sink, accumulated: QueryMetrics::default(), stage_count: 0, published: false }
     }
 
-    fn merge_stage_evidence(
-        &mut self,
-        metrics: QueryMetrics,
-        _observation: Option<query_engine::observability::SealedRuntimeObservationSnapshot>,
-    ) {
+    fn merge_stage_evidence(&mut self, metrics: QueryMetrics, _observation: Option<SealedRuntimeObservationSnapshot>) {
         if self.stage_count == 0 {
             self.accumulated = metrics;
         } else {
@@ -171,10 +169,7 @@ impl<'a> GraphExecutionMetrics<'a> {
         self.stage_count = self.stage_count.saturating_add(1);
     }
 
-    fn merge_outcome(
-        &mut self,
-        outcome: QueryExecutionOutcome,
-    ) -> std::result::Result<QueryOutput, query_engine::error::QueryError> {
+    fn merge_outcome(&mut self, outcome: QueryExecutionOutcome) -> std::result::Result<QueryOutput, QueryError> {
         let (result, metrics, observation) = outcome.into_parts();
         self.merge_stage_evidence(metrics, observation);
         if result.is_err() {

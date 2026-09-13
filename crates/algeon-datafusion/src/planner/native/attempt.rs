@@ -8,7 +8,22 @@ use datafusion::{
     physical_expr::EquivalenceProperties,
     physical_plan::ExecutionPlan,
 };
-use query_engine::capability::CapabilityRejectionCategory;
+use query_engine::{
+    admission::statistical_aggregate_execution_mode_rejection,
+    capability::CapabilityRejectionCategory,
+    dimension_pruning::local_dimension_pruning_resolver,
+    error::QueryError,
+    optimizer::{
+        NativeOptimizerDiagnostics, NativeOptimizerOptions, SemijoinReductionAdmissionMode, SharedResidentProducerPlan,
+        optimize_query_plan,
+    },
+    plan::{
+        NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, PlanNode, QueryPlan, QueryPlanBuilder,
+        native_plan_cost_decision,
+    },
+    rapids_backend::rapids_analysis_context,
+    source::{SourceDiagnostics, SourceNode},
+};
 
 use super::{
     NativeCapabilityContractDiagnostics,
@@ -19,7 +34,12 @@ use super::{
 };
 use crate::{
     capability::CapabilityReason,
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
+    native::{
+        NativeLoweringResult, lower_count_only_physical_plan_to_native, lower_physical_plan_to_native,
+        native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
+        wrap_candidate_with_declared_output_ordering_sort,
+    },
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
         gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
@@ -32,8 +52,8 @@ use crate::{
 pub(super) struct NativeOptimizationAttempt {
     pub(super) plan: Arc<dyn ExecutionPlan>,
     pub(super) report: PlanningReport,
-    pub(super) native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics,
-    pub(super) source_diagnostics: Vec<query_engine::source::SourceDiagnostics>,
+    pub(super) native_optimizer: NativeOptimizerDiagnostics,
+    pub(super) source_diagnostics: Vec<SourceDiagnostics>,
     pub(super) capability_contract: NativeCapabilityContractDiagnostics,
     pub(super) rewritten: bool,
 }
@@ -46,7 +66,7 @@ impl NativeOptimizationAttempt {
         Self {
             plan,
             report: PlanningReport::new(),
-            native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics::default(),
+            native_optimizer: NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),
             capability_contract: NativeCapabilityContractDiagnostics::default(),
             rewritten: false,
@@ -57,11 +77,11 @@ impl NativeOptimizationAttempt {
 pub(super) fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
-    native_optimizer_options: &query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_cost_options: &query_engine::plan::NativePlanCostOptions,
+    native_optimizer_options: &NativeOptimizerOptions,
+    native_plan_cost_options: &NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
-    let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
+    let lowering = lower_count_only_physical_plan_to_native(lowering_input);
     replace_lowered_root_or_keep_plan(
         plan,
         None,
@@ -75,14 +95,14 @@ pub(super) fn optimize_count_only_native_plan(
 pub(super) fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
-    native_optimizer_options: &query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_cost_options: &query_engine::plan::NativePlanCostOptions,
+    native_optimizer_options: &NativeOptimizerOptions,
+    native_plan_cost_options: &NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
-    let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     if whole_plan_has_unsupported_expression_miss(&lowering)
         && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
     {
-        let native_leaf_lowering = crate::native::lower_physical_plan_to_native(Arc::clone(boundary.source()));
+        let native_leaf_lowering = lower_physical_plan_to_native(Arc::clone(boundary.source()));
         if native_leaf_lowering.plans.len() == 1
             && native_leaf_lowering.selected_count() == 1
             && boundary.accepts_native_leaf(&native_leaf_lowering.plans[0])
@@ -116,10 +136,10 @@ pub(super) fn optimize_final_native_plan(
 fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
     output_equivalence_properties: Option<EquivalenceProperties>,
-    lowering: crate::native::NativeLoweringResult,
+    lowering: NativeLoweringResult,
     native_execution_config: &AlgeonNativeExecutionConfig,
-    native_optimizer_options: &query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_cost_options: &query_engine::plan::NativePlanCostOptions,
+    native_optimizer_options: &NativeOptimizerOptions,
+    native_plan_cost_options: &NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let mut lowering = lowering;
     stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
@@ -127,7 +147,7 @@ fn replace_lowered_root_or_keep_plan(
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
-            native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics::default(),
+            native_optimizer: NativeOptimizerDiagnostics::default(),
             source_diagnostics: lowering.source_diagnostics,
             capability_contract: NativeCapabilityContractDiagnostics::default(),
             rewritten: false,
@@ -141,46 +161,43 @@ fn replace_lowered_root_or_keep_plan(
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
         .map_err(DataFusionError::from)?;
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         lowering.plans[0].clone(),
         &optimizer_options,
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     let native_optimizer = optimizer_result.diagnostics;
     let shared_resident_producers = optimizer_result.shared_resident_producers;
     let ordered_output_sort_needed = plan.properties().output_ordering().is_some()
-        && !crate::native::native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
-    let (native_plan, appended_declared_output_sort) =
-        match crate::native::reestablish_declared_output_ordering_if_needed(
-            optimizer_result.plan,
-            plan.properties().output_ordering(),
-        ) {
-            Ok(native_plan) => native_plan,
-            Err(reason) => {
-                let candidate = if ordered_output_sort_needed {
-                    crate::native::wrap_candidate_with_declared_output_ordering_sort(
-                        candidate_before_declared_output_sort,
-                    )
-                } else {
-                    candidate_before_declared_output_sort
-                };
-                return Ok(NativeOptimizationAttempt {
-                    plan,
-                    report: native_execution_rejection_report_for_candidate(candidate, reason, &lowering.report),
-                    native_optimizer,
-                    source_diagnostics: lowering.source_diagnostics,
-                    capability_contract: NativeCapabilityContractDiagnostics::default(),
-                    rewritten: false,
-                });
-            },
-        };
+        && !native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
+    let (native_plan, appended_declared_output_sort) = match reestablish_declared_output_ordering_if_needed(
+        optimizer_result.plan,
+        plan.properties().output_ordering(),
+    ) {
+        Ok(native_plan) => native_plan,
+        Err(reason) => {
+            let candidate = if ordered_output_sort_needed {
+                wrap_candidate_with_declared_output_ordering_sort(candidate_before_declared_output_sort)
+            } else {
+                candidate_before_declared_output_sort
+            };
+            return Ok(NativeOptimizationAttempt {
+                plan,
+                report: native_execution_rejection_report_for_candidate(candidate, reason, &lowering.report),
+                native_optimizer,
+                source_diagnostics: lowering.source_diagnostics,
+                capability_contract: NativeCapabilityContractDiagnostics::default(),
+                rewritten: false,
+            });
+        },
+    };
     if appended_declared_output_sort {
         lowering.report.wrap_selected_candidates_with_outer_operator("SortExec");
     }
     lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
-    if let query_engine::plan::NativePlanCostDecision::NotSelectedByCost { reason, facts } =
-        query_engine::plan::native_plan_cost_decision(&native_plan, native_plan_cost_options)
+    if let NativePlanCostDecision::NotSelectedByCost { reason, facts } =
+        native_plan_cost_decision(&native_plan, native_plan_cost_options)
     {
         return Ok(NativeOptimizationAttempt {
             plan,
@@ -208,7 +225,7 @@ fn replace_lowered_root_or_keep_plan(
     // re-deriving it.
     let bounded_decision = native_bounded_decision(&native_plan, native_execution_config)?;
 
-    if let Some(rejection) = query_engine::admission::statistical_aggregate_execution_mode_rejection(
+    if let Some(rejection) = statistical_aggregate_execution_mode_rejection(
         &native_plan,
         native_execution_config.statistical_aggregate_execution_mode(),
     ) {
@@ -284,7 +301,7 @@ fn replace_lowered_root_or_keep_plan(
     })
 }
 
-fn whole_plan_has_unsupported_expression_miss(lowering: &crate::native::NativeLoweringResult) -> bool {
+fn whole_plan_has_unsupported_expression_miss(lowering: &NativeLoweringResult) -> bool {
     lowering.plans.is_empty()
         && lowering.selected_count() == 0
         && matches!(
@@ -294,12 +311,12 @@ fn whole_plan_has_unsupported_expression_miss(lowering: &crate::native::NativeLo
 }
 
 fn native_optimizer_options_for_execution(
-    options: &query_engine::optimizer::NativeOptimizerOptions,
+    options: &NativeOptimizerOptions,
     native_execution_config: &AlgeonNativeExecutionConfig,
-) -> crate::error::Result<query_engine::optimizer::NativeOptimizerOptions> {
+) -> Result<NativeOptimizerOptions> {
     native_execution_config.validate_query_policies()?;
     let mut options = options.clone();
-    options.semijoin_reduction.admission_mode = query_engine::optimizer::SemijoinReductionAdmissionMode::Bounded;
+    options.semijoin_reduction.admission_mode = SemijoinReductionAdmissionMode::Bounded;
     options.dynamic_filter_route_discovery.execution = native_execution_config.dynamic_filter_execution_options();
     options.keyed_hash_join_strategy = native_execution_config.keyed_hash_join_strategy_options();
     options.validate().map_err(|error| {
@@ -314,11 +331,11 @@ fn native_optimizer_options_for_execution(
 
 fn native_datafusion_exec_for_plan(
     original_plan: Arc<dyn ExecutionPlan>,
-    native_plan: query_engine::plan::QueryPlan,
+    native_plan: QueryPlan,
     native_execution_config: &AlgeonNativeExecutionConfig,
     datafusion_shape: &str,
     eq_properties: EquivalenceProperties,
-    shared_resident_producers: Vec<query_engine::optimizer::SharedResidentProducerPlan>,
+    shared_resident_producers: Vec<SharedResidentProducerPlan>,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let native_execution_config =
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
@@ -359,9 +376,9 @@ fn native_datafusion_exec_for_plan(
 }
 
 fn remove_subsumed_composed_consumer(
-    plan: query_engine::plan::QueryPlan,
+    plan: QueryPlan,
     mut gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-) -> DataFusionResult<(query_engine::plan::QueryPlan, Vec<Arc<dyn ExecutionPlan>>)> {
+) -> DataFusionResult<(QueryPlan, Vec<Arc<dyn ExecutionPlan>>)> {
     let [producer] = gpu_inputs.as_slice() else {
         return Ok((plan, gpu_inputs));
     };
@@ -375,7 +392,7 @@ fn remove_subsumed_composed_consumer(
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {
-            query_engine::plan::PlanNode::Source(source) => Some(source.as_ref().clone()),
+            PlanNode::Source(source) => Some(source.as_ref().clone()),
             _ => None,
         })
         .ok_or_else(|| {
@@ -385,19 +402,19 @@ fn remove_subsumed_composed_consumer(
                 "a subsumed composed consumer is missing its GPU-resident source",
             ))
         })?;
-    let mut builder = query_engine::plan::QueryPlanBuilder::new();
+    let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source);
     Ok((builder.finish_with_host_sink(source), gpu_inputs))
 }
 
-fn native_plan_gpu_resident_source_names(plan: &query_engine::plan::QueryPlan) -> BTreeSet<String> {
+fn native_plan_gpu_resident_source_names(plan: &QueryPlan) -> BTreeSet<String> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
-            query_engine::plan::PlanNode::Source(source) => match source.as_ref() {
-                query_engine::source::SourceNode::GpuResident(source) => Some(source.input_name.clone()),
-                query_engine::source::SourceNode::LocalParquet(_) => None,
-                query_engine::source::SourceNode::LiteralBatch(_) => None,
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::GpuResident(source) => Some(source.input_name.clone()),
+                SourceNode::LocalParquet(_) => None,
+                SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })
@@ -443,7 +460,7 @@ fn collect_gpu_resident_producer_children(
 
 fn native_execution_cost_selection_report(
     report: &PlanningReport,
-    cost_reason: query_engine::plan::NativePlanCostReason,
+    cost_reason: NativePlanCostReason,
     evidence: NativeCandidateCostEvidence,
 ) -> PlanningReport {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
@@ -494,9 +511,9 @@ fn stamp_planning_report_correlation(
 }
 
 fn stamp_native_error_correlation(
-    mut error: query_engine::error::QueryError,
+    mut error: QueryError,
     native_execution_config: &AlgeonNativeExecutionConfig,
-) -> query_engine::error::QueryError {
+) -> QueryError {
     if let Some(query_id) = native_execution_config.query_id() {
         error = error.with_query_id(query_id.clone());
     }
@@ -507,12 +524,8 @@ fn stamp_native_error_correlation(
 }
 
 fn native_candidate_error(message: &'static str) -> DataFusionError {
-    Error::new(
-        crate::error::ErrorCode::InvalidExecutionPlan,
-        "algeon_datafusion.native.pipeline_candidate_diagnostics",
-        message,
-    )
-    .into()
+    Error::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.native.pipeline_candidate_diagnostics", message)
+        .into()
 }
 
 fn peel_output_requirement_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
@@ -537,11 +550,19 @@ pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Opt
 
 #[cfg(test)]
 mod tests {
+    use query_engine::{
+        capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+        chunk::SourceChunkPlanningOptions,
+        dynamic_filter::DynamicFilterExecutionOptions,
+        optimizer::SemijoinReductionOptions,
+        plan::NativePlanCostFacts,
+    };
+
     use super::*;
 
     #[test]
     fn cost_selection_preserves_full_cost_evidence() {
-        let facts = query_engine::plan::NativePlanCostFacts {
+        let facts = NativePlanCostFacts {
             node_count: 7,
             source_count: 1,
             local_parquet_source_count: 1,
@@ -564,14 +585,14 @@ mod tests {
 
         let report = native_execution_cost_selection_report(
             &report,
-            query_engine::plan::NativePlanCostReason::SmallSelectiveTopK,
+            NativePlanCostReason::SmallSelectiveTopK,
             NativeCandidateCostEvidence::from_cost_facts(facts.clone()),
         );
 
         assert!(matches!(
             report.outcomes(),
             [CandidateOutcome::NotSelectedByCost { cost_reason, evidence, .. }]
-                if *cost_reason == query_engine::plan::NativePlanCostReason::SmallSelectiveTopK
+                if *cost_reason == NativePlanCostReason::SmallSelectiveTopK
                     && evidence.node_count == facts.node_count
                     && evidence.selected_row_groups == facts.selected_row_groups
                     && evidence.estimated_source_bytes == facts.estimated_source_bytes
@@ -585,42 +606,32 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_copy_dynamic_filter_policy_from_execution_config() {
-        let dynamic_filter_options =
-            query_engine::dynamic_filter::DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
-        let keyed_hash_join_strategy_options = query_engine::capability::KeyedHashJoinStrategyOptions::default()
-            .with_small_reusable_hash_build_row_threshold(11);
+        let dynamic_filter_options = DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
+        let keyed_hash_join_strategy_options =
+            KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
         let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(dynamic_filter_options)
             .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options);
 
-        let options = native_optimizer_options_for_execution(
-            &query_engine::optimizer::NativeOptimizerOptions::disabled(),
-            &execution_config,
-        )
-        .expect("valid execution policy should produce optimizer options");
+        let options = native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config)
+            .expect("valid execution policy should produce optimizer options");
 
         assert_eq!(options.dynamic_filter_route_discovery.execution, dynamic_filter_options);
         assert_eq!(options.keyed_hash_join_strategy, keyed_hash_join_strategy_options);
-        assert_eq!(
-            options.semijoin_reduction.admission_mode,
-            query_engine::optimizer::SemijoinReductionAdmissionMode::Bounded
-        );
+        assert_eq!(options.semijoin_reduction.admission_mode, SemijoinReductionAdmissionMode::Bounded);
     }
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_expert_query_policy() {
         let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_dynamic_filter_execution_options(
-                query_engine::dynamic_filter::DynamicFilterExecutionOptions::default()
+                DynamicFilterExecutionOptions::default()
                     .with_max_build_rows(10)
                     .with_large_local_parquet_range_producer_rows(11),
             );
 
-        let error = native_optimizer_options_for_execution(
-            &query_engine::optimizer::NativeOptimizerOptions::disabled(),
-            &execution_config,
-        )
-        .unwrap_err();
+        let error =
+            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
@@ -632,15 +643,11 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_keyed_hash_join_policy() {
         let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_keyed_hash_join_strategy_options(
-                query_engine::capability::KeyedHashJoinStrategyOptions::default()
-                    .with_large_keyed_hash_build_row_threshold(10),
+                KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(10),
             );
 
-        let error = native_optimizer_options_for_execution(
-            &query_engine::optimizer::NativeOptimizerOptions::disabled(),
-            &execution_config,
-        )
-        .unwrap_err();
+        let error =
+            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
@@ -652,15 +659,12 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_aggregate_strategy_policy() {
         let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_aggregate_strategy_execution_options(
-                query_engine::capability::AggregateStrategyExecutionOptions::default()
+                AggregateStrategyExecutionOptions::default()
                     .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
             );
 
-        let error = native_optimizer_options_for_execution(
-            &query_engine::optimizer::NativeOptimizerOptions::disabled(),
-            &execution_config,
-        )
-        .unwrap_err();
+        let error =
+            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
@@ -672,14 +676,10 @@ mod tests {
     fn optimizer_options_for_execution_rejects_invalid_source_chunk_planning_policy() {
         let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
             .with_source_chunk_planning_options(
-                query_engine::chunk::SourceChunkPlanningOptions::default()
-                    .with_local_parquet_throughput_min_device_budget_bytes(0),
+                SourceChunkPlanningOptions::default().with_local_parquet_throughput_min_device_budget_bytes(0),
             );
-        let error = native_optimizer_options_for_execution(
-            &query_engine::optimizer::NativeOptimizerOptions::disabled(),
-            &execution_config,
-        )
-        .unwrap_err();
+        let error =
+            native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
@@ -689,12 +689,9 @@ mod tests {
 
     #[test]
     fn optimizer_options_for_execution_rejects_invalid_optimizer_policy() {
-        let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-            semijoin_reduction: query_engine::optimizer::SemijoinReductionOptions {
-                cost_threshold_multiplier: 0,
-                ..Default::default()
-            },
-            ..query_engine::optimizer::NativeOptimizerOptions::disabled()
+        let optimizer_options = NativeOptimizerOptions {
+            semijoin_reduction: SemijoinReductionOptions { cost_threshold_multiplier: 0, ..Default::default() },
+            ..NativeOptimizerOptions::disabled()
         };
         let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1);
 

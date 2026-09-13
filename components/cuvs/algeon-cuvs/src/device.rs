@@ -2,6 +2,8 @@ use std::{ffi::c_void, fmt, marker::PhantomData, mem, ptr::NonNull, sync::Arc};
 
 use cudf::{
     CudfType, DenseMatrixLayout, PackedFloat32Matrix, Runtime, ValidatedPackedFloat32Matrix,
+    core::{Column, DeviceBuffer as CudfDeviceBuffer},
+    interop::contract::TypeId as InteropTypeId,
     runtime::ExecutionBindingId,
 };
 
@@ -24,7 +26,7 @@ pub trait DeviceElement: CudfType + Copy + 'static {
     const DLPACK_BITS: u8;
     /// RAPIDS interop type a prepared cuDF column must carry to be read as a
     /// tensor of this element.
-    const INTEROP_TYPE: cudf::interop::contract::TypeId;
+    const INTEROP_TYPE: InteropTypeId;
 
     /// Returns whether host values are valid native cuVS input.
     ///
@@ -38,7 +40,7 @@ pub trait DeviceElement: CudfType + Copy + 'static {
 impl DeviceElement for f32 {
     const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLFloat as u8;
     const DLPACK_BITS: u8 = 32;
-    const INTEROP_TYPE: cudf::interop::contract::TypeId = cudf::interop::contract::TypeId::Float32;
+    const INTEROP_TYPE: InteropTypeId = InteropTypeId::Float32;
 
     fn valid_native_input(values: &[Self]) -> bool {
         values.iter().all(|value| value.is_finite())
@@ -48,13 +50,13 @@ impl DeviceElement for f32 {
 impl DeviceElement for i32 {
     const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLInt as u8;
     const DLPACK_BITS: u8 = 32;
-    const INTEROP_TYPE: cudf::interop::contract::TypeId = cudf::interop::contract::TypeId::Int32;
+    const INTEROP_TYPE: InteropTypeId = InteropTypeId::Int32;
 }
 
 impl DeviceElement for i64 {
     const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLInt as u8;
     const DLPACK_BITS: u8 = 64;
-    const INTEROP_TYPE: cudf::interop::contract::TypeId = cudf::interop::contract::TypeId::Int64;
+    const INTEROP_TYPE: InteropTypeId = InteropTypeId::Int64;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,7 +85,7 @@ impl From<MatrixLayout> for DenseMatrixLayout {
 
 /// A typed owner for a cudf runtime-allocated device buffer.
 pub struct DeviceBuffer<T: DeviceElement> {
-    inner: cudf::core::DeviceBuffer,
+    inner: CudfDeviceBuffer,
     runtime: Arc<Runtime>,
     len: usize,
     native_input_validated: bool,
@@ -125,7 +127,7 @@ impl<T: DeviceElement> DeviceBuffer<T> {
         self.len * mem::size_of::<T>()
     }
 
-    pub fn binding_id(&self) -> cudf::runtime::ExecutionBindingId {
+    pub fn binding_id(&self) -> ExecutionBindingId {
         self.inner.binding_id()
     }
 
@@ -196,21 +198,21 @@ impl<T: DeviceElement> DeviceBuffer<T> {
         self.as_tensor_mut(resources, &[rows, columns], None, 0)
     }
 
-    pub fn inner(&self) -> &cudf::core::DeviceBuffer {
+    pub fn inner(&self) -> &CudfDeviceBuffer {
         &self.inner
     }
 
-    pub(crate) fn inner_mut(&mut self) -> &mut cudf::core::DeviceBuffer {
+    pub(crate) fn inner_mut(&mut self) -> &mut CudfDeviceBuffer {
         self.native_input_validated = false;
         &mut self.inner
     }
 
-    pub fn into_inner(self) -> cudf::core::DeviceBuffer {
+    pub fn into_inner(self) -> CudfDeviceBuffer {
         self.inner
     }
 
     /// Adopt this allocation as one flat cudf column without copying it.
-    pub fn into_column(self) -> Result<cudf::core::Column> {
+    pub fn into_column(self) -> Result<Column> {
         let operation = "DeviceBuffer::into_column";
         let Self { inner, runtime, len, .. } = self;
         runtime.column_from_device_buffer(inner, len, T::TYPE_ID).map_err(|error| from_cudf(operation, error))
@@ -554,11 +556,7 @@ impl fmt::Debug for OwnedFloat32Matrix {
     }
 }
 
-fn ensure_buffer_binding(
-    resources: &CuvsResources,
-    buffer: &cudf::core::DeviceBuffer,
-    operation: &'static str,
-) -> Result<()> {
+fn ensure_buffer_binding(resources: &CuvsResources, buffer: &CudfDeviceBuffer, operation: &'static str) -> Result<()> {
     resources.validate_exact_binding(operation)?;
     if buffer.binding_id() != resources.binding_id() {
         return Err(invalid_input(

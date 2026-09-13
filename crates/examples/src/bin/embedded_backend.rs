@@ -3,15 +3,19 @@
 //! This process creates one shared `AlgeonGpuBackend`, serves the example HTTP
 //! API on `EXAMPLE_REST_BIND`, and serves Flight SQL on `ALGEON_SERVER_BIND`.
 
-use std::{env, net::SocketAddr, process::ExitCode, sync::Arc};
+use std::{env, io, net::SocketAddr, process::ExitCode, sync::Arc};
 
 use algeon_datafusion::{
     backend::GpuMemoryOwnership,
-    server::{ALGEON_SERVER_LOG_ENV, FlightSqlServer, ServerConfig, backend_from_server_config, init_cuda_device},
+    server::{
+        ALGEON_SERVER_LOG_ENV, FlightSqlServer, Result as ServerResult, ServerConfig, backend_from_server_config,
+        init_cuda_device,
+    },
 };
 use anyhow::Context;
 use axum::Router;
 use examples::{AppState, BindAddrs, flight, rest};
+use tokio::{net::TcpListener, signal, task::JoinError};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -78,7 +82,7 @@ async fn serve_frontends(
     flight_server: FlightSqlServer,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let rest_listener = tokio::net::TcpListener::bind(rest_addr)
+    let rest_listener = TcpListener::bind(rest_addr)
         .await
         .with_context(|| format!("failed to bind example HTTP API frontend to {rest_addr}"))?;
     let bound_rest_addr = rest_listener.local_addr().context("failed to read bound example HTTP API address")?;
@@ -127,7 +131,7 @@ async fn serve_frontends(
     Ok(())
 }
 
-fn handle_rest_result(result: Result<Result<(), std::io::Error>, tokio::task::JoinError>) -> anyhow::Result<()> {
+fn handle_rest_result(result: Result<Result<(), io::Error>, JoinError>) -> anyhow::Result<()> {
     match result {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error).context("example HTTP API frontend failed"),
@@ -135,9 +139,7 @@ fn handle_rest_result(result: Result<Result<(), std::io::Error>, tokio::task::Jo
     }
 }
 
-fn handle_flight_result(
-    result: Result<algeon_datafusion::server::Result<()>, tokio::task::JoinError>,
-) -> anyhow::Result<()> {
+fn handle_flight_result(result: Result<ServerResult<()>, JoinError>) -> anyhow::Result<()> {
     match result {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error).context("Flight SQL frontend failed"),
@@ -148,15 +150,14 @@ fn handle_flight_result(
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).expect("install SIGTERM handler");
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            _ = signal::ctrl_c() => {}
             _ = sigterm.recv() => {}
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        let _ = signal::ctrl_c().await;
     }
 }

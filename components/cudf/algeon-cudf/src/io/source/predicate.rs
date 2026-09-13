@@ -5,6 +5,7 @@ use std::{
 };
 
 use super::*;
+use crate::core::Scalar;
 
 /// A source-schema column referenced by a local Parquet reader predicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +332,7 @@ fn source_reader_literal_scalar(
     runtime: &Runtime,
     literal: &SourceReaderPredicateLiteral,
     target_type: DataType,
-) -> Result<crate::core::Scalar> {
+) -> Result<Scalar> {
     match target_type.id() {
         TypeId::Bool8 => match literal {
             SourceReaderPredicateLiteral::Boolean(value) => runtime.scalar(*value),

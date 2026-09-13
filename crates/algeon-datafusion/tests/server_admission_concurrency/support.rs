@@ -2,7 +2,7 @@
 
 use std::{
     fs::File,
-    net::TcpListener,
+    net::{SocketAddr, TcpListener},
     path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -12,7 +12,10 @@ use algeon_datafusion::{
     attempt::{AlgeonAttempt, AttemptOptions, AttemptStream},
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceInstallationBounds, GpuDeviceMemoryLimit, GpuMemoryOwnership},
     native_exec::AlgeonNativeExecutionConfig,
-    server::{FlightSqlServer, ServerConfig, ServerShutdown},
+    server::{
+        ALGEON_SERVER_CONFIG_FILE_ENV, FlightSqlServer, Result as ServerResult, ServerConfig, ServerShutdown,
+        backend_from_server_config, init_cuda_device,
+    },
 };
 use arrow::{
     array::{ArrayRef, Int64Array},
@@ -24,8 +27,12 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
 use query_engine::observability::QueryAttemptReport;
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
 use tokio_util::sync::CancellationToken;
-use tonic::transport::Endpoint;
+use tonic::transport::{Channel, Endpoint};
 
 pub(crate) const GIB: u64 = 1024 * 1024 * 1024;
 /// The worked concurrency configuration from the admission design: a 12 GiB
@@ -43,10 +50,8 @@ fn server_config_for_concurrency(managed_capacity_bytes: u64, query_cap_bytes: u
     let path = dir.path().join("server.toml");
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    let mut config = ServerConfig::from_env_get(|name| {
-        (name == algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone())
-    })
-    .expect("explicit test device profile");
+    let mut config = ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone()))
+        .expect("explicit test device profile");
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0]
         .clone()
@@ -88,9 +93,9 @@ fn write_rows_parquet(path: &Path, rows: i64) {
 pub(crate) struct ConcurrencyServer {
     pub(crate) backend: AlgeonGpuBackend,
     pub(crate) ctx: Arc<SessionContext>,
-    addr: std::net::SocketAddr,
+    addr: SocketAddr,
     shutdown: CancellationToken,
-    server: tokio::task::JoinHandle<algeon_datafusion::server::Result<()>>,
+    server: JoinHandle<ServerResult<()>>,
     _dir: tempfile::TempDir,
 }
 
@@ -100,13 +105,12 @@ impl ConcurrencyServer {
     }
 
     pub(crate) async fn spawn_with(rows: i64, managed_capacity_bytes: u64, query_cap_bytes: u64) -> Self {
-        let _ = algeon_datafusion::server::init_cuda_device(0);
+        let _ = init_cuda_device(0);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener address");
         let mut config = server_config_for_concurrency(managed_capacity_bytes, query_cap_bytes);
         config.bind_addr = addr;
-        let backend =
-            algeon_datafusion::server::backend_from_server_config(&config).expect("concurrency backend must build");
+        let backend = backend_from_server_config(&config).expect("concurrency backend must build");
 
         let dir = tempfile::Builder::new().prefix("algeon-datafusion-concurrency-").tempdir().expect("tempdir");
         let parquet_path = dir.path().join("rows.parquet");
@@ -134,7 +138,7 @@ impl ConcurrencyServer {
         Self { backend, ctx, addr, shutdown, server, _dir: dir }
     }
 
-    pub(crate) async fn client(&self) -> FlightSqlServiceClient<tonic::transport::Channel> {
+    pub(crate) async fn client(&self) -> FlightSqlServiceClient<Channel> {
         let uri = format!("http://{}", self.addr);
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut backoff = Duration::from_millis(10);
@@ -143,7 +147,7 @@ impl ConcurrencyServer {
                 Ok(channel) => return FlightSqlServiceClient::new(channel),
                 Err(error) => {
                     assert!(Instant::now() < deadline, "server did not accept connections: {error:?}");
-                    tokio::time::sleep(backoff).await;
+                    sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_millis(250));
                 },
             }
@@ -169,13 +173,13 @@ impl ConcurrencyServer {
                 return;
             }
             assert!(Instant::now() < deadline, "expected active={active} queued={queued}, got {snapshot:?}");
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(20)).await;
         }
     }
 
     pub(crate) async fn shutdown(self) {
         self.shutdown.cancel();
-        tokio::time::timeout(Duration::from_secs(20), self.server)
+        timeout(Duration::from_secs(20), self.server)
             .await
             .expect("shutdown drains")
             .expect("server task should not panic")
@@ -205,6 +209,6 @@ pub(crate) async fn sealed_report_for(server: &ConcurrencyServer, sql: &str) -> 
             return report;
         }
         assert!(Instant::now() < deadline, "attempt never sealed a report");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sleep(Duration::from_millis(20)).await;
     }
 }

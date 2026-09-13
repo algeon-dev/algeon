@@ -296,6 +296,8 @@ unsafe fn collect_column_names(
 mod tests {
     use std::{ffi::CString, fs, os::raw::c_char, ptr};
 
+    use cudf_sys::test_support;
+
     use crate::core::error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue};
 
     #[test]
@@ -326,13 +328,13 @@ mod tests {
                 // SAFETY: this guard owns the matching test-only active-I/O
                 // increment. Cleanup is best-effort while unwinding; the
                 // normal path below asserts the status explicitly.
-                let _ = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_end() };
+                let _ = unsafe { test_support::cudf_test_io_kvikio_active_io_end() };
             }
         }
 
         // SAFETY: the test hook takes no pointers and the guard balances the
         // process-global lifecycle count even if the assertion below panics.
-        assert_eq!(unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_begin() }, cudf_sys::CUDF_SUCCESS);
+        assert_eq!(unsafe { test_support::cudf_test_io_kvikio_active_io_begin() }, cudf_sys::CUDF_SUCCESS);
         let mut active_io = ActiveIoGuard(true);
         if super::kvikio_compat_mode().is_some() {
             let error = super::drain_kvikio_bounce_buffer_pools().unwrap_err();
@@ -342,7 +344,7 @@ mod tests {
             assert_eq!(error.detail_value("reason"), Some("active_io"));
         }
         // SAFETY: this is the matching decrement for the begin call above.
-        let status = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_end() };
+        let status = unsafe { test_support::cudf_test_io_kvikio_active_io_end() };
         active_io.0 = false;
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     }

@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
+
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
     ProjectionNode, QueryError, QueryErrorCode, Result, attach_budget_token_failure_facts, budgeted_value,
@@ -9,7 +11,11 @@ use super::{
 };
 use crate::{
     expr::{alias_wrapped_column, representation_cast_column},
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
     plan::ProjectionOutput,
+    rapids_backend::rapids_analysis_context,
 };
 
 pub(in crate::exec) fn execute_projection(
@@ -76,15 +82,14 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     };
 
     if let Some(prepared) = prepared {
-        let (observation, plan_execution_id, parent_span_id) =
-            crate::observability::stage_context_from_execution(context);
+        let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
         let input_rows = frame.num_rows() as u64;
-        let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        let stage_guard = RuntimeOperatorStageGuard::start(
             observation,
             plan_execution_id,
             parent_span_id,
-            crate::observability::RuntimeOperatorStageKind::RegexReplaceExecute,
-            crate::observability::RuntimeOperatorStageIdentity::new()
+            RuntimeOperatorStageKind::RegexReplaceExecute,
+            RuntimeOperatorStageIdentity::new()
                 .with_input_rows(input_rows)
                 .with_reserved_bytes(prepared.required_budget_bytes),
         );
@@ -175,13 +180,13 @@ fn prepare_projection_regexp_replace(
 ) -> Result<PreparedProjectionRegexpReplace> {
     let frame = input.frame();
     let input_rows = frame.num_rows() as u64;
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::RegexReplacePreflight,
-        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+        RuntimeOperatorStageKind::RegexReplacePreflight,
+        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let result = (|| {
         let mut components = Vec::new();
@@ -482,7 +487,7 @@ fn coerce_projection_output_schema(
         if actual_dtype == target_type {
             continue;
         }
-        let actual_type = cudf::interop::arrow_host::arrow_type_from_cudf_dtype(actual_dtype).map_err(|error| {
+        let actual_type = arrow_type_from_cudf_dtype(actual_dtype).map_err(|error| {
             cudf_query_error(
                 "query_engine.projection.schema_coerce",
                 "failed to map native projection column type to Arrow",
@@ -491,11 +496,7 @@ fn coerce_projection_output_schema(
             .with_fact("field_name", field_name)
             .with_fact("field_index", field_index)
         })?;
-        if !is_supported_arrow_implicit_cast(
-            &actual_type,
-            expected_type,
-            crate::rapids_backend::rapids_analysis_context(),
-        ) {
+        if !is_supported_arrow_implicit_cast(&actual_type, expected_type, rapids_analysis_context()) {
             return Err(projection_schema_mismatch_error_with_budget(
                 token,
                 field_index,

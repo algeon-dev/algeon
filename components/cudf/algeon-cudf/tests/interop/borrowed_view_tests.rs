@@ -4,7 +4,7 @@ use cudf::{
 use rapids_interop::{ColumnLayout, NullMaskKind, TypeId as InteropTypeId};
 use tempfile::TempDir;
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, empty_column, empty_series, run_named_cases, series, with_test_runtime};
 
 fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
     let dir = TempDir::new().unwrap();
@@ -128,7 +128,7 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
 }
 
 fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
-    crate::common::with_test_runtime(|runtime| {
+    with_test_runtime(|runtime| {
         let column = column_from_slice(&[1i32, 2, 3]).unwrap();
         let view = column.testing_view().unwrap();
         let borrowed = view.try_borrow_column_view().unwrap();
@@ -144,9 +144,9 @@ fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
 }
 
 fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
-    crate::common::with_test_runtime(|runtime| {
-        let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
-        let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
+    with_test_runtime(|runtime| {
+        let ids = series("id", &[1i32, 2, 3]).unwrap();
+        let vals = series("value", &[10i64, 20, 30]).unwrap();
         let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let borrowed = frame.try_borrow_table_view().unwrap();
 
@@ -304,7 +304,7 @@ fn dataframe_borrow_supports_list_and_struct_columns() {
 }
 
 fn nested_list_column_construction_is_rejected_before_interop() {
-    let err = match crate::common::empty_column(cudf::TypeId::List) {
+    let err = match empty_column(cudf::TypeId::List) {
         Ok(_) => panic!("expected nested list column construction to fail"),
         Err(err) => err,
     };
@@ -314,7 +314,7 @@ fn nested_list_column_construction_is_rejected_before_interop() {
 }
 
 fn nested_struct_series_construction_is_rejected_before_interop() {
-    let err = match crate::common::empty_series("nested", cudf::TypeId::Struct) {
+    let err = match empty_series("nested", cudf::TypeId::Struct) {
         Ok(_) => panic!("expected nested struct series construction to fail"),
         Err(err) => err,
     };
@@ -325,7 +325,7 @@ fn nested_struct_series_construction_is_rejected_before_interop() {
 
 #[test]
 fn borrowed_view_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding",
             column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding,

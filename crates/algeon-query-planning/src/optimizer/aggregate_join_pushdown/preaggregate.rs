@@ -2,8 +2,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateJoinLineage, AggregateJoinPushdownRejectedReason, AggregateNode,
-    AggregateSpec, CaseWhen, DataType, Expr, Field, JoinNode, JoinSide, JoinType, NodeId, ProjectionOutput, Schema,
-    SchemaRef, avg_pushdown_sum_state_data_type, join_side_index, join_side_introduces_nulls, simple_projection_column,
+    AggregateSpec, CaseWhen, DataType, Expr, Field, JoinNode, JoinSide, JoinType, LiteralValue, NodeId,
+    ProjectionOutput, Schema, SchemaRef, avg_pushdown_sum_state_data_type, join_side_index, join_side_introduces_nulls,
+    simple_projection_column,
 };
 
 #[derive(Clone)]
@@ -194,7 +195,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn measure_input_projection_ou
     group_columns: &[PreAggregateColumn],
     lineage: &AggregateJoinLineage,
     measure_input_aliases: &[String],
-) -> Result<Vec<crate::plan::ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
+) -> Result<Vec<ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
     if lineage.measure_columns.len() != measure_input_aliases.len()
         || aggregate.spec.aggr_exprs.len() != measure_input_aliases.len()
     {
@@ -211,7 +212,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn measure_input_projection_ou
             .field_with_name(column.source_name.as_str())
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
             .clone();
-        outputs.push(crate::plan::ProjectionOutput::new(Expr::column(column.source_name.as_str()), field));
+        outputs.push(ProjectionOutput::new(Expr::column(column.source_name.as_str()), field));
     }
     for ((measure, alias), aggr_expr) in
         lineage.measure_columns.iter().zip(measure_input_aliases).zip(aggregate.spec.aggr_exprs.iter())
@@ -228,10 +229,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn measure_input_projection_ou
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
         let field =
             Field::new(alias.as_str(), aggregate_input_field.data_type().clone(), aggregate_input_field.is_nullable());
-        outputs.push(crate::plan::ProjectionOutput::new(
-            measure.side_input_aggregate.expr.clone().alias(alias.as_str()),
-            field,
-        ));
+        outputs.push(ProjectionOutput::new(measure.side_input_aggregate.expr.clone().alias(alias.as_str()), field));
     }
     Ok(outputs)
 }
@@ -370,17 +368,17 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn append_group_projection_out
 }
 
 pub(in crate::optimizer::aggregate_join_pushdown) fn zero_literal_for_data_type(
-    data_type: &arrow::datatypes::DataType,
-) -> Result<crate::expr::LiteralValue, AggregateJoinPushdownRejectedReason> {
+    data_type: &DataType,
+) -> Result<LiteralValue, AggregateJoinPushdownRejectedReason> {
     match data_type {
-        arrow::datatypes::DataType::Int8 => Ok(crate::expr::LiteralValue::Int8(0)),
-        arrow::datatypes::DataType::Int16 => Ok(crate::expr::LiteralValue::Int16(0)),
-        arrow::datatypes::DataType::Int32 => Ok(crate::expr::LiteralValue::Int32(0)),
-        arrow::datatypes::DataType::Int64 => Ok(crate::expr::LiteralValue::Int64(0)),
-        arrow::datatypes::DataType::UInt8 => Ok(crate::expr::LiteralValue::UInt8(0)),
-        arrow::datatypes::DataType::UInt16 => Ok(crate::expr::LiteralValue::UInt16(0)),
-        arrow::datatypes::DataType::UInt32 => Ok(crate::expr::LiteralValue::UInt32(0)),
-        arrow::datatypes::DataType::UInt64 => Ok(crate::expr::LiteralValue::UInt64(0)),
+        DataType::Int8 => Ok(LiteralValue::Int8(0)),
+        DataType::Int16 => Ok(LiteralValue::Int16(0)),
+        DataType::Int32 => Ok(LiteralValue::Int32(0)),
+        DataType::Int64 => Ok(LiteralValue::Int64(0)),
+        DataType::UInt8 => Ok(LiteralValue::UInt8(0)),
+        DataType::UInt16 => Ok(LiteralValue::UInt16(0)),
+        DataType::UInt32 => Ok(LiteralValue::UInt32(0)),
+        DataType::UInt64 => Ok(LiteralValue::UInt64(0)),
         _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
     }
 }

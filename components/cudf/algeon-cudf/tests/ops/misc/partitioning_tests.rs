@@ -1,6 +1,6 @@
 use cudf::{DataFrame, ErrorCode};
 
-use crate::common::series;
+use crate::common::{run_named_cases, series};
 
 fn sample_frame() -> DataFrame {
     let ids = series("id", &[1i32, 2, 3, 4, 5, 6]).unwrap();
@@ -54,7 +54,7 @@ fn hash_partition_by_rejects_empty_key_list() {
 
 #[test]
 fn partitioning_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("hash_partition_by_preserves_rows_and_reports_offsets", hash_partition_by_preserves_rows_and_reports_offsets),
         ("hash_partition_by_rejects_empty_key_list", hash_partition_by_rejects_empty_key_list),
     ]);

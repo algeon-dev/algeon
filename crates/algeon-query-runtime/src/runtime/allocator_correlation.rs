@@ -11,8 +11,15 @@ use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
-    sync::Mutex,
+    sync::{Mutex, PoisonError},
 };
+
+use cudf::{
+    AllocatorEvent, AllocatorEventDomainIdentity, AllocatorEventRead, DeviceMemoryFailureAllocationDomain,
+    QueryMemoryDomain, QueryMemoryDomainIdentity,
+};
+#[cfg(feature = "cugraph")]
+use cudf::{CacheAllocationScope, CacheAllocationScopeIdentity};
 
 use crate::observability::AttemptId;
 
@@ -47,7 +54,7 @@ impl AttemptCacheScopeAllocatorCorrelation {
     }
 
     #[doc(hidden)]
-    pub fn seal_and_take_exact_event(&self) -> Option<cudf::AllocatorEvent> {
+    pub fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
         #[cfg(feature = "cugraph")]
         {
             self.collector.as_ref().and_then(|collector| collector.seal_and_take_exact_event())
@@ -60,7 +67,7 @@ impl AttemptCacheScopeAllocatorCorrelation {
 
     #[cfg(feature = "cugraph")]
     #[doc(hidden)]
-    pub fn begin(&self, scope: Arc<cudf::CacheAllocationScope>) -> Option<CacheScopeCorrelationGuard> {
+    pub fn begin(&self, scope: Arc<CacheAllocationScope>) -> Option<CacheScopeCorrelationGuard> {
         self.collector.as_ref().map(|collector| collector.begin(scope))
     }
 }
@@ -81,7 +88,7 @@ struct CacheScopeAllocatorIdentity {
 
 #[cfg(feature = "cugraph")]
 impl CacheScopeAllocatorIdentity {
-    fn from_cudf(identity: cudf::CacheAllocationScopeIdentity) -> Self {
+    fn from_cudf(identity: CacheAllocationScopeIdentity) -> Self {
         Self {
             device_ordinal: identity.device.ordinal(),
             cache_domain_id: identity.domain_id.get(),
@@ -90,14 +97,14 @@ impl CacheScopeAllocatorIdentity {
         }
     }
 
-    fn matches(self, event: cudf::AllocatorEvent) -> bool {
+    fn matches(self, event: AllocatorEvent) -> bool {
         event.completeness.allocation_domain
             && event.device.is_some_and(|device| device.ordinal() == self.device_ordinal)
             && matches!(
                 event.allocation_domain,
-                Some(cudf::AllocatorEventDomainIdentity {
+                Some(AllocatorEventDomainIdentity {
                     domain:
-                        cudf::DeviceMemoryFailureAllocationDomain::CacheAllocationScope {
+                        DeviceMemoryFailureAllocationDomain::CacheAllocationScope {
                             cache_domain_id,
                             scope_id,
                         },
@@ -127,7 +134,7 @@ pub struct AttemptCacheScopeCorrelationCollector {
 #[derive(Debug, Default)]
 struct AttemptCacheScopeCorrelationState {
     active: BTreeSet<CacheScopeAllocatorIdentity>,
-    exact: Option<(CacheScopeAllocatorIdentity, cudf::AllocatorEvent)>,
+    exact: Option<(CacheScopeAllocatorIdentity, AllocatorEvent)>,
     ambiguous_exact_event: bool,
     /// Once a window cannot prove its complete private-ring interval, this
     /// attempt must not substitute a cache event for its admitted-domain
@@ -150,7 +157,7 @@ struct AttemptCacheScopeCorrelationState {
 #[derive(Debug, PartialEq, Eq)]
 enum CacheScopeWindowEvidence {
     NoEvent,
-    Exact(cudf::AllocatorEvent),
+    Exact(AllocatorEvent),
     Discard,
 }
 
@@ -168,7 +175,7 @@ impl AttemptCacheScopeCorrelationCollector {
     /// terminal evidence failure for this attempt: a later cache event cannot
     /// safely prove it was the terminal allocation failure.
     #[doc(hidden)]
-    pub fn begin(self: &Arc<Self>, scope: Arc<cudf::CacheAllocationScope>) -> CacheScopeCorrelationGuard {
+    pub fn begin(self: &Arc<Self>, scope: Arc<CacheAllocationScope>) -> CacheScopeCorrelationGuard {
         let identity = CacheScopeAllocatorIdentity::from_cudf(scope.identity());
         let Some(observed_after_sequence) =
             scope.allocator_event_ring_bounds().ok().and_then(|bounds| bounds.next_sequence.checked_sub(1))
@@ -193,8 +200,8 @@ impl AttemptCacheScopeCorrelationCollector {
     /// later context clone or infer a terminal event around an unclosed
     /// interval.
     #[doc(hidden)]
-    pub fn seal_and_take_exact_event(&self) -> Option<cudf::AllocatorEvent> {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.sealed {
             state.discarded = true;
             state.exact = None;
@@ -210,7 +217,7 @@ impl AttemptCacheScopeCorrelationCollector {
     }
 
     fn finish_window(&self, identity: CacheScopeAllocatorIdentity, evidence: CacheScopeWindowEvidence) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.sealed || !state.active.remove(&identity) {
             state.discarded = true;
             state.exact = None;
@@ -253,7 +260,7 @@ impl AttemptCacheScopeCorrelationCollector {
     /// A duplicate registration means a caller could no longer prove which
     /// checkout produced a record, so it must remain unavailable.
     fn register_active_window(&self, identity: CacheScopeAllocatorIdentity) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.sealed || state.discarded || !state.active.insert(identity) {
             state.discarded = true;
             state.exact = None;
@@ -263,7 +270,7 @@ impl AttemptCacheScopeCorrelationCollector {
     }
 
     fn discard_window(&self, identity: CacheScopeAllocatorIdentity) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.active.remove(&identity) {
             state.discarded = true;
             state.exact = None;
@@ -271,7 +278,7 @@ impl AttemptCacheScopeCorrelationCollector {
     }
 
     fn discard(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.discarded = true;
         state.exact = None;
     }
@@ -284,7 +291,7 @@ impl AttemptCacheScopeCorrelationCollector {
 #[doc(hidden)]
 pub struct CacheScopeCorrelationGuard {
     collector: Arc<AttemptCacheScopeCorrelationCollector>,
-    scope: Option<Arc<cudf::CacheAllocationScope>>,
+    scope: Option<Arc<CacheAllocationScope>>,
     identity: Option<CacheScopeAllocatorIdentity>,
     observed_after_sequence: u64,
 }
@@ -319,7 +326,7 @@ impl Drop for CacheScopeCorrelationGuard {
 
 #[cfg(feature = "cugraph")]
 fn cache_scope_window_evidence(
-    scope: &cudf::CacheAllocationScope,
+    scope: &CacheAllocationScope,
     identity: CacheScopeAllocatorIdentity,
     observed_after_sequence: u64,
 ) -> CacheScopeWindowEvidence {
@@ -367,7 +374,7 @@ fn newest_exact_cache_scope_event_in_window<I, E>(
     reads: I,
 ) -> CacheScopeWindowEvidence
 where
-    I: IntoIterator<Item = (u64, std::result::Result<cudf::AllocatorEventRead, E>)>,
+    I: IntoIterator<Item = (u64, std::result::Result<AllocatorEventRead, E>)>,
 {
     let Some(first_sequence) = observed_after_sequence.checked_add(1) else {
         return CacheScopeWindowEvidence::Discard;
@@ -381,7 +388,7 @@ where
         if sequence != expected_sequence || sequence > observed_through_sequence {
             return CacheScopeWindowEvidence::Discard;
         }
-        let Ok(cudf::AllocatorEventRead::Available(event)) = read else {
+        let Ok(AllocatorEventRead::Available(event)) = read else {
             return CacheScopeWindowEvidence::Discard;
         };
         // A malformed reader response cannot cross the caller's exact
@@ -423,7 +430,7 @@ impl AllocatorDomainIdentity {
     /// Adapts the complete identity that cuDF returns for one native domain
     /// instance. Callers must not substitute a grant id for its generation.
     #[doc(hidden)]
-    pub fn from_cudf(identity: cudf::QueryMemoryDomainIdentity) -> Self {
+    pub fn from_cudf(identity: QueryMemoryDomainIdentity) -> Self {
         Self::new(identity.device.ordinal(), identity.domain_id, identity.generation)
     }
 }
@@ -488,15 +495,15 @@ impl AllocatorEventCorrelationInput {
     /// Adapts one exact cuDF ring read without fabricating an identity for
     /// incomplete, pending, or non-query-domain records.
     #[doc(hidden)]
-    pub fn from_cudf_read(sequence: u64, read: cudf::AllocatorEventRead) -> Self {
+    pub fn from_cudf_read(sequence: u64, read: AllocatorEventRead) -> Self {
         match read {
-            cudf::AllocatorEventRead::Available(event) => {
+            AllocatorEventRead::Available(event) => {
                 let domain = if event.completeness.allocation_domain {
                     match (event.device, event.allocation_domain) {
                         (
                             Some(device),
-                            Some(cudf::AllocatorEventDomainIdentity {
-                                domain: cudf::DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id, .. },
+                            Some(AllocatorEventDomainIdentity {
+                                domain: DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id, .. },
                                 generation,
                             }),
                         ) => Some(AllocatorDomainIdentity::new(device.ordinal(), domain_id, generation)),
@@ -507,11 +514,11 @@ impl AllocatorEventCorrelationInput {
                 };
                 Self { sequence: event.sequence, availability: AllocatorEventAvailability::Available, domain }
             },
-            cudf::AllocatorEventRead::Overwritten => Self::overwritten(sequence),
+            AllocatorEventRead::Overwritten => Self::overwritten(sequence),
             // A pending producer may publish later, but it is not an event
             // available for this correlation pass. `NotYetRecorded` likewise
             // carries no event payload or identity to attribute.
-            cudf::AllocatorEventRead::Pending | cudf::AllocatorEventRead::NotYetRecorded => Self::missing(sequence),
+            AllocatorEventRead::Pending | AllocatorEventRead::NotYetRecorded => Self::missing(sequence),
         }
     }
 }
@@ -595,9 +602,9 @@ pub struct AllocatorDomainAttempt {
 #[doc(hidden)]
 pub struct AllocatorEventEvidenceRead {
     #[doc(hidden)]
-    pub exact: Option<cudf::AllocatorEvent>,
+    pub exact: Option<AllocatorEvent>,
     #[doc(hidden)]
-    pub unattributed: Option<cudf::AllocatorEvent>,
+    pub unattributed: Option<AllocatorEvent>,
 }
 
 /// Registers one just-created native domain against an engine attempt.
@@ -609,13 +616,13 @@ pub struct AllocatorEventEvidenceRead {
 #[doc(hidden)]
 pub fn register_admitted_domain(
     index: &Mutex<AllocatorEventCorrelationIndex>,
-    domain: &cudf::QueryMemoryDomain,
+    domain: &QueryMemoryDomain,
     attempt_id: AttemptId,
 ) -> Option<AllocatorDomainAttempt> {
     let domain_identity = AllocatorDomainIdentity::from_cudf(domain.identity().ok()?);
     let observed_after_sequence = domain.manager().allocator_event_ring_bounds().ok()?.next_sequence.saturating_sub(1);
     let binding = AllocatorDomainAttempt { domain: domain_identity, attempt_id };
-    let registration = index.lock().unwrap_or_else(std::sync::PoisonError::into_inner).register_live(
+    let registration = index.lock().unwrap_or_else(PoisonError::into_inner).register_live(
         binding.domain,
         binding.attempt_id,
         observed_after_sequence,
@@ -641,19 +648,16 @@ pub fn register_admitted_domain(
 pub fn retire_admitted_domain(
     index: &Mutex<AllocatorEventCorrelationIndex>,
     binding: AllocatorDomainAttempt,
-    domain: &cudf::QueryMemoryDomain,
+    domain: &QueryMemoryDomain,
 ) -> AllocatorEventEvidenceRead {
     let manager = domain.manager();
     let Ok(bounds) = manager.allocator_event_ring_bounds() else {
-        let _ = index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .discard_live(binding.domain, binding.attempt_id);
+        let _ = index.lock().unwrap_or_else(PoisonError::into_inner).discard_live(binding.domain, binding.attempt_id);
         return AllocatorEventEvidenceRead::default();
     };
     let observed_through_sequence = bounds.next_sequence.saturating_sub(1);
     let retired = {
-        let mut index = index.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index = index.lock().unwrap_or_else(PoisonError::into_inner);
         match index.retire(binding.domain, binding.attempt_id, observed_through_sequence) {
             AllocatorDomainRetirement::Retired => true,
             AllocatorDomainRetirement::InvalidSequenceBoundary
@@ -676,13 +680,13 @@ pub fn retire_admitted_domain(
         let Ok(read) = manager.read_allocator_event(sequence) else {
             continue;
         };
-        let cudf::AllocatorEventRead::Available(event) = read else {
+        let AllocatorEventRead::Available(event) = read else {
             continue;
         };
         let correlation = if retired {
             index
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .correlate(AllocatorEventCorrelationInput::from_cudf_read(sequence, read))
         } else {
             AllocatorEventCorrelation::Unattributed(AllocatorEventUnattributedReason::MissingDomainAttempt)
@@ -708,10 +712,7 @@ pub fn retire_admitted_domain(
 /// completion cannot be proven. This deliberately creates no retired window.
 #[doc(hidden)]
 pub fn discard_admitted_domain(index: &Mutex<AllocatorEventCorrelationIndex>, binding: AllocatorDomainAttempt) {
-    let _ = index
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .discard_live(binding.domain, binding.attempt_id);
+    let _ = index.lock().unwrap_or_else(PoisonError::into_inner).discard_live(binding.domain, binding.attempt_id);
 }
 
 /// A bounded index of active and recently retired allocator domains.

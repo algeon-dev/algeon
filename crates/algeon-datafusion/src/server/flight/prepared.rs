@@ -7,6 +7,7 @@ use std::{
 };
 
 use super::{ownership::Owner, *};
+use crate::server::adapter_error::Result;
 
 /// A live Flight SQL prepared statement.
 ///
@@ -116,7 +117,7 @@ impl PreparedStatementStore {
         handle: String,
         owner: Owner,
         entry: PreparedStatementEntry,
-    ) -> Result<(), PreparedStatementLimit> {
+    ) -> std::result::Result<(), PreparedStatementLimit> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.entries.len() >= MAX_PREPARED_STATEMENTS {
             return Err(PreparedStatementLimit::Global);
@@ -193,10 +194,7 @@ impl PreparedStatementLimit {
 }
 
 impl DatafusionAlgeonFlightSqlService {
-    pub(super) fn dataset_schema_for_prepared_statement(
-        &self,
-        plan: &LogicalPlan,
-    ) -> crate::server::adapter_error::Result<Schema> {
+    pub(super) fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> Result<Schema> {
         match plan {
             LogicalPlan::Ddl(ddl) => {
                 verify_update_ddl(

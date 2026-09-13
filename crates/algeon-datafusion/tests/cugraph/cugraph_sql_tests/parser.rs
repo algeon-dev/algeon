@@ -1,3 +1,12 @@
+use algeon_datafusion::cugraph_sql::{
+    CugraphBfsParams, CugraphCoreNumberParams, CugraphEcgParams, CugraphEigenvectorCentralityParams,
+    CugraphForceAtlas2Params, CugraphHitsParams, CugraphKCoreDegreeType, CugraphKCoreParams,
+    CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphPageRankParams,
+    CugraphPageRankPersonalizationTable, CugraphPersonalizedPageRankParams, CugraphSpectralClusteringParams,
+    CugraphSsspParams, CugraphTableReference, CugraphVertexSelector,
+};
+use datafusion::logical_expr::lit;
+
 use super::{support::*, *};
 
 #[test]
@@ -10,7 +19,7 @@ fn cugraph_bfs_string_source_vertex_uses_logical_output_schema() {
             lit("alice"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"output_mode":"normalized"}"#),
         ],
         &config,
@@ -46,7 +55,7 @@ fn cugraph_bfs_source_lists_and_relation_sources_parse() {
             lit(numeric_sources),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"output_mode":"normalized"}"#),
         ],
         &config,
@@ -72,7 +81,7 @@ fn cugraph_bfs_source_lists_and_relation_sources_parse() {
             lit(string_sources),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"output_mode":"normalized"}"#),
         ],
         &config,
@@ -93,10 +102,10 @@ fn cugraph_bfs_source_lists_and_relation_sources_parse() {
         CugraphAlgorithm::Bfs,
         &[
             lit("graph_edges"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"source_vertices_table":"bfs_sources","source_vertex_col":"vertex_id"}"#),
         ],
         &config,
@@ -125,10 +134,10 @@ fn cugraph_bfs_invalid_source_lists_and_relation_combinations_reject() {
         CugraphAlgorithm::Bfs,
         &[
             lit("graph_edges"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"output_mode":"normalized"}"#),
         ],
         &config,
@@ -144,7 +153,7 @@ fn cugraph_bfs_invalid_source_lists_and_relation_combinations_reject() {
             lit(1_i64),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"source_vertices_table":"bfs_sources","source_vertex_col":"vertex_id"}"#),
         ],
         &config,
@@ -167,11 +176,7 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     assert_eq!(spec.graph_options.construction_policy, CugraphGraphConstructionPolicy::PythonCugraph);
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::PageRank(algeon_datafusion::cugraph_sql::CugraphPageRankParams {
-            alpha: 0.85,
-            epsilon: 1.0e-5,
-            max_iterations: 100,
-        })
+        CugraphAlgorithmParams::PageRank(CugraphPageRankParams { alpha: 0.85, epsilon: 1.0e-5, max_iterations: 100 })
     );
 
     let spec = parse_cugraph_algorithm_spec(
@@ -180,7 +185,7 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
             lit("main.graph_edges"),
             lit("from_id"),
             lit("to_id"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"directed":false,"renumber":false}"#),
         ],
         &config,
@@ -250,13 +255,7 @@ fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
 
     let scc_error = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::StronglyConnectedComponents,
-        &[
-            lit("graph_edges"),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"directed":false}"#),
-        ],
+        &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"directed":false}"#)],
         &config,
     )
     .unwrap_err()
@@ -266,13 +265,7 @@ fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
 
     let wcc_error = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::WeaklyConnectedComponents,
-        &[
-            lit("graph_edges"),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"directed":true}"#),
-        ],
+        &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"directed":true}"#)],
         &config,
     )
     .unwrap_err()
@@ -289,13 +282,7 @@ fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
         let args = if algorithm == CugraphAlgorithm::MinimumSpanningTree {
             vec![lit("graph_edges"), lit("src"), lit("dst"), lit("weight"), lit(r#"{"directed":true}"#)]
         } else {
-            vec![
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"directed":true}"#),
-            ]
+            vec![lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"directed":true}"#)]
         };
         let error = parse_cugraph_algorithm_spec(algorithm, &args, &config).unwrap_err().to_string();
         assert!(error.contains(expected), "{error}");
@@ -312,7 +299,7 @@ fn cugraph_similarity_parser_requires_typed_pair_options_and_an_undirected_graph
     {
         let spec = parse_cugraph_algorithm_spec(
             algorithm,
-            &[lit("edges"), lit("src"), lit("dst"), datafusion::logical_expr::lit(ScalarValue::Null), lit(options)],
+            &[lit("edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(options)],
             &config,
         )
         .unwrap();
@@ -336,7 +323,7 @@ fn cugraph_similarity_parser_requires_typed_pair_options_and_an_undirected_graph
                     lit("edges"),
                     lit("src"),
                     lit("dst"),
-                    datafusion::logical_expr::lit(ScalarValue::Null),
+                    lit(ScalarValue::Null),
                     lit(
                         r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second","directed":true}"#,
                     ),
@@ -352,7 +339,7 @@ fn cugraph_similarity_parser_requires_typed_pair_options_and_an_undirected_graph
                     lit("edges"),
                     lit("src"),
                     lit("dst"),
-                    datafusion::logical_expr::lit(ScalarValue::Null),
+                    lit(ScalarValue::Null),
                     lit(r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first"}"#),
                 ],
                 &config,
@@ -366,7 +353,7 @@ fn cugraph_similarity_parser_requires_typed_pair_options_and_an_undirected_graph
                     lit("edges"),
                     lit("src"),
                     lit("dst"),
-                    datafusion::logical_expr::lit(ScalarValue::Null),
+                    lit(ScalarValue::Null),
                     lit(
                         r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second","all_pairs":true}"#,
                     ),
@@ -396,29 +383,18 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(spec.weight_col, Some("weight".to_string()));
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::PageRank(algeon_datafusion::cugraph_sql::CugraphPageRankParams {
-            alpha: 0.7,
-            epsilon: 0.001,
-            max_iterations: 25,
-        })
+        CugraphAlgorithmParams::PageRank(CugraphPageRankParams { alpha: 0.7, epsilon: 0.001, max_iterations: 25 })
     );
 
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Bfs,
-        &[
-            lit("graph_edges"),
-            lit(42_i64),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"depth_limit":3}"#),
-        ],
+        &[lit("graph_edges"), lit(42_i64), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"depth_limit":3}"#)],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Bfs(Box::new(algeon_datafusion::cugraph_sql::CugraphBfsParams {
+        CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
             source: CugraphBfsSource::scalar_i64(42),
             depth_limit: Some(3),
             ..Default::default()
@@ -432,7 +408,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit(42_i64),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"depth_limit":null}"#),
         ],
         &config,
@@ -440,7 +416,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Bfs(Box::new(algeon_datafusion::cugraph_sql::CugraphBfsParams {
+        CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
             source: CugraphBfsSource::scalar_i64(42),
             depth_limit: None,
             ..Default::default()
@@ -454,7 +430,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit(42_i64),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"output_mode":"normalized"}"#),
         ],
         &config,
@@ -475,7 +451,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit(42_i64),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(
                 r#"{"output_mode":"normalized","target_vertices_table":"targets","target_vertex_col":"vertex_id","return_target_info":true}"#,
             ),
@@ -498,7 +474,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit(7_i64),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{
                   "edge_id_col":"edge_id",
                   "include_edges_table":"allowed_edges",
@@ -536,7 +512,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
                 lit(0_i64),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(
                     r#"{"include_vertices_table":"included","include_vertex_col":"vertex_id","exclude_vertices_table":"excluded","exclude_vertex_col":"vertex_id"}"#,
                 ),
@@ -553,7 +529,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
                 lit(0_i64),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"include_edge_ids_table":"edge_ids","include_edge_ids_col":"edge_id"}"#),
             ],
             &config,
@@ -568,7 +544,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
                 lit(0_i64),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"return_target_info":true}"#),
             ],
             &config,
@@ -590,23 +566,13 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Louvain(algeon_datafusion::cugraph_sql::CugraphLouvainParams {
-            max_level: 24,
-            threshold: 0.00001,
-            resolution: 2.5,
-        })
+        CugraphAlgorithmParams::Louvain(CugraphLouvainParams { max_level: 24, threshold: 0.00001, resolution: 2.5 })
     );
 
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Louvain,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_level":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_level":0}"#)],
             &config,
         ),
         "Louvain max_level must be at least 1",
@@ -614,13 +580,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Louvain,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"threshold":-0.1}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"threshold":-0.1}"#)],
             &config,
         ),
         "Louvain threshold must be non-negative",
@@ -632,7 +592,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"epsilon":0.0005,"max_iterations":80}"#),
         ],
         &config,
@@ -640,17 +600,19 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::EigenvectorCentrality(
-            algeon_datafusion::cugraph_sql::CugraphEigenvectorCentralityParams { epsilon: 0.0005, max_iterations: 80 }
-        )
+        CugraphAlgorithmParams::EigenvectorCentrality(CugraphEigenvectorCentralityParams {
+            epsilon: 0.0005,
+            max_iterations: 80
+        })
     );
     let spec =
         parse_cugraph_algorithm_spec(CugraphAlgorithm::EigenvectorCentrality, &[lit("graph_edges")], &config).unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::EigenvectorCentrality(
-            algeon_datafusion::cugraph_sql::CugraphEigenvectorCentralityParams { epsilon: 1.0e-6, max_iterations: 200 }
-        )
+        CugraphAlgorithmParams::EigenvectorCentrality(CugraphEigenvectorCentralityParams {
+            epsilon: 1.0e-6,
+            max_iterations: 200
+        })
     );
 
     // Eigenvector centrality must reject zero max_iterations the same way
@@ -658,13 +620,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::EigenvectorCentrality,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_iterations":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_iterations":0}"#)],
             &config,
         ),
         "max_iterations must be at least 1",
@@ -678,13 +634,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::EigenvectorCentrality,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"epsilon":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"epsilon":0}"#)],
             &config,
         ),
         "epsilon must be positive",
@@ -697,7 +647,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"alpha":0.02,"beta":0.5,"epsilon":1e-7,"max_iterations":250}"#),
         ],
         &config,
@@ -705,7 +655,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::KatzCentrality(algeon_datafusion::cugraph_sql::CugraphKatzCentralityParams {
+        CugraphAlgorithmParams::KatzCentrality(CugraphKatzCentralityParams {
             alpha: 0.02,
             beta: 0.5,
             epsilon: 1.0e-7,
@@ -718,13 +668,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::KatzCentrality,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"epsilon":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"epsilon":0}"#)],
             &config,
         ),
         "epsilon must be positive",
@@ -735,13 +679,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::KatzCentrality,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"alpha":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"alpha":0}"#)],
             &config,
         ),
         "alpha must be positive",
@@ -753,13 +691,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::KatzCentrality,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"alpha":2}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"alpha":2}"#)],
             &config,
         ),
         "alpha must be <= 1",
@@ -771,13 +703,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::KatzCentrality,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"beta":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"beta":0}"#)],
             &config,
         ),
         "beta must be positive",
@@ -792,7 +718,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"epsilon":0.0001,"max_iterations":50,"normalize":true}"#),
         ],
         &config,
@@ -800,11 +726,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Hits(algeon_datafusion::cugraph_sql::CugraphHitsParams {
-            epsilon: 0.0001,
-            max_iterations: 50,
-            normalize: true,
-        }),
+        CugraphAlgorithmParams::Hits(CugraphHitsParams { epsilon: 0.0001, max_iterations: 50, normalize: true }),
     );
 
     // epsilon=0 is the same trap as the other centrality solvers:
@@ -813,13 +735,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Hits,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"epsilon":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"epsilon":0}"#)],
             &config,
         ),
         "epsilon must be positive",
@@ -831,13 +747,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Hits,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_iterations":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_iterations":0}"#)],
             &config,
         ),
         "max_iterations must be at least 1",
@@ -846,41 +756,27 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     // SSSP: source_vertex as second positional arg, optional cutoff in JSON.
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Sssp,
-        &[
-            lit("graph_edges"),
-            lit(5_i64),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"cutoff":10.5}"#),
-        ],
+        &[lit("graph_edges"), lit(5_i64), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"cutoff":10.5}"#)],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Sssp(algeon_datafusion::cugraph_sql::CugraphSsspParams {
-            source_vertex: algeon_datafusion::cugraph_sql::CugraphVertexSelector::Int64(5),
+        CugraphAlgorithmParams::Sssp(CugraphSsspParams {
+            source_vertex: CugraphVertexSelector::Int64(5),
             cutoff: Some(10.5)
         }),
     );
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Sssp,
-        &[
-            lit("graph_edges"),
-            lit(5_i64),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"cutoff":null}"#),
-        ],
+        &[lit("graph_edges"), lit(5_i64), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"cutoff":null}"#)],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Sssp(algeon_datafusion::cugraph_sql::CugraphSsspParams {
-            source_vertex: algeon_datafusion::cugraph_sql::CugraphVertexSelector::Int64(5),
+        CugraphAlgorithmParams::Sssp(CugraphSsspParams {
+            source_vertex: CugraphVertexSelector::Int64(5),
             cutoff: None
         }),
     );
@@ -893,7 +789,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
                 lit(0_i64),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"cutoff":-1.0}"#),
             ],
             &config,
@@ -904,54 +800,31 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     // CoreNumber: degree_type option.
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::CoreNumber,
-        &[
-            lit("graph_edges"),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"degree_type":"in"}"#),
-        ],
+        &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"degree_type":"in"}"#)],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::CoreNumber(algeon_datafusion::cugraph_sql::CugraphCoreNumberParams {
-            degree_type: algeon_datafusion::cugraph_sql::CugraphKCoreDegreeType::In,
-        }),
+        CugraphAlgorithmParams::CoreNumber(CugraphCoreNumberParams { degree_type: CugraphKCoreDegreeType::In }),
     );
 
     // KCore: k and degree_type.
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::KCore,
-        &[
-            lit("graph_edges"),
-            lit("src"),
-            lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"k":3,"degree_type":"out"}"#),
-        ],
+        &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"k":3,"degree_type":"out"}"#)],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::KCore(algeon_datafusion::cugraph_sql::CugraphKCoreParams {
-            k: 3,
-            degree_type: algeon_datafusion::cugraph_sql::CugraphKCoreDegreeType::Out,
-        }),
+        CugraphAlgorithmParams::KCore(CugraphKCoreParams { k: 3, degree_type: CugraphKCoreDegreeType::Out }),
     );
     // k=0 rejected.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::KCore,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"k":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"k":0}"#)],
             &config,
         ),
         "k_core k must be at least 1",
@@ -960,13 +833,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::CoreNumber,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"degree_type":"both"}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"degree_type":"both"}"#)],
             &config,
         ),
         "unsupported 'degree_type' value 'both'",
@@ -979,7 +846,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(
                 r#"{"alpha":0.9,"epsilon":0.0001,"max_iterations":50,"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"score"}"#,
             ),
@@ -989,32 +856,20 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::PersonalizedPageRank(
-            algeon_datafusion::cugraph_sql::CugraphPersonalizedPageRankParams {
-                pagerank: algeon_datafusion::cugraph_sql::CugraphPageRankParams {
-                    alpha: 0.9,
-                    epsilon: 0.0001,
-                    max_iterations: 50
-                },
-                personalization: algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::new(
-                    algeon_datafusion::cugraph_sql::CugraphTableReference::parse("ppr_seeds").unwrap(),
-                    "vertex",
-                    "score",
-                ),
-            }
-        ),
+        CugraphAlgorithmParams::PersonalizedPageRank(CugraphPersonalizedPageRankParams {
+            pagerank: CugraphPageRankParams { alpha: 0.9, epsilon: 0.0001, max_iterations: 50 },
+            personalization: CugraphPageRankPersonalizationTable::new(
+                CugraphTableReference::parse("ppr_seeds").unwrap(),
+                "vertex",
+                "score",
+            ),
+        }),
     );
     // Personalized PageRank: required relation options are rejected when absent.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::PersonalizedPageRank,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"alpha":0.9}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"alpha":0.9}"#)],
             &config,
         ),
         "cugraph_personalized_pagerank requires options: personalization_table, personalization_vertex_col, personalization_value_col",
@@ -1027,7 +882,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"max_level":50,"resolution":0.8,"theta":0.5,"seed":42}"#),
         ],
         &config,
@@ -1035,24 +890,13 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Leiden(algeon_datafusion::cugraph_sql::CugraphLeidenParams {
-            max_level: 50,
-            resolution: 0.8,
-            theta: 0.5,
-            seed: 42,
-        }),
+        CugraphAlgorithmParams::Leiden(CugraphLeidenParams { max_level: 50, resolution: 0.8, theta: 0.5, seed: 42 }),
     );
     // Leiden: max_level=0 rejected.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Leiden,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_level":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_level":0}"#)],
             &config,
         ),
         "Leiden max_level must be at least 1",
@@ -1061,13 +905,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Leiden,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"resolution":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"resolution":0}"#)],
             &config,
         ),
         "resolution must be positive",
@@ -1080,7 +918,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"min_weight":0.01,"ensemble_size":5,"max_level":50,"threshold":1e-5,"resolution":0.9,"seed":7}"#),
         ],
         &config,
@@ -1088,7 +926,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Ecg(algeon_datafusion::cugraph_sql::CugraphEcgParams {
+        CugraphAlgorithmParams::Ecg(CugraphEcgParams {
             min_weight: 0.01,
             ensemble_size: 5,
             max_level: 50,
@@ -1101,13 +939,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Ecg,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"ensemble_size":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"ensemble_size":0}"#)],
             &config,
         ),
         "ECG ensemble_size must be at least 1",
@@ -1120,7 +952,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"n_clusters":4,"n_eigenvectors":3,"seed":99}"#),
         ],
         &config,
@@ -1128,26 +960,18 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::SpectralModularityMaximization(
-            algeon_datafusion::cugraph_sql::CugraphSpectralClusteringParams {
-                n_clusters: 4,
-                n_eigenvectors: 3,
-                seed: 99,
-                ..Default::default()
-            }
-        ),
+        CugraphAlgorithmParams::SpectralModularityMaximization(CugraphSpectralClusteringParams {
+            n_clusters: 4,
+            n_eigenvectors: 3,
+            seed: 99,
+            ..Default::default()
+        }),
     );
     // SpectralModularityMaximization: n_clusters=0 rejected.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::SpectralModularityMaximization,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"n_clusters":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"n_clusters":0}"#)],
             &config,
         ),
         "n_clusters must be at least 1",
@@ -1159,7 +983,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
                 lit("graph_edges"),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"evs_max_iterations":2147483648}"#),
             ],
             &config,
@@ -1182,7 +1006,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(spec.weight_col, Some("weight".to_string()));
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::ForceAtlas2(algeon_datafusion::cugraph_sql::CugraphForceAtlas2Params {
+        CugraphAlgorithmParams::ForceAtlas2(CugraphForceAtlas2Params {
             max_iter: 25,
             outbound_attraction_distribution: true,
             lin_log_mode: true,
@@ -1204,13 +1028,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::ForceAtlas2,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"barnes_hut_theta":1.5}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"barnes_hut_theta":1.5}"#)],
             &config,
         ),
         "barnes_hut_theta must be in [0, 1]",
@@ -1218,13 +1036,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::ForceAtlas2,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_iter":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_iter":0}"#)],
             &config,
         ),
         "ForceAtlas2 max_iter must be at least 1",
@@ -1232,13 +1044,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::ForceAtlas2,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_iter":2147483648}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_iter":2147483648}"#)],
             &config,
         ),
         "ForceAtlas2 max_iter must be at most i32::MAX",
@@ -1250,7 +1056,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
                 lit("graph_edges"),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"prevent_overlapping":true}"#),
             ],
             &config,
@@ -1269,7 +1075,7 @@ fn cugraph_sql_planning_parses_construction_policy_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"construction_policy":"python_cugraph"}"#),
         ],
         &config,
@@ -1283,7 +1089,7 @@ fn cugraph_sql_planning_parses_construction_policy_options() {
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
-            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(ScalarValue::Null),
             lit(r#"{"construction_policy":"raw_libcugraph"}"#),
         ],
         &config,
@@ -1298,7 +1104,7 @@ fn cugraph_sql_planning_parses_construction_policy_options() {
                 lit("graph_edges"),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"construction_policy":"networkx"}"#),
             ],
             &config,
@@ -1325,13 +1131,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::PageRank,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"unknown":1}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"unknown":1}"#)],
             &config,
         ),
         "unknown option 'unknown'",
@@ -1339,13 +1139,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::PageRank,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"alpha":1.2}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"alpha":1.2}"#)],
             &config,
         ),
         "alpha must be in [0, 1]",
@@ -1353,13 +1147,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::PageRank,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"max_iterations":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"max_iterations":0}"#)],
             &config,
         ),
         "max_iterations must be at least 1",
@@ -1372,7 +1160,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
                 lit(0_i64),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"depth_limit":-1}"#),
             ],
             &config,
@@ -1387,7 +1175,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
                 lit(0_i64),
                 lit("src"),
                 lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(ScalarValue::Null),
                 lit(r#"{"output_mode":"wide"}"#),
             ],
             &config,
@@ -1397,13 +1185,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::Louvain,
-            &[
-                lit("graph_edges"),
-                lit("src"),
-                lit("dst"),
-                datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"resolution":0}"#),
-            ],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null), lit(r#"{"resolution":0}"#)],
             &config,
         ),
         "resolution must be positive",
@@ -1416,7 +1198,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     assert_error_contains(
         parse_cugraph_algorithm_spec(
             CugraphAlgorithm::MinimumSpanningTree,
-            &[lit("graph_edges"), lit("src"), lit("dst"), datafusion::logical_expr::lit(ScalarValue::Null)],
+            &[lit("graph_edges"), lit("src"), lit("dst"), lit(ScalarValue::Null)],
             &config,
         ),
         "requires a weight column; supply one as the fourth argument",

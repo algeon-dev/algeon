@@ -14,6 +14,7 @@ use super::{
     state::CompiledPipelineState,
 };
 use crate::{
+    admission::canonical_execution_scope_fingerprint,
     dynamic_filter::{DynamicFilterId, DynamicFilterSet},
     error::{QueryError, QueryErrorCode, Result},
     exec::{
@@ -102,7 +103,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     }
 
     /// Merges a successful lane's dynamic-filter set into the coordinator.
-    pub(super) fn merge_lane_dynamic_filters(&mut self, filters: crate::dynamic_filter::DynamicFilterSet) {
+    pub(super) fn merge_lane_dynamic_filters(&mut self, filters: DynamicFilterSet) {
         self.dynamic_filters.merge_from(&filters);
     }
 
@@ -163,8 +164,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         };
         let output_bytes = frame.device_allocated_size_bytes()?;
         let resident_owner = self.execution.context().retain_resident_output_owner(output_bytes)?;
-        let frame =
-            frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(self.plan));
+        let frame = frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(self.plan));
         let handle = match GpuResultHandle::new_with_resident_owner(
             self.execution.context(),
             frame,

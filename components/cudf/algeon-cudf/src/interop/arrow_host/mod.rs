@@ -37,7 +37,7 @@ use std::{
     },
 };
 
-use crate::runtime::{BoundaryObservation, record_boundary_observation_in_domain};
+use crate::runtime::{BoundaryObservation, execution_domain::ExecutionDomain, record_boundary_observation_in_domain};
 
 mod batch;
 mod estimate;
@@ -105,10 +105,7 @@ fn record_host_import_call() {
     HOST_ARROW_IMPORT_CALL_COUNT.fetch_add(1, Ordering::AcqRel);
 }
 
-fn record_host_boundary_observation_in_domain(
-    domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
-    observation: BoundaryObservation,
-) {
+fn record_host_boundary_observation_in_domain(domain: &Arc<ExecutionDomain>, observation: BoundaryObservation) {
     HOST_ARROW_LAST_BOUNDARY_OBSERVATION.with(|last| last.set(Some(observation)));
     record_boundary_observation_in_domain(domain, observation);
 }

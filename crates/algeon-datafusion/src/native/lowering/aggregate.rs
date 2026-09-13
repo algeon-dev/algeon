@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     physical_expr::{expressions::Column, projection::ProjectionExprs},
-    physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec},
+    physical_plan::{ExecutionPlan, aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
 use query_engine::{
     expr::{
@@ -204,7 +204,7 @@ pub(super) struct RequiredScalarExpressions<'a> {
     pub(super) table_schema: &'a SchemaRef,
     pub(super) scan_output_schema: SchemaRef,
     pub(super) required_scan_output_columns: &'a [String],
-    pub(super) filter: Option<&'a datafusion::physical_plan::filter::FilterExec>,
+    pub(super) filter: Option<&'a FilterExec>,
     pub(super) pre_aggregate_projection: Option<&'a ProjectionExec>,
     pub(super) aggregate: &'a AggregateExec,
     pub(super) post_aggregate_projection: Option<&'a ProjectionExec>,

@@ -1,7 +1,10 @@
 use std::{collections::BTreeSet, fs::File, path::Path, sync::Arc};
 
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use query_engine::parquet_stats::{ColumnByteKind, row_group_column_bytes};
+use query_engine::{
+    parquet_stats::{ColumnByteKind, row_group_column_bytes},
+    source::SourceColumnRef,
+};
 
 use super::*;
 
@@ -157,9 +160,8 @@ fn fixture_column_indexes(schema: &Arc<Schema>, read_columns: &[String]) -> (BTr
         .projected_output_column_source_refs
         .iter()
         .filter_map(|source_ref| match source_ref {
-            query_engine::source::SourceColumnRef::File(index) => Some(*index),
-            query_engine::source::SourceColumnRef::Partition(_)
-            | query_engine::source::SourceColumnRef::MissingNull(_) => None,
+            SourceColumnRef::File(index) => Some(*index),
+            SourceColumnRef::Partition(_) | SourceColumnRef::MissingNull(_) => None,
         })
         .collect::<BTreeSet<_>>();
     (read_column_indexes, projected_column_indexes)

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::io::parquet::RemoteParquetSource;
 
 /// Output shape requested from source execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -295,7 +296,7 @@ impl SourceChunk {
     }
 
     /// Typed remote Parquet source when this chunk reads an object-store URI.
-    pub fn remote_source(&self) -> Option<&crate::io::parquet::RemoteParquetSource> {
+    pub fn remote_source(&self) -> Option<&RemoteParquetSource> {
         self.location.remote_source()
     }
 

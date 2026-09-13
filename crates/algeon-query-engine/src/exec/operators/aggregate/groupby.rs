@@ -3,6 +3,9 @@ use super::{
     ExecutionOverrides, GroupByOptions, LoweredAggregate, Result, attach_budget_token_failure_facts, budgeted_value,
     cudf_query_error, cudf_query_error_with_budget_details,
 };
+use crate::observability::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+};
 
 pub(in crate::exec) fn execute_groupby_aggregate(
     overrides: &ExecutionOverrides<'_>,
@@ -58,14 +61,13 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
 
     let input_rows = frame.num_rows() as u64;
     let stage_guard = context.map(|context| {
-        let (observation, plan_execution_id, parent_span_id) =
-            crate::observability::stage_context_from_execution(context);
-        crate::observability::RuntimeOperatorStageGuard::start(
+        let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+        RuntimeOperatorStageGuard::start(
             observation,
             plan_execution_id,
             parent_span_id,
-            crate::observability::RuntimeOperatorStageKind::LibcudfGroupby,
-            crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+            RuntimeOperatorStageKind::LibcudfGroupby,
+            RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
         )
     });
     let result = frame

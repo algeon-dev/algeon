@@ -9,6 +9,7 @@ use crate::{
     core::{
         column::{Column, ColumnView},
         error::{self, Result},
+        native_teardown::drop_device_owned_handle,
         table::{Table, TableView},
     },
     ops::{
@@ -256,7 +257,7 @@ pub(crate) fn prepared_groupby_facts_raw(
 
 impl Drop for PreparedGroupBy<'_> {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self.keys_domain.device_id(),
             "PreparedGroupBy::drop",

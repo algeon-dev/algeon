@@ -3,13 +3,25 @@ use cudf::{
     ErrorCode, ErrorKind, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::dictionary,
-    testing::{ColumnView, prelude::*},
+    runtime::{DeviceEntryGuard, DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthStatus},
+    testing::{
+        ColumnView,
+        device_safety::DeviceSafetyTestScope,
+        dictionary::{
+            trigger_match_dictionaries_column_count_limit_error_for_test,
+            trigger_match_dictionaries_fatal_malformed_cleanup_for_test,
+            trigger_match_dictionaries_null_result_array_for_test,
+            trigger_match_dictionaries_result_count_mismatch_for_test,
+        },
+        prelude::*,
+    },
 };
-use cudf_sys::test_support;
+use cudf_sys::{CUDF_ERROR_FATAL_CUDA, test_support};
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, dependency_wait_call_count_for_stream, error_context_value,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases,
 };
 
 fn dictionary_indices_to_i64(dict_view: &ColumnView<'_>) -> Vec<i64> {
@@ -267,7 +279,7 @@ fn test_match_dictionaries_rejects_non_dictionary_input() {
 }
 
 fn test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract() {
-    let err = cudf::testing::dictionary::trigger_match_dictionaries_result_count_mismatch_for_test().unwrap_err();
+    let err = trigger_match_dictionaries_result_count_mismatch_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -289,11 +301,11 @@ fn test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract() {
 
 #[test]
 fn fatal_malformed_result_cleanup_preserves_primary_error_and_closes_device_admission() {
-    let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+    let scope = DeviceSafetyTestScope::install([]);
     // SAFETY: this one-shot hook only affects the next native provenance-bound
     // destroy on this test thread.
-    unsafe { test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
-    let err = cudf::testing::dictionary::trigger_match_dictionaries_fatal_malformed_cleanup_for_test()
+    unsafe { test_support::cudf_test_fail_next_provenance_destroy(CUDF_ERROR_FATAL_CUDA) };
+    let err = trigger_match_dictionaries_fatal_malformed_cleanup_for_test()
         .expect_err("malformed dictionary result remains the primary error");
 
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -302,25 +314,22 @@ fn fatal_malformed_result_cleanup_preserves_primary_error_and_closes_device_admi
 
     let device = cudf::DeviceId::DEFAULT;
     let snapshot = scope.health_snapshot(device);
-    assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+    assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
     assert_eq!(snapshot.fault_count(), 1);
     assert_eq!(snapshot.quarantined_teardown_count(), 1);
     let first = snapshot.first_fault().expect("fatal cleanup fault");
-    assert_eq!(first.kind(), cudf::runtime::DeviceFaultKind::FatalDeviceOperation);
+    assert_eq!(first.kind(), DeviceFaultKind::FatalDeviceOperation);
     assert_eq!(first.operation(), "dictionary::match_dictionaries::cleanup_malformed_result");
-    assert_eq!(
-        first.native_status(),
-        Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA))
-    );
+    assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cudf(CUDF_ERROR_FATAL_CUDA)));
 
-    let admission = cudf::runtime::DeviceEntryGuard::enter(device, "dictionary_cleanup::later_work")
+    let admission = DeviceEntryGuard::enter(device, "dictionary_cleanup::later_work")
         .expect_err("fatal malformed-result cleanup must close later device admission");
     assert_eq!(admission.code(), ErrorCode::FatalCuda);
     assert_eq!(scope.health_snapshot(device).rejected_operation_count(), 1);
 }
 
 fn test_match_dictionaries_testing_hook_locks_null_result_array_contract() {
-    let err = cudf::testing::dictionary::trigger_match_dictionaries_null_result_array_for_test().unwrap_err();
+    let err = trigger_match_dictionaries_null_result_array_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -341,7 +350,7 @@ fn test_match_dictionaries_testing_hook_locks_null_result_array_contract() {
 }
 
 fn test_match_dictionaries_testing_hook_locks_input_column_count_limit_contract() {
-    let err = cudf::testing::dictionary::trigger_match_dictionaries_column_count_limit_error_for_test().unwrap_err();
+    let err = trigger_match_dictionaries_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -430,7 +439,7 @@ fn test_match_dictionaries_no_overlap() {
 }
 
 fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_input_before_authoritative_exec() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let dict = dictionary::encode(&column_from_slice(&[3i32, 1, 3, 2]).unwrap().testing_view().unwrap(), TypeId::Int32)
         .unwrap()
         .testing_rebind_execution_domain_explicit(601)
@@ -438,7 +447,7 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_inp
     let keys = column_from_slice(&[2i32, 3, 4]).unwrap().testing_rebind_execution_domain_explicit(602).unwrap();
     let expected_exec_stream = dict.testing_execution_domain_stream_value();
     let expected_exec_mr = dict.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let updated = dictionary::set_keys(&dict.testing_view().unwrap(), &keys.testing_view().unwrap()).unwrap();
 
@@ -446,7 +455,7 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_inp
     assert_eq!(updated.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let mut updated_keys = dictionary::keys(&updated.testing_view().unwrap()).unwrap().to_vec::<i32>().unwrap();
@@ -456,7 +465,7 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_inp
 }
 
 fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inputs_before_first_input_exec() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let first =
         dictionary::encode(&column_from_slice(&[10i32, 20, 30]).unwrap().testing_view().unwrap(), TypeId::Int32)
             .unwrap()
@@ -469,7 +478,7 @@ fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inpu
             .unwrap();
     let expected_exec_stream = first.testing_execution_domain_stream_value();
     let expected_exec_mr = first.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let matched =
         dictionary::match_dictionaries(&[&first.testing_view().unwrap(), &second.testing_view().unwrap()]).unwrap();
@@ -479,7 +488,7 @@ fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inpu
     assert!(matched.iter().all(|column| column.testing_execution_domain_mr_value() == expected_exec_mr));
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let mut first_keys = dictionary::keys(&matched[0].testing_view().unwrap()).unwrap().to_vec::<i32>().unwrap();
@@ -493,7 +502,7 @@ fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inpu
 
 #[test]
 fn dictionary_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_dictionary_encode_i32", test_dictionary_encode_i32),
         ("test_dictionary_decode_roundtrip", test_dictionary_decode_roundtrip),
         ("test_dictionary_encode_f64", test_dictionary_encode_f64),

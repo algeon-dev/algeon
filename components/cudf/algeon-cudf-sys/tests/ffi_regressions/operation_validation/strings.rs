@@ -3,6 +3,8 @@ use std::{
     ptr,
 };
 
+use cudf_sys::test_support;
+
 use super::*;
 
 fn read_bool8_column_data(col: cudf_sys::cudf_column_handle) -> Vec<u8> {
@@ -201,7 +203,7 @@ fn prepared_replace_execute_cleanup_failure_is_quarantined_without_crossing_abi(
     let prepared_allocations = mr.active_allocation_count();
     assert!(prepared_allocations > baseline);
 
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     let invalid_exec = cudf_sys::cudf_exec_options_t { struct_size: 0, ..Default::default() };
     let mut out = ptr::null_mut();
     let status =

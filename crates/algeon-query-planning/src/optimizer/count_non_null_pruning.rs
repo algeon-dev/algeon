@@ -7,9 +7,9 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use super::rewrite;
 use crate::{
-    expr::{AggregateExpr, AggregateFunction, Expr},
+    expr::{AggregateExpr, AggregateFunction, Expr, LiteralValue},
     plan::{AggregateNode, FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan},
-    source::{LocalParquetSource, SourceColumnRef, SourceNode},
+    source::{LocalParquetFile, LocalParquetSource, MissingColumn, PartitionColumn, SourceColumnRef, SourceNode},
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -365,7 +365,7 @@ fn count_star_replacement_expr(
     row_presence_carrier_columns: &[String],
 ) -> Option<Expr> {
     if row_presence_carrier_columns.is_empty() {
-        return Some(Expr::literal(crate::expr::LiteralValue::Int64(1)));
+        return Some(Expr::literal(LiteralValue::Int64(1)));
     }
     row_presence_carrier_columns.iter().find_map(|carrier| {
         if carrier == count_column {
@@ -562,7 +562,7 @@ fn remap_source_ref(
 fn pruned_partition_values(
     source: &LocalParquetSource,
     retained_partition_indices: &[usize],
-) -> Option<Vec<crate::source::LocalParquetFile>> {
+) -> Option<Vec<LocalParquetFile>> {
     source
         .files
         .iter()
@@ -584,8 +584,8 @@ fn pruned_source_schema(
     read_columns: &[String],
     projected_output_columns: &[String],
     pure_filter_columns: &[String],
-    partition_columns: &[crate::source::PartitionColumn],
-    missing_columns: &[crate::source::MissingColumn],
+    partition_columns: &[PartitionColumn],
+    missing_columns: &[MissingColumn],
 ) -> Option<SchemaRef> {
     let mut fields = Vec::with_capacity(
         read_columns.len()
@@ -619,15 +619,15 @@ fn pruned_source_schema(
             fields.push(Field::new(column.name.as_str(), column.data_type.clone(), column.nullable));
         }
     }
-    Some(std::sync::Arc::new(Schema::new(fields)))
+    Some(Arc::new(Schema::new(fields)))
 }
 
 fn pruned_output_schema_override(
     source: &LocalParquetSource,
     projected_output_columns: &[String],
     pure_filter_columns: &[String],
-    partition_columns: &[crate::source::PartitionColumn],
-    missing_columns: &[crate::source::MissingColumn],
+    partition_columns: &[PartitionColumn],
+    missing_columns: &[MissingColumn],
 ) -> Option<Option<SchemaRef>> {
     let Some(output_schema) = source.output_schema_override.as_ref() else {
         return Some(None);

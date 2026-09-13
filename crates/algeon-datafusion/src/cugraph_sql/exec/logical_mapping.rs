@@ -4,6 +4,7 @@ use arrow::{
     array::{ArrayRef, StringArray},
     datatypes::Field,
 };
+use query_engine::plan::NodeId;
 
 use super::{
     AggregateSpec, ColumnRef, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds,
@@ -20,10 +21,10 @@ const NATIVE_VERTEX_COLUMN: &str = "__vertex_id";
 
 pub(super) struct LogicalMappingPlan {
     pub(super) execution_spec: CugraphAlgorithmSpec,
-    pub(super) encoded_edge: query_engine::plan::NodeId,
+    pub(super) encoded_edge: NodeId,
     pub(super) encoded_edge_schema: SchemaRef,
-    pub(super) encoded_predicates: Vec<query_engine::plan::NodeId>,
-    pub(super) codebook: query_engine::plan::NodeId,
+    pub(super) encoded_predicates: Vec<NodeId>,
+    pub(super) codebook: NodeId,
 }
 
 pub(super) fn graph_uses_logical_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<bool> {
@@ -44,9 +45,9 @@ pub(super) fn is_logical_vertex_type(data_type: &DataType) -> bool {
 pub(super) fn add_logical_mapping_plan(
     builder: &mut QueryPlanBuilder,
     spec: &CugraphAlgorithmSpec,
-    edge: query_engine::plan::NodeId,
+    edge: NodeId,
     edge_schema: SchemaRef,
-    predicate_nodes: Vec<query_engine::plan::NodeId>,
+    predicate_nodes: Vec<NodeId>,
     predicate_schemas: Vec<SchemaRef>,
 ) -> Result<LogicalMappingPlan> {
     let native_id_type = spec
@@ -149,10 +150,10 @@ pub(super) fn add_logical_mapping_plan(
 pub(super) fn decode_logical_graph_result(
     builder: &mut QueryPlanBuilder,
     spec: &CugraphAlgorithmSpec,
-    mut root: query_engine::plan::NodeId,
+    mut root: NodeId,
     mut root_schema: SchemaRef,
-    codebook: query_engine::plan::NodeId,
-) -> Result<(query_engine::plan::NodeId, SchemaRef)> {
+    codebook: NodeId,
+) -> Result<(NodeId, SchemaRef)> {
     let contract = spec.algorithm.definition().logical_string_contract().ok_or_else(|| {
         plan_error(format!(
             "cuGraph {} does not opt in to logical string vertex mapping",
@@ -191,10 +192,10 @@ pub(super) fn decode_logical_graph_result(
 
 fn project_logical_vertex(
     builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
+    input: NodeId,
     schema: &SchemaRef,
     column: &str,
-) -> Result<query_engine::plan::NodeId> {
+) -> Result<NodeId> {
     let field = schema
         .field_with_name(column)
         .map_err(|_| plan_error(format!("cuGraph logical vertex mapping could not find vertex column '{column}'")))?;
@@ -216,13 +217,13 @@ fn project_logical_vertex(
 
 fn encode_relation_columns(
     builder: &mut QueryPlanBuilder,
-    mut relation: query_engine::plan::NodeId,
+    mut relation: NodeId,
     mut schema: SchemaRef,
     columns: &[String],
-    codebook: query_engine::plan::NodeId,
+    codebook: NodeId,
     preserve_nulls: bool,
     native_id_type: &DataType,
-) -> Result<(query_engine::plan::NodeId, SchemaRef)> {
+) -> Result<(NodeId, SchemaRef)> {
     for column in columns {
         let field = schema.field_with_name(column).map_err(|_| {
             plan_error(format!("cuGraph logical vertex mapping could not encode missing column '{column}'"))
@@ -292,13 +293,13 @@ fn encode_relation_columns(
 
 fn decode_relation_column(
     builder: &mut QueryPlanBuilder,
-    relation: query_engine::plan::NodeId,
+    relation: NodeId,
     schema: SchemaRef,
     column: &str,
     nullable: bool,
-    codebook: query_engine::plan::NodeId,
+    codebook: NodeId,
     preserves_total_payload_bound: bool,
-) -> Result<(query_engine::plan::NodeId, SchemaRef)> {
+) -> Result<(NodeId, SchemaRef)> {
     schema.field_with_name(column).map_err(|_| {
         plan_error(format!("cuGraph logical vertex mapping could not decode missing result column '{column}'"))
     })?;

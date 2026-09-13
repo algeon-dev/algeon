@@ -12,8 +12,11 @@ use query_engine::{
     source::{GpuResidentSource, SourceNode},
 };
 
-use super::super::{CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions, error::invalid_call};
-use crate::{error::Error, native_exec::child_inputs::NativeChildBinding};
+use crate::{
+    cuvs_sql::{CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions, error::invalid_call},
+    error::{Error, ErrorCode},
+    native_exec::child_inputs::NativeChildBinding,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CuvsPlanSink {
@@ -79,8 +82,8 @@ pub(super) fn lower_cuvs_query_plan(
 
     let canonical: serde_json::Value = serde_json::from_str(options.canonical_json()).map_err(|error| {
         DataFusionError::from(
-            crate::error::Error::new(
-                crate::error::ErrorCode::Internal,
+            Error::new(
+                ErrorCode::Internal,
                 "algeon_datafusion.cuvs_sql.lower",
                 "validated cuVS options were not valid canonical JSON",
             )

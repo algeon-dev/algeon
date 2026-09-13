@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use super::{
-    JoinExecutionCapability, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan,
+    JoinExecutionCapability, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
     aggregate::{AggregateStateContract, aggregate_state_contract},
     graph::{collect_reachable_node_ids, consumer_nodes_for_reachable},
     join_node_execution_capability,
@@ -272,8 +272,8 @@ pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
 pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     let producer = plan.sink().input();
     let consumer = match plan.sink() {
-        crate::plan::ResultSink::HostArrow { .. } => EdgeConsumer::Sink(ResultSinkKind::HostArrow),
-        crate::plan::ResultSink::GpuResident { .. } => EdgeConsumer::Sink(ResultSinkKind::GpuResident),
+        ResultSink::HostArrow { .. } => EdgeConsumer::Sink(ResultSinkKind::HostArrow),
+        ResultSink::GpuResident { .. } => EdgeConsumer::Sink(ResultSinkKind::GpuResident),
     };
     let mut contract_kinds = Vec::new();
     if let Some(node) = plan.node(producer) {
@@ -284,7 +284,7 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
             contract_kinds.push(EdgeContractKind::JoinMaterialization);
         }
     }
-    if matches!(plan.sink(), crate::plan::ResultSink::HostArrow { .. }) {
+    if matches!(plan.sink(), ResultSink::HostArrow { .. }) {
         contract_kinds.push(EdgeContractKind::ExplicitSinkMaterialization);
     }
     let required_properties = vec![RequiredProperty::ResidentFrame];

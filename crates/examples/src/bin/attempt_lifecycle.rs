@@ -5,7 +5,7 @@
 use std::{process::ExitCode, sync::Arc};
 
 use algeon_datafusion::{
-    attempt::{AttemptDisposition, AttemptOptions, QueryAttemptReport},
+    attempt::{AlgeonAttempt, AttemptDisposition, AttemptOptions, QueryAttemptReport},
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile,
         GpuDeviceMemoryLimit, GpuMemoryOwnership,
@@ -13,8 +13,12 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
 };
 use anyhow::{Context, anyhow, ensure};
-use arrow::{array::Int32Array, record_batch::RecordBatch};
-use datafusion::prelude::SessionContext;
+use arrow::{
+    array::Int32Array,
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 use futures::StreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -53,12 +57,10 @@ async fn run() -> anyhow::Result<()> {
         .build()
         .map_err(|error| anyhow!("no usable CUDA device 0 for this example: {error}"))?;
 
-    let ctx_a = SessionContext::new_with_state(
-        backend.install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())?.build(),
-    );
-    let ctx_b = SessionContext::new_with_state(
-        backend.install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())?.build(),
-    );
+    let ctx_a =
+        SessionContext::new_with_state(backend.install_on(SessionStateBuilder::new_with_default_features())?.build());
+    let ctx_b =
+        SessionContext::new_with_state(backend.install_on(SessionStateBuilder::new_with_default_features())?.build());
     let directory = tempfile::tempdir()?;
     let fallback_parquet = directory.path().join("attempt_lifecycle_fallback.parquet");
     let profiling_parquet = directory.path().join("attempt_lifecycle_profiling.parquet");
@@ -147,18 +149,14 @@ async fn run_same_device_native_attempts(
     Ok(())
 }
 
-async fn run_and_print(
-    attempt: &algeon_datafusion::attempt::AlgeonAttempt,
-    ctx: &SessionContext,
-    sql: &str,
-) -> anyhow::Result<()> {
+async fn run_and_print(attempt: &AlgeonAttempt, ctx: &SessionContext, sql: &str) -> anyhow::Result<()> {
     let report = run_and_capture(attempt, ctx, sql).await?;
     print_report(report.as_ref());
     Ok(())
 }
 
 async fn run_and_capture(
-    attempt: &algeon_datafusion::attempt::AlgeonAttempt,
+    attempt: &AlgeonAttempt,
     ctx: &SessionContext,
     sql: &str,
 ) -> anyhow::Result<Arc<QueryAttemptReport>> {
@@ -193,11 +191,7 @@ fn profiling_row_count() -> anyhow::Result<usize> {
 }
 
 fn write_parquet(path: &std::path::Path, row_count: usize) -> anyhow::Result<()> {
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "value",
-        arrow::datatypes::DataType::Int32,
-        false,
-    )]));
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let file = std::fs::File::create(path)?;
     let properties = WriterProperties::builder().set_max_row_group_row_count(Some(PARQUET_BATCH_ROWS)).build();
     let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(properties))?;

@@ -15,6 +15,7 @@ use std::{
 use crate::{
     core::{
         error::{self, Result},
+        native_teardown::drop_device_owned_handle,
         types::CudfType,
     },
     ops::validation::{self, FiniteFloat32ValidationProof, Int64RangeValidationProof},
@@ -360,11 +361,8 @@ impl DeviceBuffer {
 
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
-            self.handle.as_ptr(),
-            self.domain.device_id(),
-            "DeviceBuffer::drop",
-            |owned| unsafe { cudf_sys::cudf_device_buffer_destroy(owned) },
-        );
+        drop_device_owned_handle(self.handle.as_ptr(), self.domain.device_id(), "DeviceBuffer::drop", |owned| unsafe {
+            cudf_sys::cudf_device_buffer_destroy(owned)
+        });
     }
 }

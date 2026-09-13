@@ -1,13 +1,32 @@
+#[cfg(feature = "cugraph")]
+use cudf::ErrorKind;
+#[cfg(feature = "cugraph")]
+use cugraph::ResourceHandle;
+#[cfg(feature = "cugraph")]
+use cugraph::cudf_interop::TableGraphOptions;
+#[cfg(feature = "cugraph")]
+use cugraph::cudf_interop::graph_from_prepared_table_export;
+
 use super::{
     DataFrame, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result, cudf_query_error,
     graph_build_range, map_cugraph_error, run_with_uncached_cugraph_graph,
 };
+#[cfg(feature = "cugraph")]
+use crate::plan::ResidentGraphKey;
+#[cfg(feature = "cugraph")]
+use crate::runtime::cache::resident_graph::GpuResidentGraphCache;
+#[cfg(feature = "cugraph")]
+use crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert;
+#[cfg(feature = "cugraph")]
+use crate::runtime::cache::resident_graph::GpuResidentGraphCheckout;
+#[cfg(feature = "cugraph")]
+use crate::runtime::cache::resident_graph::GpuResidentGraphTransposition;
 
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_cugraph_graph<T, F>(
     context: &ExecutionContext,
     edges: DataFrame,
-    options: cugraph::cudf_interop::TableGraphOptions,
+    options: TableGraphOptions,
     operation: &'static str,
     f: F,
 ) -> Result<GraphAlgorithmExecutionResult>
@@ -35,13 +54,13 @@ where
 pub(super) fn run_with_accounted_resident_cugraph_graph<T, F>(
     context: &ExecutionContext,
     edges: DataFrame,
-    options: cugraph::cudf_interop::TableGraphOptions,
-    resident_key: Option<crate::plan::ResidentGraphKey>,
+    options: TableGraphOptions,
+    resident_key: Option<ResidentGraphKey>,
     operation: &'static str,
     f: F,
 ) -> Result<GraphAlgorithmExecutionResult>
 where
-    T: crate::runtime::cache::resident_graph::GpuResidentGraphTransposition,
+    T: GpuResidentGraphTransposition,
     F: FnOnce(
         &cudf::Runtime,
         &cugraph::EnteredContext<'_>,
@@ -88,7 +107,7 @@ where
     let cache_runtime = transaction.runtime();
     let cached_edges = match edges.copy_into_runtime(cache_runtime.as_ref()) {
         Ok(edges) => edges,
-        Err(error) if error.kind() == cudf::ErrorKind::ResourceExhausted => {
+        Err(error) if error.kind() == ErrorKind::ResourceExhausted => {
             // The runtime can retain a current-resource route, so release it before scope teardown proof.
             drop(cache_runtime);
             if let Some(correlation) = cache_scope_correlation.take() {
@@ -110,7 +129,7 @@ where
             return Err(primary);
         },
     };
-    let handle = match cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&cache_runtime)) {
+    let handle = match ResourceHandle::for_runtime(std::sync::Arc::clone(&cache_runtime)) {
         Ok(handle) => handle,
         Err(error) => {
             let primary = map_cugraph_error(
@@ -153,8 +172,8 @@ where
             .with_source(error)
         })?;
         let _graph_build_range = graph_build_range(operation);
-        let mut graph = cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options)
-            .map_err(map_cugraph_error(
+        let mut graph =
+            graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.resident_cache.build_graph",
                 "failed to build cuGraph graph in the resident-cache allocation domain",
             ))?;
@@ -235,9 +254,9 @@ where
         correlation.finish();
     }
     match transaction.insert_if_absent(resident_key, parked)? {
-        crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Inserted
-        | crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::AlreadyPresent
-        | crate::runtime::cache::resident_graph::GpuResidentGraphCacheInsert::Closed => outcome.map(|mut outcome| {
+        GpuResidentGraphCacheInsert::Inserted
+        | GpuResidentGraphCacheInsert::AlreadyPresent
+        | GpuResidentGraphCacheInsert::Closed => outcome.map(|mut outcome| {
             outcome.cache_scope_peak_bytes = Some(cache_scope_peak_bytes);
             outcome
         }),
@@ -248,13 +267,13 @@ where
 fn run_checked_out_resident_graph<T, F>(
     context: &ExecutionContext,
     attempt_runtime: &cudf::Runtime,
-    cache: crate::runtime::cache::resident_graph::GpuResidentGraphCache,
-    mut checkout: crate::runtime::cache::resident_graph::GpuResidentGraphCheckout<T>,
+    cache: GpuResidentGraphCache,
+    mut checkout: GpuResidentGraphCheckout<T>,
     operation: &'static str,
     f: F,
 ) -> Result<GraphAlgorithmExecutionResult>
 where
-    T: crate::runtime::cache::resident_graph::GpuResidentGraphTransposition,
+    T: GpuResidentGraphTransposition,
     F: FnOnce(
         &cudf::Runtime,
         &cugraph::EnteredContext<'_>,
@@ -277,7 +296,7 @@ where
     let execution = {
         let attempt_handle_runtime = std::sync::Arc::new(attempt_runtime.clone());
         (|| {
-            let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&attempt_handle_runtime)).map_err(
+            let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&attempt_handle_runtime)).map_err(
                 map_cugraph_error(
                     "query_engine.graph_algorithm.resident_cache.resource_handle",
                     "failed to bind cuGraph to the admitted attempt runtime",
@@ -413,12 +432,12 @@ fn finish_after_successful_scope_fence<T>(
 /// ledger's fail-closed transition.
 #[cfg(feature = "cugraph")]
 fn quarantine_untrusted_resident_graph<T>(
-    cache: &crate::runtime::cache::resident_graph::GpuResidentGraphCache,
-    checkout: crate::runtime::cache::resident_graph::GpuResidentGraphCheckout<T>,
+    cache: &GpuResidentGraphCache,
+    checkout: GpuResidentGraphCheckout<T>,
     parked: cugraph::ParkedGraph<T>,
 ) -> Result<()>
 where
-    T: crate::runtime::cache::resident_graph::GpuResidentGraphTransposition,
+    T: GpuResidentGraphTransposition,
 {
     cache.close()?;
     checkout.return_parked(parked)

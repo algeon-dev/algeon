@@ -982,6 +982,9 @@ fn value_u64(value: &Value, key: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::single_node_multi_gpu_validate::artifact::{
+        BackendCloseEvidence, RunDeadlineEvidence, TimeSeriesEvidence,
+    };
 
     #[test]
     fn empty_measurements_do_not_claim_cache_residency() {
@@ -1061,7 +1064,7 @@ mod tests {
                     equal: true,
                 },
             },
-            deadline: crate::single_node_multi_gpu_validate::artifact::RunDeadlineEvidence {
+            deadline: RunDeadlineEvidence {
                 measurement_window_ns: 1,
                 completion_drain_grace_ns: 0,
                 configured_window_ns: 1,
@@ -1082,7 +1085,7 @@ mod tests {
                 attribution: AttributionCompleteness::from_observations(&[]),
                 otlp_export: OtlpExportEvidence::not_requested(),
             },
-            time_series: crate::single_node_multi_gpu_validate::artifact::TimeSeriesEvidence::empty(),
+            time_series: TimeSeriesEvidence::empty(),
             snapshots: Vec::new(),
             trace: TraceEvidence { captured_by_runner: false, uri: None, sha256: None },
         }
@@ -1581,7 +1584,7 @@ mod tests {
         ])
     }
 
-    fn test_close_evidence() -> crate::single_node_multi_gpu_validate::artifact::BackendCloseEvidence {
+    fn test_close_evidence() -> BackendCloseEvidence {
         use crate::single_node_multi_gpu_validate::artifact::{
             BackendCloseEvidence, BackendCloseOutcome, BackendCloseSnapshotEvidence,
         };

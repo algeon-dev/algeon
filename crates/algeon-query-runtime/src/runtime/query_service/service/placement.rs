@@ -1,10 +1,18 @@
 //! Device placement and immutable-grant admission against per-device ledgers.
 
 #[cfg(test)]
+use std::sync;
+#[cfg(test)]
+use std::sync::OnceLock;
+#[cfg(test)]
+use std::sync::mpsc::Receiver;
+#[cfg(test)]
+use std::sync::mpsc::SyncSender;
+#[cfg(test)]
 use std::sync::{Arc, Mutex, Weak};
 
 use query_planning::{
-    admission::AttemptRequirement,
+    admission::{AttemptRequirement, ExecutionCapability},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -21,14 +29,22 @@ use super::{
     QueryService,
 };
 use crate::{
-    observability::AdmissionRequestId,
-    runtime::gpu::{PlacementRequest, placement::ordered_placement_candidate_snapshots},
+    observability::{AdmissionRequestId, AttemptId},
+    runtime::{
+        gpu::{
+            DeviceAdmissionHealth, PlacementRequest,
+            placement::{
+                PlacementCandidateSnapshot, compare_placement_candidates, ordered_placement_candidate_snapshots,
+            },
+        },
+        query_service::admission::missing_device_admission_entry_error,
+    },
 };
 
 /// Returns the immutable capabilities required before placement.
 pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
     requirement: &AttemptRequirement,
-) -> Vec<query_planning::admission::ExecutionCapability> {
+) -> Vec<ExecutionCapability> {
     requirement.required_capabilities.clone()
 }
 
@@ -62,7 +78,7 @@ impl QueryService {
         &self,
         device_ordinal: usize,
         admission_request_id: AdmissionRequestId,
-        attempt_id: crate::observability::AttemptId,
+        attempt_id: AttemptId,
         requirement: &AttemptRequirement,
         requested_query_cap_bytes: Option<u64>,
         slot_notifications: &mut PendingDeviceSlotNotifications,
@@ -100,7 +116,7 @@ impl QueryService {
         match context.try_admit_attempt(admission_request_id, attempt_id, requested_query_cap_bytes) {
             Ok(Some(memory_grant)) => Ok(Some(PlacedQuery { device_ordinal, memory_grant })),
             Ok(None) => {
-                if !matches!(context.ledger().health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+                if !matches!(context.ledger().health()?, DeviceAdmissionHealth::Open) {
                     slot_notifications.record_device_health_transition(device_ordinal);
                 }
                 Ok(None)
@@ -115,12 +131,10 @@ impl QueryService {
         device_entries: &DeviceAdmissionEntries,
         ordinals: impl IntoIterator<Item = usize>,
         requested_query_cap_bytes: Option<u64>,
-    ) -> Result<Vec<crate::runtime::gpu::placement::PlacementCandidateSnapshot>> {
+    ) -> Result<Vec<PlacementCandidateSnapshot>> {
         let mut placements = Vec::new();
         for ordinal in ordinals {
-            let entry = device_entries
-                .get(&ordinal)
-                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(ordinal))?;
+            let entry = device_entries.get(&ordinal).ok_or_else(|| missing_device_admission_entry_error(ordinal))?;
             let requirement = &entry.requirement;
             let placement_request = PlacementRequest::new(0)
                 .with_requested_query_cap_bytes(requested_query_cap_bytes)
@@ -134,9 +148,10 @@ impl QueryService {
             )?);
         }
         placements.sort_by(|left, right| {
-            right.can_admit_now.cmp(&left.can_admit_now).then_with(|| {
-                crate::runtime::gpu::placement::compare_placement_candidates(&left.candidate, &right.candidate)
-            })
+            right
+                .can_admit_now
+                .cmp(&left.can_admit_now)
+                .then_with(|| compare_placement_candidates(&left.candidate, &right.candidate))
         });
         Ok(placements)
     }
@@ -150,7 +165,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn try_place_query(
         &self,
         admission_request_id: AdmissionRequestId,
-        attempt_id: crate::observability::AttemptId,
+        attempt_id: AttemptId,
         device_entries: &DeviceAdmissionEntries,
         compatible_devices: &[usize],
         requested_query_cap_bytes: Option<u64>,
@@ -180,7 +195,7 @@ impl QueryService {
             })?;
             let requirement = device_entries
                 .get(&fallback_device_ordinal)
-                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(fallback_device_ordinal))?
+                .ok_or_else(|| missing_device_admission_entry_error(fallback_device_ordinal))?
                 .requirement
                 .clone();
             let required_capabilities = required_capabilities_for_placement(&requirement);
@@ -251,13 +266,13 @@ impl QueryService {
             }
             device_entries
                 .get(&candidate.ordinal)
-                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(candidate.ordinal))?;
+                .ok_or_else(|| missing_device_admission_entry_error(candidate.ordinal))?;
             match context.try_admit_attempt(admission_request_id, attempt_id, requested_query_cap_bytes) {
                 Ok(Some(memory_grant)) => {
                     return Ok(Some(PlacedQuery { device_ordinal: candidate.ordinal, memory_grant }));
                 },
                 Ok(None) => {
-                    if !matches!(context.ledger().health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+                    if !matches!(context.ledger().health()?, DeviceAdmissionHealth::Open) {
                         slot_notifications.record_device_health_transition(candidate.ordinal);
                     }
                 },
@@ -290,8 +305,8 @@ impl QueryService {
 #[cfg(test)]
 #[derive(Debug)]
 struct DirectPlacementSnapshotPause {
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    entered: SyncSender<()>,
+    release: Mutex<Receiver<()>>,
 }
 
 #[cfg(test)]
@@ -300,7 +315,7 @@ impl DirectPlacementSnapshotPause {
         self.entered.send(()).expect("direct placement snapshot pause receiver remains live");
         self.release
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(sync::PoisonError::into_inner)
             .recv()
             .expect("direct placement snapshot pause is released");
     }
@@ -309,13 +324,13 @@ impl DirectPlacementSnapshotPause {
 #[cfg(test)]
 #[derive(Debug)]
 struct DirectPlacementSnapshotPauseRegistration {
-    service: std::sync::Weak<QueryServiceInner>,
+    service: Weak<QueryServiceInner>,
     pause: Arc<DirectPlacementSnapshotPause>,
 }
 
 #[cfg(test)]
-static DIRECT_PLACEMENT_SNAPSHOT_PAUSE: std::sync::OnceLock<Mutex<Vec<DirectPlacementSnapshotPauseRegistration>>> =
-    std::sync::OnceLock::new();
+static DIRECT_PLACEMENT_SNAPSHOT_PAUSE: OnceLock<Mutex<Vec<DirectPlacementSnapshotPauseRegistration>>> =
+    sync::OnceLock::new();
 
 #[cfg(test)]
 fn direct_placement_snapshot_pause_registry() -> &'static Mutex<Vec<DirectPlacementSnapshotPauseRegistration>> {
@@ -325,7 +340,7 @@ fn direct_placement_snapshot_pause_registry() -> &'static Mutex<Vec<DirectPlacem
 #[cfg(test)]
 fn take_direct_placement_snapshot_pause(service: &QueryService) -> Option<Arc<DirectPlacementSnapshotPause>> {
     let mut registrations =
-        direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        direct_placement_snapshot_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
     registrations.retain(|registered| registered.service.upgrade().is_some());
     registrations
         .iter()
@@ -338,13 +353,13 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn pause_next_direct_placement_after_snapshot_for_test(
         &self,
     ) -> TestPauseHandle {
-        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
-        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+        let (entered_sender, entered_receiver) = sync::mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = sync::mpsc::sync_channel(1);
         let pause =
             Arc::new(DirectPlacementSnapshotPause { entered: entered_sender, release: Mutex::new(release_receiver) });
         let service = Arc::downgrade(&self.inner);
         let mut registrations =
-            direct_placement_snapshot_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            direct_placement_snapshot_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
         registrations.retain(|registered| registered.service.upgrade().is_some());
         assert!(
             !registrations.iter().any(|registered| registered.service.ptr_eq(&service)),
@@ -356,9 +371,8 @@ impl QueryService {
         });
         TestPauseHandle::new("direct placement snapshot", entered_receiver, release_sender).with_drop_cleanup(
             move || {
-                let mut registrations = direct_placement_snapshot_pause_registry()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut registrations =
+                    direct_placement_snapshot_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
                 if let Some(position) = registrations.iter().position(|registered| {
                     registered.service.ptr_eq(&service) && Arc::ptr_eq(&registered.pause, &pause)
                 }) {

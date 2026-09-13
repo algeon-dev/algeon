@@ -1,5 +1,10 @@
 use std::time::Instant;
 
+use arrow::{
+    array::new_empty_array,
+    record_batch::{RecordBatch, RecordBatchOptions},
+};
+
 use super::{
     DataFrame, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError, QueryErrorCode, Result, SourceChunk,
     cudf_query_error, execution_overrides, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
@@ -10,11 +15,11 @@ pub(super) fn empty_local_parquet_execution_frame(
     source: &LocalParquetSource,
 ) -> Result<DataFrame> {
     let schema = local_parquet_execution_frame_schema(source)?;
-    let columns = schema.fields().iter().map(|field| arrow::array::new_empty_array(field.data_type())).collect();
-    let batch = arrow::record_batch::RecordBatch::try_new_with_options(
+    let columns = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect();
+    let batch = RecordBatch::try_new_with_options(
         std::sync::Arc::clone(&schema),
         columns,
-        &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(0)),
+        &RecordBatchOptions::new().with_row_count(Some(0)),
     )
     .map_err(|error| {
         QueryError::new(

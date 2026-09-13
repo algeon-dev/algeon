@@ -25,7 +25,7 @@ use algeon_datafusion::{
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{
-            CUGRAPH_PARITY_SPECS, OracleLookup, ParityComparator, ParityTruthSource, data_root,
+            CUGRAPH_PARITY_SPECS, OracleLookup, ParityComparator, ParitySpec, ParityTruthSource, data_root,
             load_ref_csv_vertex_list,
         },
     },
@@ -39,6 +39,7 @@ use arrow::{
 use datafusion::{
     datasource::MemTable,
     execution::SessionStateBuilder,
+    physical_plan::{ExecutionPlan, collect, displayable},
     prelude::{CsvReadOptions, SessionConfig, SessionContext},
 };
 use serde_json::{Map, Value};
@@ -248,9 +249,9 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
             plan_contains_cugraph_exec(plan.as_ref()),
             "{}: parity query did not plan a CugraphAlgoExec:\n{}",
             spec.label,
-            datafusion::physical_plan::displayable(plan.as_ref()).indent(false)
+            displayable(plan.as_ref()).indent(false)
         );
-        let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx())
+        let batches = collect(Arc::clone(&plan), ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{}: GPU execution failed for {sql}: {error}", spec.label));
         let dataset = loaded.manifest.dataset(spec.dataset).expect("parity spec dataset was validated");
@@ -269,9 +270,9 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
                 plan_contains_cugraph_exec(replay_plan.as_ref()),
                 "{}: replay query did not plan a CugraphAlgoExec:\n{}",
                 spec.label,
-                datafusion::physical_plan::displayable(replay_plan.as_ref()).indent(false)
+                displayable(replay_plan.as_ref()).indent(false)
             );
-            let replay = datafusion::physical_plan::collect(replay_plan, ctx.task_ctx())
+            let replay = collect(replay_plan, ctx.task_ctx())
                 .await
                 .unwrap_or_else(|error| panic!("{}: GPU replay failed for {sql}: {error}", spec.label));
             if spec.algorithm == CugraphAlgorithm::Ecg {
@@ -380,7 +381,7 @@ fn register_similarity_pairs(ctx: &SessionContext) {
     ctx.register_table("similarity_pairs", Arc::new(table)).expect("similarity pair table must register");
 }
 
-fn parity_sql(spec: &algeon_datafusion::cugraph_sql::parity::ParitySpec) -> String {
+fn parity_sql(spec: &ParitySpec) -> String {
     let mut options = serde_json::from_str::<Map<String, Value>>(spec.params_json)
         .unwrap_or_else(|error| panic!("{} has invalid params JSON: {error}", spec.label));
     let source = options.remove("source_vertex").and_then(|value| value.as_i64());
@@ -422,7 +423,7 @@ fn dataset_table_name(dataset: &str) -> String {
     format!("parity_{dataset}")
 }
 
-fn plan_contains_cugraph_exec(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+fn plan_contains_cugraph_exec(plan: &dyn ExecutionPlan) -> bool {
     plan.name() == "CugraphAlgoExec"
         || plan.children().into_iter().any(|child| plan_contains_cugraph_exec(child.as_ref()))
 }

@@ -16,6 +16,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
+use query_engine::runtime::SourceChunkPlanningMode;
 use workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchQuery, WorkloadResult, discover_clickbench_layout, register_clickbench_table,
 };
@@ -70,7 +71,7 @@ pub struct ClickbenchNativeProfileSettings {
     pub max_row_groups_per_chunk: usize,
     pub max_retry_attempts: usize,
     pub min_retry_chunk_row_groups: usize,
-    pub source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    pub source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 impl ClickbenchNativeProfileSettings {
@@ -97,7 +98,7 @@ struct NativeProfileBase {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
-    source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 /// Decision-grade session config for ClickBench reports.
@@ -275,7 +276,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         },
         CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT => NativeProfileBase {
             name: CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT,
@@ -285,7 +286,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
         },
         other => panic!(
             "unsupported {ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV}={other}; expected {CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE} or {CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT}"
@@ -314,12 +315,10 @@ fn parse_env_usize(name: &'static str, value: String) -> usize {
         .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
 }
 
-fn parse_env_source_chunk_planning_mode(value: String) -> query_engine::runtime::SourceChunkPlanningMode {
+fn parse_env_source_chunk_planning_mode(value: String) -> SourceChunkPlanningMode {
     match value.trim().to_ascii_lowercase().as_str() {
-        "conservative" => query_engine::runtime::SourceChunkPlanningMode::Conservative,
-        "local_parquet_throughput" | "local_throughput" => {
-            query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-        },
+        "conservative" => SourceChunkPlanningMode::Conservative,
+        "local_parquet_throughput" | "local_throughput" => SourceChunkPlanningMode::LocalParquetThroughput,
         other => panic!(
             "unsupported {ALGEON_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
         ),

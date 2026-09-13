@@ -8,12 +8,16 @@ use std::{
 use arrow::{
     array::{ArrayRef, BinaryViewArray, DictionaryArray, PrimitiveArray, StringViewArray, UInt64Array, make_array},
     compute::{take, take_record_batch},
-    datatypes::{ArrowDictionaryKeyType, ArrowNativeType, Schema},
+    datatypes::{
+        ArrowDictionaryKeyType, ArrowNativeType, DataType, Int8Type, Int16Type, Int32Type, Int64Type, Schema,
+        UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    },
     error::ArrowError,
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 use arrow_flight::{FlightData, encode::FlightDataEncoderBuilder, error::FlightError};
-use futures::{Stream, task::noop_waker_ref};
+use cudf::frame::dataframe::HostBatchCursorConfig;
+use futures::{Stream, stream::iter, task::noop_waker_ref};
 use prost::Message;
 
 use super::*;
@@ -22,8 +26,7 @@ use super::*;
 /// bound instead of increasing the transport limit.
 pub(super) const MAX_FLIGHT_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
-const _: () =
-    assert!(MAX_FLIGHT_FRAME_BYTES == cudf::frame::dataframe::HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES);
+const _: () = assert!(MAX_FLIGHT_FRAME_BYTES == HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CompactProbeObservation {
@@ -249,33 +252,33 @@ fn compact_batch_range(batch: &RecordBatch, offset: usize, rows: usize) -> Resul
 /// Arrow IPC serialization.
 fn compact_view_backing(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
-        arrow::datatypes::DataType::Utf8View => {
+        DataType::Utf8View => {
             let view = array.as_any().downcast_ref::<StringViewArray>().ok_or_else(|| {
                 ArrowError::CastError("Utf8View array did not downcast to StringViewArray".to_string())
             })?;
             return Ok(Arc::new(view.gc()));
         },
-        arrow::datatypes::DataType::BinaryView => {
+        DataType::BinaryView => {
             let view = array.as_any().downcast_ref::<BinaryViewArray>().ok_or_else(|| {
                 ArrowError::CastError("BinaryView array did not downcast to BinaryViewArray".to_string())
             })?;
             return Ok(Arc::new(view.gc()));
         },
-        arrow::datatypes::DataType::Dictionary(key_type, _) => {
+        DataType::Dictionary(key_type, _) => {
             macro_rules! compact_dictionary_key {
                 ($key:ty) => {
                     return compact_dictionary::<$key>(array)
                 };
             }
             match key_type.as_ref() {
-                arrow::datatypes::DataType::Int8 => compact_dictionary_key!(arrow::datatypes::Int8Type),
-                arrow::datatypes::DataType::Int16 => compact_dictionary_key!(arrow::datatypes::Int16Type),
-                arrow::datatypes::DataType::Int32 => compact_dictionary_key!(arrow::datatypes::Int32Type),
-                arrow::datatypes::DataType::Int64 => compact_dictionary_key!(arrow::datatypes::Int64Type),
-                arrow::datatypes::DataType::UInt8 => compact_dictionary_key!(arrow::datatypes::UInt8Type),
-                arrow::datatypes::DataType::UInt16 => compact_dictionary_key!(arrow::datatypes::UInt16Type),
-                arrow::datatypes::DataType::UInt32 => compact_dictionary_key!(arrow::datatypes::UInt32Type),
-                arrow::datatypes::DataType::UInt64 => compact_dictionary_key!(arrow::datatypes::UInt64Type),
+                DataType::Int8 => compact_dictionary_key!(Int8Type),
+                DataType::Int16 => compact_dictionary_key!(Int16Type),
+                DataType::Int32 => compact_dictionary_key!(Int32Type),
+                DataType::Int64 => compact_dictionary_key!(Int64Type),
+                DataType::UInt8 => compact_dictionary_key!(UInt8Type),
+                DataType::UInt16 => compact_dictionary_key!(UInt16Type),
+                DataType::UInt32 => compact_dictionary_key!(UInt32Type),
+                DataType::UInt64 => compact_dictionary_key!(UInt64Type),
                 other => {
                     return Err(ArrowError::InvalidArgumentError(format!(
                         "unsupported Flight dictionary key type {other}"
@@ -325,7 +328,7 @@ where K: ArrowDictionaryKeyType {
 }
 
 fn probe_max_encoded_len(batch: &RecordBatch) -> Result<usize, FlightError> {
-    let input = futures::stream::iter([Ok(batch.clone())]);
+    let input = iter([Ok(batch.clone())]);
     let mut encoder = Box::pin(
         FlightDataEncoderBuilder::new().with_schema(batch.schema()).with_max_flight_data_size(usize::MAX).build(input),
     );
@@ -421,15 +424,18 @@ mod tests {
     };
 
     use arrow::{
+        alloc::Allocation,
         array::{Array, BinaryArray, ByteView, Int32Array, StringArray},
         buffer::{Buffer, OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Int32Type},
+        ipc::{MessageHeader, root_as_message},
     };
     use arrow_flight::{decode::FlightRecordBatchStream, encode::DictionaryHandling};
     use futures::{StreamExt, TryStreamExt};
     use tonic::Code;
 
     use super::*;
+    use crate::server::error::ERROR_CODE_METADATA_KEY;
 
     fn string_batch(values: Vec<String>) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, false)]));
@@ -478,7 +484,7 @@ mod tests {
         }
         let backing = Arc::new(TrackedBacking { bytes, dropped: Arc::clone(&dropped) });
         let values_ptr = NonNull::new(backing.bytes.as_ptr().cast_mut()).unwrap();
-        let allocation: Arc<dyn arrow::alloc::Allocation> = Arc::clone(&backing) as _;
+        let allocation: Arc<dyn Allocation> = Arc::clone(&backing) as _;
         let values = unsafe { Buffer::from_custom_allocation(values_ptr, backing.bytes.len(), allocation) };
         let array = StringArray::new(OffsetBuffer::new(ScalarBuffer::from(offsets)), values, None);
         drop(backing);
@@ -489,7 +495,7 @@ mod tests {
         let observations = Arc::new(Mutex::new(Vec::<CompactProbeObservation>::new()));
         let observed = Arc::clone(&observations);
         let limiter = FlightFrameLimiter::new_observed(
-            futures::stream::iter([Ok(batch)]),
+            iter([Ok(batch)]),
             MAX_FLIGHT_FRAME_BYTES,
             Arc::new(move |observation| observed.lock().unwrap().push(observation)),
         );
@@ -516,7 +522,7 @@ mod tests {
             max_compact_bytes <= 2 * MAX_FLIGHT_FRAME_BYTES + ROW_BYTES + PROBE_HEADROOM_BYTES,
             "largest compact candidate {max_compact_bytes} exceeded exponential overshoot bound"
         );
-        let decoded = FlightRecordBatchStream::new_from_flight_data(futures::stream::iter(frames.into_iter().map(Ok)))
+        let decoded = FlightRecordBatchStream::new_from_flight_data(iter(frames.into_iter().map(Ok)))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -542,7 +548,7 @@ mod tests {
             dropped: Arc::clone(&dropped),
         });
         let unused_ptr = NonNull::new(unused.bytes.as_ptr().cast_mut()).expect("non-empty tracked backing");
-        let unused_allocation: Arc<dyn arrow::alloc::Allocation> = Arc::clone(&unused) as _;
+        let unused_allocation: Arc<dyn Allocation> = Arc::clone(&unused) as _;
         // SAFETY: `unused` owns an immutable allocation at `unused_ptr` for
         // exactly `unused.bytes.len()` bytes and is retained by the Buffer.
         let unused_buffer =
@@ -566,7 +572,7 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(dictionary)]).unwrap();
         assert!(batch.column(0).get_buffer_memory_size() > MAX_FLIGHT_FRAME_BYTES);
 
-        let input = futures::stream::iter([Ok(batch)]);
+        let input = iter([Ok(batch)]);
         let frames = ExactFlightFrameGuard {
             input: Box::pin(
                 FlightDataEncoderBuilder::new()
@@ -588,7 +594,7 @@ mod tests {
 
         assert!(dropped.load(Ordering::SeqCst), "transport frames must not retain the unused >4 MiB backing");
         assert!(frames.iter().all(|frame| frame.encoded_len() <= MAX_FLIGHT_FRAME_BYTES));
-        let decoded = FlightRecordBatchStream::new_from_flight_data(futures::stream::iter(frames.into_iter().map(Ok)))
+        let decoded = FlightRecordBatchStream::new_from_flight_data(iter(frames.into_iter().map(Ok)))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -607,7 +613,7 @@ mod tests {
     #[tokio::test]
     async fn exact_limiter_binary_splits_and_round_trips_all_rows() {
         let batch = string_batch((0..128).map(|index| format!("row-{index:04}-{}", "x".repeat(96))).collect());
-        let input = futures::stream::iter([Ok(batch.clone())]);
+        let input = iter([Ok(batch.clone())]);
         let frames = ExactFlightFrameGuard {
             input: Box::pin(
                 FlightDataEncoderBuilder::new()
@@ -624,7 +630,7 @@ mod tests {
 
         assert!(frames.len() > 2, "schema plus multiple data frames expected");
         assert!(frames.iter().all(|frame| frame.encoded_len() <= 1024));
-        let decoded = FlightRecordBatchStream::new_from_flight_data(futures::stream::iter(frames.into_iter().map(Ok)))
+        let decoded = FlightRecordBatchStream::new_from_flight_data(iter(frames.into_iter().map(Ok)))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -649,7 +655,7 @@ mod tests {
                 FlightDataEncoderBuilder::new()
                     .with_schema(compact.schema())
                     .with_max_flight_data_size(usize::MAX)
-                    .build(FlightFrameLimiter::new(futures::stream::iter([Ok(sliced)]), 2048)),
+                    .build(FlightFrameLimiter::new(iter([Ok(sliced)]), 2048)),
             ),
             max_frame_bytes: 2048,
             done: false,
@@ -673,11 +679,10 @@ mod tests {
         let sliced = full.slice(32, 96);
         assert!(sliced.column(0).get_buffer_memory_size() > MAX_FLIGHT_FRAME_BYTES);
 
-        let frames =
-            encode_flight_data_stream(sliced.schema(), futures::stream::iter([Ok::<_, FlightError>(sliced.clone())]))
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap();
+        let frames = encode_flight_data_stream(sliced.schema(), iter([Ok::<_, FlightError>(sliced.clone())]))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
 
         let mut schema_frames = 0usize;
         let mut record_batch_frames = 0usize;
@@ -687,17 +692,17 @@ mod tests {
                 "encoded FlightData frame was {} bytes",
                 frame.encoded_len()
             );
-            let message = arrow::ipc::root_as_message(&frame.data_header).unwrap();
+            let message = root_as_message(&frame.data_header).unwrap();
             match message.header_type() {
-                arrow::ipc::MessageHeader::Schema => schema_frames += 1,
-                arrow::ipc::MessageHeader::RecordBatch => record_batch_frames += 1,
+                MessageHeader::Schema => schema_frames += 1,
+                MessageHeader::RecordBatch => record_batch_frames += 1,
                 other => panic!("unexpected FlightData IPC frame {other:?}"),
             }
         }
         assert_eq!(schema_frames, 1);
         assert!(record_batch_frames > 1, "the >4 MiB logical slice must require multiple data frames");
 
-        let decoded = FlightRecordBatchStream::new_from_flight_data(futures::stream::iter(frames.into_iter().map(Ok)))
+        let decoded = FlightRecordBatchStream::new_from_flight_data(iter(frames.into_iter().map(Ok)))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -714,14 +719,14 @@ mod tests {
     #[tokio::test]
     async fn oversized_single_cell_is_structured_resource_exhausted() {
         let batch = string_batch(vec!["x".repeat(8192)]);
-        let input = futures::stream::iter([Ok(batch.clone())]);
+        let input = iter([Ok(batch.clone())]);
         let mut stream = FlightFrameLimiter::new(input, 1024);
         let FlightError::Tonic(status) = stream.next().await.unwrap().unwrap_err() else {
             panic!("single-cell overflow must preserve structured tonic status");
         };
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_eq!(
-            status.metadata().get(crate::server::error::ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            status.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("flight_frame_too_large")
         );
     }
@@ -736,17 +741,13 @@ mod tests {
                     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Binary, false)]));
                     let batch = RecordBatch::try_new(schema, vec![Arc::new(BinaryArray::from(vec![value.as_slice()]))])
                         .unwrap();
-                    let mut stream =
-                        FlightFrameLimiter::new(futures::stream::iter([Ok(batch)]), MAX_FLIGHT_FRAME_BYTES);
+                    let mut stream = FlightFrameLimiter::new(iter([Ok(batch)]), MAX_FLIGHT_FRAME_BYTES);
                     let FlightError::Tonic(status) = stream.next().await.unwrap().unwrap_err() else {
                         panic!("single-cell binary overflow must preserve structured tonic status");
                     };
                     assert_eq!(status.code(), Code::ResourceExhausted);
                     assert_eq!(
-                        status
-                            .metadata()
-                            .get(crate::server::error::ERROR_CODE_METADATA_KEY)
-                            .and_then(|value| value.to_str().ok()),
+                        status.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
                         Some("flight_frame_too_large")
                     );
                 })
@@ -760,7 +761,7 @@ mod tests {
         let small =
             RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(BinaryArray::from(vec![b"ok".as_slice()]))])
                 .unwrap();
-        let frames = encode_flight_data_stream(schema, futures::stream::iter([Ok::<_, FlightError>(small)]))
+        let frames = encode_flight_data_stream(schema, iter([Ok::<_, FlightError>(small)]))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();

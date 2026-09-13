@@ -21,12 +21,15 @@ use std::{
 };
 
 use super::{
-    super::compiled::{ResidentFrameStreamPayload, lanes::AggregateLaneDispatch},
     BoundedExecutionAttempt, ResidentGpuFrame, Result,
     compiled::stateless_streaming_probe_supported,
     hash::{BoundedRootHashJoinBuildState, execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame},
 };
-use crate::plan::{JoinNode, JoinSide, JoinType, NodeId};
+use crate::{
+    exec::bounded::compiled::{ResidentFrameStreamPayload, lanes::AggregateLaneDispatch},
+    plan::{JoinNode, JoinSide, JoinType, NodeId},
+    runtime::resident::GpuHashJoinBuildHandle,
+};
 
 /// Whether a hash join probe may run chunks in parallel with concatenation.
 ///
@@ -172,7 +175,7 @@ struct SharedHashBuild {
     build_frame: cudf::DataFrame,
     build_rows: u64,
     build_bytes: u64,
-    hash_join: crate::runtime::resident::GpuHashJoinBuildHandle,
+    hash_join: GpuHashJoinBuildHandle,
     hash_table_bytes: u64,
     left_indices_from_probe: bool,
     build_keys_unique: bool,

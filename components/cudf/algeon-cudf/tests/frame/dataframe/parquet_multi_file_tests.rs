@@ -4,8 +4,10 @@ use cudf::{
     DataFrame, ErrorCode, ErrorKind,
     core::{Column, Table},
     frame::dataframe::MultiParquetReadOptions,
+    io::parquet::{ParquetTableWriteOptions, write_parquet},
     testing::prelude::*,
 };
+use cudf_sys::test_support;
 use tempfile::TempDir;
 
 use crate::common::{
@@ -23,9 +25,8 @@ impl Drop for MetadataFaultReset {
 
 fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<Column>) {
     let table = Table::from_columns(columns).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(path).column_names(column_names).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(path).column_names(column_names).build();
+    write_parquet(&table, &write_opts).unwrap();
 }
 
 #[test]
@@ -217,7 +218,7 @@ fn test_read_parquet_many_metadata_fault_reports_file_index_and_path() {
 
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()]);
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    arm_next_io_metadata_fault(test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
     let err = DataFrame::read_parquet_many(&rt, [&path]).expect_err("metadata fault should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);

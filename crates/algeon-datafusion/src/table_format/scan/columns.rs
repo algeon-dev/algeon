@@ -1,5 +1,8 @@
 use std::fmt;
 
+#[cfg(test)]
+use query_engine::datatypes::diagnostic_arrow_type;
+
 use super::DataType;
 
 /// Scalar value available from table-format metadata, usually partition facts.
@@ -235,7 +238,7 @@ impl TableFormatUnsupportedColumn<'_> {
     /// Human-readable Arrow type for client-facing diagnostics.
     #[cfg(test)]
     pub(crate) fn data_type_summary(&self) -> String {
-        query_engine::datatypes::diagnostic_arrow_type(self.data_type)
+        diagnostic_arrow_type(self.data_type)
     }
 }
 

@@ -2,7 +2,7 @@
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, SortOptions};
 
-use crate::common::{error_context_value, sample_runtime};
+use crate::common::{error_context_value, run_named_cases, sample_runtime};
 
 fn assert_group_cumcount_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -66,7 +66,7 @@ fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
 
 #[test]
 fn dataframe_group_cumcount_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "group_cumcount_returns_zero_based_positions_for_each_sorted_group",
             group_cumcount_returns_zero_based_positions_for_each_sorted_group,

@@ -23,8 +23,8 @@ use crate::{
     },
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateFunction, AggregateSpec, Expr},
-    mode::StatisticalAggregateExecutionMode,
-    pipeline::{CompiledPipeline, SinkBoundaryKind},
+    mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
+    pipeline::{COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE, CompiledPipeline, PipelineEdgeKind, SinkBoundaryKind},
     plan::{NodeId, PlanNode, QueryPlan, ResultSink},
     prepared::{
         aggregate_spec_has_floating_statistical_aggregate, datafusion_exact_host_accumulator,
@@ -158,7 +158,7 @@ fn binding_rejection(
         contract_scope: CapabilityScope::Subgraph,
         boundary: "compiled_pipeline",
         reason,
-        facts: std::collections::BTreeMap::from_iter(facts),
+        facts: BTreeMap::from_iter(facts),
     }
 }
 
@@ -172,9 +172,10 @@ fn sink_boundary_kind_for_plan(plan: &QueryPlan) -> SinkBoundaryKind {
 fn pipeline_sink_output_plan_node(pipeline: &CompiledPipeline) -> Option<NodeId> {
     match pipeline.sink().kind() {
         SinkBoundaryKind::HostArrowMaterialization => {
-            let edge = pipeline.edges().iter().find(|edge| {
-                edge.to() == pipeline.sink().input() && edge.kind() == crate::pipeline::PipelineEdgeKind::SinkInput
-            })?;
+            let edge = pipeline
+                .edges()
+                .iter()
+                .find(|edge| edge.to() == pipeline.sink().input() && edge.kind() == PipelineEdgeKind::SinkInput)?;
             pipeline.tasks().iter().find(|task| task.id() == edge.from()).and_then(|task| task.plan_node())
         },
         SinkBoundaryKind::GpuResidentOutput => {
@@ -223,7 +224,7 @@ impl BoundedPipelineDecision {
 /// explicit graph trigger above: the generic executor must not silently
 /// absorb them.
 fn compiled_pipeline_coverage_gap(plan: &QueryPlan, rejection_projection: &CapabilityRejectionProjection) -> bool {
-    rejection_projection.reason == crate::pipeline::COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE
+    rejection_projection.reason == COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE
         && plan.contains_vector_algorithm()
         && !plan.contains_graph_algorithm()
 }
@@ -456,7 +457,7 @@ fn capability_admission_from_capability_first(
             "query_engine.bounded.capability_admission",
             "admitted capability candidate must include a selected envelope",
         )
-        .with_fact("execution_mode", crate::mode::CapabilityEnvelopeStatus::Admitted.as_str())
+        .with_fact("execution_mode", CapabilityEnvelopeStatus::Admitted.as_str())
         .with_fact("candidate_status", "admitted")
     })?;
     let (analysis, pipeline) = admission.into_parts();
@@ -466,7 +467,7 @@ fn capability_admission_from_capability_first(
             "query_engine.bounded.capability_admission",
             "admitted capability candidate must include a compiled pipeline",
         )
-        .with_fact("execution_mode", crate::mode::CapabilityEnvelopeStatus::Admitted.as_str())
+        .with_fact("execution_mode", CapabilityEnvelopeStatus::Admitted.as_str())
         .with_fact("candidate_status", "admitted")
     })?;
     Ok(BoundedPipelineAdmission {
@@ -494,7 +495,7 @@ pub fn artifact_binding_error(
 
 fn compiled_bounded_pipeline_required_error(
     plan: &QueryPlan,
-    pipeline: Option<&crate::pipeline::CompiledPipeline>,
+    pipeline: Option<&CompiledPipeline>,
     projection: &CapabilityRejectionProjection,
 ) -> QueryError {
     let sink_kind = match plan.sink() {

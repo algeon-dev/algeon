@@ -1,6 +1,8 @@
 use std::error::Error;
 
+use bench::cugraph_admission_stress::run;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    bench::cugraph_admission_stress::run().await
+    run().await
 }

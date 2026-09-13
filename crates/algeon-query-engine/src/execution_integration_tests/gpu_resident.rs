@@ -6,10 +6,13 @@ pub use query_engine::{
 
 use crate::{
     error::Result,
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryExecutionResult},
+    plan::QueryPlan,
     runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
-        GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
+        DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
+        QueueBounds, resident::GpuResidentInputMap,
     },
 };
 
@@ -50,17 +53,17 @@ fn try_guaranteed_runtime_test_service() -> Result<QueryService> {
 }
 
 fn execute_plan(
-    context: &crate::runtime::ExecutionContext,
-    plan: &crate::plan::QueryPlan,
-    gpu_inputs: Option<&crate::runtime::resident::GpuResidentInputMap>,
-) -> Result<crate::exec::output::QueryExecutionResult> {
-    let mut request = crate::exec::QueryExecutionRequest::new(plan);
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: Option<&GpuResidentInputMap>,
+) -> Result<QueryExecutionResult> {
+    let mut request = QueryExecutionRequest::new(plan);
     if let Some(gpu_inputs) = gpu_inputs {
         request = request.with_gpu_inputs(gpu_inputs);
     }
-    let outcome = crate::exec::execute_query_plan(context, request);
+    let outcome = execute_query_plan(context, request);
     let (result, metrics, _observation) = outcome.into_parts();
-    result.map(|output| crate::exec::output::QueryExecutionResult::new(output, metrics))
+    result.map(|output| QueryExecutionResult::new(output, metrics))
 }
 
 fn runtime_test_service_with_profiles(

@@ -9,9 +9,12 @@ use cudf::{
     DataFrame, DuplicateKeepOption, ErrorCode, ErrorKind,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::{DropDuplicatesOptions, DropNaHow, DropNaOptions},
+    testing::dataframe::trigger_dataframe_dropna_subset_count_limit_error_for_test,
 };
 
-use crate::common::{assert_missing_column_error, error_context_value, scalar};
+use crate::common::{
+    assert_missing_column_error, error_context_value, nullable_series, run_named_cases, scalar, series,
+};
 
 // ===========================================================================
 // Helpers
@@ -22,15 +25,10 @@ use crate::common::{assert_missing_column_error, error_context_value, scalar};
 ///   score: [10.0, ?, 30.0, ?, 50.0]  (f64, nulls at rows 1,3)
 ///   tag:   ["a", "b", ?, "d", ?]      (string, nulls at rows 2,4)
 fn sample_df_with_nulls() -> DataFrame {
-    let ids = crate::common::series::<i32>("id", &[1, 2, 3, 4, 5]).unwrap();
-    let scores = crate::common::nullable_series::<f64>(
-        "score",
-        &[10.0, 0.0, 30.0, 0.0, 50.0],
-        &[true, false, true, false, true],
-    )
-    .unwrap();
-    let tags =
-        crate::common::nullable_series("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
+    let ids = series::<i32>("id", &[1, 2, 3, 4, 5]).unwrap();
+    let scores =
+        nullable_series::<f64>("score", &[10.0, 0.0, 30.0, 0.0, 50.0], &[true, false, true, false, true]).unwrap();
+    let tags = nullable_series("tag", &["a", "b", "", "d", ""], &[true, true, false, true, false]).unwrap();
     DataFrame::from_series([("id", ids), ("score", scores), ("tag", tags)]).unwrap()
 }
 
@@ -38,8 +36,8 @@ fn sample_df_with_nulls() -> DataFrame {
 ///   a: [1, 2, 1, 2, 3]
 ///   b: [10, 20, 10, 20, 30]
 fn sample_df_with_dupes() -> DataFrame {
-    let a = crate::common::series::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
-    let b = crate::common::series::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
+    let a = series::<i32>("a", &[1, 2, 1, 2, 3]).unwrap();
+    let b = series::<i32>("b", &[10, 20, 10, 20, 30]).unwrap();
     DataFrame::from_series([("a", a), ("b", b)]).unwrap()
 }
 
@@ -162,7 +160,7 @@ fn test_dropna_negative_thresh_uses_stable_validation_contract() {
 }
 
 fn test_dropna_subset_count_limit_uses_canonical_contract() {
-    let err = cudf::testing::dataframe::trigger_dataframe_dropna_subset_count_limit_error_for_test().unwrap_err();
+    let err = trigger_dataframe_dropna_subset_count_limit_error_for_test().unwrap_err();
     let expected = usize::MAX.to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -181,8 +179,8 @@ fn test_dropna_subset_count_limit_uses_canonical_contract() {
 
 fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
-    let a = crate::common::nullable_series::<i32>("a", &[0, 0], &[false, false]).unwrap();
-    let b = crate::common::nullable_series::<i32>("b", &[0, 0], &[false, false]).unwrap();
+    let a = nullable_series::<i32>("a", &[0, 0], &[false, false]).unwrap();
+    let b = nullable_series::<i32>("b", &[0, 0], &[false, false]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let result = df.dropna(Default::default()).unwrap();
@@ -220,8 +218,8 @@ fn test_drop_duplicates_subset() {
 // ===========================================================================
 
 fn test_drop_duplicates_keep_first() {
-    let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = series::<i32>("a", &[1, 1, 2]).unwrap();
+    let b = series::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst).build();
@@ -242,8 +240,8 @@ fn test_drop_duplicates_keep_first() {
 }
 
 fn test_drop_duplicates_keep_last() {
-    let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = series::<i32>("a", &[1, 1, 2]).unwrap();
+    let b = series::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepLast).build();
@@ -263,8 +261,8 @@ fn test_drop_duplicates_keep_last() {
 }
 
 fn test_drop_duplicates_keep_none() {
-    let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
+    let a = series::<i32>("a", &[1, 1, 2]).unwrap();
+    let b = series::<i32>("b", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
 
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).keep(DuplicateKeepOption::KeepNone).build();
@@ -321,7 +319,7 @@ fn test_fillna_scalar_single_column() {
 
 fn test_fillna_with_series_single_column() {
     let df = sample_df_with_nulls();
-    let fill_series = crate::common::series::<f64>("fill", &[0.0, 20.0, 0.0, 40.0, 0.0]).unwrap();
+    let fill_series = series::<f64>("fill", &[0.0, 20.0, 0.0, 40.0, 0.0]).unwrap();
     let result = df.fillna_with_series("score", &fill_series).unwrap();
 
     let scores = result.series("score").unwrap().to_vec_strict::<f64>().unwrap();
@@ -341,7 +339,7 @@ fn test_fillna_invalid_column() {
 
 fn test_fillna_with_series_invalid_column() {
     let df = sample_df_with_nulls();
-    let fill_series = crate::common::series::<f64>("fill", &[0.0; 5]).unwrap();
+    let fill_series = series::<f64>("fill", &[0.0; 5]).unwrap();
     let err = df.fillna_with_series("nonexistent", &fill_series).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
 }
@@ -400,7 +398,7 @@ fn test_high_level_option_types_importable_from_dataframe_module() {
 
 #[test]
 fn high_level_d3_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_dropna_default_drops_any_null_row", test_dropna_default_drops_any_null_row),
         ("test_dropna_all_mode_keeps_partial_nulls", test_dropna_all_mode_keeps_partial_nulls),
         ("test_dropna_subset_single_column", test_dropna_subset_single_column),

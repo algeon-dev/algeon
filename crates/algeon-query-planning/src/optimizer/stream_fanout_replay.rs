@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
-use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan};
+use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const STREAM_FANOUT_REPLAY_RULE_NAME: &str = "stream_fanout_replay";
@@ -195,7 +195,7 @@ impl<'a> StreamFanoutReplayRewriter<'a> {
         }
     }
 
-    fn push_node(&mut self, kind: PlanNode, facts: crate::plan::PlanFacts) -> NodeId {
+    fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
         let id = NodeId::from_index_for_internal_use(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id

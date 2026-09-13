@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 
 use crate::util::StableFnv1a64;
 
@@ -63,13 +63,13 @@ impl<'de> Deserialize<'de> for AttemptId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where D: serde::Deserializer<'de> {
         let value = String::deserialize(deserializer)?;
-        let hex = value.strip_prefix("attempt-").ok_or_else(|| serde::de::Error::custom("attempt id prefix"))?;
+        let hex = value.strip_prefix("attempt-").ok_or_else(|| de::Error::custom("attempt id prefix"))?;
         if hex.len() != 32 {
-            return Err(serde::de::Error::custom("attempt id length"));
+            return Err(de::Error::custom("attempt id length"));
         }
         let mut bytes = [0; 16];
         for (index, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).map_err(serde::de::Error::custom)?;
+            *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).map_err(de::Error::custom)?;
         }
         Ok(Self(bytes))
     }

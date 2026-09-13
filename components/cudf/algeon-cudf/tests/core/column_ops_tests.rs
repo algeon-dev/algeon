@@ -13,7 +13,10 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, host_export_i64_values, scalar};
+use crate::common::{
+    column_from_slice, column_from_slice_nullable, column_from_strs, host_export_i64_values, null_scalar,
+    run_named_cases, scalar, series, string_scalar,
+};
 
 fn decimal128_pair_df_from_arrow(
     left_name: &str,
@@ -119,14 +122,12 @@ fn test_column_add_mixed_types() {
 }
 
 fn test_column_add_decimal64_same_scale_preserves_scale() {
-    let a = crate::common::series("a", &[12_345i64, 20_000])
+    let a = series("a", &[12_345i64, 20_000])
         .unwrap()
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
-    let b = crate::common::series("b", &[100i64, -500])
-        .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
-        .unwrap();
+    let b =
+        series("b", &[100i64, -500]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
 
     let result = a.as_column().add(b.as_column()).unwrap();
     let result = Series::from_column(result).unwrap();
@@ -225,7 +226,7 @@ fn test_column_binary_op_error_operation_context() {
 
 fn test_column_binary_op_scalar_error_operation_context() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
-    let scalar = crate::common::string_scalar("baz").unwrap();
+    let scalar = string_scalar("baz").unwrap();
     let err = col.binary_op_scalar(&scalar, BinaryOperator::Add).expect_err("expected error");
     assert_eq!(err.operation(), "column::binary_op_scalar");
 }
@@ -445,7 +446,7 @@ fn test_column_ge_scalar_i32() {
 
 fn test_column_eq_scalar_string() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = crate::common::string_scalar("active").unwrap();
+    let scalar = string_scalar("active").unwrap();
     let result = col.eq_scalar(&scalar).unwrap();
     let rv = result.testing_view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
@@ -454,7 +455,7 @@ fn test_column_eq_scalar_string() {
 
 fn test_column_lt_scalar_string() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = crate::common::string_scalar("banana").unwrap();
+    let scalar = string_scalar("banana").unwrap();
     let result = col.lt_scalar(&scalar).unwrap();
     let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
@@ -462,7 +463,7 @@ fn test_column_lt_scalar_string() {
 
 fn test_column_add_scalar_string_error() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
-    let scalar = crate::common::string_scalar("baz").unwrap();
+    let scalar = string_scalar("baz").unwrap();
     let err = col.add_scalar(&scalar).expect_err("expected error");
     assert_eq!(err.operation(), "column::add_scalar");
 }
@@ -470,7 +471,7 @@ fn test_column_add_scalar_string_error() {
 fn test_column_add_scalar_null() {
     // Adding a null scalar should produce all-null output
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let scalar = crate::common::null_scalar::<i32>().unwrap();
+    let scalar = null_scalar::<i32>().unwrap();
     let result = col.add_scalar(&scalar).unwrap();
     let rv = result.testing_view().unwrap();
     let validity = rv.to_host_validity().unwrap().unwrap();
@@ -571,7 +572,7 @@ fn test_ops_chain() {
 
 #[test]
 fn column_ops_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_column_add_i32", test_column_add_i32),
         ("test_column_sub_i32", test_column_sub_i32),
         ("test_column_mul_i32", test_column_mul_i32),

@@ -2,7 +2,7 @@
 
 use cudf::{DataFrame, SortOptions, ops::reduction::ScanAgg};
 
-use crate::common::sample_runtime;
+use crate::common::{run_named_cases, sample_runtime};
 
 fn group_scan_sorted_returns_row_aligned_cumulative_sum_per_group() {
     let runtime = sample_runtime();
@@ -40,7 +40,7 @@ fn row_positions_are_aligned_to_current_frame_order() {
 
 #[test]
 fn dataframe_group_scan_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "group_scan_sorted_returns_row_aligned_cumulative_sum_per_group",
             group_scan_sorted_returns_row_aligned_cumulative_sum_per_group,

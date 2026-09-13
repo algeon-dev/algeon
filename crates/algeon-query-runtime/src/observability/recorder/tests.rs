@@ -10,7 +10,10 @@ use std::{
 };
 
 use super::*;
-use crate::observability::{DeterministicRuntimeObservationClock, QueryBoundaryKind};
+use crate::{
+    metrics::{BudgetedExecutionEvent, SourceReadRuntimeMetrics},
+    observability::{DeterministicRuntimeObservationClock, PlanNodeRow, QueryBoundaryKind, RuntimePlanNodeId},
+};
 
 #[test]
 fn sized_preflight_rejects_before_payload_or_topology_builder_runs() {
@@ -37,9 +40,9 @@ fn sized_preflight_rejects_before_payload_or_topology_builder_runs() {
     let topology_counter = Arc::clone(&topology_builds);
     let disposition = session.handle().record_topology(RuntimeObservationRecordClass::PlanNode, move || {
         topology_counter.fetch_add(1, Ordering::SeqCst);
-        RuntimeTopologyRecord::PlanNode(super::super::PlanNodeRow {
+        RuntimeTopologyRecord::PlanNode(PlanNodeRow {
             plan_execution_id: PlanExecutionId::new("plan"),
-            node_id: super::super::RuntimePlanNodeId::new("node"),
+            node_id: RuntimePlanNodeId::new("node"),
             operator_kind: "never-built".to_string(),
         })
     });
@@ -500,8 +503,8 @@ fn plan() -> PlanExecutionId {
     PlanExecutionId::new("plan-a")
 }
 
-fn source_row(batch_index: u64) -> crate::metrics::SourceReadRuntimeMetrics {
-    crate::metrics::SourceReadRuntimeMetrics { source_node_id: "source".to_string(), batch_index, ..Default::default() }
+fn source_row(batch_index: u64) -> SourceReadRuntimeMetrics {
+    SourceReadRuntimeMetrics { source_node_id: "source".to_string(), batch_index, ..Default::default() }
 }
 
 #[test]
@@ -569,7 +572,7 @@ fn bounded_capture_truncates_detail_but_keeps_totals_exact() {
 fn budget_detail_cannot_crowd_out_later_strategy_decisions() {
     let session = metrics_session("budget-share", RuntimeObservationConfig::bounded(8, 1024 * 1024));
     let handle = session.handle();
-    let event = crate::metrics::BudgetedExecutionEvent {
+    let event = BudgetedExecutionEvent {
         query_id: None,
         operation: "groupby".to_string(),
         boundary: "partial".to_string(),

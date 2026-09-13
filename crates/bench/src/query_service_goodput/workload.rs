@@ -1,8 +1,11 @@
 use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 use algeon_datafusion::backend::AlgeonGpuBackend;
-use arrow::array::Array as _;
-use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+use arrow::array::{Array as _, Int64Array};
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
 use workloads::{
     tpcds::{TPCDS_QUERIES, register_tpcds_tables},
     tpch::{TPCH_QUERIES, register_tpch_tables},
@@ -325,24 +328,20 @@ fn new_session(backend: &AlgeonGpuBackend) -> Result<SessionContext, Box<dyn Err
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
-    let builder = datafusion::execution::SessionStateBuilder::new().with_config(session_config).with_default_features();
+    let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
     let builder = install_workload_sql(backend.install_on(builder)?)?;
     Ok(SessionContext::new_with_state(builder.build()))
 }
 
 #[cfg(feature = "cugraph")]
-fn install_workload_sql(
-    builder: datafusion::execution::SessionStateBuilder,
-) -> Result<datafusion::execution::SessionStateBuilder, Box<dyn Error>> {
+fn install_workload_sql(builder: SessionStateBuilder) -> Result<SessionStateBuilder, Box<dyn Error>> {
     use algeon_datafusion::{cugraph_sql::CugraphSqlConfig, session::AlgeonSessionStateBuilderExt};
 
     Ok(builder.try_with_cugraph_sql(CugraphSqlConfig::default())?)
 }
 
 #[cfg(not(feature = "cugraph"))]
-fn install_workload_sql(
-    builder: datafusion::execution::SessionStateBuilder,
-) -> Result<datafusion::execution::SessionStateBuilder, Box<dyn Error>> {
+fn install_workload_sql(builder: SessionStateBuilder) -> Result<SessionStateBuilder, Box<dyn Error>> {
     Ok(builder)
 }
 
@@ -351,7 +350,7 @@ pub(super) async fn discover_graph_seed(ctx: &SessionContext) -> Result<i64, Box
     let batches = ctx.sql(&format!("SELECT MIN(src) AS seed FROM {GRAPH_EDGE_TABLE}")).await?.collect().await?;
     let seed = batches
         .first()
-        .and_then(|batch| batch.column(0).as_any().downcast_ref::<arrow::array::Int64Array>())
+        .and_then(|batch| batch.column(0).as_any().downcast_ref::<Int64Array>())
         .filter(|column| !column.is_empty() && !column.is_null(0))
         .map(|column| column.value(0))
         .ok_or("graph seed discovery returned no vertex")?;

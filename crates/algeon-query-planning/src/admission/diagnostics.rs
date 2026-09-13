@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use crate::{
     backend::AnalysisContext,
-    capability::{CapabilityRejectionOwner, CapabilityRejectionProjection},
+    capability::{CapabilityRejectionOwner, CapabilityRejectionProjection, keyed_hash_join_strategy_decision_for_plan},
     error::QueryError,
     mode::StatisticalAggregateExecutionMode,
-    plan::QueryPlan,
+    plan::{PlanNode, QueryPlan},
 };
 
 /// Returns diagnostic facts for join plans rejected by bounded admission.
@@ -89,10 +89,10 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
     let mut partition_target_bytes = Vec::new();
 
     for node in plan.nodes() {
-        let crate::plan::PlanNode::Join(join) = &node.kind else {
+        let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        let Some(decision) = crate::capability::keyed_hash_join_strategy_decision_for_plan(plan, node.id, join) else {
+        let Some(decision) = keyed_hash_join_strategy_decision_for_plan(plan, node.id, join) else {
             continue;
         };
         let node_label = node.id.to_string();

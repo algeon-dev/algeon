@@ -11,6 +11,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "single-node-multi-gpu-validate-run")]
+use algeon_datafusion::attempt::{
+    GraphClaimCalibrationExecution as AdapterGraphClaimCalibrationExecution,
+    GraphClaimCalibrationNonPhysicalReason as AdapterGraphClaimCalibrationNonPhysicalReason,
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -143,26 +148,22 @@ pub(super) enum GraphClaimCalibrationNonPhysicalReason {
 }
 
 #[cfg(feature = "single-node-multi-gpu-validate-run")]
-impl From<algeon_datafusion::attempt::GraphClaimCalibrationExecution> for GraphClaimCalibrationExecution {
-    fn from(value: algeon_datafusion::attempt::GraphClaimCalibrationExecution) -> Self {
+impl From<AdapterGraphClaimCalibrationExecution> for GraphClaimCalibrationExecution {
+    fn from(value: AdapterGraphClaimCalibrationExecution) -> Self {
         match value {
-            algeon_datafusion::attempt::GraphClaimCalibrationExecution::Physical => Self::Physical,
-            algeon_datafusion::attempt::GraphClaimCalibrationExecution::NonPhysical(reason) => {
-                Self::NonPhysical(reason.into())
-            },
+            AdapterGraphClaimCalibrationExecution::Physical => Self::Physical,
+            AdapterGraphClaimCalibrationExecution::NonPhysical(reason) => Self::NonPhysical(reason.into()),
         }
     }
 }
 
 #[cfg(feature = "single-node-multi-gpu-validate-run")]
-impl From<algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason>
-    for GraphClaimCalibrationNonPhysicalReason
-{
-    fn from(value: algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason) -> Self {
+impl From<AdapterGraphClaimCalibrationNonPhysicalReason> for GraphClaimCalibrationNonPhysicalReason {
+    fn from(value: AdapterGraphClaimCalibrationNonPhysicalReason) -> Self {
         match value {
-            algeon_datafusion::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
-                leader_attempt_id,
-            } => Self::BfsSingleflightFollower { leader_attempt_id: leader_attempt_id.map(|id| id.to_string()) },
+            AdapterGraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower { leader_attempt_id } => {
+                Self::BfsSingleflightFollower { leader_attempt_id: leader_attempt_id.map(|id| id.to_string()) }
+            },
         }
     }
 }

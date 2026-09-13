@@ -19,6 +19,7 @@ use crate::{
     core::{
         column::{Column, ColumnView},
         error::{self, Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result},
+        native_teardown::drop_device_owned_handle,
         table::TableView,
         types::{DataType, TypeId},
     },
@@ -160,7 +161,7 @@ impl DistinctHashJoinHandle {
 
 impl Drop for DistinctHashJoinHandle {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self._domain.device_id(),
             "DistinctHashJoinHandle::drop",

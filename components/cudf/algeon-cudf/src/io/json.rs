@@ -13,7 +13,7 @@ use crate::{
     core::{
         error::{self, FACT_COLUMN_INDEX, Result},
         schema,
-        table::Table,
+        table::{Table, TableView},
     },
     io::TableReadOutput,
     runtime::Runtime,
@@ -126,7 +126,7 @@ pub fn write_json(table: &Table, options: &JsonTableWriteOptions) -> Result<()> 
 }
 
 pub(crate) fn write_json_with_exec(
-    table: &crate::core::TableView<'_>,
+    table: &TableView<'_>,
     options: &JsonTableWriteOptions,
     exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<()> {

@@ -8,7 +8,8 @@ use cudf::{
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, scalar,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases,
+    scalar, string_scalar,
 };
 
 fn test_add_column_column() {
@@ -288,7 +289,7 @@ fn test_string_greater_equal_vv() {
 
 fn test_string_equal_vs() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = crate::common::string_scalar("active").unwrap();
+    let scalar = string_scalar("active").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result =
@@ -299,7 +300,7 @@ fn test_string_equal_vs() {
 
 fn test_string_not_equal_vs() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
-    let scalar = crate::common::string_scalar("active").unwrap();
+    let scalar = string_scalar("active").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result =
@@ -310,7 +311,7 @@ fn test_string_not_equal_vs() {
 
 fn test_string_less_vs() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = crate::common::string_scalar("banana").unwrap();
+    let scalar = string_scalar("banana").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result =
@@ -322,7 +323,7 @@ fn test_string_less_vs() {
 
 fn test_string_greater_vs() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
-    let scalar = crate::common::string_scalar("banana").unwrap();
+    let scalar = string_scalar("banana").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result =
@@ -334,7 +335,7 @@ fn test_string_greater_vs() {
 
 fn test_string_less_equal_vs() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = crate::common::string_scalar("banana").unwrap();
+    let scalar = string_scalar("banana").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result =
@@ -346,7 +347,7 @@ fn test_string_less_equal_vs() {
 
 fn test_string_greater_equal_vs() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
-    let scalar = crate::common::string_scalar("banana").unwrap();
+    let scalar = string_scalar("banana").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result =
@@ -399,7 +400,7 @@ fn test_string_add_vv_error() {
 
 fn test_string_sub_vs_error() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
-    let scalar = crate::common::string_scalar("baz").unwrap();
+    let scalar = string_scalar("baz").unwrap();
     let cv = col.testing_view().unwrap();
 
     let result = binary::binary_operation_vs(&cv, &scalar, BinaryOperator::Sub, &DataType::new(TypeId::String));
@@ -811,7 +812,7 @@ fn test_infer_mixed_string_numeric_comparison_rejected() {
 
 #[test]
 fn binary_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_add_column_column", test_add_column_column),
         ("test_mul_column_scalar", test_mul_column_scalar),
         ("test_div_scalar_column", test_div_scalar_column),

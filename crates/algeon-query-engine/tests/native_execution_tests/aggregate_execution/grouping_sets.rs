@@ -1,5 +1,8 @@
 use std::{fs::File, path::Path, sync::Arc};
 
+use arrow::record_batch::RecordBatchOptions;
+use query_engine::expr::ColumnRef;
+
 use super::*;
 
 type RollupAvgRow = (Option<String>, Option<String>, Option<String>, Option<String>, u32, f64);
@@ -14,7 +17,7 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_empty_literal_input() {
     let empty_batch = RecordBatch::try_new_with_options(
         Arc::clone(&input_schema),
         vec![Arc::new(Int32Array::from(Vec::<i32>::new())) as _, Arc::new(Int64Array::from(Vec::<i64>::new())) as _],
-        &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(0)),
+        &RecordBatchOptions::new().with_row_count(Some(0)),
     )
     .unwrap();
     let output_schema = Arc::new(Schema::new(vec![
@@ -157,22 +160,16 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "item_sk", "inventory_item_sk"),
-                query_engine::expr::ColumnRef::input(1, "item_sk", "item_item_sk"),
+                ColumnRef::input(0, "item_sk", "inventory_item_sk"),
+                ColumnRef::input(1, "item_sk", "item_item_sk"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "product_name", "product_name"),
-                "product_name",
-            ),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "brand", "brand"), "brand"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "class", "class"), "class"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"),
-                "quantity_on_hand",
-            ),
+            JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
+            JoinOutputColumn::right(ColumnRef::input(1, "brand", "brand"), "brand"),
+            JoinOutputColumn::right(ColumnRef::input(1, "class", "class"), "class"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),

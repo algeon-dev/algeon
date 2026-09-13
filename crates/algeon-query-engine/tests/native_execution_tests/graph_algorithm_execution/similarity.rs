@@ -1,14 +1,10 @@
-fn similarity_spec(
-    algorithm: GraphAlgorithm,
-    pair_input: query_engine::plan::NodeId,
-    with_weight: bool,
-) -> GraphAlgorithmSpec {
+fn similarity_spec(algorithm: GraphAlgorithm, pair_input: NodeId, with_weight: bool) -> GraphAlgorithmSpec {
     similarity_spec_for_pair_columns(algorithm, pair_input, with_weight, "first", "second")
 }
 
 fn similarity_spec_for_pair_columns(
     algorithm: GraphAlgorithm,
-    pair_input: query_engine::plan::NodeId,
+    pair_input: NodeId,
     with_weight: bool,
     first_column: &str,
     second_column: &str,
@@ -26,7 +22,7 @@ fn similarity_spec_for_pair_columns(
 fn similarity_spec_for_pair_columns_and_vertex_type(
     algorithm: GraphAlgorithm,
     vertex_type: &DataType,
-    pair_input: query_engine::plan::NodeId,
+    pair_input: NodeId,
     with_weight: bool,
     first_column: &str,
     second_column: &str,
@@ -63,7 +59,7 @@ fn similarity_plan(
     edge_row_count_upper_bound: usize,
     pair_row_count_upper_bound: usize,
     with_weight: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let vertex_type = edge_schema.field_with_name("src").expect("similarity edge schema has src").data_type().clone();
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(
@@ -93,12 +89,12 @@ fn similarity_plan(
 fn execute_similarity_plan(
     context: &AdmittedPlanContext,
     runtime: &Arc<cudf::Runtime>,
-    plan: &query_engine::plan::QueryPlan,
+    plan: &QueryPlan,
     edge_schema: Arc<Schema>,
     edge_batch: &RecordBatch,
     pair_schema: Arc<Schema>,
     pair_batch: &RecordBatch,
-) -> query_engine::error::Result<query_engine::exec::output::QueryExecutionResult> {
+) -> QueryEngineResult<QueryExecutionResult> {
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert("edges".to_string(), graph_input_handle(context, runtime, edge_schema, edge_batch));
     gpu_inputs.insert("pairs".to_string(), graph_input_handle(context, runtime, pair_schema, pair_batch));

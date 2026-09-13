@@ -1,5 +1,7 @@
 use std::{os::raw::c_void, ptr};
 
+use cudf_sys::test_support;
+
 use crate::support::{OwnedEvent, OwnedStream, current_device, lock_shim_state};
 
 #[test]
@@ -45,7 +47,7 @@ fn test_event_create_null_out_rejected() {
 #[test]
 fn test_event_create_record_wait_and_synchronize_smoke() {
     let _shim_state = lock_shim_state();
-    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
+    unsafe { test_support::cudf_test_event_reset_observation() };
 
     let mut stream: cudf_sys::cudf_stream_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
@@ -72,7 +74,7 @@ fn test_event_create_record_wait_and_synchronize_smoke() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let mut synchronize_calls = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_event_synchronize_call_count(&mut synchronize_calls) };
+    let status = unsafe { test_support::cudf_test_event_synchronize_call_count(&mut synchronize_calls) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(synchronize_calls, 1);
 

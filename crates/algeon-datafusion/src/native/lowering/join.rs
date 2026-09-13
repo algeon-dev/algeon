@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::{
     common::{JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
@@ -34,7 +34,10 @@ use crate::{
     capability::CapabilityReason,
     native::{
         expression_contract::validate_join_residual,
-        normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
+        normalize::{
+            NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeLiteralSource,
+            NormalizedNativeNestedLoopJoin,
+        },
     },
 };
 
@@ -162,7 +165,7 @@ struct PreparedJoinKeyExpr {
 struct JoinKeyMaterialization {
     expr: Arc<dyn PhysicalExpr>,
     alias: String,
-    field: arrow::datatypes::Field,
+    field: Field,
 }
 
 struct PreparedJoinKeys {
@@ -487,7 +490,7 @@ fn unique_lookup_bounded_side(
     canonical: CanonicalJoin,
     left: &LoweredNativeInput,
     right: &LoweredNativeInput,
-    keys: &[query_engine::plan::JoinKey],
+    keys: &[NativeJoinKey],
 ) -> Option<NativeJoinSide> {
     if join.join.filter().is_some() || join.join.on().is_empty() {
         return None;
@@ -720,9 +723,7 @@ fn nested_loop_join_residual(
     Err(CapabilityReason::UnsupportedOperator)
 }
 
-fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::NormalizedNativeInput<'_>) -> bool {
-    use crate::native::normalize::NormalizedNativeInput;
-
+fn normalized_input_is_scalar_single_row(input: &NormalizedNativeInput<'_>) -> bool {
     match input {
         NormalizedNativeInput::Projection(projection) => normalized_input_is_scalar_single_row(&projection.input),
         NormalizedNativeInput::Limit(limit) => {
@@ -731,7 +732,7 @@ fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::Norma
         NormalizedNativeInput::Aggregate(aggregate) => aggregate.aggregate.group_expr().expr().is_empty(),
         NormalizedNativeInput::GpuResidentSource(_) => false,
         NormalizedNativeInput::LiteralSource(source) => {
-            matches!(source, crate::native::normalize::NormalizedNativeLiteralSource::PlaceholderRow(_))
+            matches!(source, NormalizedNativeLiteralSource::PlaceholderRow(_))
         },
         NormalizedNativeInput::Source(_)
         | NormalizedNativeInput::Filter(_)

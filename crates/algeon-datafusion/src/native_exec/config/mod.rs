@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use datafusion::execution::context::TaskContext;
+#[cfg(feature = "bench-support")]
+use query_engine::observability::SealedRuntimeObservationSnapshot;
 use query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
@@ -30,7 +32,7 @@ use super::{
     },
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
-use crate::error::Error;
+use crate::error::{Error, Result};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::graph::GraphExecutionServices;
 
@@ -62,8 +64,7 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) plan_task_mapping_datafusion_shape: Option<String>,
     pub(super) metrics_capture: Option<NativeMetricsCapture>,
     #[cfg(feature = "bench-support")]
-    pub(super) benchmark_observation_capture:
-        Option<Arc<Mutex<Option<query_engine::observability::SealedRuntimeObservationSnapshot>>>>,
+    pub(super) benchmark_observation_capture: Option<Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>>,
     pub(super) lakehouse_footer_pruning: bool,
     #[cfg(feature = "cugraph")]
     pub(super) graph_execution_services: GraphExecutionServices,
@@ -246,7 +247,7 @@ impl AlgeonNativeExecutionConfig {
     #[doc(hidden)]
     pub fn with_benchmark_observation_capture(
         mut self,
-        capture: Arc<Mutex<Option<query_engine::observability::SealedRuntimeObservationSnapshot>>>,
+        capture: Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>,
     ) -> Self {
         self.benchmark_observation_capture = Some(capture);
         self
@@ -476,7 +477,7 @@ impl AlgeonNativeExecutionConfig {
     }
 
     /// Validate internal expert query policies before planning or execution.
-    pub(crate) fn validate_query_policies(&self) -> crate::error::Result<()> {
+    pub(crate) fn validate_query_policies(&self) -> Result<()> {
         self.dynamic_filter_execution_options.validate().map_err(|error| {
             Error::from_native(
                 "algeon_datafusion.native_exec.config.validate",

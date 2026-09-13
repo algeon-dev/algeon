@@ -5,7 +5,7 @@
 //! cross-references; call [`CompiledPipeline::validate`] before execution.
 
 pub use crate::capability::AggregateExecutionStage;
-use crate::{capability::CompiledJoinExecutionStrategy, expr::SortExpr, plan::NodeId};
+use crate::{capability::CompiledJoinExecutionStrategy, error::Result, expr::SortExpr, plan::NodeId};
 
 /// Mode-agnostic compiled graph for a native query DAG.
 ///
@@ -65,7 +65,7 @@ impl CompiledPipeline {
     }
 
     /// Validate id positions, cross references, and resource flow.
-    pub fn validate(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         super::validate::validate_pipeline(self)
     }
 }

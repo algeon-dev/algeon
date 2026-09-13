@@ -1,3 +1,5 @@
+use query_planning::plan::QueryPlan;
+
 #[test]
 fn attempt_requirement_admits_with_the_ledgers_configured_default_grant() {
     let service = AdmissionTestController::new_with_ledger(
@@ -44,11 +46,11 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
         test_ledger(4096, 1, Default::default()),
     )
     .unwrap();
-    let lifecycle = crate::runtime::BackendLifecycle::new();
-    let attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest::default(),
+    let lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest::default(),
         lifecycle.try_begin_observation().expect("attempt observation permit"),
-        std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
+        std::sync::Arc::new(AttemptBackendCounters::default()),
         None,
     );
     let attempt_id = attempt.owner.attempt_id();
@@ -57,7 +59,7 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().unwrap();
     attempt_handle.record_planning_finished().unwrap();
-    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).unwrap();
+    attempt_handle.set_disposition(AttemptDisposition::Native).unwrap();
     attempt_handle.record_admission_requested().unwrap();
 
     let handle = service
@@ -67,7 +69,7 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 
     assert_eq!(handle.grant_identity().unwrap().attempt_id, attempt_id);
     attempt_handle
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(AttemptAdmissionFact {
             admission_sequence: handle.admission_sequence(),
             admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: handle.device_ordinal(),
@@ -174,7 +176,7 @@ fn explicit_sink_capability_evidence() -> AttemptRequirement {
     AttemptRequirement::for_query_plan(&plan)
 }
 
-fn explicit_sink_plan(input_name: &str) -> query_planning::plan::QueryPlan {
+fn explicit_sink_plan(input_name: &str) -> QueryPlan {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};

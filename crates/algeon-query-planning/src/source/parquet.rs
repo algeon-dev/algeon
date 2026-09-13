@@ -1136,6 +1136,7 @@ impl LocalParquetFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::{LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetInput};
 
     #[test]
     fn column_roles_expose_projected_then_filter_only_fields_without_duplicates() {
@@ -1204,14 +1205,14 @@ mod tests {
 
         assert!(matches!(
             &file.resolved_source.input,
-            crate::source::ResolvedParquetInput::RemoteKvikio {
+            ResolvedParquetInput::RemoteKvikio {
                 uri: resolved_uri,
                 credential_mode: CredentialMode::SharedProcessEnv,
                 storage_profile_id: None,
             } if resolved_uri == uri
         ));
         assert_eq!(file.resolved_source.reader_location(), uri);
-        assert_eq!(file.resolved_source.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect);
+        assert_eq!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect);
     }
 
     #[test]
@@ -1221,7 +1222,7 @@ mod tests {
                 .with_storage_profile_id("remote-profile");
         assert!(matches!(
             &remote.input,
-            crate::source::ResolvedParquetInput::RemoteKvikio {
+            ResolvedParquetInput::RemoteKvikio {
                 credential_mode: CredentialMode::ScopedResolved,
                 storage_profile_id: Some(profile_id),
                 ..
@@ -1232,12 +1233,12 @@ mod tests {
             "s3://bucket/table/part-0.parquet",
             "/tmp/cache/part-0.parquet",
             CredentialMode::ScopedResolved,
-            crate::source::LakehouseCacheStatus::Hit,
+            LakehouseCacheStatus::Hit,
         )
         .with_storage_profile_id("maintenance-profile");
         assert!(matches!(
             &cached.input,
-            crate::source::ResolvedParquetInput::LocalKvikio { reader_path }
+            ResolvedParquetInput::LocalKvikio { reader_path }
                 if reader_path == "/tmp/cache/part-0.parquet"
         ));
         assert_eq!(cached.credential_mode(), CredentialMode::ScopedResolved);

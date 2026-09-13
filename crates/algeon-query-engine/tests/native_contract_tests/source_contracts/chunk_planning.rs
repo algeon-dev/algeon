@@ -5,6 +5,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use parquet::file::{metadata::ParquetMetaData, reader::SerializedFileReader};
+use query_engine::{
+    dynamic_filter::{
+        DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
+        DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet, apply_dynamic_filters_to_local_parquet_source,
+    },
+    plan::NodeId,
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -653,23 +663,17 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 },
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 });
 
     let footer = local_parquet_footer(&path);
     let footer_refs = vec![Some(&footer)];
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -699,23 +703,17 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 },
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 });
 
     let footer = local_parquet_footer(&path);
     let footer_refs = vec![Some(&footer)];
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -752,23 +750,17 @@ fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predic
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 },
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 });
 
     let footer = local_parquet_footer(&path);
     let footer_refs = vec![Some(&footer)];
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -797,23 +789,17 @@ fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::Empty,
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::Empty);
 
     let footer = local_parquet_footer(&path);
     let footer_refs = vec![Some(&footer)];
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -873,23 +859,17 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
     .with_reader_predicate(static_predicate);
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::MergedReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::MergedReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::RangeI64 { min: 2, max: 3 });
 
     let footer = local_parquet_footer(&path);
     let footer_refs = vec![Some(&footer)];
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -926,29 +906,21 @@ fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
     .with_reader_predicate(static_predicate);
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::MergedReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::MergedReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::RangeI64 { min: 2, max: 3 });
 
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::none(),
     )
     .unwrap();
 
     let predicate = rewritten.reader_predicate.as_ref().expect("static reader predicate should remain");
-    assert!(
-        rewritten.reader_predicate_is_supported(predicate, query_engine::rapids_backend::rapids_analysis_context())
-    );
+    assert!(rewritten.reader_predicate_is_supported(predicate, rapids_analysis_context()));
 }
 
 #[test]
@@ -963,23 +935,17 @@ fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering()
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(
-        source_id,
-        query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
-    );
-    let mut filters = query_engine::dynamic_filter::DynamicFilterSet::new();
-    filters.insert(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 },
-    );
+    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::ReaderPredicate);
+    let mut filters = DynamicFilterSet::new();
+    filters.insert(DynamicFilterId::new(0), DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 });
 
     let footer = local_parquet_footer(&path);
     let footer_refs = vec![Some(&footer)];
-    let rewritten = query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+    let rewritten = apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
         query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
@@ -1103,9 +1069,9 @@ fn source_chunk_planning_rejects_selected_row_groups_outside_metadata() {
 // Reads a fixture's real footer the same way source preparation does, so
 // dynamic-filter tests exercise real row-group pruning against
 // `SourceFooterFacts` rather than the conservative "no footer supplied" path.
-fn local_parquet_footer(path: &Path) -> parquet::file::metadata::ParquetMetaData {
+fn local_parquet_footer(path: &Path) -> ParquetMetaData {
     use parquet::file::reader::FileReader;
-    parquet::file::reader::SerializedFileReader::try_from(path).unwrap().metadata().clone()
+    SerializedFileReader::try_from(path).unwrap().metadata().clone()
 }
 
 fn write_row_grouped_parquet(path: &Path, row_count: usize, rows_per_group: usize) -> Arc<Schema> {
@@ -1145,24 +1111,18 @@ fn write_nested_key_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
-fn dynamic_filter_source_route(
-    source_id: query_engine::plan::NodeId,
-    lowering: query_engine::dynamic_filter::DynamicFilterConsumerLowering,
-) -> query_engine::dynamic_filter::DynamicFilterRoute {
-    query_engine::dynamic_filter::DynamicFilterRoute::new(
-        query_engine::dynamic_filter::DynamicFilterId::new(0),
-        query_engine::dynamic_filter::DynamicFilterProducer::HashJoinBuild {
+fn dynamic_filter_source_route(source_id: NodeId, lowering: DynamicFilterConsumerLowering) -> DynamicFilterRoute {
+    DynamicFilterRoute::new(
+        DynamicFilterId::new(0),
+        DynamicFilterProducer::HashJoinBuild {
             join_node_id: source_id,
             build_side: JoinSide::Right,
             build_input: source_id,
         },
-        query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { source_node_id: source_id },
+        DynamicFilterConsumer::LocalParquetSource { source_node_id: source_id },
         vec!["key".to_string()],
         vec!["key".to_string()],
-        vec![
-            query_engine::dynamic_filter::DynamicFilterKind::Range,
-            query_engine::dynamic_filter::DynamicFilterKind::SmallInList,
-        ],
+        vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList],
         lowering,
     )
 }

@@ -37,7 +37,6 @@ use query_engine::{
         LiteralValue, SortExpr, SortSpec,
     },
     metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryId, QueryMetrics, TraceId},
-    optimizer::NativeOptimizerOptions,
     plan::{
         DataPlacement, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode,
         ProjectionOutput, QueryPlanBuilder, ResultSink, SchemaBehavior, WindowFunction, WindowSpec,
@@ -48,12 +47,12 @@ use query_engine::{
         SourceSchedulerPolicy,
     },
     source::{
-        ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
-        LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-        ParquetEqualityDeleteFile, ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType,
-        ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
-        RejectedSourceFeature, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
-        SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, validate_local_parquet_source,
+        CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus,
+        LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetEqualityDeleteFile,
+        ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
+        PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
+        ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, SourceNode,
+        ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, validate_local_parquet_source,
     },
 };
 

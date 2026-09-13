@@ -9,6 +9,7 @@ use crate::{
     core::{
         column::{Column, ColumnView},
         error::{self, Error, ErrorCode, Result},
+        native_teardown::drop_device_owned_handle,
         scalar::Scalar,
         types::DataType,
     },
@@ -480,7 +481,7 @@ impl Drop for SeriesPreparedReplaceWithBackrefs {
         let Some(handle) = self.handle.take() else {
             return;
         };
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             handle.as_ptr(),
             self.domain.device_id(),
             "SeriesPreparedReplaceWithBackrefs::drop",
@@ -576,7 +577,7 @@ pub(crate) fn prepare_replace_with_backrefs_in_context(
         )
     };
     if let Err(error) = error::check_status_in(facts_status, operation) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             handle.as_ptr(),
             execution.output_domain().device_id(),
             "strings::prepare_replace_with_backrefs::facts_cleanup",

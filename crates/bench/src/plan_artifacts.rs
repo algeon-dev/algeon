@@ -2,7 +2,10 @@ use std::{fmt::Write as _, sync::Arc};
 
 use algeon_datafusion::native_exec::{AlgeonNativeComposedExec, AlgeonNativeExec};
 use datafusion::physical_plan::ExecutionPlan;
-use query_engine::{admission::bounded_pipeline_decision, mode::StatisticalAggregateExecutionMode, plan::QueryPlan};
+use query_engine::{
+    admission::bounded_pipeline_decision, mode::StatisticalAggregateExecutionMode, plan::QueryPlan,
+    rapids_backend::rapids_analysis_context,
+};
 
 /// Appends a fresh bounded-pipeline diagnostic for every native execution
 /// wrapper in a physical plan.
@@ -39,11 +42,8 @@ fn append_compiled_pipelines(output: &mut String, plan: &Arc<dyn ExecutionPlan>,
 
 fn append_compiled_pipeline(output: &mut String, index: usize, plan: &QueryPlan) {
     let _ = writeln!(output, "wrapper={index}");
-    let decision = bounded_pipeline_decision(
-        plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    );
+    let decision =
+        bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context());
     match decision {
         Ok(decision) => {
             if let Some(admission) = decision.admission() {

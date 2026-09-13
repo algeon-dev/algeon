@@ -1,3 +1,4 @@
+use arrow::datatypes::SchemaRef;
 use query_engine::harness::StableFnv1a64;
 
 use super::*;
@@ -36,10 +37,7 @@ pub(super) fn parity_status(
     }
 }
 
-pub(super) fn fingerprint_batches(
-    schema: &arrow::datatypes::SchemaRef,
-    batches: &[RecordBatch],
-) -> DataFusionResult<String> {
+pub(super) fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("algeon-datafusion-tpch-output-v3");
     for batch in batches {

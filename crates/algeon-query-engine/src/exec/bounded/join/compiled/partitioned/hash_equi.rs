@@ -16,6 +16,7 @@ use super::{
     stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
     validate_partitioned_hash_equi_join,
 };
+use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, release_bounded_compiled_join_probe_state};
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -668,7 +669,7 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
 /// key still follows the existing split or typed failure path; adding lanes
 /// never assumes the max partition shrinks.
 pub(in crate::exec::bounded) fn partitioned_parallel_probe_supported(node: &JoinNode) -> bool {
-    super::super::partitioned_streaming_probe_supported(node)
+    partitioned_streaming_probe_supported(node)
 }
 
 struct PartitionedProbeWorkState {
@@ -730,7 +731,7 @@ pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     node_id: NodeId,
     node: &JoinNode,
     mut probe: PartitionedHashEquiJoinFrameStreamProbeState,
-    outer: Option<&super::super::super::super::compiled::lanes::AggregateLaneDispatch>,
+    outer: Option<&AggregateLaneDispatch>,
 ) -> Result<Vec<ResidentGpuFrame>> {
     // Take probe inputs out first so `probe` stays usable for the shared-view
     // construction; the frames move into lane work while partitions live on
@@ -747,8 +748,7 @@ pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     let node_owned = node.clone();
     let mut state = PartitionedProbeWorkState { pending: frames.into(), outputs: Vec::new() };
     let chunk_count = state.pending.len();
-    let mut run_on = |dispatch: &super::super::super::super::compiled::lanes::AggregateLaneDispatch,
-                      execution: &mut BoundedExecutionAttempt<'_>| {
+    let mut run_on = |dispatch: &AggregateLaneDispatch, execution: &mut BoundedExecutionAttempt<'_>| {
         let width = dispatch.width();
         execution.metrics().record_join_strategy_decision(
             node_id,
@@ -777,10 +777,9 @@ pub(in crate::exec::bounded) fn parallel_partitioned_lazy_drain(
     };
     match outer {
         Some(dispatch) => run_on(dispatch, execution)?,
-        None => super::super::super::super::compiled::lanes::AggregateLaneDispatch::with_available_lanes(
-            execution,
-            |dispatch, execution| run_on(dispatch, execution),
-        )?,
+        None => {
+            AggregateLaneDispatch::with_available_lanes(execution, |dispatch, execution| run_on(dispatch, execution))?
+        },
     }
     Ok(state.outputs)
 }
@@ -832,7 +831,7 @@ fn partitioned_probe_one_chunk(
         other => {
             // Split-build single-chunk probes always return lazy; any other
             // variant would mean the strategy changed under us.
-            crate::exec::bounded::release_bounded_compiled_join_probe_state(lane_execution, other);
+            release_bounded_compiled_join_probe_state(lane_execution, other);
             return Err(unsupported_bounded_shape(
                 "partitioned parallel probe expected a lazy stream for its chunk",
                 "partitioned_parallel_probe_unexpected_state",

@@ -1,3 +1,18 @@
+use query_engine::{
+    admission::bounded_join_unsupported_shape_facts,
+    dimension_pruning::local_dimension_pruning_resolver,
+    dynamic_filter::{
+        DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterProducer,
+        LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+    },
+    exec::ExecutionMetrics,
+    optimizer::{
+        DynamicFilterRouteDiscoveryOptions, JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan,
+    },
+    pipeline::compile_pipeline,
+    rapids_backend::rapids_analysis_context,
+};
+
 #[test]
 fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source() {
     let runtime = backend_runtime();
@@ -32,19 +47,19 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         plan,
-        &query_engine::optimizer::NativeOptimizerOptions::default(), query_engine::rapids_backend::rapids_analysis_context(),query_engine::dimension_pruning::local_dimension_pruning_resolver());
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
+    );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -108,19 +123,13 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
-                query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                ColumnRef::input(0, "p_partkey", "p_partkey"),
+                ColumnRef::input(1, "ps_partkey", "ps_partkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
-                "p_partkey",
-            ),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
-                "ps_supplycost",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
         ])
         .with_build_side(JoinSide::Left),
         Arc::clone(&result_schema),
@@ -131,19 +140,13 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                query_engine::expr::ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
+                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
-                "ps_partkey",
-            ),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
-                "ps_supplycost",
-            ),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
         ])
         .with_build_side(JoinSide::Left),
         Arc::clone(&partsupp_result_schema),
@@ -166,52 +169,46 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             JoinType::Inner,
             vec![
                 JoinKey::new(
-                    query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
-                    query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                    ColumnRef::input(0, "p_partkey", "p_partkey"),
+                    ColumnRef::input(1, "ps_partkey", "ps_partkey"),
                 ),
                 JoinKey::new(
-                    query_engine::expr::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
-                    query_engine::expr::ColumnRef::input(1, "min_supplycost", "min_supplycost"),
+                    ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                    ColumnRef::input(1, "min_supplycost", "min_supplycost"),
                 ),
             ],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
-                "p_partkey",
-            ),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
-                "ps_supplycost",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&result_schema),
     );
     let plan = builder.finish_with_host_sink(final_join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        dynamic_filter_route_discovery: query_engine::optimizer::DynamicFilterRouteDiscoveryOptions::default(),
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::disabled()
+    let optimizer_options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::disabled()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
         route.consumer_columns == ["ps_partkey".to_string()]
-            && route.consumer_lowering
-                == query_engine::dynamic_filter::DynamicFilterConsumerLowering::PostDecodeOnly
+            && route.consumer_lowering == DynamicFilterConsumerLowering::PostDecodeOnly
             && matches!(
                 route.consumer,
-                query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { source_node_id }
+                DynamicFilterConsumer::LocalParquetSource { source_node_id }
                     if source_node_id == partsupp
             )
     }));
     let context = backend_context_with_grant(1024 * 1024);
     let admitted = context.admit_plan_for_compiled_executor_test(&optimized.plan).unwrap();
 
-    let analysis = optimized.plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&optimized.plan, &analysis).unwrap();
+    let analysis = optimized.plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&optimized.plan, &analysis).unwrap();
     let scheduler = query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let gpu_inputs = GpuResidentInputMap::new();
     let output = {
         let metrics_context = metrics_recorder.scope_context(&admitted).unwrap();
@@ -294,30 +291,26 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         left,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -446,19 +439,13 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "cs_sold_date_sk", "cs_sold_date_sk"),
-                query_engine::expr::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+                ColumnRef::input(0, "cs_sold_date_sk", "cs_sold_date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
-                "cs_item_sk",
-            ),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
-                "d_week_seq",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "cs_item_sk", "cs_item_sk"), "cs_item_sk"),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_week_seq", "d_week_seq"), "d_week_seq"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&sales_with_d1_schema),
@@ -469,19 +456,13 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "inv_date_sk", "inv_date_sk"),
-                query_engine::expr::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+                ColumnRef::input(0, "inv_date_sk", "inv_date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "inv_item_sk", "inv_item_sk"),
-                "inv_item_sk",
-            ),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
-                "d_week_seq",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "inv_item_sk", "inv_item_sk"), "inv_item_sk"),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_week_seq", "d_week_seq"), "d_week_seq"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&inventory_with_d2_schema),
@@ -492,8 +473,8 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
-                query_engine::expr::ColumnRef::input(1, "inv_item_sk", "inv_item_sk"),
+                ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+                ColumnRef::input(1, "inv_item_sk", "inv_item_sk"),
             )],
         )
         .with_residual_predicate(Expr::binary(
@@ -502,18 +483,19 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
             Expr::input_column(1, "d_week_seq", "d_week_seq"),
         ))
         .with_output_projection(vec![JoinOutputColumn::left(
-            query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+            ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
             "cs_item_sk",
         )])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(root);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     let residual_route = optimized
         .plan
         .dynamic_filter_routes()
@@ -521,14 +503,14 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         .find(|route| {
             matches!(
                 route.producer,
-                query_engine::dynamic_filter::DynamicFilterProducer::HashJoinBuild {
+                DynamicFilterProducer::HashJoinBuild {
                     join_node_id,
                     build_side: JoinSide::Right,
                     ..
                 } if join_node_id == sales_with_d1
             ) && matches!(
                 route.consumer,
-                query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource {
+                DynamicFilterConsumer::LocalParquetSource {
                     source_node_id
                 } if source_node_id == d2
             ) && route.producer_columns == ["d_week_seq".to_string()]
@@ -591,30 +573,26 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         left,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -701,51 +679,42 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         Arc::clone(&fact_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let order_keys = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "order_keys",
-        Arc::clone(&order_schema),
-    )));
+    let order_keys =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("order_keys", Arc::clone(&order_schema))));
     let order_join = builder.add_join(
         fact,
         order_keys,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
-    let qty_keys = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "qty_keys",
-        Arc::clone(&qty_schema),
-    )));
+    let qty_keys =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("qty_keys", Arc::clone(&qty_schema))));
     let qty_join = builder.add_join(
         order_join,
         qty_keys,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                query_engine::expr::ColumnRef::input(1, "qty", "qty"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "qty", "qty"), ColumnRef::input(1, "qty", "qty"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(qty_join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -780,7 +749,9 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         assert_eq!(metrics.dynamic_filter_produced_count, 2);
         assert_eq!(metrics.dynamic_filter_applied_count, 2);
         assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-            row.event == "reader_predicate_rows" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(4)
+            row.event == "reader_predicate_rows"
+                && row.filter_kind == "small_in_list"
+                && row.payload_value_count == Some(4)
         }));
         let deferred_rows = metrics
             .dynamic_filter_runtime_rows
@@ -839,30 +810,26 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         left,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -940,30 +907,26 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         left,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1039,30 +1002,26 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         vec!["order_id".to_string(), "qty".to_string()],
     )));
     let union = builder.add_union(vec![small, large], Arc::clone(&output_schema));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         union,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1087,9 +1046,7 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         assert_eq!(metrics.dynamic_filter_applied_count, 1);
         assert_eq!(metrics.dynamic_filter_skipped_count, 1);
         assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
-            row.event == "skipped"
-                && row.skipped_reason.as_deref()
-                    == Some(query_engine::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
+            row.event == "skipped" && row.skipped_reason.as_deref() == Some(LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
         }));
         assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
             row.event == "produced"
@@ -1130,30 +1087,26 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         left,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1250,30 +1203,26 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "right_keys",
-        Arc::clone(&right_schema),
-    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_keys", Arc::clone(&right_schema))));
     let join = builder.add_join(
         left,
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1375,19 +1324,19 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         plan,
-        &query_engine::optimizer::NativeOptimizerOptions::default(), query_engine::rapids_backend::rapids_analysis_context(),query_engine::dimension_pruning::local_dimension_pruning_resolver());
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
+    );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1442,26 +1391,21 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    assert!(matches!(
-        optimized.plan.dynamic_filter_routes()[0].consumer,
-        query_engine::dynamic_filter::DynamicFilterConsumer::HashJoinProbe { .. }
-    ));
+    assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::HashJoinProbe { .. }));
 
     drop(fixture_runtime);
     let context = backend_context_with_grant(1024 * 1024);
@@ -1534,26 +1478,21 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
-    assert!(matches!(
-        optimized.plan.dynamic_filter_routes()[0].consumer,
-        query_engine::dynamic_filter::DynamicFilterConsumer::Filter { .. }
-    ));
+    assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::Filter { .. }));
 
     drop(fixture_runtime);
     let context = backend_context_with_grant(1024 * 1024);
@@ -1636,27 +1575,22 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         output_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert_eq!(optimized.plan.dynamic_filter_routes()[0].consumer_columns, ["raw_order_id".to_string()]);
-    assert!(matches!(
-        optimized.plan.dynamic_filter_routes()[0].consumer,
-        query_engine::dynamic_filter::DynamicFilterConsumer::Filter { .. }
-    ));
+    assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::Filter { .. }));
 
     drop(fixture_runtime);
     let context = backend_context_with_grant(1024 * 1024);
@@ -1729,23 +1663,21 @@ fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
         left,
         keyset,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )])
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    assert!(query_engine::admission::bounded_join_unsupported_shape_facts(&optimized.plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, rapids_analysis_context()).is_none());
     let result = execute_query_plan(&context, &optimized.plan).expect("aggregate keyset join input should execute");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1796,26 +1728,27 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
         grouped_fact,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "order_id", "order_id"),
+                ColumnRef::input(1, "order_id", "order_id"),
                 "order_id",
             )])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimizer_options = query_engine::optimizer::NativeOptimizerOptions {
-        join_build_side_selection: query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
-        ..query_engine::optimizer::NativeOptimizerOptions::default()
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        ..NativeOptimizerOptions::default()
     };
-    let optimized = query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, query_engine::rapids_backend::rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized =
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
-        query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { .. }
+        DynamicFilterConsumer::LocalParquetSource { .. }
     ));
     let context = backend_context_with_grant(1024 * 1024);
 
-    assert!(query_engine::admission::bounded_join_unsupported_shape_facts(&optimized.plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, rapids_analysis_context()).is_none());
     let result = execute_query_plan(&context, &optimized.plan).expect("aggregate probe input should execute");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {

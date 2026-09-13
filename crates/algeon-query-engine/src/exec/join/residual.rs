@@ -6,7 +6,11 @@ use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, JoinNode, JoinNullEquality, JoinSide, LiteralValue, QueryError,
     QueryErrorCode, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
 };
-use crate::expr::{ColumnQualifier, interval_month_day_nano};
+use crate::{
+    datatypes::arrow_decimal_scale_to_cudf_scale,
+    expr::{ColumnQualifier, interval_month_day_nano},
+    plan::JoinKey,
+};
 
 #[derive(Debug, Clone)]
 struct ResidualColumnLayout {
@@ -219,7 +223,7 @@ pub(in crate::exec) fn lower_join_match_predicate(
     lower_join_ast_expr(context, &predicate, residual_columns)
 }
 
-fn join_key_match_expr(key: &crate::plan::JoinKey, null_equality: JoinNullEquality) -> Expr {
+fn join_key_match_expr(key: &JoinKey, null_equality: JoinNullEquality) -> Expr {
     let left = Expr::Column(key.left.clone());
     let right = Expr::Column(key.right.clone());
     let equality = Expr::binary(left.clone(), BinaryOp::Eq, right.clone());
@@ -239,10 +243,10 @@ fn lower_join_ast_expr(
     match expr {
         Expr::Column(column) => {
             let (side, index) = match column.qualifier() {
-                Some(crate::expr::ColumnQualifier::Input { index: 0 }) => {
+                Some(ColumnQualifier::Input { index: 0 }) => {
                     (JoinSide::Left, residual_columns.index_of(JoinSide::Left, column.name()))
                 },
-                Some(crate::expr::ColumnQualifier::Input { index: 1 }) => {
+                Some(ColumnQualifier::Input { index: 1 }) => {
                     (JoinSide::Right, residual_columns.index_of(JoinSide::Right, column.name()))
                 },
                 qualifier => {
@@ -666,7 +670,7 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
         LiteralValue::Float64(value) => runtime.scalar(*value),
         LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.string_scalar(value),
         LiteralValue::Decimal128 { raw, scale, .. } => {
-            runtime.decimal128_raw_scalar(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            runtime.decimal128_raw_scalar(*raw, arrow_decimal_scale_to_cudf_scale(*scale))
         },
         LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days),
         LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, cudf::TimestampResolution::Milliseconds),

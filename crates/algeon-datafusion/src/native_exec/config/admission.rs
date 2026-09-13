@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
-use query_engine::admission::AttemptCapabilityEvidence;
+use query_engine::{
+    admission::AttemptCapabilityEvidence, error::Result as QueryEngineResult, runtime::GpuBackendSession,
+};
 
 use super::{
     AlgeonNativeExecutionConfig, NativeExecutionMetricsCapture, NativeMetricsCapture, QueryAdmissionSource,
     QueryAdmissionTicket, QueryId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId, TaskContext,
     query_admission_ticket_from_task_context,
 };
-use crate::attempt::AlgeonAttemptExtension;
+use crate::{attempt::AlgeonAttemptExtension, native_exec::NativeRuntimeObservation};
 
 impl AlgeonNativeExecutionConfig {
     pub(crate) fn with_query_admission_source(mut self, source: QueryAdmissionSource) -> Self {
@@ -19,7 +21,7 @@ impl AlgeonNativeExecutionConfig {
     pub(crate) fn new_plan_query_admission_ticket_with_fragment_requirements(
         &self,
         fragment_evidence_items: Vec<AttemptCapabilityEvidence>,
-    ) -> query_engine::error::Result<Option<Arc<QueryAdmissionTicket>>> {
+    ) -> QueryEngineResult<Option<Arc<QueryAdmissionTicket>>> {
         let Some(source) = self.query_admission_source.clone() else {
             return Ok(None);
         };
@@ -40,7 +42,7 @@ impl AlgeonNativeExecutionConfig {
     pub(super) fn new_runtime_observation(
         &self,
         capture: Option<&NativeExecutionMetricsCapture>,
-    ) -> crate::native_exec::NativeRuntimeObservation {
+    ) -> NativeRuntimeObservation {
         let query_id = self.query_id.clone().unwrap_or_else(QueryId::mint);
         let trace_id = self.trace_id.as_ref().map(|trace_id| RuntimeTraceId::new(trace_id.as_str()));
         let observation = match capture {
@@ -50,7 +52,7 @@ impl AlgeonNativeExecutionConfig {
             },
         };
         #[cfg(feature = "bench-support")]
-        if let (Some(target), crate::native_exec::NativeRuntimeObservation::Local(owner)) =
+        if let (Some(target), NativeRuntimeObservation::Local(owner)) =
             (&self.benchmark_observation_capture, &observation)
         {
             let target = Arc::clone(target);
@@ -67,7 +69,7 @@ impl AlgeonNativeExecutionConfig {
     pub(crate) fn with_graph_aware_plan_query_admission_ticket(
         mut self,
         fragment_evidence_items: Vec<AttemptCapabilityEvidence>,
-    ) -> query_engine::error::Result<Self> {
+    ) -> QueryEngineResult<Self> {
         if let Some(ticket) =
             self.new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)?
         {
@@ -127,7 +129,7 @@ impl AlgeonNativeExecutionConfig {
         self.query_admission_source.is_some() || self.query_admission_ticket.is_some()
     }
 
-    pub(crate) fn query_admission_source_matches(&self, session: &query_engine::runtime::GpuBackendSession) -> bool {
+    pub(crate) fn query_admission_source_matches(&self, session: &GpuBackendSession) -> bool {
         self.query_admission_source.as_ref().is_some_and(|source| source.backend_matches(session))
     }
 }

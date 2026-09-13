@@ -18,7 +18,7 @@ use bench::{
         },
     },
 };
-use query_engine::mode::StatisticalAggregateExecutionMode;
+use query_engine::mode::{StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract};
 use workloads::tpcds::{WorkloadResult, prepare_tpcds_report_dataset};
 
 const ALGEON_TPCDS_PARITY_QUERY_IDS_ENV: &str = "ALGEON_TPCDS_PARITY_QUERY_IDS";
@@ -103,9 +103,7 @@ fn validate_statistical_aggregate_parity_contract(
     mode: StatisticalAggregateExecutionMode,
     tolerance: ParityFloatTolerance,
 ) {
-    if mode.tolerance_contract() == query_engine::mode::StatisticalAggregateToleranceContract::FloatTolerant
-        && !tolerance.is_enabled()
-    {
+    if mode.tolerance_contract() == StatisticalAggregateToleranceContract::FloatTolerant && !tolerance.is_enabled() {
         panic!(
             "invalid TPC-DS parity configuration: {mode} requires non-zero {ALGEON_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV} or {ALGEON_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV}"
         );

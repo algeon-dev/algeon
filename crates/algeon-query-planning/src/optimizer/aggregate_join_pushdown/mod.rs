@@ -7,6 +7,7 @@ use super::{
 use crate::{
     datatypes::arrow_fixed_width_byte_size,
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
+    optimizer::NativeOptimizerChange,
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
         ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
@@ -49,7 +50,7 @@ pub fn optimize_aggregate_join_pushdown(
     if !options.enabled {
         return AggregateJoinPushdownResult {
             plan,
-            change: crate::optimizer::NativeOptimizerChange::Unchanged,
+            change: NativeOptimizerChange::Unchanged,
             diagnostics: AggregateJoinPushdownDiagnostics::default(),
         };
     }
@@ -58,18 +59,14 @@ pub fn optimize_aggregate_join_pushdown(
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     if !rewriter.changed {
         let AggregateJoinPushdownRewriter { diagnostics, .. } = rewriter;
-        return AggregateJoinPushdownResult {
-            plan,
-            change: crate::optimizer::NativeOptimizerChange::Unchanged,
-            diagnostics,
-        };
+        return AggregateJoinPushdownResult { plan, change: NativeOptimizerChange::Unchanged, diagnostics };
     }
 
     AggregateJoinPushdownResult {
         plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink())
             .with_keyed_hash_join_strategy_options_from(&plan)
             .with_advisory_outputs_from(&plan),
-        change: crate::optimizer::NativeOptimizerChange::Changed,
+        change: NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }
 }

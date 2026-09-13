@@ -6,11 +6,12 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
+    error::Result,
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
 #[cfg(feature = "iceberg")]
 use query_engine::{
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuBackendSession, KvikioCompatModeStatus,
@@ -27,7 +28,7 @@ pub(crate) fn build_installed_gpu_backend(
     source_work_per_attempt: usize,
     max_active_attempts: usize,
     datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
-) -> algeon_datafusion::error::Result<AlgeonGpuBackend> {
+) -> Result<AlgeonGpuBackend> {
     let native_optimizer_config =
         native_optimizer_config.with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy);
     let device_profile = AlgeonGpuDeviceProfile::new(0)
@@ -75,7 +76,7 @@ impl GpuBackendOwner {
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
         devices: Vec<GpuBackendDeviceConfig>,
-    ) -> Result<Self> {
+    ) -> QueryEngineResult<Self> {
         let device_count = devices.len();
         if device_count == 0 {
             return Err(
@@ -97,7 +98,7 @@ impl GpuBackendOwner {
         self.session.clone()
     }
 
-    pub(crate) fn close_and_wait(&self, timeout: Duration) -> Result<()> {
+    pub(crate) fn close_and_wait(&self, timeout: Duration) -> QueryEngineResult<()> {
         self.core.close_and_wait(timeout).map(|_| ())
     }
 }

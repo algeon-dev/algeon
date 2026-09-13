@@ -463,7 +463,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::runtime::gpu::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile};
+    use crate::{
+        observability::AdmissionRequestId,
+        runtime::gpu::{DeviceAdmissionHealth, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
+    };
 
     fn ledger(cache_cap_bytes: u64) -> DeviceLedger {
         let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
@@ -545,8 +548,8 @@ mod tests {
         let snapshot = ledger.snapshot().unwrap();
         assert_eq!(snapshot.cache_evictable_resident_bytes, 200, "unsafe destruction must retain the sole charge");
         assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
-        assert!(matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. }));
-        assert!(ledger.try_admit(crate::observability::AdmissionRequestId::new(1), Some(1),).unwrap().is_none());
+        assert!(matches!(snapshot.health, DeviceAdmissionHealth::Closed { .. }));
+        assert!(ledger.try_admit(AdmissionRequestId::new(1), Some(1),).unwrap().is_none());
     }
 
     #[test]

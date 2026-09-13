@@ -2,13 +2,19 @@ use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use query_engine::{
     admission::{BoundedPipelineDecision, bounded_pipeline_decision},
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
+    error::QueryError,
     mode::CapabilityEnvelopeStatus,
     pipeline::CompiledPipeline,
     plan::{PlanNode, QueryPlan},
+    rapids_backend::rapids_analysis_context,
     source::SourceNode,
 };
 
-use crate::{error::Error, native_exec::AlgeonNativeExecutionConfig, report::GpuCandidate};
+use crate::{
+    error::{Error, ErrorCode},
+    native_exec::AlgeonNativeExecutionConfig,
+    report::GpuCandidate,
+};
 
 /// Stable compatibility reason used when report rows omit bounded non-join plans.
 pub const CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
@@ -127,13 +133,9 @@ pub(super) fn native_bounded_decision(
     if composed_admission_requires_producer_binding(plan) {
         return Ok(None);
     }
-    bounded_pipeline_decision(
-        plan,
-        execution_config.statistical_aggregate_execution_mode(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .map(Some)
-    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+    bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode(), rapids_analysis_context())
+        .map(Some)
+        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
 }
 
 pub(super) fn accepted_plan_contract_diagnostics(
@@ -249,7 +251,7 @@ fn first_blocking_contract_row(
         });
     }
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(report.decision_rows().first().cloned())
@@ -263,7 +265,7 @@ fn non_join_capability_diagnostics() -> NativeCapabilityContractDiagnostics {
     }
 }
 
-fn capability_contract_report_error(error: query_engine::error::QueryError) -> DataFusionError {
+fn capability_contract_report_error(error: QueryError) -> DataFusionError {
     Error::from_native(
         "algeon_datafusion.native.capability_contract_diagnostics",
         "capability-contract diagnostics could not be built",
@@ -273,12 +275,8 @@ fn capability_contract_report_error(error: query_engine::error::QueryError) -> D
 }
 
 fn capability_contract_candidate_error(message: &'static str) -> DataFusionError {
-    Error::new(
-        crate::error::ErrorCode::InvalidExecutionPlan,
-        "algeon_datafusion.native.capability_contract_diagnostics",
-        message,
-    )
-    .into()
+    Error::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.native.capability_contract_diagnostics", message)
+        .into()
 }
 
 fn stamp_capability_report_correlation(
@@ -294,10 +292,7 @@ fn stamp_capability_report_correlation(
     report
 }
 
-fn stamp_native_error_correlation(
-    mut error: query_engine::error::QueryError,
-    execution_config: &AlgeonNativeExecutionConfig,
-) -> query_engine::error::QueryError {
+fn stamp_native_error_correlation(mut error: QueryError, execution_config: &AlgeonNativeExecutionConfig) -> QueryError {
     if let Some(query_id) = execution_config.query_id() {
         error = error.with_query_id(query_id.clone());
     }

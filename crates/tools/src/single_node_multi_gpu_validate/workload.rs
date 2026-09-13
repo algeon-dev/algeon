@@ -18,6 +18,7 @@ use std::{
 
 use serde::Serialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use workloads::{clickbench::CLICKBENCH_QUERIES, tpcds::TPCDS_QUERIES, tpch::TPCH_QUERIES};
 
 use super::profile::{FixtureKind, FixtureWorkloadProfile};
 use crate::ToolResult;
@@ -295,17 +296,17 @@ fn resolve(fixture_index: usize, kind: FixtureKind, label: &str) -> ToolResult<S
         completion_sink: None,
     };
     match kind {
-        FixtureKind::Tpch => workloads::tpch::TPCH_QUERIES
+        FixtureKind::Tpch => TPCH_QUERIES
             .iter()
             .find(|query| query.id == label)
             .map(|query| selected(label, query.sql, false))
             .ok_or_else(|| unknown_label(kind, label).into()),
-        FixtureKind::Tpcds => workloads::tpcds::TPCDS_QUERIES
+        FixtureKind::Tpcds => TPCDS_QUERIES
             .iter()
             .find(|query| query.id == label)
             .map(|query| selected(label, query.sql, false))
             .ok_or_else(|| unknown_label(kind, label).into()),
-        FixtureKind::Clickbench => workloads::clickbench::CLICKBENCH_QUERIES
+        FixtureKind::Clickbench => CLICKBENCH_QUERIES
             .iter()
             .find(|query| query.id == label)
             .map(|query| selected(label, query.sql, false))
@@ -325,9 +326,9 @@ fn unknown_label(kind: FixtureKind, label: &str) -> String {
 /// Query labels a profile may select, for the usage text and error messages.
 pub(super) fn known_labels(kind: FixtureKind) -> Vec<&'static str> {
     match kind {
-        FixtureKind::Tpch => workloads::tpch::TPCH_QUERIES.iter().map(|query| query.id).collect(),
-        FixtureKind::Tpcds => workloads::tpcds::TPCDS_QUERIES.iter().map(|query| query.id).collect(),
-        FixtureKind::Clickbench => workloads::clickbench::CLICKBENCH_QUERIES.iter().map(|query| query.id).collect(),
+        FixtureKind::Tpch => TPCH_QUERIES.iter().map(|query| query.id).collect(),
+        FixtureKind::Tpcds => TPCDS_QUERIES.iter().map(|query| query.id).collect(),
+        FixtureKind::Clickbench => CLICKBENCH_QUERIES.iter().map(|query| query.id).collect(),
         FixtureKind::Dblp => dblp_queries().into_iter().map(|(label, _, _)| label).collect(),
     }
 }
@@ -335,6 +336,18 @@ pub(super) fn known_labels(kind: FixtureKind) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[cfg(feature = "single-node-multi-gpu-validate-run")]
+    use algeon_datafusion::cugraph_sql::{
+        CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION as AdapterCugraphBetweennessCentralityFunction,
+        CUGRAPH_BFS_FUNCTION as AdapterCugraphBfsFunction,
+        CUGRAPH_FORCE_ATLAS2_FUNCTION as AdapterCugraphForceAtlas2Function,
+        CUGRAPH_PAGERANK_FUNCTION as AdapterCugraphPagerankFunction,
+        CUGRAPH_SSSP_FUNCTION as AdapterCugraphSsspFunction,
+        CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION as AdapterCugraphWeaklyConnectedComponentsFunction,
+    };
+    use tokio::task::yield_now;
+    use workloads::{clickbench::CLICKBENCH_QUERY_COUNT, tpcds::TPCDS_QUERY_COUNT, tpch::TPCH_QUERY_COUNT};
 
     use super::*;
 
@@ -391,9 +404,9 @@ mod tests {
                 resolve(0, kind, label).unwrap();
             }
         }
-        assert_eq!(known_labels(FixtureKind::Tpch).len(), workloads::tpch::TPCH_QUERY_COUNT);
-        assert_eq!(known_labels(FixtureKind::Tpcds).len(), workloads::tpcds::TPCDS_QUERY_COUNT);
-        assert_eq!(known_labels(FixtureKind::Clickbench).len(), workloads::clickbench::CLICKBENCH_QUERY_COUNT);
+        assert_eq!(known_labels(FixtureKind::Tpch).len(), TPCH_QUERY_COUNT);
+        assert_eq!(known_labels(FixtureKind::Tpcds).len(), TPCDS_QUERY_COUNT);
+        assert_eq!(known_labels(FixtureKind::Clickbench).len(), CLICKBENCH_QUERY_COUNT);
         let graph = known_labels(FixtureKind::Dblp);
         for required in [
             "pagerank",
@@ -433,18 +446,12 @@ mod tests {
     #[cfg(feature = "single-node-multi-gpu-validate-run")]
     #[test]
     fn cugraph_function_names_match_the_adapter_constants() {
-        assert_eq!(CUGRAPH_PAGERANK_FUNCTION, algeon_datafusion::cugraph_sql::CUGRAPH_PAGERANK_FUNCTION);
-        assert_eq!(CUGRAPH_BFS_FUNCTION, algeon_datafusion::cugraph_sql::CUGRAPH_BFS_FUNCTION);
-        assert_eq!(CUGRAPH_SSSP_FUNCTION, algeon_datafusion::cugraph_sql::CUGRAPH_SSSP_FUNCTION);
-        assert_eq!(
-            CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION,
-            algeon_datafusion::cugraph_sql::CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION
-        );
-        assert_eq!(CUGRAPH_FORCE_ATLAS2_FUNCTION, algeon_datafusion::cugraph_sql::CUGRAPH_FORCE_ATLAS2_FUNCTION);
-        assert_eq!(
-            CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION,
-            algeon_datafusion::cugraph_sql::CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION
-        );
+        assert_eq!(CUGRAPH_PAGERANK_FUNCTION, AdapterCugraphPagerankFunction);
+        assert_eq!(CUGRAPH_BFS_FUNCTION, AdapterCugraphBfsFunction);
+        assert_eq!(CUGRAPH_SSSP_FUNCTION, AdapterCugraphSsspFunction);
+        assert_eq!(CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, AdapterCugraphWeaklyConnectedComponentsFunction);
+        assert_eq!(CUGRAPH_FORCE_ATLAS2_FUNCTION, AdapterCugraphForceAtlas2Function);
+        assert_eq!(CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION, AdapterCugraphBetweennessCentralityFunction);
     }
 
     #[test]
@@ -465,7 +472,7 @@ mod tests {
             waiting_sink.mark_drained();
             permit
         });
-        tokio::task::yield_now().await;
+        yield_now().await;
         assert_eq!(sink.counters().drains_started, 1);
         drop(first);
         drop(waiting.await.unwrap());

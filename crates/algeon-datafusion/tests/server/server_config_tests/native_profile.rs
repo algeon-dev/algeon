@@ -41,13 +41,13 @@ fn server_config_accepts_bounded_native_profile() {
     let native = config.native_optimizer_config.native_execution_config();
     assert_eq!(
         config.gpu_device_profiles[0].memory_limit(),
-        algeon_datafusion::backend::GpuDeviceMemoryLimit::default()
+        GpuDeviceMemoryLimit::default()
     );
     assert_eq!(native.max_source_chunk_bytes(), 512);
     assert_eq!(native.max_row_groups_per_chunk(), 8);
     assert_eq!(
         native.max_retry_attempts(),
-        algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS
+        AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS
     );
 }
 
@@ -59,7 +59,7 @@ fn server_config_accepts_independent_source_chunk_limits() {
     assert_eq!(native.max_source_chunk_bytes(), 512);
     assert_eq!(
         native.max_row_groups_per_chunk(),
-        algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
+        AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
     );
 }
 
@@ -87,7 +87,7 @@ fn server_config_rejects_removed_legacy_cache_profile_env() {
     {
         let env = BTreeMap::from([(name, "256".to_string())]);
         let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
-        assert_eq!(error.code(), algeon_datafusion::error::ErrorCode::InvalidRequest);
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
         assert_eq!(error.operation(), "algeon_datafusion.server.config");
         assert_eq!(error.fact_value("config_field"), Some(name));
         assert!(error.message().contains("removed by the resource-only admission contract"), "{error}");
@@ -166,7 +166,7 @@ fn server_config_rejects_conflicting_execution_mode_and_legacy_requirement() {
         (ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "no_datafusion_cpu".to_string()),
     ]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
-    assert_eq!(error.code(), algeon_datafusion::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV));
 }
 
@@ -194,7 +194,7 @@ fn server_config_accepts_no_datafusion_cpu_final_plan_requirement_toml() {
 fn server_config_rejects_unknown_final_plan_requirement() {
     let env = BTreeMap::from([(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "native_only".to_string())]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
-    assert_eq!(error.code(), algeon_datafusion::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV));
     assert!(error.message().contains("no_datafusion_cpu"), "{error}");
 }

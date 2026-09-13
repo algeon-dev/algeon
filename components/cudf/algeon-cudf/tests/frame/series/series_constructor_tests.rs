@@ -5,7 +5,9 @@
 
 use cudf::{DataType, ErrorCode, ErrorKind, Series, TypeId};
 
-use crate::common::{error_context_value, scalar};
+use crate::common::{
+    empty_series, error_context_value, null_scalar, null_series, run_named_cases, scalar, series_opt, string_scalar,
+};
 
 // ===========================================================================
 // Runtime unnamed-default constructor split
@@ -92,11 +94,11 @@ fn test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract() {
 }
 
 // ===========================================================================
-// crate::common::series_opt
+// series_opt
 // ===========================================================================
 
 fn test_from_optional_i32() {
-    let s = crate::common::series_opt("x", &[Some(10i32), None, Some(30)]).unwrap();
+    let s = series_opt("x", &[Some(10i32), None, Some(30)]).unwrap();
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
@@ -104,31 +106,31 @@ fn test_from_optional_i32() {
 }
 
 fn test_from_optional_bool_preserves_false() {
-    let s = crate::common::series_opt("flag", &[Some(false), Some(true), None, Some(false)]).unwrap();
+    let s = series_opt("flag", &[Some(false), Some(true), None, Some(false)]).unwrap();
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(s.to_optional_vec::<bool>().unwrap(), vec![Some(false), Some(true), None, Some(false)]);
 }
 
 fn test_from_optional_empty() {
-    let s = crate::common::series_opt::<i32>("empty", &[]).unwrap();
+    let s = series_opt::<i32>("empty", &[]).unwrap();
     assert!(s.is_empty());
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }
 
 // ===========================================================================
-// crate::common::null_series
+// null_series
 // ===========================================================================
 
 fn test_nulls_i32_basic() {
-    let s = crate::common::null_series("x", TypeId::Int32, 5).unwrap();
+    let s = null_series("x", TypeId::Int32, 5).unwrap();
     assert_eq!(s.len(), 5);
     assert_eq!(s.null_count(), 5);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }
 
 fn test_nulls_f64() {
-    let s = crate::common::null_series("floats", TypeId::Float64, 3).unwrap();
+    let s = null_series("floats", TypeId::Float64, 3).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(s.len(), 3);
@@ -136,7 +138,7 @@ fn test_nulls_f64() {
 }
 
 fn test_nulls_bool8() {
-    let s = crate::common::null_series("flags", TypeId::Bool8, 4).unwrap();
+    let s = null_series("flags", TypeId::Bool8, 4).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(s.len(), 4);
@@ -144,7 +146,7 @@ fn test_nulls_bool8() {
 }
 
 fn test_nulls_string() {
-    let s = crate::common::null_series("names", TypeId::String, 3).unwrap();
+    let s = null_series("names", TypeId::String, 3).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
     assert_eq!(s.len(), 3);
@@ -152,7 +154,7 @@ fn test_nulls_string() {
 }
 
 fn test_nulls_zero_length() {
-    let s = crate::common::null_series("empty", TypeId::Int32, 0).unwrap();
+    let s = null_series("empty", TypeId::Int32, 0).unwrap();
 
     assert_eq!(s.len(), 0);
     assert_eq!(s.null_count(), 0);
@@ -160,7 +162,7 @@ fn test_nulls_zero_length() {
 
 fn test_nulls_decimal_preserve_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
-    let s = crate::common::null_series("amount", dtype, 3).unwrap();
+    let s = null_series("amount", dtype, 3).unwrap();
 
     assert_eq!(s.dtype().unwrap(), dtype);
     assert_eq!(s.len(), 3);
@@ -189,7 +191,7 @@ fn test_from_scalar_f64() {
 }
 
 fn test_from_scalar_string() {
-    let scalar = crate::common::string_scalar("hello").unwrap();
+    let scalar = string_scalar("hello").unwrap();
     let s = Series::from_scalar(&scalar, 2).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
@@ -198,7 +200,7 @@ fn test_from_scalar_string() {
 }
 
 fn test_from_scalar_null_produces_all_nulls() {
-    let scalar = crate::common::null_scalar::<i32>().unwrap();
+    let scalar = null_scalar::<i32>().unwrap();
     let s = Series::from_scalar(&scalar, 3).unwrap();
 
     assert_eq!(s.len(), 3);
@@ -235,11 +237,11 @@ fn test_from_scalar_rejects_size_over_i32_max_with_stable_contract() {
 }
 
 // ===========================================================================
-// crate::common::empty_series
+// empty_series
 // ===========================================================================
 
 fn test_empty_i32() {
-    let s = crate::common::empty_series("x", TypeId::Int32).unwrap();
+    let s = empty_series("x", TypeId::Int32).unwrap();
     assert_eq!(s.len(), 0);
     assert_eq!(s.null_count(), 0);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
@@ -247,7 +249,7 @@ fn test_empty_i32() {
 }
 
 fn test_empty_f64() {
-    let s = crate::common::empty_series("y", TypeId::Float64).unwrap();
+    let s = empty_series("y", TypeId::Float64).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(s.len(), 0);
@@ -255,14 +257,14 @@ fn test_empty_f64() {
 }
 
 fn test_empty_string() {
-    let s = crate::common::empty_series("z", TypeId::String).unwrap();
+    let s = empty_series("z", TypeId::String).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
     assert_eq!(s.len(), 0);
 }
 
 fn test_empty_bool8() {
-    let s = crate::common::empty_series("flags", TypeId::Bool8).unwrap();
+    let s = empty_series("flags", TypeId::Bool8).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
     assert!(s.is_empty());
@@ -270,7 +272,7 @@ fn test_empty_bool8() {
 
 fn test_empty_decimal_preserve_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
-    let s = crate::common::empty_series("amount", dtype).unwrap();
+    let s = empty_series("amount", dtype).unwrap();
 
     assert_eq!(s.dtype().unwrap(), dtype);
     assert!(s.is_empty());
@@ -278,7 +280,7 @@ fn test_empty_decimal_preserve_scale() {
 
 #[test]
 fn series_constructor_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_runtime_series_default_is_unnamed", test_runtime_series_default_is_unnamed),
         ("test_runtime_series_from_host_slice", test_runtime_series_from_host_slice),
         ("test_runtime_null_series_constructors", test_runtime_null_series_constructors),

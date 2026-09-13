@@ -3,7 +3,7 @@
 use std::fmt;
 
 use query_planning::{
-    error::AttemptFailureCode,
+    error::{AttemptFailureCode, CugraphAllocationSource, QueryError, QueryErrorCode, QueryErrorStatus, Result},
     schedule_projection::{AttemptComposedScheduleProjection, AttemptId},
 };
 use serde::{
@@ -29,11 +29,11 @@ macro_rules! attempt_correlation {
         #[serde(transparent)]
         pub struct $name(String);
         impl $name {
-            pub fn new(value: impl Into<String>) -> query_planning::error::Result<Self> {
+            pub fn new(value: impl Into<String>) -> Result<Self> {
                 let value = value.into();
                 if value.trim().is_empty() || value.len() > $limit {
-                    return Err(query_planning::error::QueryError::new(
-                        query_planning::error::QueryErrorCode::InvalidAttemptCorrelation,
+                    return Err(QueryError::new(
+                        QueryErrorCode::InvalidAttemptCorrelation,
                         "query_engine.attempt.correlation",
                         "attempt correlation must be non-blank and within its byte limit",
                     )
@@ -53,12 +53,12 @@ macro_rules! attempt_correlation {
             }
         }
         impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
             where D: serde::Deserializer<'de> {
                 // Validation is part of the value contract on every
                 // construction path, including report decoding.
                 let value = String::deserialize(deserializer)?;
-                Self::new(value).map_err(serde::de::Error::custom)
+                Self::new(value).map_err(de::Error::custom)
             }
         }
     };
@@ -134,11 +134,11 @@ pub enum AttemptFailureStatus {
 }
 
 impl AttemptFailureStatus {
-    pub const fn from_query_error_status(status: query_planning::error::QueryErrorStatus) -> Self {
+    pub const fn from_query_error_status(status: QueryErrorStatus) -> Self {
         match status {
-            query_planning::error::QueryErrorStatus::Permanent => Self::Permanent,
-            query_planning::error::QueryErrorStatus::Temporary => Self::Temporary,
-            query_planning::error::QueryErrorStatus::Persistent => Self::Persistent,
+            QueryErrorStatus::Permanent => Self::Permanent,
+            QueryErrorStatus::Temporary => Self::Temporary,
+            QueryErrorStatus::Persistent => Self::Persistent,
         }
     }
 }
@@ -233,7 +233,7 @@ struct AttemptFailureTextWire {
     invalid_utf8: bool,
 }
 
-fn deserialize_bounded_attempt_failure_text_value<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_bounded_attempt_failure_text_value<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
 where D: serde::Deserializer<'de> {
     struct BoundedTextVisitor;
 
@@ -244,7 +244,7 @@ where D: serde::Deserializer<'de> {
             write!(formatter, "a UTF-8 string no longer than {MAX_ATTEMPT_FAILURE_TEXT_BYTES} bytes")
         }
 
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
         where E: de::Error {
             if value.len() > MAX_ATTEMPT_FAILURE_TEXT_BYTES {
                 return Err(E::custom("attempt failure text exceeds its byte bound"));
@@ -252,7 +252,7 @@ where D: serde::Deserializer<'de> {
             Ok(value.to_owned())
         }
 
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
         where E: de::Error {
             if value.len() > MAX_ATTEMPT_FAILURE_TEXT_BYTES {
                 return Err(E::custom("attempt failure text exceeds its byte bound"));
@@ -265,18 +265,18 @@ where D: serde::Deserializer<'de> {
 }
 
 impl<'de> Deserialize<'de> for AttemptFailureText {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where D: serde::Deserializer<'de> {
         let wire = AttemptFailureTextWire::deserialize(deserializer)?;
         if wire.value.len() > MAX_ATTEMPT_FAILURE_TEXT_BYTES {
-            return Err(serde::de::Error::custom("attempt failure text exceeds its byte bound"));
+            return Err(de::Error::custom("attempt failure text exceeds its byte bound"));
         }
         if wire.redacted {
             if wire.value != "<redacted>" {
-                return Err(serde::de::Error::custom("redacted attempt failure text must not retain source text"));
+                return Err(de::Error::custom("redacted attempt failure text must not retain source text"));
             }
         } else if attempt_failure_text_requires_redaction(&wire.value.to_ascii_lowercase()) {
-            return Err(serde::de::Error::custom("attempt failure text requires redaction"));
+            return Err(de::Error::custom("attempt failure text requires redaction"));
         }
         Ok(Self {
             value: wire.value,
@@ -382,7 +382,9 @@ struct AttemptFailureSummaryWire {
     facts: Vec<AttemptFailureFact>,
 }
 
-fn deserialize_bounded_attempt_failure_facts<'de, D>(deserializer: D) -> Result<Vec<AttemptFailureFact>, D::Error>
+fn deserialize_bounded_attempt_failure_facts<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<AttemptFailureFact>, D::Error>
 where D: serde::Deserializer<'de> {
     struct BoundedFactsVisitor;
 
@@ -393,7 +395,7 @@ where D: serde::Deserializer<'de> {
             write!(formatter, "at most {MAX_ATTEMPT_FAILURE_FACTS} attempt failure facts")
         }
 
-        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
         where A: SeqAccess<'de> {
             let mut facts = Vec::with_capacity(MAX_ATTEMPT_FAILURE_FACTS);
             while let Some(fact) = sequence.next_element()? {
@@ -410,11 +412,11 @@ where D: serde::Deserializer<'de> {
 }
 
 impl<'de> Deserialize<'de> for AttemptFailureSummary {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where D: serde::Deserializer<'de> {
         let wire = AttemptFailureSummaryWire::deserialize(deserializer)?;
         Self::from_parts(wire.origin, wire.code, wire.status, wire.operation, wire.text, wire.facts)
-            .map_err(serde::de::Error::custom)
+            .map_err(de::Error::custom)
     }
 }
 
@@ -426,7 +428,7 @@ impl AttemptFailureSummary {
         operation: AttemptFailureOperation,
         text: Option<AttemptFailureText>,
         facts: Vec<AttemptFailureFact>,
-    ) -> Result<Self, &'static str> {
+    ) -> std::result::Result<Self, &'static str> {
         if facts.len() > MAX_ATTEMPT_FAILURE_FACTS {
             return Err("attempt failure facts exceed their fixed bound");
         }
@@ -443,7 +445,7 @@ impl AttemptFailureSummary {
     /// match a known URI, credential, or SQL pattern. The returned
     /// [`query_planning::error::QueryError`] keeps that complete source text on its
     /// ordinary error path.
-    pub fn from_native_error(error: &query_planning::error::QueryError) -> Self {
+    pub fn from_native_error(error: &QueryError) -> Self {
         let mut facts = Vec::with_capacity(2);
         let reason = match error.fact_value("reason") {
             Some("backend_closing") => Some(AttemptFailureFactValue::BackendClosing),
@@ -468,16 +470,10 @@ impl AttemptFailureSummary {
             facts.push(AttemptFailureFact { key: AttemptFailureFactKey::Reason, value });
         }
         let allocation_source = match error.cugraph_allocation_source() {
-            Some(query_planning::error::CugraphAllocationSource::RmmOutOfMemory) => {
-                Some(AttemptFailureFactValue::CugraphRmmOutOfMemory)
-            },
-            Some(query_planning::error::CugraphAllocationSource::RmmBadAlloc) => {
-                Some(AttemptFailureFactValue::CugraphRmmBadAlloc)
-            },
-            Some(query_planning::error::CugraphAllocationSource::StdBadAlloc) => {
-                Some(AttemptFailureFactValue::CugraphStdBadAlloc)
-            },
-            Some(query_planning::error::CugraphAllocationSource::Unknown) | None => None,
+            Some(CugraphAllocationSource::RmmOutOfMemory) => Some(AttemptFailureFactValue::CugraphRmmOutOfMemory),
+            Some(CugraphAllocationSource::RmmBadAlloc) => Some(AttemptFailureFactValue::CugraphRmmBadAlloc),
+            Some(CugraphAllocationSource::StdBadAlloc) => Some(AttemptFailureFactValue::CugraphStdBadAlloc),
+            Some(CugraphAllocationSource::Unknown) | None => None,
         };
         if let Some(value) = allocation_source {
             facts.push(AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value });
@@ -581,7 +577,7 @@ pub struct CleanupFailureSummary {
 }
 
 impl CleanupFailureSummary {
-    pub fn from_native_error(phase: CleanupFailurePhase, error: &query_planning::error::QueryError) -> Self {
+    pub fn from_native_error(phase: CleanupFailurePhase, error: &QueryError) -> Self {
         Self { phase, failure: AttemptFailureSummary::from_native_error(error), complete: true }
     }
 
@@ -1666,8 +1662,8 @@ impl RuntimeTerminalOutcome {
     /// Reduces a native error to its closed terminal projection. Attempt
     /// owners must still call the borrowed summary recorder first when they
     /// publish an attempt report.
-    pub fn from_query_error(error: &query_planning::error::QueryError) -> Self {
-        if error.code() == query_planning::error::QueryErrorCode::Cancelled {
+    pub fn from_query_error(error: &QueryError) -> Self {
+        if error.code() == QueryErrorCode::Cancelled {
             Self::Cancelled
         } else {
             Self::failed(&AttemptFailureSummary::from_native_error(error))
@@ -1679,15 +1675,9 @@ impl RuntimeTerminalOutcome {
     /// remains a text-free control outcome, while an expired deadline retains
     /// its stable reason beside the same `Cancelled` terminal outcome.
     #[doc(hidden)]
-    pub fn primary_failure_from_query_error(
-        error: &query_planning::error::QueryError,
-    ) -> Option<AttemptFailureSummary> {
+    pub fn primary_failure_from_query_error(error: &QueryError) -> Option<AttemptFailureSummary> {
         match error.code() {
-            query_planning::error::QueryErrorCode::Cancelled
-                if error.fact_value("reason") != Some("deadline_expired") =>
-            {
-                None
-            },
+            QueryErrorCode::Cancelled if error.fact_value("reason") != Some("deadline_expired") => None,
             _ => Some(AttemptFailureSummary::from_native_error(error)),
         }
     }

@@ -1,3 +1,5 @@
+use query_engine::{pipeline::CompiledPipeline, rapids_backend::rapids_analysis_context};
+
 use super::*;
 
 #[tokio::test]
@@ -16,11 +18,9 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
     let native = optimized
         .downcast_ref::<AlgeonNativeExec>()
         .expect("single-join post-root pipeline should optimize to AlgeonNativeExec");
-    let pipeline = compile_pipeline(
-        native.native_plan(),
-        &native.native_plan().capability_analysis(query_engine::rapids_backend::rapids_analysis_context()),
-    )
-    .expect("lowered single-join post-root pipeline should compile");
+    let pipeline =
+        compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis(rapids_analysis_context()))
+            .expect("lowered single-join post-root pipeline should compile");
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);
@@ -45,7 +45,7 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn task_kind_count(pipeline: &query_engine::pipeline::CompiledPipeline, kind: PipelineTaskKind) -> usize {
+fn task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> usize {
     pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
 }
 #[tokio::test]

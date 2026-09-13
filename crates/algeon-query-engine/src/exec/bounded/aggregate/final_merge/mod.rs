@@ -4,6 +4,9 @@ use super::{final_merge_policy::BoundedFinalMergePolicy, *};
 use crate::{
     capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision},
     expr::{SortExpr, SortSpec},
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
 };
 
 mod compiled;
@@ -68,16 +71,13 @@ pub(super) fn partition_final_merge_partial(
 
     let frame = partial.frame.into_frame();
     let input_rows = frame.num_rows() as u64;
-    let (observation, plan_execution_id, parent_span_id) =
-        crate::observability::stage_context_from_execution(execution.context());
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::HashPartition,
-        crate::observability::RuntimeOperatorStageIdentity::new()
-            .with_node_id(node_id.to_string())
-            .with_input_rows(input_rows),
+        RuntimeOperatorStageKind::HashPartition,
+        RuntimeOperatorStageIdentity::new().with_node_id(node_id.to_string()).with_input_rows(input_rows),
     );
     let partitioned = match frame
         .with_execution(&token.execution_overrides())
@@ -261,14 +261,13 @@ pub(super) fn apply_partitioned_final_merge_topk(
 
     let input_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     let input = ResidentGpuFrame::with_device_bytes(frame, input_bytes);
-    let (observation, plan_execution_id, parent_span_id) =
-        crate::observability::stage_context_from_execution(execution.context());
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PartitionLocalTopK,
-        crate::observability::RuntimeOperatorStageIdentity::new()
+        RuntimeOperatorStageKind::PartitionLocalTopK,
+        RuntimeOperatorStageIdentity::new()
             .with_node_id(bounded.aggregate_id.to_string())
             .with_partition_index(partition_index)
             .with_input_rows(topk_stats.input_rows),

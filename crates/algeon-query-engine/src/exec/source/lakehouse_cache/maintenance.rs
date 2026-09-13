@@ -4,7 +4,8 @@ use super::{
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    runtime::S3ObjectStoreKey,
+    runtime::{CacheFillBytePermit, S3ObjectStoreKey},
+    source::{ParquetSourceLocation, ResolvedParquetSource},
 };
 
 pub(in crate::exec::source) struct PendingCacheMaintenanceFetch {
@@ -13,7 +14,7 @@ pub(in crate::exec::source) struct PendingCacheMaintenanceFetch {
 
 pub(in crate::exec::source::lakehouse_cache) struct CacheMaintenanceObject {
     pub(in crate::exec::source::lakehouse_cache) bytes: bytes::Bytes,
-    pub(in crate::exec::source::lakehouse_cache) permit: Option<crate::runtime::CacheFillBytePermit>,
+    pub(in crate::exec::source::lakehouse_cache) permit: Option<CacheFillBytePermit>,
     pub(in crate::exec::source::lakehouse_cache) actual_bytes: u64,
 }
 
@@ -42,8 +43,8 @@ impl CacheMaintenanceObject {
 
 pub(super) fn start_cache_maintenance_fetch(
     context: &ExecutionContext,
-    location: &crate::source::ParquetSourceLocation,
-    resolved_source: &crate::source::ResolvedParquetSource,
+    location: &ParquetSourceLocation,
+    resolved_source: &ResolvedParquetSource,
     estimated_fetch_bytes: Option<u64>,
 ) -> Result<PendingCacheMaintenanceFetch> {
     context.check_cancellation("query_engine.lakehouse_cache.maintenance")?;
@@ -119,7 +120,7 @@ fn cache_fill_reserve_bytes(
     estimated_fetch_bytes.unwrap_or(budget_bytes).max(1)
 }
 
-fn account_cache_fill_payload_bytes(permit: &mut crate::runtime::CacheFillBytePermit, actual_bytes: u64) -> Result<()> {
+fn account_cache_fill_payload_bytes(permit: &mut CacheFillBytePermit, actual_bytes: u64) -> Result<()> {
     let charge_bytes = actual_bytes.max(1);
     permit.grow_to(charge_bytes)?;
     Ok(())

@@ -1,16 +1,25 @@
 //! Tests for Column::factorize
 use cudf::{
     ErrorCode, ErrorKind, Series, TypeId,
-    core::error::{FactKeyName, FactValue},
-    testing::prelude::*,
+    core::{
+        Column,
+        error::{FactKeyName, FactValue},
+    },
+    testing::{
+        factorization::{
+            trigger_codebook_key_count_limit_error_for_test, trigger_factorize_empty_row_code_dtype_error_for_test,
+        },
+        prelude::*,
+    },
 };
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns, error_context_value,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    run_named_cases, series as common_series,
 };
 
-fn factorize_column(column: cudf::core::Column) -> (Series, Series) {
+fn factorize_column(column: Column) -> (Series, Series) {
     let series = Series::from_column(column).unwrap();
     let factorized = series.factorize().unwrap();
     (factorized.row_codes().as_series().clone(), factorized.codebook().keys().clone())
@@ -224,7 +233,7 @@ fn test_factorize_codes_are_owned_independent_of_input() {
 
 fn test_dataframe_factorize_by_name() {
     let col = column_from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
+    let df = dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
 
     let factorized = df.factorize("values").unwrap();
     let codes_view = factorized.row_codes().testing_view().unwrap();
@@ -236,14 +245,14 @@ fn test_dataframe_factorize_by_name() {
 
 fn test_dataframe_factorize_missing_column() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
+    let df = dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
 
     let result = df.factorize("nonexistent");
     assert!(result.is_err());
 }
 
 fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
-    let lookup_source = crate::common::series("lookup_source", &["b", "b", "a", "c"]).unwrap();
+    let lookup_source = common_series("lookup_source", &["b", "b", "a", "c"]).unwrap();
     let factorized = lookup_source.factorize().unwrap();
     let row_codes = factorized.row_codes();
     let uniques = factorized.codebook().keys();
@@ -251,7 +260,7 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     // This is the tempting but invalid pattern: slice row-aligned factorize
     // codes down to uniques.len() and reuse them as if they were a stable key
     // to code mapping.
-    let first_positions = crate::common::series("first_positions", &[0i32, 1, 2]).unwrap();
+    let first_positions = common_series("first_positions", &[0i32, 1, 2]).unwrap();
     let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());
     assert_ne!(wrong_lookup_values.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
@@ -261,7 +270,7 @@ fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     let lookup_source = Series::from_column(column_from_strs(&["b", "a", "c", "a"]).unwrap()).unwrap();
     let factorized = lookup_source.factorize().unwrap();
     let codebook = factorized.codebook();
-    let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
+    let query = common_series("query", &["a", "b", "c"]).unwrap();
     let encoded = codebook.encode(&query).unwrap();
     let decoded = codebook.decode(&encoded).unwrap();
 
@@ -302,7 +311,7 @@ fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end(
 }
 
 fn test_testing_hook_locks_factorize_empty_row_code_dtype_contract() {
-    let err = cudf::testing::factorization::trigger_factorize_empty_row_code_dtype_error_for_test().unwrap_err();
+    let err = trigger_factorize_empty_row_code_dtype_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -319,7 +328,7 @@ fn test_testing_hook_locks_factorize_empty_row_code_dtype_contract() {
 }
 
 fn test_testing_hook_locks_codebook_key_count_limit_contract() {
-    let err = cudf::testing::factorization::trigger_codebook_key_count_limit_error_for_test().unwrap_err();
+    let err = trigger_codebook_key_count_limit_error_for_test().unwrap_err();
     let expected = (i32::MAX as usize) + 1;
     let expected_text = expected.to_string();
 
@@ -337,7 +346,7 @@ fn test_testing_hook_locks_codebook_key_count_limit_contract() {
 
 #[test]
 fn factorize_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_factorize_i32_with_duplicates", test_factorize_i32_with_duplicates),
         ("test_factorize_string_column", test_factorize_string_column),
         ("test_factorize_with_nulls", test_factorize_with_nulls),

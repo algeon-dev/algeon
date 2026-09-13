@@ -1,5 +1,7 @@
 use std::{fs::File, path::Path, sync::Arc};
 
+use parquet::basic::Compression;
+
 use super::*;
 
 pub(crate) fn write_discounted_lineitem_parquet(path: &Path) -> Arc<Schema> {
@@ -547,7 +549,7 @@ pub(crate) fn write_uncompressed_row_grouped_input_parquet(
     )
     .unwrap();
     let props = WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_compression(Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .set_max_row_group_row_count(Some(rows_per_row_group))
         .build();
@@ -588,7 +590,7 @@ pub(crate) fn write_skewed_string_key_row_grouped_parquet(
     )
     .unwrap();
     let props = WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_compression(Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .set_max_row_group_row_count(Some(rows_per_row_group))
         .build();
@@ -632,7 +634,7 @@ pub(crate) fn write_unique_key_row_grouped_parquet(
     )
     .unwrap();
     let props = WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_compression(Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .set_max_row_group_row_count(Some(rows_per_row_group))
         .build();
@@ -679,7 +681,7 @@ pub(crate) fn write_cardinality_shift_string_key_parquet(
     )
     .unwrap();
     let props = WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_compression(Compression::UNCOMPRESSED)
         .set_dictionary_enabled(false)
         .set_max_row_group_row_count(Some(rows_per_row_group))
         .build();

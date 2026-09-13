@@ -1,3 +1,5 @@
+use arrow::array::{Date32Array, Float64Array};
+
 #[test]
 fn join_filter_reassociation_preserves_output_advisory_for_residual_build_selection() {
     for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
@@ -42,7 +44,7 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
                 .with_build_side(JoinSide::Right),
                 schema(&["customer"]),
             );
-            let result = optimize_query_plan(builder.finish_gpu_resident(root), &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+            let result = optimize_query_plan(builder.finish_gpu_resident(root), &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
             assert!(result.diagnostics.join_filter_reassociation.applied_count > 0);
             let candidate = result
                 .diagnostics
@@ -64,7 +66,7 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
 fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_losing_multiplicity() {
     let plan = inner_join_filter_over_projected_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 1);
@@ -96,7 +98,7 @@ fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_los
 fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
     let plan = nested_inner_join_filter_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 2);
@@ -125,7 +127,7 @@ fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
 fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_fact_join() {
     let plan = projected_parent_join_filter_over_fact_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert!(
@@ -164,7 +166,7 @@ fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_
 fn join_filter_reassociation_rejects_shared_projected_parent_to_preserve_projection_fanout() {
     let plan = shared_projected_parent_join_filter_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 0);
     assert!(
@@ -210,7 +212,7 @@ fn join_filter_reassociation_pushes_scalar_range_residuals_into_dimension_join_i
     );
     let plan = scalar_range_residual_plan(&date_path, Arc::clone(&date_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert!(
         result.diagnostics.join_filter_reassociation.applied_count >= 2,
@@ -265,13 +267,13 @@ fn join_filter_reassociation_uses_date32_literals_for_temporal_scalar_range_resi
     let date_schema = Arc::new(Schema::new(vec![Field::new("d_date", DataType::Date32, false)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&date_schema),
-        vec![Arc::new(arrow::array::Date32Array::from(vec![100, 110, 120])) as ArrayRef],
+        vec![Arc::new(Date32Array::from(vec![100, 110, 120])) as ArrayRef],
     )
     .expect("test batch should be valid");
     write_record_batch_parquet(&date_path, Arc::clone(&date_schema), &batch, 8);
     let plan = date32_scalar_range_residual_plan(&date_path, Arc::clone(&date_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     let expected = Expr::binary(
         Expr::binary(
@@ -302,13 +304,13 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
     let scalar_schema = Arc::new(Schema::new(vec![Field::new("bound", DataType::Float64, false)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&scalar_schema),
-        vec![Arc::new(arrow::array::Float64Array::from(vec![1.0e20])) as ArrayRef],
+        vec![Arc::new(Float64Array::from(vec![1.0e20])) as ArrayRef],
     )
     .expect("test batch should be valid");
     write_record_batch_parquet(&scalar_path, Arc::clone(&scalar_schema), &batch, 8);
     let plan = out_of_range_float_scalar_range_residual_plan(&scalar_path, Arc::clone(&scalar_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(
         result.diagnostics.join_filter_reassociation.applied_count, 0,
@@ -322,7 +324,7 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
     fs::remove_dir_all(dir).expect("temporary test directory should be removable");
 }
 
-fn inner_join_filter_over_projected_inner_join_plan() -> query_engine::plan::QueryPlan {
+fn inner_join_filter_over_projected_inner_join_plan() -> QueryPlan {
     let (builder, filtered) = inner_join_filter_over_projected_inner_join_builder(None, None);
     builder.finish_gpu_resident(filtered)
 }
@@ -397,7 +399,7 @@ fn inner_join_filter_over_projected_inner_join_builder(
     (builder, filtered)
 }
 
-fn nested_inner_join_filter_plan() -> query_engine::plan::QueryPlan {
+fn nested_inner_join_filter_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(gpu_source("sales", &["sold_date_sk", "customer_sk", "amount"]));
     let customer = builder.add_source(gpu_source("customer", &["customer_sk", "addr_sk"]));
@@ -462,7 +464,7 @@ fn nested_inner_join_filter_plan() -> query_engine::plan::QueryPlan {
     builder.finish_gpu_resident(date_filtered)
 }
 
-fn projected_parent_join_filter_over_fact_join_plan() -> query_engine::plan::QueryPlan {
+fn projected_parent_join_filter_over_fact_join_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let supplier = builder.add_source(gpu_source("supplier", &["s_suppkey", "s_nationkey"]));
     let partsupp = builder.add_source(gpu_source("partsupp", &["ps_suppkey", "ps_partkey", "ps_supplycost"]));
@@ -533,7 +535,7 @@ fn projected_parent_join_filter_over_fact_join_plan() -> query_engine::plan::Que
     builder.finish_gpu_resident(projected)
 }
 
-fn shared_projected_parent_join_filter_plan() -> query_engine::plan::QueryPlan {
+fn shared_projected_parent_join_filter_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(gpu_source("sales", &["s_item", "s_ticket", "customer", "amount"]));
     let returns = builder.add_source(gpu_source("returns", &["r_item", "r_ticket", "reason_key", "returned"]));
@@ -589,7 +591,7 @@ fn shared_projected_parent_join_filter_plan() -> query_engine::plan::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn subtree_contains_gpu_source(plan: &query_engine::plan::QueryPlan, node_id: NodeId, source_name: &str) -> bool {
+fn subtree_contains_gpu_source(plan: &QueryPlan, node_id: NodeId, source_name: &str) -> bool {
     let Some(node) = plan.node(node_id) else {
         return false;
     };
@@ -601,7 +603,7 @@ fn subtree_contains_gpu_source(plan: &query_engine::plan::QueryPlan, node_id: No
     node.input_ids().iter().any(|input| subtree_contains_gpu_source(plan, *input, source_name))
 }
 
-fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> query_engine::plan::QueryPlan {
+fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(estimated_local_source_with_fields(
         "scalar_range_store_sales",
@@ -719,7 +721,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> que
 fn date32_scalar_range_residual_plan(
     date_path: &Path,
     date_schema: Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = Arc::new(Schema::new(vec![Field::new("d_date", DataType::Date32, false)]));
     let left =
@@ -756,7 +758,7 @@ fn date32_scalar_range_residual_plan(
 fn out_of_range_float_scalar_range_residual_plan(
     scalar_path: &Path,
     scalar_schema: Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_fields(
         "float_scalar_fact",

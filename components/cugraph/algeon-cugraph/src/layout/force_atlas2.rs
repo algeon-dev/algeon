@@ -16,8 +16,9 @@ use cugraph_sys::{
 };
 
 use crate::{
-    array::DeviceArrayView,
+    array::{DeviceArrayView, RawDeviceArrayView},
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::layout_result_to_dataframe,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposition},
     handle::{EnteredContext, ResourceHandleLease},
@@ -207,12 +208,7 @@ impl LayoutResult {
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
         let raw = unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(
-                view_ptr,
-                Some(self.device),
-                "LayoutResult::vertex_ids",
-                "vertices",
-            )
+            RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::vertex_ids", "vertices")
         }?;
         VertexIds::from_raw(raw)
     }
@@ -229,9 +225,8 @@ impl LayoutResult {
             require_non_null(unsafe { cugraph_layout_result_get_x_axis(self.raw) }, "LayoutResult::x", "x_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        let raw = unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::x", "x_axis")
-        }?;
+        let raw =
+            unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::x", "x_axis") }?;
         ScoreValues::from_raw(raw)
     }
 
@@ -247,9 +242,8 @@ impl LayoutResult {
             require_non_null(unsafe { cugraph_layout_result_get_y_axis(self.raw) }, "LayoutResult::y", "y_axis")?;
         // SAFETY: `view_ptr` belongs to the live layout result and was
         // validated to be non-null above.
-        let raw = unsafe {
-            crate::array::RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::y", "y_axis")
-        }?;
+        let raw =
+            unsafe { RawDeviceArrayView::from_borrowed(view_ptr, Some(self.device), "LayoutResult::y", "y_axis") }?;
         ScoreValues::from_raw(raw)
     }
 
@@ -262,9 +256,8 @@ impl LayoutResult {
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
-    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> crate::error::Result<cudf::DataFrame> {
-        crate::cudf_interop::layout_result_to_dataframe(self, runtime)
-            .map_err(|e: crate::error::Error| e.with_operation("LayoutResult::to_dataframe"))
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        layout_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("LayoutResult::to_dataframe"))
     }
 }
 

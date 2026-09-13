@@ -1,6 +1,8 @@
 use std::{collections::HashSet, fmt};
 
 use arrow::datatypes::SchemaRef;
+#[cfg(feature = "catalog")]
+use iceberg::expr::Predicate;
 
 use crate::{Error, ErrorCode, Operation, Result};
 
@@ -142,7 +144,7 @@ pub struct ScanRequest {
     /// the planner retains consumer-side residual intent because manifest
     /// pruning is not row-level predicate enforcement.
     #[cfg(feature = "catalog")]
-    pub iceberg_predicate: Option<iceberg::expr::Predicate>,
+    pub iceberg_predicate: Option<Predicate>,
     pub source_limit: SourceLimit,
     pub pruning: PruningIntent,
 }

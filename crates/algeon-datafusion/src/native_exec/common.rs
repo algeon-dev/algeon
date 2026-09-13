@@ -29,14 +29,15 @@ use datafusion::{
 };
 use futures::{FutureExt, Stream, future::BoxFuture};
 use query_engine::{
-    observability::RuntimeObservationHandle,
+    error::QueryError,
+    observability::{RuntimeObservationHandle, RuntimeStreamLeaseScope},
     plan::{PlanNode, QueryPlan},
     runtime::{GpuExecutionJobKind, GpuExecutorLease, resident::GpuHostBatchCursor},
     source::SourceNode,
 };
 
 use super::{config::AlgeonNativeExecutionContext, metrics::AlgeonNativeMetrics};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 pub(super) const NATIVE_ALGEON_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "AlgeonNativeExec[host-output]";
 pub(super) const NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str =
@@ -106,7 +107,7 @@ pub(super) fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> 
 pub(super) fn properties_with_equivalence(
     schema: SchemaRef,
     eq_properties: EquivalenceProperties,
-) -> crate::error::Result<Arc<PlanProperties>> {
+) -> Result<Arc<PlanProperties>> {
     if eq_properties.schema().as_ref() != schema.as_ref() {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
@@ -351,7 +352,7 @@ pub(crate) fn run_gpu_execution_task<B, F, T>(
     build_future: B,
 ) -> impl Future<Output = DataFusionResult<T>> + Send
 where
-    B: FnOnce(query_engine::observability::RuntimeStreamLeaseScope) -> F + Send + 'static,
+    B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
     F: Future<Output = DataFusionResult<T>> + Send + 'static,
     T: Send + 'static,
 {
@@ -405,7 +406,7 @@ pub(super) fn write_native_plan_tree(f: &mut std::fmt::Formatter<'_>, plan: &Que
 pub(super) fn native_query_runtime_error(
     operation: &'static str,
     message: impl Into<String>,
-    source: query_engine::error::QueryError,
+    source: QueryError,
 ) -> Error {
     native_query_runtime_error_with_publication(operation, message, source, NativeOutputPublication::None)
 }
@@ -415,7 +416,7 @@ pub(super) fn native_query_runtime_error(
 pub(super) fn native_query_runtime_error_with_publication(
     operation: &'static str,
     message: impl Into<String>,
-    source: query_engine::error::QueryError,
+    source: QueryError,
     publication: NativeOutputPublication,
 ) -> Error {
     mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
@@ -460,6 +461,7 @@ mod tests {
     };
 
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+    use query_engine::error::{QueryError, QueryErrorCode};
 
     use super::{
         HostOutputReservation, NativeOutputPublication, conservative_properties, mark_native_runtime_error,
@@ -505,8 +507,8 @@ mod tests {
             native_query_runtime_error_with_publication(
                 "algeon_datafusion.test",
                 "native query execution failed",
-                query_engine::error::QueryError::new(
-                    query_engine::error::QueryErrorCode::QueryMemoryLimitExceeded,
+                QueryError::new(
+                    QueryErrorCode::QueryMemoryLimitExceeded,
                     "query_engine.test",
                     "query memory limit exceeded",
                 ),

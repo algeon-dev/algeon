@@ -21,24 +21,31 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use cudf_sys::test_support::{
+    cudf_test_event_allow_synchronize, cudf_test_event_fail_synchronize, cudf_test_stream_block_synchronize,
+    cudf_test_stream_unblock_synchronize,
+};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     admission::{AttemptCapabilityEvidence, bounded_pipeline_decision},
     error::{QueryErrorCode, Result},
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
-        QueryExecutionRequest, is_lane_family_pipeline, output::QueryOutput, run_lane_dispatched,
+        QueryExecutionRequest, execute_query_plan, is_lane_family_pipeline, output::QueryOutput,
+        preflight_bounded_query_plan, run_lane_dispatched,
     },
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec},
     mode::StatisticalAggregateExecutionMode,
     observability::{
-        PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
-        RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, StreamLeaseLifecycleState, TaskLifecycleState,
+        LiveRuntimeObservationSnapshot, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
+        RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTaskId, RuntimeTerminalOutcome,
+        RuntimeWorkerId, StreamLeaseLifecycleState, TaskLifecycleState,
     },
-    pipeline::PipelineTaskKind,
+    pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
     plan::{ProjectionOutput, QueryPlan, QueryPlanBuilder},
+    rapids_backend::rapids_analysis_context,
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
+        AdmittedQueryContext, AttemptWorkLease, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
         GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind, GpuMemoryOwnership,
         KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
@@ -46,6 +53,7 @@ use query_engine::{
     },
     source::{LiteralBatchSource, LocalParquetSource, SourceNode},
 };
+use tokio::runtime::Builder as TokioRuntimeBuilder;
 
 struct LaneBackend {
     core: GpuBackendCore,
@@ -97,7 +105,7 @@ impl LaneBackendGuard {
     }
 
     fn admit(&self, plan: &QueryPlan, cap_bytes: Option<u64>) -> Result<LaneTestContext> {
-        query_engine::exec::preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+        preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
         let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
         let mut backend = self.backend.borrow_mut();
         ensure_lane_backend(&mut backend)?;
@@ -156,9 +164,7 @@ fn write_key_value_parquet(path: &Path, keys: &[i32], values: &[i64]) {
 
 /// Splits this run's acquired stream leases into lane leases (acquired with
 /// no source worker in scope) and nested source-worker leases.
-fn count_acquired_stream_leases(
-    snapshot: &query_engine::observability::LiveRuntimeObservationSnapshot,
-) -> (usize, usize) {
+fn count_acquired_stream_leases(snapshot: &LiveRuntimeObservationSnapshot) -> (usize, usize) {
     let mut lane_leases = 0usize;
     let mut source_worker_leases = 0usize;
     for event in snapshot.events() {
@@ -264,13 +270,10 @@ fn parquet_union_plan(left_path: &Path, right_path: &Path, schema: &Arc<Schema>)
     builder.finish_with_host_sink(limit)
 }
 
-fn admitted_pipeline(plan: &QueryPlan) -> query_engine::pipeline::CompiledPipeline {
-    let decision = bounded_pipeline_decision(
-        plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
+    let decision =
+        bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("lane union uses the compiled admission");
     admission.pipeline().clone()
 }
@@ -353,8 +356,7 @@ fn lane_width_2_executes_parquet_union_on_production_path() {
     assert!(is_lane_family_pipeline(&pipeline));
 
     let test_context = backend.admit(&plan, None).expect("lane union admits");
-    let outcome =
-        query_engine::exec::execute_query_plan(test_context.context.context(), QueryExecutionRequest::new(&plan));
+    let outcome = execute_query_plan(test_context.context.context(), QueryExecutionRequest::new(&plan));
     let (result, _metrics, _observation) = outcome.into_parts();
     let output = result.expect("width-2 lane union should execute");
     let QueryOutput::HostArrow(batch) = output else {
@@ -396,7 +398,7 @@ fn lane_width_2_parquet_overlap_workload() {
     let context: &ExecutionContext = test_context.context.context();
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     assert_eq!(route.lane_capacity(), 2, "overlap run engages two lanes");
-    let outcome = query_engine::exec::execute_query_plan(context, QueryExecutionRequest::new(&plan));
+    let outcome = execute_query_plan(context, QueryExecutionRequest::new(&plan));
     let (result, _metrics, _observation) = outcome.into_parts();
     let output = result.expect("width-2 overlap union should execute");
     let QueryOutput::HostArrow(batch) = output else {
@@ -464,10 +466,7 @@ fn lane_small_cap_typed_failure_isolates_the_next_query() {
     // handle, so the next admission proves the failure left nothing held.
     let error = {
         let capped = backend.admit(&plan, Some(65_536)).expect("tiny cap still admits");
-        match query_engine::exec::execute_query_plan(capped.context.context(), QueryExecutionRequest::new(&plan))
-            .into_parts()
-            .0
-        {
+        match execute_query_plan(capped.context.context(), QueryExecutionRequest::new(&plan)).into_parts().0 {
             Ok(_) => panic!("tiny cap must fail lane execution"),
             Err(error) => error,
         }
@@ -475,17 +474,17 @@ fn lane_small_cap_typed_failure_isolates_the_next_query() {
     assert!(
         matches!(
             error.code(),
-            query_engine::error::QueryErrorCode::QueryMemoryLimitExceeded
-                | query_engine::error::QueryErrorCode::MemoryReservationFailed
-                | query_engine::error::QueryErrorCode::CudfResourceExhausted
-                | query_engine::error::QueryErrorCode::CudfTemporaryFailure
+            QueryErrorCode::QueryMemoryLimitExceeded
+                | QueryErrorCode::MemoryReservationFailed
+                | QueryErrorCode::CudfResourceExhausted
+                | QueryErrorCode::CudfTemporaryFailure
         ),
         "small-cap failure is typed, got {:?}",
         error.code()
     );
 
     let healthy = backend.admit(&plan, None).expect("next query still admits after a lane failure");
-    let output = query_engine::exec::execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
+    let output = execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
         .into_parts()
         .0
         .expect("next query executes after a lane failure");
@@ -617,7 +616,7 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
 
     let executor = context.gpu_executor().expect("admitted context exposes its device executor");
     let observation = context.runtime_observation().clone();
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
+    let runtime = TokioRuntimeBuilder::new_current_thread().enable_all().build().expect("test runtime");
     // Exactly as DataFusion runs it: the root query job holds a root-class
     // permit for the whole plan while the lanes run underneath it.
     let output = runtime
@@ -626,7 +625,7 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
             observation,
             move |scope| async move {
                 let context = context.with_runtime_gpu_stream_scope(scope);
-                query_engine::exec::execute_query_plan(&context, QueryExecutionRequest::new(&plan)).into_parts().0
+                execute_query_plan(&context, QueryExecutionRequest::new(&plan)).into_parts().0
             },
         ))
         .expect("the root query job runs")
@@ -656,7 +655,7 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
 /// unclaimed one. A test that needs a specific fork held therefore claims
 /// every index up to it and releases the ones it does not want, driving the
 /// choice through acquisition order rather than naming an index.
-fn hold_lane_fork(context: &ExecutionContext, fork_index: usize) -> query_engine::runtime::AttemptWorkLease {
+fn hold_lane_fork(context: &ExecutionContext, fork_index: usize) -> AttemptWorkLease {
     let mut leases: Vec<_> = (0..=fork_index)
         .map(|_| context.acquire_attempt_work_lease(None).expect("the other holder takes its permit"))
         .collect();
@@ -733,16 +732,14 @@ fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
     let observation = context.runtime_observation().clone();
     let dispatch_context = context;
     let dispatch_plan = plan;
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
+    let runtime = TokioRuntimeBuilder::new_current_thread().enable_all().build().expect("test runtime");
     let output = runtime
         .block_on(executor.run_observed_scoped(
             GpuExecutionJobKind::QueryExecution,
             observation,
             move |scope| async move {
                 let context = dispatch_context.with_runtime_gpu_stream_scope(scope);
-                query_engine::exec::execute_query_plan(&context, QueryExecutionRequest::new(&dispatch_plan))
-                    .into_parts()
-                    .0
+                execute_query_plan(&context, QueryExecutionRequest::new(&dispatch_plan)).into_parts().0
             },
         ))
         .expect("the root query job runs")
@@ -1085,7 +1082,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     let lane_context = lane_lease.context().clone();
     assert!(lane_context.is_attempt_work_lease_context(), "a lane context is a work-lease context");
 
-    let outcome = query_engine::exec::execute_query_plan(&lane_context, QueryExecutionRequest::new(&plan));
+    let outcome = execute_query_plan(&lane_context, QueryExecutionRequest::new(&plan));
     let (result, metrics, _observation) = outcome.into_parts();
     let output = result.expect("a source read from a work lease completes inline instead of deadlocking");
     let QueryOutput::HostArrow(batch) = output else {
@@ -1150,8 +1147,8 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
     // worker it runs for. Before this fix that call registered no claim.
     let source_worker_lease = context
         .acquire_attempt_work_lease(Some((
-            query_engine::observability::RuntimeTaskId::new("fork-isolation-source-task"),
-            query_engine::observability::RuntimeWorkerId::new("fork-isolation-source-worker"),
+            RuntimeTaskId::new("fork-isolation-source-task"),
+            RuntimeWorkerId::new("fork-isolation-source-worker"),
         )))
         .expect("the source-worker lease acquires");
     let lane_lease = context
@@ -1203,14 +1200,14 @@ struct EventSyncFaultGuard;
 
 impl EventSyncFaultGuard {
     fn fail() -> Self {
-        unsafe { cudf_sys::test_support::cudf_test_event_fail_synchronize() };
+        unsafe { cudf_test_event_fail_synchronize() };
         Self
     }
 }
 
 impl Drop for EventSyncFaultGuard {
     fn drop(&mut self) {
-        unsafe { cudf_sys::test_support::cudf_test_event_allow_synchronize() };
+        unsafe { cudf_test_event_allow_synchronize() };
     }
 }
 
@@ -1218,22 +1215,19 @@ struct StreamSyncBlockGuard;
 
 impl StreamSyncBlockGuard {
     fn block() -> Self {
-        unsafe { cudf_sys::test_support::cudf_test_stream_block_synchronize() };
+        unsafe { cudf_test_stream_block_synchronize() };
         Self
     }
 }
 
 impl Drop for StreamSyncBlockGuard {
     fn drop(&mut self) {
-        unsafe { cudf_sys::test_support::cudf_test_stream_unblock_synchronize() };
+        unsafe { cudf_test_stream_unblock_synchronize() };
     }
 }
 
-fn union_output_data_form(
-    pipeline: &query_engine::pipeline::CompiledPipeline,
-    task_kind: query_engine::pipeline::PipelineTaskKind,
-) -> query_engine::pipeline::ResidentDataForm {
-    use query_engine::pipeline::ResidentDataForm;
+fn union_output_data_form(pipeline: &CompiledPipeline, task_kind: PipelineTaskKind) -> ResidentDataForm {
+    use ResidentDataForm;
     let producer = pipeline
         .tasks()
         .iter()
@@ -1287,8 +1281,6 @@ fn literal_union_count_plan() -> QueryPlan {
 /// what this test observes.
 #[test]
 fn union_streaming_output_contract_matches_its_consumer_form() {
-    use query_engine::pipeline::{PipelineTaskKind, ResidentDataForm};
-
     let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
     let plan = literal_union_count_plan();
     let pipeline = admitted_pipeline(&plan);
@@ -1533,7 +1525,7 @@ fn chunk_readiness_sync_failure_attributes_head_ordinal_and_commits_nothing() {
 
     // The failure neither commits partials nor poisons the backend: the next admission runs.
     let healthy = backend.admit(&plan, None).expect("next query still admits after a readiness failure");
-    let output = query_engine::exec::execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
+    let output = execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
         .into_parts()
         .0
         .expect("next query executes after a readiness failure");

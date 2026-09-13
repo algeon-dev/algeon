@@ -27,7 +27,8 @@ pub mod sorting;
 use crate::{
     AggSpec, MergeOptions, SortOptions,
     core::{
-        Column, DeviceMemoryResource, Result, Scalar, Table, column::ColumnView as CoreColumnView,
+        Column, DeviceMemoryResource, Result, Scalar, Table,
+        column::{ColumnView as CoreColumnView, slice_view_for_test},
         table::TableView as CoreTableView,
     },
     frame::dataframe::DataFrame,
@@ -240,7 +241,7 @@ impl BorrowedViewTestingExt for DataFrame {
 
 impl BorrowedColumnSliceTestingExt for Column {
     fn testing_slice_view(&self, offset: usize, length: usize) -> Result<ColumnView<'_>> {
-        crate::core::column::slice_view_for_test(self, offset, length)
+        slice_view_for_test(self, offset, length)
     }
 }
 

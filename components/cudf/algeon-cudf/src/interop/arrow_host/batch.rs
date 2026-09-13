@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::Array,
+    array::{Array, ArrayData},
+    compute::concat as arrow_concat,
     datatypes::{DataType as ArrowDataType, Schema, TimeUnit},
     record_batch::{RecordBatch, RecordBatchOptions},
 };
@@ -16,13 +17,19 @@ use super::{
 };
 use crate::{
     core::{
+        DeviceBuffer,
         column::Column,
         error::{self, Error, ErrorCode, Result},
         types::TypeId,
     },
     frame::dataframe::DataFrame,
     internal::{hash::fast_index_map, resolve::missing_column_error},
-    runtime::{BoundaryKind, QueryStageKind, Runtime},
+    runtime::{
+        BoundaryKind, CudaEvent, QueryStageKind, Runtime,
+        device_guard::DeviceGuard,
+        host_staging::{PinnedSlabLease, pinned_staging_pool},
+        stream::CudaStream,
+    },
 };
 
 impl DataFrame {
@@ -360,7 +367,7 @@ pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch])
                         format!("staged import type {:?} lacks a fixed primitive width", field.data_type()),
                     )
                 })?;
-                let datas: Vec<arrow::array::ArrayData> = arrays.iter().map(|array| array.to_data()).collect();
+                let datas: Vec<ArrayData> = arrays.iter().map(|array| array.to_data()).collect();
                 let slices: Vec<&[u8]> = datas
                     .iter()
                     .map(|data| {
@@ -373,7 +380,7 @@ pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch])
                     .map_err(|error| error.reanchor("arrow::dataframe_from_record_batches"))?
             },
             _ => {
-                let merged = arrow::compute::concat(&arrays).map_err(|error| {
+                let merged = arrow_concat(&arrays).map_err(|error| {
                     error::foreign_invariant_violation(
                         "dataframe_from_record_batches",
                         error.to_string(),
@@ -450,13 +457,13 @@ fn staged_fixed_width_column(
     slices: &[&[u8]],
 ) -> Result<Column> {
     let total_bytes: usize = slices.iter().map(|slice| slice.len()).sum();
-    let device_buffer = crate::core::DeviceBuffer::new_in_runtime(runtime, total_bytes)?;
+    let device_buffer = DeviceBuffer::new_in_runtime(runtime, total_bytes)?;
     if total_bytes > 0 {
-        let _device_guard = crate::runtime::device_guard::DeviceGuard::new(runtime.device())
-            .map_err(|error| error.reanchor("arrow::staged_fixed_width_column"))?;
-        let pool = crate::runtime::host_staging::pinned_staging_pool();
+        let _device_guard =
+            DeviceGuard::new(runtime.device()).map_err(|error| error.reanchor("arrow::staged_fixed_width_column"))?;
+        let pool = pinned_staging_pool();
         let mut leases = [pool.acquire()?, pool.acquire()?];
-        let events = [crate::runtime::CudaEvent::new()?, crate::runtime::CudaEvent::new()?];
+        let events = [CudaEvent::new()?, CudaEvent::new()?];
         let mut event_pending = [false, false];
         let slab_capacity = pool.slab_bytes();
         let stream = runtime.stream();
@@ -505,12 +512,12 @@ fn staged_fixed_width_column(
 }
 
 fn flush_staging_slab(
-    device_buffer: &crate::core::DeviceBuffer,
-    lease: &mut crate::runtime::host_staging::PinnedSlabLease,
+    device_buffer: &DeviceBuffer,
+    lease: &mut PinnedSlabLease,
     fill: usize,
     dst_offset: &mut usize,
-    event: &crate::runtime::CudaEvent,
-    stream: &crate::runtime::stream::CudaStream,
+    event: &CudaEvent,
+    stream: &CudaStream,
 ) -> Result<()> {
     let slab = lease.slab();
     // SAFETY: the slab holds at least `fill` initialized bytes written via

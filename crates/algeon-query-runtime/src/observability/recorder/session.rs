@@ -8,8 +8,6 @@ use std::{
     },
 };
 
-#[cfg(any(test, feature = "test-hooks"))]
-use super::TestSourceLocationDigestKeyProvider;
 use super::{
     CleanupFailureSummary, LiveRuntimeObservationSnapshot, PlanExecutionId, QueryAttemptReport, RetainedTopologyRecord,
     RuntimeEventContext, RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationConfig,
@@ -17,8 +15,10 @@ use super::{
     RuntimeObservationOwner, RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecordClass,
     RuntimeObservationRecordDisposition, RuntimeObservationRecorderState, RuntimeObservationSnapshotData,
     RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
-    SealedRuntimeObservationSnapshot, SourceLocationDigestKeyState, SystemRuntimeObservationClock,
+    SealedRuntimeObservationSnapshot, SourceLocationDigestKeyState,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use super::{SystemRuntimeObservationClock, TestSourceLocationDigestKeyProvider};
 
 /// Owner-only capability for one query observation lifetime.
 ///

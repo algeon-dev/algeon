@@ -1,5 +1,5 @@
 use algeon_datafusion::{
-    backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership},
+    backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, GpuMemoryOwnership},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
         CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphSqlConfig,
@@ -23,7 +23,7 @@ use datafusion::{
     common::{DataFusionError, ScalarValue},
     datasource::MemTable,
     execution::SessionStateBuilder,
-    logical_expr::{col, lit},
+    logical_expr::col,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_plan::{ExecutionPlan, displayable},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},

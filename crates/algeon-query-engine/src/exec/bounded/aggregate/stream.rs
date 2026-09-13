@@ -21,12 +21,18 @@ use super::{
     stream_bounded_join_leaf_local_parquet_source_chunks, unsupported_bounded_shape,
 };
 use crate::exec::{
-    bounded::{compiled::CompiledGpuResource, join::bounded_join_leaf_local_parquet_source_frame_stream},
+    bounded::{
+        chunks::bounded_source_adjacent_chunk_batching_enabled,
+        compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
+        join::bounded_join_leaf_local_parquet_source_frame_stream,
+    },
     operators::{
         PartialAggregateInputEvidence, execute_gpu_native_statistical_final_merge_with_budget,
         execute_gpu_native_statistical_partial_aggregate_with_budget, partial_aggregate_source_chunk_fingerprint,
         should_execute_gpu_native_statistical_partial_aggregate,
     },
+    retry::backoff_before_retry,
+    source::observed_chunk_row_group_count,
 };
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
@@ -161,7 +167,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
     output_schema: &ArrowSchemaRef,
     stream: BoundedJoinLeafLocalParquetSourceStream,
     preserve_output_stream: bool,
-    dispatch: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
+    dispatch: Option<&AggregateLaneDispatch>,
     topk: Option<&super::SourceAggregateTopK<'_>>,
 ) -> Result<CompiledGpuResource> {
     if aggregate_spec_requires_whole_input(&aggregate.spec) {
@@ -214,12 +220,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
             &bounded,
             stream.chunks(),
         );
-        if partitioned
-            || crate::exec::bounded::chunks::bounded_source_adjacent_chunk_batching_enabled(
-                execution.context(),
-                &bounded,
-                stream.chunks(),
-            )
+        if partitioned || bounded_source_adjacent_chunk_batching_enabled(execution.context(), &bounded, stream.chunks())
         {
             return super::execute_source_aggregate_with_dispatch(
                 execution,
@@ -290,7 +291,7 @@ pub(in crate::exec::bounded) fn execute_compiled_source_aggregate_chunk(
         let evidence = PartialAggregateInputEvidence {
             source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(std::slice::from_ref(chunk)),
             source_adjacent_partial: stream.has_stages(),
-            source_chunk_row_group_count: crate::exec::source::observed_chunk_row_group_count(chunk)
+            source_chunk_row_group_count: observed_chunk_row_group_count(chunk)
                 .unwrap_or_else(|| chunk.row_group_count()) as u64,
             source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,
             source_chunk_known_row_count: chunk.known_row_count,
@@ -844,10 +845,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     };
     if should_split_compiled_aggregate_stream_frame(execution, &input, upper_bound_bytes, retry_budget) {
         execution.metrics().record_retry_resource_exhausted();
-        crate::exec::retry::backoff_before_retry(
-            execution.context(),
-            "query_engine.exec.bounded.compiled_aggregate_stream_frame_retry",
-        )?;
+        backoff_before_retry(execution.context(), "query_engine.exec.bounded.compiled_aggregate_stream_frame_retry")?;
         let (left, right) = split_compiled_aggregate_stream_frame(execution, node_id, input)?;
         let mut partials = match execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
             execution,

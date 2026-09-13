@@ -11,7 +11,7 @@ use datafusion::{
 };
 
 use super::{CuvsAlgoExec, CuvsLogicalNode};
-use crate::native_exec::AlgeonNativeExecutionConfig;
+use crate::{native_exec::AlgeonNativeExecutionConfig, session::installed_algeon_native_optimizer_config};
 
 pub struct CuvsQueryPlanner {
     extension_planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>,
@@ -70,7 +70,7 @@ impl ExtensionPlanner for CuvsExtensionPlanner {
         let Some(node) = node.as_any().downcast_ref::<CuvsLogicalNode>() else {
             return Ok(None);
         };
-        let native_execution_config = crate::session::installed_algeon_native_optimizer_config(session)
+        let native_execution_config = installed_algeon_native_optimizer_config(session)
             .map(|config| config.native_execution_config().clone())
             .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
         CuvsAlgoExec::try_new(

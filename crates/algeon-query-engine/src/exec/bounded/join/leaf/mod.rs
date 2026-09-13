@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
     FilterNode, GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
@@ -25,14 +27,20 @@ use crate::{
         dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
     },
     exec::{
-        bounded::chunks::{source_read_budget_bytes, source_read_budget_correction_from_error},
+        bounded::{
+            BoundedPlan,
+            chunks::{source_read_budget_bytes, source_read_budget_correction_from_error},
+        },
         source::{
-            ScheduledLocalParquetRead, read_local_parquet_chunk_batch,
-            read_local_parquet_chunk_with_reader_dynamic_filter_count, read_local_parquet_source,
+            ScheduledLocalParquetRead, attach_row_group_facts_if_absent, parquet_chunk_path_fact,
+            read_local_parquet_chunk_batch, read_local_parquet_chunk_with_reader_dynamic_filter_count,
+            read_local_parquet_source,
         },
     },
     metrics::DynamicFilterSourceSnapshot,
-    source::SourceFooterFacts,
+    plan::AggregateNode,
+    rapids_backend::rapids_analysis_context,
+    source::{ParquetReadStrategy, SourceFooterFacts, SourceNode},
 };
 
 mod batching;
@@ -59,8 +67,8 @@ fn attach_join_source_read_resource_facts(
         .with_fact_if_absent("max_attempts", max_attempts)
         .with_fact_if_absent("chunk_index", chunk.chunk_index)
         .with_fact_if_absent("file_index", chunk.file_index)
-        .with_fact_if_absent("path", crate::exec::source::parquet_chunk_path_fact(chunk));
-    crate::exec::source::attach_row_group_facts_if_absent(error, chunk)
+        .with_fact_if_absent("path", parquet_chunk_path_fact(chunk));
+    attach_row_group_facts_if_absent(error, chunk)
 }
 
 use batching::*;
@@ -122,10 +130,10 @@ impl BoundedJoinLeafLocalParquetSourceStream {
     pub(in crate::exec::bounded) fn aggregate_plan<'a>(
         &'a self,
         aggregate_id: NodeId,
-        aggregate: &'a crate::plan::AggregateNode,
-        input_schema: &'a arrow::datatypes::SchemaRef,
-        output_schema: &'a arrow::datatypes::SchemaRef,
-    ) -> Option<crate::exec::bounded::BoundedPlan<'a>> {
+        aggregate: &'a AggregateNode,
+        input_schema: &'a ArrowSchemaRef,
+        output_schema: &'a ArrowSchemaRef,
+    ) -> Option<BoundedPlan<'a>> {
         if !self.reader_dynamic_filters.is_empty() {
             return None;
         }
@@ -145,7 +153,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
                 },
             }
         }
-        Some(crate::exec::bounded::BoundedPlan {
+        Some(BoundedPlan {
             source_id: self.node_id,
             source: &self.source,
             pre_filter_projections,
@@ -281,7 +289,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             routes,
             filter_set,
             |route, _filter| merged_reader_predicate_routes.contains(&route.id),
-            crate::rapids_backend::rapids_analysis_context(),
+            rapids_analysis_context(),
             footers,
         )?;
         let mut chunk_plan = plan_local_parquet_source_chunks_with_metadata_cache_and_context(
@@ -402,31 +410,32 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
 
 fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource) -> bool {
     !source.files.is_empty()
-        && source.files.iter().all(|file| {
-            matches!(file.resolved_source.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect)
-        })
+        && source
+            .files
+            .iter()
+            .all(|file| matches!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect))
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
     execution: &mut BoundedExecutionAttempt<'_>,
-    source: &crate::source::SourceNode,
+    source: &SourceNode,
     node_id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ResidentGpuFrame> {
     match source {
-        crate::source::SourceNode::LocalParquet(source) => {
-            validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
+        SourceNode::LocalParquet(source) => {
+            validate_local_parquet_source(source, rapids_analysis_context())?;
             if source.has_position_delete_visible_scan_limit() {
                 return execute_bounded_generic_local_parquet_source(execution, source, node_id);
             }
             execute_bounded_join_leaf_local_parquet_source(execution, source, node_id)
         },
-        crate::source::SourceNode::GpuResident(source) => {
+        SourceNode::GpuResident(source) => {
             let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics())?;
             let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
             Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))
         },
-        crate::source::SourceNode::LiteralBatch(source) => {
+        SourceNode::LiteralBatch(source) => {
             let frame = read_literal_batch_source(execution.context(), source, execution.metrics())?;
             let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
             Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))

@@ -1,8 +1,9 @@
 //! Tests for Table::into_columns.
 
 use cudf::{ErrorCode, Runtime, TypeId, core::Table, testing::prelude::*};
+use cudf_sys::test_support;
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, empty_column, run_named_cases};
 
 fn test_into_columns_single_column() {
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -111,8 +112,8 @@ fn test_into_columns_with_string_column() {
 
 fn test_into_columns_with_empty_rows() {
     // Table with columns that have zero rows.
-    let c1 = crate::common::empty_column(TypeId::Int32).unwrap();
-    let c2 = crate::common::empty_column(TypeId::Float64).unwrap();
+    let c1 = empty_column(TypeId::Int32).unwrap();
+    let c2 = empty_column(TypeId::Float64).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
 
     let columns = table.into_columns().unwrap();
@@ -132,7 +133,7 @@ fn into_columns_copies_typed_failure_before_cleanup_clears_native_error_state() 
     let c1 = column_from_slice(&[10i32, 20]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
 
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
+    unsafe { test_support::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
     let error = table.into_columns().unwrap_err();
 
     assert_eq!(error.code(), ErrorCode::OutOfMemory);
@@ -143,7 +144,7 @@ fn into_columns_copies_typed_failure_before_cleanup_clears_native_error_state() 
 
 #[test]
 fn table_release_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_into_columns_single_column", test_into_columns_single_column),
         ("test_into_columns_multiple_columns", test_into_columns_multiple_columns),
         ("test_into_columns_empty_table", test_into_columns_empty_table),

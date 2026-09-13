@@ -7,12 +7,13 @@ use super::{
     unique_join_output_for_name,
 };
 use crate::{
-    expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr, LiteralValue},
+    expr::{BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, Expr, LiteralValue},
     plan::{
-        AdvisoryOutputStatistics, AdvisoryStatistic, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId,
-        PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
-        estimated_output_bytes, estimated_output_rows,
+        AdvisoryOutputStatistics, AdvisoryStatistic, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn,
+        JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode,
+        QueryPlan, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
     },
+    source::SourceNode,
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -465,8 +466,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             self.nodes.get(input_new.index()).expect("rewritten join input node must exist before adding filter");
         let mut facts = input_node.facts.clone();
         facts.schema_behavior = SchemaBehavior::PreservesInput;
-        let filter_new =
-            self.push_node(PlanNode::Filter(crate::plan::FilterNode { input: input_new, predicate }), facts);
+        let filter_new = self.push_node(PlanNode::Filter(FilterNode { input: input_new, predicate }), facts);
         PushedFilterInput {
             node_id: filter_new,
             filtered_child_node_id: Some(old_input),
@@ -497,7 +497,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             return Err(JoinFilterReassociationRejectedReason::UnsupportedCrossedJoinShape);
         };
         if crossed_join.spec.join_type != JoinType::Inner
-            || crossed_join.spec.null_equality != crate::plan::JoinNullEquality::NullsDoNotMatch
+            || crossed_join.spec.null_equality != JoinNullEquality::NullsDoNotMatch
         {
             return Err(JoinFilterReassociationRejectedReason::UnsupportedCrossedJoinShape);
         }
@@ -576,9 +576,9 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             .iter()
             .map(|field| JoinOutputColumn::left(ColumnRef::input(0, field.name(), field.name()), field.name()))
             .collect::<Vec<_>>();
-        let spec = crate::plan::JoinSpec::new(JoinType::Inner, keys)
+        let spec = JoinSpec::new(JoinType::Inner, keys)
             .with_output_projection(projection)
-            .with_null_equality(crate::plan::JoinNullEquality::NullsDoNotMatch);
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch);
         self.push_node(
             PlanNode::Join(JoinNode { inputs: [filtered_child_new, filtering_new], spec }),
             PlanFacts::device(filtered_schema, SchemaBehavior::Join),
@@ -697,13 +697,13 @@ fn parent_join_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
-        && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
+        && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
 }
 
 fn residual_pushdown_join_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && join.spec.residual_predicate.is_some()
-        && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
+        && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
 }
 
 fn residual_filter_pushdown_target_supported(plan: &QueryPlan, node_id: NodeId) -> bool {
@@ -712,9 +712,9 @@ fn residual_filter_pushdown_target_supported(plan: &QueryPlan, node_id: NodeId) 
     };
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(_) => OptimizerSourceTargetPolicy::default()
+            SourceNode::LocalParquet(_) => OptimizerSourceTargetPolicy::default()
                 .target_is_dimension_sized(estimated_output_rows(plan, node_id), estimated_output_bytes(plan, node_id)),
-            crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => true,
+            SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => true,
         },
         PlanNode::Filter(filter) => residual_filter_pushdown_target_supported(plan, filter.input),
         PlanNode::Projection(projection) => residual_filter_pushdown_target_supported(plan, projection.input),
@@ -971,7 +971,7 @@ fn remap_projection_predicate(predicate: &Expr, projection: &ProjectionNode) -> 
 
 fn remap_single_side_join_output_predicate(predicate: &Expr, join: &JoinNode) -> Option<(JoinSide, Expr)> {
     if join.spec.join_type != JoinType::Inner
-        || join.spec.null_equality != crate::plan::JoinNullEquality::NullsDoNotMatch
+        || join.spec.null_equality != JoinNullEquality::NullsDoNotMatch
         || join.spec.output_projection.is_empty()
     {
         return None;
@@ -1078,7 +1078,7 @@ fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef
             branches
                 .iter()
                 .map(|branch| {
-                    Some(crate::expr::CaseWhen::new(
+                    Some(CaseWhen::new(
                         remap_unqualified_columns(&branch.when, map_column)?,
                         remap_unqualified_columns(&branch.then, map_column)?,
                     ))
@@ -1098,7 +1098,7 @@ fn combine_optional_filters(
     left: Option<Expr>,
     op: BinaryOp,
     right: Option<Expr>,
-    output_type: Option<arrow::datatypes::DataType>,
+    output_type: Option<ArrowDataType>,
 ) -> Option<Expr> {
     match (left, right) {
         (Some(left), Some(right)) => {
@@ -1254,7 +1254,7 @@ fn strip_input_qualifiers(expr: &Expr) -> Expr {
         Expr::Case { branches, else_expr } => Expr::case(
             branches
                 .iter()
-                .map(|branch| crate::expr::CaseWhen {
+                .map(|branch| CaseWhen {
                     when: strip_input_qualifiers(&branch.when),
                     then: strip_input_qualifiers(&branch.then),
                 })
@@ -1318,7 +1318,7 @@ fn parent_keys(join: &JoinNode, side: JoinSide) -> Vec<ColumnRef> {
 fn parent_projection_for_preserved_side(
     join: &JoinNode,
     side: JoinSide,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &SchemaRef,
 ) -> Option<Vec<ProjectionOutput>> {
     if join.spec.output_projection.len() != output_schema.fields().len() {
         return None;
@@ -1469,7 +1469,7 @@ mod tests {
         join
     }
 
-    fn filter_node(plan: &QueryPlan, node_id: NodeId) -> &crate::plan::FilterNode {
+    fn filter_node(plan: &QueryPlan, node_id: NodeId) -> &FilterNode {
         let Some(node) = plan.node(node_id) else {
             panic!("missing node {node_id}");
         };

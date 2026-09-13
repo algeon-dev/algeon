@@ -1,3 +1,5 @@
+use query_engine::plan::NodeId;
+
 use super::*;
 
 include!("graph_algorithm_execution/support.rs");

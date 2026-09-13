@@ -10,7 +10,17 @@ use super::{
     resources::QueryServiceResources,
     *,
 };
-use crate::runtime::{GpuExecutorLease, gpu::DeviceContext};
+#[cfg(feature = "cugraph")]
+use crate::runtime::query_service::LakehouseCacheFillEventSink;
+use crate::{
+    metrics::TraceId,
+    observability::{AttemptAdmissionWaitFact, RuntimeStreamLeaseScope},
+    runtime::{
+        GpuExecutorLease, StreamPermitClass,
+        gpu::{DeviceContext, GrantIdentity},
+        gpu_execution_pool::GpuExecutionJobClass,
+    },
+};
 
 mod lifetime;
 mod release;
@@ -29,7 +39,7 @@ pub struct QueryHandle {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
-    pub(super) admission_wait_fact: Option<crate::observability::AttemptAdmissionWaitFact>,
+    pub(super) admission_wait_fact: Option<AttemptAdmissionWaitFact>,
     pub(super) device_budget_bytes: u64,
     pub(super) device_ordinal: usize,
     pub(super) lifetime: Arc<QueryHandleLifetime>,
@@ -54,7 +64,7 @@ impl QueryHandle {
     /// Returns the final controller-owned finite-overtake state for this
     /// queued admission, when the handle was admitted through the bounded
     /// queue. Direct non-queued admission intentionally has no such fact.
-    pub fn admission_wait_fact(&self) -> Option<crate::observability::AttemptAdmissionWaitFact> {
+    pub fn admission_wait_fact(&self) -> Option<AttemptAdmissionWaitFact> {
         self.admission_wait_fact
     }
 
@@ -69,7 +79,7 @@ impl QueryHandle {
     }
 
     /// Immutable attempt and ledger generation committed for this admission.
-    pub fn grant_identity(&self) -> Result<crate::runtime::gpu::GrantIdentity> {
+    pub fn grant_identity(&self) -> Result<GrantIdentity> {
         self.lifetime
             .lock_envelope()?
             .as_ref()
@@ -173,8 +183,8 @@ impl QueryHandle {
         };
         let pool = self.gpu_execution_pool()?;
         let job_class = match setup_claim {
-            ContextSetupClaim::Root => super::super::gpu_execution_pool::GpuExecutionJobClass::Lifecycle,
-            ContextSetupClaim::Auxiliary => super::super::gpu_execution_pool::GpuExecutionJobClass::Execution,
+            ContextSetupClaim::Root => GpuExecutionJobClass::Lifecycle,
+            ContextSetupClaim::Auxiliary => GpuExecutionJobClass::Execution,
             ContextSetupClaim::WaitForRoot => {
                 unreachable!("context setup reservation resolves waits before scheduling")
             },
@@ -237,7 +247,7 @@ impl QueryHandle {
         let stream_acquire_deadline = self.context_stream_acquire_deadline(&cancellation);
         self.acquire_context_with_cancellation_and_stream_scope(
             cancellation,
-            crate::observability::RuntimeStreamLeaseScope::default(),
+            RuntimeStreamLeaseScope::default(),
             setup_claim,
             stream_acquire_deadline,
             None,
@@ -247,7 +257,7 @@ impl QueryHandle {
     fn acquire_context_with_cancellation_and_stream_scope(
         &self,
         cancellation: ExecutionCancellation,
-        stream_scope: crate::observability::RuntimeStreamLeaseScope,
+        stream_scope: RuntimeStreamLeaseScope,
         setup_claim: ContextSetupClaim,
         stream_acquire_deadline: Instant,
         attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
@@ -328,7 +338,7 @@ impl QueryHandle {
         cancellation: &ExecutionCancellation,
         device: &DeviceContext,
         template: ExecutionContext,
-        stream_scope: crate::observability::RuntimeStreamLeaseScope,
+        stream_scope: RuntimeStreamLeaseScope,
         stream_acquire_deadline: Instant,
         attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
     ) -> Result<ExecutionContext> {
@@ -346,7 +356,7 @@ impl QueryHandle {
             "query_engine.query_service.context.stream_acquire",
             self.lifetime.observation.clone(),
             stream_scope,
-            crate::runtime::StreamPermitClass::Auxiliary,
+            StreamPermitClass::Auxiliary,
         )?;
         validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
         Ok(template
@@ -358,7 +368,7 @@ impl QueryHandle {
     fn bind_root_execution_context(
         &self,
         cancellation: ExecutionCancellation,
-        stream_scope: crate::observability::RuntimeStreamLeaseScope,
+        stream_scope: RuntimeStreamLeaseScope,
         device: &DeviceContext,
         service: &QueryServiceInner,
         resources: &QueryServiceResources,
@@ -394,8 +404,7 @@ impl QueryHandle {
         // once for the whole attempt lifetime.
         let observation_owner = self.lifetime.observation_owner();
         let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
-        let trace_id =
-            self.lifetime.observation.trace_id().map(|trace_id| crate::metrics::TraceId::new(trace_id.as_str()));
+        let trace_id = self.lifetime.observation.trace_id().map(|trace_id| TraceId::new(trace_id.as_str()));
         let runtime_observation = self.lifetime.observation.clone();
         let context = ExecutionContext::from_parts(ExecutionContextParts {
             service_epoch: Some(service.service_epoch.clone()),
@@ -432,7 +441,7 @@ impl QueryHandle {
             service_stream_pool: device.stream_pool().clone(),
             lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
             lakehouse_cache_fill_concurrency: resources.lakehouse_cache_fill_concurrency.clone(),
-            lakehouse_cache_fill_events: super::LakehouseCacheFillEventSink::default(),
+            lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             object_store_control_runtime: Arc::clone(&resources.object_store_control_runtime),
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),

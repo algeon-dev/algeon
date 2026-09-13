@@ -15,14 +15,15 @@ use cudf::{
     runtime::CudaStream,
     testing::prelude::*,
 };
+use cudf_sys::test_support;
 use rapids_interop::{
     CompletionAuthority, ExportProfile, InteropErrorKind, LeaseCompletionResult, Placement, ProducerReadiness,
     ReadStartAuthority, ReleaseSynchronization, TransferCompletionRule,
 };
 
 use crate::common::{
-    assert_duplicate_name_error, column_from_slice, error_context_value, interop_error_context_value,
-    lock_event_observation,
+    assert_duplicate_name_error, column_from_slice, dataframe_from_columns, error_context_value,
+    interop_error_context_value, lock_event_observation, run_named_cases,
 };
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
@@ -47,30 +48,29 @@ fn first_two_test_devices() -> (DeviceId, DeviceId) {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
+    unsafe { test_support::cudf_test_event_reset_observation() };
 }
 
 fn observed_event_synchronize_call_count() -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_event_synchronize_call_count(&mut out) };
+    let status = unsafe { test_support::cudf_test_event_synchronize_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
     out
 }
 
 fn block_event_synchronize() {
-    unsafe { cudf_sys::test_support::cudf_test_event_block_synchronize() };
+    unsafe { test_support::cudf_test_event_block_synchronize() };
 }
 
 fn unblock_event_synchronize() {
-    unsafe { cudf_sys::test_support::cudf_test_event_unblock_synchronize() };
+    unsafe { test_support::cudf_test_event_unblock_synchronize() };
 }
 
 struct EventSynchronizeBlockGuard;
@@ -510,7 +510,7 @@ fn ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it
     // Ordinary DataFrame rejects mixed provenance at construction time.
     let left = column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(7301).unwrap();
     let right = column_from_slice(&[4i32, 5, 6]).unwrap().testing_rebind_execution_domain_explicit(7302).unwrap();
-    let frame = crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]);
+    let frame = dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]);
     assert!(frame.is_err(), "DataFrame::new should reject mixed-provenance columns");
 
     // The same provenance layout succeeds through the partitioned export path,
@@ -592,7 +592,7 @@ fn partitioned_dataframe_export_rejects_row_count_mismatch_with_canonical_facts(
 
 #[test]
 fn partitioned_export_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order", partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order),
         ("partitioned_dataframe_export_partition_wrapper_activates_directly", partitioned_dataframe_export_partition_wrapper_activates_directly),
         ("partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_stable_contract", partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_stable_contract),

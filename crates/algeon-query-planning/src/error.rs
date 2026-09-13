@@ -13,7 +13,10 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::correlation::{QueryId, TraceId};
+use crate::{
+    correlation::{QueryId, TraceId},
+    triage::TriageCode,
+};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -381,39 +384,39 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
 }
 
 #[doc(hidden)]
-pub const fn triage_code_for_query_error(code: QueryErrorCode) -> crate::triage::TriageCode {
+pub const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageCode {
     match code {
-        QueryErrorCode::Cancelled => crate::triage::TriageCode::Cancelled,
-        QueryErrorCode::UnsupportedPlanShape => crate::triage::TriageCode::UnsupportedPlanShape,
-        QueryErrorCode::UnsupportedOperator => crate::triage::TriageCode::UnsupportedOperator,
-        QueryErrorCode::UnsupportedExpression => crate::triage::TriageCode::UnsupportedExpression,
-        QueryErrorCode::UnsupportedType => crate::triage::TriageCode::UnsupportedType,
-        QueryErrorCode::InvalidPlan => crate::triage::TriageCode::InvalidPlan,
+        QueryErrorCode::Cancelled => TriageCode::Cancelled,
+        QueryErrorCode::UnsupportedPlanShape => TriageCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedOperator => TriageCode::UnsupportedOperator,
+        QueryErrorCode::UnsupportedExpression => TriageCode::UnsupportedExpression,
+        QueryErrorCode::UnsupportedType => TriageCode::UnsupportedType,
+        QueryErrorCode::InvalidPlan => TriageCode::InvalidPlan,
         QueryErrorCode::InvalidAttemptCorrelation
         | QueryErrorCode::GraphInputInvalid
-        | QueryErrorCode::CudfInvalidInput => crate::triage::TriageCode::InvalidInput,
-        QueryErrorCode::CudfUnsupported => crate::triage::TriageCode::UnsupportedPlanShape,
+        | QueryErrorCode::CudfInvalidInput => TriageCode::InvalidInput,
+        QueryErrorCode::CudfUnsupported => TriageCode::UnsupportedPlanShape,
         QueryErrorCode::CudfResourceExhausted
         | QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::QueryMemoryLimitExceeded
         | QueryErrorCode::DeviceOutOfMemory
-        | QueryErrorCode::DeviceAllocationFailed => crate::triage::TriageCode::ResourceExhausted,
+        | QueryErrorCode::DeviceAllocationFailed => TriageCode::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
         | QueryErrorCode::CudfDependencyFailure
-        | QueryErrorCode::AlgorithmDidNotConverge => crate::triage::TriageCode::DependencyFailure,
-        QueryErrorCode::CudfInvariantViolation => crate::triage::TriageCode::InvariantViolation,
-        QueryErrorCode::ServiceOverloaded => crate::triage::TriageCode::ServiceOverloaded,
-        QueryErrorCode::Internal => crate::triage::TriageCode::Internal,
+        | QueryErrorCode::AlgorithmDidNotConverge => TriageCode::DependencyFailure,
+        QueryErrorCode::CudfInvariantViolation => TriageCode::InvariantViolation,
+        QueryErrorCode::ServiceOverloaded => TriageCode::ServiceOverloaded,
+        QueryErrorCode::Internal => TriageCode::Internal,
         QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
-        | QueryErrorCode::SourceTemporaryFailure => crate::triage::TriageCode::SourceFailure,
-        QueryErrorCode::MemoryReservationFailed => crate::triage::TriageCode::MemoryReservationDenied,
-        QueryErrorCode::QueryBudgetUnavailable => crate::triage::TriageCode::MemoryReservationDenied,
-        QueryErrorCode::DeviceFault | QueryErrorCode::CleanupFailed => crate::triage::TriageCode::DependencyFailure,
-        QueryErrorCode::InternalInvariantViolation => crate::triage::TriageCode::InvariantViolation,
+        | QueryErrorCode::SourceTemporaryFailure => TriageCode::SourceFailure,
+        QueryErrorCode::MemoryReservationFailed => TriageCode::MemoryReservationDenied,
+        QueryErrorCode::QueryBudgetUnavailable => TriageCode::MemoryReservationDenied,
+        QueryErrorCode::DeviceFault | QueryErrorCode::CleanupFailed => TriageCode::DependencyFailure,
+        QueryErrorCode::InternalInvariantViolation => TriageCode::InvariantViolation,
     }
 }
 

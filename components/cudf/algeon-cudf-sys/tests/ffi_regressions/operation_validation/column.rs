@@ -1,5 +1,7 @@
 use std::{os::raw::c_void, ptr};
 
+use cudf_sys::test_support;
+
 use super::*;
 
 #[test]
@@ -10,12 +12,7 @@ fn test_interleave_columns_rejects_oversized_output_before_allocation() {
     let mut second: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     for out in [&mut first, &mut second] {
         let status = unsafe {
-            cudf_sys::test_support::cudf_test_column_view_create_synthetic_fixed_width(
-                cudf_sys::CUDF_TYPE_INT32,
-                rows,
-                0,
-                out,
-            )
+            test_support::cudf_test_column_view_create_synthetic_fixed_width(cudf_sys::CUDF_TYPE_INT32, rows, 0, out)
         };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         assert!(!out.is_null());

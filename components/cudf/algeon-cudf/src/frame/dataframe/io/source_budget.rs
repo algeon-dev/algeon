@@ -11,7 +11,10 @@ use crate::{
     internal::hash::fast_hash_set_with_capacity,
     io::{
         parquet::ParquetReadEvidence,
-        source::{LocalParquetSource, LocalParquetSourceKind, SourceChunk, SourceReadMode},
+        source::{
+            LocalParquetSource, LocalParquetSourceKind, PartitionColumn, SourceChunk, SourceColumn, SourceOutputColumn,
+            SourceReadMode, SourceRequiredColumn,
+        },
     },
 };
 
@@ -89,15 +92,15 @@ fn comma_separated_usize(values: &[usize]) -> String {
     values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-fn source_column_names<'a>(columns: impl IntoIterator<Item = &'a crate::io::source::SourceOutputColumn>) -> String {
+fn source_column_names<'a>(columns: impl IntoIterator<Item = &'a SourceOutputColumn>) -> String {
     columns.into_iter().map(|column| column.name()).collect::<Vec<_>>().join(",")
 }
 
-fn required_column_names<'a>(columns: impl IntoIterator<Item = &'a crate::io::source::SourceRequiredColumn>) -> String {
+fn required_column_names<'a>(columns: impl IntoIterator<Item = &'a SourceRequiredColumn>) -> String {
     columns.into_iter().map(|column| column.name()).collect::<Vec<_>>().join(",")
 }
 
-fn partition_column_names<'a>(columns: impl IntoIterator<Item = &'a crate::io::source::PartitionColumn>) -> String {
+fn partition_column_names<'a>(columns: impl IntoIterator<Item = &'a PartitionColumn>) -> String {
     columns.into_iter().map(|column| column.name()).collect::<Vec<_>>().join(",")
 }
 
@@ -136,10 +139,7 @@ pub(super) fn source_preflight_row_count(source: &LocalParquetSource, chunk: &So
         .transpose()
 }
 
-pub(super) fn source_preflight_column_bytes(
-    column: &crate::io::source::SourceColumn,
-    rows: usize,
-) -> Result<Option<usize>> {
+pub(super) fn source_preflight_column_bytes(column: &SourceColumn, rows: usize) -> Result<Option<usize>> {
     let Some(element_size) = column.data_type().id().size_in_bytes()? else {
         return Ok(None);
     };

@@ -8,6 +8,7 @@ use cudf::{
             DeviceArrowColumnExport, DeviceArrowColumnOwnedAbiParts, DeviceArrowColumnRawParts, DeviceArrowTableExport,
             DeviceArrowTableOwnedAbiParts, DeviceArrowTableRawParts, ForeignDeviceArrowColumn, ForeignDeviceArrowTable,
         },
+        cuda_event_handle, cuda_stream_handle,
         runtime_release::{
             OwnedColumnTransferReleaser, OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser,
         },
@@ -115,12 +116,8 @@ fn prepared_column_export_can_activate_and_complete_on_worker_thread() {
             .spawn(move || {
                 let lease = export
                     .try_activate_read_lease(
-                        ReadStartAuthority::ConsumerStream {
-                            stream: cudf::interop::cuda_stream_handle(&consumer_stream).unwrap(),
-                        },
-                        CompletionAuthority::SameDeviceStream {
-                            stream: cudf::interop::cuda_stream_handle(&consumer_stream).unwrap(),
-                        },
+                        ReadStartAuthority::ConsumerStream { stream: cuda_stream_handle(&consumer_stream).unwrap() },
+                        CompletionAuthority::SameDeviceStream { stream: cuda_stream_handle(&consumer_stream).unwrap() },
                     )
                     .unwrap();
 
@@ -182,10 +179,10 @@ fn prepared_table_export_survives_cross_thread_cross_device_completion_stress() 
                     let lease = export
                         .try_activate_read_lease(
                             ReadStartAuthority::ConsumerStream {
-                                stream: cudf::interop::cuda_stream_handle(&consumer_stream).unwrap(),
+                                stream: cuda_stream_handle(&consumer_stream).unwrap(),
                             },
                             CompletionAuthority::CrossDeviceEvent {
-                                event: cudf::interop::cuda_event_handle(&consumer_event).unwrap(),
+                                event: cuda_event_handle(&consumer_event).unwrap(),
                             },
                         )
                         .unwrap();

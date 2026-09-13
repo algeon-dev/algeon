@@ -9,7 +9,7 @@ fn count_non_null_pruning_rewrites_footer_proven_count_column_to_retained_carrie
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.considered_count, 1);
@@ -61,7 +61,7 @@ fn count_non_null_pruning_prunes_physical_read_columns_when_source_uses_logical_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 1);
@@ -103,7 +103,7 @@ fn count_non_null_pruning_remaps_retained_synthetic_source_refs_and_partition_va
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 1);
@@ -121,7 +121,7 @@ fn count_non_null_pruning_remaps_retained_synthetic_source_refs_and_partition_va
     let SourceNode::LocalParquet(source) = source.as_ref() else {
         panic!("expected local Parquet source");
     };
-    validate_local_parquet_source(source, query_engine::rapids_backend::rapids_analysis_context()).unwrap();
+    validate_local_parquet_source(source, rapids_analysis_context()).unwrap();
     assert_eq!(source.read_columns, vec!["k"]);
     assert_eq!(source.read_column_file_indices, vec![0]);
     assert_eq!(source.projected_output_columns, vec!["k", "p1", "m1"]);
@@ -142,7 +142,8 @@ fn count_non_null_pruning_does_not_mutate_sources_when_no_count_rewrite_applies(
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result =
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -157,7 +158,8 @@ fn count_non_null_pruning_keeps_count_column_when_footer_proof_is_missing() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result =
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -178,7 +180,8 @@ fn count_non_null_pruning_keeps_grouped_count_column_when_no_retained_non_null_c
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result =
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -192,7 +195,7 @@ fn count_non_null_pruning_keeps_grouped_count_column_when_no_retained_non_null_c
 fn count_non_null_pruning_source_adjacent_plan(
     carrier_null_counts: Option<Vec<Option<u64>>>,
     count_null_counts: Option<Vec<Option<u64>>>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("o_custkey", DataType::Int32, false),
         Field::new("o_orderkey", DataType::Int32, false),
@@ -250,7 +253,7 @@ fn count_non_null_pruning_source_adjacent_plan(
     builder.finish_with_host_sink(aggregate)
 }
 
-fn count_non_null_pruning_synthetic_source_plan() -> query_engine::plan::QueryPlan {
+fn count_non_null_pruning_synthetic_source_plan() -> QueryPlan {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("cnt", DataType::Int32, false),
@@ -320,7 +323,7 @@ fn count_non_null_pruning_synthetic_source_plan() -> query_engine::plan::QueryPl
     builder.finish_with_host_sink(aggregate)
 }
 
-fn non_count_projection_pruning_plan() -> query_engine::plan::QueryPlan {
+fn non_count_projection_pruning_plan() -> QueryPlan {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -357,7 +360,7 @@ fn non_count_projection_pruning_plan() -> query_engine::plan::QueryPlan {
     builder.finish_with_host_sink(aggregate)
 }
 
-fn count_non_null_pruning_overridden_source_plan() -> query_engine::plan::QueryPlan {
+fn count_non_null_pruning_overridden_source_plan() -> QueryPlan {
     let physical_schema = Arc::new(Schema::new(vec![
         Field::new("raw_custkey", DataType::Int32, false),
         Field::new("raw_orderkey", DataType::Int32, false),

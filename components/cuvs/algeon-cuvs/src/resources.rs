@@ -7,7 +7,10 @@ use std::{
     },
 };
 
-use cudf::{Runtime, runtime::BindingExtensionLease};
+use cudf::{
+    Runtime,
+    runtime::{BindingExtensionInitError, BindingExtensionLease, DeviceEntryGuard, ExecutionBindingId},
+};
 
 use crate::error::{Result, check_cuvs, from_cudf, from_interop, invalid_state, unsupported};
 
@@ -24,8 +27,8 @@ impl NativeResources {
     fn create(device: cudf::DeviceId, stream: usize, memory_resource: usize) -> Result<Self> {
         cuvs_sys::validate_runtime_version()
             .map_err(|error| invalid_state(CREATE_OPERATION, error.to_string()).set_source(error))?;
-        let _device = cudf::runtime::DeviceEntryGuard::enter(device, CREATE_OPERATION)
-            .map_err(|error| from_cudf(CREATE_OPERATION, error))?;
+        let _device =
+            DeviceEntryGuard::enter(device, CREATE_OPERATION).map_err(|error| from_cudf(CREATE_OPERATION, error))?;
         let mut raw = 0;
         unsafe { check_cuvs(cuvs_sys::cuvsResourcesCreate(&mut raw), CREATE_OPERATION)? };
         if raw == 0 {
@@ -57,7 +60,7 @@ impl Drop for NativeResources {
         if raw == 0 {
             return;
         }
-        if let Ok(_device) = cudf::runtime::DeviceEntryGuard::enter(self.device, "CuvsResources::drop") {
+        if let Ok(_device) = DeviceEntryGuard::enter(self.device, "CuvsResources::drop") {
             unsafe {
                 let _ = cuvs_sys::cuvsResourcesDestroy(raw);
             }
@@ -109,8 +112,8 @@ impl CuvsResources {
                 NativeResources::create(runtime.device(), stream, memory_resource)
             })
             .map_err(|error| match error {
-                cudf::runtime::BindingExtensionInitError::Lifecycle(error) => from_cudf(CREATE_OPERATION, error),
-                cudf::runtime::BindingExtensionInitError::Factory(error) => error,
+                BindingExtensionInitError::Lifecycle(error) => from_cudf(CREATE_OPERATION, error),
+                BindingExtensionInitError::Factory(error) => error,
             })?;
         let resources = Self { runtime, native, _not_send_sync: PhantomData };
         resources.validate_exact_binding(CREATE_OPERATION)?;
@@ -125,7 +128,7 @@ impl CuvsResources {
         self.runtime.device()
     }
 
-    pub fn binding_id(&self) -> cudf::runtime::ExecutionBindingId {
+    pub fn binding_id(&self) -> ExecutionBindingId {
         self.runtime.binding_id()
     }
 
@@ -161,8 +164,7 @@ impl CuvsResources {
         call: impl FnOnce(cuvs_sys::cuvsResources_t) -> Result<T>,
     ) -> Result<T> {
         let binding = self.runtime.execution_binding().map_err(|error| from_interop(operation, error))?;
-        let _device = cudf::runtime::DeviceEntryGuard::enter(self.device(), operation)
-            .map_err(|error| from_cudf(operation, error))?;
+        let _device = DeviceEntryGuard::enter(self.device(), operation).map_err(|error| from_cudf(operation, error))?;
         let guard = self.native.enter(operation).map_err(|error| from_cudf(operation, error))?;
         let native = guard.value();
         if binding.device() != native.device.ordinal() as i32

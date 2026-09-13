@@ -1,11 +1,13 @@
 //! Attempt-owned auxiliary stream slot accounting.
 
 use std::{
+    sync,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::{sync::Notify, time::timeout};
 
 use super::ExecutionCancellation;
 
@@ -25,7 +27,7 @@ pub struct AttemptAuxiliarySlots {
     capacity: usize,
     state: Mutex<AttemptAuxiliarySlotState>,
     available: Condvar,
-    async_available: tokio::sync::Notify,
+    async_available: Notify,
 }
 
 #[derive(Debug)]
@@ -49,7 +51,7 @@ impl AttemptAuxiliarySlots {
             capacity: capacity.max(1),
             state: Mutex::new(AttemptAuxiliarySlotState { in_use: 0 }),
             available: Condvar::new(),
-            async_available: tokio::sync::Notify::new(),
+            async_available: Notify::new(),
         })
     }
 
@@ -126,7 +128,7 @@ impl AttemptAuxiliarySlots {
             }
             let wait =
                 deadline.saturating_duration_since(Instant::now()).min(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL);
-            let _ = tokio::time::timeout(wait, available).await;
+            let _ = timeout(wait, available).await;
         }
     }
 
@@ -186,13 +188,13 @@ impl AttemptAuxiliarySlots {
     #[cfg(any(test, feature = "test-hooks"))]
     #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate auxiliary-slot tests"))]
     fn in_use_for_test(&self) -> usize {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).in_use
+        self.state.lock().unwrap_or_else(sync::PoisonError::into_inner).in_use
     }
 }
 
 impl Drop for AttemptAuxiliaryPermit {
     fn drop(&mut self) {
-        let mut state = self.slots.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.slots.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         debug_assert!(state.in_use > 0, "attempt auxiliary-slot permit underflow");
         state.in_use = state.in_use.saturating_sub(1);
         self.slots.available.notify_one();

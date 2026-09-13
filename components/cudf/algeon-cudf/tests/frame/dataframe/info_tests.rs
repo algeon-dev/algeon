@@ -15,7 +15,7 @@ use cudf::{
 };
 use cudf_sys::test_support::{cudf_test_exec_last_stream_value, cudf_test_exec_reset_observation};
 
-use crate::common::sample_runtime;
+use crate::common::{dataframe_from_columns, nullable_series, run_named_cases, sample_runtime, series};
 
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };
@@ -33,9 +33,9 @@ fn nullable_bitmask_payload_bytes(len: usize) -> usize {
 }
 
 fn sample_info_frame() -> DataFrame {
-    let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
-    let maybe = crate::common::nullable_series::<i32>("maybe", &[10, 0, 30], &[true, false, true]).unwrap();
-    let names = crate::common::series("names", &["ab", "cde", ""]).unwrap();
+    let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
+    let maybe = nullable_series::<i32>("maybe", &[10, 0, 30], &[true, false, true]).unwrap();
+    let names = series("names", &["ab", "cde", ""]).unwrap();
 
     DataFrame::from_series([("ids", ids), ("maybe", maybe), ("names", names)]).unwrap()
 }
@@ -215,7 +215,7 @@ fn test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_
 }
 
 fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
-    let plain = crate::common::series("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
+    let plain = series("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
     let dict = dictionary::encode(&plain.testing_view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(dict).unwrap();
     let df = DataFrame::from_series([("category", category)]).unwrap();
@@ -243,7 +243,7 @@ fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
 }
 
 fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
-    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
+    let df = dataframe_from_columns(vec![], vec![]).unwrap();
 
     let info = df.info_with(InfoDetail::ALL).unwrap();
 
@@ -277,7 +277,7 @@ fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_
 
 #[test]
 fn info_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("backing_allocations_preserve_shared_column_identity", backing_allocations_preserve_shared_column_identity),
         ("backing_allocations_identify_fresh_sliced_output", backing_allocations_identify_fresh_sliced_output),
         ("backing_allocations_include_nested_children_once", backing_allocations_include_nested_children_once),

@@ -4,7 +4,7 @@
 use std::ffi::CStr;
 use std::ffi::{CString, c_char, c_int};
 
-use crate::{execution_contracts::DevicePlacement, runtime::ExecutionContext};
+use crate::{execution_contracts::DevicePlacement, observability::AttemptId, runtime::ExecutionContext};
 
 unsafe extern "C" {
     fn nvtxRangePushA(message: *const c_char) -> c_int;
@@ -52,7 +52,7 @@ pub(in crate::exec) fn attempt_execution_range(context: &ExecutionContext) -> Op
     Some(NvtxRange::new(attempt_execution_label(attempt_id, device_ordinal)))
 }
 
-fn attempt_execution_label(attempt_id: crate::observability::AttemptId, device_ordinal: usize) -> CString {
+fn attempt_execution_label(attempt_id: AttemptId, device_ordinal: usize) -> CString {
     CString::new(format!(
         "algeon_datafusion.attempt_gpu_execution attempt_id={attempt_id} device_ordinal={device_ordinal}"
     ))
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn attempt_execution_label_includes_the_engine_attempt_and_device() {
-        let attempt_id = crate::observability::AttemptId::mint();
+        let attempt_id = AttemptId::mint();
         let label = attempt_execution_label(attempt_id, 7);
 
         assert_eq!(

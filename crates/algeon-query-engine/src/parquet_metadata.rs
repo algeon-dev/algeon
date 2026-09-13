@@ -17,7 +17,10 @@ use parquet::file::{
     FOOTER_SIZE,
     metadata::{FooterTail, ParquetMetaData, ParquetMetaDataReader},
 };
-use query_planning::error::{QueryError, QueryErrorCode, Result};
+use query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    source::redacted_object_store_path_diagnostic,
+};
 
 /// Speculative tail size for footer-only object-store metadata reads.
 pub const PARQUET_FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
@@ -482,7 +485,7 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
 }
 
 fn object_store_path_fact(location: &ObjectStorePath) -> String {
-    query_planning::source::redacted_object_store_path_diagnostic(location.as_ref())
+    redacted_object_store_path_diagnostic(location.as_ref())
 }
 
 fn local_metadata_io_error(message: &'static str, error: std::io::Error, path: &Path) -> QueryError {
@@ -514,7 +517,10 @@ mod tests {
         record_batch::RecordBatch,
     };
     use async_trait::async_trait;
-    use futures::{StreamExt, stream::BoxStream};
+    use futures::{
+        StreamExt,
+        stream::{BoxStream, empty},
+    };
     use object_store::{
         CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStoreExt,
         PutMultipartOptions, PutOptions, PutPayload, PutResult, memory::InMemory, path::Path as ObjectStorePath,
@@ -677,11 +683,11 @@ mod tests {
             &self,
             _locations: BoxStream<'static, object_store::Result<ObjectStorePath>>,
         ) -> BoxStream<'static, object_store::Result<ObjectStorePath>> {
-            futures::stream::empty().boxed()
+            empty().boxed()
         }
 
         fn list(&self, _prefix: Option<&ObjectStorePath>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-            futures::stream::empty().boxed()
+            empty().boxed()
         }
 
         async fn list_with_delimiter(&self, _prefix: Option<&ObjectStorePath>) -> object_store::Result<ListResult> {

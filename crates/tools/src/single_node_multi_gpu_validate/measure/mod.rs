@@ -20,6 +20,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile,
         AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
+    cugraph_sql::CugraphSqlConfig,
     error::DataFusionErrorExt,
     native_exec::AlgeonNativeExecutionConfig,
     planner::DataFusionCpuExecutionPolicy,
@@ -29,7 +30,11 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use datafusion::{datasource::MemTable, execution::SessionStateBuilder, prelude::SessionContext};
+use datafusion::{
+    datasource::MemTable,
+    execution::SessionStateBuilder,
+    prelude::{SessionConfig, SessionContext},
+};
 use futures::StreamExt as _;
 use query_engine::{
     metrics::{BackendMetric, backend_metric_descriptors},
@@ -39,10 +44,17 @@ use query_engine::{
     },
     runtime::{
         BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptOutcome, BackendHistogramSnapshot,
-        BackendMetricsSnapshot,
+        BackendMetricsSnapshot, cache_observation_fingerprint,
     },
 };
 use serde_json::Value;
+use tokio::runtime::Builder;
+use workloads::{
+    clickbench::{discover_clickbench_layout, register_clickbench_table},
+    graph::register_dblp_tables,
+    tpcds::register_tpcds_tables,
+    tpch::register_tpch_tables,
+};
 
 #[cfg(test)]
 use super::aggregate::scenario_clauses_pass;
@@ -214,7 +226,7 @@ pub(super) fn run_on_owned_runtime(
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
-                let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+                let runtime = Builder::new_multi_thread().enable_all().build()?;
                 runtime.block_on(run_measured(profile, trace, probes))
             })
             .join()
@@ -801,9 +813,7 @@ async fn run_cache_same_key_cohort(
     let query = queries.get(query_index).ok_or("cache same-key cohort query index is out of bounds")?;
     let cohort_id = format!("s7-same-key-{}-ordinal-{target_device_ordinal}", query.label);
     let expected_correlation_fingerprints = (0..cohort_width)
-        .map(|sequence| {
-            query_engine::runtime::cache_observation_fingerprint(&format!("{cohort_id}-attempt-{sequence}"))
-        })
+        .map(|sequence| cache_observation_fingerprint(&format!("{cohort_id}-attempt-{sequence}")))
         .collect::<Vec<_>>();
     let cache_reports_before = cache_reports_snapshot(backend)?;
     let source_cache_events_before = cache_source_event_snapshots(backend)?;
@@ -1075,28 +1085,25 @@ pub(super) async fn install_sessions(
             // parallel byte-range grouping cannot reproduce a declared scan
             // ordering. The GPU-only cells never use CPU parallelism, and the
             // native device pipeline parallelizes reads internally.
-            let session_config = datafusion::prelude::SessionConfig::new().with_target_partitions(1);
+            let session_config = SessionConfig::new().with_target_partitions(1);
             let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
             let builder = backend.install_on(builder)?;
-            let builder = if needs_cugraph_sql {
-                builder.try_with_cugraph_sql(algeon_datafusion::cugraph_sql::CugraphSqlConfig::default())?
-            } else {
-                builder
-            };
+            let builder =
+                if needs_cugraph_sql { builder.try_with_cugraph_sql(CugraphSqlConfig::default())? } else { builder };
             let ctx = SessionContext::new_with_state(builder.build());
             match workload.kind {
                 super::profile::FixtureKind::Tpch => {
-                    workloads::tpch::register_tpch_tables(&ctx, &workload.path).await?;
+                    register_tpch_tables(&ctx, &workload.path).await?;
                 },
                 super::profile::FixtureKind::Tpcds => {
-                    workloads::tpcds::register_tpcds_tables(&ctx, &workload.path).await?;
+                    register_tpcds_tables(&ctx, &workload.path).await?;
                 },
                 super::profile::FixtureKind::Clickbench => {
-                    let layout = workloads::clickbench::discover_clickbench_layout(&workload.path)?;
-                    workloads::clickbench::register_clickbench_table(&ctx, &layout).await?;
+                    let layout = discover_clickbench_layout(&workload.path)?;
+                    register_clickbench_table(&ctx, &layout).await?;
                 },
                 super::profile::FixtureKind::Dblp => {
-                    workloads::graph::register_dblp_tables(&ctx, &workload.path).await?;
+                    register_dblp_tables(&ctx, &workload.path).await?;
                 },
             }
             if needs_feature_off_probe {
@@ -1130,6 +1137,8 @@ fn elapsed_ns(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use query_engine::{harness::StableFnv1a64, observability::AttemptId};
+
     use super::*;
 
     #[test]
@@ -1216,8 +1225,8 @@ mod tests {
 
     #[test]
     fn sealed_engine_composed_projection_is_copied_without_runner_byte_derivation() {
-        let attempt_id = query_engine::observability::AttemptId::mint();
-        let mut hasher = query_engine::harness::StableFnv1a64::new();
+        let attempt_id = AttemptId::mint();
+        let mut hasher = StableFnv1a64::new();
         hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1);
         hasher.update_field("10");
         hasher.update_field("2");

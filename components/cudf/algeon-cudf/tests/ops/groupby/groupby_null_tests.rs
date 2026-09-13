@@ -10,14 +10,14 @@
 
 use cudf::{AggSpec, DataFrame, GroupByAgg};
 
-use crate::common::{column_from_slice, column_from_slice_nullable};
+use crate::common::{column_from_slice, column_from_slice_nullable, dataframe_from_columns, run_named_cases};
 
 /// Helper: build a DataFrame with key and value columns for groupby tests.
 fn df_with_nullable_values() -> DataFrame {
     // key: [1, 1, 2, 2], value: [10, null, 30, 40]
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice_nullable(&[10i64, 0, 30, 40], &[true, false, true, true]).unwrap();
-    crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap()
+    dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap()
 }
 
 // ===========================================================================
@@ -129,8 +129,7 @@ fn test_groupby_sum_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
     let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
     let vals = column_from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
@@ -152,8 +151,7 @@ fn test_groupby_min_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
     let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
     let vals = column_from_slice_nullable(&[0i64, 0, 10], &[false, false, true]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
 
@@ -179,8 +177,7 @@ fn test_groupby_null_keys_excluded_by_default() {
     // key: [1, null, 1, 2], value: [10, 20, 30, 40]
     let keys = column_from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
@@ -203,8 +200,7 @@ fn test_groupby_null_keys_included_when_requested() {
     // key: [1, null, 1, 2], value: [10, 20, 30, 40]
     let keys = column_from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let options = GroupByOptions::builder().include_null_keys(true).build();
     let result = df.groupby(["key"]).options(options).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
@@ -224,7 +220,7 @@ fn test_groupby_null_keys_included_when_requested() {
 
 #[test]
 fn groupby_null_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_groupby_sum_skips_nulls_in_values", test_groupby_sum_skips_nulls_in_values),
         ("test_groupby_min_skips_nulls", test_groupby_min_skips_nulls),
         ("test_groupby_max_skips_nulls", test_groupby_max_skips_nulls),

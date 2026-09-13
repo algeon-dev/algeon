@@ -1,5 +1,7 @@
 use std::{os::raw::c_void, ptr};
 
+use cudf_sys::test_support;
+
 use super::*;
 
 fn column_len(col: cudf_sys::cudf_column_handle) -> usize {
@@ -1932,7 +1934,7 @@ fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
 
     let mut left_indices = std::ptr::NonNull::<cudf_sys::cudf_column_handle_state>::dangling().as_ptr();
     let mut right_indices = std::ptr::NonNull::<cudf_sys::cudf_column_handle_state>::dangling().as_ptr();
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(1) };
 
     let status = unsafe {
         cudf_sys::cudf_inner_join_indices_ex(
@@ -1944,7 +1946,7 @@ fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
             &exec,
         )
     };
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(-1) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(left_indices.is_null());

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
+use crate::core::{error::FACT_TYPE_ID, types::cudf_null_mask_allocation_size_bytes};
 
 /// Stable owner contract for metadata-only filtered-join allocation sizing.
 pub const FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str = "libcudf_filtered_join_allocation_preflight_v1";
@@ -96,7 +97,7 @@ pub fn filtered_join_allocation_preflight_for_metadata(
                         FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
                         "fixed-width filtered join key metadata carried a variable-width dtype",
                     )
-                    .with_fact(crate::core::error::FACT_TYPE_ID, type_id)
+                    .with_fact(FACT_TYPE_ID, type_id)
                     .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
                 }
                 flattened_types.push(type_id);
@@ -110,7 +111,7 @@ pub fn filtered_join_allocation_preflight_for_metadata(
         FilteredJoin::pre_build_reservation_size_bytes_for_fixed_width_metadata(&flattened_types, rows, options)?;
     let temporary_row_validity_workspace_bytes = if options.null_eq() == NullEquality::Unequal && nullable_key_count > 1
     {
-        crate::core::types::cudf_null_mask_allocation_size_bytes(rows)
+        cudf_null_mask_allocation_size_bytes(rows)
     } else {
         0
     };

@@ -12,11 +12,12 @@ use super::{
     residual_equality_route_candidates, rewrite, route_orientations, shared_source_filter_is_keyset_constrained,
     subtree_contains_node, unique_lineage,
 };
+use crate::optimizer::NativeOptimizerChange;
 
 #[doc(hidden)]
 pub struct DynamicFilterRouteDiscoveryResult {
     pub plan: QueryPlan,
-    pub change: super::super::NativeOptimizerChange,
+    pub change: NativeOptimizerChange,
     pub diagnostics: DynamicFilterRouteDiscoveryDiagnostics,
 }
 
@@ -29,7 +30,7 @@ pub fn optimize_dynamic_filter_route_discovery(
     if !options.enabled {
         return DynamicFilterRouteDiscoveryResult {
             plan,
-            change: super::super::NativeOptimizerChange::Unchanged,
+            change: NativeOptimizerChange::Unchanged,
             diagnostics: DynamicFilterRouteDiscoveryDiagnostics::default(),
         };
     }
@@ -592,11 +593,7 @@ pub fn optimize_dynamic_filter_route_discovery(
         }
     }
 
-    let change = if routes.is_empty() {
-        super::super::NativeOptimizerChange::Unchanged
-    } else {
-        super::super::NativeOptimizerChange::Changed
-    };
+    let change = if routes.is_empty() { NativeOptimizerChange::Unchanged } else { NativeOptimizerChange::Changed };
     let plan = plan.with_dynamic_filter_execution_options(options.execution).with_dynamic_filter_routes(routes);
     DynamicFilterRouteDiscoveryResult { plan, change, diagnostics }
 }

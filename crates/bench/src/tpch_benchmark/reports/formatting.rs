@@ -1,10 +1,17 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use algeon_datafusion::native_report::{
+    format_native_aggregate_strategy_metric_rows, format_native_dynamic_filter_runtime_metric_rows,
+    format_native_graph_runtime_metric_rows, format_native_join_strategy_metric_rows,
+    format_native_task_operator_metric_rows, format_native_task_runtime_metric_rows,
+};
+
 use super::*;
+use crate::report_workload::RelationalExecutionSelection;
 
 pub(super) fn write_native_execution_policy_metadata(
     output: &mut String,
-    relational_execution: crate::report_workload::RelationalExecutionSelection,
+    relational_execution: RelationalExecutionSelection,
 ) {
     push_line(output, format_args!("# tpch_benchmark_relational_execution={}", relational_execution.as_str()));
 }
@@ -114,27 +121,27 @@ pub(super) fn format_capability_compiled_graphs(graphs: &[NativeCapabilityCompil
 }
 
 pub(super) fn format_join_strategy_rows(rows: &[NativeJoinStrategyMetricRow]) -> String {
-    algeon_datafusion::native_report::format_native_join_strategy_metric_rows(rows)
+    format_native_join_strategy_metric_rows(rows)
 }
 
 pub(super) fn format_aggregate_strategy_rows(rows: &[NativeAggregateStrategyMetricRow]) -> String {
-    algeon_datafusion::native_report::format_native_aggregate_strategy_metric_rows(rows)
+    format_native_aggregate_strategy_metric_rows(rows)
 }
 
 pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
-    algeon_datafusion::native_report::format_native_graph_runtime_metric_rows(rows)
+    format_native_graph_runtime_metric_rows(rows)
 }
 
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
-    algeon_datafusion::native_report::format_native_task_operator_metric_rows(rows)
+    format_native_task_operator_metric_rows(rows)
 }
 
 pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
-    algeon_datafusion::native_report::format_native_task_runtime_metric_rows(rows)
+    format_native_task_runtime_metric_rows(rows)
 }
 
 pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRuntimeMetricRow]) -> String {
-    algeon_datafusion::native_report::format_native_dynamic_filter_runtime_metric_rows(rows)
+    format_native_dynamic_filter_runtime_metric_rows(rows)
 }
 
 pub(super) fn format_failure_facts(facts: &BTreeMap<String, String>) -> String {

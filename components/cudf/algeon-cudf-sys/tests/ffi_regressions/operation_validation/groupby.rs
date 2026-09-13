@@ -1,5 +1,7 @@
 use std::ptr;
 
+use cudf_sys::test_support;
+
 use super::*;
 
 #[test]
@@ -223,7 +225,7 @@ fn test_groupby_aggregate_publish_failure_does_not_publish_partial_outputs() {
     let mut out_total: i32 = -1;
     let (_stream, _mr, exec) = strict_exec_owners();
 
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(1) };
     let status = unsafe {
         cudf_sys::cudf_groupby_aggregate_ex(
             keys_view,
@@ -239,7 +241,7 @@ fn test_groupby_aggregate_publish_failure_does_not_publish_partial_outputs() {
             &exec,
         )
     };
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(-1) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out_keys.is_null());
@@ -293,7 +295,7 @@ fn test_prepared_groupby_aggregate_publish_failure_does_not_publish_partial_outp
     let mut out_vals = std::ptr::NonNull::<cudf_sys::cudf_column_handle>::dangling().as_ptr();
     let mut out_total: i32 = -1;
 
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(1) };
     let status = unsafe {
         cudf_sys::cudf_prepared_groupby_aggregate_ex(
             prepared,
@@ -308,7 +310,7 @@ fn test_prepared_groupby_aggregate_publish_failure_does_not_publish_partial_outp
             &exec,
         )
     };
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(-1) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out_keys.is_null());

@@ -1,6 +1,6 @@
 #[test]
 fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {
-    let device_safety = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+    let device_safety = DeviceSafetyTestScope::install([]);
     let config = QueryExecutionConfig::default();
     let service = AdmissionTestController::new_with_ledger(
         config,
@@ -130,8 +130,8 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
     assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(9));
     assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 2);
 
-    context.lakehouse_cache_fill_events().record(super::super::LakehouseCacheFillEvent {
-        outcome: super::super::LakehouseCacheFillOutcome::Completed,
+    context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
+        outcome: LakehouseCacheFillOutcome::Completed,
         bytes: Some(128),
         elapsed: Duration::from_millis(1),
         cache_path_hash: "cache-path-hash".to_string(),

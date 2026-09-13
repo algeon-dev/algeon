@@ -15,7 +15,7 @@ use cudf_sys::test_support::{
     cudf_test_exec_reset_observation,
 };
 
-use crate::common::sample_runtime;
+use crate::common::{run_named_cases, sample_runtime};
 
 fn obs_reset() {
     unsafe { cudf_test_exec_reset_observation() };
@@ -251,7 +251,7 @@ fn runtime_column_from_device_ptr_uses_ex_ffi() {
 
 #[test]
 fn runtime_v1_fillna_and_seed_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime",
             df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime,

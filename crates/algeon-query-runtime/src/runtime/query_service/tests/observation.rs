@@ -1,13 +1,15 @@
+use crate::observability::{AttemptFailureFactKey, AttemptFailureFactValue, AttemptFailureOperation};
+use cudf::testing::device_safety::injected_device_id as observation_injected_device_id;
+
 #[test]
 fn unhealthy_device_rejects_query_admission_before_grant_or_queue() {
     let service = runtime_test_service(1, 8);
-    let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+    let scope = DeviceSafetyTestScope::install([]);
     let device_ordinal = service.device_ledger_reports().unwrap()[0].device_ordinal;
-    let device =
-        cudf::testing::device_safety::injected_device_id(device_ordinal as i32).expect("isolated device health owner");
-    cudf::runtime::report_device_fault(
+    let device = observation_injected_device_id(device_ordinal as i32).expect("isolated device health owner");
+    report_device_fault(
         device,
-        cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+        DeviceFaultKind::FatalDeviceOperation,
         "injected_query_admission_fault",
         None,
     );
@@ -189,7 +191,7 @@ async fn async_capacity_contention_uses_one_id_without_false_rejection() {
         if service.queued_len() == 1 {
             break;
         }
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
     let enqueued = observed_admission_events(&owner);
     assert_eq!(enqueued.len(), 1);
@@ -486,14 +488,14 @@ fn snapshot_sweep_finishes_timeout_after_waiter_consumes_terminal_error() {
 fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consumes_timeout() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first query occupies the only slot");
-    let attempt_lifecycle = crate::runtime::BackendLifecycle::new();
-    let attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
+    let attempt_lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
             observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+            ..BeginAttemptRequest::default()
         },
         attempt_lifecycle.try_begin_observation().expect("attempt observation permit"),
-        Arc::new(crate::attempt::AttemptBackendCounters::default()),
+        Arc::new(AttemptBackendCounters::default()),
         None,
     );
     let mut waiter = service
@@ -524,15 +526,15 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
     ));
     let primary = report.primary_failure.as_ref().expect("queue sweep retains the borrowed primary failure");
     assert_eq!(primary.code(), AttemptFailureCode::ServiceOverloaded);
-    assert_eq!(primary.operation(), crate::observability::AttemptFailureOperation::Admission);
+    assert_eq!(primary.operation(), AttemptFailureOperation::Admission);
     assert_eq!(primary.facts().len(), 1, "the stable report retains one closed admission reason");
-    assert_eq!(primary.facts()[0].key(), crate::observability::AttemptFailureFactKey::Reason);
-    assert_eq!(primary.facts()[0].value(), crate::observability::AttemptFailureFactValue::QueueWaitElapsed);
+    assert_eq!(primary.facts()[0].key(), AttemptFailureFactKey::Reason);
+    assert_eq!(primary.facts()[0].value(), AttemptFailureFactValue::QueueWaitElapsed);
     assert_eq!(
         report.retry_advice,
-        crate::observability::AttemptRetryAdvice {
-            recovery: crate::observability::AttemptRetryRecovery::Backoff,
-            prerequisite: crate::observability::AttemptRetryPrerequisite::CapacityAvailable,
+        AttemptRetryAdvice {
+            recovery: AttemptRetryRecovery::Backoff,
+            prerequisite: AttemptRetryPrerequisite::CapacityAvailable,
         }
     );
 
@@ -688,7 +690,7 @@ fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
     drop(admitted_context);
 
     let stream_pool = service.inner.resources.as_ref().unwrap().devices.context_by_ordinal(0).unwrap().stream_pool();
-    let cleanup_blocker = super::super::service_stream::block_stream_cleanup_thread_for_test(stream_pool);
+    let cleanup_blocker = block_stream_cleanup_thread_for_test(stream_pool);
     handle.finish();
     drop(handle);
 

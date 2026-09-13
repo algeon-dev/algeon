@@ -3,6 +3,7 @@ use super::{
     BoundedSourceBatchingPolicy, ExecutionContext, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
     SourceChunk, SourceChunkBatch, annotate_source_chunk_batching_reasons, plan_source_chunk_batches,
 };
+use crate::{rapids_backend::rapids_analysis_context, source::ParquetReadStrategy};
 
 pub(super) fn stream_has_multi_source_batches(
     context: &ExecutionContext,
@@ -74,13 +75,14 @@ fn materialized_source_batch_target_bytes(stream: &BoundedJoinLeafLocalParquetSo
 }
 
 fn source_chunk_requires_remote_direct_read(chunk: &SourceChunk) -> bool {
-    matches!(chunk.resolved_source.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect)
+    matches!(chunk.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect)
 }
 
 pub(super) fn source_chunk_batching_reader_predicate_supported(source: &LocalParquetSource) -> bool {
-    source.reader_predicate.as_ref().is_none_or(|predicate| {
-        source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
-    })
+    source
+        .reader_predicate
+        .as_ref()
+        .is_none_or(|predicate| source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
 }
 
 pub(super) fn join_leaf_source_batching_disabled_reason(source: &LocalParquetSource) -> Option<&'static str> {

@@ -12,9 +12,12 @@ use datafusion::{
 };
 
 use crate::server::{
-    config::WorkspaceOverlayConfig,
+    adapter_error::{Error as AdapterError, ErrorCode as AdapterErrorCode},
+    config::{ServerConfig, WorkspaceOverlayConfig},
     error::{Result, ServerError},
 };
+#[cfg(feature = "iceberg")]
+use crate::table_format::iceberg::catalog::AlgeonIcebergSchemaProvider;
 
 /// Mutable local workspace schema with optional read-through to one source schema.
 ///
@@ -52,10 +55,7 @@ impl AlgeonWorkspaceSchemaProvider {
             #[cfg(feature = "iceberg")]
             {
                 let mut names = names;
-                if let Some(iceberg) =
-                    self.backing
-                        .downcast_ref::<crate::server::table_format::iceberg::catalog::AlgeonIcebergSchemaProvider>()
-                {
+                if let Some(iceberg) = self.backing.downcast_ref::<AlgeonIcebergSchemaProvider>() {
                     names.extend(iceberg.known_or_seeded_table_names());
                 }
                 return names;
@@ -79,9 +79,7 @@ impl AlgeonWorkspaceSchemaProvider {
             return true;
         }
         #[cfg(feature = "iceberg")]
-        if let Some(iceberg) =
-            self.backing.downcast_ref::<crate::server::table_format::iceberg::catalog::AlgeonIcebergSchemaProvider>()
-        {
+        if let Some(iceberg) = self.backing.downcast_ref::<AlgeonIcebergSchemaProvider>() {
             return iceberg.known_or_seeded_table_exists(name);
         }
         false
@@ -122,8 +120,8 @@ impl SchemaProvider for AlgeonWorkspaceSchemaProvider {
         table: Arc<dyn TableProvider>,
     ) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.backing_table_exists(&name) {
-            return Err(crate::server::adapter_error::Error::new(
-                crate::server::adapter_error::ErrorCode::InvalidRequest,
+            return Err(AdapterError::new(
+                AdapterErrorCode::InvalidRequest,
                 "algeon_datafusion.server.workspace.shadow_guard",
                 format!(
                     "workspace table `{name}` would shadow a backing source table; choose a different workspace name"
@@ -187,7 +185,7 @@ pub(crate) fn install_workspace_overlay(ctx: &SessionContext, config: &Workspace
     Ok(())
 }
 
-pub(crate) fn warn_if_default_schema_is_read_only(ctx: &SessionContext, config: &crate::server::config::ServerConfig) {
+pub(crate) fn warn_if_default_schema_is_read_only(ctx: &SessionContext, config: &ServerConfig) {
     let state = ctx.state();
     let options = state.config().options();
     let default_catalog = options.catalog.default_catalog.as_str();
@@ -219,12 +217,12 @@ pub(crate) fn warn_if_default_schema_is_read_only(ctx: &SessionContext, config: 
 }
 
 #[cfg(feature = "iceberg")]
-fn iceberg_enabled(config: &crate::server::config::ServerConfig) -> bool {
+fn iceberg_enabled(config: &ServerConfig) -> bool {
     config.iceberg.is_some()
 }
 
 #[cfg(not(feature = "iceberg"))]
-fn iceberg_enabled(_config: &crate::server::config::ServerConfig) -> bool {
+fn iceberg_enabled(_config: &ServerConfig) -> bool {
     false
 }
 
@@ -233,7 +231,7 @@ fn schema_supports_session_ddl(schema: &dyn SchemaProvider) -> bool {
         return true;
     }
     #[cfg(feature = "iceberg")]
-    if schema.is::<crate::server::table_format::iceberg::catalog::AlgeonIcebergSchemaProvider>() {
+    if schema.is::<AlgeonIcebergSchemaProvider>() {
         return false;
     }
     true

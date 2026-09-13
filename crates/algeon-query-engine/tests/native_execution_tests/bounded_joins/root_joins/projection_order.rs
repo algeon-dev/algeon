@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::{expr::ColumnRef, rapids_backend::rapids_analysis_context};
+
 use super::*;
 
 #[test]
@@ -23,13 +25,13 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
         left,
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
         ]),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -108,21 +110,15 @@ fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
         left,
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
-                "right_order_id",
-            ),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
-                "left_order_id",
-            ),
+            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
         ]),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

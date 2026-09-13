@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::single_node_multi_gpu_validate::profile::FixtureKind;
 
 fn device(ordinal: usize, capacity_bytes: u64, max_active_attempts: usize) -> DeviceConfiguration {
     DeviceConfiguration {
@@ -39,7 +40,7 @@ fn attempt(
         sequence,
         phase,
         step_index: 0,
-        query_kind: super::super::profile::FixtureKind::Tpch,
+        query_kind: FixtureKind::Tpch,
         query_label: "q01".to_string(),
         graph_workload: false,
         placement_required: true,

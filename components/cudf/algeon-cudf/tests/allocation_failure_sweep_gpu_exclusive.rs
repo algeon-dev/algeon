@@ -3,7 +3,7 @@
 
 use cudf::{
     AggSpec, CudfErrorFailureSource, DataFrame, ErrorKind, GroupByAgg, MergeOptions, QueryMemoryDomain,
-    QueryMemoryDomainOptions, Runtime, SortOptions,
+    QueryMemoryDomainOptions, Runtime, SortOptions, ops::ast::AstExpression,
 };
 use cudf_sys::test_support;
 
@@ -108,10 +108,7 @@ fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_
             member_id,
             || {
                 let ctx = cudf::ExecutionOverrides::new();
-                let predicate = cudf::ops::ast::AstExpression::less(
-                    cudf::ops::ast::AstExpression::left_column(0)?,
-                    cudf::ops::ast::AstExpression::right_column(0)?,
-                )?;
+                let predicate = AstExpression::less(AstExpression::left_column(0)?, AstExpression::right_column(0)?)?;
                 let options = cudf::DataFrameMixedJoinOptions::new()
                     .on(["key"])
                     .left_predicate_columns(["value"])

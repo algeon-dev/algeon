@@ -86,8 +86,8 @@ fn pruning_test_backend() -> &'static AlgeonGpuBackend {
 
 pub(super) struct TemplatedNativeOptimization {
     pub(super) plan: Arc<dyn ExecutionPlan>,
-    pub(super) report: algeon_datafusion::report::PlanningReport,
-    pub(super) source_diagnostics: Vec<query_engine::source::SourceDiagnostics>,
+    pub(super) report: PlanningReport,
+    pub(super) source_diagnostics: Vec<SourceDiagnostics>,
 }
 
 pub(super) fn optimize_with_pruning_template(plan: Arc<dyn ExecutionPlan>) -> TemplatedNativeOptimization {
@@ -105,7 +105,7 @@ fn pruning_template_optimizer_config() -> AlgeonNativeOptimizerConfig {
     pruning_test_backend().optimizer_config().clone()
 }
 
-pub(super) fn metric_usize(metrics: &datafusion::physical_plan::metrics::MetricsSet, name: &str) -> usize {
+pub(super) fn metric_usize(metrics: &MetricsSet, name: &str) -> usize {
     metrics.sum_by_name(name).unwrap().as_usize()
 }
 
@@ -224,7 +224,7 @@ pub(super) fn aggregate_sort_limit_plan_with_filter(
 
 pub(super) fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let scan_schema = scan.schema();
-    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(datafusion::common::ScalarValue::Int64(Some(1)))])
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
         .schema(Arc::clone(&scan_schema))
         .alias("count_rows")
         .build()

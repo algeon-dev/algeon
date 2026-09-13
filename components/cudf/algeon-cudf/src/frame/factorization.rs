@@ -8,7 +8,7 @@ use crate::{
     },
     frame::series::{IntoSeries, Series},
     ops::{copying, lookup},
-    runtime::{ExecutionOverrides, execution_resolver::ResolvedExecution},
+    runtime::{ExecutionOverrides, Runtime, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ impl DictionaryEncodingOptions {
 }
 
 pub(crate) fn trigger_codebook_key_count_limit_error_for_test() -> Result<()> {
-    let runtime = crate::runtime::Runtime::new()?;
+    let runtime = Runtime::new()?;
     position_sequence_in_domain((i32::MAX as usize) + 1, runtime.execution_domain(), "codebook::from_keys").map(|_| ())
 }
 
@@ -204,7 +204,7 @@ impl Codebook {
 fn null_series_like_in_domain(
     series: &Series,
     len: usize,
-    output_domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<Series> {
     let dtype = series.dtype().map_err(|e| e.reanchor(operation))?;

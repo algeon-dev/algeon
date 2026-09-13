@@ -1,5 +1,11 @@
 use std::fs;
 
+use algeon_datafusion::{capability::CapabilityReason, report::CandidateOutcome};
+use cudf::testing::arrow::{
+    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+    reset_arrow_host_interop_observation_for_test,
+};
+
 use super::*;
 
 #[tokio::test]
@@ -19,13 +25,13 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
     assert_algeon_native_exec(&optimization.plan, "scalar plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
 
@@ -60,13 +66,13 @@ async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     assert_algeon_native_exec(&optimization.plan, "nullable scalar plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
 
@@ -125,7 +131,7 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         assert_algeon_native_exec(&optimization.plan, "{name} must rewrite to AlgeonNativeExec");
 
         let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-        cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+        reset_arrow_host_interop_observation_for_test();
         let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
         let metrics = optimization.plan.metrics().expect("{name} must expose DataFusion metrics");
         assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0, "{name}");
@@ -151,10 +157,7 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
     assert!(
         matches!(
             optimization.report.outcomes()[0],
-            algeon_datafusion::report::CandidateOutcome::NotSupported {
-                capability_reason: algeon_datafusion::capability::CapabilityReason::UnsupportedExpression,
-                ..
-            }
+            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
         ),
         "outcomes={:?}",
         optimization.report.outcomes()
@@ -178,10 +181,7 @@ async fn native_runtime_integer_modulo_rejects_before_native_execution() {
     assert!(
         matches!(
             optimization.report.outcomes()[0],
-            algeon_datafusion::report::CandidateOutcome::NotSupported {
-                capability_reason: algeon_datafusion::capability::CapabilityReason::UnsupportedExpression,
-                ..
-            }
+            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
         ),
         "outcomes={:?}",
         optimization.report.outcomes()
@@ -221,10 +221,7 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
         assert!(
             matches!(
                 optimization.report.outcomes()[0],
-                algeon_datafusion::report::CandidateOutcome::NotSupported {
-                    capability_reason: algeon_datafusion::capability::CapabilityReason::UnsupportedExpression,
-                    ..
-                }
+                CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
             ),
             "{name} outcomes={:?}",
             optimization.report.outcomes()
@@ -262,10 +259,7 @@ async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execu
         assert!(
             matches!(
                 optimization.report.outcomes()[0],
-                algeon_datafusion::report::CandidateOutcome::NotSupported {
-                    capability_reason: algeon_datafusion::capability::CapabilityReason::UnsupportedExpression,
-                    ..
-                }
+                CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
             ),
             "{name} outcomes={:?}",
             optimization.report.outcomes()

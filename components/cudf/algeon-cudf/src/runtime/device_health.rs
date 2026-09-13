@@ -18,7 +18,10 @@ use std::{
 };
 
 use super::DeviceId;
-use crate::core::error::{Error, ErrorCode, Result};
+use crate::{
+    core::error::{Error, ErrorCode, Result, check_status_in_without_device_report},
+    testing::device_safety::injected_health_registry,
+};
 
 /// Process-lifetime usability of one CUDA device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -193,7 +196,7 @@ fn global_registry() -> &'static DeviceHealthRegistry {
 }
 
 fn with_registry<R>(f: impl FnOnce(&DeviceHealthRegistry) -> R) -> R {
-    if let Some(registry) = crate::testing::device_safety::injected_health_registry() {
+    if let Some(registry) = injected_health_registry() {
         return f(&registry);
     }
     f(global_registry())
@@ -302,7 +305,7 @@ pub(crate) fn check_device_status_in(
     if status == cudf_sys::CUDF_ERROR_FATAL_CUDA {
         record_fault(device, DeviceFaultKind::FatalDeviceOperation, operation, Some(status));
     }
-    crate::core::error::check_status_in_without_device_report(status, operation)
+    check_status_in_without_device_report(status, operation)
 }
 
 /// Consume one device-owned pointer and invoke its destructor only after the

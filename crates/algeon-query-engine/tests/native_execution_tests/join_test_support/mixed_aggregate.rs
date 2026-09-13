@@ -9,7 +9,7 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
     fact_schema: &Arc<Schema>,
     grouped_fact_schema: &Arc<Schema>,
     dim_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let joined_fact_schema = Arc::new(Schema::new(vec![
         Field::new("entity_id", DataType::Int32, false),
         Field::new("measure", DataType::Float64, false),
@@ -43,14 +43,14 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "entity_id", "entity_id"),
-                query_engine::expr::ColumnRef::input(1, "entity_id", "entity_id"),
+                ColumnRef::input(0, "entity_id", "entity_id"),
+                ColumnRef::input(1, "entity_id", "entity_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "entity_id", "entity_id"), "entity_id"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "measure", "measure"), "measure"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "quantity", "quantity"), "quantity"),
+            JoinOutputColumn::left(ColumnRef::input(0, "entity_id", "entity_id"), "entity_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "measure", "measure"), "measure"),
+            JoinOutputColumn::left(ColumnRef::input(0, "quantity", "quantity"), "quantity"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&joined_fact_schema),
@@ -99,8 +99,8 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "entity_id", "entity_id"),
-                query_engine::expr::ColumnRef::input(1, "entity_id", "entity_id"),
+                ColumnRef::input(0, "entity_id", "entity_id"),
+                ColumnRef::input(1, "entity_id", "entity_id"),
             )],
         )
         .with_residual_predicate(Expr::binary(
@@ -108,10 +108,7 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
             BinaryOp::Lt,
             Expr::input_column(1, "avg_quantity", "avg_quantity"),
         ))
-        .with_output_projection(vec![JoinOutputColumn::left(
-            query_engine::expr::ColumnRef::input(0, "measure", "measure"),
-            "measure",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "measure", "measure"), "measure")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&root_output_schema),
     );

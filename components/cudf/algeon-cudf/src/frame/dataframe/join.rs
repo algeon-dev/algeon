@@ -8,7 +8,7 @@ use crate::{
         ConditionalFullJoinSizeData, FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin,
         HashJoinOptions, MixedJoinSizeData, MixedSingleSideJoinSizeData, NullableJoin,
     },
-    runtime::ExecutionPlacement,
+    runtime::{ExecutionPlacement, execution_context::ExecutionOverrides},
 };
 
 // libcudf join APIs return INT32 row indices (`cudf::size_type`).
@@ -586,7 +586,7 @@ impl DataFrameJoinIndices {
     }
 
     /// Returns bytes retained by this device-side gather map.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.indices
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::join_indices::device_allocated_size_bytes"))
@@ -682,7 +682,7 @@ impl DataFrameJoinPairIndices {
     }
 
     /// Returns bytes retained by both device-side gather maps.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         Ok(self.left.device_allocated_size_bytes()? + self.right.device_allocated_size_bytes()?)
     }
 
@@ -740,7 +740,7 @@ impl DataFrameHashJoinPairIndices {
     }
 
     /// Returns bytes retained by both device-side gather maps.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         Ok(self.probe.device_allocated_size_bytes()? + self.build.device_allocated_size_bytes()?)
     }
 
@@ -890,7 +890,7 @@ impl DataFrameHashJoin {
     ///
     /// This excludes the retained build DataFrame and any per-probe
     /// output/index allocations.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.join
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::hash_join::device_allocated_size_bytes"))
@@ -929,7 +929,7 @@ impl DataFrameFilteredJoin {
     ///
     /// This excludes the retained build DataFrame and any per-probe output
     /// index allocation.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.join
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::filtered_join::device_allocated_size_bytes"))
@@ -950,7 +950,7 @@ impl DataFrameFilteredJoinProbeState {
     }
 
     /// Returns bytes retained by this probe state.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.state
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::filtered_join_probe_state::device_allocated_size_bytes"))
@@ -965,7 +965,7 @@ impl DataFrameFilteredJoinProbeState {
     }
 
     /// Materialize selected probe indices from retained probe state.
-    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinIndices> {
+    pub fn materialize_indices(self) -> Result<DataFrameJoinIndices> {
         let raw = self
             .state
             .materialize_indices()
@@ -974,10 +974,7 @@ impl DataFrameFilteredJoinProbeState {
     }
 
     /// Materialize selected probe indices using a borrowed execution override.
-    pub fn materialize_indices_in(
-        self,
-        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
-    ) -> crate::core::error::Result<DataFrameJoinIndices> {
+    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
@@ -993,7 +990,7 @@ impl DataFrameConditionalFullJoinSizeData<'_> {
     }
 
     /// Returns bytes retained by libcudf's conditional full join size-data state.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.state
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::conditional_full_join_size_data::device_allocated_size_bytes"))
@@ -1007,7 +1004,7 @@ impl DataFrameConditionalFullJoinSizeData<'_> {
     }
 
     /// Materialize the two conditional full join gather maps from retained size data.
-    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+    pub fn materialize_indices(self) -> Result<DataFrameJoinPairIndices> {
         let raw = self
             .state
             .materialize_indices()
@@ -1017,10 +1014,7 @@ impl DataFrameConditionalFullJoinSizeData<'_> {
 
     /// Materialize the two conditional full join gather maps using a borrowed
     /// execution override.
-    pub fn materialize_indices_in(
-        self,
-        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
-    ) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinPairIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
@@ -1036,7 +1030,7 @@ impl DataFrameMixedJoinSizeData<'_> {
     }
 
     /// Returns bytes retained by libcudf's mixed join size-data buffer.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.state
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::mixed_join_size_data::device_allocated_size_bytes"))
@@ -1050,7 +1044,7 @@ impl DataFrameMixedJoinSizeData<'_> {
     }
 
     /// Materialize the two mixed join gather maps from retained size data.
-    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+    pub fn materialize_indices(self) -> Result<DataFrameJoinPairIndices> {
         let raw = self
             .state
             .materialize_indices()
@@ -1059,10 +1053,7 @@ impl DataFrameMixedJoinSizeData<'_> {
     }
 
     /// Materialize the two mixed join gather maps using a borrowed execution override.
-    pub fn materialize_indices_in(
-        self,
-        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
-    ) -> crate::core::error::Result<DataFrameJoinPairIndices> {
+    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinPairIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)
@@ -1078,7 +1069,7 @@ impl DataFrameMixedSingleSideJoinSizeData<'_> {
     }
 
     /// Returns bytes retained by libcudf's mixed join size-data buffer.
-    pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
         self.state
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor("dataframe::mixed_single_side_join_size_data::device_allocated_size_bytes"))
@@ -1092,7 +1083,7 @@ impl DataFrameMixedSingleSideJoinSizeData<'_> {
     }
 
     /// Materialize the mixed left semi/anti gather map from retained size data.
-    pub fn materialize_indices(self) -> crate::core::error::Result<DataFrameJoinIndices> {
+    pub fn materialize_indices(self) -> Result<DataFrameJoinIndices> {
         let raw = self
             .state
             .materialize_indices()
@@ -1102,10 +1093,7 @@ impl DataFrameMixedSingleSideJoinSizeData<'_> {
 
     /// Materialize the mixed left semi/anti gather map using a borrowed
     /// execution override.
-    pub fn materialize_indices_in(
-        self,
-        ctx: &crate::runtime::execution_context::ExecutionOverrides<'_>,
-    ) -> crate::core::error::Result<DataFrameJoinIndices> {
+    pub fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrameJoinIndices> {
         let raw = self
             .state
             .materialize_indices_in(ctx)

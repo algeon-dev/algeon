@@ -14,7 +14,7 @@ use rapids_interop::{
 };
 use tempfile::TempDir;
 
-use crate::common;
+use crate::common::{self, run_named_cases};
 
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()) }.to_vec()
@@ -548,7 +548,7 @@ mod column_import_contracts {
 
     #[test]
     fn import_tests_cases_column_import_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "borrowed_column_view_import_copies_data_and_uses_destination_runtime",
                 borrowed_column_view_import_copies_data_and_uses_destination_runtime,
@@ -805,7 +805,7 @@ mod table_import_contracts {
 
     #[test]
     fn import_tests_cases_table_import_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime",
                 borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime,
@@ -996,7 +996,7 @@ mod dataframe_import_contracts {
 
     #[test]
     fn import_tests_cases_dataframe_import_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             ("dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names", dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names),
             ("dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts", dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts),
             ("dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_names_even_when_root_has_names", dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_names_even_when_root_has_names),
@@ -1152,7 +1152,7 @@ mod error_mapping_contracts {
 
     #[test]
     fn import_tests_cases_error_mapping_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "prepared_column_export_constructor_rejects_non_prepared_profiles",
                 prepared_column_export_constructor_rejects_non_prepared_profiles,

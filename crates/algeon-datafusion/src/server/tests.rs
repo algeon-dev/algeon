@@ -1,17 +1,26 @@
 use std::{
     sync::{Arc, Barrier},
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 
-use datafusion::execution::SessionStateBuilder;
+use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
+use query_engine::{error::QueryErrorCode, observability::RuntimeObservationConfig};
+use tokio::time::timeout;
 
 use super::*;
 use crate::server::{
+    adapter_error::ErrorCode,
     backend::{
         AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     native_exec::{AlgeonNativeExecutionConfig, NativeMetricsCapture},
-    planner::AlgeonNativeOptimizerConfig,
+    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+};
+#[cfg(feature = "iceberg")]
+use crate::server::{
+    config::IcebergCatalogBackendConfig,
+    table_format::iceberg::{SourceAccessPolicy, catalog::RestCatalogConfig},
 };
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -22,7 +31,7 @@ const TEST_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
 #[test]
 fn server_session_configuration_preserves_datafusion_settings() {
-    let mut base = datafusion::prelude::SessionConfig::new().with_target_partitions(16).with_repartition_joins(false);
+    let mut base = SessionConfig::new().with_target_partitions(16).with_repartition_joins(false);
     base.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
 
     let session_config = super::session::enable_session_discovery(base);
@@ -41,7 +50,7 @@ fn base_config() -> ServerConfig {
         gpu_device_profiles: vec![AlgeonGpuDeviceProfile::new(0)],
         gpu_devices: vec![0],
         gpu_memory_ownership: vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
-        statement_ticket_ttl: std::time::Duration::from_secs(60),
+        statement_ticket_ttl: Duration::from_secs(60),
         observability: ServerObservabilityConfig::default(),
         native_optimizer_config: AlgeonNativeOptimizerConfig::default(),
         auth: AuthConfig::default(),
@@ -71,22 +80,16 @@ fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
 }
 
 fn runtime_backend(max_active_attempts_per_device: usize) -> AlgeonGpuBackend {
-    runtime_backend_with_policy(
-        max_active_attempts_per_device,
-        crate::server::planner::DataFusionCpuExecutionPolicy::Allow,
-    )
+    runtime_backend_with_policy(max_active_attempts_per_device, DataFusionCpuExecutionPolicy::Allow)
 }
 
 fn strict_runtime_backend(max_active_attempts_per_device: usize) -> AlgeonGpuBackend {
-    runtime_backend_with_policy(
-        max_active_attempts_per_device,
-        crate::server::planner::DataFusionCpuExecutionPolicy::Reject,
-    )
+    runtime_backend_with_policy(max_active_attempts_per_device, DataFusionCpuExecutionPolicy::Reject)
 }
 
 fn runtime_backend_with_policy(
     max_active_attempts_per_device: usize,
-    datafusion_cpu_execution_policy: crate::server::planner::DataFusionCpuExecutionPolicy,
+    datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
 ) -> AlgeonGpuBackend {
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
@@ -114,13 +117,7 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
         &config.observability,
     ));
     let planning = coordinator
-        .register_with_id(
-            "shutdown-order",
-            "select 1",
-            None,
-            None,
-            query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
-        )
+        .register_with_id("shutdown-order", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
     let activity_factory = planning.activity_factory();
 
@@ -128,7 +125,7 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
         let error = backend
             .begin_attempt(attempt::AttemptOptions::default())
             .expect_err("native QueryService must be closed before coordinator shutdown begins");
-        assert_eq!(error.code(), adapter_error::ErrorCode::Cancelled);
+        assert_eq!(error.code(), ErrorCode::Cancelled);
         let activity = activity_factory().expect("coordinator remains live until admission is closed");
         drop(activity);
         coordinator.begin_shutdown(Instant::now())
@@ -148,13 +145,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
     ));
     let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
     let execution = coordinator
-        .register_with_id(
-            "shutdown-race",
-            "select 1",
-            None,
-            None,
-            query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
-        )
+        .register_with_id("shutdown-race", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap()
         .into_execution()
         .unwrap();
@@ -168,7 +159,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
         .expect("activity acquired before shutdown");
     let barrier = Arc::new(Barrier::new(2));
 
-    let (coordinator_live, racing_activity) = std::thread::scope(|scope| {
+    let (coordinator_live, racing_activity) = thread::scope(|scope| {
         let shutdown_admission = Arc::clone(&admission);
         let shutdown_coordinator = Arc::clone(&coordinator);
         let shutdown_barrier = Arc::clone(&barrier);
@@ -183,7 +174,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
         let error = backend
             .begin_attempt(attempt::AttemptOptions::default())
             .expect_err("native admission is closed before the coordinator race begins");
-        assert_eq!(error.code(), adapter_error::ErrorCode::Cancelled);
+        assert_eq!(error.code(), ErrorCode::Cancelled);
         let racing_activity = capture
             .new_observation_activity()
             .expect("coordinated acquisition cannot downgrade to no activity requirement");
@@ -194,31 +185,29 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
     drop(execution);
     let mut finish = tokio::spawn(maintenance.finish(coordinator_live));
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(20), &mut finish).await.is_err(),
+        timeout(Duration::from_millis(20), &mut finish).await.is_err(),
         "maintenance cannot drain while pre-shutdown activity is live"
     );
     match racing_activity {
         Ok(activity) => drop(activity),
         Err(error) => {
-            assert_eq!(error.code(), query_engine::error::QueryErrorCode::Cancelled);
+            assert_eq!(error.code(), QueryErrorCode::Cancelled);
             assert_eq!(error.fact_value("reason"), Some("query_coordinator_activity_rejected"));
         },
     }
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(20), &mut finish).await.is_err(),
+        timeout(Duration::from_millis(20), &mut finish).await.is_err(),
         "racing acquisition cannot release the prior activity"
     );
     drop(prior_activity);
-    assert!(!tokio::time::timeout(std::time::Duration::from_secs(1), finish).await.unwrap().unwrap().unwrap());
+    assert!(!timeout(Duration::from_secs(1), finish).await.unwrap().unwrap().unwrap());
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
     let admission = Arc::new(admission::QueryAdmission::new_for_tests());
-    let observability = ServerObservabilityConfig {
-        shutdown_grace: std::time::Duration::from_millis(20),
-        ..ServerObservabilityConfig::default()
-    };
+    let observability =
+        ServerObservabilityConfig { shutdown_grace: Duration::from_millis(20), ..ServerObservabilityConfig::default() };
     let coordinator =
         coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(&observability));
     let execution = coordinator
@@ -227,7 +216,7 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
             "select 1",
             None,
             None,
-            query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
+            RuntimeObservationConfig::bounded(16, 4096),
         )
         .unwrap()
         .into_execution()
@@ -242,7 +231,7 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
     );
 
     assert_eq!(supervisor.begin_shutdown(Instant::now()).live_count(), 1);
-    let error = tokio::time::timeout(std::time::Duration::from_secs(1), supervisor.finish())
+    let error = timeout(Duration::from_secs(1), supervisor.finish())
         .await
         .expect("supervisor must use the configured deadline")
         .expect_err("forced coordinator timeout must fail server shutdown");
@@ -256,7 +245,7 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     let mut config = bounded_config(1);
-    config.observability.shutdown_grace = std::time::Duration::from_millis(20);
+    config.observability.shutdown_grace = Duration::from_millis(20);
     let backend = runtime_backend(1);
     let _live_attempt = backend.begin_attempt(attempt::AttemptOptions::default()).unwrap();
     let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
@@ -272,7 +261,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     );
 
     assert_eq!(supervisor.begin_shutdown(Instant::now()).live_count(), 0);
-    let error = tokio::time::timeout(std::time::Duration::from_secs(1), supervisor.finish())
+    let error = timeout(Duration::from_secs(1), supervisor.finish())
         .await
         .expect("supervisor must not grant admission a second grace period")
         .expect_err("native admission cleanup timeout must fail server shutdown");
@@ -281,7 +270,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     assert_eq!(error.fact_value("shutdown_component"), Some("query_admission"));
     drop(_live_attempt);
     let snapshot = backend
-        .close_and_wait(std::time::Duration::from_secs(1))
+        .close_and_wait(Duration::from_secs(1))
         .expect("releasing the held query must allow the already-closing backend to quiesce");
     assert!(snapshot.gpu_resource_quiescent);
     assert!(snapshot.observation_quiescent);
@@ -294,17 +283,11 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
 async fn supervisor_uses_captured_expired_plan_after_coordinator_finalization_clears_deadline() {
     let admission = Arc::new(admission::QueryAdmission::new_for_tests());
     let observability =
-        ServerObservabilityConfig { shutdown_grace: std::time::Duration::ZERO, ..ServerObservabilityConfig::default() };
+        ServerObservabilityConfig { shutdown_grace: Duration::ZERO, ..ServerObservabilityConfig::default() };
     let coordinator =
         coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(&observability));
     let execution = coordinator
-        .register_with_id(
-            "fast-finalization",
-            "select 1",
-            None,
-            None,
-            query_engine::observability::RuntimeObservationConfig::bounded(16, 4096),
-        )
+        .register_with_id("fast-finalization", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap()
         .into_execution()
         .unwrap();
@@ -416,7 +399,7 @@ fn builder_rejects_injected_backend_queue_limit_conflict() {
 fn builder_rejects_injected_backend_wait_timeout_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
-    config.queue_policy = config.queue_policy.with_max_queue_wait(std::time::Duration::from_secs(5));
+    config.queue_policy = config.queue_policy.with_max_queue_wait(Duration::from_secs(5));
 
     let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
@@ -496,7 +479,7 @@ async fn builder_rejects_strict_backend_session_with_incompatible_target_partiti
     )
     .await;
 
-    assert_eq!(error.code(), crate::server::adapter_error::ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.operation(), "algeon_datafusion.server.builder");
     assert_eq!(error.fact_value("reason"), Some("server_session_optimizer_policy_mismatch"));
     assert_eq!(error.fact_value("config_field"), Some("datafusion.execution.target_partitions"));
@@ -561,14 +544,12 @@ fn single_librmm_runtime_mapping_check_passes_in_this_process() {
 #[cfg(feature = "iceberg")]
 #[test]
 fn iceberg_backend_snapshot_sanitizes_rest_urls_for_logs() {
-    let backend = config::IcebergCatalogBackendConfig::Rest(
-        crate::server::table_format::iceberg::catalog::RestCatalogConfig::new(
-            "lake",
-            "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
-            "s3://lakehouse/warehouse",
-        ),
-    );
-    let source_access = crate::server::table_format::iceberg::SourceAccessPolicy::s3_custom_endpoint(
+    let backend = IcebergCatalogBackendConfig::Rest(RestCatalogConfig::new(
+        "lake",
+        "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
+        "s3://lakehouse/warehouse",
+    ));
+    let source_access = SourceAccessPolicy::s3_custom_endpoint(
         "http://user:s3-secret@rustfs.local:9000/path?sig=secret#frag",
         None,
         Some(true),

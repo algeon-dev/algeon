@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use cudf::interop::arrow_host::estimate_record_batches_import_required_budget_bytes;
 use query_planning::{
     pipeline::{
         CompiledPipeline, PipelineTaskKind, ShadowBytes, ShadowMemoryModels, ShadowPipelineEstimate,
@@ -11,6 +12,8 @@ use query_planning::{
     source::SourceNode,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::error::Result;
 
 /// One explicitly requested pre-execution shadow capture.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,10 +52,7 @@ pub fn frontend_output_records(plan: &QueryPlan) -> Vec<serde_json::Value> {
         .collect()
 }
 
-pub fn estimate_compiled_pipeline(
-    plan: &QueryPlan,
-    pipeline: &CompiledPipeline,
-) -> crate::error::Result<NativeShadowEstimate> {
+pub fn estimate_compiled_pipeline(plan: &QueryPlan, pipeline: &CompiledPipeline) -> Result<NativeShadowEstimate> {
     let started = Instant::now();
     let task_workspace = pipeline
         .tasks()
@@ -76,15 +76,12 @@ pub fn estimate_compiled_pipeline(
                         bytes: ShadowBytes::unknown("borrowed_resident_size_unavailable"),
                     },
                     SourceNode::LiteralBatch(source) => {
-                        let bytes =
-                            match cudf::interop::arrow_host::estimate_record_batches_import_required_budget_bytes(
-                                &source.batches,
-                            ) {
-                                Ok(bytes) => {
-                                    ShadowBytes::estimated(bytes as u64, "cudf_arrow_import_aligned_allocations_v1")
-                                },
-                                Err(error) => ShadowBytes::unknown(format!("cudf_arrow_import_model:{}", error.code())),
-                            };
+                        let bytes = match estimate_record_batches_import_required_budget_bytes(&source.batches) {
+                            Ok(bytes) => {
+                                ShadowBytes::estimated(bytes as u64, "cudf_arrow_import_aligned_allocations_v1")
+                            },
+                            Err(error) => ShadowBytes::unknown(format!("cudf_arrow_import_model:{}", error.code())),
+                        };
                         ShadowResourceModel { borrowed: false, bytes }
                     },
                     SourceNode::LocalParquet(_) => ShadowResourceModel {

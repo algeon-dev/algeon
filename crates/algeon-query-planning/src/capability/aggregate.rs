@@ -13,7 +13,7 @@ use arrow::datatypes::{DataType, Schema};
 use crate::{
     datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result as QueryResult},
-    expr::{AggregateFunction, AggregateSpec, Expr},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr},
     plan::{NodeId, PlanNode, QueryPlan},
 };
 
@@ -39,7 +39,7 @@ pub enum AggregateExecutionStage {
     FinalMerge,
 }
 
-fn aggregate_expr_is_exact_distinct_count(expr: &crate::expr::AggregateExpr) -> bool {
+fn aggregate_expr_is_exact_distinct_count(expr: &AggregateExpr) -> bool {
     expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
 }
 

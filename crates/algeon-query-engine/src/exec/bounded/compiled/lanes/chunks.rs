@@ -4,17 +4,22 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef;
+use cudf::{Error as CudfError, runtime::event::CudaEvent};
 
 use super::{LaneDispatchSupport, LaneWorkLease, OPERATION};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    exec::bounded::{
-        BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
-        execute_compiled_source_aggregate_chunk,
+    exec::{
+        ExecutionMetrics,
+        bounded::{
+            BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, CommittedPartial,
+            compiled::scheduler::record_cleanup_failure, execute_compiled_source_aggregate_chunk,
+        },
     },
     native_error::cudf_query_error,
+    observability::{CleanupFailurePhase, RuntimeExecutionObservationScope},
     plan::{AggregateNode, NodeId},
-    runtime::{GpuExecutionJobKind, PoolBlockingWork},
+    runtime::{ExecutionContext, GpuExecutionJobKind, PoolBlockingWork},
 };
 
 /// Owns a share of the compiled run's lanes: expanded work never acquires
@@ -31,17 +36,17 @@ use crate::{
 /// ordinals, readiness events, and exactly-once ordered commit.
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct AggregateLaneDispatch {
-    context: Arc<crate::runtime::ExecutionContext>,
-    metrics: Arc<crate::exec::ExecutionMetrics>,
+    context: Arc<ExecutionContext>,
+    metrics: Arc<ExecutionMetrics>,
     #[cfg(any(test, feature = "test-hooks"))]
     completion_gate: Option<super::AggregateChunkCompletionGate>,
     lanes: Vec<LaneWorkLease>,
-    observation_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<RuntimeExecutionObservationScope>,
 }
 
 #[derive(Default)]
 struct ChunkFlights<O> {
-    observation_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<RuntimeExecutionObservationScope>,
     jobs: BTreeMap<usize, ChunkFlight<O>>,
 }
 
@@ -62,7 +67,7 @@ struct ChunkFlight<O> {
 /// a host fence because the event itself could not be recorded; that output is verified.
 struct LaneWorkOutput<O> {
     output: O,
-    readiness: Option<cudf::runtime::event::CudaEvent>,
+    readiness: Option<CudaEvent>,
 }
 
 /// A completed lane output waiting for its stable ordinal commit.
@@ -85,19 +90,15 @@ impl<O> Drop for ChunkFlights<O> {
                     if let Some(readiness) = completed.readiness
                         && let Err(sync_error) = readiness.synchronize()
                     {
-                        super::super::scheduler::record_cleanup_failure(
+                        record_cleanup_failure(
                             self.observation_scope.as_ref(),
-                            crate::observability::CleanupFailurePhase::TaskExecution,
+                            CleanupFailurePhase::TaskExecution,
                             &chunk_readiness_error(ordinal, flight.lane, flight.fork, sync_error),
                         );
                     }
                 },
                 Err(error) => {
-                    super::super::scheduler::record_cleanup_failure(
-                        self.observation_scope.as_ref(),
-                        crate::observability::CleanupFailurePhase::TaskExecution,
-                        &error,
-                    );
+                    record_cleanup_failure(self.observation_scope.as_ref(), CleanupFailurePhase::TaskExecution, &error);
                 },
             }
         }
@@ -105,7 +106,7 @@ impl<O> Drop for ChunkFlights<O> {
 }
 
 /// Attributes one chunk's readiness observation with its stable dispatch facts.
-fn chunk_readiness_error(ordinal: usize, lane: usize, fork: Option<usize>, sync_error: cudf::Error) -> QueryError {
+fn chunk_readiness_error(ordinal: usize, lane: usize, fork: Option<usize>, sync_error: CudfError) -> QueryError {
     let mut error = cudf_query_error(
         "query_engine.compiled.chunk_readiness_sync",
         "aggregate chunk readiness failed before coordinator commit",
@@ -126,15 +127,15 @@ fn chunk_readiness_error(ordinal: usize, lane: usize, fork: Option<usize>, sync_
 /// leaking to an unrelated later fence. Outputs release with their entries.
 fn drain_ready_on_abort<O>(
     ready: BTreeMap<usize, ReadyLaneOutput<O>>,
-    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) {
     for (ordinal, entry) in ready {
         if let Some(readiness) = entry.output.readiness
             && let Err(sync_error) = readiness.synchronize()
         {
-            super::super::scheduler::record_cleanup_failure(
+            record_cleanup_failure(
                 observation_scope,
-                crate::observability::CleanupFailurePhase::TaskExecution,
+                CleanupFailurePhase::TaskExecution,
                 &chunk_readiness_error(ordinal, entry.lane, entry.fork, sync_error),
             );
         }
@@ -149,7 +150,7 @@ impl AggregateLaneDispatch {
     pub(super) fn new(
         support: &LaneDispatchSupport,
         lanes: &[LaneWorkLease],
-        observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+        observation_scope: Option<&RuntimeExecutionObservationScope>,
     ) -> Self {
         Self {
             context: Arc::clone(&support.context),
@@ -406,7 +407,7 @@ impl AggregateLaneDispatch {
 fn finish_lane_work<O>(
     execution: &BoundedExecutionAttempt<'_>,
     result: Result<O>,
-    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<LaneWorkOutput<O>> {
     match result {
         Ok(output) => {
@@ -452,11 +453,7 @@ fn finish_lane_work<O>(
                     )
                 })
             }) {
-                super::super::scheduler::record_cleanup_failure(
-                    observation_scope,
-                    crate::observability::CleanupFailurePhase::TaskExecution,
-                    &sync_error,
-                );
+                record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskExecution, &sync_error);
             }
             Err(error)
         },
@@ -466,7 +463,7 @@ fn finish_lane_work<O>(
 fn finish_chunk_work<O>(
     execution: &BoundedExecutionAttempt<'_>,
     result: Result<O>,
-    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<O> {
     let synchronized = execution.context().runtime().and_then(|runtime| {
         runtime.synchronize().map_err(|error| {
@@ -484,11 +481,7 @@ fn finish_chunk_work<O>(
         },
         Err(error) => {
             if let Err(cleanup) = synchronized {
-                super::super::scheduler::record_cleanup_failure(
-                    observation_scope,
-                    crate::observability::CleanupFailurePhase::TaskExecution,
-                    &cleanup,
-                );
+                record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskExecution, &cleanup);
             }
             Err(error)
         },

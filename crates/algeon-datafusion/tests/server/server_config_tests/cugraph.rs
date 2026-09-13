@@ -62,7 +62,7 @@ fn server_cugraph_config_defaults_to_enabled() {
     let config = server_config_with_default_device_profile(env).unwrap();
     let cugraph = config.cugraph.expect("cuGraph must be enabled by default");
 
-    assert_eq!(cugraph.default_graph_options, algeon_datafusion::cugraph_sql::CugraphGraphOptions::default());
+    assert_eq!(cugraph.default_graph_options, CugraphGraphOptions::default());
 }
 
 #[cfg(feature = "cugraph")]

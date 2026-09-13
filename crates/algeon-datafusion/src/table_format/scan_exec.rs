@@ -5,18 +5,25 @@ use std::sync::Arc;
 use arrow::{
     array::{Array, ArrayRef, make_array},
     datatypes::{DataType, Field, Schema, SchemaRef},
+    error::ArrowError,
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
+    common::{DataFusionError, Result as DataFusionResult, Statistics, tree_node::TreeNodeRecursion},
     execution::{SendableRecordBatchStream, TaskContext},
     physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, StatisticsArgs, StatisticsContext,
-        stream::RecordBatchStreamAdapter,
+        metrics::MetricsSet, stream::RecordBatchStreamAdapter,
     },
 };
-use futures::TryStreamExt;
+use futures::{TryStreamExt, future::ready};
+#[cfg(feature = "iceberg")]
+use iceberg::{Error as IcebergError, ErrorKind as IcebergErrorKind};
+#[cfg(feature = "iceberg")]
+use object_store::Error as ObjectStoreError;
+#[cfg(feature = "iceberg")]
+use opendal::{Error as OpendalError, ErrorKind as OpendalErrorKind};
 
 use crate::{
     capability::CapabilityReason,
@@ -288,19 +295,18 @@ impl ExecutionPlan for AlgeonIcebergScanExec {
         let snapshot_id = self.resolved_snapshot_id().map(str::to_string);
         let stream_snapshot_id = snapshot_id.clone();
         let batch_schema = Arc::clone(&schema);
-        let stream = stream
-            .map_err(move |error| map_cpu_delegate_error(error, stream_snapshot_id.as_deref()))
-            .and_then(move |batch| {
-                futures::future::ready(canonicalize_cpu_batch(batch, Arc::clone(&batch_schema), snapshot_id.as_deref()))
-            });
+        let stream =
+            stream.map_err(move |error| map_cpu_delegate_error(error, stream_snapshot_id.as_deref())).and_then(
+                move |batch| ready(canonicalize_cpu_batch(batch, Arc::clone(&batch_schema), snapshot_id.as_deref())),
+            );
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn metrics(&self) -> Option<datafusion::physical_plan::metrics::MetricsSet> {
+    fn metrics(&self) -> Option<MetricsSet> {
         self.cpu_delegate.metrics()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
         StatisticsContext::new().compute(self.cpu_delegate.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 }
@@ -370,10 +376,7 @@ fn canonicalize_cpu_batch(
 /// field metadata in container data types, so assigning only a canonical
 /// `RecordBatch` schema is insufficient for list, struct, map, union, and
 /// other nested columns.
-fn canonicalize_cpu_array(
-    array: ArrayRef,
-    canonical_data_type: &DataType,
-) -> Result<ArrayRef, arrow::error::ArrowError> {
+fn canonicalize_cpu_array(array: ArrayRef, canonical_data_type: &DataType) -> Result<ArrayRef, ArrowError> {
     if array.data_type() == canonical_data_type {
         return Ok(array);
     }
@@ -381,7 +384,7 @@ fn canonicalize_cpu_array(
     let data = array.to_data();
     let child_types = canonical_array_child_data_types(canonical_data_type);
     if data.child_data().len() != child_types.len() {
-        return Err(arrow::error::ArrowError::InvalidArgumentError(format!(
+        return Err(ArrowError::InvalidArgumentError(format!(
             "canonical Arrow data type has {} child arrays but delegate array has {}",
             child_types.len(),
             data.child_data().len()
@@ -572,7 +575,7 @@ pub(crate) fn translate_iceberg_cpu_delegate_error(
     }
 
     #[cfg(feature = "iceberg")]
-    if let Some(source) = find_source_error::<opendal::Error>(&error) {
+    if let Some(source) = find_source_error::<OpendalError>(&error) {
         let mut adapter =
             Error::new(crate::table_format::iceberg::catalog::classify_opendal_scan_error(source), operation, message)
                 .with_fact("table_format", TableFormat::Iceberg.code())
@@ -585,7 +588,7 @@ pub(crate) fn translate_iceberg_cpu_delegate_error(
     }
 
     #[cfg(feature = "iceberg")]
-    if let Some(source) = find_source_error::<object_store::Error>(&error) {
+    if let Some(source) = find_source_error::<ObjectStoreError>(&error) {
         let mut adapter = Error::new(classify_object_store_error(source), operation, message)
             .with_fact("table_format", TableFormat::Iceberg.code())
             .with_fact("cpu_delegate", true)
@@ -661,38 +664,38 @@ fn find_io_error<'a>(mut error: &'a (dyn std::error::Error + 'static)) -> Option
 }
 
 #[cfg(feature = "iceberg")]
-fn classify_object_store_error(source: &object_store::Error) -> ErrorCode {
+fn classify_object_store_error(source: &ObjectStoreError) -> ErrorCode {
     match source {
-        object_store::Error::NotFound { .. } => ErrorCode::SourceObjectNotFound,
-        object_store::Error::PermissionDenied { .. } => ErrorCode::SourceAccessDenied,
-        object_store::Error::Unauthenticated { .. } => ErrorCode::SourceUnauthenticated,
+        ObjectStoreError::NotFound { .. } => ErrorCode::SourceObjectNotFound,
+        ObjectStoreError::PermissionDenied { .. } => ErrorCode::SourceAccessDenied,
+        ObjectStoreError::Unauthenticated { .. } => ErrorCode::SourceUnauthenticated,
         _ => ErrorCode::SourceDependencyFailure,
     }
 }
 
 #[cfg(feature = "iceberg")]
-fn object_store_error_kind(source: &object_store::Error) -> &'static str {
+fn object_store_error_kind(source: &ObjectStoreError) -> &'static str {
     match source {
-        object_store::Error::NotFound { .. } => "not_found",
-        object_store::Error::PermissionDenied { .. } => "permission_denied",
-        object_store::Error::Unauthenticated { .. } => "unauthenticated",
-        object_store::Error::Generic { .. } => "generic",
-        object_store::Error::InvalidPath { .. } => "invalid_path",
-        object_store::Error::JoinError { .. } => "join_error",
-        object_store::Error::NotSupported { .. } => "not_supported",
-        object_store::Error::AlreadyExists { .. } => "already_exists",
-        object_store::Error::Precondition { .. } => "precondition",
-        object_store::Error::NotModified { .. } => "not_modified",
-        object_store::Error::NotImplemented { .. } => "not_implemented",
-        object_store::Error::UnknownConfigurationKey { .. } => "unknown_configuration_key",
+        ObjectStoreError::NotFound { .. } => "not_found",
+        ObjectStoreError::PermissionDenied { .. } => "permission_denied",
+        ObjectStoreError::Unauthenticated { .. } => "unauthenticated",
+        ObjectStoreError::Generic { .. } => "generic",
+        ObjectStoreError::InvalidPath { .. } => "invalid_path",
+        ObjectStoreError::JoinError { .. } => "join_error",
+        ObjectStoreError::NotSupported { .. } => "not_supported",
+        ObjectStoreError::AlreadyExists { .. } => "already_exists",
+        ObjectStoreError::Precondition { .. } => "precondition",
+        ObjectStoreError::NotModified { .. } => "not_modified",
+        ObjectStoreError::NotImplemented { .. } => "not_implemented",
+        ObjectStoreError::UnknownConfigurationKey { .. } => "unknown_configuration_key",
         _ => "unknown",
     }
 }
 
 #[cfg(feature = "iceberg")]
-fn find_iceberg_error<'a>(mut error: &'a (dyn StdError + 'static)) -> Option<&'a iceberg::Error> {
+fn find_iceberg_error<'a>(mut error: &'a (dyn StdError + 'static)) -> Option<&'a IcebergError> {
     for _ in 0..32 {
-        if let Some(error) = error.downcast_ref::<iceberg::Error>() {
+        if let Some(error) = error.downcast_ref::<IcebergError>() {
             return Some(error);
         }
         error = error.source()?;
@@ -730,9 +733,10 @@ mod tests {
             execution_plan::{Boundedness, EmissionType},
         },
     };
-    use futures::StreamExt;
+    use futures::{StreamExt, stream::iter};
 
     use super::*;
+    use crate::error::ErrorStatus;
 
     #[derive(Debug, Clone, Copy)]
     enum DelegateBehavior {
@@ -761,7 +765,7 @@ mod tests {
 
     impl TestDelegateExec {
         fn new(behavior: DelegateBehavior) -> Self {
-            Self { inner: EmptyExec::new(Arc::new(arrow::datatypes::Schema::empty())), behavior, properties: None }
+            Self { inner: EmptyExec::new(Arc::new(Schema::empty())), behavior, properties: None }
         }
     }
 
@@ -810,8 +814,7 @@ mod tests {
                 },
                 DelegateBehavior::StreamDataFusionError => {
                     let schema = self.schema();
-                    let stream =
-                        futures::stream::iter([Err(DataFusionError::Execution("stream delegate failure".to_string()))]);
+                    let stream = iter([Err(DataFusionError::Execution("stream delegate failure".to_string()))]);
                     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
                 },
                 DelegateBehavior::ImmediateAlgeonError => {
@@ -825,7 +828,7 @@ mod tests {
                         "algeon_datafusion.test.delegate_stream",
                         "typed delegate stream failure",
                     );
-                    let stream = futures::stream::iter([Err(error.into())]);
+                    let stream = iter([Err(error.into())]);
                     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
                 },
                 DelegateBehavior::ImmediateResourceError => {
@@ -833,8 +836,8 @@ mod tests {
                 },
                 #[cfg(feature = "iceberg")]
                 DelegateBehavior::ImmediateOpenDalUnauthenticated => Err(iceberg_delegate_error(
-                    opendal::Error::new(
-                        opendal::ErrorKind::PermissionDenied,
+                    OpendalError::new(
+                        OpendalErrorKind::PermissionDenied,
                         "S3Error { code: \"InvalidAccessKeyId\", message: \"credential rejected\" }",
                     )
                     .with_context(
@@ -843,26 +846,23 @@ mod tests {
                     ),
                 )),
                 #[cfg(feature = "iceberg")]
-                DelegateBehavior::ImmediateOpenDalPermissionDenied => Err(iceberg_delegate_error(opendal::Error::new(
-                    opendal::ErrorKind::PermissionDenied,
-                    "access denied",
-                ))),
+                DelegateBehavior::ImmediateOpenDalPermissionDenied => {
+                    Err(iceberg_delegate_error(OpendalError::new(OpendalErrorKind::PermissionDenied, "access denied")))
+                },
                 #[cfg(feature = "iceberg")]
                 DelegateBehavior::StreamOpenDalNotFound => {
                     let schema = self.schema();
-                    let error =
-                        iceberg_delegate_error(opendal::Error::new(opendal::ErrorKind::NotFound, "object missing"));
-                    let stream = futures::stream::iter([Err(error)]);
+                    let error = iceberg_delegate_error(OpendalError::new(OpendalErrorKind::NotFound, "object missing"));
+                    let stream = iter([Err(error)]);
                     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
                 },
                 #[cfg(feature = "iceberg")]
                 DelegateBehavior::StreamOpenDalTemporary => {
                     let schema = self.schema();
                     let error = iceberg_delegate_error(
-                        opendal::Error::new(opendal::ErrorKind::Unexpected, "transient transport failure")
-                            .set_temporary(),
+                        OpendalError::new(OpendalErrorKind::Unexpected, "transient transport failure").set_temporary(),
                     );
-                    let stream = futures::stream::iter([Err(error)]);
+                    let stream = iter([Err(error)]);
                     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
                 },
             }
@@ -870,9 +870,9 @@ mod tests {
     }
 
     #[cfg(feature = "iceberg")]
-    fn iceberg_delegate_error(source: opendal::Error) -> DataFusionError {
+    fn iceberg_delegate_error(source: OpendalError) -> DataFusionError {
         DataFusionError::External(Box::new(
-            iceberg::Error::new(iceberg::ErrorKind::Unexpected, "Iceberg object read failed").with_source(source),
+            IcebergError::new(IcebergErrorKind::Unexpected, "Iceberg object read failed").with_source(source),
         ))
     }
 
@@ -950,7 +950,7 @@ mod tests {
         let algeon = error.find_algeon_error().expect("wrapper must attach a typed Algeon error");
 
         assert_eq!(algeon.code(), ErrorCode::MemoryReservationFailed);
-        assert_eq!(algeon.status(), crate::error::ErrorStatus::Temporary);
+        assert_eq!(algeon.status(), ErrorStatus::Temporary);
     }
 
     #[cfg(feature = "iceberg")]
@@ -965,7 +965,7 @@ mod tests {
         let algeon = error.find_algeon_error().expect("wrapper must attach a typed Algeon error");
 
         assert_eq!(algeon.code(), ErrorCode::SourceUnauthenticated);
-        assert_eq!(algeon.status(), crate::error::ErrorStatus::Permanent);
+        assert_eq!(algeon.status(), ErrorStatus::Permanent);
         assert_eq!(algeon.fact_value("opendal_error_kind"), Some("PermissionDenied"));
         assert_eq!(algeon.fact_value("aws_error_code"), Some("InvalidAccessKeyId"));
         assert_eq!(algeon.fact_value("aws_request_id"), Some("req-auth-1"));
@@ -983,7 +983,7 @@ mod tests {
         let algeon = error.find_algeon_error().expect("wrapper must attach a typed Algeon error");
 
         assert_eq!(algeon.code(), ErrorCode::SourceAccessDenied);
-        assert_eq!(algeon.status(), crate::error::ErrorStatus::Permanent);
+        assert_eq!(algeon.status(), ErrorStatus::Permanent);
         assert_eq!(algeon.fact_value("opendal_error_kind"), Some("PermissionDenied"));
     }
 
@@ -997,7 +997,7 @@ mod tests {
         let algeon = error.find_algeon_error().expect("wrapper must attach a typed Algeon error");
 
         assert_eq!(algeon.code(), ErrorCode::SourceObjectNotFound);
-        assert_eq!(algeon.status(), crate::error::ErrorStatus::Permanent);
+        assert_eq!(algeon.status(), ErrorStatus::Permanent);
         assert_eq!(algeon.fact_value("opendal_error_kind"), Some("NotFound"));
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
         let algeon = error.find_algeon_error().expect("wrapper must attach a typed Algeon error");
 
         assert_eq!(algeon.code(), ErrorCode::SourceTemporaryFailure);
-        assert_eq!(algeon.status(), crate::error::ErrorStatus::Temporary);
+        assert_eq!(algeon.status(), ErrorStatus::Temporary);
         assert_eq!(algeon.fact_value("opendal_temporary"), Some("true"));
     }
 

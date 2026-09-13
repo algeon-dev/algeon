@@ -25,6 +25,7 @@ use crate::{
             self, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_EXPECTED_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID,
             FACT_TYPE_ID, Result,
         },
+        native_teardown::drop_device_owned_handle,
         types::{CudfType, DataType, TypeId, materialize_bool},
     },
     ops::search,
@@ -869,11 +870,8 @@ impl ColumnView<'_> {
 }
 impl Drop for ColumnView<'_> {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
-            self.handle.as_ptr(),
-            self.domain.device_id(),
-            "ColumnView::drop",
-            |owned| unsafe { cudf_sys::cudf_column_view_destroy(owned) },
-        );
+        drop_device_owned_handle(self.handle.as_ptr(), self.domain.device_id(), "ColumnView::drop", |owned| unsafe {
+            cudf_sys::cudf_column_view_destroy(owned)
+        });
     }
 }

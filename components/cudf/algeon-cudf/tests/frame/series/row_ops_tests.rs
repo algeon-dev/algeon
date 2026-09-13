@@ -11,18 +11,28 @@ use cudf::{
         error::{FactKeyName, FactValue},
         types::TypeId,
     },
+    testing::{
+        groupby::{
+            trigger_value_counts_empty_count_result_for_test, trigger_value_counts_missing_count_results_for_test,
+            trigger_value_counts_missing_key_columns_for_test,
+        },
+        series::{
+            trigger_series_row_range_end_limit_error_for_test, trigger_series_row_range_overflow_error_for_test,
+            trigger_series_row_range_start_limit_error_for_test,
+        },
+    },
 };
 
-use crate::common::{column_from_slice, error_context_value};
+use crate::common::{column_from_slice, error_context_value, nullable_series, run_named_cases, series, series_opt};
 
 fn test_head_basic() {
-    let s = crate::common::series::<i32>("x", &[10, 20, 30, 40]).unwrap();
+    let s = series::<i32>("x", &[10, 20, 30, 40]).unwrap();
     let head = s.head(2).unwrap();
     assert_eq!(head.to_vec_strict::<i32>().unwrap(), vec![10, 20]);
 }
 
 fn test_tail_clamps_to_len() {
-    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let s = series::<i32>("x", &[10, 20, 30]).unwrap();
     let tail = s.tail(99).unwrap();
     assert_eq!(tail.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
@@ -35,24 +45,23 @@ fn test_slice_preserves_unnamed_series() {
 }
 
 fn test_filter_drops_false_and_null_mask_rows() {
-    let values = crate::common::series::<i32>("x", &[10, 20, 30, 40]).unwrap();
-    let mask = crate::common::nullable_series::<bool>("mask", &[true, false, false, true], &[true, true, false, true])
-        .unwrap();
+    let values = series::<i32>("x", &[10, 20, 30, 40]).unwrap();
+    let mask = nullable_series::<bool>("mask", &[true, false, false, true], &[true, true, false, true]).unwrap();
 
     let filtered = values.filter(&mask).unwrap();
     assert_eq!(filtered.to_vec_strict::<i32>().unwrap(), vec![10, 40]);
 }
 
 fn test_gather_out_of_bounds_nullifies_rows() {
-    let values = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let indices = crate::common::series::<i32>("idx", &[2, 99, 0]).unwrap();
+    let values = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let indices = series::<i32>("idx", &[2, 99, 0]).unwrap();
 
     let gathered = values.gather(&indices).unwrap();
     assert_eq!(gathered.to_optional_vec::<i32>().unwrap(), vec![Some(30), None, Some(10)]);
 }
 
 fn test_dropna_removes_null_rows() {
-    let values = crate::common::series_opt("x", &[Some(10i32), None, Some(30), None]).unwrap();
+    let values = series_opt("x", &[Some(10i32), None, Some(30), None]).unwrap();
 
     let cleaned = values.dropna().unwrap();
     assert_eq!(cleaned.null_count(), 0);
@@ -60,7 +69,7 @@ fn test_dropna_removes_null_rows() {
 }
 
 fn test_drop_duplicates_returns_unique_values() {
-    let values = crate::common::series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
+    let values = series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
 
     let deduped = values.drop_duplicates().unwrap();
     let mut host = deduped.to_vec_strict::<i32>().unwrap();
@@ -69,7 +78,7 @@ fn test_drop_duplicates_returns_unique_values() {
 }
 
 fn test_value_counts_returns_schema_neutral_value_and_count_columns() {
-    let values = crate::common::series_opt("x", &[Some(2i32), Some(1), None, Some(2), Some(1), Some(2)]).unwrap();
+    let values = series_opt("x", &[Some(2i32), Some(1), None, Some(2), Some(1), Some(2)]).unwrap();
 
     let counts = values.value_counts().unwrap();
 
@@ -108,30 +117,30 @@ fn test_value_counts_for_unnamed_series_uses_fallback_value_name() {
 // -- Semantic lock-down: stable across the column-primitive refactor --------
 
 fn test_head_on_empty_series_returns_empty_with_name() {
-    let s = crate::common::series::<i32>("x", &[]).unwrap();
+    let s = series::<i32>("x", &[]).unwrap();
     let head = s.head(10).unwrap();
     assert_eq!(head.len(), 0);
     assert_eq!(head.to_vec_strict::<i32>().unwrap(), Vec::<i32>::new());
 }
 
 fn test_slice_offset_beyond_len_returns_empty() {
-    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let sliced = s.slice(10, 5).unwrap();
     assert_eq!(sliced.len(), 0);
 }
 
 fn test_gather_empty_index_returns_empty_with_name() {
-    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let idx = crate::common::series::<i32>("idx", &[]).unwrap();
+    let s = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let idx = series::<i32>("idx", &[]).unwrap();
 
     let gathered = s.gather(&idx).unwrap();
     assert_eq!(gathered.len(), 0);
 }
 
 fn test_gather_operation_tag_on_dtype_error() {
-    let s = crate::common::series::<i32>("x", &[10, 20]).unwrap();
+    let s = series::<i32>("x", &[10, 20]).unwrap();
     // Indices must be Int32; pass Float64 to trigger dtype error.
-    let bogus = crate::common::series::<f64>("idx", &[0.0, 1.0]).unwrap();
+    let bogus = series::<f64>("idx", &[0.0, 1.0]).unwrap();
 
     let err = s.gather(&bogus).unwrap_err();
     assert_eq!(
@@ -142,9 +151,9 @@ fn test_gather_operation_tag_on_dtype_error() {
 }
 
 fn test_filter_operation_tag_on_dtype_error() {
-    let s = crate::common::series::<i32>("x", &[10, 20]).unwrap();
+    let s = series::<i32>("x", &[10, 20]).unwrap();
     // Mask must be BOOL8; pass Int32 to trigger dtype error.
-    let bogus = crate::common::series::<i32>("mask", &[1, 0]).unwrap();
+    let bogus = series::<i32>("mask", &[1, 0]).unwrap();
 
     let err = s.filter(&bogus).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -155,8 +164,8 @@ fn test_filter_operation_tag_on_dtype_error() {
 }
 
 fn test_filter_length_mismatch_uses_canonical_length_contract() {
-    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let short_mask = crate::common::series::<bool>("mask", &[true, false]).unwrap();
+    let s = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let short_mask = series::<bool>("mask", &[true, false]).unwrap();
 
     let err = s.filter(&short_mask).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -167,7 +176,7 @@ fn test_filter_length_mismatch_uses_canonical_length_contract() {
 }
 
 fn test_dropna_on_non_nullable_returns_same_values() {
-    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let out = s.dropna().unwrap();
     assert_eq!(out.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -184,14 +193,14 @@ fn test_drop_duplicates_preserves_unnamed_series() {
 fn test_value_counts_with_sentinel_collision_name() {
     // value_counts now returns schema-neutral output names regardless of the
     // source series name, including names that match the old sentinel.
-    let values = crate::common::series::<i32>("__cudf_series_value__", &[1, 1, 2]).unwrap();
+    let values = series::<i32>("__cudf_series_value__", &[1, 1, 2]).unwrap();
 
     let counts = values.value_counts().unwrap();
     assert_eq!(counts.column_names(), vec!["value", "count"]);
 }
 
 fn test_testing_hook_locks_value_counts_missing_key_columns_contract() {
-    let err = cudf::testing::groupby::trigger_value_counts_missing_key_columns_for_test().unwrap_err();
+    let err = trigger_value_counts_missing_key_columns_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -209,7 +218,7 @@ fn test_testing_hook_locks_value_counts_missing_key_columns_contract() {
 }
 
 fn test_testing_hook_locks_value_counts_missing_count_results_contract() {
-    let err = cudf::testing::groupby::trigger_value_counts_missing_count_results_for_test().unwrap_err();
+    let err = trigger_value_counts_missing_count_results_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -226,7 +235,7 @@ fn test_testing_hook_locks_value_counts_missing_count_results_contract() {
 }
 
 fn test_testing_hook_locks_value_counts_empty_count_result_contract() {
-    let err = cudf::testing::groupby::trigger_value_counts_empty_count_result_for_test().unwrap_err();
+    let err = trigger_value_counts_empty_count_result_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -243,7 +252,7 @@ fn test_testing_hook_locks_value_counts_empty_count_result_contract() {
 }
 
 fn test_testing_hook_locks_series_row_range_start_limit_contract() {
-    let err = cudf::testing::series::trigger_series_row_range_start_limit_error_for_test().unwrap_err();
+    let err = trigger_series_row_range_start_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -257,7 +266,7 @@ fn test_testing_hook_locks_series_row_range_start_limit_contract() {
 }
 
 fn test_testing_hook_locks_series_row_range_end_limit_contract() {
-    let err = cudf::testing::series::trigger_series_row_range_end_limit_error_for_test().unwrap_err();
+    let err = trigger_series_row_range_end_limit_error_for_test().unwrap_err();
     let expected_end = (i32::MAX as usize).checked_add(1).unwrap().to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -272,7 +281,7 @@ fn test_testing_hook_locks_series_row_range_end_limit_contract() {
 }
 
 fn test_testing_hook_locks_series_row_range_overflow_contract() {
-    let err = cudf::testing::series::trigger_series_row_range_overflow_error_for_test().unwrap_err();
+    let err = trigger_series_row_range_overflow_error_for_test().unwrap_err();
     let expected_end = ((i32::MAX as u128) + (usize::MAX as u128)).to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -289,7 +298,7 @@ fn test_testing_hook_locks_series_row_range_overflow_contract() {
 
 #[test]
 fn row_ops_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_head_basic", test_head_basic),
         ("test_tail_clamps_to_len", test_tail_clamps_to_len),
         ("test_slice_preserves_unnamed_series", test_slice_preserves_unnamed_series),

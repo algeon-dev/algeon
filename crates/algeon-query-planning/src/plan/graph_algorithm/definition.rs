@@ -1,6 +1,8 @@
 //! Graph algorithm definitions, registry metadata, and construction contracts.
 use std::{fmt, sync::Arc};
 
+use arrow::datatypes::DataType;
+
 use super::{
     Field, GraphAlgorithmParams, GraphBetweennessCentralityParams, GraphBfsParams, GraphCoreNumberParams,
     GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEigenvectorCentralityParams,
@@ -200,12 +202,10 @@ impl GraphVertexIdTypeSupport {
     }
 
     /// Whether the Arrow dtype is supported for vertex id columns.
-    pub fn accepts_arrow_data_type(self, data_type: &arrow::datatypes::DataType) -> bool {
+    pub fn accepts_arrow_data_type(self, data_type: &DataType) -> bool {
         match self {
-            Self::Int32OrInt64 => {
-                matches!(data_type, arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64)
-            },
-            Self::Int32OnlyLegacyEdgeType => matches!(data_type, arrow::datatypes::DataType::Int32),
+            Self::Int32OrInt64 => matches!(data_type, DataType::Int32 | DataType::Int64),
+            Self::Int32OnlyLegacyEdgeType => matches!(data_type, DataType::Int32),
         }
     }
 }
@@ -634,11 +634,11 @@ impl GraphOperationDefinition {
             && params.path_output.is_some()
         {
             return Arc::new(Schema::new(vec![
-                Field::new("path_index", arrow::datatypes::DataType::Int64, false),
-                Field::new("source", arrow::datatypes::DataType::Int64, false),
-                Field::new("target", arrow::datatypes::DataType::Int64, false),
-                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-                Field::new("distance", arrow::datatypes::DataType::Int64, false),
+                Field::new("path_index", DataType::Int64, false),
+                Field::new("source", DataType::Int64, false),
+                Field::new("target", DataType::Int64, false),
+                Field::new("vertex", DataType::Int64, false),
+                Field::new("distance", DataType::Int64, false),
             ]));
         }
         let mut fields =
@@ -646,8 +646,8 @@ impl GraphOperationDefinition {
         if let GraphAlgorithmParams::Bfs(params) = params
             && params.return_target_info
         {
-            fields.push(Field::new("target_found", arrow::datatypes::DataType::Boolean, false));
-            fields.push(Field::new("target_distance", arrow::datatypes::DataType::Int64, true));
+            fields.push(Field::new("target_found", DataType::Boolean, false));
+            fields.push(Field::new("target_distance", DataType::Int64, true));
         }
         Arc::new(Schema::new(fields))
     }

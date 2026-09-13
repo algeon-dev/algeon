@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::{
     common::ScalarValue,
     logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits},
@@ -320,7 +320,7 @@ fn offset_from_u32(value: u32) -> Result<u32, CapabilityReason> {
 
 fn parse_lag_lead_default(
     expr: &Arc<dyn PhysicalExpr>,
-    value_type: &arrow::datatypes::DataType,
+    value_type: &DataType,
 ) -> Result<Option<NativeLiteralValue>, CapabilityReason> {
     let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     let scalar = literal.value();

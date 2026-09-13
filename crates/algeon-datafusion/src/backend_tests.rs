@@ -1,5 +1,17 @@
-use datafusion::execution::SessionStateBuilder;
-use query_engine::{optimizer::NativeOptimizerOptions, plan::NativePlanCostOptions};
+use datafusion::{
+    catalog::Session,
+    common::Result as DataFusionResult,
+    execution::{SessionStateBuilder, context::QueryPlanner},
+    logical_expr::LogicalPlan,
+    physical_plan::ExecutionPlan,
+    physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner},
+};
+use query_engine::{
+    error::{QueryError, QueryErrorCode},
+    optimizer::NativeOptimizerOptions,
+    plan::NativePlanCostOptions,
+    runtime::DeviceCapability,
+};
 
 use super::*;
 use crate::{planner::DataFusionCpuExecutionPolicy, session::installed_algeon_native_optimizer_config};
@@ -159,7 +171,7 @@ fn backend_default_device_profile_needs_no_ownership_for_defaults() {
 
 #[test]
 fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
-    let capabilities = DeviceCapabilities::only(Vec::<query_engine::runtime::DeviceCapability>::new());
+    let capabilities = DeviceCapabilities::only(Vec::<DeviceCapability>::new());
     let first = AlgeonGpuDeviceConfig::new(
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 })
@@ -334,17 +346,13 @@ fn backend_session_binding_predicate_tracks_installed_backend_identity() {
 struct SentinelQueryPlanner;
 
 #[async_trait::async_trait]
-impl datafusion::execution::context::QueryPlanner for SentinelQueryPlanner {
+impl QueryPlanner for SentinelQueryPlanner {
     async fn create_physical_plan(
         &self,
-        logical_plan: &datafusion::logical_expr::LogicalPlan,
-        session: &dyn datafusion::catalog::Session,
-    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
-        use datafusion::physical_planner::PhysicalPlanner;
-
-        datafusion::physical_planner::DefaultPhysicalPlanner::default()
-            .create_physical_plan(logical_plan, session)
-            .await
+        logical_plan: &LogicalPlan,
+        session: &dyn Session,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        DefaultPhysicalPlanner::default().create_physical_plan(logical_plan, session).await
     }
 }
 
@@ -464,8 +472,8 @@ fn backend_probe_device_capacity_reports_live_cuda_totals() {
 
 #[test]
 fn backend_core_build_error_surfaces_capacity_cause_in_display() {
-    let native = query_engine::error::QueryError::new(
-        query_engine::error::QueryErrorCode::InvalidPlan,
+    let native = QueryError::new(
+        QueryErrorCode::InvalidPlan,
         "query_engine.gpu.device_registry.capacity",
         "explicit managed capacity cannot exceed owned device memory",
     )

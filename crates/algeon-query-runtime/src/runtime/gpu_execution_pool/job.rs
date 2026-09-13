@@ -3,13 +3,16 @@
 use std::{
     cell::Cell,
     future::Future,
+    hint, panic,
     panic::AssertUnwindSafe,
     pin::Pin,
+    sync,
     sync::{
         Arc,
         atomic::{AtomicU8, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
+    thread,
 };
 
 use futures::FutureExt;
@@ -25,7 +28,8 @@ use super::{
 };
 use crate::observability::{
     GpuJobLifecycleState, JobDefinitionRow, RuntimeGpuJobObservation, RuntimeJobId, RuntimeObservationHandle,
-    RuntimeObservationPayload, RuntimeStreamLeaseScope, RuntimeTopologyRecord, RuntimeWorkerId, WorkerDefinitionRow,
+    RuntimeObservationPayload, RuntimeObservationRecordClass, RuntimeStreamLeaseScope, RuntimeTopologyRecord,
+    RuntimeWorkerId, WorkerDefinitionRow,
 };
 
 pub(super) struct JobObservation {
@@ -43,7 +47,7 @@ const JOB_LIFECYCLE_TERMINAL: u8 = 3;
 
 impl JobObservation {
     pub(super) fn enqueued(&self) {
-        self.observation.record_topology(crate::observability::RuntimeObservationRecordClass::JobDefinition, || {
+        self.observation.record_topology(RuntimeObservationRecordClass::JobDefinition, || {
             RuntimeTopologyRecord::JobDefinition(JobDefinitionRow {
                 plan_execution_id: None,
                 job_id: self.job_id.clone(),
@@ -60,7 +64,7 @@ impl JobObservation {
             self.job_id.as_str(),
             worker_index.map_or_else(|| "inline".to_string(), |index| index.to_string())
         ));
-        self.observation.record_topology(crate::observability::RuntimeObservationRecordClass::WorkerDefinition, || {
+        self.observation.record_topology(RuntimeObservationRecordClass::WorkerDefinition, || {
             RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
                 plan_execution_id: None,
                 worker_id: worker_id.clone(),
@@ -82,7 +86,7 @@ impl JobObservation {
             match self.lifecycle.load(Ordering::Acquire) {
                 JOB_LIFECYCLE_TERMINAL => return false,
                 JOB_LIFECYCLE_CANCELLATION_REQUESTED => return true,
-                JOB_LIFECYCLE_CANCELLATION_RECORDING => std::hint::spin_loop(),
+                JOB_LIFECYCLE_CANCELLATION_RECORDING => hint::spin_loop(),
                 JOB_LIFECYCLE_PENDING => {
                     if self
                         .lifecycle
@@ -109,7 +113,7 @@ impl JobObservation {
             let current = self.lifecycle.load(Ordering::Acquire);
             match current {
                 JOB_LIFECYCLE_TERMINAL => return,
-                JOB_LIFECYCLE_CANCELLATION_RECORDING => std::hint::spin_loop(),
+                JOB_LIFECYCLE_CANCELLATION_RECORDING => hint::spin_loop(),
                 JOB_LIFECYCLE_PENDING | JOB_LIFECYCLE_CANCELLATION_REQUESTED => {
                     if self
                         .lifecycle
@@ -239,13 +243,13 @@ impl Drop for JobCounterGuard {
         // before publishing pool quiescence, but never while retaining the
         // drain mutex that serializes the zero-counter transition.
         let completion_panic =
-            self.completion.take().and_then(|completion| std::panic::catch_unwind(AssertUnwindSafe(completion)).err());
+            self.completion.take().and_then(|completion| panic::catch_unwind(AssertUnwindSafe(completion)).err());
 
         {
             // Synchronize the zero-counter transition with drain waiters.
             // Completion above releases the job's final resource anchors, so
             // a waiter that observes zero after this decrement may proceed.
-            let _drain_state = self.drain.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _drain_state = self.drain.changed.lock().unwrap_or_else(sync::PoisonError::into_inner);
             match self.state {
                 JobCounterState::Queued => decrement(&self.counters.queued),
                 JobCounterState::Active => {
@@ -260,7 +264,7 @@ impl Drop for JobCounterGuard {
         }
 
         if let Some(panic) = completion_panic {
-            std::panic::resume_unwind(panic);
+            panic::resume_unwind(panic);
         }
     }
 }
@@ -287,7 +291,7 @@ impl JobTerminalGuard {
         if self.observation.is_terminal() {
             return;
         }
-        if std::thread::panicking() {
+        if thread::panicking() {
             self.observation.terminal(GpuJobLifecycleState::Panicked);
         } else if self.cancellation_on_drop {
             self.observation.cancellation_requested();

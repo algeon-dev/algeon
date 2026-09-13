@@ -7,7 +7,11 @@ use std::{fmt, ptr};
 
 use cudf::{
     DeviceId,
-    runtime::{DeviceEntryGuard, drop_device_resource as cudf_drop_device_resource, quarantine_device_resource},
+    runtime::{
+        DeviceEntryGuard, DeviceFaultKind, DeviceFaultNativeStatus, drop_device_resource as cudf_drop_device_resource,
+        quarantine_device_resource, report_device_fault,
+    },
+    testing::device_safety,
 };
 
 use crate::error::{Error, ErrorKind, Result};
@@ -81,7 +85,7 @@ fn validated_device(device: i32, operation: &'static str) -> Result<DeviceId> {
     usize::try_from(device)
         .ok()
         .and_then(|ordinal| DeviceId::new(ordinal).ok())
-        .or_else(|| cudf::testing::device_safety::injected_device_id(device))
+        .or_else(|| device_safety::injected_device_id(device))
         .ok_or_else(|| {
             Error::new(ErrorKind::InvalidInput, operation)
                 .with_message("invalid CUDA owner-device ordinal")
@@ -131,11 +135,11 @@ pub(crate) fn drop_device_resource<T>(
             return;
         }
         if status == CUGRAPH_RS_DESTROY_FATAL_CUDA {
-            cudf::runtime::report_device_fault(
+            report_device_fault(
                 device,
-                cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+                DeviceFaultKind::FatalDeviceOperation,
                 operation,
-                Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(cuda_status)),
+                Some(DeviceFaultNativeStatus::Cuda(cuda_status)),
             );
         }
         quarantine_device_resource(device, operation, &NativeDestroyFailure { status, cuda_status });

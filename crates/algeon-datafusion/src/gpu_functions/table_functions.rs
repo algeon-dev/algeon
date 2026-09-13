@@ -353,7 +353,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::gpu_functions::{GpuFunctionAvailability, GpuFunctionFamily};
+    use crate::{
+        gpu_functions::{GpuFunctionAvailability, GpuFunctionFamily},
+        physical_plan::DataFusionCpuBoundaryExec,
+    };
 
     #[derive(Debug)]
     struct FakeFamily;
@@ -523,7 +526,7 @@ mod tests {
         let df = ctx.sql("SELECT * FROM gpu_list_functions()").await.unwrap();
         let plan = df.create_physical_plan().await.unwrap();
         assert!(
-            plan.downcast_ref::<crate::physical_plan::DataFusionCpuBoundaryExec>().is_some(),
+            plan.downcast_ref::<DataFusionCpuBoundaryExec>().is_some(),
             "expected DataFusionCpuBoundaryExec at physical root, got {}",
             plan.name()
         );

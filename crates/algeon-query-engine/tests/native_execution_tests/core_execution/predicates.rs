@@ -1,3 +1,5 @@
+use query_engine::rapids_backend::rapids_analysis_context;
+
 #[test]
 fn native_query_executes_gpu_resident_source_with_offset_only_limit() {
     let context = backend_context();
@@ -110,7 +112,7 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
         vec!["order_id".to_string(), "amount".to_string()],
     )
     .with_reader_predicate(predicate);
-    assert!(source.reader_predicate.as_ref().is_some_and(|predicate| source.reader_predicate_is_supported(predicate, query_engine::rapids_backend::rapids_analysis_context())));
+    assert!(source.reader_predicate.as_ref().is_some_and(|predicate| source.reader_predicate_is_supported(predicate, rapids_analysis_context())));
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));

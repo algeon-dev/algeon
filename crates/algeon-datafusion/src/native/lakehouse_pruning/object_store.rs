@@ -1,10 +1,10 @@
 //! Object-store lookup, native storage-profile fallback, and redacted diagnostics.
 
-use std::{collections::HashMap, error::Error as StdError, hash::Hasher, sync::Arc};
+use std::{collections::HashMap, env, error::Error as StdError, hash::Hasher, sync::Arc};
 
 use datafusion::{
     execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
-    object_store::path::Path as ObjectStorePath,
+    object_store::{Error as ObjectStoreError, ObjectStore, path::Path as ObjectStorePath},
 };
 use fnv::FnvHasher;
 use query_engine::{
@@ -18,7 +18,7 @@ use crate::error::ErrorSourceDiagnostics;
 pub(super) struct FooterObjectStoreRegistry<'a> {
     runtime_env: &'a Arc<RuntimeEnv>,
     source_storage_profiles: &'a [SourceStorageProfile],
-    profile_stores: HashMap<(String, String), Arc<dyn datafusion::object_store::ObjectStore>>,
+    profile_stores: HashMap<(String, String), Arc<dyn ObjectStore>>,
 }
 
 impl<'a> FooterObjectStoreRegistry<'a> {
@@ -31,7 +31,7 @@ impl<'a> FooterObjectStoreRegistry<'a> {
         file: &LocalParquetFile,
         object: &ObjectStoreFile,
         source_node_id: NodeId,
-    ) -> std::result::Result<Arc<dyn datafusion::object_store::ObjectStore>, String> {
+    ) -> std::result::Result<Arc<dyn ObjectStore>, String> {
         match self.runtime_env.object_store(&object.store_url) {
             Ok(store) => Ok(store),
             Err(runtime_error) if object.scheme == "s3" => {
@@ -63,8 +63,8 @@ impl<'a> FooterObjectStoreRegistry<'a> {
                     .as_deref()
                     .filter(|region| !region.is_empty())
                     .map(ToOwned::to_owned)
-                    .or_else(|| std::env::var("AWS_REGION").ok().filter(|region| !region.is_empty()))
-                    .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok().filter(|region| !region.is_empty()))
+                    .or_else(|| env::var("AWS_REGION").ok().filter(|region| !region.is_empty()))
+                    .or_else(|| env::var("AWS_DEFAULT_REGION").ok().filter(|region| !region.is_empty()))
                     .unwrap_or_else(|| "us-east-1".to_string());
                 let store = profile.build_s3_object_store(&object.bucket, fallback_region).map_err(|error| {
                     foreign_error_diagnostic(
@@ -125,7 +125,7 @@ pub(super) fn object_error_context(source_node_id: NodeId, path: &ObjectStorePat
 }
 
 pub(super) fn object_store_pruning_error(
-    error: datafusion::object_store::Error,
+    error: ObjectStoreError,
     context: &[(&'static str, String)],
     path: &ObjectStorePath,
 ) -> String {
@@ -143,26 +143,24 @@ pub(super) fn object_store_pruning_error(
     fields.join(" ")
 }
 
-fn object_store_error_kind(error: &datafusion::object_store::Error) -> &'static str {
+fn object_store_error_kind(error: &ObjectStoreError) -> &'static str {
     match error {
-        datafusion::object_store::Error::PermissionDenied { .. } => "permission_denied",
-        datafusion::object_store::Error::Unauthenticated { .. } => "unauthenticated",
-        datafusion::object_store::Error::NotFound { .. } => "not_found",
-        datafusion::object_store::Error::Generic { .. } => "generic",
-        datafusion::object_store::Error::InvalidPath { .. } => "invalid_path",
-        datafusion::object_store::Error::NotSupported { .. } => "not_supported",
+        ObjectStoreError::PermissionDenied { .. } => "permission_denied",
+        ObjectStoreError::Unauthenticated { .. } => "unauthenticated",
+        ObjectStoreError::NotFound { .. } => "not_found",
+        ObjectStoreError::Generic { .. } => "generic",
+        ObjectStoreError::InvalidPath { .. } => "invalid_path",
+        ObjectStoreError::NotSupported { .. } => "not_supported",
         _ => "other",
     }
 }
 
-fn object_store_error_detail(error: &datafusion::object_store::Error) -> Option<&'static str> {
+fn object_store_error_detail(error: &ObjectStoreError) -> Option<&'static str> {
     match error {
-        datafusion::object_store::Error::PermissionDenied { .. } => Some("access_denied"),
-        datafusion::object_store::Error::Unauthenticated { .. } => Some("unauthenticated"),
-        datafusion::object_store::Error::NotFound { .. } => Some("not_found"),
-        datafusion::object_store::Error::Generic { source, .. } => {
-            classify_generic_object_store_source(source.as_ref())
-        },
+        ObjectStoreError::PermissionDenied { .. } => Some("access_denied"),
+        ObjectStoreError::Unauthenticated { .. } => Some("unauthenticated"),
+        ObjectStoreError::NotFound { .. } => Some("not_found"),
+        ObjectStoreError::Generic { source, .. } => classify_generic_object_store_source(source.as_ref()),
         _ => None,
     }
 }

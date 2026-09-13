@@ -6,12 +6,12 @@ use cudf::{
         error::{FactKeyName, FactValue},
     },
     ops::sorting::{self, NullOrder, Order},
-    testing::prelude::*,
+    testing::{prelude::*, sorting::trigger_sort_key_count_limit_error_for_test},
 };
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, error_context_value, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases,
 };
 
 fn test_sort_ascending() {
@@ -177,7 +177,7 @@ fn test_sort_error_contains_operation_context() {
 }
 
 fn test_testing_hook_locks_sort_key_count_limit_contract() {
-    let err = cudf::testing::sorting::trigger_sort_key_count_limit_error_for_test().unwrap_err();
+    let err = trigger_sort_key_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -248,7 +248,7 @@ fn test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenanc
 
 #[test]
 fn sorting_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_sort_ascending", test_sort_ascending),
         ("test_sort_descending", test_sort_descending),
         ("test_sort_multi_column", test_sort_multi_column),

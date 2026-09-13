@@ -1,5 +1,7 @@
 use std::{borrow::Cow, sync::Arc, time::Instant};
 
+use cudf::{DataFrameJoinOptions, DataType, NullEquality, TypeId};
+
 use super::{
     ArrowDataType, BinaryOp, CudfSortOptions, DataFrame, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame,
     LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryErrorCode, Result, Schema,
@@ -10,6 +12,15 @@ use super::{
     ensure_local_cache_parquet_chunk, ensure_local_cache_parquet_file, execution_overrides, lit,
     parquet_chunk_path_fact, parquet_file_path_fact, parquet_file_stable_id_fact, read_local_parquet_file,
     record_background_cache_chunk_fill_enqueue, record_source_chunk_read_runtime,
+};
+use crate::{
+    chunk::{
+        SourceChunkPlanningPolicy, SourceChunkRowPositionRange,
+        plan_local_parquet_source_chunks_with_execution_context, source_chunk_row_position_range,
+        source_file_for_chunk,
+    },
+    naming::unique_name_with_suffix_from,
+    source::{ParquetEqualityDeleteFile, ParquetPositionDeleteFile, ParquetReadStrategy},
 };
 
 const ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN: &str = "file_path";
@@ -34,11 +45,11 @@ pub(super) fn read_position_delete_parquet_source_as_chunks(
 ) -> Result<GpuDataFrame> {
     let chunk_source = source.clone().with_scan_limit(None);
     let planning_policy = if source.scan_limit.is_some() {
-        crate::chunk::SourceChunkPlanningPolicy::for_position_delete_scan_limit()
+        SourceChunkPlanningPolicy::for_position_delete_scan_limit()
     } else {
-        crate::chunk::SourceChunkPlanningPolicy::default()
+        SourceChunkPlanningPolicy::default()
     };
-    let chunk_plan = crate::chunk::plan_local_parquet_source_chunks_with_execution_context(
+    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         source_node_id,
         &chunk_source,
         planning_policy,
@@ -121,16 +132,15 @@ pub(super) fn read_position_delete_source_chunk(
         ));
     }
 
-    let _cache_read_pin =
-        if chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-            ensure_local_cache_parquet_chunk(context, chunk)?;
-            Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
-        } else {
-            None
-        };
-    let file = crate::chunk::source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.position_deletes")?;
+    let _cache_read_pin = if chunk.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio {
+        ensure_local_cache_parquet_chunk(context, chunk)?;
+        Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
+    } else {
+        None
+    };
+    let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.position_deletes")?;
     let row_position_range =
-        if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
+        if file.has_position_delete_files() { source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let _io_lease = context.acquire_io_lease("query_engine.local_parquet_source.position_delete_chunk.read")?;
     let read_timer = Instant::now();
@@ -207,7 +217,7 @@ pub(super) fn apply_position_deletes_to_data_file(
     source_node_id: NodeId,
     file: &LocalParquetFile,
     file_index: usize,
-    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+    row_position_range: Option<SourceChunkRowPositionRange>,
     mut frame: DataFrame,
     metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
@@ -314,10 +324,10 @@ pub(super) fn apply_position_deletes_to_data_file(
             .with_execution(&overrides)
             .left_anti_join(
                 &matching_deletes,
-                cudf::DataFrameJoinOptions::new()
+                DataFrameJoinOptions::new()
                     .left_on([row_position_column.as_str()])
                     .right_on([ICEBERG_POSITION_DELETE_POS_COLUMN])
-                    .null_equality(cudf::NullEquality::Unequal),
+                    .null_equality(NullEquality::Unequal),
             )
             .map_err(|error| {
                 cudf_query_error(
@@ -346,10 +356,10 @@ pub(super) fn apply_position_deletes_to_data_file(
             .with_execution(&overrides)
             .left_anti_join(
                 &delete_frame,
-                cudf::DataFrameJoinOptions::new()
+                DataFrameJoinOptions::new()
                     .left_on(delete_file.equality_columns.iter().map(String::as_str))
                     .right_on(delete_file.equality_columns.iter().map(String::as_str))
-                    .null_equality(cudf::NullEquality::Equal),
+                    .null_equality(NullEquality::Equal),
             )
             .map_err(|error| {
                 cudf_query_error(
@@ -393,9 +403,9 @@ pub(super) fn apply_position_deletes_to_data_file(
 
 pub(super) fn position_delete_row_position_expr(
     row_position_column: &str,
-    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+    row_position_range: Option<SourceChunkRowPositionRange>,
 ) -> Result<cudf::Expr> {
-    let int64 = cudf::DataType::new(cudf::TypeId::Int64);
+    let int64 = DataType::new(TypeId::Int64);
     let expr = col(row_position_column).cast(int64);
     let expr = if let Some(range) = row_position_range
         && range.start > 0
@@ -408,9 +418,9 @@ pub(super) fn position_delete_row_position_expr(
 }
 
 pub(super) fn position_delete_filter_predicates(
-    delete_file: &crate::source::ParquetPositionDeleteFile,
+    delete_file: &ParquetPositionDeleteFile,
     data_file_path: &str,
-    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+    row_position_range: Option<SourceChunkRowPositionRange>,
 ) -> Result<Vec<cudf::Expr>> {
     let file_path_values = position_delete_file_path_filter_values(delete_file, data_file_path);
     let file_path_predicate =
@@ -426,9 +436,9 @@ pub(super) fn position_delete_filter_predicates(
 }
 
 pub(super) fn position_delete_reader_predicate(
-    delete_file: &crate::source::ParquetPositionDeleteFile,
+    delete_file: &ParquetPositionDeleteFile,
     data_file_path: &str,
-    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+    row_position_range: Option<SourceChunkRowPositionRange>,
 ) -> Result<Expr> {
     let file_path_values = position_delete_file_path_filter_values(delete_file, data_file_path)
         .into_iter()
@@ -479,7 +489,7 @@ pub(super) fn position_delete_i64_bound(value: u64, bound: &'static str) -> Resu
 }
 
 pub(super) fn position_delete_file_matches_referenced_data_file(
-    delete_file: &crate::source::ParquetPositionDeleteFile,
+    delete_file: &ParquetPositionDeleteFile,
     data_file_path: &str,
 ) -> bool {
     delete_file
@@ -489,7 +499,7 @@ pub(super) fn position_delete_file_matches_referenced_data_file(
 }
 
 pub(super) fn position_delete_file_path_filter_values(
-    delete_file: &crate::source::ParquetPositionDeleteFile,
+    delete_file: &ParquetPositionDeleteFile,
     data_file_path: &str,
 ) -> Vec<String> {
     let mut values = Vec::with_capacity(8);
@@ -540,8 +550,8 @@ pub(super) fn normalized_local_file_location_text(location: &str) -> Cow<'_, str
 }
 
 pub(super) fn position_delete_file_overlaps_row_range(
-    delete_file: &crate::source::ParquetPositionDeleteFile,
-    range: crate::chunk::SourceChunkRowPositionRange,
+    delete_file: &ParquetPositionDeleteFile,
+    range: SourceChunkRowPositionRange,
 ) -> bool {
     if range.start >= range.end {
         return false;
@@ -562,9 +572,9 @@ pub(super) fn position_delete_file_overlaps_row_range(
 pub(super) fn read_position_delete_file(
     context: &ExecutionContext,
     source_node_id: NodeId,
-    delete_file: &crate::source::ParquetPositionDeleteFile,
+    delete_file: &ParquetPositionDeleteFile,
     data_file_path: &str,
-    row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
+    row_position_range: Option<SourceChunkRowPositionRange>,
     data_file_index: usize,
     delete_index: usize,
     metrics: &ExecutionMetrics,
@@ -582,13 +592,12 @@ pub(super) fn read_position_delete_file(
     .with_reader_predicate(position_delete_reader_predicate(delete_file, data_file_path, row_position_range)?);
     let columns = [ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN, ICEBERG_POSITION_DELETE_POS_COLUMN];
     let frame = {
-        let _cache_read_pin =
-            if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-                ensure_local_cache_parquet_file(context, &file)?;
-                Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
-            } else {
-                None
-            };
+        let _cache_read_pin = if file.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio {
+            ensure_local_cache_parquet_file(context, &file)?;
+            Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
+        } else {
+            None
+        };
         let (cudf_source, cudf_chunk) =
             cudf_local_parquet_source_file_selection(context, &source, &file, data_file_index, delete_index)?;
         read_local_parquet_file(
@@ -614,7 +623,7 @@ pub(super) fn read_equality_delete_file(
     context: &ExecutionContext,
     source_node_id: NodeId,
     source: &LocalParquetSource,
-    delete_file: &crate::source::ParquetEqualityDeleteFile,
+    delete_file: &ParquetEqualityDeleteFile,
     data_file_index: usize,
     delete_index: usize,
     metrics: &ExecutionMetrics,
@@ -642,13 +651,12 @@ pub(super) fn read_equality_delete_file(
         LocalParquetSource::from_files(vec![file.clone()], delete_schema, delete_file.equality_columns.clone());
     let columns = delete_file.equality_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let frame = {
-        let _cache_read_pin =
-            if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-                ensure_local_cache_parquet_file(context, &file)?;
-                Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
-            } else {
-                None
-            };
+        let _cache_read_pin = if file.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio {
+            ensure_local_cache_parquet_file(context, &file)?;
+            Some(acquire_lakehouse_cache_file_read_pin(context, &file)?)
+        } else {
+            None
+        };
         let (cudf_source, cudf_chunk) =
             cudf_local_parquet_source_file_selection(context, &delete_source, &file, data_file_index, delete_index)?;
         read_local_parquet_file(
@@ -684,13 +692,13 @@ pub(super) fn read_equality_delete_file(
 
 pub(super) fn unique_position_delete_column_name(frame: &DataFrame) -> String {
     let names = frame.column_names();
-    crate::naming::unique_name_with_suffix_from(ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN, 0, |candidate| {
-        names.contains(&candidate)
-    })
+    unique_name_with_suffix_from(ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN, 0, |candidate| names.contains(&candidate))
 }
 
 #[cfg(test)]
 mod tests {
+    use cudf::io::parquet::RemoteReadMode;
+
     use super::*;
     use crate::source::{CredentialMode, ParquetEqualityDeleteFile, ResolvedParquetSource};
 
@@ -698,7 +706,7 @@ mod tests {
     fn position_and_equality_delete_files_build_typed_remote_kvikio_sources() {
         let context = ExecutionContext::builder().build().expect("execution context builds");
 
-        let position_delete = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
+        let position_delete = ParquetPositionDeleteFile::from_resolved_parquet_source(
             "position-delete",
             ResolvedParquetSource::remote_kvikio(
                 "s3://bucket/table/position-delete.parquet",
@@ -727,10 +735,7 @@ mod tests {
             position_cudf_source.files()[0].remote_source().unwrap().uri(),
             "s3://bucket/table/position-delete.parquet"
         );
-        assert_eq!(
-            position_chunk.remote_source().unwrap().read_mode(),
-            cudf::io::parquet::RemoteReadMode::RequireKvikio
-        );
+        assert_eq!(position_chunk.remote_source().unwrap().read_mode(), RemoteReadMode::RequireKvikio);
         assert!(position_cudf_source.reader_predicate().is_some());
 
         let equality_delete = ParquetEqualityDeleteFile::from_resolved_parquet_source(
@@ -756,9 +761,6 @@ mod tests {
             equality_cudf_source.files()[0].remote_source().unwrap().uri(),
             "s3://bucket/table/equality-delete.parquet"
         );
-        assert_eq!(
-            equality_chunk.remote_source().unwrap().read_mode(),
-            cudf::io::parquet::RemoteReadMode::RequireKvikio
-        );
+        assert_eq!(equality_chunk.remote_source().unwrap().read_mode(), RemoteReadMode::RequireKvikio);
     }
 }

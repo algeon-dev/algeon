@@ -7,7 +7,7 @@
 use super::{context::default_execution_context, owned::Series};
 use crate::{
     core::{
-        error::{self, Error, ErrorCode, FACT_TYPE_ID, Result},
+        error::{self, Error, ErrorCode, ErrorKind, FACT_TYPE_ID, Result},
         scalar::Scalar,
         types::{CudfType, DataType, NullPolicy, TypeId},
     },
@@ -554,9 +554,7 @@ fn annotate_scalar_reduction_budget_execution_error(
     operation: &'static str,
 ) -> Error {
     match error.kind() {
-        crate::core::error::ErrorKind::ResourceExhausted | crate::core::error::ErrorKind::DependencyFailure => {
-            token.annotate_error(error, operation)
-        },
+        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
         _ => error.reanchor_if_needed(operation),
     }
 }

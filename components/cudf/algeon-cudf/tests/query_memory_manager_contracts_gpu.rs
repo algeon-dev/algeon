@@ -12,8 +12,11 @@ use cudf::{
     CudfErrorFailureSource, DataFrame, DataType, DeviceId, DeviceMemoryFailureAllocationDomain,
     DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
     DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions, StreamReservationLease, TypeId,
-    ops::expr::col, runtime::CudaStream, testing::prelude::*,
+    ExecutionBudgetStatus, QueryMemoryDomainOptions, Result, Runtime, SortOptions, StreamReservationLease, TypeId,
+    core::DeviceBuffer,
+    ops::expr::col,
+    runtime::CudaStream,
+    testing::{core::adopt_owned_memory_resource_for_test, prelude::*},
 };
 use cudf_sys::test_support;
 use static_assertions::assert_not_impl_any;
@@ -99,18 +102,18 @@ fn fail_first_allocation_resource(upstream: &DeviceMemoryResource) -> DeviceMemo
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create fail-first memory resource");
     // SAFETY: the hook returned one newly owned resource tied to the same
     // device as `upstream`, and this test transfers its sole ownership to cudf.
-    unsafe { cudf::testing::core::adopt_owned_memory_resource_for_test(raw, upstream.device()) }
+    unsafe { adopt_owned_memory_resource_for_test(raw, upstream.device()) }
         .expect("failed to adopt fail-first memory resource")
 }
 
 fn current_device_resource_raw_value() -> usize {
     let mut out = std::ptr::null_mut();
-    let status = unsafe { cudf_sys::test_support::cudf_test_current_device_resource_raw(&mut out) };
+    let status = unsafe { test_support::cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     out as usize
 }
 
-fn expect_device_buffer_error(result: cudf::Result<cudf::core::DeviceBuffer>) -> cudf::Error {
+fn expect_device_buffer_error(result: Result<DeviceBuffer>) -> cudf::Error {
     match result {
         Ok(_) => panic!("expected device buffer allocation to fail"),
         Err(error) => error,
@@ -133,9 +136,8 @@ fn query_domain_count_for_id(manager: &DeviceMemoryManager, domain_id: u64) -> u
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!raw_manager.is_null());
     let mut count = 0;
-    let status = unsafe {
-        cudf_sys::test_support::cudf_test_memory_manager_query_domain_count_for_id(raw_manager, domain_id, &mut count)
-    };
+    let status =
+        unsafe { test_support::cudf_test_memory_manager_query_domain_count_for_id(raw_manager, domain_id, &mut count) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     count
 }
@@ -144,7 +146,7 @@ struct QueryDomainRoutePauseRelease;
 
 impl Drop for QueryDomainRoutePauseRelease {
     fn drop(&mut self) {
-        unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_release() };
+        unsafe { test_support::cudf_test_query_domain_route_pause_release() };
     }
 }
 
@@ -1407,7 +1409,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     let lease = domain.reserve_stream(runtime.stream(), 61_001, 64 * 1024 * 1024).unwrap();
     assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
-    if unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_arm(DOMAIN_ID) } == 0 {
+    if unsafe { test_support::cudf_test_query_domain_route_pause_arm(DOMAIN_ID) } == 0 {
         eprintln!("skipping deterministic query-domain teardown race; debug test hooks are disabled");
         return;
     }
@@ -1415,7 +1417,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     let worker_runtime = Arc::clone(&runtime);
     let allocation = std::thread::spawn(move || worker_runtime.device_buffer(16 * 1024 * 1024));
     let deadline = Instant::now() + Duration::from_secs(5);
-    while unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_reached() } == 0 {
+    while unsafe { test_support::cudf_test_query_domain_route_pause_reached() } == 0 {
         assert!(Instant::now() < deadline, "query-domain allocation did not reach the armed route pause");
         std::thread::yield_now();
     }

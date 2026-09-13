@@ -1,18 +1,21 @@
 //! Shared explicit-pair similarity execution.
 
+use cugraph::cudf_interop::vertex_pairs_from_prepared_columns;
+
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NvtxRange, QueryError,
     QueryErrorCode, Result, cudf_query_error, empty_graph_execution_result, map_cugraph_error,
     normalize_graph_result_schema, project_edge_list, run_with_accounted_resident_cugraph_graph, similarity_params,
     table_graph_options,
 };
+use crate::plan::{GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, planned_resident_graph_key};
 
 pub(super) fn execute_similarity(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     mut inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let crate::plan::GraphAlgorithmParams::Similarity(params) = &spec.params else {
+    let GraphAlgorithmParams::Similarity(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.similarity",
@@ -51,8 +54,7 @@ pub(super) fn execute_similarity(
     }
 
     let input = inputs.edge_list;
-    let resident_key =
-        input.graph_residency().and_then(|descriptor| crate::plan::planned_resident_graph_key(descriptor, spec));
+    let resident_key = input.graph_residency().and_then(|descriptor| planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let graph_options = table_graph_options(spec);
@@ -112,36 +114,27 @@ pub(super) fn execute_similarity(
             .with_source(error)
         })?;
         let vertex_pairs =
-            cugraph::cudf_interop::vertex_pairs_from_prepared_columns(entered, graph, &first_export, &second_export)
-                .map_err(|error| {
-                    similarity_cugraph_error(
-                        spec,
-                        "query_engine.graph_algorithm.vertex_pairs",
-                        "failed to create cuGraph vertex pairs from the prepared pair relation",
-                        error,
-                    )
-                })?;
+            vertex_pairs_from_prepared_columns(entered, graph, &first_export, &second_export).map_err(|error| {
+                similarity_cugraph_error(
+                    spec,
+                    "query_engine.graph_algorithm.vertex_pairs",
+                    "failed to create cuGraph vertex pairs from the prepared pair relation",
+                    error,
+                )
+            })?;
         // End the input conversion range before timing the algorithm itself.
         drop(_vertex_pairs_range);
 
         let frame = {
             let _metric_range = match algorithm {
-                crate::plan::GraphAlgorithm::Jaccard => {
-                    NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.jaccard")
-                },
-                crate::plan::GraphAlgorithm::Sorensen => {
-                    NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.sorensen")
-                },
-                crate::plan::GraphAlgorithm::Overlap => {
-                    NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.overlap")
-                },
-                crate::plan::GraphAlgorithm::Cosine => {
-                    NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.cosine")
-                },
+                GraphAlgorithm::Jaccard => NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.jaccard"),
+                GraphAlgorithm::Sorensen => NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.sorensen"),
+                GraphAlgorithm::Overlap => NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.overlap"),
+                GraphAlgorithm::Cosine => NvtxRange::static_label(c"algeon_datafusion.cugraph_similarity.cosine"),
                 _ => unreachable!("similarity executor accepts only similarity algorithms"),
             };
             match algorithm {
-                crate::plan::GraphAlgorithm::Jaccard => graph
+                GraphAlgorithm::Jaccard => graph
                     .jaccard_coefficients(entered, vertex_pairs, &cugraph_params)
                     .map_err(|error| {
                         similarity_cugraph_error(
@@ -160,7 +153,7 @@ pub(super) fn execute_similarity(
                             error,
                         )
                     })?,
-                crate::plan::GraphAlgorithm::Sorensen => graph
+                GraphAlgorithm::Sorensen => graph
                     .sorensen_coefficients(entered, vertex_pairs, &cugraph_params)
                     .map_err(|error| {
                         similarity_cugraph_error(
@@ -179,7 +172,7 @@ pub(super) fn execute_similarity(
                             error,
                         )
                     })?,
-                crate::plan::GraphAlgorithm::Overlap => graph
+                GraphAlgorithm::Overlap => graph
                     .overlap_coefficients(entered, vertex_pairs, &cugraph_params)
                     .map_err(|error| {
                         similarity_cugraph_error(
@@ -198,7 +191,7 @@ pub(super) fn execute_similarity(
                             error,
                         )
                     })?,
-                crate::plan::GraphAlgorithm::Cosine => graph
+                GraphAlgorithm::Cosine => graph
                     .cosine_similarity_coefficients(entered, vertex_pairs, &cugraph_params)
                     .map_err(|error| {
                         similarity_cugraph_error(
@@ -248,12 +241,12 @@ pub(super) fn execute_similarity(
 }
 
 fn similarity_cugraph_error(
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     operation: &'static str,
     message: &'static str,
     error: cugraph::Error,
 ) -> QueryError {
-    let crate::plan::GraphAlgorithmParams::Similarity(params) = &spec.params else {
+    let GraphAlgorithmParams::Similarity(params) = &spec.params else {
         unreachable!("similarity executor validated its parameter payload before calling cuGraph")
     };
     map_cugraph_error(operation, message)(error)

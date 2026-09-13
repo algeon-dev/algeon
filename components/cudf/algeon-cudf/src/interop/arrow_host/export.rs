@@ -4,8 +4,13 @@ use std::sync::Arc;
 
 use arrow::{
     array::*,
-    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
-    datatypes::{DataType as ArrowDataType, Decimal32Type, Decimal64Type, DecimalType, Field},
+    buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
+    datatypes::{
+        ArrowNativeType, ArrowPrimitiveType, DataType as ArrowDataType, Date32Type, Decimal32Type, Decimal64Type,
+        DecimalType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType, DurationSecondType,
+        Field, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
+    },
+    error::ArrowError,
 };
 
 use super::{
@@ -39,15 +44,15 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn 
         TypeId::Decimal32 => decimal_widening_to_arrow::<i32>(cv, dtype),
         TypeId::Decimal64 => decimal_widening_to_arrow::<i64>(cv, dtype),
         TypeId::Decimal128 => decimal128_to_arrow(cv, dtype),
-        TypeId::TimestampDays => fixed_width_to_arrow::<i32, arrow::datatypes::Date32Type>(cv),
-        TypeId::TimestampSeconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampSecondType>(cv),
-        TypeId::TimestampMilliseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampMillisecondType>(cv),
-        TypeId::TimestampMicroseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampMicrosecondType>(cv),
-        TypeId::TimestampNanoseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampNanosecondType>(cv),
-        TypeId::DurationSeconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationSecondType>(cv),
-        TypeId::DurationMilliseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationMillisecondType>(cv),
-        TypeId::DurationMicroseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationMicrosecondType>(cv),
-        TypeId::DurationNanoseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationNanosecondType>(cv),
+        TypeId::TimestampDays => fixed_width_to_arrow::<i32, Date32Type>(cv),
+        TypeId::TimestampSeconds => fixed_width_to_arrow::<i64, TimestampSecondType>(cv),
+        TypeId::TimestampMilliseconds => fixed_width_to_arrow::<i64, TimestampMillisecondType>(cv),
+        TypeId::TimestampMicroseconds => fixed_width_to_arrow::<i64, TimestampMicrosecondType>(cv),
+        TypeId::TimestampNanoseconds => fixed_width_to_arrow::<i64, TimestampNanosecondType>(cv),
+        TypeId::DurationSeconds => fixed_width_to_arrow::<i64, DurationSecondType>(cv),
+        TypeId::DurationMilliseconds => fixed_width_to_arrow::<i64, DurationMillisecondType>(cv),
+        TypeId::DurationMicroseconds => fixed_width_to_arrow::<i64, DurationMicrosecondType>(cv),
+        TypeId::DurationNanoseconds => fixed_width_to_arrow::<i64, DurationNanosecondType>(cv),
         TypeId::List => list_to_arrow(cv),
         _ => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
@@ -74,7 +79,7 @@ pub(super) fn column_view_to_arrow_with_requested_type(
     }
 }
 
-pub(super) fn map_record_batch_error(error: arrow::error::ArrowError) -> Error {
+pub(super) fn map_record_batch_error(error: ArrowError) -> Error {
     error::foreign_invariant_violation(
         "dataframe::to_record_batch",
         error.to_string(),
@@ -85,7 +90,7 @@ pub(super) fn map_record_batch_error(error: arrow::error::ArrowError) -> Error {
     .with_source(error)
 }
 
-pub(super) fn map_numeric_to_arrow_error(error: arrow::error::ArrowError) -> Error {
+pub(super) fn map_numeric_to_arrow_error(error: ArrowError) -> Error {
     error::foreign_invariant_violation(
         "arrow::numeric_to_arrow",
         error.to_string(),
@@ -96,7 +101,7 @@ pub(super) fn map_numeric_to_arrow_error(error: arrow::error::ArrowError) -> Err
     .with_source(error)
 }
 
-pub(super) fn map_arrow_ffi_export_error(operation: &'static str, error: arrow::error::ArrowError) -> Error {
+pub(super) fn map_arrow_ffi_export_error(operation: &'static str, error: ArrowError) -> Error {
     error::foreign_invariant_violation(
         operation,
         error.to_string(),
@@ -119,8 +124,8 @@ where T: ArrowPrimitiveMapping {
             Ok(Arc::new(arr))
         },
         Some(mask) => {
-            let null_buffer = arrow::buffer::NullBuffer::from(mask);
-            let buffer = arrow::buffer::ScalarBuffer::from(data);
+            let null_buffer = NullBuffer::from(mask);
+            let buffer = ScalarBuffer::from(data);
             let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(buffer, Some(null_buffer))
                 .map_err(map_numeric_to_arrow_error)?;
             Ok(Arc::new(arr))
@@ -149,8 +154,8 @@ fn fixed_width_host_values<T: Copy + Default>(cv: &ColumnView<'_>) -> Result<Vec
 
 fn fixed_width_to_arrow<T, A>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
 where
-    T: Copy + arrow::datatypes::ArrowNativeType,
-    A: arrow::datatypes::ArrowPrimitiveType<Native = T>,
+    T: Copy + ArrowNativeType,
+    A: ArrowPrimitiveType<Native = T>,
 {
     let data = fixed_width_host_values::<T>(cv)?;
     let validity = cv.to_host_validity()?;
@@ -263,7 +268,7 @@ fn list_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     Ok(Arc::new(array))
 }
 
-fn map_decimal_to_arrow_error(error: arrow::error::ArrowError) -> Error {
+fn map_decimal_to_arrow_error(error: ArrowError) -> Error {
     error::foreign_invariant_violation(
         "arrow::decimal128_to_arrow",
         error.to_string(),
@@ -274,7 +279,7 @@ fn map_decimal_to_arrow_error(error: arrow::error::ArrowError) -> Error {
     .with_source(error)
 }
 
-fn map_list_arrow_error(error: arrow::error::ArrowError) -> Error {
+fn map_list_arrow_error(error: ArrowError) -> Error {
     error::foreign_invariant_violation(
         "arrow::list_to_arrow",
         error.to_string(),
@@ -302,7 +307,7 @@ where T: Copy + Default + Into<i128> {
 
 fn decimal_to_arrow<T, A>(cv: &ColumnView<'_>, dtype: DataType, precision: u8, scale: i8) -> Result<Arc<dyn Array>>
 where
-    T: Copy + Default + arrow::datatypes::ArrowNativeType,
+    T: Copy + Default + ArrowNativeType,
     A: DecimalType<Native = T>,
 {
     let expected_scale = arrow_decimal_scale_to_cudf_scale(scale);
@@ -356,8 +361,8 @@ fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     match validity {
         None => Ok(Arc::new(BooleanArray::from(data))),
         Some(mask) => {
-            let null_buffer = arrow::buffer::NullBuffer::from(mask);
-            let bool_buffer = arrow::buffer::BooleanBuffer::from(data);
+            let null_buffer = NullBuffer::from(mask);
+            let bool_buffer = BooleanBuffer::from(data);
             let arr = BooleanArray::new(bool_buffer, Some(null_buffer));
             Ok(Arc::new(arr))
         },

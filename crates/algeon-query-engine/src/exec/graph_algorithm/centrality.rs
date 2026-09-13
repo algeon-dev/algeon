@@ -1,3 +1,10 @@
+use cudf::{CudfType, DataType as CudfDataType, core::DeviceSlice};
+use cugraph::{
+    centrality::{PersonalizationVector, PersonalizedPageRankParams},
+    cudf_interop::device_array_view_from_slice,
+    types::{CugraphElement, DataType as CugraphDataType},
+};
+
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
     QueryError, QueryErrorCode, Result, betweenness_centrality_params, cudf_query_error,
@@ -5,14 +12,18 @@ use super::{
     map_cugraph_error, normalize_graph_result_schema, pagerank_params, personalized_pagerank_params, project_edge_list,
     run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, table_graph_options,
 };
+use crate::plan::{
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessSeeds, GraphPageRankPersonalizationInput,
+    GraphPredicateInput, planned_resident_graph_key,
+};
 
 pub(super) fn execute_pagerank(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::PageRank(params) = &spec.params else {
+    let GraphAlgorithmParams::PageRank(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.pagerank",
@@ -21,8 +32,7 @@ pub(super) fn execute_pagerank(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
-    let resident_key =
-        input.graph_residency().and_then(|descriptor| crate::plan::planned_resident_graph_key(descriptor, spec));
+    let resident_key = input.graph_residency().and_then(|descriptor| planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
@@ -60,11 +70,11 @@ pub(super) fn execute_pagerank(
 
 pub(super) fn execute_personalized_pagerank(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     mut inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
+    let GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.personalized_pagerank",
@@ -95,7 +105,7 @@ pub(super) fn execute_personalized_pagerank(
         "algeon_datafusion_cugraph_personalized_pagerank",
         |runtime, entered, graph| match vertex_type {
             cudf::TypeId::Int32 => match graph.weight_dtype() {
-                cugraph::types::DataType::Float32 => personalized_pagerank_typed::<i32, f32>(
+                CugraphDataType::Float32 => personalized_pagerank_typed::<i32, f32>(
                     &personalization_frame,
                     personalization,
                     runtime,
@@ -104,7 +114,7 @@ pub(super) fn execute_personalized_pagerank(
                     &ppr_params,
                     spec,
                 ),
-                cugraph::types::DataType::Float64 => personalized_pagerank_typed::<i32, f64>(
+                CugraphDataType::Float64 => personalized_pagerank_typed::<i32, f64>(
                     &personalization_frame,
                     personalization,
                     runtime,
@@ -116,7 +126,7 @@ pub(super) fn execute_personalized_pagerank(
                 dtype => Err(personalized_pagerank_unsupported_weight_dtype(dtype)),
             },
             cudf::TypeId::Int64 => match graph.weight_dtype() {
-                cugraph::types::DataType::Float32 => personalized_pagerank_typed::<i64, f32>(
+                CugraphDataType::Float32 => personalized_pagerank_typed::<i64, f32>(
                     &personalization_frame,
                     personalization,
                     runtime,
@@ -125,7 +135,7 @@ pub(super) fn execute_personalized_pagerank(
                     &ppr_params,
                     spec,
                 ),
-                cugraph::types::DataType::Float64 => personalized_pagerank_typed::<i64, f64>(
+                CugraphDataType::Float64 => personalized_pagerank_typed::<i64, f64>(
                     &personalization_frame,
                     personalization,
                     runtime,
@@ -148,11 +158,11 @@ pub(super) fn execute_personalized_pagerank(
 
 pub(super) fn execute_eigenvector_centrality(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::EigenvectorCentrality(params) = &spec.params else {
+    let GraphAlgorithmParams::EigenvectorCentrality(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.eigenvector_centrality",
@@ -193,11 +203,11 @@ pub(super) fn execute_eigenvector_centrality(
 
 pub(super) fn execute_hits(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::Hits(params) = &spec.params else {
+    let GraphAlgorithmParams::Hits(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.hits",
@@ -251,11 +261,11 @@ pub(super) fn execute_hits(
 
 pub(super) fn execute_betweenness_centrality(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) = &spec.params else {
+    let GraphAlgorithmParams::BetweennessCentrality(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.betweenness_centrality",
@@ -323,11 +333,11 @@ pub(super) fn execute_betweenness_centrality(
 
 pub(super) fn execute_edge_betweenness_centrality(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) = &spec.params else {
+    let GraphAlgorithmParams::EdgeBetweennessCentrality(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.edge_betweenness_centrality",
@@ -394,11 +404,11 @@ pub(super) fn execute_edge_betweenness_centrality(
 }
 
 fn betweenness_i32_seeds(
-    seeds: &crate::plan::GraphBetweennessSeeds,
+    seeds: &GraphBetweennessSeeds,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<Vec<i32>> {
     match seeds {
-        crate::plan::GraphBetweennessSeeds::I64(values) => values
+        GraphBetweennessSeeds::I64(values) => values
             .iter()
             .map(|value| {
                 i32::try_from(*value).map_err(|_| {
@@ -411,7 +421,7 @@ fn betweenness_i32_seeds(
                 })
             })
             .collect(),
-        crate::plan::GraphBetweennessSeeds::Input { input, .. } => {
+        GraphBetweennessSeeds::Input { input, .. } => {
             betweenness_input_series(input, side_inputs, cudf::TypeId::Int32)?.to_vec_strict::<i32>().map_err(|error| {
                 cudf_query_error(
                     "query_engine.graph_algorithm.betweenness_seeds",
@@ -424,12 +434,12 @@ fn betweenness_i32_seeds(
 }
 
 fn betweenness_i64_seeds(
-    seeds: &crate::plan::GraphBetweennessSeeds,
+    seeds: &GraphBetweennessSeeds,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<Vec<i64>> {
     match seeds {
-        crate::plan::GraphBetweennessSeeds::I64(values) => Ok(values.clone()),
-        crate::plan::GraphBetweennessSeeds::Input { input, .. } => {
+        GraphBetweennessSeeds::I64(values) => Ok(values.clone()),
+        GraphBetweennessSeeds::Input { input, .. } => {
             betweenness_input_series(input, side_inputs, cudf::TypeId::Int64)?.to_vec_strict::<i64>().map_err(|error| {
                 cudf_query_error(
                     "query_engine.graph_algorithm.betweenness_seeds",
@@ -442,12 +452,12 @@ fn betweenness_i64_seeds(
 }
 
 fn betweenness_seed_count(
-    seeds: &crate::plan::GraphBetweennessSeeds,
+    seeds: &GraphBetweennessSeeds,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<u64> {
     match seeds {
-        crate::plan::GraphBetweennessSeeds::I64(values) => Ok(values.len() as u64),
-        crate::plan::GraphBetweennessSeeds::Input { input, row_count_upper_bound } => {
+        GraphBetweennessSeeds::I64(values) => Ok(values.len() as u64),
+        GraphBetweennessSeeds::Input { input, row_count_upper_bound } => {
             let rows = side_inputs.get(&input.input).map(|frame| frame.num_rows() as u64).ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -472,7 +482,7 @@ fn betweenness_seed_count(
 }
 
 fn betweenness_input_series(
-    input: &crate::plan::GraphPredicateInput,
+    input: &GraphPredicateInput,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
     vertex_type: cudf::TypeId,
 ) -> Result<cudf::Series> {
@@ -522,11 +532,11 @@ fn betweenness_algorithm_metadata(seed_count: Option<u64>, normalized: bool) -> 
 
 pub(super) fn execute_katz_centrality(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::KatzCentrality(params) = &spec.params else {
+    let GraphAlgorithmParams::KatzCentrality(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.katz_centrality",
@@ -567,16 +577,16 @@ pub(super) fn execute_katz_centrality(
 
 fn personalized_pagerank_typed<V, W>(
     personalization_frame: &DataFrame,
-    personalization: &crate::plan::GraphPageRankPersonalizationInput,
+    personalization: &GraphPageRankPersonalizationInput,
     runtime: &cudf::Runtime,
     entered: &cugraph::EnteredContext<'_>,
     graph: &mut cugraph::Graph<cugraph::Transposed>,
-    params: &cugraph::centrality::PersonalizedPageRankParams,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &PersonalizedPageRankParams,
+    spec: &GraphAlgorithmSpec,
 ) -> Result<GraphAlgorithmExecutionResult>
 where
-    V: cudf::CudfType + cugraph::types::CugraphElement,
-    W: cudf::CudfType + cugraph::types::CugraphElement,
+    V: CudfType + CugraphElement,
+    W: CudfType + CugraphElement,
 {
     let vertices = personalization_series(personalization_frame, &personalization.vertex, "personalization_vertex")?;
     let values = personalization_values_series::<W>(personalization_frame, &personalization.value, runtime)?;
@@ -586,7 +596,7 @@ where
     let value_slice = personalization_device_slice::<W>(&values, "personalization_value")?;
     let vertex_view = personalization_device_view::<V>(&vertex_slice, "personalization_vertex")?;
     let value_view = personalization_device_view::<W>(&value_slice, "personalization_value")?;
-    let personalization = cugraph::centrality::PersonalizationVector { vertices: &vertex_view, values: &value_view };
+    let personalization = PersonalizationVector { vertices: &vertex_view, values: &value_view };
     let result = graph.personalized_pagerank(entered, params, &personalization).map_err(map_cugraph_error(
         "query_engine.graph_algorithm.personalized_pagerank",
         "cuGraph personalized PageRank failed",
@@ -605,11 +615,11 @@ where
 }
 
 fn personalization_values_series<W>(frame: &DataFrame, column: &str, runtime: &cudf::Runtime) -> Result<cudf::Series>
-where W: cudf::CudfType + cugraph::types::CugraphElement {
+where W: CudfType + CugraphElement {
     let values = personalization_series(frame, column, "personalization_value")?;
     let target = match W::data_type() {
-        cugraph::types::DataType::Float32 => cudf::TypeId::Float32,
-        cugraph::types::DataType::Float64 => cudf::TypeId::Float64,
+        CugraphDataType::Float32 => cudf::TypeId::Float32,
+        CugraphDataType::Float64 => cudf::TypeId::Float64,
         dtype => return Err(personalized_pagerank_unsupported_weight_dtype(dtype)),
     };
     let dtype = values.dtype().map_err(|error| {
@@ -634,7 +644,7 @@ where W: cudf::CudfType + cugraph::types::CugraphElement {
     }
     let overrides =
         cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    values.astype_in(cudf::DataType::new(target), &overrides).map_err(|error| {
+    values.astype_in(CudfDataType::new(target), &overrides).map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.personalized_pagerank",
             "failed to cast personalized PageRank values to the graph weight dtype",
@@ -658,10 +668,10 @@ fn personalization_series(frame: &DataFrame, column: &str, role: &'static str) -
     })
 }
 
-fn personalization_device_slice<'a, T: cudf::CudfType>(
+fn personalization_device_slice<'a, T: CudfType>(
     series: &'a cudf::Series,
     role: &'static str,
-) -> Result<cudf::core::DeviceSlice<'a>> {
+) -> Result<DeviceSlice<'a>> {
     series.as_column().device_slice::<T>().map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.personalized_pagerank",
@@ -672,11 +682,11 @@ fn personalization_device_slice<'a, T: cudf::CudfType>(
     })
 }
 
-fn personalization_device_view<'a, T: cugraph::types::CugraphElement>(
-    slice: &'a cudf::core::DeviceSlice<'a>,
+fn personalization_device_view<'a, T: CugraphElement>(
+    slice: &'a DeviceSlice<'a>,
     role: &'static str,
 ) -> Result<cugraph::DeviceArrayView<'a, T>> {
-    cugraph::cudf_interop::device_array_view_from_slice::<T>(slice)
+    device_array_view_from_slice::<T>(slice)
         .map_err(map_cugraph_error(
             "query_engine.graph_algorithm.personalized_pagerank",
             "failed to wrap personalized PageRank input as a cuGraph device-array view",
@@ -697,7 +707,7 @@ fn validate_personalization_series(series: &cudf::Series, role: &'static str) ->
     .with_fact("null_count", series.null_count()))
 }
 
-fn personalized_pagerank_unsupported_weight_dtype(dtype: cugraph::types::DataType) -> QueryError {
+fn personalized_pagerank_unsupported_weight_dtype(dtype: CugraphDataType) -> QueryError {
     QueryError::new(
         QueryErrorCode::UnsupportedType,
         "query_engine.graph_algorithm.personalized_pagerank",

@@ -1,3 +1,5 @@
+use algeon_datafusion::error::ErrorCode;
+
 use super::*;
 
 #[test]
@@ -71,7 +73,7 @@ fn accepted_row_reports_fingerprint_mismatch_without_canonical_output_fingerprin
 #[test]
 fn native_runtime_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        algeon_datafusion::error::ErrorCode::MemoryReservationFailed,
+        ErrorCode::MemoryReservationFailed,
         "algeon_datafusion.native_exec.execute",
         "algeon native query execution failed",
     )
@@ -135,7 +137,7 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
 #[test]
 fn planning_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        algeon_datafusion::error::ErrorCode::InvalidExecutionPlan,
+        ErrorCode::InvalidExecutionPlan,
         "algeon_datafusion.native_planner",
         "native physical planning failed",
     )
@@ -158,13 +160,10 @@ fn planning_failure_preserves_adapter_error_facts() {
 
 #[test]
 fn cpu_runtime_failure_preserves_adapter_error_facts() {
-    let adapter_error = AdapterError::new(
-        algeon_datafusion::error::ErrorCode::InvalidExecutionPlan,
-        "algeon_datafusion.cpu_collect",
-        "cpu collection failed",
-    )
-    .with_fact("query_id", "q01")
-    .with_fact("stage", "collect");
+    let adapter_error =
+        AdapterError::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.cpu_collect", "cpu collection failed")
+            .with_fact("query_id", "q01")
+            .with_fact("stage", "collect");
     let datafusion_error = DataFusionError::from(adapter_error);
     let details = execution::FailureDetails::from_datafusion_error(&datafusion_error);
     let row = NativeTpchBenchmarkRow::accepted(

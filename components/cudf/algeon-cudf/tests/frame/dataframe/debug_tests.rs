@@ -1,10 +1,10 @@
 //! Tests for metadata-only Debug formatting on DataFrame values.
 
-use crate::common::{column_from_slice, column_from_strs};
+use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns};
 
 #[test]
 fn test_dataframe_debug_reports_table_metadata_without_values() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["id".to_string(), "city".to_string()],
         vec![column_from_slice(&[7i32, 8, 9]).unwrap(), column_from_strs(&["tokyo", "paris", "taipei"]).unwrap()],
     )

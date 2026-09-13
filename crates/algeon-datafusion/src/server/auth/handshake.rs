@@ -13,7 +13,8 @@ use std::sync::LazyLock;
 use argon2::Params;
 use arrow_flight::{HandshakeRequest, HandshakeResponse};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream};
+use tokio::task::spawn_blocking;
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{AsciiMetadataValue, MetadataMap},
@@ -105,10 +106,9 @@ async fn authenticate_and_issue_token(
                 .map_err(|_| Status::resource_exhausted("too many concurrent handshakes, retry later"))?;
 
             let users = users.clone();
-            let username =
-                tokio::task::spawn_blocking(move || authenticate_user(&users, &username, &password).map(|()| username))
-                    .await
-                    .map_err(|_| Status::internal("password verification task panicked"))??;
+            let username = spawn_blocking(move || authenticate_user(&users, &username, &password).map(|()| username))
+                .await
+                .map_err(|_| Status::internal("password verification task panicked"))??;
             drop(permit);
 
             let principal = Principal { username };
@@ -164,13 +164,14 @@ fn extract_basic_credentials(metadata: &MetadataMap) -> Result<(String, String),
 }
 
 fn empty_response() -> Response<HandshakeResponseStream> {
-    let stream = futures::stream::iter([Ok(HandshakeResponse { protocol_version: 0, payload: vec![].into() })]);
+    let stream = stream::iter([Ok(HandshakeResponse { protocol_version: 0, payload: vec![].into() })]);
     Response::new(Box::pin(stream))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::auth::{TokenStore, hash_password};
 
     fn make_metadata(header: Option<&str>) -> MetadataMap {
         let mut md = MetadataMap::new();
@@ -214,10 +215,7 @@ mod tests {
     }
 
     fn test_users() -> Vec<StaticUserConfig> {
-        vec![StaticUserConfig {
-            username: "alice".to_string(),
-            password_hash: super::super::hash_password("s3cret").expect("hash"),
-        }]
+        vec![StaticUserConfig { username: "alice".to_string(), password_hash: hash_password("s3cret").expect("hash") }]
     }
 
     #[test]
@@ -261,7 +259,7 @@ mod tests {
 
     fn basic_bearer_interceptor() -> AuthInterceptor {
         let mode = AuthMode::BasicBearer { users: test_users(), token_ttl_secs: 60 };
-        AuthInterceptor::new(mode, super::super::TokenStore::new())
+        AuthInterceptor::new(mode, TokenStore::new())
     }
 
     fn basic_auth_header(username: &str, password: &str) -> String {

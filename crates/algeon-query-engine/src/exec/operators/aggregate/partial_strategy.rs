@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use arrow::datatypes::{Schema as ArrowSchema, SchemaRef as ArrowSchemaRef};
+use cudf::NullPolicy;
 use fnv::FnvHasher;
 
 use super::{
@@ -17,6 +19,10 @@ use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
     datatypes::arrow_fixed_width_byte_size,
     exec::execution_metrics::PriorEvidenceScope,
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
+    source::parquet_source_path_fact,
 };
 
 #[cfg(test)]
@@ -24,7 +30,7 @@ pub(super) fn select_partial_aggregate_strategy_decision(
     decision: AggregateStrategyCapabilityDecision,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
     input_evidence: Option<PartialAggregateInputEvidence>,
     metrics: &ExecutionMetrics,
@@ -49,7 +55,7 @@ pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     mut decision: AggregateStrategyCapabilityDecision,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
     input_evidence: Option<PartialAggregateInputEvidence>,
     options: AggregateStrategyExecutionOptions,
@@ -445,7 +451,7 @@ fn prepared_sort_groupby_should_run_for_prior_evidence(
 pub(super) fn exact_single_key_cardinality_probe_candidate<'a>(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &'a AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
 ) -> Option<&'a str> {
     exact_single_key_cardinality_probe_candidate_with_options(
@@ -460,7 +466,7 @@ pub(super) fn exact_single_key_cardinality_probe_candidate<'a>(
 pub(super) fn exact_single_key_cardinality_probe_candidate_with_options<'a>(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &'a AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
     options: AggregateStrategyExecutionOptions,
 ) -> Option<&'a str> {
@@ -475,7 +481,7 @@ pub(super) fn exact_single_key_cardinality_probe_candidate_with_options<'a>(
 pub(super) fn exact_grouped_key_cardinality_probe_candidate(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
 ) -> Option<Vec<String>> {
     exact_grouped_key_cardinality_probe_candidate_with_options(
@@ -490,7 +496,7 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
 pub(super) fn exact_grouped_key_cardinality_probe_candidate_with_options(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
     options: AggregateStrategyExecutionOptions,
 ) -> Option<Vec<String>> {
@@ -516,24 +522,21 @@ pub(super) fn exact_single_key_cardinality_probe(
         )
     })?;
     let null_count = series.null_count() as u64;
-    let prepared = series
-        .prepare_scalar_reduction(ReduceAgg::NUnique { null_policy: cudf::NullPolicy::Exclude })
-        .map_err(|error| {
+    let prepared =
+        series.prepare_scalar_reduction(ReduceAgg::NUnique { null_policy: NullPolicy::Exclude }).map_err(|error| {
             cudf_query_error(
                 "query_engine.aggregate.exact_single_key_cardinality_probe.prepare_nunique",
                 "failed to prepare exact cardinality reduction for grouped aggregate key column",
                 error,
             )
         })?;
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::ExactCardinalityProbe,
-        crate::observability::RuntimeOperatorStageIdentity::new()
-            .with_input_rows(input_rows)
-            .with_strategy_label("nunique"),
+        RuntimeOperatorStageKind::ExactCardinalityProbe,
+        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows).with_strategy_label("nunique"),
     );
     let scalar = match prepared.execute_with_budget(token).map_err(|error| {
         cudf_query_error_with_budget_details(
@@ -606,15 +609,13 @@ pub(super) fn exact_grouped_key_cardinality_probe(
         )
     })?;
     let overrides = token.execution_overrides();
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::ExactCardinalityProbe,
-        crate::observability::RuntimeOperatorStageIdentity::new()
-            .with_input_rows(input_rows)
-            .with_strategy_label("drop_duplicates"),
+        RuntimeOperatorStageKind::ExactCardinalityProbe,
+        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows).with_strategy_label("drop_duplicates"),
     );
     let groups = match keys
         .with_execution(&overrides)
@@ -985,7 +986,7 @@ fn add_prior_cardinality_facts(
     decision: &mut AggregateStrategyCapabilityDecision,
     evidence: &PriorAggregateCardinalityEvidence,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
 ) {
     add_encoded_key_prior_cardinality_facts(decision, evidence);
     decision.facts.insert("prepared_sort_groupby_prior_input_rows", evidence.input_rows.to_string());
@@ -1001,7 +1002,7 @@ fn add_prior_cardinality_facts(
 
 fn estimate_grouped_key_output_bytes(
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     output_group_count: u64,
 ) -> Option<u64> {
     let mut bytes_per_group = 0u64;
@@ -1043,7 +1044,7 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input_rows: u64,
     output_rows: u64,
     elapsed: Duration,
@@ -1080,10 +1081,10 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input_rows: u64,
     output_rows: u64,
-    decision: crate::capability::AggregateStrategyCapabilityDecision,
+    decision: AggregateStrategyCapabilityDecision,
     selection_elapsed: Duration,
     encode_elapsed: Duration,
     groupby_elapsed: Duration,
@@ -1127,7 +1128,7 @@ fn duration_ns(duration: Duration) -> u64 {
 
 pub(super) fn aggregate_structural_key(
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_evidence: Option<PartialAggregateInputEvidence>,
 ) -> String {
     let group_exprs = spec
@@ -1177,7 +1178,7 @@ fn aggregate_function_structural_name(function: AggregateFunction) -> &'static s
     function.as_str()
 }
 
-fn aggregate_expr_structural_part(expr: &Expr, input_schema: &arrow::datatypes::Schema) -> String {
+fn aggregate_expr_structural_part(expr: &Expr, input_schema: &ArrowSchema) -> String {
     match expr {
         Expr::Column(column) => {
             let dtype = input_schema
@@ -1222,7 +1223,7 @@ pub(super) fn source_chunk_structural_part(chunk: &SourceChunk) -> String {
         chunk.file_index,
         chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()),
         chunk.location.diagnostic_location(),
-        crate::source::parquet_source_path_fact(&chunk.location, &chunk.path),
+        parquet_source_path_fact(&chunk.location, &chunk.path),
         chunk.read_columns.join(","),
         chunk.partition_values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join(","),
         format_usize_list(&chunk.row_group_indexes),

@@ -4,14 +4,17 @@ use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
 use super::{rewrite, simple_projection_column_single_alias, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
+    admission::bounded_pipeline_decision,
     backend::AnalysisContext,
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, Result},
     expr::{ColumnQualifier, ColumnRef, Expr},
+    mode::StatisticalAggregateExecutionMode,
     plan::{
         FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
         PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes,
         estimated_output_rows,
     },
+    source::SourceNode,
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -58,7 +61,7 @@ impl SemijoinReductionOptions {
     }
 
     /// Validates internal consistency for semijoin-reduction cost gates.
-    pub fn validate(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.cost_threshold_multiplier == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -342,7 +345,7 @@ struct SemijoinRewritePlan {
     cost_gate: SemijoinReductionCostGateDiagnostics,
 }
 
-type SemijoinRewriteResult = Result<SemijoinRewritePlan, Box<SemijoinRewriteRejection>>;
+type SemijoinRewriteResult = std::result::Result<SemijoinRewritePlan, Box<SemijoinRewriteRejection>>;
 
 struct SemijoinRewriteRejection {
     reason: SemijoinReductionRejectedReason,
@@ -394,7 +397,7 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
         &self,
         left_input: NodeId,
         keys: &[JoinKey],
-    ) -> Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
+    ) -> std::result::Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
         if keys.is_empty() {
             return Err(SemijoinReductionRejectedReason::MissingKeyLineage);
         }
@@ -406,7 +409,7 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
         &self,
         node_id: NodeId,
         required_columns: &[ColumnRef],
-    ) -> Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
+    ) -> std::result::Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
         let node = self.plan.node(node_id).ok_or(SemijoinReductionRejectedReason::MissingKeyLineage)?;
         match &node.kind {
             PlanNode::Source(_) => self.analyze_source(node_id, required_columns),
@@ -497,7 +500,7 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
         &self,
         node_id: NodeId,
         required_columns: &[ColumnRef],
-    ) -> Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
+    ) -> std::result::Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
         let node = self.plan.node(node_id).ok_or(SemijoinReductionRejectedReason::MissingKeyLineage)?;
         let mut key_mappings = Vec::with_capacity(required_columns.len());
         for column in required_columns {
@@ -677,7 +680,7 @@ impl<'a> SemijoinReductionRewriter<'a> {
         original_semijoin: &JoinNode,
         analysis: &SemijoinLineageAnalysis,
         step_index: usize,
-    ) -> Result<NodeId, SemijoinReductionRejectedReason> {
+    ) -> std::result::Result<NodeId, SemijoinReductionRejectedReason> {
         if current_old_id == analysis.target_subtree_id {
             if step_index != analysis.steps.len() {
                 return Err(SemijoinReductionRejectedReason::MissingKeyLineage);
@@ -779,7 +782,7 @@ impl<'a> SemijoinReductionRewriter<'a> {
             })
             .collect::<Vec<_>>();
         self.push_node(
-            PlanNode::Projection(crate::plan::ProjectionNode::new(pushed_left, outputs)),
+            PlanNode::Projection(ProjectionNode::new(pushed_left, outputs)),
             PlanFacts::device(projected_schema, SchemaBehavior::Projection),
         )
     }
@@ -800,7 +803,10 @@ fn prepend_mappings(
     }
 }
 
-fn resolve_output_slot(schema: &ArrowSchemaRef, column: &ColumnRef) -> Result<usize, SemijoinReductionRejectedReason> {
+fn resolve_output_slot(
+    schema: &ArrowSchemaRef,
+    column: &ColumnRef,
+) -> std::result::Result<usize, SemijoinReductionRejectedReason> {
     let mut matches = schema
         .fields()
         .iter()
@@ -818,7 +824,7 @@ fn resolve_output_slot(schema: &ArrowSchemaRef, column: &ColumnRef) -> Result<us
 fn validate_join_output_column_qualifier(
     side: JoinSide,
     column: &ColumnRef,
-) -> Result<(), SemijoinReductionRejectedReason> {
+) -> std::result::Result<(), SemijoinReductionRejectedReason> {
     let expected_input = join_side_index(side);
     match column.qualifier() {
         Some(ColumnQualifier::Input { index }) if *index == expected_input => Ok(()),
@@ -960,12 +966,12 @@ fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<
     let node = plan.node(node_id)?;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => {
+            SourceNode::LocalParquet(source) => {
                 let evidence =
                     FilteredSourceKeysetEvidence::source().with_source_bytes(estimated_output_bytes(plan, node_id));
                 Some(if source.reader_predicate.is_some() { evidence.filtered() } else { evidence })
             },
-            crate::source::SourceNode::LiteralBatch(source) => Some(
+            SourceNode::LiteralBatch(source) => Some(
                 FilteredSourceKeysetEvidence::source().with_source_bytes(
                     source
                         .batches
@@ -973,7 +979,7 @@ fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<
                         .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
                 ),
             ),
-            crate::source::SourceNode::GpuResident(_) => Some(FilteredSourceKeysetEvidence::source()),
+            SourceNode::GpuResident(_) => Some(FilteredSourceKeysetEvidence::source()),
         },
         PlanNode::Filter(filter) => Some(filtered_source_keyset_evidence(plan, filter.input)?.filtered()),
         PlanNode::Projection(projection) => filtered_source_keyset_evidence(plan, projection.input),
@@ -1107,7 +1113,7 @@ fn schemas_equal(left: &ArrowSchemaRef, right: &ArrowSchemaRef) -> bool {
 fn validate_rewritten_root_semantics(
     original: &QueryPlan,
     rewritten: &QueryPlan,
-) -> Result<(), SemijoinReductionRejectedReason> {
+) -> std::result::Result<(), SemijoinReductionRejectedReason> {
     if !schemas_equal(original.output_schema(), rewritten.output_schema()) {
         return Err(SemijoinReductionRejectedReason::RootSchemaMismatch);
     }
@@ -1153,11 +1159,7 @@ fn mode_admission_gate_decision(
 }
 
 fn bounded_admitted(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Option<bool> {
-    match crate::admission::bounded_pipeline_decision(
-        plan,
-        crate::mode::StatisticalAggregateExecutionMode::default(),
-        ctx,
-    ) {
+    match bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx) {
         Ok(decision) => Some(decision.admission().is_some()),
         Err(_) => None,
     }

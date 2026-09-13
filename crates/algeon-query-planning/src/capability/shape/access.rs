@@ -4,6 +4,7 @@ use super::{
     AggregateFunction, AggregateNode, CapabilityDecision, Expr, JoinNode, JoinSide, JoinType, NodeId, OutputLineage,
     PlanNode, QueryPlan, SourceNode, expr_family, multi_join_subtree_join_execution_capability, node_operator_fact,
 };
+use crate::expr::ColumnRef;
 
 pub(in crate::capability) fn projection_input(
     plan: &QueryPlan,
@@ -1051,7 +1052,7 @@ pub(in crate::capability) fn output_lineage(
 pub(in crate::capability) fn resolve_column_field_index(
     plan: &QueryPlan,
     input_id: NodeId,
-    column: &crate::expr::ColumnRef,
+    column: &ColumnRef,
     reason: &'static str,
 ) -> Result<usize, CapabilityDecision> {
     let Some(node) = plan.node(input_id) else {

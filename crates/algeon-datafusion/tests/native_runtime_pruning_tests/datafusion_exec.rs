@@ -1,5 +1,9 @@
 use std::{fs, sync::Arc};
 
+use cudf::testing::arrow::{
+    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+    reset_arrow_host_interop_observation_for_test,
+};
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::*;
@@ -30,12 +34,12 @@ async fn native_datafusion_exec_discounted_revenue_global_decimal_sum_matches_cp
     assert_eq!(plan.name(), "AlgeonNativeExec");
     assert!(plan.downcast_ref::<AlgeonNativeExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
     assert_batches_equal(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert!(metrics.elapsed_compute().unwrap_or(0) > 0);
@@ -59,12 +63,12 @@ async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
     assert_eq!(plan.name(), "AlgeonNativeExec");
     assert!(plan.downcast_ref::<AlgeonNativeExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
     assert_batches_equal(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "read_columns"), 0);
@@ -87,12 +91,12 @@ async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
     assert_eq!(plan.name(), "AlgeonNativeExec");
     assert!(plan.downcast_ref::<AlgeonNativeExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
     assert_batches_equal(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
@@ -118,12 +122,12 @@ async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_
     assert_eq!(plan.name(), "AlgeonNativeExec");
     assert!(plan.downcast_ref::<AlgeonNativeExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
     assert_batches_equal(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
@@ -148,12 +152,12 @@ async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
     assert_eq!(plan.name(), "AlgeonNativeExec");
     assert!(plan.downcast_ref::<AlgeonNativeExec>().is_some());
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
     assert_batches_equal(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);

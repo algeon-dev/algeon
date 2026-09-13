@@ -5,7 +5,10 @@
 //! [`query_planning::datatypes`] and is re-exported here unchanged.
 
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
-use cudf::{DataType as CudfDataType, TimestampResolution};
+use cudf::{
+    DataType as CudfDataType, TimestampResolution,
+    interop::arrow_host::cudf_dtype_from_arrow_type as cudf_dtype_from_arrow_type_cudf,
+};
 pub use query_planning::datatypes::{
     arrow_data_types_match_except_list_child_names, arrow_decimal_scale_to_cudf_scale,
     arrow_field_metadata_matches_except_parquet_field_id, arrow_fields_match_except_name, arrow_fixed_width_byte_size,
@@ -23,7 +26,7 @@ pub use query_planning::datatypes::{
 /// list columns are admitted only as carry types; operator validation
 /// decides where their semantics are unsupported.
 pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataType> {
-    cudf::interop::arrow_host::cudf_dtype_from_arrow_type(data_type).ok()
+    cudf_dtype_from_arrow_type_cudf(data_type).ok()
 }
 
 /// Returns whether this Arrow type has a native cuDF physical representation.

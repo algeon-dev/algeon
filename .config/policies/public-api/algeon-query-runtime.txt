@@ -2359,7 +2359,7 @@ pub fn query_runtime::runtime::ExecutionContext::acquire_io_lease(&self, &'stati
 pub fn query_runtime::runtime::ExecutionContext::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_id(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> query_planning::error::Result<core::option::Option<cudf::core::memory::usage::QueryMemoryDomainUsage>>
-pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_grant_identity(&self) -> core::option::Option<crate::runtime::gpu::GrantIdentity>
+pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_grant_identity(&self) -> core::option::Option<GrantIdentity>
 pub fn query_runtime::runtime::ExecutionContext::boundary_policy(&self) -> query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub fn query_runtime::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::builder() -> query_runtime::runtime::context::builder::ExecutionContextBuilder
@@ -2518,7 +2518,7 @@ pub query_runtime::runtime::GpuBackendDeviceStartupRecord::memory_manager_instal
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::memory_ownership: query_runtime::runtime::GpuMemoryOwnership
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::model_name: core::option::Option<alloc::string::String>
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::physical_total_bytes: core::option::Option<u64>
-pub query_runtime::runtime::GpuBackendDeviceStartupRecord::resource_profile: crate::runtime::DeviceResourceProfile
+pub query_runtime::runtime::GpuBackendDeviceStartupRecord::resource_profile: super::DeviceResourceProfile
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::stream_pool_size: usize
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::uuid: core::option::Option<alloc::string::String>
 pub query_runtime::runtime::GpuBackendDeviceStartupRecord::worker_count: usize
@@ -2536,8 +2536,8 @@ pub fn query_runtime::runtime::GpuBackendSession::backend_metrics_snapshot(&self
 pub fn query_runtime::runtime::GpuBackendSession::begin_attempt(&self, query_runtime::attempt::BeginAttemptRequest) -> query_planning::error::Result<query_runtime::attempt::AttemptBegin>
 pub fn query_runtime::runtime::GpuBackendSession::config(&self) -> query_planning::error::Result<query_runtime::runtime::QueryExecutionConfig>
 pub fn query_runtime::runtime::GpuBackendSession::device_admission_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<query_runtime::runtime::QueryServiceDeviceAdmissionSnapshot>>
-pub fn query_runtime::runtime::GpuBackendSession::device_cache_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<crate::runtime::DeviceCacheReport>>
-pub fn query_runtime::runtime::GpuBackendSession::device_cache_source_event_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<crate::runtime::CacheSourceEventSnapshot>>
+pub fn query_runtime::runtime::GpuBackendSession::device_cache_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<DeviceCacheReport>>
+pub fn query_runtime::runtime::GpuBackendSession::device_cache_source_event_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<CacheSourceEventSnapshot>>
 pub fn query_runtime::runtime::GpuBackendSession::device_ledger_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<DeviceLedgerReport>>
 pub fn query_runtime::runtime::GpuBackendSession::device_memory_failure_reports(&self) -> query_planning::error::Result<alloc::vec::Vec<DeviceMemoryFailureReport>>
 pub fn query_runtime::runtime::GpuBackendSession::device_telemetry_snapshots(&self) -> query_planning::error::Result<alloc::vec::Vec<DeviceTelemetrySnapshot>>
@@ -2683,7 +2683,7 @@ pub fn query_runtime::runtime::QueryHandle::device_ordinal(&self) -> usize
 pub fn query_runtime::runtime::QueryHandle::dynamic_filter_execution_options(&self) -> query_planning::dynamic_filter::DynamicFilterExecutionOptions
 pub fn query_runtime::runtime::QueryHandle::finish(&self)
 pub fn query_runtime::runtime::QueryHandle::gpu_executor(&self) -> query_planning::error::Result<query_runtime::runtime::GpuExecutorLease>
-pub fn query_runtime::runtime::QueryHandle::grant_identity(&self) -> query_planning::error::Result<crate::runtime::gpu::GrantIdentity>
+pub fn query_runtime::runtime::QueryHandle::grant_identity(&self) -> query_planning::error::Result<GrantIdentity>
 pub fn query_runtime::runtime::QueryHandle::keyed_hash_join_strategy_options(&self) -> query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub fn query_runtime::runtime::QueryHandle::lakehouse_cache_fill_config(&self) -> query_runtime::runtime::LakehouseCacheFillConfig
 pub fn query_runtime::runtime::QueryHandle::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy

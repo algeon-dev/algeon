@@ -1,3 +1,8 @@
+use algeon_datafusion::server::init_cuda_device;
+use arrow::datatypes::SchemaRef;
+use datafusion::{common::Result as DataFusionResult, error::DataFusionError};
+use tonic::transport::Channel;
+
 fn unwrap_flight_status(error: FlightError) -> tonic::Status {
     match error {
         FlightError::Tonic(status) => *status,
@@ -29,7 +34,7 @@ fn query_id_from_statement_flight_info(flight_info: &arrow_flight::FlightInfo) -
     String::from_utf8(query_id.to_vec()).unwrap()
 }
 
-async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<tonic::transport::Channel>, query_id: &str) -> String {
+async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<Channel>, query_id: &str) -> String {
     let action =
         arrow_flight::Action { r#type: "GetQueryStats".to_string(), body: query_id.as_bytes().to_vec().into() };
     let mut stream = client.do_action(action).await.unwrap();
@@ -88,7 +93,7 @@ fn tsv_value<'a>(header: &[&str], row: &'a [&str], column: &str) -> &'a str {
 }
 
 async fn cancel_query_raw(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     flight_info: &FlightInfo,
 ) -> ActionCancelQueryResult {
     let action_body = ActionCancelQueryRequest { info: flight_info.encode_to_vec().into() };
@@ -102,9 +107,9 @@ async fn cancel_query_raw(
 }
 
 async fn collect_metadata_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     flight_info: &arrow_flight::FlightInfo,
-) -> Vec<arrow::record_batch::RecordBatch> {
+) -> Vec<RecordBatch> {
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
 }
@@ -115,9 +120,9 @@ async fn collect_metadata_batches(
 /// result metadata RPCs (`get_primary_keys`, foreign-key RPCs) the batch
 /// vector is empty and the schema would otherwise be unreachable.
 async fn collect_metadata_schema_and_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     flight_info: &arrow_flight::FlightInfo,
-) -> (arrow::datatypes::SchemaRef, Vec<arrow::record_batch::RecordBatch>) {
+) -> (SchemaRef, Vec<RecordBatch>) {
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let mut stream = client.do_get(ticket).await.unwrap();
     let mut batches = Vec::new();
@@ -128,14 +133,14 @@ async fn collect_metadata_schema_and_batches(
     (schema, batches)
 }
 
-fn collect_name_and_type(batches: &[arrow::record_batch::RecordBatch]) -> Vec<(String, String)> {
+fn collect_name_and_type(batches: &[RecordBatch]) -> Vec<(String, String)> {
     let names = collect_string_column(batches, "table_name");
     let types = collect_string_column(batches, "table_type");
     assert_eq!(names.len(), types.len(), "GetTables name/type columns desynced");
     names.into_iter().zip(types).collect()
 }
 
-fn collect_string_column(batches: &[arrow::record_batch::RecordBatch], column: &str) -> Vec<String> {
+fn collect_string_column(batches: &[RecordBatch], column: &str) -> Vec<String> {
     let mut out = Vec::new();
     for batch in batches {
         let Some(index) = batch.schema().index_of(column).ok() else {
@@ -183,9 +188,9 @@ impl TableProvider for ScanFailingTableProvider {
         _projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         self.scan_called.store(true, Ordering::SeqCst);
-        Err(datafusion::error::DataFusionError::Execution("metadata regression provider row scan invoked".to_string()))
+        Err(DataFusionError::Execution("metadata regression provider row scan invoked".to_string()))
     }
 }
 
@@ -210,7 +215,7 @@ impl RelationPlanner for ControlledPlanReplacement {
         &self,
         relation: TableFactor,
         _context: &mut dyn RelationPlannerContext,
-    ) -> datafusion::common::Result<RelationPlanning> {
+    ) -> DataFusionResult<RelationPlanning> {
         let alias = match &relation {
             TableFactor::Table { name, alias, .. }
                 if self.enabled.load(Ordering::SeqCst)
@@ -232,7 +237,7 @@ fn warm_cuda_once() {
     static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     CUDA_WARM.get_or_init(|| {
         // Best-effort: serve_with_listener re-runs (and surfaces) any error.
-        let _ = algeon_datafusion::server::init_cuda_device(0);
+        let _ = init_cuda_device(0);
     });
 }
 
@@ -246,7 +251,7 @@ fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
     (listener, addr)
 }
 
-async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
+async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<Channel> {
     let uri = format!("http://{addr}");
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut backoff = Duration::from_millis(10);
@@ -257,7 +262,7 @@ async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClien
                 if std::time::Instant::now() >= deadline {
                     panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
                 }
-                tokio::time::sleep(backoff).await;
+                sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
@@ -275,7 +280,7 @@ async fn wait_for_shared_ledger_queue(backend: &AlgeonGpuBackend, expected_queue
             Instant::now() < deadline,
             "queries did not queue on the shared backend: expected active=1 queued={expected_queued_queries}, snapshot={snapshot:?}"
         );
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -293,23 +298,23 @@ async fn wait_for_empty_gpu_ledger(backend: &AlgeonGpuBackend) {
             return;
         }
         assert!(Instant::now() < deadline, "backend GPU admission ledger did not become empty: snapshot={snapshot:?}");
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        sleep(Duration::from_millis(25)).await;
     }
 }
 
 async fn execute_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     sql: &str,
-) -> Vec<arrow::record_batch::RecordBatch> {
+) -> Vec<RecordBatch> {
     let flight_info = client.execute(sql.to_string(), None).await.unwrap();
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
 }
 
 async fn execute_flight_info_with_stream_schema(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     flight_info: FlightInfo,
-) -> (Schema, Vec<arrow::record_batch::RecordBatch>) {
+) -> (Schema, Vec<RecordBatch>) {
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let mut stream = client.do_get(ticket).await.unwrap();
     let mut batches = Vec::new();
@@ -321,7 +326,7 @@ async fn execute_flight_info_with_stream_schema(
 }
 
 async fn create_prepared_raw(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     sql: String,
 ) -> ActionCreatePreparedStatementResult {
     use prost::Message as _;
@@ -338,8 +343,8 @@ async fn create_prepared_raw(
 }
 
 async fn close_prepared_raw(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    handle: prost::bytes::Bytes,
+    client: &mut FlightSqlServiceClient<Channel>,
+    handle: Bytes,
 ) {
     use arrow_flight::sql::ActionClosePreparedStatementRequest;
     use prost::Message as _;
@@ -380,7 +385,7 @@ fn write_basic_list_parquet(path: &Path) {
             OffsetBuffer::new(ScalarBuffer::from(vec![0; 13])),
             Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
             Some(NullBuffer::from(vec![false; 12])),
-        )) as arrow::array::ArrayRef
+        )) as ArrayRef
     };
     let int_child = Arc::new(Field::new("element", DataType::Int64, true));
     let ports = ListArray::new(
@@ -422,7 +427,7 @@ fn write_int64_pairs_parquet(path: &Path, names: [&str; 2], left: [i64; 2], righ
     writer.close().unwrap();
 }
 
-fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {
+fn int_value(array: &ArrayRef) -> Option<i64> {
     array
         .as_any()
         .downcast_ref::<Int64Array>()
@@ -430,7 +435,7 @@ fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {
         .or_else(|| array.as_any().downcast_ref::<Int32Array>().map(|array| i64::from(array.value(0))))
 }
 
-fn sql_info_string(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> String {
+fn sql_info_string(batch: &RecordBatch, info: SqlInfo) -> String {
     let (values, row) = sql_info_values(batch, info);
     assert_eq!(values.type_id(row), 0, "SqlInfo {info:?} must be encoded as a string");
     values
@@ -442,7 +447,7 @@ fn sql_info_string(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> S
         .to_string()
 }
 
-fn sql_info_bool(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> bool {
+fn sql_info_bool(batch: &RecordBatch, info: SqlInfo) -> bool {
     let (values, row) = sql_info_values(batch, info);
     assert_eq!(values.type_id(row), 1, "SqlInfo {info:?} must be encoded as a bool");
     values
@@ -453,7 +458,7 @@ fn sql_info_bool(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> boo
         .value(values.value_offset(row))
 }
 
-fn sql_info_i32(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> i32 {
+fn sql_info_i32(batch: &RecordBatch, info: SqlInfo) -> i32 {
     let (values, row) = sql_info_values(batch, info);
     assert_eq!(values.type_id(row), 3, "SqlInfo {info:?} must be encoded as an i32");
     values
@@ -464,7 +469,7 @@ fn sql_info_i32(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> i32 
         .value(values.value_offset(row))
 }
 
-fn sql_info_values(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> (&UnionArray, usize) {
+fn sql_info_values(batch: &RecordBatch, info: SqlInfo) -> (&UnionArray, usize) {
     let names =
         batch.column(0).as_any().downcast_ref::<UInt32Array>().expect("SqlInfo info_name column must be UInt32Array");
     let values =

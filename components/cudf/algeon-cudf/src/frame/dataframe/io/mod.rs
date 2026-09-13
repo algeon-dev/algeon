@@ -28,6 +28,7 @@ use crate::{
     core::{
         error::{Error, ErrorCode, Result},
         schema,
+        table::Table,
     },
     io::{
         TableReadOutput, json, parquet,
@@ -35,7 +36,7 @@ use crate::{
     },
     runtime::{
         BoundaryKind, BudgetedExecutionOutcome, ExecutionBudgetToken, QueryStageKind, Runtime,
-        execution_domain::ExecutionDomain,
+        execution_domain::{ConsumerCompletionFence, ExecutionDomain},
     },
 };
 
@@ -43,7 +44,7 @@ fn require_reader_schema_names(
     result: TableReadOutput,
     operation: &'static str,
     reader_label: &'static str,
-) -> Result<(crate::core::Table, Vec<String>)> {
+) -> Result<(Table, Vec<String>)> {
     let num_columns = {
         let view = result.table.view()?;
         view.num_columns()?
@@ -110,7 +111,7 @@ fn prepare_write_domain(
     frame_domain: &Arc<ExecutionDomain>,
     write_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
-) -> Result<crate::runtime::execution_domain::ConsumerCompletionFence> {
+) -> Result<ConsumerCompletionFence> {
     ExecutionDomain::require_same_device_for_mixed_inputs(frame_domain, write_domain, operation)?;
     ExecutionDomain::insert_stream_dependency(frame_domain, write_domain, operation)
 }

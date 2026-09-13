@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
+use parquet::{arrow::parquet_to_arrow_schema, file::reader::SerializedFileReader};
 use query_engine::datatypes::arrow_field_metadata_matches_except_parquet_field_id;
 
 use super::{
@@ -23,9 +24,9 @@ pub(super) fn table_format_local_footer_schema(scan_plan: &TableFormatScanPlan) 
 }
 
 pub(super) fn table_format_local_footer_arrow_schema(path: &Path) -> Option<Schema> {
-    parquet::file::reader::SerializedFileReader::try_from(path).ok().and_then(|reader| {
+    SerializedFileReader::try_from(path).ok().and_then(|reader| {
         let metadata = reader.metadata().file_metadata();
-        parquet::arrow::parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata()).ok()
+        parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata()).ok()
     })
 }
 

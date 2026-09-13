@@ -7,21 +7,29 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy},
     session::AlgeonSessionStateBuilderExt,
     source_cardinality::schema_with_source_unique_keys,
 };
 use arrow::record_batch::RecordBatch;
 use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
+    error::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
+use query_engine::{
+    mode::StatisticalAggregateExecutionMode,
+    plan::NativePlanCostOptions,
+    runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode},
 };
 use workloads::tpcds::{
     TPCDS_QUERIES, TPCDS_TABLES, TpcdsQuery, WorkloadError, WorkloadResult, discover_tpcds_table_layout,
     registration::tpcds_table_schema,
 };
+
+use crate::gpu_backend::build_installed_gpu_backend;
 
 mod parity;
 pub use parity::{
@@ -112,7 +120,7 @@ pub struct TpcdsNativeProfileSettings {
     pub max_row_groups_per_chunk: usize,
     pub max_retry_attempts: usize,
     pub min_retry_chunk_row_groups: usize,
-    pub source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    pub source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 impl TpcdsNativeProfileSettings {
@@ -139,7 +147,7 @@ struct NativeProfileBase {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
-    source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 /// Session config used by TPC-DS native report surfaces.
@@ -185,25 +193,25 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 
 pub(crate) fn build_tpcds_gpu_backend(
     optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: query_engine::runtime::GpuDeviceMemoryLimit,
+    device_memory_limit: GpuDeviceMemoryLimit,
 ) -> WorkloadResult<AlgeonGpuBackend> {
     let source_work_per_attempt =
         optimizer_config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight();
-    crate::gpu_backend::build_installed_gpu_backend(
+    build_installed_gpu_backend(
         optimizer_config,
         device_memory_limit,
         source_work_per_attempt,
         1,
-        algeon_datafusion::planner::DataFusionCpuExecutionPolicy::Allow,
+        DataFusionCpuExecutionPolicy::Allow,
     )
-    .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)).into())
+    .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }
 
 pub(crate) fn close_tpcds_gpu_backend(backend: AlgeonGpuBackend) -> WorkloadResult<()> {
     backend
         .close_and_wait(Duration::from_secs(30))
         .map(|_| ())
-        .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)).into())
+        .map_err(|error| DataFusionError::External(Box::new(error)).into())
 }
 
 /// Native optimizer config used by TPC-DS report surfaces.
@@ -215,7 +223,7 @@ pub(crate) fn close_tpcds_gpu_backend(backend: AlgeonGpuBackend) -> WorkloadResu
 /// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
-        query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+        StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
     )
 }
 
@@ -224,7 +232,7 @@ pub fn tpcds_native_optimizer_config_with_profile_settings(
     profile: &TpcdsNativeProfileSettings,
 ) -> AlgeonNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
-        query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+        StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
         profile,
     )
 }
@@ -238,7 +246,7 @@ pub fn tpcds_native_optimizer_config_with_profile_settings(
 /// DataFusion compatibility.
 pub fn tpcds_native_analytics_optimizer_config() -> AlgeonNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
-        query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
     )
 }
 
@@ -247,7 +255,7 @@ pub fn tpcds_native_analytics_optimizer_config_with_profile_settings(
     profile: &TpcdsNativeProfileSettings,
 ) -> AlgeonNativeOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
-        query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
         profile,
     )
 }
@@ -264,7 +272,7 @@ pub fn tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_s
 }
 
 /// Resolves TPC-DS analytics cost-selection options from env.
-pub fn tpcds_native_cost_selection_options_from_env() -> query_engine::plan::NativePlanCostOptions {
+pub fn tpcds_native_cost_selection_options_from_env() -> NativePlanCostOptions {
     tpcds_native_cost_selection_options_with_env(|name| std::env::var(name).ok())
 }
 
@@ -272,10 +280,10 @@ pub fn tpcds_native_cost_selection_options_from_env() -> query_engine::plan::Nat
 /// env reader for tests and benchmark harnesses.
 pub fn tpcds_native_cost_selection_options_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
-) -> query_engine::plan::NativePlanCostOptions {
-    let mut options = query_engine::plan::NativePlanCostOptions {
+) -> NativePlanCostOptions {
+    let mut options = NativePlanCostOptions {
         max_small_selective_residual_join_row_groups: TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS,
-        ..query_engine::plan::NativePlanCostOptions::default()
+        ..NativePlanCostOptions::default()
     };
 
     if let Some(value) = get(ALGEON_TPCDS_NATIVE_COST_SELECTION_ENV) {
@@ -305,7 +313,7 @@ pub fn tpcds_native_cost_selection_options_with_env(
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
-    statistical_aggregate_execution_mode_default: query_engine::mode::StatisticalAggregateExecutionMode,
+    statistical_aggregate_execution_mode_default: StatisticalAggregateExecutionMode,
 ) -> AlgeonNativeOptimizerConfig {
     let profile = tpcds_native_profile_settings_from_env();
     tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
@@ -315,7 +323,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
-    statistical_aggregate_execution_mode_default: query_engine::mode::StatisticalAggregateExecutionMode,
+    statistical_aggregate_execution_mode_default: StatisticalAggregateExecutionMode,
     profile: &TpcdsNativeProfileSettings,
 ) -> AlgeonNativeOptimizerConfig {
     let statistical_aggregate_execution_mode =
@@ -324,7 +332,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
     // `cugraph_*` table functions, and those plans must stay on the GPU rather
     // than being declined by cost. The dedicated comparison benchmark installs
     // its own cost-selection configuration after the GPU-island boundary is explicit.
-    let cost_options = query_engine::plan::NativePlanCostOptions::disabled();
+    let cost_options = NativePlanCostOptions::disabled();
     AlgeonNativeOptimizerConfig::default()
         .with_native_execution_config(
             AlgeonNativeExecutionConfig::bounded(
@@ -359,13 +367,13 @@ pub fn tpcds_native_profile_settings_with_env(
 }
 
 pub fn tpcds_native_profile_settings_and_device_memory_limit_from_env()
--> (TpcdsNativeProfileSettings, query_engine::runtime::GpuDeviceMemoryLimit) {
+-> (TpcdsNativeProfileSettings, GpuDeviceMemoryLimit) {
     tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| std::env::var(name).ok())
 }
 
 fn tpcds_native_profile_settings_and_device_memory_limit_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
-) -> (TpcdsNativeProfileSettings, query_engine::runtime::GpuDeviceMemoryLimit) {
+) -> (TpcdsNativeProfileSettings, GpuDeviceMemoryLimit) {
     let requested_profile = get(ALGEON_TPCDS_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
     let base = native_profile_base(requested_profile.as_deref());
     let mut resolved = TpcdsNativeProfileSettings::from_base(base);
@@ -430,9 +438,9 @@ fn tpcds_native_profile_settings_and_device_memory_limit_with_env(
         resolved.profile_source = "custom_overrides";
     }
     let device_memory_limit = if device_budget_overridden {
-        query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: resolved.device_budget_bytes }
+        GpuDeviceMemoryLimit::Explicit { limit_bytes: resolved.device_budget_bytes }
     } else {
-        query_engine::runtime::GpuDeviceMemoryLimit::default()
+        GpuDeviceMemoryLimit::default()
     };
     (resolved, device_memory_limit)
 }
@@ -461,7 +469,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         },
         TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
@@ -474,7 +482,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_row_groups_per_chunk: TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
         },
         other => panic!(
             "unsupported {ALGEON_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -511,28 +519,25 @@ fn parse_env_bool(name: &'static str, value: String) -> bool {
     }
 }
 
-fn parse_env_source_chunk_planning_mode(value: String) -> query_engine::runtime::SourceChunkPlanningMode {
+fn parse_env_source_chunk_planning_mode(value: String) -> SourceChunkPlanningMode {
     match value.trim().to_ascii_lowercase().as_str() {
-        "conservative" => query_engine::runtime::SourceChunkPlanningMode::Conservative,
-        "local_parquet_throughput" | "local_throughput" => {
-            query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
-        },
+        "conservative" => SourceChunkPlanningMode::Conservative,
+        "local_parquet_throughput" | "local_throughput" => SourceChunkPlanningMode::LocalParquetThroughput,
         other => panic!(
             "unsupported {ALGEON_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
         ),
     }
 }
 
-fn optional_env_statistical_aggregate_execution_mode() -> Option<query_engine::mode::StatisticalAggregateExecutionMode>
-{
+fn optional_env_statistical_aggregate_execution_mode() -> Option<StatisticalAggregateExecutionMode> {
     optional_env_statistical_aggregate_execution_mode_for(ALGEON_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
 }
 
 fn optional_env_statistical_aggregate_execution_mode_for(
     name: &'static str,
-) -> Option<query_engine::mode::StatisticalAggregateExecutionMode> {
+) -> Option<StatisticalAggregateExecutionMode> {
     std::env::var(name).ok().map(|value| {
-        value.parse::<query_engine::mode::StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
+        value.parse::<StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
             panic!("unsupported {name}={value}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}")
         })
     })
@@ -667,7 +672,7 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
         root,
         session_config,
         optimizer_config,
-        query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        GpuDeviceMemoryLimit::default(),
         None,
         None,
     )
@@ -717,7 +722,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
         root,
         session_config,
         optimizer_config,
-        query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        GpuDeviceMemoryLimit::default(),
         query_ids,
         progress,
     )
@@ -728,7 +733,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered_with_device_memo
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: query_engine::runtime::GpuDeviceMemoryLimit,
+    device_memory_limit: GpuDeviceMemoryLimit,
     query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
@@ -737,9 +742,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered_with_device_memo
     let items = async {
         let builder =
             SessionStateBuilder::new_with_default_features().with_config(native_tpcds_session_config(session_config));
-        let builder = backend
-            .install_on(builder)
-            .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+        let builder = backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error)))?;
         let state = builder.with_algeon_native_rule(Arc::clone(&native_rule)).build();
         let ctx = SessionContext::new_with_state(state);
         register_tpcds_tables_with_native_metadata(&ctx, root).await?;
@@ -880,32 +883,30 @@ pub(crate) fn tpcds_source_unique_key(table: &str) -> Option<&'static [&'static 
 #[cfg(test)]
 mod tests {
     use algeon_datafusion::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY;
+    use workloads::tpcds::write_tiny_tpcds_parquet_dataset;
 
     use super::*;
 
     #[test]
     fn tpcds_profile_memory_limit_tracks_device_budget_provenance() {
         let (_, default_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|_| None);
-        assert_eq!(default_limit, query_engine::runtime::GpuDeviceMemoryLimit::default());
+        assert_eq!(default_limit, GpuDeviceMemoryLimit::default());
 
         let (_, source_only_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
             (name == ALGEON_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV).then(|| (1024_u64 * 1024 * 1024).to_string())
         });
-        assert_eq!(source_only_limit, query_engine::runtime::GpuDeviceMemoryLimit::default());
+        assert_eq!(source_only_limit, GpuDeviceMemoryLimit::default());
 
         let (_, throughput_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
             (name == ALGEON_TPCDS_NATIVE_PROFILE_ENV).then(|| TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT.to_string())
         });
-        assert_eq!(throughput_limit, query_engine::runtime::GpuDeviceMemoryLimit::default());
+        assert_eq!(throughput_limit, GpuDeviceMemoryLimit::default());
 
         let explicit_budget = 17 * 1024 * 1024 * 1024;
         let (_, overridden_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
             (name == ALGEON_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).then(|| explicit_budget.to_string())
         });
-        assert_eq!(
-            overridden_limit,
-            query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: explicit_budget }
-        );
+        assert_eq!(overridden_limit, GpuDeviceMemoryLimit::Explicit { limit_bytes: explicit_budget });
     }
 
     #[tokio::test]
@@ -913,7 +914,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("algeon-datafusion-tpcds-native-metadata-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        workloads::tpcds::write_tiny_tpcds_parquet_dataset(&root).unwrap();
+        write_tiny_tpcds_parquet_dataset(&root).unwrap();
         let ctx = SessionContext::new();
         register_tpcds_tables_with_native_metadata(&ctx, &root).await.unwrap();
 

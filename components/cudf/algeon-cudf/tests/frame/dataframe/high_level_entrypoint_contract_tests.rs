@@ -10,8 +10,10 @@ use cudf::{
 };
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_runtime, scalar,
+    assert_missing_column_error, column_from_slice, dependency_wait_call_count_for_stream, error_context_value,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
+    scalar, unnamed_nullable_series, unnamed_series,
 };
 
 // ===========================================================================
@@ -20,8 +22,8 @@ use crate::common::{
 
 /// Build a 5-row DataFrame with id (i32) and score (f64) columns.
 fn sample_df() -> DataFrame {
-    let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30, 40, 50]).unwrap();
-    let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids = unnamed_series::<i32>(&[10, 20, 30, 40, 50]).unwrap();
+    let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
@@ -31,7 +33,7 @@ fn sample_df() -> DataFrame {
 
 fn test_gather_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let indices = crate::common::unnamed_series::<i32>(&[0, 2, 4]).unwrap();
+    let indices = unnamed_series::<i32>(&[0, 2, 4]).unwrap();
     let result = df.gather(&indices).unwrap();
     assert_eq!(result.num_rows(), 3);
     // Gather produces nullable output; use to_optional_vec.
@@ -43,7 +45,7 @@ fn test_gather_with_series() {
 }
 
 fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let df_rt = sample_runtime();
     let indices_rt = sample_runtime();
     let df = DataFrame::from_series([
@@ -54,7 +56,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let indices = indices_rt.series(&[2i32, 0]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let result = df.gather(&indices).unwrap();
 
@@ -62,7 +64,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     // Gather produces nullable output; use to_optional_vec.
@@ -77,7 +79,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
 
 fn test_filter_isin_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
-    let values = crate::common::unnamed_series::<i32>(&[10, 30, 50]).unwrap();
+    let values = unnamed_series::<i32>(&[10, 30, 50]).unwrap();
     let result = df.filter_isin("id", &values).unwrap();
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["id", "score"]);
@@ -87,14 +89,14 @@ fn test_filter_isin_with_series() {
 }
 
 fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
     let df = DataFrame::from_series([("id", df_rt.series(&[10i32, 20, 30]).unwrap())]).unwrap();
     let values = values_rt.series(&[20i32, 30]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let result = df.filter_isin("id", &values).unwrap();
 
@@ -102,7 +104,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
@@ -111,7 +113,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
 
 fn test_filter_isin_with_series_no_matches_preserves_schema() {
     let df = sample_df();
-    let values = crate::common::unnamed_series::<i32>(&[99, 100]).unwrap();
+    let values = unnamed_series::<i32>(&[99, 100]).unwrap();
     let result = df.filter_isin("id", &values).unwrap();
 
     assert_eq!(result.num_rows(), 0);
@@ -120,7 +122,7 @@ fn test_filter_isin_with_series_no_matches_preserves_schema() {
 
 fn test_filter_isin_with_series_rejects_missing_column() {
     let df = sample_df();
-    let values = crate::common::unnamed_series::<i32>(&[10]).unwrap();
+    let values = unnamed_series::<i32>(&[10]).unwrap();
     let err = df.filter_isin("nonexistent", &values).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");
@@ -131,9 +133,8 @@ fn test_filter_isin_with_series_rejects_missing_column() {
 // ===========================================================================
 
 fn test_fillna_with_plain_value() {
-    let ids =
-        crate::common::unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
-    let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids = unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
+    let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let filled = df.fillna::<i32>("id", 42).unwrap();
@@ -144,9 +145,8 @@ fn test_fillna_with_plain_value() {
 }
 
 fn test_fillna_with_scalar_still_works() {
-    let ids =
-        crate::common::unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
-    let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let ids = unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
+    let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let fill = scalar(42i32).unwrap();
@@ -158,7 +158,7 @@ fn test_fillna_with_scalar_still_works() {
 }
 
 fn test_fillna_rejects_missing_column() {
-    let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30]).unwrap();
+    let ids = unnamed_series::<i32>(&[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("id", ids)]).unwrap();
     let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
 
@@ -177,7 +177,7 @@ fn test_factorize_returns_typed_result() {
 }
 
 fn test_with_encoded_and_decoded_column_workflows() {
-    let df = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("kind", unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
     let codebook = df.codebook("kind").unwrap();
 
     let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
@@ -190,7 +190,7 @@ fn test_with_encoded_and_decoded_column_workflows() {
 fn test_with_decoded_column_preserves_null_codes_as_null_values() {
     let df = DataFrame::from_series([(
         "kind",
-        crate::common::unnamed_nullable_series(&["b", "", "a", "b"], &[true, false, true, true]).unwrap(),
+        unnamed_nullable_series(&["b", "", "a", "b"], &[true, false, true, true]).unwrap(),
     )])
     .unwrap();
     let codebook = df.codebook("kind").unwrap();
@@ -205,7 +205,7 @@ fn test_with_decoded_column_preserves_null_codes_as_null_values() {
 }
 
 fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let df_runtime = sample_runtime();
     let ctx_runtime = sample_runtime();
     let df = DataFrame::from_series([(
@@ -219,7 +219,7 @@ fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain()
     let expected_stream = ctx_runtime.stream().testing_raw_handle_value();
     let expected_mr = ctx_runtime.memory_resource().testing_raw_handle_value();
 
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let encoded = df.with_execution(&ctx).with_encoded_column("kind_id", "kind", &codebook).unwrap();
 
@@ -243,28 +243,28 @@ fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain()
 }
 
 fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context() {
-    let df = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("kind", unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
     let codebook = df.codebook("kind").unwrap();
 
     let err = df.with_encoded_column("kind_id", "missing", &codebook).unwrap_err();
 
-    crate::common::assert_missing_column_error(&err, "missing");
+    assert_missing_column_error(&err, "missing");
     assert_eq!(err.operation(), "dataframe::with_encoded_column");
-    assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
+    assert_eq!(error_context_value(&err, "input_column").as_deref(), None);
 }
 
 fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context() {
-    let df = DataFrame::from_series([("kind_id", crate::common::unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
-    let codebook = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c"]).unwrap())])
+    let df = DataFrame::from_series([("kind_id", unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
+    let codebook = DataFrame::from_series([("kind", unnamed_series(&["b", "a", "c"]).unwrap())])
         .unwrap()
         .codebook("kind")
         .unwrap();
 
     let err = df.with_decoded_column("kind", "missing", &codebook).unwrap_err();
 
-    crate::common::assert_missing_column_error(&err, "missing");
+    assert_missing_column_error(&err, "missing");
     assert_eq!(err.operation(), "dataframe::with_decoded_column");
-    assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
+    assert_eq!(error_context_value(&err, "input_column").as_deref(), None);
 }
 
 // ===========================================================================
@@ -335,7 +335,7 @@ fn test_runtime_sequence_uses_runtime_execution_domain() {
 
 #[test]
 fn high_level_entrypoint_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_gather_with_series", test_gather_with_series),
         (
             "test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",

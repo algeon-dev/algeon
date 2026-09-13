@@ -6,9 +6,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use cudf_sys::test_support;
 use support::{
     CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device, current_device_resource_raw,
-    lock_shim_state, required_exec_options,
+    lock_shim_state, required_exec_options, set_current_device_resource, set_current_device_resource_raw,
 };
 
 fn make_i32_column_with_memory_resource(
@@ -142,7 +143,7 @@ fn stats_memory_resource_can_be_installed_as_current_resource_and_used_explicitl
     let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let borrowed = stats.borrowed();
 
-    crate::support::set_current_device_resource(&borrowed).expect("failed to install current test allocator");
+    set_current_device_resource(&borrowed).expect("failed to install current test allocator");
 
     let installed_raw = current_device_resource_raw();
     assert_ne!(installed_raw, previous_raw, "test allocator should replace the previous current allocator");
@@ -177,7 +178,7 @@ fn destroying_current_memory_resource_returns_invalid_operation_and_preserves_cu
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         assert!(!installed_raw.is_null());
 
-        let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current(mr) };
+        let status = unsafe { test_support::cudf_test_memory_resource_set_current(mr) };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         assert_eq!(
             current_device_resource_raw(),
@@ -188,7 +189,7 @@ fn destroying_current_memory_resource_returns_invalid_operation_and_preserves_cu
         let destroy_status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
         let current_after_destroy = current_device_resource_raw();
 
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
+        unsafe { set_current_device_resource_raw(previous_raw) }
             .expect("failed to restore previous current device resource before cleanup");
 
         if destroy_status == cudf_sys::CUDF_ERROR_INVALID_OPERATION {
@@ -213,13 +214,13 @@ fn destroying_non_current_memory_resource_still_succeeds_after_current_destroy_r
 
     let mr = create_cuda_memory_resource();
 
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current(mr) };
+    let status = unsafe { test_support::cudf_test_memory_resource_set_current(mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let destroy_status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
     assert_eq!(destroy_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
 
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
+    unsafe { set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource before cleanup");
 
     let cleanup_status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };

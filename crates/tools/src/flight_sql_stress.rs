@@ -967,15 +967,18 @@ use futures::TryStreamExt;
 use prost::Message;
 #[cfg(not(test))]
 use tokio::{
-    sync::{Semaphore, mpsc},
+    sync::{Mutex, Semaphore, mpsc},
     task::JoinSet,
+    time::{MissedTickBehavior, interval, sleep},
 };
+#[cfg(not(test))]
+use tonic::transport::Channel;
 
 #[cfg(not(test))]
 use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 #[cfg(not(test))]
-type FlightClient = FlightSqlServiceClient<tonic::transport::Channel>;
+type FlightClient = FlightSqlServiceClient<Channel>;
 
 /// Pooled worker-slot connects mirror flight_sql_query's long budget: the
 /// server may still be starting when the run begins.
@@ -1115,10 +1118,10 @@ async fn run_open_loop(
 ) -> ToolResult<()> {
     // Pooled mode connects one client per slot up front; churn mode leaves
     // the pool empty and connects per attempt.
-    let mut pool: Vec<Arc<tokio::sync::Mutex<FlightClient>>> = Vec::new();
+    let mut pool: Vec<Arc<Mutex<FlightClient>>> = Vec::new();
     if config.mode() == ConnectionMode::Pooled {
         for _ in 0..config.clients {
-            pool.push(Arc::new(tokio::sync::Mutex::new(
+            pool.push(Arc::new(Mutex::new(
                 connect(&config.url, POOLED_CONNECT_ATTEMPTS, &config.url_host_port).await?,
             )));
         }
@@ -1130,8 +1133,8 @@ async fn run_open_loop(
         slot_tx.send(slot).await.map_err(|_| "flight-sql-stress slot channel closed unexpectedly")?;
     }
     let semaphore = Arc::new(Semaphore::new(config.clients));
-    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / rate));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut interval = interval(Duration::from_secs_f64(1.0 / rate));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut scheduled = 0u64;
     let mut in_flight = JoinSet::new();
     loop {
@@ -1308,7 +1311,7 @@ async fn cancel_attempt(
         Ok(stream) => stream,
         Err(error) => return record.finish(attempt_start, AttemptOutcome::Failed, flight_error_class(&error)),
     };
-    tokio::time::sleep(Duration::from_millis(cancel.after_ms)).await;
+    sleep(Duration::from_millis(cancel.after_ms)).await;
     match cancel_via_flight_info(client, flight_info).await {
         Ok(()) => {
             record.cancel_path = CancelPath::FlightInfo;

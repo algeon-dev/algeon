@@ -59,6 +59,7 @@ broken_intra_doc_links = "deny"
 bare_urls = "deny"
 
 [workspace.lints.clippy]
+absolute_paths = "warn"
 allow_attributes = "warn"
 clone_on_ref_ptr = "warn"
 coerce_container_to_any = "warn"

@@ -1,3 +1,5 @@
+use query_engine::error::QueryErrorStatus;
+
 fn empty_int32_edges_batch(schema: Arc<Schema>) -> RecordBatch {
     RecordBatch::try_new(
         schema,
@@ -96,7 +98,7 @@ fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::GraphInputInvalid);
-    assert_eq!(error.status(), query_engine::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("algorithm"), Some("bfs"));
     assert_eq!(error.fact_value("input_role"), Some("edge"));
     assert_eq!(error.fact_value("reason"), Some("bfs_source_requires_nonempty_graph"));
@@ -161,7 +163,7 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::GraphInputInvalid);
-    assert_eq!(error.status(), query_engine::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("algorithm"), Some("personalized_pagerank"));
     assert_eq!(error.fact_value("input_role"), Some("personalization"));
     assert_eq!(error.fact_value("side_input_rows"), Some("0"));
@@ -232,7 +234,7 @@ fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
     };
 
     assert_eq!(error.code(), QueryErrorCode::GraphInputInvalid);
-    assert_eq!(error.status(), query_engine::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("predicate_vertices_absent"));
     assert_eq!(error.fact_value("predicate_role"), Some("include_vertices"));
     assert_eq!(error.fact_value("predicate_rows"), Some("1"));

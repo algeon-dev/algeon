@@ -7,6 +7,7 @@ use std::{
     ptr,
 };
 
+use cudf::runtime::{CudaEvent, ExecutionBindingId};
 use cugraph_sys::cugraph_graph_t;
 
 use super::{Forward, Graph, map_cudf_runtime_error};
@@ -36,11 +37,11 @@ pub struct ParkedGraph<T = Forward> {
     pub(super) weight_dtype: DataType,
     pub(super) has_weights: bool,
     pub(super) edge_id_dtype: Option<DataType>,
-    pub(super) park_event: cudf::runtime::CudaEvent,
+    pub(super) park_event: CudaEvent,
     // Binding whose stream the park event was recorded on. Exact resume
     // requires this binding; `resume_under` orders another same-device
     // binding behind the event instead.
-    pub(super) park_binding: cudf::runtime::ExecutionBindingId,
+    pub(super) park_binding: ExecutionBindingId,
     pub(super) resource_handle_leases: Vec<ResourceHandleLease>,
     pub(super) _not_sync: PhantomData<Cell<()>>,
     pub(super) _transposition: PhantomData<T>,
@@ -191,7 +192,7 @@ impl<T> std::fmt::Debug for ParkedGraph<T> {
 fn free_parked_graph_raw_with_leases(
     raw: &mut *mut cugraph_graph_t,
     device: i32,
-    park_event: &cudf::runtime::CudaEvent,
+    park_event: &CudaEvent,
     leases: &[ResourceHandleLease],
 ) {
     let mut free = || match park_event.synchronize() {

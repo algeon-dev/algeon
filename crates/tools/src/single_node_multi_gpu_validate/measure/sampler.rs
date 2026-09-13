@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use query_engine::runtime::{BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, DeviceLedgerReport};
+
 use super::*;
 
 /// Polls the public snapshot accessors on the window-aware interval and folds
@@ -148,7 +150,7 @@ pub(super) struct CalibrationClaimSnapshot {
 }
 
 impl CalibrationClaimSnapshot {
-    pub(super) fn from_report(report: &query_engine::runtime::DeviceLedgerReport) -> Self {
+    pub(super) fn from_report(report: &DeviceLedgerReport) -> Self {
         Self {
             sequence: report.sequence,
             live_grants_bytes: report.live_grants_bytes,
@@ -382,7 +384,7 @@ pub(super) fn metric_snapshot_observation(
             BackendAttemptOutcome::ALL.into_iter().map(move |outcome| snapshot.attempts.completed(disposition, outcome))
         })
         .sum();
-    let mut total_duration_bucket_counts = vec![0_u64; query_engine::runtime::BACKEND_ATTEMPT_DURATION_BUCKET_COUNT];
+    let mut total_duration_bucket_counts = vec![0_u64; BACKEND_ATTEMPT_DURATION_BUCKET_COUNT];
     let mut total_duration_count = 0_u64;
     for disposition in BackendAttemptDisposition::ALL {
         for outcome in BackendAttemptOutcome::ALL {

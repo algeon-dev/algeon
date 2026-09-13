@@ -178,7 +178,10 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
             assert_eq!(event.boundary, "final_sort");
         },
         "query_engine.final_sort.topk_prepare" | "query_engine.final_sort.topk_materialize" => {
-            assert!(matches!(event.boundary.as_str(), "final_sort_topk_chunk" | "final_sort_topk_merge"));
+            assert!(matches!(
+                event.boundary.as_str(),
+                "final_sort_topk_chunk" | "final_sort_topk_stream_chunk" | "final_sort_topk_merge"
+            ));
         },
         "query_engine.local_parquet_chunk.zero_column_count" => {
             assert!(matches!(event.boundary.as_str(), "source_chunk_read" | "source_chunk_prefetch"));

@@ -1,6 +1,7 @@
 use std::time::Instant;
 
-use parquet::file::reader::FileReader;
+use cudf::io::source::{LocalParquetSource as CudfLocalParquetSource, SourceChunk as CudfSourceChunk};
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::{
     DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, Result, SourceReadFact,
@@ -19,8 +20,8 @@ pub(super) fn read_local_parquet_file(
     source_node_id: NodeId,
     file: &LocalParquetFile,
     file_index: usize,
-    cudf_source: &cudf::io::source::LocalParquetSource,
-    cudf_chunk: &cudf::io::source::SourceChunk,
+    cudf_source: &CudfLocalParquetSource,
+    cudf_chunk: &CudfSourceChunk,
     columns: &[&str],
 ) -> Result<DataFrame> {
     context.check_cancellation("query_engine.local_parquet_source.read")?;
@@ -93,7 +94,7 @@ fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
     if let Some(count) = local_parquet_file_row_group_metadata_count(file) {
         return count as u64;
     }
-    parquet::file::reader::SerializedFileReader::try_from(file.path.as_path())
+    SerializedFileReader::try_from(file.path.as_path())
         .ok()
         .map(|reader| reader.metadata().num_row_groups() as u64)
         .unwrap_or(0)
@@ -101,18 +102,21 @@ fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use cudf::{ErrorCode, testing::error::new_with_for_test};
+
     use super::*;
+    use crate::source::{CredentialMode, ResolvedParquetSource};
 
     #[test]
     fn remote_direct_read_errors_redact_object_store_locations() {
         let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-        let file = LocalParquetFile::from_resolved_parquet_source(crate::source::ResolvedParquetSource::remote_kvikio(
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             sensitive_uri,
-            crate::source::CredentialMode::SharedProcessEnv,
+            CredentialMode::SharedProcessEnv,
         ))
         .expect("valid remote direct source");
-        let cudf_error = cudf::testing::error::new_with_for_test(
-            cudf::ErrorCode::IoFailure,
+        let cudf_error = new_with_for_test(
+            ErrorCode::IoFailure,
             "io::parquet::read_parquet_table",
             format!("failed to open {sensitive_uri}"),
         );

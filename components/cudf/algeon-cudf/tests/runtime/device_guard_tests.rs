@@ -5,6 +5,8 @@
 
 use cudf::{DeviceId, Runtime};
 
+use crate::common::run_named_cases;
+
 fn runtime_build_with_device_zero_succeeds() {
     // DeviceGuard is used internally by RuntimeBuilder::build() when a device is specified.
     let rt = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
@@ -25,7 +27,7 @@ fn multiple_runtimes_on_same_device_coexist() {
 
 #[test]
 fn device_guard_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("runtime_build_with_device_zero_succeeds", runtime_build_with_device_zero_succeeds),
         ("runtime_build_without_device_uses_current", runtime_build_without_device_uses_current),
         ("multiple_runtimes_on_same_device_coexist", multiple_runtimes_on_same_device_coexist),

@@ -1,12 +1,17 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
+use datafusion::{
+    datasource::source::DataSourceExec,
+    physical_expr::window::WindowExpr,
+    physical_plan::{empty::EmptyExec, placeholder_row::PlaceholderRowExec},
+};
 use query_engine::expr::LimitSpec;
 
 use super::{
-    AggregateExec, AlgeonIcebergScanExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, DataSourceExec,
-    ExecutionPlan, FilterExec, GpuCandidate, HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec,
-    UnionExec, WindowAggExec, wrap_shape,
+    AggregateExec, AlgeonIcebergScanExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, ExecutionPlan,
+    FilterExec, GpuCandidate, HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec, UnionExec,
+    WindowAggExec, wrap_shape,
 };
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
@@ -178,11 +183,11 @@ impl NormalizedNativeInput<'_> {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::native) enum NormalizedNativeLiteralSource<'a> {
     /// DataFusion placeholder one-row, zero-column input.
-    PlaceholderRow(&'a datafusion::physical_plan::placeholder_row::PlaceholderRowExec),
+    PlaceholderRow(&'a PlaceholderRowExec),
     /// DataFusion typed empty input.
-    Empty(&'a datafusion::physical_plan::empty::EmptyExec),
+    Empty(&'a EmptyExec),
     /// DataFusion memory source, including SQL `VALUES`.
-    Memory(&'a datafusion::datasource::source::DataSourceExec),
+    Memory(&'a DataSourceExec),
 }
 
 impl NormalizedNativeLiteralSource<'_> {
@@ -414,9 +419,7 @@ pub(in crate::native) enum NormalizedNativeWindowExec<'a> {
 }
 
 impl NormalizedNativeWindowExec<'_> {
-    pub(in crate::native) fn window_expr(
-        &self,
-    ) -> &[std::sync::Arc<dyn datafusion::physical_expr::window::WindowExpr>] {
+    pub(in crate::native) fn window_expr(&self) -> &[Arc<dyn WindowExpr>] {
         match self {
             Self::Unbounded(window) => window.window_expr(),
             Self::Bounded(window) => window.window_expr(),

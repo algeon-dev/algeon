@@ -11,10 +11,11 @@ use std::{
 
 use query_engine::runtime::ExecutionCancellation;
 
-use super::super::observability::CapturedError;
 use crate::server::{
     adapter_error::{Error, ErrorCode},
     attempt::AlgeonAttempt,
+    config::ServerObservabilityConfig,
+    observability::CapturedError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,7 +49,7 @@ pub(crate) struct QueryCoordinatorConfig {
 }
 
 impl QueryCoordinatorConfig {
-    pub(crate) fn from_observability(config: &crate::server::config::ServerObservabilityConfig) -> Self {
+    pub(crate) fn from_observability(config: &ServerObservabilityConfig) -> Self {
         let max_live_queries = 1024;
         Self {
             max_live_queries,

@@ -6,6 +6,7 @@
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::tsv::{metric_count, optional_observed_metric_count, optional_observed_metric_duration_nanos};
+use crate::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME;
 
 mod dynamic_filter;
 mod graph;
@@ -311,7 +312,7 @@ impl NativeDataFusionExecutionMetrics {
             join_gather_map_bytes: metric_count(metrics, "join_gather_map_bytes"),
             aggregate_strategy_rows: aggregate_strategy_rows(metrics),
             join_strategy_rows: join_strategy_rows(metrics),
-            detail_capture_lost: metric_count(metrics, crate::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME) > 0,
+            detail_capture_lost: metric_count(metrics, SERVER_CAPTURE_LOSS_METRIC_NAME) > 0,
         }
     }
 

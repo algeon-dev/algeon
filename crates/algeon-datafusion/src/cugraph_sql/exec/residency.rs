@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
+use datafusion::datasource::source::DataSourceExec;
+
 use super::{
     AlgeonNativeGpuProducerExec, CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec,
     GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor,
     GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, Schema, as_algeon_native_composed_exec,
     as_algeon_native_exec, graph_residency_descriptor_for_edge_plan, is_logical_vertex_type, native_algorithm,
 };
+use crate::native::{graph_residency_descriptor_for_datafusion_local_parquet_scan, lower_physical_plan_to_native};
 
 pub(super) fn cugraph_graph_residency_descriptor(
     spec: &CugraphAlgorithmSpec,
@@ -48,11 +51,11 @@ pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
 ) -> GraphResidencyPlanAnalysis {
-    let direct_parquet_descriptor =
-        edge_source.as_ref().downcast_ref::<datafusion::datasource::source::DataSourceExec>().and_then(|source| {
-            crate::native::graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec)
-        });
-    let lowering = crate::native::lower_physical_plan_to_native(edge_source);
+    let direct_parquet_descriptor = edge_source
+        .as_ref()
+        .downcast_ref::<DataSourceExec>()
+        .and_then(|source| graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec));
+    let lowering = lower_physical_plan_to_native(edge_source);
     if lowering.plans.len() == 1 && lowering.selected_count() == 1 {
         return graph_residency_descriptor_for_edge_plan(&lowering.plans[0], native_spec);
     }

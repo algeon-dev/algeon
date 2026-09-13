@@ -1,5 +1,7 @@
 use std::{fs::File, path::Path, sync::Arc};
 
+use query_engine::{capability::CapabilityDecision, expr::ColumnRef, rapids_backend::rapids_analysis_context};
+
 use super::*;
 
 fn admitted_execution_context() -> BackendQueryContext {
@@ -192,20 +194,14 @@ fn unbounded_tpch_q3_multi_join_aggregate_topk_preserves_pruning_regression() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
-                query_engine::expr::ColumnRef::input(1, "o_custkey", "o_custkey"),
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "o_orderdate", "o_orderdate"),
-                "o_orderdate",
-            ),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "o_shippriority", "o_shippriority"),
-                "o_shippriority",
-            ),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderdate", "o_orderdate"), "o_orderdate"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_shippriority", "o_shippriority"), "o_shippriority"),
         ])
         .with_build_side(JoinSide::Left),
         customer_orders_schema,
@@ -221,24 +217,15 @@ fn unbounded_tpch_q3_multi_join_aggregate_topk_preserves_pruning_regression() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "o_orderkey", "o_orderkey"),
-                query_engine::expr::ColumnRef::input(1, "l_orderkey", "l_orderkey"),
+                ColumnRef::input(0, "o_orderkey", "o_orderkey"),
+                ColumnRef::input(1, "l_orderkey", "l_orderkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "o_orderkey", "o_orderkey"), "o_orderkey"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "o_orderdate", "o_orderdate"),
-                "o_orderdate",
-            ),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "o_shippriority", "o_shippriority"),
-                "o_shippriority",
-            ),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "l_extendedprice", "l_extendedprice"),
-                "l_extendedprice",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "o_orderdate", "o_orderdate"), "o_orderdate"),
+            JoinOutputColumn::left(ColumnRef::input(0, "o_shippriority", "o_shippriority"), "o_shippriority"),
+            JoinOutputColumn::right(ColumnRef::input(1, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
         ])
         .with_build_side(JoinSide::Left),
         joined_schema,
@@ -332,13 +319,13 @@ fn unbounded_tpch_q19_join_residual_in_list_preserves_pruning_regression() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "l_partkey", "l_partkey"),
-                query_engine::expr::ColumnRef::input(1, "p_partkey", "p_partkey"),
+                ColumnRef::input(0, "l_partkey", "l_partkey"),
+                ColumnRef::input(1, "p_partkey", "p_partkey"),
             )],
         )
         .with_residual_predicate(q19_residual_predicate())
         .with_output_projection(vec![JoinOutputColumn::left(
-            query_engine::expr::ColumnRef::input(0, "l_extendedprice", "l_extendedprice"),
+            ColumnRef::input(0, "l_extendedprice", "l_extendedprice"),
             "l_extendedprice",
         )])
         .with_build_side(JoinSide::Right),
@@ -439,17 +426,14 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                query_engine::expr::ColumnRef::input(1, "supplier_no", "supplier_no"),
+                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(1, "supplier_no", "supplier_no"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "total_revenue", "total_revenue"),
-                "total_revenue",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+            JoinOutputColumn::right(ColumnRef::input(1, "total_revenue", "total_revenue"), "total_revenue"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&supplier_revenue_schema),
@@ -479,12 +463,9 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
                 Expr::input_column(1, "max_revenue", "max_revenue"),
             ))
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "total_revenue", "total_revenue"),
-                    "total_revenue",
-                ),
+                JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+                JoinOutputColumn::left(ColumnRef::input(0, "total_revenue", "total_revenue"), "total_revenue"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&supplier_revenue_schema),
@@ -497,9 +478,8 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
 
     let plan = builder.finish_with_host_sink(sorted);
     assert_eq!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .root_full_sort_join_aggregate_admission,
-        query_engine::capability::CapabilityDecision::Satisfied,
+        plan.capability_analysis(rapids_analysis_context()).root_full_sort_join_aggregate_admission,
+        CapabilityDecision::Satisfied,
         "Q15 shared grouped-aggregate keyless root must satisfy root full-sort admission",
     );
     let result = execute_query_plan(&admitted_execution_context(), &plan).unwrap();
@@ -554,13 +534,13 @@ fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
         JoinSpec::new(
             JoinType::LeftAnti,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
-                query_engine::expr::ColumnRef::input(1, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                ColumnRef::input(1, "s_suppkey", "s_suppkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
         ])
         .with_build_side(JoinSide::Right),
         anti_schema,
@@ -576,15 +556,15 @@ fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                query_engine::expr::ColumnRef::input(1, "p_partkey", "p_partkey"),
+                ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                ColumnRef::input(1, "p_partkey", "p_partkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "p_size", "p_size"), "p_size"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
+            JoinOutputColumn::right(ColumnRef::input(1, "p_type", "p_type"), "p_type"),
+            JoinOutputColumn::right(ColumnRef::input(1, "p_size", "p_size"), "p_size"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
         ])
         .with_build_side(JoinSide::Right),
         joined_schema,

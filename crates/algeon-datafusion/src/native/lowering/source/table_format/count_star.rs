@@ -1,5 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
+use query_engine::plan::NodeId;
+
 use super::{
     AlgeonIcebergScanExec, CapabilityReason, DataType, ExecutionPlan, Field, LoweredNativeInput,
     NATIVE_ZERO_COLUMN_COUNT_COLUMN, NativeLiteralBatchSource, NativeLocalParquetSource,
@@ -25,7 +27,7 @@ pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
 pub(super) fn add_table_format_zero_column_count_source_node(
     scan_plan: &TableFormatScanPlan,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<query_engine::plan::NodeId, CapabilityReason> {
+) -> Result<NodeId, CapabilityReason> {
     let requirements = NativeParquetColumnRequirements {
         read_columns: Vec::new(),
         read_column_file_indices: Vec::new(),

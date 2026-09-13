@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    datasource::physical_plan::{FileScanConfig, ParquetSource},
+    datasource::physical_plan::{FileScanConfig, ParquetSource, parquet::ParquetAccessPlan},
     parquet::file::reader::{FileReader, SerializedFileReader},
     physical_plan::filter::FilterExec,
 };
@@ -10,7 +10,8 @@ use query_engine::source::{
     ByteRangeDisposition as NativeByteRangeDisposition, PartitionColumnDisposition as NativePartitionColumnDisposition,
     PredicateDisposition as NativePredicateDisposition, RejectedSourceFeature as NativeRejectedSourceFeature,
     ScanLimitDisposition as NativeScanLimitDisposition, SchemaMappingDisposition as NativeSchemaMappingDisposition,
-    SourceDiagnostics as NativeSourceDiagnostics, ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
+    SourceDiagnostics as NativeSourceDiagnostics, SourceFormat,
+    ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
 };
 
 use super::{
@@ -259,7 +260,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     rejected_features.dedup();
 
     NativeSourceDiagnostics {
-        format: query_engine::source::SourceFormat::Parquet,
+        format: SourceFormat::Parquet,
         source_read_strategy: "local_kvikio".to_string(),
         credential_mode: "none".to_string(),
         lakehouse_cache_status: "disabled".to_string(),
@@ -298,10 +299,9 @@ fn scan_limit_disposition(file_scan: &FileScanConfig) -> NativeScanLimitDisposit
 }
 
 fn selected_row_groups_from_coalesced_files(files: &[CoalescedLocalParquetFile<'_>]) -> Option<usize> {
-    let has_row_group_selection = files.iter().any(|file| {
-        file.byte_range_row_groups.is_some()
-            || file.file.extensions.get::<datafusion::datasource::physical_plan::parquet::ParquetAccessPlan>().is_some()
-    });
+    let has_row_group_selection = files
+        .iter()
+        .any(|file| file.byte_range_row_groups.is_some() || file.file.extensions.get::<ParquetAccessPlan>().is_some());
     has_row_group_selection.then(|| {
         files.iter().try_fold(0usize, |total, file| {
             selected_row_group_count_for_coalesced_file(file).map(|count| total.saturating_add(count))

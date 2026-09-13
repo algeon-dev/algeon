@@ -14,10 +14,15 @@ use super::{
         synchronize_producer_readiness, synchronize_same_device_stream_raw,
     },
 };
-use crate::runtime::{BoundaryObservation, BoundaryObserverRef, DeviceId, record_boundary_observation_for_observer};
+use crate::{
+    interop::map_cudf_error,
+    runtime::{
+        BoundaryObservation, BoundaryObserverRef, CudaEvent, DeviceId, record_boundary_observation_for_observer,
+    },
+};
 
 struct SharedCudaLeaseActivation {
-    _barrier: Option<crate::runtime::CudaEvent>,
+    _barrier: Option<CudaEvent>,
 }
 
 impl ActiveLeaseActivation for SharedCudaLeaseActivation {}
@@ -48,11 +53,7 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
             },
             rapids_interop::ReadStartBinding::ConsumerStream { raw, device } => {
                 let consumer_device = DeviceId::new(device as usize).map_err(|error| {
-                    super::super::map_cudf_error(
-                        InteropErrorKind::ReadinessUnavailable,
-                        SHARED_ACTIVATE_LEASE_OP,
-                        error,
-                    )
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_ACTIVATE_LEASE_OP, error)
                 })?;
                 let barrier = order_consumer_stream_after_producer_readiness_raw(
                     producer_readiness,
@@ -96,18 +97,10 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
                     .with_context("completion", "same_device_stream")
                 })?;
                 let producer_device = DeviceId::new(producer_device as usize).map_err(|error| {
-                    super::super::map_cudf_error(
-                        InteropErrorKind::ReadinessUnavailable,
-                        SHARED_COMPLETE_LEASE_OP,
-                        error,
-                    )
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETE_LEASE_OP, error)
                 })?;
                 let consumer_device = DeviceId::new(device as usize).map_err(|error| {
-                    super::super::map_cudf_error(
-                        InteropErrorKind::ReadinessUnavailable,
-                        SHARED_COMPLETE_LEASE_OP,
-                        error,
-                    )
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETE_LEASE_OP, error)
                 })?;
                 complete_same_device_stream_shared(producer_device, raw, consumer_device, SHARED_COMPLETE_LEASE_OP)
                     .map(LeaseCompletionResult::Completed)
@@ -115,11 +108,7 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
             CompletionBinding::CrossDeviceEvent { raw, device } => {
                 let producer_readiness = producer_readiness_binding_from_export(export, SHARED_COMPLETE_LEASE_OP)?;
                 let consumer_device = DeviceId::new(device as usize).map_err(|error| {
-                    super::super::map_cudf_error(
-                        InteropErrorKind::ReadinessUnavailable,
-                        SHARED_COMPLETE_LEASE_OP,
-                        error,
-                    )
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETE_LEASE_OP, error)
                 })?;
                 complete_cross_device_event_shared(producer_readiness, raw, consumer_device, SHARED_COMPLETE_LEASE_OP)
                     .map(LeaseCompletionResult::Completed)
@@ -136,18 +125,18 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
             CompletionBinding::SynchronousByReturn => Ok(()),
             CompletionBinding::SameDeviceStream { raw, device } => {
                 let device = DeviceId::new(device as usize).map_err(|error| {
-                    super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
                 })?;
                 synchronize_same_device_stream_raw(raw, device, SHARED_DROP_LEASE_OP).map_err(|error| {
-                    super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
                 })
             },
             CompletionBinding::CrossDeviceEvent { raw, device } => {
                 let device = DeviceId::new(device as usize).map_err(|error| {
-                    super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
                 })?;
                 synchronize_cross_device_event_raw(raw, device, SHARED_DROP_LEASE_OP).map_err(|error| {
-                    super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
+                    map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_DROP_LEASE_OP, error)
                 })
             },
         }

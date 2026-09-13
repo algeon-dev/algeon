@@ -18,7 +18,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable, scalar};
+use crate::common::{column_from_slice, column_from_slice_nullable, run_named_cases, scalar};
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
@@ -387,7 +387,7 @@ fn conditional_inner_join_indices_supports_decimal_ast_cast_to_float64() {
 
 #[test]
 fn conditional_join_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "conditional_inner_join_indices_matches_less_than_predicate",
             conditional_inner_join_indices_matches_less_than_predicate,

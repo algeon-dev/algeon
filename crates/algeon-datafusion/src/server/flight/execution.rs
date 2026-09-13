@@ -1,8 +1,27 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    error::Error as StdError,
+    pin::Pin,
+    str::from_utf8,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+    thread,
+    time::Instant,
+};
 
-use futures::{future::BoxFuture, stream::BoxStream};
+use arrow::record_batch::RecordBatch;
+use arrow_flight::sql::Any;
+use datafusion::common::Result as DataFusionResult;
+use futures::{
+    future::BoxFuture,
+    stream::{BoxStream, empty, once, poll_fn},
+};
+use query_engine::attempt::AttemptCancellation;
 
 use super::*;
+use crate::server::attempt::AlgeonAttempt;
 
 /// Keeps a Flight-owned cancellation path ahead of the attempt stream's drop
 /// implementation. `take_until` and client disconnects may discard this
@@ -13,8 +32,8 @@ struct FlightExecutionBody {
     inner: Option<SendableRecordBatchStream>,
     cancellation: BoxFuture<'static, ()>,
     native_cancellation: ExecutionCancellation,
-    attempt_cancellation: Option<query_engine::attempt::AttemptCancellation>,
-    delivery_started: Arc<std::sync::atomic::AtomicBool>,
+    attempt_cancellation: Option<AttemptCancellation>,
+    delivery_started: Arc<AtomicBool>,
     terminal: Arc<CoordinatorExecutionTerminal>,
     native_execution_span: tracing::Span,
 }
@@ -24,8 +43,8 @@ impl FlightExecutionBody {
         inner: SendableRecordBatchStream,
         flight_token: CancellationToken,
         native_cancellation: ExecutionCancellation,
-        attempt_cancellation: Option<query_engine::attempt::AttemptCancellation>,
-        delivery_started: Arc<std::sync::atomic::AtomicBool>,
+        attempt_cancellation: Option<AttemptCancellation>,
+        delivery_started: Arc<AtomicBool>,
         terminal: Arc<CoordinatorExecutionTerminal>,
         native_execution_span: tracing::Span,
     ) -> Self {
@@ -42,12 +61,9 @@ impl FlightExecutionBody {
 }
 
 impl Stream for FlightExecutionBody {
-    type Item = datafusion::common::Result<arrow::record_batch::RecordBatch>;
+    type Item = DataFusionResult<RecordBatch>;
 
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         let _native_enter = this.native_execution_span.enter();
         if this.cancellation.as_mut().poll(context).is_ready() {
@@ -60,13 +76,13 @@ impl Stream for FlightExecutionBody {
             // the report handoff completes before the cancellation tail can
             // release the coordinator execution lease.
             this.inner = None;
-            return std::task::Poll::Ready(None);
+            return Poll::Ready(None);
         }
-        let poll = this.inner.as_mut().map_or(std::task::Poll::Ready(None), |stream| {
-            this.delivery_started.store(true, std::sync::atomic::Ordering::Release);
+        let poll = this.inner.as_mut().map_or(Poll::Ready(None), |stream| {
+            this.delivery_started.store(true, Ordering::Release);
             stream.as_mut().poll_next(context)
         });
-        if matches!(&poll, std::task::Poll::Ready(None)) {
+        if matches!(&poll, Poll::Ready(None)) {
             // Reaching EOF is the execution-resource boundary. Do not retain
             // the exhausted DataFusion stream (and its admission ticket)
             // until tonic later drops the response wrapper. This is also the
@@ -99,18 +115,14 @@ impl Drop for FlightExecutionBody {
 /// contract: EOF succeeds, cancellation cancels, and a client drop commits
 /// before its coordinator lease can be released.
 struct ExplainGpuExecutionBody {
-    batch: Option<arrow::record_batch::RecordBatch>,
-    attempt: Option<crate::server::attempt::AlgeonAttempt>,
+    batch: Option<RecordBatch>,
+    attempt: Option<AlgeonAttempt>,
     guard: QueryExecutionGuard,
     finished: bool,
 }
 
 impl ExplainGpuExecutionBody {
-    fn new(
-        batch: arrow::record_batch::RecordBatch,
-        attempt: Option<crate::server::attempt::AlgeonAttempt>,
-        guard: QueryExecutionGuard,
-    ) -> Self {
+    fn new(batch: RecordBatch, attempt: Option<AlgeonAttempt>, guard: QueryExecutionGuard) -> Self {
         Self { batch: Some(batch), attempt, guard, finished: false }
     }
 
@@ -131,15 +143,12 @@ impl ExplainGpuExecutionBody {
 }
 
 impl Stream for ExplainGpuExecutionBody {
-    type Item = Result<arrow::record_batch::RecordBatch, FlightError>;
+    type Item = Result<RecordBatch, FlightError>;
 
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        _context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         if this.finished {
-            return std::task::Poll::Ready(None);
+            return Poll::Ready(None);
         }
         if this.guard.flight_token.is_cancelled() {
             this.cancel_attempt();
@@ -147,18 +156,18 @@ impl Stream for ExplainGpuExecutionBody {
             this.finished = true;
             let (status, captured) = this.cancelled_status();
             this.guard.terminal.finish_captured("stream", &status, captured);
-            return std::task::Poll::Ready(Some(Err(FlightError::from(status))));
+            return Poll::Ready(Some(Err(FlightError::from(status))));
         }
         if let Some(batch) = this.batch.take() {
-            this.guard.delivery_started.store(true, std::sync::atomic::Ordering::Release);
-            return std::task::Poll::Ready(Some(Ok(batch)));
+            this.guard.delivery_started.store(true, Ordering::Release);
+            return Poll::Ready(Some(Ok(batch)));
         }
         if let Some(attempt) = this.attempt.take() {
             attempt.complete_without_result_stream();
         }
         this.finished = true;
         this.guard.terminal.finish_success("stream");
-        std::task::Poll::Ready(None)
+        Poll::Ready(None)
     }
 }
 
@@ -168,7 +177,7 @@ impl Drop for ExplainGpuExecutionBody {
             return;
         }
         self.finished = true;
-        if std::thread::panicking() {
+        if thread::panicking() {
             // The attempt owner observes the active panic while it is dropped
             // and records the matching panicked terminal report.
             drop(self.attempt.take());
@@ -192,21 +201,18 @@ impl DatafusionAlgeonFlightSqlService {
     ) -> Response<<Self as FlightService>::DoGetStream> {
         let query_id_for_encode = query_id.to_string();
         let correlation_id_for_encode = correlation_id.map(str::to_string);
-        let stream = encode_flight_data_stream(
-            Arc::new(Schema::empty()),
-            futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>(),
-        )
-        .map_err(move |error| {
-            status_with_query_id_and_correlation_id(
-                arrow_flight_error_to_status_for_operation(
-                    error,
-                    "algeon_datafusion.server.flight.execute_ticket.empty_ddl_encode",
-                    "failed to encode empty Flight SQL DDL result stream",
-                ),
-                &query_id_for_encode,
-                correlation_id_for_encode.as_deref(),
-            )
-        });
+        let stream = encode_flight_data_stream(Arc::new(Schema::empty()), empty::<Result<RecordBatch, FlightError>>())
+            .map_err(move |error| {
+                status_with_query_id_and_correlation_id(
+                    arrow_flight_error_to_status_for_operation(
+                        error,
+                        "algeon_datafusion.server.flight.execute_ticket.empty_ddl_encode",
+                        "failed to encode empty Flight SQL DDL result stream",
+                    ),
+                    &query_id_for_encode,
+                    correlation_id_for_encode.as_deref(),
+                )
+            });
         let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
         attach_query_response_metadata(&mut response, query_id, correlation_id);
         response
@@ -279,7 +285,7 @@ impl DatafusionAlgeonFlightSqlService {
             );
         }
         let output_counters = execution_lease.hot_counters();
-        let attempt_cancellation = attempt.as_ref().map(crate::server::attempt::AlgeonAttempt::cancellation);
+        let attempt_cancellation = attempt.as_ref().map(AlgeonAttempt::cancellation);
         self.cancellations.insert(
             query_id.clone(),
             token.clone(),
@@ -311,7 +317,7 @@ impl DatafusionAlgeonFlightSqlService {
             native_cancellation: native_cancellation.clone(),
             attempt_cancellation,
             shutdown_token: self.shutdown_token.clone(),
-            delivery_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            delivery_started: Arc::new(AtomicBool::new(false)),
             terminal: Arc::clone(&coordinator_terminal),
         };
         if token.is_cancelled() {
@@ -667,7 +673,7 @@ impl DatafusionAlgeonFlightSqlService {
         };
         let execution_span =
             Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), execution_stage);
-        let stream_result: datafusion::common::Result<SendableRecordBatchStream> = match attempt.as_ref() {
+        let stream_result: DataFusionResult<SendableRecordBatchStream> = match attempt.as_ref() {
             Some(attempt) => attempt
                 .execute_physical_plan(Arc::clone(&plan), &query_ctx)
                 .map(|stream| Box::pin(stream) as SendableRecordBatchStream),
@@ -707,7 +713,7 @@ impl DatafusionAlgeonFlightSqlService {
         let stream_operation = ticket_kind.stream_operation();
         // `take_until` ends cleanly on cancellation, so append a one-shot tail
         // that emits CANCELLED as the gRPC trailer when the token fired.
-        let body: BoxStream<'static, Result<arrow::record_batch::RecordBatch, FlightError>> = Box::pin(
+        let body: BoxStream<'static, Result<RecordBatch, FlightError>> = Box::pin(
             stream
                 .map_ok(move |batch| {
                     let _stream_enter = streaming_span_for_output.enter();
@@ -726,7 +732,7 @@ impl DatafusionAlgeonFlightSqlService {
                 }),
         );
         let terminal_for_tail = Arc::clone(&coordinator_terminal);
-        let tail = futures::stream::once(async move {
+        let tail = once(async move {
             cancel_token_for_tail.is_cancelled().then(|| {
                 let (status, captured) =
                     adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_tail));
@@ -741,18 +747,18 @@ impl DatafusionAlgeonFlightSqlService {
         })
         .filter_map(|opt| async move { opt });
         let terminal_for_end = Arc::clone(&coordinator_terminal);
-        let end = futures::stream::once(async move {
+        let end = once(async move {
             terminal_for_end.wait_finished().await;
-            None::<Result<arrow::record_batch::RecordBatch, FlightError>>
+            None::<Result<RecordBatch, FlightError>>
         })
         .filter_map(|opt| async move { opt });
         let stream = body.chain(tail).chain(end).map(move |batch| {
             let _guard = &guard;
             batch
         });
-        let mut stream: BoxStream<'static, Result<arrow::record_batch::RecordBatch, FlightError>> = Box::pin(stream);
+        let mut stream: BoxStream<'static, Result<RecordBatch, FlightError>> = Box::pin(stream);
         let result_streaming_span_for_poll = streaming_span;
-        let stream = futures::stream::poll_fn(move |context| {
+        let stream = poll_fn(move |context| {
             let _stream_enter = result_streaming_span_for_poll.enter();
             stream.as_mut().poll_next(context)
         });
@@ -793,7 +799,7 @@ impl DatafusionAlgeonFlightSqlService {
         let Some(ticket) = endpoint.ticket.as_ref() else {
             return Ok(false);
         };
-        let any = arrow_flight::sql::Any::decode(&*ticket.ticket).map_err(|error| {
+        let any = Any::decode(&*ticket.ticket).map_err(|error| {
             cancel_invalid_argument_status(
                 "Flight SQL cancel action contained a malformed ticket envelope",
                 "ticket_any_decode",
@@ -824,7 +830,7 @@ impl DatafusionAlgeonFlightSqlService {
         } else {
             return Ok(false);
         };
-        let query_id = std::str::from_utf8(&query_id_bytes).map_err(|error| {
+        let query_id = from_utf8(&query_id_bytes).map_err(|error| {
             cancel_invalid_argument_status(
                 "Flight SQL cancel action contained a non-UTF-8 query id",
                 "query_id_utf8",
@@ -845,7 +851,7 @@ impl DatafusionAlgeonFlightSqlService {
 pub(super) fn cancel_invalid_argument_status(
     message: &'static str,
     stage: &'static str,
-    source: impl std::error::Error + Send + Sync + 'static,
+    source: impl StdError + Send + Sync + 'static,
 ) -> Status {
     adapter_error_status(
         Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.server.flight.cancel_query.decode", message)

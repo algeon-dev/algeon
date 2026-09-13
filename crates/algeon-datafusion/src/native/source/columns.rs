@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
@@ -10,9 +10,12 @@ use parquet::{
     arrow::parquet_to_arrow_schema,
     file::reader::{FileReader, SerializedFileReader},
 };
-use query_engine::source::{
-    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
-    SourceColumnRef as NativeSourceColumnRef,
+use query_engine::{
+    expr::LiteralValue as NativeLiteralValue,
+    source::{
+        MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
+        SourceColumnRef as NativeSourceColumnRef,
+    },
 };
 
 use crate::{
@@ -73,7 +76,7 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     /// `None` means the value must come from file partition metadata. `Some`
     /// represents a table-format default value materialized for every row of
     /// the file.
-    pub(in crate::native) partition_column_values: Vec<Option<query_engine::expr::LiteralValue>>,
+    pub(in crate::native) partition_column_values: Vec<Option<NativeLiteralValue>>,
     /// DataFusion table partition-column indices required by this source.
     pub(in crate::native) partition_column_indices: Vec<usize>,
     /// Required nullable table columns missing from the physical file schema.
@@ -442,14 +445,14 @@ pub(in crate::native) fn native_source_output_schema(
         );
     }
     for partition_column in &requirements.partition_columns {
-        fields.push(arrow::datatypes::Field::new(
+        fields.push(Field::new(
             partition_column.name.as_str(),
             partition_column.data_type.clone(),
             partition_column.nullable,
         ));
     }
     for missing_column in &requirements.missing_columns {
-        fields.push(arrow::datatypes::Field::new(
+        fields.push(Field::new(
             missing_column.name.as_str(),
             missing_column.data_type.clone(),
             missing_column.nullable,

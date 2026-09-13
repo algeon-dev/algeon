@@ -3,7 +3,9 @@
 //! These tests run by default on hosts with 2+ visible GPUs and skip cleanly
 //! on single-GPU hosts. Set `CUDF_SKIP_MULTI_GPU=1` to disable them
 //! explicitly.
-use cudf::testing::prelude::*;
+use cudf::{core::Table, testing::prelude::*};
+
+use crate::common::{column_from_device_buffer_nullable, dataframe_from_columns, error_context_value, series};
 
 mod common;
 
@@ -111,14 +113,14 @@ fn assert_cross_device_relocation_error_any_operation(err: cudf::Error, operatio
 }
 
 fn assert_cross_device_contract(err: &cudf::Error, operation: &'static str) {
-    let left_device = crate::common::error_context_value(err, "left_device");
-    let right_device = crate::common::error_context_value(err, "right_device");
+    let left_device = error_context_value(err, "left_device");
+    let right_device = error_context_value(err, "right_device");
 
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), operation);
-    assert!(crate::common::error_context_value(err, "left_domain").is_some(), "expected left_domain in {:?}", err);
-    assert!(crate::common::error_context_value(err, "right_domain").is_some(), "expected right_domain in {:?}", err);
+    assert!(error_context_value(err, "left_domain").is_some(), "expected left_domain in {:?}", err);
+    assert!(error_context_value(err, "right_domain").is_some(), "expected right_domain in {:?}", err);
     assert!(matches!(err.fact_value(FactKeyName::LeftDevice), Some(FactValue::DeviceId(_))));
     assert!(matches!(err.fact_value(FactKeyName::RightDevice), Some(FactValue::DeviceId(_))));
     assert!(left_device.is_some(), "expected left_device in {:?}", err);
@@ -149,7 +151,7 @@ fn assert_constructor_mixed_provenance_error(
         err.details()
     );
     assert!(
-        crate::common::error_context_value(&err, "column_name").as_deref() == Some(expected_column_name),
+        error_context_value(&err, "column_name").as_deref() == Some(expected_column_name),
         "expected failing column_name context, got facts={:?} details={:?}",
         err.facts(),
         err.details()
@@ -169,7 +171,7 @@ fn assert_borrowed_override_runtime_binding_mismatch(
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::RuntimeBindingMismatch);
     assert_eq!(err.operation(), "execution_overrides::resolve_output_domain");
-    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some(resource));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some(resource));
     assert_eq!(
         err.fact_value(FactKeyName::LeftDevice),
         Some(&FactValue::DeviceId(left_device.parse::<i32>().unwrap()))
@@ -178,16 +180,12 @@ fn assert_borrowed_override_runtime_binding_mismatch(
         err.fact_value(FactKeyName::RightDevice),
         Some(&FactValue::DeviceId(right_device.parse::<i32>().unwrap()))
     );
-    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
-    assert!(
-        crate::common::error_context_value(&err, "remedy").is_some(),
-        "expected remedy context, got {:?}",
-        err.details()
-    );
-    assert_eq!(crate::common::error_context_value(&err, "domain_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "override_stream_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "override_mr_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert!(error_context_value(&err, "remedy").is_some(), "expected remedy context, got {:?}", err.details());
+    assert_eq!(error_context_value(&err, "domain_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "override_stream_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "override_mr_device").as_deref(), None);
 }
 
 fn assert_runtime_builder_binding_mismatch(
@@ -202,7 +200,7 @@ fn assert_runtime_builder_binding_mismatch(
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::RuntimeBindingMismatch);
     assert_eq!(err.operation(), "runtime::RuntimeBuilder::build");
-    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some(resource));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some(resource));
     assert_eq!(
         err.fact_value(FactKeyName::LeftDevice),
         Some(&FactValue::DeviceId(left_device.parse::<i32>().unwrap()))
@@ -211,16 +209,12 @@ fn assert_runtime_builder_binding_mismatch(
         err.fact_value(FactKeyName::RightDevice),
         Some(&FactValue::DeviceId(right_device.parse::<i32>().unwrap()))
     );
-    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
-    assert!(
-        crate::common::error_context_value(&err, "remedy").is_some(),
-        "expected remedy context, got {:?}",
-        err.details()
-    );
-    assert_eq!(crate::common::error_context_value(&err, "target_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "stream_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "mr_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert!(error_context_value(&err, "remedy").is_some(), "expected remedy context, got {:?}", err.details());
+    assert_eq!(error_context_value(&err, "target_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "stream_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "mr_device").as_deref(), None);
 }
 
 fn dataframe1(name: &str, series: Series) -> DataFrame {
@@ -357,11 +351,11 @@ fn with_column_requires_explicit_relocation_for_cross_device_series() {
         .with_column("value", foreign)
         .expect_err("cross-device with_column should require explicit relocation before structural insertion");
     assert_cross_device_contract(&err, "dataframe::with_column");
-    assert_eq!(crate::common::error_context_value(&err, "column_name").as_deref(), Some("value"));
-    assert_eq!(crate::common::error_context_value(&err, "frame_domain").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_domain").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "frame_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("value"));
+    assert_eq!(error_context_value(&err, "frame_domain").as_deref(), None);
+    assert_eq!(error_context_value(&err, "series_domain").as_deref(), None);
+    assert_eq!(error_context_value(&err, "frame_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "series_device").as_deref(), None);
 }
 
 #[test]
@@ -378,11 +372,11 @@ fn assign_requires_explicit_relocation_for_cross_device_series() {
         .assign([("value", foreign)])
         .expect_err("cross-device assign should require explicit relocation before structural insertion");
     assert_cross_device_contract(&err, "dataframe::assign");
-    assert_eq!(crate::common::error_context_value(&err, "column_name").as_deref(), Some("value"));
-    assert_eq!(crate::common::error_context_value(&err, "frame_domain").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_domain").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "frame_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("value"));
+    assert_eq!(error_context_value(&err, "frame_domain").as_deref(), None);
+    assert_eq!(error_context_value(&err, "series_domain").as_deref(), None);
+    assert_eq!(error_context_value(&err, "frame_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "series_device").as_deref(), None);
 }
 
 #[test]
@@ -438,7 +432,7 @@ fn columns_from_different_devices_have_different_domains() {
 
     // Create a column on the calling thread's current primary device.
     common::reset_exec_observation();
-    let s0 = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let s0 = series::<i32>("x", &[1, 2, 3]).unwrap();
     assert_eq!(
         common::last_exec_device(),
         device0.ordinal() as i32,
@@ -478,7 +472,7 @@ fn adopted_device_buffer_uses_matching_runtime_provenance_after_current_device_s
     let adopted = runtime.column_from_device_buffer(buffer, 3, TypeId::Int32).unwrap();
 
     let peer = runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
-    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "peer".into()], vec![adopted, peer]);
+    let frame = dataframe_from_columns(vec!["adopted".into(), "peer".into()], vec![adopted, peer]);
     assert!(
         frame.is_ok(),
         "adopted column should bind to runtime device {} even after switching the calling thread's current device to {}",
@@ -506,7 +500,7 @@ fn adopted_nullable_device_buffer_uses_matching_runtime_provenance_after_current
     let adopted = runtime.column_from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32).unwrap();
 
     let peer = runtime.column_from_slice(&[40i32, 50, 60]).unwrap();
-    let frame = crate::common::dataframe_from_columns(vec!["adopted".into(), "peer".into()], vec![adopted, peer]);
+    let frame = dataframe_from_columns(vec!["adopted".into(), "peer".into()], vec![adopted, peer]);
     assert!(
         frame.is_ok(),
         "nullable adopted column should bind to runtime device {} even after switching the calling thread's current device to {}",
@@ -534,17 +528,17 @@ fn adopted_nullable_device_buffer_rejects_cross_device_data_and_mask_buffers() {
     let runtime1 = Runtime::builder().with_device(device1).build().unwrap();
     let mask_buffer = runtime1.device_buffer_from_host_data(&mask).unwrap();
 
-    let err = crate::common::column_from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32)
+    let err = column_from_device_buffer_nullable(data_buffer, mask_buffer, 1, 3, TypeId::Int32)
         .expect_err("cross-device nullable adoption should fail");
     let left_device = device0.ordinal().to_string();
     let right_device = device1.ordinal().to_string();
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
-    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "data_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "mask_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert_eq!(error_context_value(&err, "data_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "mask_device").as_deref(), None);
 }
 
 #[test]
@@ -569,10 +563,10 @@ fn runtime_adopted_device_buffer_rejects_cross_device_runtime() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
-    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "runtime_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "buffer_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert_eq!(error_context_value(&err, "runtime_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "buffer_device").as_deref(), None);
 }
 
 #[test]
@@ -600,10 +594,10 @@ fn runtime_adopted_nullable_device_buffer_rejects_cross_device_runtime() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
-    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "runtime_device").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "buffer_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert_eq!(error_context_value(&err, "runtime_device").as_deref(), None);
+    assert_eq!(error_context_value(&err, "buffer_device").as_deref(), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,19 +1255,14 @@ fn low_level_join_without_relocation_rejects_cross_device_runtime_inputs() {
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left_keys =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
-    let left_payload = cudf::core::Table::from_columns(vec![
-        left_rt.series(&[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let left_payload =
+        Table::from_columns(vec![left_rt.series(&[10i32, 20, 30]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right_keys =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
+        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let right_payload =
+        Table::from_columns(vec![right_rt.series(&[200i32, 300, 400]).unwrap().as_column().deep_copy().unwrap()])
             .unwrap();
-    let right_payload = cudf::core::Table::from_columns(vec![
-        right_rt.series(&[200i32, 300, 400]).unwrap().as_column().deep_copy().unwrap(),
-    ])
-    .unwrap();
 
     let err = match join::inner_join(
         &left_keys.testing_view().unwrap(),
@@ -1297,11 +1286,9 @@ fn join_indices_without_relocation_reject_cross_device_runtime_inputs() {
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left_keys =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right_keys =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
 
     let err = match join::inner_join_indices(
         &left_keys.testing_view().unwrap(),
@@ -1323,11 +1310,9 @@ fn conditional_join_indices_without_relocation_reject_cross_device_runtime_input
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
 
@@ -1351,11 +1336,9 @@ fn conditional_join_indices_in_without_relocation_reject_cross_device_runtime_in
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
     let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
@@ -1381,17 +1364,13 @@ fn mixed_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left_equality =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let left_conditional =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right_equality =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right_conditional =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
 
@@ -1418,17 +1397,13 @@ fn mixed_join_indices_in_without_relocation_reject_cross_device_runtime_inputs()
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left_equality =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let left_conditional =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right_equality =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right_conditional =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let predicate =
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
     let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
@@ -1457,11 +1432,9 @@ fn filter_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let left_indices = left_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
     let right_indices = right_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
     let predicate =
@@ -1490,11 +1463,9 @@ fn filter_join_indices_in_without_relocation_reject_cross_device_runtime_inputs(
     let (left_rt, right_rt) = first_two_test_runtimes();
 
     let left =
-        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let right =
-        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let left_indices = left_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
     let right_indices = right_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
     let predicate =
@@ -1525,11 +1496,9 @@ fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
     let (build_rt, probe_rt) = first_two_test_runtimes();
 
     let build_keys =
-        cudf::core::Table::from_columns(vec![build_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![build_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let probe_keys =
-        cudf::core::Table::from_columns(vec![probe_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
-            .unwrap();
+        Table::from_columns(vec![probe_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()]).unwrap();
     let hash_join = join::HashJoin::new(build_keys, join::HashJoinOptions::new()).unwrap();
 
     let err = match hash_join.inner_join_indices(&probe_keys.testing_view().unwrap()) {
@@ -1682,8 +1651,8 @@ fn dataframe_write_parquet_with_options_without_relocation_rejects_cross_device_
         Err(err) => err,
     };
     assert_cross_device_contract(&err, "dataframe::write_parquet_with_options");
-    assert_eq!(crate::common::error_context_value(&err, "frame_domain").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "write_domain").as_deref(), None);
+    assert_eq!(error_context_value(&err, "frame_domain").as_deref(), None);
+    assert_eq!(error_context_value(&err, "write_domain").as_deref(), None);
 }
 
 #[test]

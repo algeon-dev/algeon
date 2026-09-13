@@ -13,6 +13,7 @@ use arrow::{
 use arrow_flight::{FlightEndpoint, Ticket, sql::client::FlightSqlServiceClient};
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use tonic::transport::Channel;
 
 use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
@@ -269,7 +270,7 @@ fn write_edge_parquet(path: &Path) -> SmokeResult<()> {
     Ok(())
 }
 
-async fn connect_flight_sql(url: &str) -> SmokeResult<FlightSqlServiceClient<tonic::transport::Channel>> {
+async fn connect_flight_sql(url: &str) -> SmokeResult<FlightSqlServiceClient<Channel>> {
     connect_with_retry(
         url,
         ConnectionRetryConfig::fixed_attempts(50, Duration::from_millis(50)),
@@ -280,19 +281,13 @@ async fn connect_flight_sql(url: &str) -> SmokeResult<FlightSqlServiceClient<ton
     .await
 }
 
-async fn execute_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> SmokeResult<Vec<RecordBatch>> {
+async fn execute_batches(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> SmokeResult<Vec<RecordBatch>> {
     let flight_info = client.execute(sql.to_string(), None).await?;
     let ticket = first_ticket(&flight_info.endpoint)?;
     Ok(client.do_get(ticket).await?.try_collect::<Vec<_>>().await?)
 }
 
-async fn execute_schema(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> SmokeResult<Schema> {
+async fn execute_schema(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> SmokeResult<Schema> {
     let flight_info = client.execute(sql.to_string(), None).await?;
     let ticket = first_ticket(&flight_info.endpoint)?;
     let schema = flight_info.try_decode_schema()?;
@@ -301,7 +296,7 @@ async fn execute_schema(
 }
 
 async fn execute_full_unbounded_graph_smoke(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    client: &mut FlightSqlServiceClient<Channel>,
     graph_view: &str,
 ) -> SmokeResult<()> {
     let batches = execute_batches(

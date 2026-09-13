@@ -12,6 +12,7 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 use tokio::{runtime::Handle, sync::Semaphore, task::JoinHandle};
 
 use super::{GpuExecutionQueryTracker, PoolCounters, RUN_OPERATION, SHUTDOWN_OPERATION, supervisor::RuntimeSupervisor};
+use crate::runtime::deadline::{DeadlineMutexLockError, deadline_remaining, mutex_lock_until};
 
 pub(super) struct GpuExecutionPoolInner {
     pub(super) id: u64,
@@ -112,21 +113,18 @@ pub(super) struct PoolDrain {
 
 impl PoolDrain {
     pub(super) fn wait_until(&self, deadline: Instant, device_ordinal: usize, counters: &PoolCounters) -> Result<()> {
-        let mut state =
-            crate::runtime::deadline::mutex_lock_until(&self.changed, deadline).map_err(|error| match error {
-                crate::runtime::deadline::DeadlineMutexLockError::Poisoned => QueryError::new(
-                    QueryErrorCode::Internal,
-                    SHUTDOWN_OPERATION,
-                    "GPU execution pool drain mutex was poisoned",
-                )
-                .with_fact("device_ordinal", device_ordinal)
-                .with_fact("reason", "gpu_execution_pool_drain_poisoned"),
-                crate::runtime::deadline::DeadlineMutexLockError::TimedOut => {
-                    pool_drain_timeout(device_ordinal, counters)
-                },
-            })?;
+        let mut state = mutex_lock_until(&self.changed, deadline).map_err(|error| match error {
+            DeadlineMutexLockError::Poisoned => QueryError::new(
+                QueryErrorCode::Internal,
+                SHUTDOWN_OPERATION,
+                "GPU execution pool drain mutex was poisoned",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("reason", "gpu_execution_pool_drain_poisoned"),
+            DeadlineMutexLockError::TimedOut => pool_drain_timeout(device_ordinal, counters),
+        })?;
         while counters.active.load(Ordering::Acquire) != 0 || counters.queued.load(Ordering::Acquire) != 0 {
-            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+            let Some(remaining) = deadline_remaining(deadline) else {
                 return Err(pool_drain_timeout(device_ordinal, counters));
             };
             let (next, timeout) = self.wake.wait_timeout(state, remaining).map_err(|_| {

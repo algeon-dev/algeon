@@ -6,7 +6,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use algeon_datafusion::{
+    backend::AlgeonGpuDeviceProfile, cugraph_sql::CugraphAlgorithmSpec, planner::AlgeonGpuExecutionMode,
+};
+use datafusion::{common::Result as DataFusionResult, physical_plan::metrics::MetricsSet};
+use tokio::task::spawn_blocking;
+
 use super::*;
+use crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable;
 
 pub(super) async fn assert_sql_schema(ctx: &SessionContext, sql: &str, algorithm: CugraphAlgorithm) {
     let df = ctx.sql(sql).await.unwrap();
@@ -40,10 +47,7 @@ pub(super) async fn assert_sql_schema_with_vertex_type(
     }
 }
 
-pub(super) fn assert_error_contains(
-    result: datafusion::common::Result<algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec>,
-    expected: &str,
-) {
+pub(super) fn assert_error_contains(result: DataFusionResult<CugraphAlgorithmSpec>, expected: &str) {
     let error = result.unwrap_err().to_string();
     assert!(error.contains(expected), "expected error containing {expected:?}, got {error:?}",);
 }
@@ -52,51 +56,42 @@ pub(super) fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
     stable_result_schema(algorithm).fields().iter().map(|field| field.as_ref().clone()).collect()
 }
 
-pub(super) fn find_composed_exec(
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
-) -> Option<&AlgeonNativeComposedExec> {
+pub(super) fn find_composed_exec(plan: &dyn ExecutionPlan) -> Option<&AlgeonNativeComposedExec> {
     if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
         return Some(composed);
     }
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
 }
 
-pub(super) fn find_cugraph_algo_exec(
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
-) -> Option<&dyn datafusion::physical_plan::ExecutionPlan> {
+pub(super) fn find_cugraph_algo_exec(plan: &dyn ExecutionPlan) -> Option<&dyn ExecutionPlan> {
     if plan.name() == "CugraphAlgoExec" {
         return Some(plan);
     }
     plan.children().into_iter().find_map(|child| find_cugraph_algo_exec(child.as_ref()))
 }
 
-pub(super) fn plan_contains_native_exec(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+pub(super) fn plan_contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<AlgeonNativeExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_exec(child.as_ref()))
 }
 
-pub(super) fn metric_usize(metrics: &datafusion::physical_plan::metrics::MetricsSet, name: &str) -> usize {
+pub(super) fn metric_usize(metrics: &MetricsSet, name: &str) -> usize {
     metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
 }
 
-pub(super) fn plan_metric_usize(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> usize {
+pub(super) fn plan_metric_usize(plan: &dyn ExecutionPlan, name: &str) -> usize {
     let own = plan.metrics().as_ref().map(|metrics| metric_usize(metrics, name)).unwrap_or(0);
     own + plan.children().into_iter().map(|child| plan_metric_usize(child.as_ref(), name)).sum::<usize>()
 }
 
-pub(super) fn plan_metrics_recursive(
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
-) -> datafusion::physical_plan::metrics::MetricsSet {
-    let mut metrics = datafusion::physical_plan::metrics::MetricsSet::new();
+pub(super) fn plan_metrics_recursive(plan: &dyn ExecutionPlan) -> MetricsSet {
+    let mut metrics = MetricsSet::new();
     append_plan_metrics(&mut metrics, plan);
     metrics
 }
 
-fn append_plan_metrics(
-    metrics: &mut datafusion::physical_plan::metrics::MetricsSet,
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
-) {
+fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
     if let Some(plan_metrics) = plan.metrics() {
         for metric in plan_metrics.iter() {
             metrics.push(Arc::clone(metric));
@@ -108,17 +103,14 @@ fn append_plan_metrics(
 }
 
 pub(super) fn backend_cugraph_sql_context(builder: SessionStateBuilder) -> (AlgeonGpuBackend, SessionContext) {
-    backend_cugraph_sql_context_with_mode(builder, algeon_datafusion::planner::AlgeonGpuExecutionMode::NativePreferred)
+    backend_cugraph_sql_context_with_mode(builder, AlgeonGpuExecutionMode::NativePreferred)
 }
 
 pub(super) fn backend_cugraph_sql_context_with_mode(
     builder: SessionStateBuilder,
-    mode: algeon_datafusion::planner::AlgeonGpuExecutionMode,
+    mode: AlgeonGpuExecutionMode,
 ) -> (AlgeonGpuBackend, SessionContext) {
-    let device = AlgeonGpuDeviceConfig::new(
-        algeon_datafusion::backend::AlgeonGpuDeviceProfile::new(0),
-        GpuMemoryOwnership::WholeDeviceExclusive,
-    );
+    let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder().with_execution_mode(mode).devices([device]).build().unwrap();
     let state = backend.install_on(builder).unwrap().try_with_cugraph_sql(CugraphSqlConfig::default()).unwrap().build();
     (backend, SessionContext::new_with_state(state))
@@ -129,7 +121,7 @@ pub(super) fn default_backend_cugraph_sql_context() -> (AlgeonGpuBackend, Sessio
 }
 
 pub(super) async fn drop_session_context_on_blocking_thread(ctx: SessionContext) {
-    tokio::task::spawn_blocking(move || drop(ctx)).await.unwrap();
+    spawn_blocking(move || drop(ctx)).await.unwrap();
 }
 
 #[derive(Debug, Clone)]
@@ -221,7 +213,7 @@ print(json.dumps({
 }
 
 pub(super) fn handle_python_oracle_unavailable(message: impl AsRef<str>) -> ! {
-    crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
+    handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }
 
 pub(super) fn write_tiny_directed_edges(path: &Path) {

@@ -1,27 +1,37 @@
 //! Runtime betweenness seed policy and validation.
 
+#[cfg(feature = "cugraph")]
+use cudf::Series;
+#[cfg(feature = "cugraph")]
+use cudf::TypeId;
+
 use super::{CudfSortOptions, DataFrame, QueryError, QueryErrorCode, Result, cudf_query_error};
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphAlgorithm;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphAlgorithmParams;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphAlgorithmSpec;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphBetweennessSeeds;
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) enum RuntimeGraphSpecResolution {
     Unresolved,
     CheckedNoRewrite,
-    Rewritten(Box<crate::plan::GraphAlgorithmSpec>),
+    Rewritten(Box<GraphAlgorithmSpec>),
 }
 
 #[cfg(feature = "cugraph")]
 impl RuntimeGraphSpecResolution {
-    fn from_optional(spec: Option<crate::plan::GraphAlgorithmSpec>) -> Self {
+    fn from_optional(spec: Option<GraphAlgorithmSpec>) -> Self {
         match spec {
             Some(spec) => Self::Rewritten(Box::new(spec)),
             None => Self::CheckedNoRewrite,
         }
     }
 
-    pub(super) fn spec_or<'a>(
-        &'a self,
-        fallback: &'a crate::plan::GraphAlgorithmSpec,
-    ) -> &'a crate::plan::GraphAlgorithmSpec {
+    pub(super) fn spec_or<'a>(&'a self, fallback: &'a GraphAlgorithmSpec) -> &'a GraphAlgorithmSpec {
         match self {
             Self::Unresolved | Self::CheckedNoRewrite => fallback,
             Self::Rewritten(spec) => spec.as_ref(),
@@ -32,7 +42,7 @@ impl RuntimeGraphSpecResolution {
 #[cfg(feature = "cugraph")]
 pub(super) fn resolve_runtime_graph_spec_for_execution(
     input: &DataFrame,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
 ) -> Result<RuntimeGraphSpecResolution> {
     if betweenness_seed_policy_operation(spec).is_none() {
         return Ok(RuntimeGraphSpecResolution::CheckedNoRewrite);
@@ -41,12 +51,10 @@ pub(super) fn resolve_runtime_graph_spec_for_execution(
 }
 
 #[cfg(feature = "cugraph")]
-fn betweenness_seed_policy_operation(spec: &crate::plan::GraphAlgorithmSpec) -> Option<&'static str> {
+fn betweenness_seed_policy_operation(spec: &GraphAlgorithmSpec) -> Option<&'static str> {
     match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(_) => {
-            Some("query_engine.graph_algorithm.betweenness_seed_policy")
-        },
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(_) => {
+        GraphAlgorithmParams::BetweennessCentrality(_) => Some("query_engine.graph_algorithm.betweenness_seed_policy"),
+        GraphAlgorithmParams::EdgeBetweennessCentrality(_) => {
             Some("query_engine.graph_algorithm.edge_betweenness_seed_policy")
         },
         _ => None,
@@ -56,13 +64,13 @@ fn betweenness_seed_policy_operation(spec: &crate::plan::GraphAlgorithmSpec) -> 
 #[cfg(feature = "cugraph")]
 fn graph_spec_with_runtime_betweenness_seeds(
     input: &DataFrame,
-    spec: &crate::plan::GraphAlgorithmSpec,
-) -> Result<Option<crate::plan::GraphAlgorithmSpec>> {
+    spec: &GraphAlgorithmSpec,
+) -> Result<Option<GraphAlgorithmSpec>> {
     let (seeds, k, operation) = match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+        GraphAlgorithmParams::BetweennessCentrality(params) => {
             (params.seeds.as_ref(), params.k, "query_engine.graph_algorithm.betweenness_seed_policy")
         },
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
             (params.seeds.as_ref(), params.k, "query_engine.graph_algorithm.edge_betweenness_seed_policy")
         },
         _ => return Ok(None),
@@ -84,7 +92,7 @@ fn graph_spec_with_runtime_betweenness_seeds(
         })?;
         return graph_spec_with_betweenness_seeds(
             spec,
-            crate::plan::GraphBetweennessSeeds::I64(vertices.into_iter().take(k_usize).collect()),
+            GraphBetweennessSeeds::I64(vertices.into_iter().take(k_usize).collect()),
         )
         .map(Some);
     }
@@ -94,17 +102,17 @@ fn graph_spec_with_runtime_betweenness_seeds(
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) fn validate_betweenness_seed_policy_for_vertex_count(
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     vertex_count: u64,
 ) -> Result<()> {
     let (seeds, k, exact_vertex_threshold, operation) = match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => (
+        GraphAlgorithmParams::BetweennessCentrality(params) => (
             params.seeds.as_ref(),
             params.k,
             params.exact_vertex_threshold,
             "query_engine.graph_algorithm.betweenness_seed_policy",
         ),
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => (
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => (
             params.seeds.as_ref(),
             params.k,
             params.exact_vertex_threshold,
@@ -148,12 +156,12 @@ pub(in crate::exec) fn validate_betweenness_seed_policy_for_vertex_count(
 }
 
 #[cfg(feature = "cugraph")]
-pub(in crate::exec) fn validate_betweenness_static_seed_policy(spec: &crate::plan::GraphAlgorithmSpec) -> Result<()> {
+pub(in crate::exec) fn validate_betweenness_static_seed_policy(spec: &GraphAlgorithmSpec) -> Result<()> {
     let (seeds, k, operation) = match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+        GraphAlgorithmParams::BetweennessCentrality(params) => {
             (params.seeds.as_ref(), params.k, "query_engine.graph_algorithm.betweenness_seed_policy")
         },
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
             (params.seeds.as_ref(), params.k, "query_engine.graph_algorithm.edge_betweenness_seed_policy")
         },
         _ => return Ok(()),
@@ -163,8 +171,8 @@ pub(in crate::exec) fn validate_betweenness_static_seed_policy(spec: &crate::pla
 
 #[cfg(feature = "cugraph")]
 fn validate_betweenness_static_seed_policy_parts(
-    algorithm: crate::plan::GraphAlgorithm,
-    seeds: Option<&crate::plan::GraphBetweennessSeeds>,
+    algorithm: GraphAlgorithm,
+    seeds: Option<&GraphBetweennessSeeds>,
     k: Option<u64>,
     operation: &'static str,
 ) -> Result<()> {
@@ -200,14 +208,14 @@ fn validate_betweenness_static_seed_policy_parts(
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) fn runtime_graph_spec_resolution_after_bounded_seed_validation(
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     vertex_count_validated: bool,
 ) -> RuntimeGraphSpecResolution {
     match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+        GraphAlgorithmParams::BetweennessCentrality(params) => {
             bounded_betweenness_runtime_resolution(params.seeds.is_some(), params.k.is_some(), vertex_count_validated)
         },
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
             bounded_betweenness_runtime_resolution(params.seeds.is_some(), params.k.is_some(), vertex_count_validated)
         },
         _ => RuntimeGraphSpecResolution::CheckedNoRewrite,
@@ -232,7 +240,7 @@ fn bounded_betweenness_runtime_resolution(
 #[cfg(feature = "cugraph")]
 fn sorted_graph_vertices_i64(
     input: &DataFrame,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     operation: &'static str,
 ) -> Result<Vec<i64>> {
     let source = input
@@ -257,16 +265,16 @@ fn sorted_graph_vertices_i64(
         .with_fact("src_cudf_dtype", format!("{source_dtype:?}"))
         .with_fact("dst_cudf_dtype", format!("{destination_dtype:?}")));
     }
-    let vertices = cudf::Series::concat(&[&source, &destination])
+    let vertices = Series::concat(&[&source, &destination])
         .and_then(|series| series.unique())
         .and_then(|series| series.sort_values(CudfSortOptions::new()))
         .map_err(|error| cudf_query_error(operation, "failed to collect graph vertices", error))?;
     match source_dtype.id() {
-        cudf::TypeId::Int32 => vertices
+        TypeId::Int32 => vertices
             .to_vec_strict::<i32>()
             .map(|values| values.into_iter().map(i64::from).collect())
             .map_err(|error| cudf_query_error(operation, "failed to copy graph Int32 vertices to host", error)),
-        cudf::TypeId::Int64 => vertices
+        TypeId::Int64 => vertices
             .to_vec_strict::<i64>()
             .map_err(|error| cudf_query_error(operation, "failed to copy graph Int64 vertices to host", error)),
         dtype => Err(QueryError::new(
@@ -280,16 +288,16 @@ fn sorted_graph_vertices_i64(
 
 #[cfg(feature = "cugraph")]
 fn graph_spec_with_betweenness_seeds(
-    spec: &crate::plan::GraphAlgorithmSpec,
-    seeds: crate::plan::GraphBetweennessSeeds,
-) -> Result<crate::plan::GraphAlgorithmSpec> {
+    spec: &GraphAlgorithmSpec,
+    seeds: GraphBetweennessSeeds,
+) -> Result<GraphAlgorithmSpec> {
     let mut resolved = spec.clone();
     match &mut resolved.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+        GraphAlgorithmParams::BetweennessCentrality(params) => {
             params.seeds = Some(seeds);
             params.k = None;
         },
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
             params.seeds = Some(seeds);
             params.k = None;
         },

@@ -8,6 +8,8 @@
 //! [`output::QueryExecutionResult`] so callers can record them after choosing host or
 //! GPU-resident output handling.
 
+#[cfg(any(feature = "cugraph", feature = "cuvs"))]
+use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
     sync::{
@@ -24,8 +26,8 @@ use arrow::{
 };
 use cudf::{
     AggSpec as CudfAggSpec, BudgetedExecutionOutcome, DataFrame, DuplicateKeepOption, ExecutionBudgetRequest,
-    ExecutionBudgetToken, ExecutionOverrides, GroupByAgg, GroupByOptions, ReduceAgg, ShiftSpec as CudfShiftSpec,
-    SortOptions as CudfSortOptions,
+    ExecutionBudgetToken, ExecutionOverrides, GroupByAgg, GroupByOptions, ReduceAgg, Runtime,
+    ShiftSpec as CudfShiftSpec, SortOptions as CudfSortOptions,
     core::Scalar as CudfScalar,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
     io::source::SourceReadMode,
@@ -66,6 +68,7 @@ pub use execution_metrics::ExecutionMetrics;
 pub(crate) use execution_metrics::ExecutionMetrics;
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
+use query_planning::validate_query_plan;
 use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};
 
 use self::{
@@ -81,7 +84,10 @@ use self::{
 };
 #[cfg(feature = "cuvs")]
 use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphAlgorithmNode;
 use crate::{
+    admission::{BoundedPipelineAdmission, canonical_execution_scope_fingerprint},
     chunk::{
         SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
         annotate_source_chunk_batching_reasons, plan_local_parquet_source_chunks_with_execution_context,
@@ -97,22 +103,23 @@ use crate::{
         cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details,
     },
     observability::{
-        PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimePlanNodeId,
-        RuntimeTerminalOutcome, RuntimeTopologyRecord,
+        PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
+        RuntimePlanNodeId, RuntimeTerminalOutcome, RuntimeTopologyRecord,
     },
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
         PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
     },
     prepared::*,
+    rapids_backend::rapids_analysis_context,
     runtime::{
-        ExecutionContext, MemoryControlPolicy, ReservationKind, RetryFacts,
+        DevicePlacement, ExecutionContext, MemoryControlPolicy, ReservationKind, RetryFacts,
         resident::{
             GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
         },
     },
     source::{
-        GpuResidentSource, LocalParquetFile, LocalParquetSource, ZERO_COLUMN_COUNT_COLUMN,
+        GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
         validate_local_parquet_source,
     },
     validation::*,
@@ -124,7 +131,7 @@ use crate::{
 /// Frontends use this capability-first boundary before host work or native
 /// admission. Execution entrypoints call the same validation internally.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
-    query_planning::validate_query_plan(plan, crate::rapids_backend::rapids_analysis_context())
+    validate_query_plan(plan, rapids_analysis_context())
 }
 
 /// Decides the executable plan once and hands the admitted artifact to the
@@ -138,7 +145,7 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
 pub fn preflight_bounded_query_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Result<Option<crate::admission::BoundedPipelineAdmission>> {
+) -> Result<Option<BoundedPipelineAdmission>> {
     preflight_query_plan(plan)?;
     bounded::preflight_bounded_join_plan(plan, statistical_aggregate_execution_mode)
 }
@@ -176,20 +183,20 @@ impl ExecutionScratch {
 
 // Per-query cache of reusable cuDF hash-join builds for repeated probes.
 pub(super) struct HashJoinBuildRepository {
-    runtime: Arc<cudf::Runtime>,
-    device_placement: crate::runtime::DevicePlacement,
+    runtime: Arc<Runtime>,
+    device_placement: DevicePlacement,
     cache: HashMap<HashJoinCacheKey, GpuHashJoinBuildHandle>,
 }
 
 impl HashJoinBuildRepository {
-    fn new(runtime: Arc<cudf::Runtime>, device_placement: crate::runtime::DevicePlacement) -> Self {
+    fn new(runtime: Arc<Runtime>, device_placement: DevicePlacement) -> Self {
         Self { runtime, device_placement, cache: HashMap::new() }
     }
 
     pub(super) fn get(&self, key: &HashJoinCacheKey) -> Option<&GpuHashJoinBuildHandle> {
         debug_assert_eq!(
             self.device_placement,
-            crate::runtime::DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
+            DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
         );
         self.cache.get(key)
     }
@@ -197,7 +204,7 @@ impl HashJoinBuildRepository {
     pub(super) fn insert(&mut self, key: HashJoinCacheKey, hash_join: GpuHashJoinBuildHandle) {
         debug_assert_eq!(
             self.device_placement,
-            crate::runtime::DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
+            DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
         );
         self.cache.insert(key, hash_join);
     }
@@ -221,7 +228,7 @@ impl HashJoinCacheKey {
 pub struct QueryExecutionRequest<'a> {
     plan: &'a QueryPlan,
     gpu_inputs: Option<&'a GpuResidentInputMap>,
-    bounded_admission: Option<&'a crate::admission::BoundedPipelineAdmission>,
+    bounded_admission: Option<&'a BoundedPipelineAdmission>,
 }
 
 impl<'a> QueryExecutionRequest<'a> {
@@ -242,7 +249,7 @@ impl<'a> QueryExecutionRequest<'a> {
     /// it; a plan, mode, or sink the artifact does not bind to is a caller
     /// error. Callers without a preflight artifact omit this and keep the
     /// engine-local decision.
-    pub const fn with_bounded_admission(mut self, admission: &'a crate::admission::BoundedPipelineAdmission) -> Self {
+    pub const fn with_bounded_admission(mut self, admission: &'a BoundedPipelineAdmission) -> Self {
         self.bounded_admission = Some(admission);
         self
     }
@@ -263,7 +270,7 @@ pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionReq
 fn execute_query_plan_with_observation(
     context: &ExecutionContext,
     plan: &QueryPlan,
-    bounded_admission: Option<&crate::admission::BoundedPipelineAdmission>,
+    bounded_admission: Option<&BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
 ) -> QueryExecutionOutcome {
     let observation_handle = context.runtime_observation().clone();
@@ -322,7 +329,7 @@ fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &Q
     for node in plan.nodes() {
         let node_id = RuntimePlanNodeId::new(node.id.to_string());
         let operator_kind = plan_node_kind(&node.kind).to_string();
-        scope.observation().record_topology(crate::observability::RuntimeObservationRecordClass::PlanNode, || {
+        scope.observation().record_topology(RuntimeObservationRecordClass::PlanNode, || {
             RuntimeTopologyRecord::PlanNode(PlanNodeRow {
                 plan_execution_id: scope.plan_execution_id().clone(),
                 node_id: node_id.clone(),
@@ -330,7 +337,7 @@ fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &Q
             })
         });
         for (input_ordinal, input) in node.input_ids().iter().enumerate() {
-            scope.observation().record_topology(crate::observability::RuntimeObservationRecordClass::PlanEdge, || {
+            scope.observation().record_topology(RuntimeObservationRecordClass::PlanEdge, || {
                 RuntimeTopologyRecord::PlanEdge(PlanEdgeRow {
                     plan_execution_id: scope.plan_execution_id().clone(),
                     from_node_id: RuntimePlanNodeId::new(input.to_string()),
@@ -379,13 +386,13 @@ fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> Quer
 fn execute_query_plan_output(
     context: &ExecutionContext,
     plan: &QueryPlan,
-    bounded_admission: Option<&crate::admission::BoundedPipelineAdmission>,
+    bounded_admission: Option<&BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Output> {
     context.check_cancellation("query_engine.exec.execute_query_plan")?;
-    validate_query_plan(plan, crate::rapids_backend::rapids_analysis_context())?;
+    validate_query_plan(plan, rapids_analysis_context())?;
     let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
     // Derive the per-query exact-order scope here so every context clone,
     // including the source-read worker contexts on spawned threads, observes
@@ -418,7 +425,7 @@ fn execute_query_plan_output(
 /// The handle outlives its plan execution, so this reports into the caller's
 /// detached metrics value rather than an execution's metrics owner.
 pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
-    let timer = std::time::Instant::now();
+    let timer = Instant::now();
     let output = handle.to_host_record_batch()?;
     metrics.materialization_time += timer.elapsed();
     metrics
@@ -430,7 +437,7 @@ pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut Que
 fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDataFrame) -> Result<GpuResultHandle> {
     GpuResultHandle::new(
         context,
-        frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan)),
+        frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(plan)),
         Arc::clone(plan.output_schema()),
     )
     .map(|handle| handle.with_producer_execution_plan(plan.clone()))
@@ -453,11 +460,9 @@ fn execute_node(
 
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, id, source, metrics),
-            crate::source::SourceNode::GpuResident(source) => {
-                read_gpu_resident_source(context, source, gpu_inputs, metrics)
-            },
-            crate::source::SourceNode::LiteralBatch(source) => read_literal_batch_source(context, source, metrics),
+            SourceNode::LocalParquet(source) => read_local_parquet_source(context, id, source, metrics),
+            SourceNode::GpuResident(source) => read_gpu_resident_source(context, source, gpu_inputs, metrics),
+            SourceNode::LiteralBatch(source) => read_literal_batch_source(context, source, metrics),
         },
         PlanNode::Filter(filter) => {
             let input = execute_node(context, plan, filter.input, gpu_inputs, scratch, metrics)?;
@@ -522,7 +527,7 @@ fn execute_node(
                         execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics)
                             .map(|frame| (*input_id, frame))
                     })
-                    .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+                    .collect::<Result<BTreeMap<_, _>>>()?;
                 let result = execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics);
                 Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
             }
@@ -531,7 +536,7 @@ fn execute_node(
             #[cfg(feature = "cuvs")]
             {
                 validate_vector_algorithm_execution(node.id, vector)?;
-                let mut inputs = std::collections::BTreeMap::new();
+                let mut inputs = BTreeMap::new();
                 for input_id in &vector.inputs {
                     if !inputs.contains_key(input_id) {
                         let input = execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics)?;
@@ -553,7 +558,7 @@ fn execute_node(
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_preparation_bypass_input(plan: &QueryPlan, graph: &crate::plan::GraphAlgorithmNode) -> Option<NodeId> {
+fn graph_preparation_bypass_input(plan: &QueryPlan, graph: &GraphAlgorithmNode) -> Option<NodeId> {
     if !graph.spec.edge_normalize_inserted {
         return None;
     }

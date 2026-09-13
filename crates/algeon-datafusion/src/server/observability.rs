@@ -1,6 +1,8 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashSet},
     fmt::{self, Write},
+    mem,
     sync::Arc,
     time::Instant,
 };
@@ -13,15 +15,25 @@ use datafusion::{
     },
 };
 use query_engine::observability::{AttemptDisposition, QueryAttemptReport, RuntimeTerminalOutcome};
+use tonic::metadata::MetadataMap;
 
+#[cfg(feature = "cugraph")]
+use crate::server::cugraph_sql::CugraphAlgoExec;
 use crate::server::{
     adapter_error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
+    cuvs_sql::CuvsAlgoExec,
+    error::{
+        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+        status_source_diagnostics,
+    },
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec,
+        SERVER_CAPTURE_LOSS_METRIC_NAME,
     },
     native_report::{
         NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
+        NativeDataFusionRuntimeOutcome,
     },
     planner::NativePlanningDiagnostics,
 };
@@ -295,9 +307,9 @@ const SQL_OPTION_VALUE_MASK: &str = "***";
 /// closing `)` (or a value literal that is never closed) masks to the end of
 /// input rather than emit the unscanned tail, so a truncated or malformed
 /// statement fails closed.
-fn redact_sql_options(sql: &str) -> std::borrow::Cow<'_, str> {
+fn redact_sql_options(sql: &str) -> Cow<'_, str> {
     if !contains_options_keyword(sql) {
-        return std::borrow::Cow::Borrowed(sql);
+        return Cow::Borrowed(sql);
     }
     let bytes = sql.as_bytes();
     let mut output = String::with_capacity(sql.len());
@@ -333,7 +345,7 @@ fn redact_sql_options(sql: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     output.push_str(&sql[plain_start..]);
-    std::borrow::Cow::Owned(output)
+    Cow::Owned(output)
 }
 
 /// Cheap pre-check so SQL with no `OPTIONS` clause never allocates: an ASCII
@@ -906,17 +918,14 @@ impl CapturedQuery {
             RuntimeTerminalOutcome::Failed { .. } => {
                 NativeDataFusionRuntime::Failed { message: attempt_failure_message(report), metrics }
             },
-            RuntimeTerminalOutcome::Cancelled => NativeDataFusionRuntime::Interrupted {
-                outcome: crate::server::native_report::NativeDataFusionRuntimeOutcome::Cancelled,
-                metrics,
+            RuntimeTerminalOutcome::Cancelled => {
+                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Cancelled, metrics }
             },
-            RuntimeTerminalOutcome::Dropped => NativeDataFusionRuntime::Interrupted {
-                outcome: crate::server::native_report::NativeDataFusionRuntimeOutcome::Dropped,
-                metrics,
+            RuntimeTerminalOutcome::Dropped => {
+                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Dropped, metrics }
             },
-            RuntimeTerminalOutcome::Panicked => NativeDataFusionRuntime::Interrupted {
-                outcome: crate::server::native_report::NativeDataFusionRuntimeOutcome::Panicked,
-                metrics,
+            RuntimeTerminalOutcome::Panicked => {
+                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Panicked, metrics }
             },
         }
     }
@@ -1047,9 +1056,7 @@ impl CapturedTsvReport {
         let retained_capacity_bytes = lines
             .iter()
             .fold(0u64, |total, line| total.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX)))
-            .saturating_add(
-                u64::try_from(lines.len().saturating_mul(std::mem::size_of::<Box<str>>())).unwrap_or(u64::MAX),
-            );
+            .saturating_add(u64::try_from(lines.len().saturating_mul(mem::size_of::<Box<str>>())).unwrap_or(u64::MAX));
         Self { lines, retained_capacity_bytes }
     }
 
@@ -1145,7 +1152,7 @@ pub(super) struct CapturedError {
 impl CapturedError {
     fn apply_capture_budget(&mut self, budget: &mut CaptureBudget) {
         fn bound(value: &mut String, budget: &mut CaptureBudget) {
-            let original = std::mem::take(value);
+            let original = mem::take(value);
             *value = budget.retain_string(&original);
         }
 
@@ -1215,13 +1222,11 @@ impl CapturedError {
 
     pub(super) fn from_status(status: &tonic::Status) -> Self {
         let metadata = status.metadata();
-        let code = metadata_value(metadata, crate::server::error::ERROR_CODE_METADATA_KEY).unwrap_or("unknown");
-        let kind = metadata_value(metadata, crate::server::error::ERROR_KIND_METADATA_KEY).unwrap_or("unknown");
-        let error_status =
-            metadata_value(metadata, crate::server::error::ERROR_STATUS_METADATA_KEY).unwrap_or("unknown");
-        let operation =
-            metadata_value(metadata, crate::server::error::ERROR_OPERATION_METADATA_KEY).unwrap_or("unknown");
-        let (source_chain, root_cause) = crate::server::error::status_source_diagnostics(status);
+        let code = metadata_value(metadata, ERROR_CODE_METADATA_KEY).unwrap_or("unknown");
+        let kind = metadata_value(metadata, ERROR_KIND_METADATA_KEY).unwrap_or("unknown");
+        let error_status = metadata_value(metadata, ERROR_STATUS_METADATA_KEY).unwrap_or("unknown");
+        let operation = metadata_value(metadata, ERROR_OPERATION_METADATA_KEY).unwrap_or("unknown");
+        let (source_chain, root_cause) = status_source_diagnostics(status);
         let diagnostic = source_chain
             .clone()
             .unwrap_or_else(|| format!("grpc_code={:?} message={}", status.code(), status.message()));
@@ -1271,7 +1276,7 @@ fn project_native_execution_metrics(
     fn visit(
         plan: &Arc<dyn ExecutionPlan>,
         seen_plans: &mut HashSet<*const ()>,
-        seen_metrics: &mut HashSet<*const datafusion::physical_plan::metrics::Metric>,
+        seen_metrics: &mut HashSet<*const Metric>,
         projected: &mut Vec<Arc<Metric>>,
         saw_native_wrapper: &mut bool,
         max_records: usize,
@@ -1295,7 +1300,7 @@ fn project_native_execution_metrics(
                     if !seen_metrics.insert(Arc::as_ptr(metric)) {
                         continue;
                     }
-                    if metric.value().name() == crate::server::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME {
+                    if metric.value().name() == SERVER_CAPTURE_LOSS_METRIC_NAME {
                         *truncated |= metric.value().as_usize() > 0;
                         continue;
                     }
@@ -1354,7 +1359,7 @@ fn project_native_execution_metrics(
                 .saturating_add(u64::try_from(label.name().len()).unwrap_or(u64::MAX))
                 .saturating_add(u64::try_from(label.value().len()).unwrap_or(u64::MAX))
         });
-        total.saturating_add(labels).saturating_add(u64::try_from(std::mem::size_of::<Arc<Metric>>()).unwrap_or(0))
+        total.saturating_add(labels).saturating_add(u64::try_from(mem::size_of::<Arc<Metric>>()).unwrap_or(0))
     });
     MetricsProjection {
         handles: MetricHandles { metrics: projected.into_boxed_slice(), saw_native_wrapper, retained_capacity_bytes },
@@ -1367,12 +1372,12 @@ fn is_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
         || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-        || plan.downcast_ref::<crate::server::cuvs_sql::CuvsAlgoExec>().is_some()
+        || plan.downcast_ref::<CuvsAlgoExec>().is_some()
     {
         return true;
     }
     #[cfg(feature = "cugraph")]
-    if plan.downcast_ref::<crate::server::cugraph_sql::CugraphAlgoExec>().is_some() {
+    if plan.downcast_ref::<CugraphAlgoExec>().is_some() {
         return true;
     }
     false
@@ -1385,12 +1390,14 @@ fn contains_native_wrapper(plan: &dyn ExecutionPlan) -> bool {
     plan.children().iter().any(|child| contains_native_wrapper(child.as_ref()))
 }
 
-fn metadata_value<'a>(metadata: &'a tonic::metadata::MetadataMap, key: &'static str) -> Option<&'a str> {
+fn metadata_value<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a str> {
     metadata.get(key).and_then(|value| value.to_str().ok())
 }
 
 #[cfg(test)]
 mod tests {
+    use query_engine::observability::AttemptRetryAdvice;
+
     use super::*;
 
     fn cancelled_attempt_report() -> QueryAttemptReport {
@@ -1407,7 +1414,7 @@ mod tests {
             disposition: AttemptDisposition::Native,
             outcome: RuntimeTerminalOutcome::Cancelled,
             primary_failure: None,
-            retry_advice: query_engine::observability::AttemptRetryAdvice::do_not_retry(),
+            retry_advice: AttemptRetryAdvice::do_not_retry(),
             device_ordinal: Some(0),
             admission: None,
             admission_wait: None,

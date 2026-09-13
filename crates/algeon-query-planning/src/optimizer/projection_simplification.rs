@@ -4,8 +4,9 @@ use arrow::datatypes::SchemaRef;
 
 use super::rewrite;
 use crate::{
+    capability::capability_shape_contract_projection_ids,
     expr::{ColumnRef, Expr},
-    plan::{NodeId, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan},
+    plan::{NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan},
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -138,7 +139,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
             original,
             nodes: Vec::new(),
             memo: BTreeMap::new(),
-            protected_projection_ids: crate::capability::capability_shape_contract_projection_ids(original),
+            protected_projection_ids: capability_shape_contract_projection_ids(original),
             diagnostics: ProjectionSimplificationDiagnostics::default(),
             changed: false,
         }
@@ -223,7 +224,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
         rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
-    fn push_node(&mut self, kind: PlanNode, facts: crate::plan::PlanFacts) -> NodeId {
+    fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
         let id = NodeId::from_index_for_internal_use(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id

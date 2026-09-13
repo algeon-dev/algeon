@@ -8,9 +8,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use arrow::datatypes::DataType;
+use cudf::frame::dataframe::{ParquetDictionaryPolicy, ParquetWriteOptions};
 use fnv::FnvHasher;
 use futures::StreamExt;
-use object_store::ObjectStoreExt;
+use object_store::{Error as ObjectStoreError, ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
 
 use super::{
     cudf_query_error,
@@ -20,10 +22,18 @@ use super::{
     *,
 };
 use crate::{
+    chunk::SourceChunkBatch,
     datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result},
-    parquet_metadata::{object_store_query_error, write_parquet_footer_sidecar_from_file},
-    runtime::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome, S3ObjectStoreKey},
+    parquet_metadata::{object_store_query_error, parquet_footer_sidecar_path, write_parquet_footer_sidecar_from_file},
+    runtime::{
+        CacheFillBytePermit, LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome,
+        S3ObjectStoreKey,
+    },
+    source::{
+        LakehouseCacheFillMode, LakehouseCacheStatus, ParquetReadStrategy, ParquetReaderDecimalType,
+        ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef,
+    },
 };
 
 pub(super) static LAKEHOUSE_CACHE_READ_PIN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -149,7 +159,7 @@ pub(in crate::exec::source) fn acquire_lakehouse_optimized_batch_read_pin(
 
 pub(in crate::exec::source) fn local_cache_optimized_batch_entry(
     source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
+    batch: &SourceChunkBatch,
 ) -> Option<LakehouseOptimizedBatchCacheEntry> {
     if !local_cache_optimized_batch_eligible(source, batch) {
         return None;
@@ -202,10 +212,10 @@ pub(in crate::exec::source) fn publish_lakehouse_optimized_batch_frame(
     let row_group_size_rows = optimized_batch_row_group_size_rows(frame.num_rows());
     let _io_lease = context.acquire_io_lease("query_engine.lakehouse_cache.optimized_batch.write")?;
     let write_result = frame.write_parquet_with_options(
-        cudf::frame::dataframe::ParquetWriteOptions::builder()
+        ParquetWriteOptions::builder()
             .filepath(&temp_path)
             .row_group_size_rows(row_group_size_rows)
-            .dictionary_policy(cudf::frame::dataframe::ParquetDictionaryPolicy::Adaptive)
+            .dictionary_policy(ParquetDictionaryPolicy::Adaptive)
             .with_runtime(&context.runtime()?)
             .build(),
     );
@@ -294,7 +304,7 @@ fn acquire_lakehouse_cache_read_pin(
     Ok(LakehouseCacheReadPin { path: Some(pin_path) })
 }
 
-fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &crate::chunk::SourceChunkBatch) -> bool {
+fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &SourceChunkBatch) -> bool {
     let policy = LakehouseCachePolicy::default();
 
     if !std::env::var("ALGEON_LAKEHOUSE_OPTIMIZED_BATCH_CACHE").is_ok_and(|value| value == "1")
@@ -321,7 +331,7 @@ fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &cra
     let cache_root = first.resolved_source.lakehouse_cache_root.as_deref();
     cache_root.is_some()
         && batch.chunks.iter().all(|chunk| {
-            chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio
+            chunk.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio
                 && chunk.resolved_source.lakehouse_cache_root.as_deref() == cache_root
                 && !chunk.zero_column_count
                 && chunk.scan_limit_rows.is_none()
@@ -331,10 +341,7 @@ fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &cra
         })
 }
 
-pub(super) fn local_cache_optimized_batch_signature(
-    source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
-) -> String {
+pub(super) fn local_cache_optimized_batch_signature(source: &LocalParquetSource, batch: &SourceChunkBatch) -> String {
     let mut signature = String::from(
         "optimized-local-cache-source-batch-v4-small-fixed-width-rowgroup-normalized-adaptive-dictionary\n",
     );
@@ -371,9 +378,7 @@ pub(super) fn local_cache_optimized_batch_signature(
     signature
 }
 
-fn optimized_batch_reader_decimal_contract_signature(
-    reader_decimal_types: &[crate::source::ParquetReaderDecimalType],
-) -> String {
+fn optimized_batch_reader_decimal_contract_signature(reader_decimal_types: &[ParquetReaderDecimalType]) -> String {
     let mut output = String::new();
     push_optimized_batch_contract_value(
         &mut output,
@@ -400,9 +405,7 @@ fn optimized_batch_reader_decimal_contract_signature(
     output
 }
 
-fn optimized_batch_resolved_source_contract_signature(
-    resolved_source: &crate::source::ResolvedParquetSource,
-) -> String {
+fn optimized_batch_resolved_source_contract_signature(resolved_source: &ResolvedParquetSource) -> String {
     let mut output = String::new();
     push_optimized_batch_contract_hash(
         &mut output,
@@ -478,9 +481,7 @@ pub(super) fn optimized_batch_uses_identity_source_frame(source: &LocalParquetSo
             .projected_output_column_source_refs
             .iter()
             .zip(&source.read_column_file_indices)
-            .all(|(source_ref, read_index)| {
-                matches!(source_ref, crate::source::SourceColumnRef::File(index) if index == read_index)
-            })
+            .all(|(source_ref, read_index)| matches!(source_ref, SourceColumnRef::File(index) if index == read_index))
 }
 
 fn source_read_columns_are_fixed_width(source: &LocalParquetSource) -> bool {
@@ -489,7 +490,7 @@ fn source_read_columns_are_fixed_width(source: &LocalParquetSource) -> bool {
     })
 }
 
-fn optimized_cache_fixed_width_type(data_type: &arrow::datatypes::DataType) -> bool {
+fn optimized_cache_fixed_width_type(data_type: &DataType) -> bool {
     use arrow::datatypes::DataType;
     is_arrow_fixed_width(data_type) || matches!(data_type, DataType::Float16)
 }
@@ -518,8 +519,8 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
 )]
 fn ensure_local_cache_parquet_entry(
     context: &ExecutionContext,
-    location: &crate::source::ParquetSourceLocation,
-    resolved_source: &crate::source::ResolvedParquetSource,
+    location: &ParquetSourceLocation,
+    resolved_source: &ResolvedParquetSource,
     cache_path: &Path,
     estimated_fetch_bytes: Option<u64>,
     stable_id: &str,
@@ -544,7 +545,7 @@ fn ensure_local_cache_parquet_entry(
     if complete_cache_file_matches_expected_size(cache_path, estimated_fetch_bytes) {
         return Ok(());
     }
-    if resolved_source.cache_status == crate::source::LakehouseCacheStatus::Hit {
+    if resolved_source.cache_status == LakehouseCacheStatus::Hit {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.lakehouse_cache.stale_hit",
@@ -554,7 +555,7 @@ fn ensure_local_cache_parquet_entry(
         .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id))
         .with_fact("expected_bytes", estimated_fetch_bytes.map(|bytes| bytes.to_string()).unwrap_or_default()));
     }
-    if !matches!(location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+    if !matches!(location, ParquetSourceLocation::ObjectStoreUri { .. }) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.lakehouse_cache.location",
@@ -653,14 +654,14 @@ pub(super) fn complete_cache_file_matches_expected_size(cache_path: &Path, expec
 
 fn enqueue_background_lakehouse_cache_entry_fill(
     context: &ExecutionContext,
-    location: &crate::source::ParquetSourceLocation,
-    resolved_source: &crate::source::ResolvedParquetSource,
+    location: &ParquetSourceLocation,
+    resolved_source: &ResolvedParquetSource,
     estimated_fetch_bytes: Option<u64>,
     stable_id: &str,
     file_index: Option<usize>,
     chunk_index: Option<usize>,
 ) -> Result<BackgroundLakehouseCacheFillEnqueue> {
-    if resolved_source.lakehouse_cache_fill_mode != crate::source::LakehouseCacheFillMode::Background {
+    if resolved_source.lakehouse_cache_fill_mode != LakehouseCacheFillMode::Background {
         return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_disabled"));
     }
     // Without a content identity the fetched bytes cannot be attributed to the
@@ -674,7 +675,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
     if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {
         return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("cache_file_exists"));
     }
-    if !matches!(location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+    if !matches!(location, ParquetSourceLocation::ObjectStoreUri { .. }) {
         return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("not_object_store_source"));
     }
     if let Some(parent) = cache_path.parent() {
@@ -974,10 +975,7 @@ fn publish_lakehouse_cache_file(
     Ok(())
 }
 
-fn sidecar_content_identity<'a>(
-    resolved_source: &'a crate::source::ResolvedParquetSource,
-    stable_id: &'a str,
-) -> &'a str {
+fn sidecar_content_identity<'a>(resolved_source: &'a ResolvedParquetSource, stable_id: &'a str) -> &'a str {
     resolved_source.content_identity.as_deref().unwrap_or(stable_id)
 }
 
@@ -1077,7 +1075,7 @@ pub(super) fn evict_lakehouse_cache(cache_root: Option<&str>, protected_path: &P
             continue;
         }
         if fs::remove_file(&entry.path).is_ok() {
-            let _ = fs::remove_file(crate::parquet_metadata::parquet_footer_sidecar_path(&entry.path));
+            let _ = fs::remove_file(parquet_footer_sidecar_path(&entry.path));
             retained_bytes = retained_bytes.saturating_sub(entry.bytes);
         }
     }
@@ -1206,15 +1204,15 @@ pub(super) fn lakehouse_cache_io_error(
     reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
 )]
 async fn stream_lakehouse_cache_fill(
-    store: std::sync::Arc<dyn object_store::ObjectStore>,
-    location: object_store::path::Path,
+    store: std::sync::Arc<dyn ObjectStore>,
+    location: ObjectStorePath,
     cache_path: PathBuf,
     temp_path: PathBuf,
     lock_guard: BackgroundLakehouseCacheLock,
     stable_id: String,
     sidecar_content_identity: String,
     estimated_fetch_bytes: Option<u64>,
-    mut budget_permit: crate::runtime::CacheFillBytePermit,
+    mut budget_permit: CacheFillBytePermit,
 ) -> Result<u64> {
     let _lock = lock_guard;
     if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {
@@ -1343,9 +1341,9 @@ async fn stream_lakehouse_cache_fill(
 fn lakehouse_cache_object_store_error(
     operation: &'static str,
     message: &'static str,
-    error: object_store::Error,
+    error: ObjectStoreError,
     cache_path: &Path,
-    location: &object_store::path::Path,
+    location: &ObjectStorePath,
     stable_id: &str,
 ) -> QueryError {
     object_store_query_error(operation, message, error)
@@ -1360,7 +1358,7 @@ mod tests {
 
     #[test]
     fn background_fill_object_store_error_preserves_authn_classification() {
-        let error = object_store::Error::Generic {
+        let error = ObjectStoreError::Generic {
             store: "fault",
             source: Box::new(std::io::Error::other(
                 "ServiceError: status code: 403 Forbidden; ExpiredToken: security token expired",
@@ -1371,7 +1369,7 @@ mod tests {
             "failed to start background lakehouse cache object fetch",
             error,
             Path::new("/tmp/cache/file.parquet"),
-            &object_store::path::Path::from("bucket/private/file.parquet"),
+            &ObjectStorePath::from("bucket/private/file.parquet"),
             "stable-id",
         );
 

@@ -14,7 +14,7 @@ use super::{
     error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result},
     types::{CudfType, DataType, TypeId, materialize_bool},
 };
-use crate::runtime::execution_domain::ExecutionDomain;
+use crate::{core::native_teardown::drop_device_owned_handle, runtime::execution_domain::ExecutionDomain};
 
 fn negative_string_length_error(operation: &'static str, raw_len: i32) -> Error {
     error::foreign_invariant_violation(
@@ -840,12 +840,9 @@ pub(crate) fn trigger_negative_string_length_error_for_test() -> Result<()> {
 
 impl Drop for Scalar {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
-            self.handle.as_ptr(),
-            self.domain.device_id(),
-            "Scalar::drop",
-            |owned| unsafe { cudf_sys::cudf_scalar_destroy(owned) },
-        );
+        drop_device_owned_handle(self.handle.as_ptr(), self.domain.device_id(), "Scalar::drop", |owned| unsafe {
+            cudf_sys::cudf_scalar_destroy(owned)
+        });
     }
 }
 

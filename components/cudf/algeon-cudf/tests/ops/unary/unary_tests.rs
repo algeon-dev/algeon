@@ -6,7 +6,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value};
+use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value, run_named_cases};
 
 fn test_sqrt() {
     let col = column_from_slice(&[4.0f64, 9.0, 16.0]).unwrap();
@@ -160,7 +160,7 @@ fn test_logical_not_empty() {
 
 #[test]
 fn unary_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_sqrt", test_sqrt),
         ("test_abs", test_abs),
         ("test_negate", test_negate),

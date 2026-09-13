@@ -6,7 +6,10 @@
 //! unsupported binding that was decidable during planning.
 
 use arrow::datatypes::DataType as ArrowDataType;
-use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
+use cudf::{
+    interop::arrow_host::arrow_type_from_cudf_dtype as cudf_arrow_type_from_cudf_dtype,
+    ops::binary::{BinaryOperator, infer_binary_output_dtype},
+};
 use query_planning::backend::{AggregateBinding, AnalysisContext, BackendCapabilities, ExpressionUse};
 
 use crate::{
@@ -15,7 +18,10 @@ use crate::{
     expr::{AggregateSpec, BinaryOp, Expr},
     native_error::cudf_query_error,
     plan::ProjectionOutput,
-    prepared::{lower_aggregate_spec, lower_expr, lower_filter_predicate_expr, lower_projection_output_expr},
+    prepared::{
+        lower_aggregate_spec, lower_expr, lower_filter_predicate_expr, lower_final_aggregate_spec,
+        lower_projection_output_expr,
+    },
 };
 
 /// The backend capability the native engine executes with.
@@ -65,7 +71,7 @@ impl BackendCapabilities for RapidsBackend {
                 .with_fact("right_type", format!("{right:?}"))
                 .with_fact("operator", op.to_string())
             })?;
-        cudf::interop::arrow_host::arrow_type_from_cudf_dtype(output_dtype).map_err(|error| {
+        cudf_arrow_type_from_cudf_dtype(output_dtype).map_err(|error| {
             cudf_query_error(
                 "query_engine.plan.validate_expr",
                 "failed to map inferred native decimal arithmetic output type to Arrow",
@@ -91,7 +97,7 @@ impl BackendCapabilities for RapidsBackend {
     fn aggregate_output_names(&self, spec: &AggregateSpec, binding: AggregateBinding) -> Result<Vec<String>> {
         let lowered = match binding {
             AggregateBinding::SingleStage => lower_aggregate_spec(spec)?,
-            AggregateBinding::FinalMerge => crate::prepared::lower_final_aggregate_spec(spec)?,
+            AggregateBinding::FinalMerge => lower_final_aggregate_spec(spec)?,
         };
         Ok(lowered.output_names)
     }

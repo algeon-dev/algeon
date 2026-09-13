@@ -14,6 +14,7 @@ use datafusion::{
 };
 use query_engine::expr::{
     BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
+    LiteralValue as NativeLiteralValue,
 };
 
 use crate::{
@@ -71,7 +72,7 @@ pub(super) fn lower_physical_expr_with_bindings(
 }
 
 pub(super) fn lower_validated_physical_expr_with_bindings(
-    validated: &crate::native::expression_contract::ValidatedPhysicalExpr,
+    validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, CapabilityReason> {
     let expr = validated.expr();
@@ -94,10 +95,7 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
                 NativeExpr::is_null(right.clone()),
             );
             return Ok(NativeExpr::case(
-                vec![NativeCaseWhen::new(
-                    null_guard,
-                    NativeExpr::literal(query_engine::expr::LiteralValue::Null(output_type)),
-                )],
+                vec![NativeCaseWhen::new(null_guard, NativeExpr::literal(NativeLiteralValue::Null(output_type)))],
                 NativeExpr::concat(vec![left, right]),
             ));
         }
@@ -170,7 +168,7 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
 
 fn lower_validated_child_expr_with_bindings(
     expr: &Arc<dyn PhysicalExpr>,
-    parent: &crate::native::expression_contract::ValidatedPhysicalExpr,
+    parent: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, CapabilityReason> {
     let child = parent.trusted_descendant(expr);
@@ -179,7 +177,7 @@ fn lower_validated_child_expr_with_bindings(
 
 fn lower_try_cast_expr(
     try_cast: &TryCastExpr,
-    validated: &crate::native::expression_contract::ValidatedPhysicalExpr,
+    validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, CapabilityReason> {
     let inner = lower_validated_child_expr_with_bindings(try_cast.expr(), validated, bindings)?;
@@ -189,13 +187,13 @@ fn lower_try_cast_expr(
 fn lower_literal_string_date32_cast(
     expr: &Arc<dyn PhysicalExpr>,
     target_type: &ArrowDataType,
-) -> Option<query_engine::expr::LiteralValue> {
+) -> Option<NativeLiteralValue> {
     if !matches!(target_type, ArrowDataType::Date32) {
         return None;
     }
     expr.downcast_ref::<Literal>().and_then(|literal| match literal.value() {
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
-            parse_yyyy_mm_dd_date32(value).map(query_engine::expr::LiteralValue::Date32)
+            parse_yyyy_mm_dd_date32(value).map(NativeLiteralValue::Date32)
         },
         _ => None,
     })
@@ -263,7 +261,7 @@ fn lower_case_expr(
         None => {
             let data_type = physical_expr_data_type(validated.expr(), input_schema)
                 .expect("validated CASE expression must have an output type");
-            NativeExpr::literal(query_engine::expr::LiteralValue::Null(data_type))
+            NativeExpr::literal(NativeLiteralValue::Null(data_type))
         },
     };
     Ok(NativeExpr::case(branches, else_expr))
@@ -512,7 +510,7 @@ fn lower_nullif_function(
     Ok(NativeExpr::case(
         vec![NativeCaseWhen::new(
             NativeExpr::is_not_distinct_from(left.clone(), right),
-            NativeExpr::literal(query_engine::expr::LiteralValue::Null(output_type)),
+            NativeExpr::literal(NativeLiteralValue::Null(output_type)),
         )],
         left,
     ))

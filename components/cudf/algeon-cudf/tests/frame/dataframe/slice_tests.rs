@@ -1,14 +1,22 @@
 //! Tests for DataFrame row slicing helpers.
 
-use cudf::{DataFrame, ErrorCode, ErrorKind, ExecutionBudgetRequest};
+use cudf::{
+    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetRequest,
+    testing::dataframe::{
+        trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
+        trigger_dataframe_row_range_start_limit_error_for_test,
+    },
+};
 
-use crate::common::{column_from_slice, error_context_value, with_test_runtime};
+use crate::common::{
+    column_from_slice, dataframe_from_columns, error_context_value, run_named_cases, with_test_runtime,
+};
 
 /// Helper: build a 5-row, 2-column DataFrame for slicing tests.
 fn sample_df() -> DataFrame {
     let ids = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let vals = column_from_slice(&[1.0f64, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +166,7 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
 }
 
 fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
-    let err = cudf::testing::dataframe::trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
+    let err = trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -172,7 +180,7 @@ fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
 }
 
 fn test_testing_hook_locks_dataframe_row_range_end_limit_contract() {
-    let err = cudf::testing::dataframe::trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
+    let err = trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
     let expected_end = (i32::MAX as usize).checked_add(1).unwrap().to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -187,7 +195,7 @@ fn test_testing_hook_locks_dataframe_row_range_end_limit_contract() {
 }
 
 fn test_testing_hook_locks_dataframe_row_range_overflow_contract() {
-    let err = cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
+    let err = trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
     let expected_end = ((i32::MAX as u128) + (usize::MAX as u128)).to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -204,7 +212,7 @@ fn test_testing_hook_locks_dataframe_row_range_overflow_contract() {
 
 #[test]
 fn slice_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_head_basic", test_head_basic),
         ("test_head_zero_rows", test_head_zero_rows),
         ("test_head_clamps_to_num_rows", test_head_clamps_to_num_rows),

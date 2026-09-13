@@ -30,13 +30,16 @@ pub use resource::CompiledGpuResource;
 pub use scheduler::{CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput};
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
 
+#[cfg(test)]
+use crate::observability::assert_live_topology_references_resolve;
 use crate::{
     error::Result,
     exec::{ExecutionMetrics, output::QueryOutput},
     observability::{
-        BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimePipelineEdgeId, RuntimePlanNodeId,
-        RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId,
-        RuntimeTopologyRecord, SinkDefinitionRow, TaskDefinitionRow,
+        BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimeExecutionObservationScope,
+        RuntimeObservationRecordClass, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeResourceDomain,
+        RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId, RuntimeTopologyRecord, SinkDefinitionRow,
+        TaskDefinitionRow,
     },
     pipeline::{CompiledPipeline, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
     plan::{JoinType, PlanNode, QueryPlan, ResultSink},
@@ -49,7 +52,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     pipeline: &CompiledPipeline,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
-    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     if let Some(scope) = observation_scope {
         record_compiled_pipeline_topology(scope, pipeline, context.runtime()?.device().ordinal());
@@ -119,26 +122,23 @@ fn lane_dispatch_support(
 }
 
 fn record_compiled_pipeline_topology(
-    scope: &crate::observability::RuntimeExecutionObservationScope,
+    scope: &RuntimeExecutionObservationScope,
     pipeline: &CompiledPipeline,
     device_ordinal: usize,
 ) {
     let plan_execution_id = scope.plan_execution_id().clone();
     for task in pipeline.tasks() {
-        scope.observation().record_topology(
-            crate::observability::RuntimeObservationRecordClass::TaskDefinition,
-            || {
-                RuntimeTopologyRecord::TaskDefinition(TaskDefinitionRow {
-                    plan_execution_id: plan_execution_id.clone(),
-                    task_id: RuntimeTaskId::new(task.id().to_string()),
-                    plan_node_id: task.plan_node().map(|node_id| RuntimePlanNodeId::new(node_id.to_string())),
-                    task_kind: task.kind().as_str().to_string(),
-                })
-            },
-        );
+        scope.observation().record_topology(RuntimeObservationRecordClass::TaskDefinition, || {
+            RuntimeTopologyRecord::TaskDefinition(TaskDefinitionRow {
+                plan_execution_id: plan_execution_id.clone(),
+                task_id: RuntimeTaskId::new(task.id().to_string()),
+                plan_node_id: task.plan_node().map(|node_id| RuntimePlanNodeId::new(node_id.to_string())),
+                task_kind: task.kind().as_str().to_string(),
+            })
+        });
     }
     for edge in pipeline.edges() {
-        scope.observation().record_topology(crate::observability::RuntimeObservationRecordClass::CompiledEdge, || {
+        scope.observation().record_topology(RuntimeObservationRecordClass::CompiledEdge, || {
             RuntimeTopologyRecord::CompiledEdge(CompiledEdgeRow {
                 plan_execution_id: plan_execution_id.clone(),
                 edge_id: RuntimePipelineEdgeId::new(edge.id().to_string()),
@@ -154,29 +154,26 @@ fn record_compiled_pipeline_topology(
         });
     }
     for barrier in pipeline.barriers() {
-        scope.observation().record_topology(
-            crate::observability::RuntimeObservationRecordClass::BarrierDefinition,
-            || {
-                RuntimeTopologyRecord::BarrierDefinition(BarrierDefinitionRow {
-                    plan_execution_id: plan_execution_id.clone(),
-                    barrier_id: RuntimeBarrierId::new(barrier.id().to_string()),
-                    barrier_kind: barrier.kind().as_str().to_string(),
-                    upstream_task_ids: barrier
-                        .upstream_tasks()
-                        .iter()
-                        .map(|task_id| RuntimeTaskId::new(task_id.to_string()))
-                        .collect(),
-                    downstream_task_ids: barrier
-                        .downstream_tasks()
-                        .iter()
-                        .map(|task_id| RuntimeTaskId::new(task_id.to_string()))
-                        .collect(),
-                })
-            },
-        );
+        scope.observation().record_topology(RuntimeObservationRecordClass::BarrierDefinition, || {
+            RuntimeTopologyRecord::BarrierDefinition(BarrierDefinitionRow {
+                plan_execution_id: plan_execution_id.clone(),
+                barrier_id: RuntimeBarrierId::new(barrier.id().to_string()),
+                barrier_kind: barrier.kind().as_str().to_string(),
+                upstream_task_ids: barrier
+                    .upstream_tasks()
+                    .iter()
+                    .map(|task_id| RuntimeTaskId::new(task_id.to_string()))
+                    .collect(),
+                downstream_task_ids: barrier
+                    .downstream_tasks()
+                    .iter()
+                    .map(|task_id| RuntimeTaskId::new(task_id.to_string()))
+                    .collect(),
+            })
+        });
     }
     let sink_id = RuntimeSinkId::new("sink");
-    scope.observation().record_topology(crate::observability::RuntimeObservationRecordClass::SinkDefinition, || {
+    scope.observation().record_topology(RuntimeObservationRecordClass::SinkDefinition, || {
         RuntimeTopologyRecord::SinkDefinition(SinkDefinitionRow {
             plan_execution_id: plan_execution_id.clone(),
             sink_id: sink_id.clone(),
@@ -190,7 +187,7 @@ fn record_compiled_pipeline_topology(
             ResidentLifetime::BetweenTasks { producer } => format!("between_tasks:{}", producer.index()),
             ResidentLifetime::SinkOutput { producer } => format!("sink_output:{}", producer.index()),
         };
-        scope.observation().record_topology(crate::observability::RuntimeObservationRecordClass::Resource, || {
+        scope.observation().record_topology(RuntimeObservationRecordClass::Resource, || {
             RuntimeTopologyRecord::Resource(RuntimeResourceRow {
                 plan_execution_id: Some(plan_execution_id.clone()),
                 resource_id: RuntimeResourceId::new(resource.id().to_string()),
@@ -283,7 +280,7 @@ mod topology_tests {
         record_compiled_pipeline_topology(&first.execution_scope(), &pipeline, 0);
         record_compiled_pipeline_topology(&second.execution_scope(), &pipeline, 0);
         let snapshot = owner.live_snapshot().unwrap();
-        crate::observability::assert_live_topology_references_resolve(&snapshot);
+        assert_live_topology_references_resolve(&snapshot);
 
         let tasks = snapshot
             .topology()

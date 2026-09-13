@@ -1,17 +1,19 @@
+use cudf::testing::device_safety::injected_device_id;
+use query_planning::{plan::QueryPlanBuilder, source::{GpuResidentSource, SourceNode}};
+use crate::observability::AttemptId;
+
 #[test]
 fn evidence_device_entries_are_retained_through_admission() {
     let service = test_service(1, 8);
-    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+    let schema = Arc::new(Schema::new(vec![Field::new(
         "value",
-        arrow::datatypes::DataType::Int64,
+        DataType::Int64,
         false,
     )]));
-    let mut builder = query_planning::plan::QueryPlanBuilder::new();
-    let source = builder.add_source(query_planning::source::SourceNode::GpuResident(
-        query_planning::source::GpuResidentSource::new("input", schema),
-    ));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let plan = builder.finish_with_host_sink(source);
-    let evidence = query_planning::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
     let request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone());
 
     let handle = service.admit_query_with_request(request).expect("evidence-backed fixture admission succeeds");
@@ -48,18 +50,18 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
             .expect("device zero context")
             .ledger(),
     );
-    let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
-    let unhealthy = cudf::testing::device_safety::injected_device_id(0).expect("isolated device zero health");
-    cudf::runtime::report_device_fault(
+    let scope = DeviceSafetyTestScope::install([]);
+    let unhealthy = injected_device_id(0).expect("isolated device zero health");
+    report_device_fault(
         unhealthy,
-        cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+        DeviceFaultKind::FatalDeviceOperation,
         "injected_queued_placement_fault",
         None,
     );
     assert!(
         matches!(
             device_zero_ledger.health().expect("engine ledger health"),
-            crate::runtime::gpu::DeviceAdmissionHealth::Open
+            DeviceAdmissionHealth::Open
         ),
         "the regression starts with a native fault that the placement boundary must fold into the ledger"
     );
@@ -74,7 +76,7 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     assert!(
         matches!(
             device_zero_ledger.health().expect("faulted device ledger health"),
-            crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. }
+            DeviceAdmissionHealth::Closed { .. }
         ),
         "pre-sweep reconciliation closes the faulted device ledger before selecting a healthy device"
     );
@@ -337,7 +339,7 @@ fn missing_selected_entry_is_a_typed_invariant_error() {
     let error = service
         .try_place_query(
             AdmissionRequestId::new(91),
-            crate::observability::AttemptId::mint(),
+            AttemptId::mint(),
             &DeviceAdmissionEntries::new(),
             &[0],
             None,

@@ -8,7 +8,8 @@ use cudf::{
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, dataframe_device_ptr, dataframe_from_columns,
     error_context_value, last_row_predicate_compute_mask_calls, last_row_predicate_filter_calls,
-    last_row_predicate_final_filter_calls, last_row_predicate_mask_api_calls, reset_row_predicate_observation, series,
+    last_row_predicate_final_filter_calls, last_row_predicate_mask_api_calls, reset_row_predicate_observation,
+    run_named_cases, series,
 };
 
 fn edge_df() -> cudf::DataFrame {
@@ -508,7 +509,7 @@ fn test_filter_expr_uses_fused_row_predicate_path_once() {
 
 #[test]
 fn dataframe_filter_expr_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "test_filter_expr_matches_rfc_style_multi_condition_filtering",
             test_filter_expr_matches_rfc_style_multi_condition_filtering,

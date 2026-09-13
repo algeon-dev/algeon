@@ -5,15 +5,23 @@
 //! idle unrelated devices needed only by later work.
 
 #[cfg(test)]
+use std::sync;
+#[cfg(test)]
+use std::sync::OnceLock;
+#[cfg(test)]
+use std::sync::mpsc::Receiver;
+#[cfg(test)]
+use std::sync::mpsc::SyncSender;
+#[cfg(test)]
 use std::sync::{Mutex, Weak};
 use std::{
     collections::{BTreeSet, VecDeque},
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, MutexGuard, atomic::Ordering},
     time::Instant,
 };
 
 use query_planning::{
-    admission::AttemptRequirement,
+    admission::{AttemptRequirement, ExecutionCapability},
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -38,7 +46,11 @@ use crate::{
     observability::{AdmissionLifecycleState, AdmissionRequestId, RuntimeTerminalOutcome},
     runtime::{
         DeviceLedger,
-        gpu::placement::{PlacementCandidate, preferred_placement_candidate},
+        deadline::{DeadlineMutexLockError, mutex_lock_until},
+        gpu::{
+            DeviceAdmissionHealth,
+            placement::{PlacementCandidate, preferred_placement_candidate},
+        },
     },
 };
 
@@ -76,7 +88,7 @@ impl QueryService {
     /// while selecting among this frozen set.
     pub(in crate::runtime::query_service) fn compatible_devices_for_capabilities(
         &self,
-        required_capabilities: &[query_planning::admission::ExecutionCapability],
+        required_capabilities: &[ExecutionCapability],
     ) -> Result<Vec<usize>> {
         let mut devices = match &self.inner.resources {
             Some(resources) => resources
@@ -141,7 +153,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn device_supports_capabilities(
         &self,
         device_ordinal: usize,
-        required_capabilities: &[query_planning::admission::ExecutionCapability],
+        required_capabilities: &[ExecutionCapability],
     ) -> bool {
         match &self.inner.resources {
             Some(resources) => resources.devices.supports_capabilities(device_ordinal, required_capabilities),
@@ -160,7 +172,7 @@ impl QueryService {
     /// samples are diagnostics and cannot race ledger admission decisions.
     fn is_device_admission_healthy(&self, device_ordinal: usize) -> Result<bool> {
         let ledger = self.ledger_for_ordinal(device_ordinal)?;
-        Ok(matches!(ledger.health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open))
+        Ok(matches!(ledger.health()?, DeviceAdmissionHealth::Open))
     }
 
     /// Returns a terminal health error only when every capability-compatible
@@ -178,10 +190,10 @@ impl QueryService {
         for ordinal in compatible_devices {
             let ledger = self.ledger_for_ordinal(*ordinal)?;
             match ledger.health()? {
-                crate::runtime::gpu::DeviceAdmissionHealth::Open => {
+                DeviceAdmissionHealth::Open => {
                     return Ok(None);
                 },
-                crate::runtime::gpu::DeviceAdmissionHealth::Closed { reason, generation } => {
+                DeviceAdmissionHealth::Closed { reason, generation } => {
                     all_closed_for_unknown_isolation &= reason.starts_with("unknown-isolation backend failure:");
                     first_closed_ledger.get_or_insert((*ordinal, reason, generation));
                 },
@@ -218,7 +230,7 @@ impl QueryService {
 
     pub(in crate::runtime::query_service) fn no_capable_device_error(
         &self,
-        required_capabilities: &[query_planning::admission::ExecutionCapability],
+        required_capabilities: &[ExecutionCapability],
     ) -> QueryError {
         QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
@@ -237,7 +249,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn reject_impossible_requirements(
         &self,
         device_entries: &DeviceAdmissionEntries,
-        required_capabilities: &[query_planning::admission::ExecutionCapability],
+        required_capabilities: &[ExecutionCapability],
         requested_query_cap_bytes: Option<u64>,
     ) -> Result<()> {
         if device_entries.is_empty() && !required_capabilities.is_empty() {
@@ -254,7 +266,7 @@ impl QueryService {
             // skips closed devices; the waiter revalidation must agree, or a
             // single closed device makes every cap look satisfiable until the
             // waiter times out.
-            if !matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+            if !matches!(snapshot.health, DeviceAdmissionHealth::Open) {
                 continue;
             }
             open_device_count += 1;
@@ -312,9 +324,7 @@ impl QueryService {
         removed
     }
 
-    pub(in crate::runtime::query_service) fn lock_admission(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, AdmissionState>> {
+    pub(in crate::runtime::query_service) fn lock_admission(&self) -> Result<MutexGuard<'_, AdmissionState>> {
         self.inner.admission.lock().map_err(|_error| admission_mutex_poisoned_error())
     }
 
@@ -323,7 +333,7 @@ impl QueryService {
     /// released, because it may synchronously reenter backend shutdown.
     pub(in crate::runtime::query_service) fn recover_queued_request_after_admission_poison(
         &self,
-        mut state: std::sync::MutexGuard<'_, AdmissionState>,
+        mut state: MutexGuard<'_, AdmissionState>,
         admission_request_id: AdmissionRequestId,
     ) -> QueryError {
         let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
@@ -366,11 +376,11 @@ impl QueryService {
         &self,
         deadline: Instant,
         operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, AdmissionState>> {
-        match crate::runtime::deadline::mutex_lock_until(&self.inner.admission, deadline) {
+    ) -> Result<MutexGuard<'_, AdmissionState>> {
+        match mutex_lock_until(&self.inner.admission, deadline) {
             Ok(state) => Ok(state),
-            Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => self.lock_admission(),
-            Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
+            Err(DeadlineMutexLockError::Poisoned) => self.lock_admission(),
+            Err(DeadlineMutexLockError::TimedOut) => {
                 Err(query_service_shutdown_timeout(operation, None, "admission_mutex"))
             },
         }
@@ -552,7 +562,7 @@ impl QueryService {
             }
             request.requirement_for_device(ordinal)?;
             let snapshot = ledger.snapshot()?;
-            if !matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+            if !matches!(snapshot.health, DeviceAdmissionHealth::Open) {
                 continue;
             }
             let Some(query_cap_bytes) = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes) else {
@@ -656,7 +666,7 @@ pub(super) fn admission_mutex_poisoned_error() -> QueryError {
 }
 
 /// Formats capability requirements for a structured diagnostic fact.
-fn capability_labels(capabilities: &[query_planning::admission::ExecutionCapability]) -> String {
+fn capability_labels(capabilities: &[ExecutionCapability]) -> String {
     capabilities.iter().map(|capability| capability.as_str()).collect::<Vec<_>>().join(",")
 }
 
@@ -692,8 +702,8 @@ pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout
 #[cfg(test)]
 #[derive(Debug)]
 struct QueueSweepFinishPause {
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    entered: SyncSender<()>,
+    release: Mutex<Receiver<()>>,
 }
 
 #[cfg(test)]
@@ -702,7 +712,7 @@ impl QueueSweepFinishPause {
         self.entered.send(()).expect("queue sweep finish pause receiver remains live");
         self.release
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(sync::PoisonError::into_inner)
             .recv()
             .expect("queue sweep finish pause is released");
     }
@@ -711,13 +721,12 @@ impl QueueSweepFinishPause {
 #[cfg(test)]
 #[derive(Debug)]
 struct QueueSweepFinishPauseRegistration {
-    service: std::sync::Weak<QueryServiceInner>,
+    service: Weak<QueryServiceInner>,
     pause: Arc<QueueSweepFinishPause>,
 }
 
 #[cfg(test)]
-static QUEUE_SWEEP_FINISH_PAUSE: std::sync::OnceLock<Mutex<Vec<QueueSweepFinishPauseRegistration>>> =
-    std::sync::OnceLock::new();
+static QUEUE_SWEEP_FINISH_PAUSE: OnceLock<Mutex<Vec<QueueSweepFinishPauseRegistration>>> = sync::OnceLock::new();
 
 #[cfg(test)]
 fn queue_sweep_finish_pause_registry() -> &'static Mutex<Vec<QueueSweepFinishPauseRegistration>> {
@@ -726,8 +735,7 @@ fn queue_sweep_finish_pause_registry() -> &'static Mutex<Vec<QueueSweepFinishPau
 
 #[cfg(test)]
 fn take_queue_sweep_finish_pause(service: &QueryService) -> Option<Arc<QueueSweepFinishPause>> {
-    let mut registration =
-        queue_sweep_finish_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registration = queue_sweep_finish_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
     registration.retain(|registered| registered.service.upgrade().is_some());
     registration
         .iter()
@@ -740,12 +748,11 @@ impl QueryService {
     /// Pauses the next sweep from this service after it has removed requests
     /// and recorded their terminal errors, but before completion delivery.
     pub(in crate::runtime::query_service) fn pause_next_queue_sweep_finish_for_test(&self) -> TestPauseHandle {
-        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
-        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+        let (entered_sender, entered_receiver) = sync::mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = sync::mpsc::sync_channel(1);
         let pause = Arc::new(QueueSweepFinishPause { entered: entered_sender, release: Mutex::new(release_receiver) });
         let service = Arc::downgrade(&self.inner);
-        let mut registration =
-            queue_sweep_finish_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registration = queue_sweep_finish_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
         registration.retain(|registered| registered.service.upgrade().is_some());
         assert!(
             !registration.iter().any(|registered| registered.service.ptr_eq(&service)),
@@ -755,7 +762,7 @@ impl QueryService {
             .push(QueueSweepFinishPauseRegistration { service: Weak::clone(&service), pause: Arc::clone(&pause) });
         TestPauseHandle::new("queue sweep finish", entered_receiver, release_sender).with_drop_cleanup(move || {
             let mut registration =
-                queue_sweep_finish_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                queue_sweep_finish_pause_registry().lock().unwrap_or_else(sync::PoisonError::into_inner);
             if let Some(position) = registration
                 .iter()
                 .position(|registered| registered.service.ptr_eq(&service) && Arc::ptr_eq(&registered.pause, &pause))

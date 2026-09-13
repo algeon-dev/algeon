@@ -1,18 +1,19 @@
-use query_engine::admission::{
-    bounded_join_modeled_facts as modeled_facts, bounded_join_unsupported_shape_facts as unsupported_facts,
+use query_engine::{
+    admission::{
+        BoundedPipelineAdmission, bounded_join_modeled_facts as modeled_facts,
+        bounded_join_unsupported_shape_facts as unsupported_facts, bounded_pipeline_decision,
+    },
+    error::Result,
+    mode::StatisticalAggregateExecutionMode,
+    plan::QueryPlan,
+    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;
 
-fn bounded_pipeline_admission(
-    plan: &query_engine::plan::QueryPlan,
-) -> query_engine::error::Result<Option<query_engine::admission::BoundedPipelineAdmission>> {
-    query_engine::admission::bounded_pipeline_decision(
-        plan,
-        query_engine::mode::StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )?
-    .into_execution_admission()
+fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
+    bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
+        .into_execution_admission()
 }
 
 #[path = "bounded_join_admission/aggregate_over_join_subplans.rs"]

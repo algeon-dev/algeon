@@ -25,10 +25,15 @@ use cudf::{
     AggSpec, DataFrame, DeviceId, GroupByAgg, Series, SortOptions,
     core::{Column, Scalar, Table, memory::DeviceMemoryResource},
     runtime::{CudaEvent, CudaStream},
+    testing::{ColumnView, TableView},
 };
 use static_assertions::assert_not_impl_any;
+use tokio::{
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
 
-use crate::common::{column_from_slice, column_from_strs, sample_df};
+use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns, run_named_cases, sample_df, series};
 
 // ===========================================================================
 // Category 1: Send+Sync static assertions for owned types
@@ -106,15 +111,15 @@ fn cuda_event_can_record_wait_and_synchronize() {
 // exactly what we want to guard against.
 // ===========================================================================
 
-assert_not_impl_any!(cudf::testing::ColumnView<'static>: Send, Sync);
-assert_not_impl_any!(cudf::testing::TableView<'static>: Send, Sync);
+assert_not_impl_any!(ColumnView<'static>: Send, Sync);
+assert_not_impl_any!(TableView<'static>: Send, Sync);
 
 // NOTE: The authoritative negative test is that the following code DOES NOT
 // compile (verified manually and kept here as the authoritative example):
 //
 //   let col = column_from_slice(&[1i32]).unwrap();
 //   let view = col.testing_view().unwrap();
-//   tokio::task::spawn_blocking(move || {
+//   spawn_blocking(move || {
 //       view.len()  // ERROR: ColumnView is !Send
 //   });
 //
@@ -127,7 +132,7 @@ assert_not_impl_any!(cudf::testing::TableView<'static>: Send, Sync);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_sort_survives_spawn_blocking() {
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
+    let result = spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -140,8 +145,7 @@ async fn dataframe_sort_survives_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_head_survives_spawn_blocking() {
     let df = sample_df();
-    let result =
-        tokio::task::spawn_blocking(move || df.head(3)).await.expect("blocking task panicked").expect("head failed");
+    let result = spawn_blocking(move || df.head(3)).await.expect("blocking task panicked").expect("head failed");
 
     assert_eq!(result.num_rows(), 3);
     assert_eq!(result.num_columns(), 2);
@@ -154,7 +158,7 @@ async fn arc_dataframe_shared_across_workers() {
     let mut handles = Vec::new();
     for _ in 0..4 {
         let df = Arc::clone(&df);
-        handles.push(tokio::task::spawn_blocking(move || {
+        handles.push(spawn_blocking(move || {
             // Read-only: each worker creates its own views internally.
             let series = df.series("id").unwrap();
             series.to_vec_strict::<i32>()
@@ -172,7 +176,7 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
     // Move DataFrame into spawn_blocking, do work, let it drop inside
     // the closure (not returned). Verify no leak or crash.
     let df = sample_df();
-    tokio::task::spawn_blocking(move || {
+    spawn_blocking(move || {
         let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
         assert_eq!(sorted.num_rows(), 5);
         // df and sorted both drop here, freeing GPU memory.
@@ -185,7 +189,7 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
 async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
     // Move DataFrame into spawn_blocking, return it, and drop it after await.
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
+    let result = spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -202,8 +206,8 @@ async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_sort_survives_spawn_blocking() {
-    let series = crate::common::series::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
-    let sorted = tokio::task::spawn_blocking(move || series.sort_values(SortOptions::new()))
+    let series = series::<i64>("vals", &[50, 10, 30, 20, 40]).unwrap();
+    let sorted = spawn_blocking(move || series.sort_values(SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
@@ -214,11 +218,10 @@ async fn series_sort_survives_spawn_blocking() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_arithmetic_in_spawn_blocking() {
-    let a = crate::common::series::<f64>("a", &[1.0, 2.0, 3.0]).unwrap();
-    let b = crate::common::series::<f64>("b", &[10.0, 20.0, 30.0]).unwrap();
+    let a = series::<f64>("a", &[1.0, 2.0, 3.0]).unwrap();
+    let b = series::<f64>("b", &[10.0, 20.0, 30.0]).unwrap();
 
-    let result =
-        tokio::task::spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
+    let result = spawn_blocking(move || a.add(&b)).await.expect("blocking task panicked").expect("add failed");
 
     let vals: Vec<f64> = result.to_vec_strict::<f64>().unwrap();
     assert_eq!(vals, vec![11.0, 22.0, 33.0]);
@@ -226,11 +229,8 @@ async fn series_arithmetic_in_spawn_blocking() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn series_unique_in_spawn_blocking() {
-    let series = crate::common::series::<i32>("x", &[1, 2, 2, 3, 3, 3]).unwrap();
-    let unique = tokio::task::spawn_blocking(move || series.unique())
-        .await
-        .expect("blocking task panicked")
-        .expect("unique failed");
+    let series = series::<i32>("x", &[1, 2, 2, 3, 3, 3]).unwrap();
+    let unique = spawn_blocking(move || series.unique()).await.expect("blocking task panicked").expect("unique failed");
 
     assert_eq!(unique.nunique().unwrap(), 3);
 }
@@ -247,13 +247,13 @@ async fn parquet_round_trip_in_spawn_blocking() {
 
     // Write from spawn_blocking.
     let df = sample_df();
-    tokio::task::spawn_blocking(move || df.write_parquet(&path))
+    spawn_blocking(move || df.write_parquet(&path))
         .await
         .expect("blocking task panicked")
         .expect("write_parquet failed");
 
     // Read from a separate spawn_blocking.
-    let loaded = tokio::task::spawn_blocking(move || {
+    let loaded = spawn_blocking(move || {
         let runtime = cudf::Runtime::builder().build().unwrap();
         DataFrame::read_parquet(&runtime, &path_clone)
     })
@@ -273,7 +273,7 @@ async fn parquet_round_trip_in_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn host_materialization_to_vec_in_spawn_blocking() {
     let df = sample_df();
-    let ids = tokio::task::spawn_blocking(move || {
+    let ids = spawn_blocking(move || {
         let col = df.series("id").unwrap();
         col.to_vec_strict::<i32>()
     })
@@ -287,7 +287,7 @@ async fn host_materialization_to_vec_in_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn to_record_batch_in_spawn_blocking() {
     let df = sample_df();
-    let batch = tokio::task::spawn_blocking(move || df.to_record_batch())
+    let batch = spawn_blocking(move || df.to_record_batch())
         .await
         .expect("blocking task panicked")
         .expect("to_record_batch failed");
@@ -303,13 +303,13 @@ async fn arrow_round_trip_across_spawn_blocking() {
     let df = sample_df();
 
     // GPU → host (RecordBatch) in spawn_blocking.
-    let batch = tokio::task::spawn_blocking(move || df.to_record_batch())
+    let batch = spawn_blocking(move || df.to_record_batch())
         .await
         .expect("blocking task panicked")
         .expect("to_record_batch failed");
 
     // host → GPU (DataFrame) in another spawn_blocking.
-    let df2 = tokio::task::spawn_blocking(move || {
+    let df2 = spawn_blocking(move || {
         let runtime = cudf::Runtime::builder().build().unwrap();
         dataframe_from_record_batch(&runtime, &batch)
     })
@@ -329,10 +329,10 @@ async fn arrow_round_trip_across_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chained_pipeline_in_spawn_blocking() {
     // Full pipeline: create → sort → head → groupby → materialize.
-    let result = tokio::task::spawn_blocking(|| -> cudf::Result<Vec<(i32, i64)>> {
+    let result = spawn_blocking(|| -> cudf::Result<Vec<(i32, i64)>> {
         let keys = column_from_slice(&[2i32, 1, 2, 1, 3, 3]).unwrap();
         let vals = column_from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
-        let df = crate::common::dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals])?;
+        let df = dataframe_from_columns(vec!["key".into(), "value".into()], vec![keys, vals])?;
 
         // Sort by key.
         let sorted = df.sort_values(["key"], SortOptions::new())?;
@@ -363,13 +363,13 @@ async fn chained_pipeline_in_spawn_blocking() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_inside_spawn_blocking() {
-    let result = tokio::task::spawn_blocking(|| -> cudf::Result<usize> {
-        let left = crate::common::dataframe_from_columns(
+    let result = spawn_blocking(|| -> cudf::Result<usize> {
+        let left = dataframe_from_columns(
             vec!["id".into(), "name".into()],
             vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_strs(&["Alice", "Bob", "Carol"]).unwrap()],
         )?;
 
-        let right = crate::common::dataframe_from_columns(
+        let right = dataframe_from_columns(
             vec!["id".into(), "score".into()],
             vec![column_from_slice(&[2i32, 3, 4]).unwrap(), column_from_slice(&[85.0f64, 92.0, 78.0]).unwrap()],
         )?;
@@ -393,7 +393,7 @@ async fn join_inside_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_filter_in_spawn_blocking() {
     let df = sample_df();
-    let result = tokio::task::spawn_blocking(move || -> cudf::Result<Vec<i32>> {
+    let result = spawn_blocking(move || -> cudf::Result<Vec<i32>> {
         // Build a boolean mask: score > 20.0
         let score_series = df.series("score")?;
         let mask_series = score_series.gt_scalar(20.0f64)?;
@@ -427,10 +427,8 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
     let df2 = Arc::clone(&df);
 
     let (sorted_asc, sorted_desc) = tokio::join!(
-        tokio::task::spawn_blocking(move || { df1.sort_values(["id"], SortOptions::new()) }),
-        tokio::task::spawn_blocking(move || {
-            df2.sort_values(["id"], SortOptions::new().with_descending(vec![true]))
-        }),
+        spawn_blocking(move || { df1.sort_values(["id"], SortOptions::new()) }),
+        spawn_blocking(move || { df2.sort_values(["id"], SortOptions::new().with_descending(vec![true])) }),
     );
 
     let asc = sorted_asc.expect("asc task panicked").expect("asc sort failed");
@@ -454,7 +452,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
         let start = Instant::now();
         let mut ticks = 0usize;
         while start.elapsed() < Duration::from_millis(300) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
             ticks += 1;
         }
         ticks
@@ -465,7 +463,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
     let mut handles = Vec::with_capacity(workers);
 
     for _ in 0..workers {
-        handles.push(tokio::task::spawn_blocking(|| {
+        handles.push(spawn_blocking(|| {
             for _ in 0..16 {
                 let df = sample_df();
                 let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -475,7 +473,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
     }
 
     for handle in handles {
-        tokio::time::timeout(Duration::from_secs(20), handle)
+        timeout(Duration::from_secs(20), handle)
             .await
             .expect("spawn_blocking task timed out")
             .expect("spawn_blocking task panicked");
@@ -493,7 +491,7 @@ async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
 async fn timeout_on_spawn_blocking_is_safe() {
     // Even if the timeout fires, the blocking thread completes its GPU work
     // cleanly. No crash, no corruption.
-    let handle = tokio::task::spawn_blocking(|| {
+    let handle = spawn_blocking(|| {
         let df = sample_df();
         let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
         assert_eq!(sorted.num_rows(), 5);
@@ -501,7 +499,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
     });
 
     // Use a generous timeout; we are testing safety, not speed.
-    let result = tokio::time::timeout(Duration::from_secs(30), handle).await;
+    let result = timeout(Duration::from_secs(30), handle).await;
 
     match result {
         Ok(Ok(df)) => {
@@ -522,7 +520,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
 
 #[test]
 fn runtime_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("dataframe_is_send_sync", dataframe_is_send_sync),
         ("series_is_send_sync", series_is_send_sync),
         ("column_is_send_sync", column_is_send_sync),

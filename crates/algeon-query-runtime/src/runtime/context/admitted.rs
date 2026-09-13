@@ -3,18 +3,18 @@
 use std::sync::Arc;
 
 use query_planning::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AttemptCapabilityEvidence, canonical_execution_scope_fingerprint, log_safe_fingerprint},
     error::{QueryError, QueryErrorCode, Result},
     plan::QueryPlan,
 };
 
-#[cfg(test)]
-use super::super::attempt_domain::AttemptAllocationDomain;
 use super::{
     super::{MemoryGrant, resident::GpuResidentInputMap},
     ActivatedDeferredResidentInput, ActivatedDeferredResidentPhase, ExecutionContext,
 };
 use crate::observability::AttemptComposedScheduleProjection;
+#[cfg(test)]
+use crate::runtime::attempt_domain::AttemptAllocationDomain;
 
 impl ExecutionContext {
     fn validated_admitted_identity(
@@ -31,7 +31,7 @@ impl ExecutionContext {
                 "a query-service context requires its admitted capability evidence",
             )
             .with_fact("reason", "admitted_capability_evidence_missing")
-            .with_fact("plan_scope", query_planning::admission::canonical_execution_scope_fingerprint(plan))
+            .with_fact("plan_scope", canonical_execution_scope_fingerprint(plan))
         })?;
         let runtime_device_ordinal = self.runtime()?.device().ordinal();
         let immutable_grant = self.memory_grant()?.ok_or_else(|| {
@@ -94,10 +94,9 @@ impl ExecutionContext {
         plan: &QueryPlan,
     ) -> Result<()> {
         evidence.validate_covers_plan(plan)?;
-        let execution_scope = query_planning::admission::canonical_execution_scope_fingerprint(plan);
+        let execution_scope = canonical_execution_scope_fingerprint(plan);
         let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
-        let expected_schema =
-            query_planning::admission::log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
+        let expected_schema = log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
         let scope_matches = evidence.execution_scopes().iter().filter(|shape| shape.matches(plan)).collect::<Vec<_>>();
         let matching_shapes = scope_matches
             .iter()
@@ -149,8 +148,7 @@ impl ExecutionContext {
         // against the evidence submitted at admission.
         let evidence = match &self.activated_deferred_resident_phase {
             Some(activated)
-                if activated.consumer_execution_scope_fingerprint
-                    == query_planning::admission::canonical_execution_scope_fingerprint(plan) =>
+                if activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan) =>
             {
                 if activated.grant_identity != immutable_grant.identity() {
                     return Err(QueryError::new(
@@ -198,8 +196,7 @@ impl ExecutionContext {
         // frames actually presented: one execution context legitimately runs a
         // plan more than once, and a later round may carry a different frame.
         if let Some(activated) = &self.activated_deferred_resident_phase
-            && activated.consumer_execution_scope_fingerprint
-                == query_planning::admission::canonical_execution_scope_fingerprint(plan)
+            && activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
             && activated.grant_identity != immutable_grant.identity()
         {
             return Err(QueryError::new(
@@ -232,8 +229,7 @@ impl ExecutionContext {
                     let Some(actual_scope) = input.producer_execution_scope() else {
                         return false;
                     };
-                    let actual_schema =
-                        query_planning::admission::log_safe_fingerprint(&format!("{:?}", input.schema()));
+                    let actual_schema = log_safe_fingerprint(&format!("{:?}", input.schema()));
                     (actual_scope == expected.execution_scope_fingerprint()
                         || input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan)))
                         && actual_schema == expected.output_schema_fingerprint()
@@ -265,7 +261,7 @@ impl ExecutionContext {
                     .with_fact("reason", "deferred_resident_input_scope_missing")
                     .with_fact("input_name", input_name)
                 })?;
-                let actual_schema = query_planning::admission::log_safe_fingerprint(&format!("{:?}", input.schema()));
+                let actual_schema = log_safe_fingerprint(&format!("{:?}", input.schema()));
                 if actual_scope != expected.execution_scope_fingerprint()
                     && !input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan))
                     || actual_schema != expected.output_schema_fingerprint()
@@ -312,9 +308,7 @@ impl ExecutionContext {
             })
             .collect::<Result<Vec<_>>>()?;
         let activated = ActivatedDeferredResidentPhase {
-            consumer_execution_scope_fingerprint: query_planning::admission::canonical_execution_scope_fingerprint(
-                plan,
-            ),
+            consumer_execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
             inputs,
             capability_evidence,
             grant_identity: immutable_grant.identity(),
@@ -333,8 +327,7 @@ impl ExecutionContext {
     ) -> Result<()> {
         self.validate_admitted_plan_capabilities(plan)?;
         let Some(activated) = self.activated_deferred_resident_phase.as_ref().filter(|activated| {
-            activated.consumer_execution_scope_fingerprint
-                == query_planning::admission::canonical_execution_scope_fingerprint(plan)
+            activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
         }) else {
             return Ok(());
         };

@@ -2,7 +2,7 @@
 
 use cudf::{TypeId, core::Table, ops::hashing, testing::prelude::*};
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, run_named_cases};
 
 fn test_murmurhash3_i32_column() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
@@ -93,7 +93,7 @@ fn test_murmurhash3_multi_column() {
 
 #[test]
 fn hashing_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_murmurhash3_i32_column", test_murmurhash3_i32_column),
         ("test_murmurhash3_deterministic", test_murmurhash3_deterministic),
         ("test_murmurhash3_different_seeds", test_murmurhash3_different_seeds),

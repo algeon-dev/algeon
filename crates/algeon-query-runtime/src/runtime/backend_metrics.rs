@@ -4,7 +4,11 @@
 //! ledger, finalization, and telemetry transitions. It deliberately stores no
 //! query correlations, report payloads, or application-provided labels.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    error::Error,
+    fmt, sync,
+    sync::{Arc, Mutex},
+};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
@@ -12,7 +16,10 @@ use serde::Serialize;
 #[cfg(test)]
 use crate::runtime::gpu::LedgerTransitionKind;
 use crate::{
-    metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS,
+    metrics::{
+        BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BackendDurationProjectionError, BackendMetricDescriptor,
+        project_backend_duration_histogram,
+    },
     observability::{AttemptDisposition, RuntimeTerminalOutcome, SealedAttemptProjection},
     runtime::gpu::{DeviceAdmissionHealth, DeviceMemoryFailureReport, DeviceTelemetryStatus, LedgerTransition},
 };
@@ -399,7 +406,7 @@ impl BackendMetricsSnapshot {
     /// selects its ingress by [`crate::metrics::BackendMetricKind`].
     pub fn project_backend_metric(
         &self,
-        descriptor: &'static crate::metrics::BackendMetricDescriptor,
+        descriptor: &'static BackendMetricDescriptor,
     ) -> std::result::Result<Vec<BackendMetricSample>, BackendMetricProjectionError> {
         if descriptor != descriptor.metric.descriptor() {
             return Err(BackendMetricProjectionError::NonCanonicalDescriptor { metric_name: descriptor.name });
@@ -566,14 +573,14 @@ pub struct BackendMetricSample {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendMetricProjectionError {
     NonCanonicalDescriptor { metric_name: &'static str },
-    Duration(crate::metrics::BackendDurationProjectionError),
+    Duration(BackendDurationProjectionError),
     CumulativeHistogramDecreases { metric_name: &'static str, bucket_index: usize },
     CumulativeHistogramCountMismatch { metric_name: &'static str, cumulative_count: u64, count: u64 },
     DisjointHistogramCountMismatch { metric_name: &'static str, bucket_count_sum: u64, count: u64 },
 }
 
-impl std::fmt::Display for BackendMetricProjectionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for BackendMetricProjectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NonCanonicalDescriptor { metric_name } => {
                 write!(formatter, "{metric_name} is not the canonical backend descriptor")
@@ -593,17 +600,17 @@ impl std::fmt::Display for BackendMetricProjectionError {
     }
 }
 
-impl std::error::Error for BackendMetricProjectionError {}
+impl Error for BackendMetricProjectionError {}
 
-impl From<crate::metrics::BackendDurationProjectionError> for BackendMetricProjectionError {
-    fn from(error: crate::metrics::BackendDurationProjectionError) -> Self {
+impl From<BackendDurationProjectionError> for BackendMetricProjectionError {
+    fn from(error: BackendDurationProjectionError) -> Self {
         Self::Duration(error)
     }
 }
 
 fn push_scalar_sample(
     samples: &mut Vec<BackendMetricSample>,
-    descriptor: &crate::metrics::BackendMetricDescriptor,
+    descriptor: &BackendMetricDescriptor,
     attributes: Vec<BackendMetricAttribute>,
     value: u64,
 ) {
@@ -611,15 +618,12 @@ fn push_scalar_sample(
     samples.push(BackendMetricSample { attributes, value: BackendMetricSampleValue::Scalar(value) });
 }
 
-fn device_attributes(
-    descriptor: &crate::metrics::BackendMetricDescriptor,
-    device_ordinal: usize,
-) -> Vec<BackendMetricAttribute> {
+fn device_attributes(descriptor: &BackendMetricDescriptor, device_ordinal: usize) -> Vec<BackendMetricAttribute> {
     descriptor_attributes(descriptor, &[BackendMetricAttributeValue::I64(device_ordinal as i64)])
 }
 
 fn attempt_attributes(
-    descriptor: &crate::metrics::BackendMetricDescriptor,
+    descriptor: &BackendMetricDescriptor,
     disposition: BackendAttemptDisposition,
     outcome: BackendAttemptOutcome,
 ) -> Vec<BackendMetricAttribute> {
@@ -630,7 +634,7 @@ fn attempt_attributes(
 }
 
 fn duration_attributes(
-    descriptor: &crate::metrics::BackendMetricDescriptor,
+    descriptor: &BackendMetricDescriptor,
     disposition: BackendAttemptDisposition,
     outcome: BackendAttemptOutcome,
     duration: BackendAttemptDuration,
@@ -646,7 +650,7 @@ fn duration_attributes(
 }
 
 fn descriptor_attributes(
-    descriptor: &crate::metrics::BackendMetricDescriptor,
+    descriptor: &BackendMetricDescriptor,
     values: &[BackendMetricAttributeValue],
 ) -> Vec<BackendMetricAttribute> {
     assert_eq!(
@@ -666,10 +670,10 @@ fn descriptor_attributes(
 /// Converts the fixed backend cumulative-by-upper-bound histogram snapshot
 /// into the descriptor-declared, OTLP-compatible disjoint representation.
 pub fn project_backend_histogram(
-    descriptor: &crate::metrics::BackendMetricDescriptor,
+    descriptor: &BackendMetricDescriptor,
     snapshot: BackendHistogramSnapshot,
 ) -> std::result::Result<BackendHistogramProjection, BackendMetricProjectionError> {
-    let duration = crate::metrics::project_backend_duration_histogram(descriptor, snapshot.sum)?;
+    let duration = project_backend_duration_histogram(descriptor, snapshot.sum)?;
     let mut bucket_counts = [0; BACKEND_ATTEMPT_DURATION_BUCKET_COUNT];
     let mut previous = 0;
     for (bucket_index, cumulative) in snapshot.bucket_counts.iter().copied().enumerate() {
@@ -940,7 +944,7 @@ impl BackendMetricsStore {
     #[doc(hidden)]
     pub fn record_ledger_transition(&self, transition: &LedgerTransition) {
         let device_ordinal = transition.snapshot.device_ordinal;
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let Some(device) = state.devices.get_mut(device_ordinal) else {
             return;
         };
@@ -957,7 +961,7 @@ impl BackendMetricsStore {
     /// sink; this method intentionally does not retain an attempt identity.
     #[doc(hidden)]
     pub fn record_sealed_attempt(&self, projection: &SealedAttemptProjection, durations: BackendAttemptDurations) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.attempts.record(projection, durations);
         state.advance_generation();
     }
@@ -986,7 +990,7 @@ impl BackendMetricsStore {
             .with_fact("memory_failure_device_ordinal", memory_failures.device_ordinal)
             .with_fact("reason", "memory_failure_telemetry_device_mismatch"));
         }
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let Some(device) = state.devices.get_mut(refresh.device_ordinal) else {
             return Err(unknown_telemetry_device_error(refresh.device_ordinal));
         };
@@ -1001,7 +1005,7 @@ impl BackendMetricsStore {
     /// Returns one coherent pull snapshot without exposing the mutable store.
     #[doc(hidden)]
     pub fn snapshot(&self) -> BackendMetricsSnapshot {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         BackendMetricsSnapshot {
             backend_generation: self.backend_generation,
             generation: state.generation,
@@ -1019,7 +1023,7 @@ impl BackendMetricsStore {
         if snapshot.backend_generation != self.backend_generation {
             return false;
         }
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         snapshot.generation == state.generation
     }
 }

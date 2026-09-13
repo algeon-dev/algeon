@@ -7,10 +7,10 @@ use super::{
     unique_join_output_for_name,
 };
 use crate::{
-    expr::{ColumnRef, Expr},
+    expr::{BinaryOp, ColumnRef, Expr},
     plan::{
-        FilterNode, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        QueryPlan, SchemaBehavior, estimated_output_bytes,
+        AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
+        PlanNode, ProjectionNode, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes,
     },
 };
 
@@ -268,7 +268,7 @@ fn left_join_marker_null_filter_to_anti_rewrite(
         || join.spec.build_side != JoinSide::Right
         || join.spec.keys.is_empty()
         || join.spec.residual_predicate.is_some()
-        || join.spec.null_equality != crate::plan::JoinNullEquality::NullsDoNotMatch
+        || join.spec.null_equality != JoinNullEquality::NullsDoNotMatch
     {
         return None;
     }
@@ -367,7 +367,7 @@ fn split_single_marker_is_null_predicate(expr: &Expr, marker_names: &[&str]) -> 
 
 fn flatten_conjunction(expr: &Expr, terms: &mut Vec<Expr>) {
     match expr {
-        Expr::Binary { left, op: crate::expr::BinaryOp::And, right, .. } => {
+        Expr::Binary { left, op: BinaryOp::And, right, .. } => {
             flatten_conjunction(left, terms);
             flatten_conjunction(right, terms);
         },
@@ -381,7 +381,7 @@ fn rebuild_conjunction(mut terms: Vec<Expr>) -> Option<Expr> {
         return None;
     }
     let first = terms.remove(0);
-    Some(terms.into_iter().fold(first, |left, right| Expr::binary(left, crate::expr::BinaryOp::And, right)))
+    Some(terms.into_iter().fold(first, |left, right| Expr::binary(left, BinaryOp::And, right)))
 }
 
 fn marker_is_null_term(expr: &Expr, marker_names: &[&str]) -> Option<String> {
@@ -405,14 +405,10 @@ fn column_matches_any_name(expr: &Expr, marker_names: &[&str]) -> Option<String>
 fn rejecting_join_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && !join.spec.keys.is_empty()
-        && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
+        && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
 }
 
-fn right_side_null_rejecting_traces(
-    nodes: &[crate::plan::QueryNode],
-    join: &JoinNode,
-    side: JoinSide,
-) -> Vec<NullRejectingTrace> {
+fn right_side_null_rejecting_traces(nodes: &[QueryNode], join: &JoinNode, side: JoinSide) -> Vec<NullRejectingTrace> {
     let input = join.inputs[join_side_index(side)];
     parent_key_columns(join, side)
         .iter()
@@ -443,18 +439,14 @@ struct NullRejectingTrace {
     path: Vec<NodeId>,
 }
 
-fn trace_right_origins(
-    nodes: &[crate::plan::QueryNode],
-    node_id: NodeId,
-    column_name: &str,
-) -> Vec<NullRejectingTrace> {
+fn trace_right_origins(nodes: &[QueryNode], node_id: NodeId, column_name: &str) -> Vec<NullRejectingTrace> {
     let mut traces = Vec::new();
     trace_right_origins_inner(nodes, node_id, column_name, &mut Vec::new(), &mut traces);
     traces
 }
 
 fn trace_right_origins_inner(
-    nodes: &[crate::plan::QueryNode],
+    nodes: &[QueryNode],
     node_id: NodeId,
     column_name: &str,
     path: &mut Vec<NodeId>,
@@ -523,8 +515,8 @@ fn trace_right_origins_inner(
 }
 
 fn aggregate_group_input_column_for_output<'a>(
-    node: &'a crate::plan::QueryNode,
-    aggregate: &'a crate::plan::AggregateNode,
+    node: &'a QueryNode,
+    aggregate: &'a AggregateNode,
     output_name: &str,
 ) -> Option<&'a ColumnRef> {
     if aggregate.spec.grouping_sets.is_some() {
@@ -540,10 +532,7 @@ fn aggregate_group_input_column_for_output<'a>(
     None
 }
 
-fn unique_projection_expr_for_output<'a>(
-    projection: &'a crate::plan::ProjectionNode,
-    output_name: &str,
-) -> Option<&'a Expr> {
+fn unique_projection_expr_for_output<'a>(projection: &'a ProjectionNode, output_name: &str) -> Option<&'a Expr> {
     let mut matches = projection.outputs.iter().filter(|output| output.field.name() == output_name);
     let first = matches.next()?;
     matches.next().is_none().then_some(&first.expr)
@@ -602,7 +591,7 @@ fn path_is_exclusive(consumer_counts: &[usize], path: &[NodeId]) -> bool {
 
 fn large_null_introducing_input_requires_preserved_shape(
     plan: &QueryPlan,
-    nodes: &[crate::plan::QueryNode],
+    nodes: &[QueryNode],
     outer_join_id: NodeId,
     traces: &[NullRejectingTrace],
 ) -> bool {
@@ -612,7 +601,7 @@ fn large_null_introducing_input_requires_preserved_shape(
     null_introducing_input_is_large(plan, outer_join_id) && !traces_cross_group_key_aggregate(nodes, traces)
 }
 
-fn traces_cross_group_key_aggregate(nodes: &[crate::plan::QueryNode], traces: &[NullRejectingTrace]) -> bool {
+fn traces_cross_group_key_aggregate(nodes: &[QueryNode], traces: &[NullRejectingTrace]) -> bool {
     traces.iter().any(|trace| {
         trace.path.iter().any(|node_id| {
             nodes

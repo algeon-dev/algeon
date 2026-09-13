@@ -1,16 +1,17 @@
-use super::{
-    super::{
-        frame_stream::{map_filter_resident_frame_stream, map_projection_resident_frame_stream},
-        helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
-        resource::CompiledGpuResourcePayload,
-    },
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
-};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
 use crate::{
     error::Result,
-    exec::bounded::{
-        execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame,
-        execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
+    exec::{
+        bounded::{
+            compiled::{
+                frame_stream::{map_filter_resident_frame_stream, map_projection_resident_frame_stream},
+                helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+                resource::CompiledGpuResourcePayload,
+            },
+            execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame,
+            execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
+        },
+        operators::execute_filter_with_budget,
     },
     pipeline::{PipelineTask, ResourceSharing},
     plan::PlanNode,
@@ -53,7 +54,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 frame,
                                 true,
                                 |context, input, token, metrics| {
-                                    crate::exec::operators::execute_filter_with_budget(
+                                    execute_filter_with_budget(
                                         context,
                                         filter,
                                         input,
@@ -119,7 +120,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 frame,
                                 true,
                                 |context, input, token, metrics| {
-                                    crate::exec::operators::execute_filter_with_budget(
+                                    execute_filter_with_budget(
                                         context,
                                         filter,
                                         input,
@@ -137,7 +138,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 input_payload.clone_frame(),
                                 true,
                                 |context, input, token, metrics| {
-                                    crate::exec::operators::execute_filter_with_budget(
+                                    execute_filter_with_budget(
                                         context,
                                         filter,
                                         input,

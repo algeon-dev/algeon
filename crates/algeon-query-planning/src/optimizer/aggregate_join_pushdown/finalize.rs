@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use arrow::datatypes::DECIMAL128_MAX_PRECISION;
+
 use super::{
     AggregateExpr, AggregateFunction, AggregateJoinPushdownRejectedReason, AggregateNode, AggregateSpec, BinaryOp,
     CaseWhen, DataType, Expr, LiteralValue, PreAggregateMeasureState, ProjectionOutput, Schema, SchemaRef,
@@ -9,7 +11,7 @@ use super::{
 pub(in crate::optimizer::aggregate_join_pushdown) struct FinalAggregateRewrite {
     pub(in crate::optimizer::aggregate_join_pushdown) spec: AggregateSpec,
     pub(in crate::optimizer::aggregate_join_pushdown) output_schema: SchemaRef,
-    pub(in crate::optimizer::aggregate_join_pushdown) projection_outputs: Option<Vec<crate::plan::ProjectionOutput>>,
+    pub(in crate::optimizer::aggregate_join_pushdown) projection_outputs: Option<Vec<ProjectionOutput>>,
 }
 
 pub(in crate::optimizer::aggregate_join_pushdown) fn final_aggregate_rewrite_after_preagg(
@@ -160,9 +162,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn avg_pushdown_sum_state_data
     match avg_output_type {
         DataType::Float32 | DataType::Float64 => Ok(DataType::Float64),
         DataType::Decimal128(_, output_scale) => match input_type {
-            DataType::Decimal128(_, input_scale) => {
-                Ok(DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *input_scale))
-            },
+            DataType::Decimal128(_, input_scale) => Ok(DataType::Decimal128(DECIMAL128_MAX_PRECISION, *input_scale)),
             DataType::Int8
             | DataType::Int16
             | DataType::Int32
@@ -172,7 +172,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn avg_pushdown_sum_state_data
             | DataType::UInt32
             | DataType::UInt64
             | DataType::Float32
-            | DataType::Float64 => Ok(DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale)),
+            | DataType::Float64 => Ok(DataType::Decimal128(DECIMAL128_MAX_PRECISION, *output_scale)),
             _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
         },
         _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
@@ -196,7 +196,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn avg_pushdown_division_data_
             | DataType::UInt32
             | DataType::UInt64
             | DataType::Float32
-            | DataType::Float64 => Ok(DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale)),
+            | DataType::Float64 => Ok(DataType::Decimal128(DECIMAL128_MAX_PRECISION, *output_scale)),
             _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
         },
         _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
@@ -207,7 +207,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn avg_pushdown_count_projecti
     avg_output_type: &DataType,
 ) -> DataType {
     match avg_output_type {
-        DataType::Decimal128(_, _) => DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, 0),
+        DataType::Decimal128(_, _) => DataType::Decimal128(DECIMAL128_MAX_PRECISION, 0),
         _ => avg_output_type.clone(),
     }
 }

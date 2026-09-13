@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
 };
 
+use cudf::{DeviceId, Runtime as CudfRuntime};
 use query_planning::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
@@ -34,8 +35,10 @@ use crate::{
     metrics::{QueryId, TraceId},
     native_error::cudf_query_error,
     observability::{
-        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationSession, RuntimeTerminalOutcome,
+        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationSession, RuntimeStreamLeaseScope,
+        RuntimeTerminalOutcome,
     },
+    runtime::IoLifecycle,
 };
 
 /// Builder for [`ExecutionContext`].
@@ -57,7 +60,7 @@ pub struct ExecutionContextBuilder {
     /// Prebuilt runtime to use instead of constructing one.
     runtime: Option<Arc<cudf::Runtime>>,
     /// Optional server-generation gate for file-backed native I/O.
-    io_lifecycle: Option<crate::runtime::IoLifecycle>,
+    io_lifecycle: Option<IoLifecycle>,
     /// Optional caller-owned dedicated GPU execution pool.
     gpu_execution_pool: Option<GpuExecutionPool>,
     /// CUDA device ordinal used only when this builder constructs the runtime.
@@ -453,7 +456,7 @@ impl ExecutionContextBuilder {
                 runtime_observation,
                 runtime_observation_owner: None,
                 runtime_execution_scope: None,
-                runtime_stream_lease_scope: crate::observability::RuntimeStreamLeaseScope::default(),
+                runtime_stream_lease_scope: RuntimeStreamLeaseScope::default(),
                 runtime,
                 gpu_execution_pool,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
@@ -491,9 +494,9 @@ impl ExecutionContextBuilder {
             }));
         }
 
-        let mut builder = cudf::Runtime::builder();
+        let mut builder = CudfRuntime::builder();
         if let Some(device_ordinal) = self.device_ordinal {
-            let device = cudf::DeviceId::new(device_ordinal).map_err(|error| {
+            let device = DeviceId::new(device_ordinal).map_err(|error| {
                 cudf_query_error("query_engine.runtime.device", "failed to resolve CUDA device", error)
             })?;
             builder = builder.with_device(device);
@@ -539,7 +542,7 @@ impl ExecutionContextBuilder {
             runtime_observation,
             runtime_observation_owner: None,
             runtime_execution_scope: None,
-            runtime_stream_lease_scope: crate::observability::RuntimeStreamLeaseScope::default(),
+            runtime_stream_lease_scope: RuntimeStreamLeaseScope::default(),
             runtime,
             gpu_execution_pool,
             memory_policy,

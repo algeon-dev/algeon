@@ -34,17 +34,27 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::AlgeonNativePhysicalOptimizerRule,
-    report::CandidateOutcome,
+    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE},
     session::AlgeonSessionStateBuilderExt,
 };
-use arrow::{array::Array, datatypes::SchemaRef, record_batch::RecordBatch, util::display::array_value_to_string};
+use arrow::{
+    array::{Array, Int64Array},
+    datatypes::SchemaRef,
+    error::ArrowError,
+    record_batch::RecordBatch,
+    util::display::array_value_to_string,
+};
+use cudf::runtime::{cuda_profiler_start, cuda_profiler_stop};
 use datafusion::{
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use query_engine::harness::StableFnv1a64;
-use tokio::sync::Barrier;
+use query_engine::{harness::StableFnv1a64, runtime::GpuMemoryFraction};
+use tokio::{
+    sync::Barrier,
+    time::{sleep, timeout},
+};
 
 mod config;
 mod report;
@@ -144,7 +154,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
             if config.stagger_ms > 0 && request.task_index > 0 {
-                tokio::time::sleep(Duration::from_millis(config.stagger_ms * request.task_index as u64)).await;
+                sleep(Duration::from_millis(config.stagger_ms * request.task_index as u64)).await;
             }
 
             if !config.uses_phased_execution() {
@@ -164,7 +174,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             }
 
             if barrier.wait().await.is_leader() && config.cuda_profiler_capture {
-                match cudf::runtime::cuda_profiler_start() {
+                match cuda_profiler_start() {
                     Ok(()) => profiler_active.store(true, Ordering::SeqCst),
                     Err(error) => {
                         *profiler_error.lock().unwrap() =
@@ -184,7 +194,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 
             if barrier.wait().await.is_leader()
                 && profiler_active.swap(false, Ordering::SeqCst)
-                && let Err(error) = cudf::runtime::cuda_profiler_stop()
+                && let Err(error) = cuda_profiler_stop()
             {
                 *profiler_error.lock().unwrap() = Some(format!("failed to stop CUDA profiler capture: {error}"));
             }
@@ -251,7 +261,7 @@ fn build_backend(config: &HarnessConfig) -> Result<AlgeonGpuBackend, Box<dyn Err
         None => GpuDeviceMemoryLimit::Automatic {
             headroom_bytes: AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
             fallback_bytes: AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-            fraction: config.budget_fraction.map(query_engine::runtime::GpuMemoryFraction::new).transpose()?,
+            fraction: config.budget_fraction.map(GpuMemoryFraction::new).transpose()?,
         },
     };
     let admission =
@@ -319,7 +329,7 @@ async fn discover_seed(backend: &AlgeonGpuBackend, config: &HarnessConfig) -> Re
     let batches = ctx.sql("SELECT MIN(src) AS s FROM citation_edges").await?.collect().await?;
     let scalar = batches
         .first()
-        .and_then(|batch| batch.column(0).as_any().downcast_ref::<arrow::array::Int64Array>().map(|a| a.value(0)))
+        .and_then(|batch| batch.column(0).as_any().downcast_ref::<Int64Array>().map(|a| a.value(0)))
         .ok_or("seed discovery failed")?;
     Ok(scalar)
 }
@@ -363,7 +373,7 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
                                 request.spec.label,
                                 candidate.shape,
                                 planning_stage,
-                                algeon_datafusion::report::DEFERRED_PRODUCER_BINDING_REASON_CODE
+                                DEFERRED_PRODUCER_BINDING_REASON_CODE
                             );
                         },
                         CandidateOutcome::NotSupported { candidate, capability_reason } => {
@@ -389,9 +399,7 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
     }
 
     let task_ctx = Arc::new(TaskContext::from(&ctx.state()));
-    let outcome =
-        tokio::time::timeout(Duration::from_millis(config.query_timeout_ms), collect(Arc::clone(&plan), task_ctx))
-            .await;
+    let outcome = timeout(Duration::from_millis(config.query_timeout_ms), collect(Arc::clone(&plan), task_ctx)).await;
     match outcome {
         Ok(Ok(batches)) => {
             row.output_rows = Some(batches.iter().map(|batch| batch.num_rows()).sum());
@@ -412,12 +420,12 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
     }
 }
 
-fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<String, arrow::error::ArrowError> {
+fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<String, ArrowError> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("algeon-datafusion-cugraph-admission-output-multiset-v2");
     for batch in batches {
         if batch.schema().as_ref() != schema.as_ref() {
-            return Err(arrow::error::ArrowError::SchemaError(
+            return Err(ArrowError::SchemaError(
                 "cuGraph stress output fingerprint requires collected batches to match the planned schema".to_string(),
             ));
         }

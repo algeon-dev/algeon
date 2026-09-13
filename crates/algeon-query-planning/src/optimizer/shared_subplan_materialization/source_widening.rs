@@ -149,7 +149,7 @@ fn widen_local_parquet_source(
     source.schema = Arc::new(Schema::new(fields));
     source.projected_output_columns = source.read_columns.clone();
     source.projected_output_column_source_refs =
-        source.read_column_file_indices.iter().copied().map(crate::source::SourceColumnRef::File).collect();
+        source.read_column_file_indices.iter().copied().map(SourceColumnRef::File).collect();
     source.pure_filter_columns.clear();
     source.pure_filter_column_source_refs.clear();
     source.refresh_diagnostics();

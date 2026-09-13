@@ -10,19 +10,28 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cudf::runtime::event::CudaEvent;
+
 use super::{
     BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, QueryError,
     QueryErrorCode, Result, SourceChunk, attach_row_group_facts, cudf_query_error, observed_chunk_row_group_count,
     parquet_chunk_path_fact, read_local_parquet_chunk,
 };
 use crate::{
-    exec::bounded::chunks::{record_chunk_retry_error, source_read_budget_correction_from_error},
-    observability::{
-        MetricsRecorder, RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimePlanNodeId,
-        RuntimeSourceReadObservation, RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId,
-        SourceReadFact, SourceReadLifecycleState, TaskDefinitionRow, WorkerDefinitionRow,
+    exec::{
+        bounded::chunks::{record_chunk_retry_error, source_read_budget_correction_from_error},
+        retry::backoff_before_retry,
     },
-    runtime::{ExecutionCancellation, GpuExecutorLease, SupervisedWorker, SupervisedWorkerJoin},
+    observability::{
+        CleanupFailurePhase, CleanupFailureSummary, MetricsRecorder, RuntimeEventContext, RuntimeObservationHandle,
+        RuntimeObservationPayload, RuntimeObservationRecordClass, RuntimePlanNodeId, RuntimeSourceReadObservation,
+        RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId, SourceReadFact, SourceReadLifecycleState,
+        TaskDefinitionRow, WorkerDefinitionRow,
+    },
+    runtime::{
+        AttemptWorkLease, DevicePlacement, ExecutionCancellation, GpuExecutorLease, SupervisedWorker,
+        SupervisedWorkerJoin,
+    },
 };
 
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
@@ -39,7 +48,7 @@ enum ScheduledLocalParquetReadState {
     /// A leased worker read scheduled from the attempt's root context.
     Running {
         worker: SupervisedWorker<ScheduledLocalParquetReadResult>,
-        source_read_lease: Box<crate::runtime::AttemptWorkLease>,
+        source_read_lease: Box<AttemptWorkLease>,
         source: Box<LocalParquetSource>,
         attempt: usize,
         max_attempts: usize,
@@ -80,7 +89,7 @@ struct ScheduledLocalParquetReadResult {
 /// consumers additionally order device-side through the retained provenance fences, and
 /// host-visible uses (D2H, scalars) keep their own stream synchronizes.
 struct ReadinessEvent {
-    event: cudf::runtime::event::CudaEvent,
+    event: CudaEvent,
 }
 
 impl ReadinessEvent {
@@ -126,10 +135,7 @@ fn observe_abandoned_readiness(
     let Some(readiness) = readiness else { return };
     if let Err(error) = readiness.synchronize_for_commit(chunk) {
         if let Some(scope) = execution.context().runtime_execution_scope() {
-            let summary = crate::observability::CleanupFailureSummary::from_native_error(
-                crate::observability::CleanupFailurePhase::TaskExecution,
-                &error,
-            );
+            let summary = CleanupFailureSummary::from_native_error(CleanupFailurePhase::TaskExecution, &error);
             scope.observation().record_attempt_cleanup_failure(summary);
         } else {
             eprintln!("[query_engine::source_scheduler] warning: abandoned source read readiness failed: {error}");
@@ -166,34 +172,26 @@ impl SourceReadObservation {
             chunk_index: chunk.chunk_index,
             file_index: chunk.file_index,
         });
-        observation.observation.record_topology(
-            crate::observability::RuntimeObservationRecordClass::TaskDefinition,
-            || {
-                RuntimeTopologyRecord::TaskDefinition(TaskDefinitionRow {
-                    plan_execution_id: scope.plan_execution_id().clone(),
-                    task_id,
-                    plan_node_id: Some(RuntimePlanNodeId::new(chunk.source_node_id.to_string())),
-                    task_kind: "source_read_worker".to_string(),
-                })
-            },
-        );
-        observation.observation.record_topology(
-            crate::observability::RuntimeObservationRecordClass::WorkerDefinition,
-            || {
-                let device_ordinal = match context.device_placement() {
-                    crate::runtime::DevicePlacement::SingleDevice { device_ordinal } => {
-                        u32::try_from(device_ordinal).ok()
-                    },
-                    _ => None,
-                };
-                RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
-                    plan_execution_id: Some(scope.plan_execution_id().clone()),
-                    worker_id,
-                    worker_kind: "source_read".to_string(),
-                    device_ordinal,
-                })
-            },
-        );
+        observation.observation.record_topology(RuntimeObservationRecordClass::TaskDefinition, || {
+            RuntimeTopologyRecord::TaskDefinition(TaskDefinitionRow {
+                plan_execution_id: scope.plan_execution_id().clone(),
+                task_id,
+                plan_node_id: Some(RuntimePlanNodeId::new(chunk.source_node_id.to_string())),
+                task_kind: "source_read_worker".to_string(),
+            })
+        });
+        observation.observation.record_topology(RuntimeObservationRecordClass::WorkerDefinition, || {
+            let device_ordinal = match context.device_placement() {
+                DevicePlacement::SingleDevice { device_ordinal } => u32::try_from(device_ordinal).ok(),
+                _ => None,
+            };
+            RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
+                plan_execution_id: Some(scope.plan_execution_id().clone()),
+                worker_id,
+                worker_kind: "source_read".to_string(),
+                device_ordinal,
+            })
+        });
         Some(observation)
     }
 
@@ -431,7 +429,7 @@ impl Drop for SourceReadWorkerGuard {
 fn acquire_source_read_lease_then_enqueue(
     context: &ExecutionContext,
     observation: Option<&Arc<SourceReadObservation>>,
-) -> Result<(crate::runtime::AttemptWorkLease, SourceReadQueueStart)> {
+) -> Result<(AttemptWorkLease, SourceReadQueueStart)> {
     let lease = context.acquire_attempt_work_lease(observation.map(|observation| observation.source_worker_scope()))?;
     let queue_start = SourceReadQueueStart::new(observation.map(Arc::as_ref));
     Ok((lease, queue_start))
@@ -689,7 +687,7 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     };
     record_chunk_retry_error(error, execution.metrics());
     execution.record_source_read(SourceReadFact::ChunkRetried);
-    crate::exec::retry::backoff_before_retry(execution.context(), "query_engine.source_scheduler.budget_retry")?;
+    backoff_before_retry(execution.context(), "query_engine.source_scheduler.budget_retry")?;
     execution.record_source_read(SourceReadFact::ChunkAttempted);
     let frame = read_local_parquet_chunk(
         execution.context(),
@@ -721,10 +719,14 @@ mod observation_tests {
     };
 
     use super::*;
-    use crate::observability::{
-        DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
-        RuntimeObservationSession, RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, RuntimeTopologyRecord,
-        TaskDefinitionRow, WorkerDefinitionRow,
+    use crate::{
+        observability::{
+            DeterministicRuntimeObservationClock, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
+            RuntimeObservationRecordClass, RuntimeObservationSession, RuntimePlanExecutionLifecycle,
+            RuntimeTerminalOutcome, RuntimeTopologyRecord, StreamLeaseLifecycleState, TaskDefinitionRow,
+            WorkerDefinitionRow, assert_live_topology_references_resolve,
+        },
+        runtime::{ExecutionCancellation, ExecutionContext, ServiceStreamPool},
     };
 
     fn observed_source_states(owner: &RuntimeObservationOwner) -> Vec<SourceReadLifecycleState> {
@@ -744,7 +746,7 @@ mod observation_tests {
         let plan_execution_id = PlanExecutionId::new("source-plan");
         let task_id = RuntimeTaskId::new("source-task");
         let worker_id = RuntimeWorkerId::new("source-worker");
-        owner.handle().record_topology(crate::observability::RuntimeObservationRecordClass::TaskDefinition, || {
+        owner.handle().record_topology(RuntimeObservationRecordClass::TaskDefinition, || {
             RuntimeTopologyRecord::TaskDefinition(TaskDefinitionRow {
                 plan_execution_id: plan_execution_id.clone(),
                 task_id: task_id.clone(),
@@ -752,7 +754,7 @@ mod observation_tests {
                 task_kind: "source_read_worker".to_string(),
             })
         });
-        owner.handle().record_topology(crate::observability::RuntimeObservationRecordClass::WorkerDefinition, || {
+        owner.handle().record_topology(RuntimeObservationRecordClass::WorkerDefinition, || {
             RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
                 plan_execution_id: Some(plan_execution_id.clone()),
                 worker_id: worker_id.clone(),
@@ -787,7 +789,7 @@ mod observation_tests {
         let checkpoint = observation.metrics.checkpoint().unwrap();
         assert_eq!(checkpoint.summary.source_read.source_read_queue_wait_time, Duration::from_nanos(17));
         let snapshot = owner.live_snapshot().unwrap();
-        crate::observability::assert_live_topology_references_resolve(&snapshot);
+        assert_live_topology_references_resolve(&snapshot);
         let states = snapshot
             .events()
             .iter()
@@ -838,9 +840,9 @@ mod observation_tests {
     #[test]
     fn contended_source_lease_wait_precedes_source_queue_enqueue() {
         let runtime = cudf::Runtime::new().unwrap();
-        let pool = crate::runtime::ServiceStreamPool::new(runtime.device(), 1).unwrap();
+        let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
-        let observed_context = crate::runtime::ExecutionContext::builder()
+        let observed_context = ExecutionContext::builder()
             .with_runtime(runtime)
             .with_service_stream_pool(pool.clone())
             .with_runtime_observation_session(RuntimeObservationSession::new(
@@ -889,10 +891,10 @@ mod observation_tests {
     #[test]
     fn production_worker_queue_interval_uses_recorder_clock_and_excludes_lease_wait_and_join() {
         let runtime = cudf::Runtime::new().unwrap();
-        let pool = crate::runtime::ServiceStreamPool::new(runtime.device(), 1).unwrap();
+        let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
         let clock = Arc::new(DeterministicRuntimeObservationClock::new(None));
-        let observed_context = crate::runtime::ExecutionContext::builder()
+        let observed_context = ExecutionContext::builder()
             .with_runtime(runtime)
             .with_service_stream_pool(pool.clone())
             .with_runtime_observation_session(RuntimeObservationSession::with_clock(
@@ -978,10 +980,10 @@ mod observation_tests {
     #[test]
     fn cancelled_source_lease_wait_does_not_orphan_source_enqueue() {
         let runtime = cudf::Runtime::new().unwrap();
-        let pool = crate::runtime::ServiceStreamPool::new(runtime.device(), 1).unwrap();
+        let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
-        let cancellation = crate::runtime::ExecutionCancellation::new();
-        let observed_context = crate::runtime::ExecutionContext::builder()
+        let cancellation = ExecutionCancellation::new();
+        let observed_context = ExecutionContext::builder()
             .with_runtime(runtime)
             .with_service_stream_pool(pool.clone())
             .with_cancellation(cancellation.clone())
@@ -1010,7 +1012,7 @@ mod observation_tests {
         assert!(owner.live_snapshot().unwrap().events().iter().any(|event| matches!(
             &event.payload,
             RuntimeObservationPayload::StreamLease(observation)
-                if observation.lifecycle == crate::observability::StreamLeaseLifecycleState::Cancelled
+                if observation.lifecycle == StreamLeaseLifecycleState::Cancelled
         )));
         drop(held);
         lifecycle.finish(RuntimeTerminalOutcome::Cancelled);

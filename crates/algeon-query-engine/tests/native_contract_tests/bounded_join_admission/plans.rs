@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::plan::QueryPlan;
+
 use super::*;
 
 /// Mutates the non-root side of a keyless conditional root join. The admitted
@@ -37,9 +39,7 @@ pub(crate) use resident_subplan::{
     KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
 };
 
-pub(crate) fn keyless_conditional_join_input_subplan_plan(
-    variant: KeylessInputSubplanVariant,
-) -> query_engine::plan::QueryPlan {
+pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputSubplanVariant) -> QueryPlan {
     let lineitem_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),

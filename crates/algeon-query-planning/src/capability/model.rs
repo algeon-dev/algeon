@@ -9,7 +9,7 @@ use super::{
     AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId,
     aggregate::AggregateStateContract,
 };
-use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
+use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams};
 
 /// The most local graph scope that owns a capability decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -206,7 +206,7 @@ pub enum NodeOperator {
     /// cuVS vector algorithm execution over one or more resident relations.
     VectorAlgorithm {
         /// Algorithm family whose parameter contract must be supported.
-        algorithm: crate::plan::VectorAlgorithm,
+        algorithm: VectorAlgorithm,
     },
 }
 
@@ -412,14 +412,12 @@ pub enum VectorInputRole {
 
 impl VectorInputRole {
     #[doc(hidden)]
-    pub fn for_vector_input(vector: &crate::plan::VectorAlgorithmNode, input_index: usize) -> Self {
+    pub fn for_vector_input(vector: &VectorAlgorithmNode, input_index: usize) -> Self {
         match (&vector.spec.params, input_index) {
-            (crate::plan::VectorAlgorithmParams::BruteForceKnn(_), 0) => Self::Dataset,
-            (crate::plan::VectorAlgorithmParams::BruteForceKnn(_), 1) => Self::Queries,
-            (crate::plan::VectorAlgorithmParams::KMeans(_), 0) | (crate::plan::VectorAlgorithmParams::Pca(_), 0) => {
-                Self::Input
-            },
-            (crate::plan::VectorAlgorithmParams::KMeans(_), 1) => Self::InitialCentroids,
+            (VectorAlgorithmParams::BruteForceKnn(_), 0) => Self::Dataset,
+            (VectorAlgorithmParams::BruteForceKnn(_), 1) => Self::Queries,
+            (VectorAlgorithmParams::KMeans(_), 0) | (VectorAlgorithmParams::Pca(_), 0) => Self::Input,
+            (VectorAlgorithmParams::KMeans(_), 1) => Self::InitialCentroids,
             _ => Self::Input,
         }
     }

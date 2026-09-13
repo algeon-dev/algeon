@@ -1,13 +1,16 @@
 use super::errors::foreign_dictionary_match_result_shape_error;
 use crate::{
-    core::error::{Error, FACT_ACTUAL_COUNT, FACT_TABLE_COLUMN_COUNT, Result},
+    core::{
+        error::{Error, FACT_ACTUAL_COUNT, FACT_TABLE_COLUMN_COUNT, Result},
+        native_teardown::drop_device_owned_handle,
+    },
     runtime::DeviceId,
 };
 
 unsafe fn destroy_returned_column_handles(returned: &[cudf_sys::cudf_column_handle], device: DeviceId) {
     for &handle in returned {
         if !handle.is_null() {
-            crate::core::native_teardown::drop_device_owned_handle(
+            drop_device_owned_handle(
                 handle,
                 device,
                 "dictionary::match_dictionaries::cleanup_malformed_result",

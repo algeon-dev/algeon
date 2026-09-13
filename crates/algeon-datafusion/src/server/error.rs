@@ -1,7 +1,14 @@
-use std::{error::Error as StdError, fmt, sync::Arc};
+use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
 use datafusion::common::{DataFusionError, SchemaError};
-use tonic::{Status, metadata::MetadataValue};
+use query_engine::error::QueryError;
+#[cfg(test)]
+use query_engine::error::QueryErrorCode;
+use tonic::{
+    Status,
+    metadata::{MetadataMap, MetadataValue},
+    transport::Error as TonicTransportError,
+};
 
 use crate::server::{
     adapter_error::{
@@ -150,7 +157,7 @@ impl ServerError {
             Ok(adapter_error) => return Self { inner: adapter_error_with_message(message, *adapter_error) },
             Err(source) => source,
         };
-        let source = match source.downcast::<query_engine::error::QueryError>() {
+        let source = match source.downcast::<QueryError>() {
             Ok(native_error) => {
                 return Self { inner: Error::from_native("algeon_datafusion.server.session", message, *native_error) };
             },
@@ -181,7 +188,7 @@ impl ServerError {
         }
     }
 
-    pub fn transport(source: tonic::transport::Error) -> Self {
+    pub fn transport(source: TonicTransportError) -> Self {
         Self::new(
             ErrorCode::ServerTransportFailure,
             "algeon_datafusion.server.transport",
@@ -190,7 +197,7 @@ impl ServerError {
         .with_source(source)
     }
 
-    pub(crate) fn transport_at_addr(addr: std::net::SocketAddr, source: tonic::transport::Error) -> Self {
+    pub(crate) fn transport_at_addr(addr: SocketAddr, source: TonicTransportError) -> Self {
         Self::new(
             ErrorCode::ServerTransportFailure,
             "algeon_datafusion.server.transport",
@@ -629,14 +636,14 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     status
 }
 
-fn insert_metadata(metadata: &mut tonic::metadata::MetadataMap, key: &'static str, value: &'static str) {
+fn insert_metadata(metadata: &mut MetadataMap, key: &'static str, value: &'static str) {
     if let Ok(value) = MetadataValue::try_from(value) {
         metadata.insert(key, value);
     }
 }
 
 fn insert_fact_metadata(
-    metadata: &mut tonic::metadata::MetadataMap,
+    metadata: &mut MetadataMap,
     metadata_key: &'static str,
     error: &Error,
     fact_key: &'static str,
@@ -789,8 +796,10 @@ fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
 mod tests {
     use std::{error::Error as StdError, fmt};
 
+    use cudf::testing::error::new_with_for_test;
     use datafusion::{
         common::{Column, Diagnostic, SchemaError, TableReference},
+        prelude::SessionContext,
         sql::sqlparser::parser::ParserError,
     };
     use tonic::Code;
@@ -954,8 +963,8 @@ mod tests {
 
     #[test]
     fn server_error_debug_omits_native_and_cudf_source_payloads_but_keeps_typed_access() {
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::InvalidPlan,
+        let native = QueryError::new(
+            QueryErrorCode::InvalidPlan,
             "query_engine.test.server_debug_source",
             "server-native-source-message-secret",
         )
@@ -965,7 +974,7 @@ mod tests {
         };
         let native_source = native_error
             .source()
-            .and_then(|source| source.downcast_ref::<query_engine::error::QueryError>())
+            .and_then(|source| source.downcast_ref::<QueryError>())
             .expect("native source must remain typed");
         assert_eq!(native_source.fact_value("literal"), Some("server-native-source-fact-secret"));
         let native_debug = format!("{native_error:?}");
@@ -973,7 +982,7 @@ mod tests {
         assert!(!native_debug.contains("server-native-source-message-secret"), "{native_debug}");
         assert!(!native_debug.contains("server-native-source-fact-secret"), "{native_debug}");
 
-        let cudf = cudf::testing::error::new_with_for_test(
+        let cudf = new_with_for_test(
             cudf::ErrorCode::ForeignInvalidArgument,
             "cudf.test.server_debug_source",
             "server-cudf-source-detail-secret refresh_token=cudf-refresh-secret",
@@ -1190,7 +1199,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_context_missing_table_remains_generic_planning_without_a_typed_relation_error() {
-        let context = datafusion::prelude::SessionContext::new();
+        let context = SessionContext::new();
         let error = context
             .sql("SELECT * FROM p39_missing_table")
             .await
@@ -1449,8 +1458,8 @@ mod tests {
 
     #[test]
     fn server_error_session_preserves_native_query_error_classification() {
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::ServiceOverloaded,
+        let native = QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
             "query_engine.query_service.admit",
             "native query service queue is full",
         )

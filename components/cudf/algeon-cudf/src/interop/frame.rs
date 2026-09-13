@@ -11,6 +11,7 @@ use super::{
     },
     *,
 };
+use crate::core::{error::row_count_mismatch_error, schema::column_name_count_mismatch_error};
 
 pub(crate) struct BorrowedPartitionColumnGroup<'a> {
     pub(crate) top_level_column_indices: Vec<usize>,
@@ -44,7 +45,7 @@ impl PartitionedDataFrameExport {
     /// and owned columns.
     pub fn new(names: Vec<String>, columns: Vec<Column>) -> crate::Result<Self> {
         if names.len() != columns.len() {
-            return Err(crate::core::schema::column_name_count_mismatch_error(
+            return Err(column_name_count_mismatch_error(
                 "interop::PartitionedDataFrameExport::new",
                 "number of names must equal number of columns",
                 names.len(),
@@ -62,7 +63,7 @@ impl PartitionedDataFrameExport {
         for (index, column) in columns.iter().enumerate().skip(1) {
             let rows = column.view()?.len()?;
             if rows != first_rows {
-                return Err(crate::core::error::row_count_mismatch_error(
+                return Err(row_count_mismatch_error(
                     "interop::PartitionedDataFrameExport::new",
                     index,
                     rows,

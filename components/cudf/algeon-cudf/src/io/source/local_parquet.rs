@@ -6,13 +6,14 @@ use std::{
 };
 
 use super::*;
+use crate::io::parquet::{RemoteParquetProfile, RemoteParquetSource, RemoteReadMode};
 
 /// Explicit Parquet source location represented by the checked source
 /// contract.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParquetSourceLocation {
     LocalPath(PathBuf),
-    ObjectStoreUri(crate::io::parquet::RemoteParquetSource),
+    ObjectStoreUri(RemoteParquetSource),
 }
 
 impl ParquetSourceLocation {
@@ -25,7 +26,7 @@ impl ParquetSourceLocation {
     pub fn object_store_uri(uri: impl Into<String>) -> Result<Self> {
         let uri = uri.into();
         validate_object_store_uri(&uri)?;
-        Ok(Self::ObjectStoreUri(crate::io::parquet::RemoteParquetSource::s3(uri)?))
+        Ok(Self::ObjectStoreUri(RemoteParquetSource::s3(uri)?))
     }
 
     pub fn reader_path(&self) -> String {
@@ -35,7 +36,7 @@ impl ParquetSourceLocation {
         }
     }
 
-    pub fn remote_source(&self) -> Option<&crate::io::parquet::RemoteParquetSource> {
+    pub fn remote_source(&self) -> Option<&RemoteParquetSource> {
         match self {
             Self::LocalPath(_) => None,
             Self::ObjectStoreUri(source) => Some(source),
@@ -881,7 +882,7 @@ impl LocalParquetFile {
     }
 
     /// Typed remote Parquet source when this file is an object-store URI.
-    pub fn remote_source(&self) -> Option<&crate::io::parquet::RemoteParquetSource> {
+    pub fn remote_source(&self) -> Option<&RemoteParquetSource> {
         self.location.remote_source()
     }
 
@@ -893,8 +894,8 @@ impl LocalParquetFile {
     /// Attach a typed remote Parquet profile and read policy.
     pub fn with_remote_parquet_contract(
         mut self,
-        profile: crate::io::parquet::RemoteParquetProfile,
-        read_mode: crate::io::parquet::RemoteReadMode,
+        profile: RemoteParquetProfile,
+        read_mode: RemoteReadMode,
     ) -> Result<Self> {
         let ParquetSourceLocation::ObjectStoreUri(source) = &mut self.location else {
             return Err(Error::new_with(

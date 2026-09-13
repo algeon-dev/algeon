@@ -7,11 +7,14 @@
 
 use std::{
     collections::HashMap,
+    fmt,
     marker::PhantomData,
+    mem,
     sync::{Arc, Condvar, Mutex, MutexGuard},
     time::Instant,
 };
 
+use cudf::runtime::{DeviceHealthStatus, device_health_snapshot, quarantine_device_resource};
 use cugraph::{ParkedGraph, Transposed, Transposition};
 use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
@@ -214,8 +217,8 @@ impl Clone for GpuResidentGraphCache {
     }
 }
 
-impl std::fmt::Debug for GpuResidentGraphCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for GpuResidentGraphCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let snapshot = self.snapshot().ok();
         f.debug_struct("GpuResidentGraphCache")
             .field("device_ordinal", &self.inner.ledger.device_ordinal())
@@ -784,12 +787,12 @@ impl GpuResidentGraphInsertTransaction {
             return Err(error);
         }
         let device = self.allocation_scope.device();
-        let health = cudf::runtime::device_health_snapshot(device);
+        let health = device_health_snapshot(device);
         let scope_usage = self.scope_usage();
         let usage_is_empty = scope_usage.as_ref().is_ok_and(|usage| {
             usage.current_bytes == 0 && usage.current_aligned_bytes == 0 && usage.current_allocations == 0
         });
-        if health.status() != cudf::runtime::DeviceHealthStatus::Healthy || !usage_is_empty {
+        if health.status() != DeviceHealthStatus::Healthy || !usage_is_empty {
             charge.retain_charge_after_unsafe_teardown();
             return self.fail_closed_candidate_teardown(
                 "resident graph candidate teardown could not prove an empty healthy allocation scope",
@@ -836,8 +839,7 @@ impl Drop for GpuResidentGraphInsertTransaction {
         let scope_empty = self.allocation_scope.usage().is_ok_and(|usage| {
             usage.current_bytes == 0 && usage.current_aligned_bytes == 0 && usage.current_allocations == 0
         });
-        let healthy = cudf::runtime::device_health_snapshot(self.allocation_scope.device()).status()
-            == cudf::runtime::DeviceHealthStatus::Healthy;
+        let healthy = device_health_snapshot(self.allocation_scope.device()).status() == DeviceHealthStatus::Healthy;
         if scope_fenced && scope_empty && healthy {
             if charge.release_after_proven_empty().is_err() {
                 let _ =
@@ -968,7 +970,7 @@ where T: GpuResidentGraphTransposition
     pub fn verify_reparked_scope_for_return(&self) -> Result<()> {
         self.verify_retained_scope_usage()?;
         let device = self.entry.allocation_scope.device();
-        if cudf::runtime::device_health_snapshot(device).status() != cudf::runtime::DeviceHealthStatus::Healthy {
+        if device_health_snapshot(device).status() != DeviceHealthStatus::Healthy {
             return Err(QueryError::new(
                 QueryErrorCode::CudfPersistentFailure,
                 OPERATION,
@@ -1124,11 +1126,11 @@ fn destroy_entry_after_graph_drop(
         .with_fact("reason", "resident_graph_destroy_state_invalid"));
     };
     let device = entry.allocation_scope.device();
-    let before = cudf::runtime::device_health_snapshot(device);
-    if before.status() != cudf::runtime::DeviceHealthStatus::Healthy {
-        std::mem::forget(graph);
+    let before = device_health_snapshot(device);
+    if before.status() != DeviceHealthStatus::Healthy {
+        mem::forget(graph);
         let reason = "device was already unhealthy before resident graph teardown";
-        cudf::runtime::quarantine_device_resource(device, OPERATION, &reason);
+        quarantine_device_resource(device, OPERATION, &reason);
         destruction.retain_charge_after_failed_destruction()?;
         return record_teardown_quarantine(cache, entry.residency.bytes(), reason).map(|_| false);
     }
@@ -1146,8 +1148,8 @@ fn destroy_entry_after_graph_drop(
         )
         .map(|_| false);
     }
-    let after = cudf::runtime::device_health_snapshot(device);
-    if after.status() != cudf::runtime::DeviceHealthStatus::Healthy
+    let after = device_health_snapshot(device);
+    if after.status() != DeviceHealthStatus::Healthy
         || after.quarantined_teardown_count() > before.quarantined_teardown_count()
     {
         destruction.retain_charge_after_failed_destruction()?;

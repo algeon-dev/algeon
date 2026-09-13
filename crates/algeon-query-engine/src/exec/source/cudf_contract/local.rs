@@ -1,10 +1,19 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
+
+use cudf::{
+    io::source::{
+        LocalParquetFile as CudfLocalParquetFile, LocalParquetSource as CudfLocalParquetSource,
+        ParquetVariableWidthEncodingProof as CudfParquetVariableWidthEncodingProof,
+        ParquetVariableWidthPayloadEvidence as CudfParquetVariableWidthPayloadEvidence, SourceChunk as CudfSourceChunk,
+    },
+    ops::ast::AstExpression,
+};
+use query_planning::{
+    parquet_stats::ParquetVariableWidthEncodingProof,
+    source::{ParquetReadStrategy, ParquetReaderDecimalType, ParquetSourceLocation},
+};
 
 use super::{
-    super::{
-        predicate::{lower_source_reader_batch_predicate, lower_source_reader_predicate},
-        *,
-    },
     error::{cudf_error_for_chunk, cudf_error_for_file, cudf_error_for_source, path_fact},
     remote::attach_cudf_remote_parquet_contract,
     schema::{
@@ -12,12 +21,23 @@ use super::{
         cudf_source_required_columns, cudf_source_schema,
     },
 };
+use crate::{
+    chunk::{
+        SourceMetadataCache, footer_verified_object_store_reader_decimal_types,
+        footer_verified_object_store_reader_decimal_types_with_supplied_cache,
+        object_store_decimal_reader_predicate_requires_footer_contract, source_file_for_chunk,
+    },
+    exec::source::{
+        predicate::{lower_source_reader_batch_predicate, lower_source_reader_predicate},
+        *,
+    },
+};
 
 pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
+) -> Result<(CudfLocalParquetSource, CudfSourceChunk)> {
     let verified_chunk;
     let chunk =
         if let Some(reader_decimal_types) = footer_verified_reader_decimal_types_for_chunk(context, source, chunk)? {
@@ -28,23 +48,22 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(
         };
     let cudf_source = cudf_local_parquet_source_for_chunk(context, source, chunk)?;
     let row_groups = if chunk.reads_all_row_groups { None } else { Some(chunk.row_group_indexes.clone()) };
-    let cudf_chunk =
-        cudf::io::source::SourceChunk::from_source_file_selection(&cudf_source, 0, chunk.chunk_index, row_groups)
-            .map_err(|error| {
-                attach_row_group_facts(
-                    cudf_error_for_chunk(
-                        "query_engine.local_parquet_chunk.descriptor_cudf",
-                        "failed to convert native local parquet source chunk descriptor into cudf source chunk",
-                        error,
-                        chunk,
-                    )
-                    .with_fact("path", parquet_chunk_path_fact(chunk))
-                    .with_fact("chunk_index", chunk.chunk_index)
-                    .with_fact("file_index", chunk.file_index)
-                    .with_fact("read_columns", chunk.read_columns.len()),
+    let cudf_chunk = CudfSourceChunk::from_source_file_selection(&cudf_source, 0, chunk.chunk_index, row_groups)
+        .map_err(|error| {
+            attach_row_group_facts(
+                cudf_error_for_chunk(
+                    "query_engine.local_parquet_chunk.descriptor_cudf",
+                    "failed to convert native local parquet source chunk descriptor into cudf source chunk",
+                    error,
                     chunk,
                 )
-            })?;
+                .with_fact("path", parquet_chunk_path_fact(chunk))
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("read_columns", chunk.read_columns.len()),
+                chunk,
+            )
+        })?;
     let predicate = lower_source_reader_predicate(context, source, &cudf_source, &cudf_chunk)?;
     let cudf_source = attach_cudf_source_reader_predicate(
         cudf_source,
@@ -64,7 +83,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-) -> Result<(cudf::io::source::LocalParquetSource, Vec<cudf::io::source::SourceChunk>)> {
+) -> Result<(CudfLocalParquetSource, Vec<CudfSourceChunk>)> {
     if chunks.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -72,7 +91,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
             "local parquet source chunk batch must not be empty",
         ));
     }
-    let mut metadata_cache = crate::chunk::SourceMetadataCache::default();
+    let mut metadata_cache = SourceMetadataCache::default();
     let chunks = chunks
         .iter()
         .map(|chunk| {
@@ -91,8 +110,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
     let mut cudf_file_positions = std::collections::BTreeMap::new();
     let mut batch_file_indexes = Vec::with_capacity(chunks.len());
     for chunk in &chunks {
-        let file =
-            crate::chunk::source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk_batch.file_cudf")?;
+        let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk_batch.file_cudf")?;
         let position = match cudf_file_positions.entry(chunk.file_index) {
             std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::btree_map::Entry::Vacant(entry) => {
@@ -120,14 +138,9 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
         .zip(batch_file_indexes)
         .map(|(chunk, batch_file_index)| {
             let row_groups = if chunk.reads_all_row_groups { None } else { Some(chunk.row_group_indexes.clone()) };
-            cudf::io::source::SourceChunk::from_source_file_selection(
-                &cudf_source,
-                batch_file_index,
-                chunk.chunk_index,
-                row_groups,
-            )
-            .map_err(|error| {
-                attach_row_group_facts(
+            CudfSourceChunk::from_source_file_selection(&cudf_source, batch_file_index, chunk.chunk_index, row_groups)
+                .map_err(|error| {
+                    attach_row_group_facts(
                     cudf_error_for_chunk(
                         "query_engine.local_parquet_chunk_batch.descriptor_cudf",
                         "failed to convert native local parquet source chunk batch descriptor into cudf source chunk",
@@ -141,7 +154,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
                     .with_fact("read_columns", chunk.read_columns.len()),
                     chunk,
                 )
-            })
+                })
         })
         .collect::<Result<Vec<_>>>()?;
     let predicate = lower_source_reader_batch_predicate(context, source, &cudf_source, &cudf_chunks)?;
@@ -165,9 +178,8 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_file_selection(
     file: &LocalParquetFile,
     file_index: usize,
     chunk_index: usize,
-) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
-    let verified_reader_decimal_types =
-        crate::chunk::footer_verified_object_store_reader_decimal_types(context, source, file)?;
+) -> Result<(CudfLocalParquetSource, CudfSourceChunk)> {
+    let verified_reader_decimal_types = footer_verified_object_store_reader_decimal_types(context, source, file)?;
     let verified_file;
     let file = if let Some(reader_decimal_types) = verified_reader_decimal_types {
         verified_file = file.clone().with_reader_decimal_types(reader_decimal_types);
@@ -178,20 +190,18 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_file_selection(
     let cudf_source = cudf_local_parquet_source_for_file(context, source, file, file_index, chunk_index)?;
     let row_groups = file.row_groups.clone();
     let cudf_chunk =
-        cudf::io::source::SourceChunk::from_source_file_selection(&cudf_source, 0, chunk_index, row_groups).map_err(
-            |error| {
-                cudf_error_for_file(
-                    "query_engine.local_parquet_source.descriptor_cudf",
-                    "failed to convert native local parquet source file descriptor into cudf source chunk",
-                    error,
-                    file,
-                )
-                .with_fact("path", parquet_file_path_fact(file))
-                .with_fact("chunk_index", chunk_index)
-                .with_fact("file_index", file_index)
-                .with_fact("read_columns", source.read_columns.len())
-            },
-        )?;
+        CudfSourceChunk::from_source_file_selection(&cudf_source, 0, chunk_index, row_groups).map_err(|error| {
+            cudf_error_for_file(
+                "query_engine.local_parquet_source.descriptor_cudf",
+                "failed to convert native local parquet source file descriptor into cudf source chunk",
+                error,
+                file,
+            )
+            .with_fact("path", parquet_file_path_fact(file))
+            .with_fact("chunk_index", chunk_index)
+            .with_fact("file_index", file_index)
+            .with_fact("read_columns", source.read_columns.len())
+        })?;
     let predicate = lower_source_reader_predicate(context, source, &cudf_source, &cudf_chunk)?;
     let cudf_source = attach_cudf_source_reader_predicate(
         cudf_source,
@@ -211,8 +221,8 @@ pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-) -> Result<Option<Vec<crate::source::ParquetReaderDecimalType>>> {
-    let mut metadata_cache = crate::chunk::SourceMetadataCache::default();
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    let mut metadata_cache = SourceMetadataCache::default();
     footer_verified_reader_decimal_types_for_chunk_with_cache(context, source, chunk, &mut metadata_cache)
 }
 
@@ -220,20 +230,16 @@ pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk_wi
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    metadata_cache: &mut crate::chunk::SourceMetadataCache,
-) -> Result<Option<Vec<crate::source::ParquetReaderDecimalType>>> {
-    let file = crate::chunk::source_file_for_chunk(
-        source,
-        chunk,
-        "query_engine.local_parquet_chunk.reader_decimal_type_metadata",
-    )?;
+    metadata_cache: &mut SourceMetadataCache,
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.reader_decimal_type_metadata")?;
     if chunk.reader_decimal_types_footer_verified
         && !chunk.reader_decimal_types.is_empty()
-        && crate::chunk::object_store_decimal_reader_predicate_requires_footer_contract(source, file)
+        && object_store_decimal_reader_predicate_requires_footer_contract(source, file)
     {
         return Ok(Some(chunk.reader_decimal_types.clone()));
     }
-    crate::chunk::footer_verified_object_store_reader_decimal_types_with_supplied_cache(
+    footer_verified_object_store_reader_decimal_types_with_supplied_cache(
         context,
         source,
         file,
@@ -244,7 +250,7 @@ pub(in crate::exec::source) fn footer_verified_reader_decimal_types_for_chunk_wi
 
 pub(in crate::exec::source) fn chunk_with_reader_decimal_types(
     chunk: &SourceChunk,
-    reader_decimal_types: Vec<crate::source::ParquetReaderDecimalType>,
+    reader_decimal_types: Vec<ParquetReaderDecimalType>,
 ) -> SourceChunk {
     let mut chunk = chunk.clone();
     chunk.reader_decimal_types = reader_decimal_types;
@@ -256,8 +262,8 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-) -> Result<cudf::io::source::LocalParquetSource> {
-    let file = crate::chunk::source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.source_cudf")?;
+) -> Result<CudfLocalParquetSource> {
+    let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.source_cudf")?;
     let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
     let cudf_file = attach_cudf_variable_width_payload_evidence(cudf_file, file);
     cudf_local_parquet_source_from_file(
@@ -284,7 +290,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_file(
     file: &LocalParquetFile,
     file_index: usize,
     chunk_index: usize,
-) -> Result<cudf::io::source::LocalParquetSource> {
+) -> Result<CudfLocalParquetSource> {
     let cudf_file = cudf_local_parquet_file(context, file)?;
     cudf_local_parquet_source_from_file(
         source,
@@ -303,24 +309,24 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_file(
 
 pub(in crate::exec::source) fn cudf_local_parquet_source_from_file<'a>(
     source: &LocalParquetSource,
-    cudf_file: cudf::io::source::LocalParquetFile,
+    cudf_file: CudfLocalParquetFile,
     read_columns: impl IntoIterator<Item = &'a str>,
     operation: &'static str,
-) -> Result<cudf::io::source::LocalParquetSource> {
+) -> Result<CudfLocalParquetSource> {
     cudf_local_parquet_source_from_files(source, [cudf_file], read_columns, operation)
 }
 
 pub(in crate::exec::source) fn cudf_local_parquet_source_from_files<'a>(
     source: &LocalParquetSource,
-    cudf_files: impl IntoIterator<Item = cudf::io::source::LocalParquetFile>,
+    cudf_files: impl IntoIterator<Item = CudfLocalParquetFile>,
     read_columns: impl IntoIterator<Item = &'a str>,
     operation: &'static str,
-) -> Result<cudf::io::source::LocalParquetSource> {
+) -> Result<CudfLocalParquetSource> {
     let cudf_schema = cudf_source_schema(source)?;
     let output_columns = cudf_source_output_columns(source)?;
     let required_columns = cudf_source_required_columns(source)?;
     let partition_columns = cudf_partition_columns(source)?;
-    cudf::io::source::LocalParquetSource::data(
+    CudfLocalParquetSource::data(
         cudf_files,
         cudf_schema,
         read_columns,
@@ -345,8 +351,8 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_from_files<'a>(
     reason = "native cuDF/cuGraph/cuVS call parameters stay explicit at the FFI boundary"
 )]
 pub(in crate::exec::source) fn attach_cudf_source_reader_predicate(
-    mut cudf_source: cudf::io::source::LocalParquetSource,
-    predicate: Option<std::sync::Arc<cudf::ops::ast::AstExpression>>,
+    mut cudf_source: CudfLocalParquetSource,
+    predicate: Option<Arc<AstExpression>>,
     source: &LocalParquetSource,
     operation: &'static str,
     path: &Path,
@@ -354,7 +360,7 @@ pub(in crate::exec::source) fn attach_cudf_source_reader_predicate(
     file_index: usize,
     read_columns: usize,
     row_groups: Option<String>,
-) -> Result<cudf::io::source::LocalParquetSource> {
+) -> Result<CudfLocalParquetSource> {
     if let Some(predicate) = predicate {
         cudf_source = cudf_source.with_reader_predicate(predicate).map_err(|error| {
             let error = cudf_error_for_source(
@@ -376,23 +382,19 @@ pub(in crate::exec::source) fn attach_cudf_source_reader_predicate(
 pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
     context: &ExecutionContext,
     chunk: &SourceChunk,
-) -> Result<cudf::io::source::LocalParquetFile> {
+) -> Result<CudfLocalParquetFile> {
     let partition_values = chunk.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
     let mut cudf_file = match chunk.resolved_source.read_strategy() {
-        crate::source::ParquetReadStrategy::RemoteDirect => match &chunk.location {
-            crate::source::ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
-                cudf::io::source::LocalParquetFile::object_store_uri(
-                    uri.clone(),
-                    chunk.stable_id.as_str(),
-                    partition_values,
-                )
+        ParquetReadStrategy::RemoteDirect => match &chunk.location {
+            ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
+                CudfLocalParquetFile::object_store_uri(uri.clone(), chunk.stable_id.as_str(), partition_values)
             },
-            crate::source::ParquetSourceLocation::LocalPath(_) => {
-                cudf::io::source::LocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values)
+            ParquetSourceLocation::LocalPath(_) => {
+                CudfLocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values)
             },
         },
-        crate::source::ParquetReadStrategy::LocalKvikio | crate::source::ParquetReadStrategy::LocalCacheKvikio => {
-            cudf::io::source::LocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values)
+        ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio => {
+            CudfLocalParquetFile::new(&chunk.path, chunk.stable_id.as_str(), partition_values)
         },
     }
     .map_err(|error| {
@@ -478,23 +480,19 @@ pub(in crate::exec::source) fn cudf_local_parquet_file_for_chunk(
 pub(in crate::exec::source) fn cudf_local_parquet_file(
     context: &ExecutionContext,
     file: &LocalParquetFile,
-) -> Result<cudf::io::source::LocalParquetFile> {
+) -> Result<CudfLocalParquetFile> {
     let partition_values = file.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
     let mut cudf_file = match file.resolved_source.read_strategy() {
-        crate::source::ParquetReadStrategy::RemoteDirect => match &file.location {
-            crate::source::ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
-                cudf::io::source::LocalParquetFile::object_store_uri(
-                    uri.clone(),
-                    file.stable_id.as_str(),
-                    partition_values,
-                )
+        ParquetReadStrategy::RemoteDirect => match &file.location {
+            ParquetSourceLocation::ObjectStoreUri { uri, .. } => {
+                CudfLocalParquetFile::object_store_uri(uri.clone(), file.stable_id.as_str(), partition_values)
             },
-            crate::source::ParquetSourceLocation::LocalPath(_) => {
-                cudf::io::source::LocalParquetFile::new(&file.path, file.stable_id.as_str(), partition_values)
+            ParquetSourceLocation::LocalPath(_) => {
+                CudfLocalParquetFile::new(&file.path, file.stable_id.as_str(), partition_values)
             },
         },
-        crate::source::ParquetReadStrategy::LocalKvikio | crate::source::ParquetReadStrategy::LocalCacheKvikio => {
-            cudf::io::source::LocalParquetFile::new(&file.path, file.stable_id.as_str(), partition_values)
+        ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio => {
+            CudfLocalParquetFile::new(&file.path, file.stable_id.as_str(), partition_values)
         },
     }
     .map_err(|error| {
@@ -572,30 +570,24 @@ pub(in crate::exec::source) fn cudf_local_parquet_file(
 }
 
 fn attach_cudf_variable_width_payload_evidence(
-    cudf_file: cudf::io::source::LocalParquetFile,
+    cudf_file: CudfLocalParquetFile,
     file: &LocalParquetFile,
-) -> cudf::io::source::LocalParquetFile {
+) -> CudfLocalParquetFile {
     let evidence = file
         .variable_width_payload_evidence
         .iter()
         .map(|(column_index, evidence)| {
             let encoding_proof = match evidence.encoding_proof {
-                crate::parquet_stats::ParquetVariableWidthEncodingProof::Empty => {
-                    cudf::io::source::ParquetVariableWidthEncodingProof::Empty
-                },
-                crate::parquet_stats::ParquetVariableWidthEncodingProof::Plain => {
-                    cudf::io::source::ParquetVariableWidthEncodingProof::Plain
-                },
-                crate::parquet_stats::ParquetVariableWidthEncodingProof::Dictionary => {
-                    cudf::io::source::ParquetVariableWidthEncodingProof::Dictionary
-                },
-                crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary => {
-                    cudf::io::source::ParquetVariableWidthEncodingProof::PlainAndDictionary
+                ParquetVariableWidthEncodingProof::Empty => CudfParquetVariableWidthEncodingProof::Empty,
+                ParquetVariableWidthEncodingProof::Plain => CudfParquetVariableWidthEncodingProof::Plain,
+                ParquetVariableWidthEncodingProof::Dictionary => CudfParquetVariableWidthEncodingProof::Dictionary,
+                ParquetVariableWidthEncodingProof::PlainAndDictionary => {
+                    CudfParquetVariableWidthEncodingProof::PlainAndDictionary
                 },
             };
             (
                 *column_index,
-                cudf::io::source::ParquetVariableWidthPayloadEvidence::new(
+                CudfParquetVariableWidthPayloadEvidence::new(
                     evidence.physical_column_index,
                     evidence.selected_row_groups.clone(),
                     evidence.payload_upper_bound_bytes,

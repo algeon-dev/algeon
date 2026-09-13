@@ -4,9 +4,19 @@ use cudf::{
         error::{FactKeyName, FactValue},
         types::TypeId,
     },
+    testing::{
+        dataframe::{
+            trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
+            trigger_dataframe_row_range_start_limit_error_for_test,
+        },
+        series::{
+            trigger_series_row_range_end_limit_error_for_test, trigger_series_row_range_overflow_error_for_test,
+            trigger_series_row_range_start_limit_error_for_test,
+        },
+    },
 };
 
-use crate::common::sample_df;
+use crate::common::{run_named_cases, sample_df, series};
 
 fn assert_same_row_range_contract(lhs: &Error, rhs: &Error) {
     assert_eq!(lhs.kind(), rhs.kind());
@@ -23,7 +33,7 @@ fn assert_same_row_range_contract(lhs: &Error, rhs: &Error) {
 fn dataframe_and_series_filter_dtype_validation_use_same_canonical_contract() {
     let df = sample_df();
     let values = df.series("id").unwrap();
-    let bad_mask = crate::common::series::<i32>("mask", &[1, 0, 1, 0, 1]).unwrap();
+    let bad_mask = series::<i32>("mask", &[1, 0, 1, 0, 1]).unwrap();
 
     let dataframe_err = df.filter(&bad_mask).unwrap_err();
     let series_err = values.filter(&bad_mask).unwrap_err();
@@ -42,7 +52,7 @@ fn dataframe_and_series_filter_dtype_validation_use_same_canonical_contract() {
 fn dataframe_and_series_filter_length_validation_use_same_canonical_facts() {
     let df = sample_df();
     let values = df.series("id").unwrap();
-    let short_mask = crate::common::series::<bool>("mask", &[true, false]).unwrap();
+    let short_mask = series::<bool>("mask", &[true, false]).unwrap();
 
     let dataframe_err = df.filter(&short_mask).unwrap_err();
     let series_err = values.filter(&short_mask).unwrap_err();
@@ -58,24 +68,22 @@ fn dataframe_and_series_filter_length_validation_use_same_canonical_facts() {
 }
 
 fn dataframe_and_series_row_range_testing_hooks_share_same_error_shape() {
-    let dataframe_start =
-        cudf::testing::dataframe::trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
-    let series_start = cudf::testing::series::trigger_series_row_range_start_limit_error_for_test().unwrap_err();
+    let dataframe_start = trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
+    let series_start = trigger_series_row_range_start_limit_error_for_test().unwrap_err();
     assert_same_row_range_contract(&dataframe_start, &series_start);
 
-    let dataframe_end = cudf::testing::dataframe::trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
-    let series_end = cudf::testing::series::trigger_series_row_range_end_limit_error_for_test().unwrap_err();
+    let dataframe_end = trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
+    let series_end = trigger_series_row_range_end_limit_error_for_test().unwrap_err();
     assert_same_row_range_contract(&dataframe_end, &series_end);
 
-    let dataframe_overflow =
-        cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
-    let series_overflow = cudf::testing::series::trigger_series_row_range_overflow_error_for_test().unwrap_err();
+    let dataframe_overflow = trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
+    let series_overflow = trigger_series_row_range_overflow_error_for_test().unwrap_err();
     assert_same_row_range_contract(&dataframe_overflow, &series_overflow);
 }
 
 #[test]
 fn shared_row_selection_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "dataframe_and_series_filter_dtype_validation_use_same_canonical_contract",
             dataframe_and_series_filter_dtype_validation_use_same_canonical_contract,

@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
-use tonic::transport::{Channel, Endpoint};
+use tokio::time::sleep;
+use tonic::transport::{Channel, Endpoint, Error as TransportError};
 
 pub(crate) type ConnectionResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -72,7 +73,7 @@ pub(crate) async fn connect_with_retry<T>(
     config: ConnectionRetryConfig,
     mut before_connect: impl FnMut() -> ConnectionResult<BeforeConnect>,
     map_channel: impl FnOnce(Channel) -> T,
-    connection_failure: impl Fn(&tonic::transport::Error) -> String,
+    connection_failure: impl Fn(&TransportError) -> String,
 ) -> ConnectionResult<T> {
     let endpoint = Endpoint::from_shared(url.to_string())?;
     let deadline = match config.limit {
@@ -102,14 +103,14 @@ pub(crate) async fn connect_with_retry<T>(
                     // window intact; timeout callers fail immediately once the
                     // deadline has elapsed.
                     if matches!(config.limit, RetryLimit::Attempts(_)) {
-                        tokio::time::sleep(backoff).await;
+                        sleep(backoff).await;
                     }
                     return Err(connection_failure(&error).into());
                 }
             },
         }
 
-        tokio::time::sleep(backoff).await;
+        sleep(backoff).await;
         backoff = config.next_backoff(backoff);
     }
 }

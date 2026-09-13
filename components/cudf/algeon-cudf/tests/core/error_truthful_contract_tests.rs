@@ -3,8 +3,20 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use cudf::{
     ErrorCode, ErrorKind, ErrorStatus, TypeId,
     core::error::{FactKeyName, FactValue, kind_for_code, status_for_code},
+    testing::{
+        core::{
+            ffi_cuda_status_error_for_test, ffi_io_status_error_for_test,
+            trigger_canonical_key_in_detail_path_for_test, trigger_if_absent_error_annotation_contract_for_test,
+            trigger_reanchor_if_needed_same_operation_contract_for_test,
+            trigger_same_operation_reanchor_contract_for_test, trigger_truthful_error_contract_for_test,
+            trigger_with_column_error_annotation_contract_for_test,
+        },
+        error::{annotate_foreign_invariant_contract_if_absent_for_test, foreign_invariant_violation_for_test},
+    },
 };
 use strum::IntoEnumIterator;
+
+use crate::common::run_named_cases;
 
 fn kind_projection_is_defined_for_every_public_error_code() {
     let codes: Vec<_> = ErrorCode::iter().collect();
@@ -52,7 +64,7 @@ fn deterministic_host_materialization_size_failures_are_permanent_resource_leave
 }
 
 fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
-    let transient = cudf::testing::core::ffi_io_status_error_for_test(
+    let transient = ffi_io_status_error_for_test(
         "CUDA error encountered at: cudf/cpp/src/utilities/cuda_memcpy.cu:43: 1 cudaErrorInvalidValue invalid argument",
         "testing::ffi_status_error_for_test",
     );
@@ -62,7 +74,7 @@ fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
     assert!(transient.is_retryable());
     assert_eq!(transient.detail_values("transient_promotion").collect::<Vec<_>>(), vec!["cuda_invalid_value_copy"]);
 
-    let ordinary = cudf::testing::core::ffi_io_status_error_for_test(
+    let ordinary = ffi_io_status_error_for_test(
         "Failed to open local parquet file: No such file or directory",
         "testing::ffi_status_error_for_test",
     );
@@ -71,7 +83,7 @@ fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
     assert_eq!(ordinary.status(), ErrorStatus::Permanent);
     assert!(!ordinary.is_retryable());
 
-    let os_invalid_argument = cudf::testing::core::ffi_io_status_error_for_test(
+    let os_invalid_argument = ffi_io_status_error_for_test(
         "Failed to open local parquet file: invalid argument in thrust path",
         "testing::ffi_status_error_for_test",
     );
@@ -79,17 +91,15 @@ fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
     assert_eq!(os_invalid_argument.status(), ErrorStatus::Permanent);
     assert!(!os_invalid_argument.is_retryable());
 
-    let cuda_invalid_value_without_copy_context = cudf::testing::core::ffi_io_status_error_for_test(
+    let cuda_invalid_value_without_copy_context = ffi_io_status_error_for_test(
         "cudaErrorInvalidValue invalid argument while opening input path",
         "testing::ffi_status_error_for_test",
     );
     assert_eq!(cuda_invalid_value_without_copy_context.code(), ErrorCode::IoFailure);
     assert_eq!(cuda_invalid_value_without_copy_context.status(), ErrorStatus::Permanent);
 
-    let cuda = cudf::testing::core::ffi_cuda_status_error_for_test(
-        "cudaErrorInvalidValue invalid argument",
-        "testing::ffi_status_error_for_test",
-    );
+    let cuda =
+        ffi_cuda_status_error_for_test("cudaErrorInvalidValue invalid argument", "testing::ffi_status_error_for_test");
     assert_eq!(cuda.code(), ErrorCode::CudaRuntime);
     assert_eq!(cuda.status(), ErrorStatus::Temporary);
 }
@@ -99,7 +109,7 @@ fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
 // is not downstream-visible, so the tests cannot live outside the crate.
 
 fn truthful_error_hook_exposes_typed_facts_without_string_parsing() {
-    let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
+    let err = trigger_truthful_error_contract_for_test().unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -111,7 +121,7 @@ fn truthful_error_hook_exposes_typed_facts_without_string_parsing() {
 }
 
 fn diagnostic_string_preserves_machine_fields_and_human_context() {
-    let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
+    let err = trigger_truthful_error_contract_for_test().unwrap_err();
     let diagnostic = err.diagnostic_string();
 
     assert!(diagnostic.contains("code=ColumnLengthMismatch"), "{diagnostic}");
@@ -131,7 +141,7 @@ fn diagnostic_string_preserves_machine_fields_and_human_context() {
 }
 
 fn reanchor_preserves_payload_and_records_call_chain_in_order() {
-    let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
+    let err = trigger_truthful_error_contract_for_test().unwrap_err();
 
     assert_eq!(err.operation(), "testing::truthful_error_contract::outer");
     assert_eq!(
@@ -147,7 +157,7 @@ fn reanchor_preserves_payload_and_records_call_chain_in_order() {
 }
 
 fn detail_writer_panics_when_given_a_canonical_fact_snake_case_key() {
-    let panic = catch_unwind(AssertUnwindSafe(cudf::testing::core::trigger_canonical_key_in_detail_path_for_test));
+    let panic = catch_unwind(AssertUnwindSafe(trigger_canonical_key_in_detail_path_for_test));
 
     let payload = panic.expect_err("canonical fact key on the detail path must panic the writer");
     let message = payload
@@ -162,14 +172,14 @@ fn detail_writer_panics_when_given_a_canonical_fact_snake_case_key() {
 }
 
 fn reanchor_does_not_deduplicate_same_operation_labels() {
-    let err = cudf::testing::core::trigger_same_operation_reanchor_contract_for_test().unwrap_err();
+    let err = trigger_same_operation_reanchor_contract_for_test().unwrap_err();
 
     assert_eq!(err.operation(), "testing::truthful_error_contract::same");
     assert_eq!(err.call_chain(), ["testing::truthful_error_contract::same", "testing::truthful_error_contract::same",],);
 }
 
 fn reanchor_if_needed_is_noop_when_operation_is_already_anchored() {
-    let err = cudf::testing::core::trigger_reanchor_if_needed_same_operation_contract_for_test().unwrap_err();
+    let err = trigger_reanchor_if_needed_same_operation_contract_for_test().unwrap_err();
 
     assert_eq!(err.operation(), "testing::truthful_error_contract::same_if_needed");
     assert!(err.call_chain().is_empty());
@@ -177,7 +187,7 @@ fn reanchor_if_needed_is_noop_when_operation_is_already_anchored() {
 }
 
 fn if_absent_helpers_preserve_existing_payload_and_only_fill_missing_fields() {
-    let err = cudf::testing::core::trigger_if_absent_error_annotation_contract_for_test().unwrap_err();
+    let err = trigger_if_absent_error_annotation_contract_for_test().unwrap_err();
 
     assert_eq!(err.operation(), "testing::truthful_error_contract::if_absent");
     assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(7)));
@@ -189,7 +199,7 @@ fn if_absent_helpers_preserve_existing_payload_and_only_fill_missing_fields() {
 }
 
 fn with_column_helper_writes_the_canonical_column_name_fact() {
-    let err = cudf::testing::core::trigger_with_column_error_annotation_contract_for_test().unwrap_err();
+    let err = trigger_with_column_error_annotation_contract_for_test().unwrap_err();
 
     assert_eq!(err.operation(), "testing::truthful_error_contract::with_column::outer");
     assert_eq!(err.call_chain(), ["testing::truthful_error_contract::with_column::inner"]);
@@ -198,7 +208,7 @@ fn with_column_helper_writes_the_canonical_column_name_fact() {
 }
 
 fn foreign_invariant_contract_helper_builds_the_canonical_error_shape() {
-    let err = cudf::testing::error::foreign_invariant_violation_for_test();
+    let err = foreign_invariant_violation_for_test();
 
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
@@ -217,7 +227,7 @@ fn foreign_invariant_contract_helper_builds_the_canonical_error_shape() {
 }
 
 fn foreign_invariant_contract_annotation_only_fills_missing_details() {
-    let err = cudf::testing::error::annotate_foreign_invariant_contract_if_absent_for_test();
+    let err = annotate_foreign_invariant_contract_if_absent_for_test();
 
     assert_eq!(err.code(), ErrorCode::InvariantViolation);
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
@@ -234,7 +244,7 @@ fn foreign_invariant_contract_annotation_only_fills_missing_details() {
 
 #[test]
 fn error_truthful_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "kind_projection_is_defined_for_every_public_error_code",
             kind_projection_is_defined_for_every_public_error_code,

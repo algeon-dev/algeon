@@ -30,10 +30,10 @@ use cudf::{
 use cudf_sys::test_support::{
     cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_device,
     cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
-    cudf_test_exec_reset_observation, cudf_test_stream_handle_value,
+    cudf_test_exec_reset_observation, cudf_test_memory_resource_raw, cudf_test_stream_handle_value,
 };
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, run_named_cases, series};
 
 // ---------------------------------------------------------------------------
 // Safe wrappers around observation hooks
@@ -963,7 +963,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
 }
 
 fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
-    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
+    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -1056,9 +1056,9 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 }
 
 fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
-    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
+    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
-    let indices = crate::common::series::<i32>("gather", &[2, 0]).unwrap();
+    let indices = series::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.testing_raw_handle_value();
@@ -1091,9 +1091,9 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 }
 
 fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
-    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
+    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
-    let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = series::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.testing_raw_handle_value();
@@ -1130,7 +1130,7 @@ fn column_deep_copy_uses_source_runtime_stream_without_override() {
 /// results. This is the default-path baseline for
 /// `DataFrame::with_execution(&ctx).sort_values(...)`.
 fn sort_values_default_produces_correct_results() {
-    let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
+    let ids = series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
 
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
@@ -1143,12 +1143,12 @@ fn sort_values_default_produces_correct_results() {
 /// Existing `DataFrame::merge` (no context) should produce correct results.
 /// This is the default-path baseline for `DataFrame::with_execution(&ctx).merge(...)`.
 fn merge_default_produces_correct_results() {
-    let left_ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
-    let left_vals = crate::common::series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
+    let left_ids = series::<i32>("id", &[1, 2, 3]).unwrap();
+    let left_vals = series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
     let left = cudf::DataFrame::from_series([("id", left_ids), ("val", left_vals)]).unwrap();
 
-    let right_ids = crate::common::series::<i32>("id", &[2, 3, 4]).unwrap();
-    let right_scores = crate::common::series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
+    let right_ids = series::<i32>("id", &[2, 3, 4]).unwrap();
+    let right_scores = series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
     let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
 
     let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
@@ -1159,8 +1159,8 @@ fn merge_default_produces_correct_results() {
 /// Existing `GroupBy::agg` (no context) should produce correct results.
 /// This is the default-path baseline for `GroupBy::with_execution(&ctx).agg(...)`.
 fn groupby_agg_default_produces_correct_results() {
-    let keys = crate::common::series::<i32>("key", &[1, 1, 2, 2]).unwrap();
-    let vals = crate::common::series::<i64>("val", &[10, 20, 30, 40]).unwrap();
+    let keys = series::<i32>("key", &[1, 1, 2, 2]).unwrap();
+    let vals = series::<i64>("val", &[10, 20, 30, 40]).unwrap();
     let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
@@ -1283,7 +1283,7 @@ fn device_memory_resource_as_borrowed_sys_preserves_handle() {
     let mr = DeviceMemoryResource::cuda().unwrap();
     let borrowed = mr.as_borrowed_sys();
     let mut underlying = ptr::null_mut();
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_raw(borrowed.as_raw(), &mut underlying) };
+    let status = unsafe { cudf_test_memory_resource_raw(borrowed.as_raw(), &mut underlying) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(mr.testing_raw_handle_value(), underlying as usize);
 }
@@ -1387,7 +1387,7 @@ fn exec_options_defaults_are_rejected() {
 
 #[test]
 fn execution_context_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("execution_context_default_has_null_handles", execution_context_default_has_null_handles),
         ("execution_context_with_stream_stores_handle", execution_context_with_stream_stores_handle),
         ("execution_context_with_mr_stores_handle", execution_context_with_mr_stores_handle),

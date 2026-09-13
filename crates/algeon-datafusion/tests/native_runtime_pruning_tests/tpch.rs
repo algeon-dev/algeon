@@ -1,6 +1,10 @@
 use std::{fs, fs::File, sync::Arc};
 
 use arrow::array::{Date32Array, Int32Array, Int64Array, StringArray};
+use cudf::testing::arrow::{
+    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+    reset_arrow_host_interop_observation_for_test,
+};
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 use super::{fixtures::date32, *};
@@ -33,10 +37,10 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
@@ -56,10 +60,10 @@ async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal(&cpu_batches, &native_batches);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -82,12 +86,12 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q7 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal(&cpu_batches, &native_batches);
     assert_q7_nation_identity_rows(&native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
 
     let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
@@ -113,10 +117,10 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q2 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
@@ -136,10 +140,10 @@ async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu(
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal(&cpu_batches, &native_batches);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -162,11 +166,11 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q4 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
 
     let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
@@ -191,10 +195,10 @@ async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -216,11 +220,11 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q18 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
 
     let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
@@ -249,11 +253,11 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q20 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
 
     let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
@@ -279,10 +283,10 @@ async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -299,11 +303,11 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     assert_algeon_native_exec(&native_plan, "bounded TPC-H Q11 should be replaced by AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
 
     let metrics = native_plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
@@ -326,10 +330,10 @@ async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert!(arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
@@ -349,10 +353,10 @@ async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
@@ -378,10 +382,10 @@ async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal(&cpu_batches, &native_batches);
 }
 

@@ -5,13 +5,17 @@ use cudf::{
         Table,
         error::{FactKeyName, FactValue},
     },
-    testing::{TableView, prelude::*},
+    testing::{
+        TableView,
+        core::{trigger_table_column_count_limit_error_for_test, trigger_table_view_column_count_limit_error_for_test},
+        prelude::*,
+    },
 };
 
 use crate::common::{
     arm_next_table_view_negative_num_columns_fault, arm_next_table_view_negative_num_rows_fault, column_from_slice,
     column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    reset_exec_observation,
+    reset_exec_observation, run_named_cases,
 };
 
 fn test_create_table_from_columns() {
@@ -113,7 +117,7 @@ fn test_table_from_columns_mismatched_rows_rejected() {
 }
 
 fn test_testing_hook_locks_table_column_count_limit_contract() {
-    let err = cudf::testing::core::trigger_table_column_count_limit_error_for_test().unwrap_err();
+    let err = trigger_table_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -253,7 +257,7 @@ fn test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contrac
 }
 
 fn test_testing_hook_locks_table_view_column_count_limit_contract() {
-    let err = cudf::testing::core::trigger_table_view_column_count_limit_error_for_test().unwrap_err();
+    let err = trigger_table_view_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -345,7 +349,7 @@ fn test_table_view_num_rows_rejects_negative_foreign_count_with_stable_contract(
 
 #[test]
 fn table_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_create_table_from_columns", test_create_table_from_columns),
         ("test_table_column_access", test_table_column_access),
         ("test_table_deep_copy", test_table_deep_copy),

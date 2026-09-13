@@ -33,7 +33,7 @@ use query_engine::{
 };
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
-use crate::capability::CapabilityReason;
+use crate::{capability::CapabilityReason, native::validate::native_zero_column_count_source_is_safe};
 
 /// Lowers a normalized native tree into the DataFusion-free query IR.
 ///
@@ -53,7 +53,7 @@ pub(super) fn lower_normalized_plan(
         NormalizedNativeRoot::Aggregate(root)
             if normalized.single_source_input().is_some_and(|source| {
                 source.table_format_scan_exec().is_some()
-                    && crate::native::validate::native_zero_column_count_source_is_safe(
+                    && native_zero_column_count_source_is_safe(
                         source.filter,
                         root.pre_aggregate_projection,
                         root.aggregate,
@@ -215,7 +215,7 @@ fn lower_literal_source_input(
     let source_node = builder
         .add_source(NativeSourceNode::LiteralBatch(NativeLiteralBatchSource::new(Arc::clone(&native_schema), batches)));
     let source_node = if let Some(fetch) = fetch {
-        builder.add_limit(source_node, query_engine::expr::LimitSpec::fetch(fetch), Arc::clone(&native_schema))
+        builder.add_limit(source_node, NativeLimitSpec::fetch(fetch), Arc::clone(&native_schema))
     } else {
         source_node
     };

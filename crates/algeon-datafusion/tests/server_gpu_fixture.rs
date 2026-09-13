@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-static SERIAL: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-fn semaphore() -> Arc<tokio::sync::Semaphore> {
-    Arc::clone(SERIAL.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))))
+static SERIAL: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn semaphore() -> Arc<Semaphore> {
+    Arc::clone(SERIAL.get_or_init(|| Arc::new(Semaphore::new(1))))
 }
 
-pub(crate) async fn lock_async() -> tokio::sync::OwnedSemaphorePermit {
+pub(crate) async fn lock_async() -> OwnedSemaphorePermit {
     semaphore().acquire_owned().await.expect("GPU fixture semaphore remains open")
 }

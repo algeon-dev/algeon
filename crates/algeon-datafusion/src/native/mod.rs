@@ -15,7 +15,7 @@ mod source;
 mod table_format_pruning_policy;
 mod validate;
 
-impl From<expression_contract::ExpressionRejection> for crate::capability::CapabilityReason {
+impl From<expression_contract::ExpressionRejection> for CapabilityReason {
     fn from(rejection: expression_contract::ExpressionRejection) -> Self {
         let _capability = rejection.capability();
         match rejection.kind() {
@@ -27,8 +27,9 @@ impl From<expression_contract::ExpressionRejection> for crate::capability::Capab
 
 use std::sync::Arc;
 
+use arrow::datatypes::{FieldRef as ArrowFieldRef, SchemaRef as ArrowSchemaRef};
 use datafusion::{
-    physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
+    physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, expressions::Column},
     physical_plan::ExecutionPlan,
 };
 use lowering::lower_normalized_plan;
@@ -38,8 +39,9 @@ use normalize::{
 };
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 use query_engine::{
+    datatypes::diagnostic_arrow_type,
     expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
-    plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan},
+    plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
 pub(crate) use source::native_parquet_file_reader_factory_is_supported;
@@ -52,7 +54,10 @@ pub(crate) use source::{
 };
 use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 
-use crate::report::{GpuCandidate, PlanningReport, UnsupportedColumnDetail};
+use crate::{
+    capability::CapabilityReason,
+    report::{GpuCandidate, PlanningReport, UnsupportedColumnDetail},
+};
 
 const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
@@ -124,10 +129,7 @@ fn lower_physical_plan_to_native_with_mode(
                 }) =>
         {
             let mut report = PlanningReport::new();
-            report.push_not_supported(
-                normalized.candidate.clone(),
-                crate::capability::CapabilityReason::UnsupportedOperator,
-            );
+            report.push_not_supported(normalized.candidate.clone(), CapabilityReason::UnsupportedOperator);
             NativeLoweringResult {
                 plans: Vec::new(),
                 report,
@@ -137,7 +139,7 @@ fn lower_physical_plan_to_native_with_mode(
         Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
             |reason| {
                 let mut report = PlanningReport::new();
-                if reason == crate::capability::CapabilityReason::UnsupportedType
+                if reason == CapabilityReason::UnsupportedType
                     && let Some(detail) = unsupported_column_for_normalized_plan(&normalized, plan.schema())
                 {
                     report.push_not_supported_column(normalized.candidate.clone(), reason, detail);
@@ -158,10 +160,7 @@ fn lower_physical_plan_to_native_with_mode(
                 let mut candidate = normalized.candidate.clone();
                 if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
                     let mut report = PlanningReport::new();
-                    report.push_not_supported(
-                        candidate,
-                        crate::capability::CapabilityReason::NativeOrderedOutputUnsupported,
-                    );
+                    report.push_not_supported(candidate, CapabilityReason::NativeOrderedOutputUnsupported);
                     return NativeLoweringResult {
                         plans: Vec::new(),
                         report,
@@ -176,7 +175,7 @@ fn lower_physical_plan_to_native_with_mode(
                         let mut report = PlanningReport::new();
                         report.push_not_supported(
                             candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
-                            crate::capability::CapabilityReason::NativeOrderedOutputUnsupported,
+                            CapabilityReason::NativeOrderedOutputUnsupported,
                         );
                         return NativeLoweringResult {
                             plans: Vec::new(),
@@ -209,10 +208,7 @@ fn lower_physical_plan_to_native_with_mode(
                     if appended_declared_output_sort {
                         candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
                     }
-                    report.push_not_supported(
-                        candidate,
-                        crate::capability::CapabilityReason::NativeOrderedOutputUnsupported,
-                    );
+                    report.push_not_supported(candidate, CapabilityReason::NativeOrderedOutputUnsupported);
                     return NativeLoweringResult {
                         plans: Vec::new(),
                         report,
@@ -230,7 +226,7 @@ fn lower_physical_plan_to_native_with_mode(
         ),
         Err(rejection) => {
             let mut report = PlanningReport::new();
-            if rejection.reason == crate::capability::CapabilityReason::UnsupportedType
+            if rejection.reason == CapabilityReason::UnsupportedType
                 && let Some(detail) = unsupported_column_for_schema(&plan.schema(), "projected")
             {
                 report.push_not_supported_column(rejection.candidate, rejection.reason, detail);
@@ -244,7 +240,7 @@ fn lower_physical_plan_to_native_with_mode(
 
 fn unsupported_column_for_normalized_plan(
     normalized: &normalize::NormalizedNativePlan<'_>,
-    output_schema: arrow::datatypes::SchemaRef,
+    output_schema: ArrowSchemaRef,
 ) -> Option<UnsupportedColumnDetail> {
     unsupported_column_for_schema(&output_schema, "projected")
         .or_else(|| unsupported_column_for_input(normalized.root_input()))
@@ -264,7 +260,7 @@ fn unsupported_column_for_input(input: &NormalizedNativeInput<'_>) -> Option<Uns
             {
                 return Some(UnsupportedColumnDetail::new(
                     column.logical_name,
-                    query_engine::datatypes::diagnostic_arrow_type(column.data_type),
+                    diagnostic_arrow_type(column.data_type),
                     column.role.code(),
                 ));
             }
@@ -321,8 +317,8 @@ fn unsupported_column_for_input(input: &NormalizedNativeInput<'_>) -> Option<Uns
 }
 
 fn unsupported_column_for_expression(
-    expression: &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
-    schema: &arrow::datatypes::SchemaRef,
+    expression: &Arc<dyn PhysicalExpr>,
+    schema: &ArrowSchemaRef,
     role: &'static str,
 ) -> Option<UnsupportedColumnDetail> {
     let mut required = std::collections::BTreeSet::new();
@@ -333,10 +329,7 @@ fn unsupported_column_for_expression(
     })
 }
 
-fn unsupported_column_for_schema(
-    schema: &arrow::datatypes::SchemaRef,
-    role: &'static str,
-) -> Option<UnsupportedColumnDetail> {
+fn unsupported_column_for_schema(schema: &ArrowSchemaRef, role: &'static str) -> Option<UnsupportedColumnDetail> {
     schema
         .fields()
         .iter()
@@ -344,25 +337,25 @@ fn unsupported_column_for_schema(
         .map(|field| unsupported_column_detail(field, role))
 }
 
-fn unsupported_column_detail(field: &arrow::datatypes::FieldRef, role: &'static str) -> UnsupportedColumnDetail {
-    UnsupportedColumnDetail::new(field.name(), query_engine::datatypes::diagnostic_arrow_type(field.data_type()), role)
+fn unsupported_column_detail(field: &ArrowFieldRef, role: &'static str) -> UnsupportedColumnDetail {
+    UnsupportedColumnDetail::new(field.name(), diagnostic_arrow_type(field.data_type()), role)
 }
 
 pub(crate) fn reestablish_declared_output_ordering_if_needed(
     native_plan: NativeQueryPlan,
     ordering: Option<&LexOrdering>,
-) -> Result<(NativeQueryPlan, bool), crate::capability::CapabilityReason> {
+) -> Result<(NativeQueryPlan, bool), CapabilityReason> {
     let Some(ordering) = ordering else {
         return Ok((native_plan, false));
     };
     if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
-        return Err(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported);
+        return Err(CapabilityReason::NativeOrderedOutputUnsupported);
     }
     if native_plan_reproduces_declared_output_ordering(&native_plan) {
         return Ok((native_plan, false));
     }
     if !native_plan_can_append_declared_output_ordering_sort(&native_plan) {
-        return Err(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported);
+        return Err(CapabilityReason::NativeOrderedOutputUnsupported);
     }
     let sort_spec = declared_output_ordering_sort_spec(ordering, native_plan.root_node())?;
     Ok((native_plan.with_appended_sort(sort_spec), true))
@@ -374,10 +367,10 @@ pub(crate) fn wrap_candidate_with_declared_output_ordering_sort(candidate: GpuCa
 
 fn declared_output_ordering_sort_spec(
     ordering: &LexOrdering,
-    output_node: &query_engine::plan::QueryNode,
-) -> Result<NativeSortSpec, crate::capability::CapabilityReason> {
+    output_node: &QueryNode,
+) -> Result<NativeSortSpec, CapabilityReason> {
     if ordering.is_empty() {
-        return Err(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported);
+        return Err(CapabilityReason::NativeOrderedOutputUnsupported);
     }
     let output_schema = output_node.output_schema();
     validate_sort_ordering(ordering, output_schema)?;
@@ -390,16 +383,10 @@ fn declared_output_ordering_sort_spec(
 
 fn declared_output_ordering_sort_expr(
     sort_expr: &PhysicalSortExpr,
-    output_schema: &arrow::datatypes::SchemaRef,
-) -> Result<NativeSortExpr, crate::capability::CapabilityReason> {
-    let column = sort_expr
-        .expr
-        .downcast_ref::<Column>()
-        .ok_or(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported)?;
-    let field = output_schema
-        .fields()
-        .get(column.index())
-        .ok_or(crate::capability::CapabilityReason::NativeOrderedOutputUnsupported)?;
+    output_schema: &ArrowSchemaRef,
+) -> Result<NativeSortExpr, CapabilityReason> {
+    let column = sort_expr.expr.downcast_ref::<Column>().ok_or(CapabilityReason::NativeOrderedOutputUnsupported)?;
+    let field = output_schema.fields().get(column.index()).ok_or(CapabilityReason::NativeOrderedOutputUnsupported)?;
     Ok(NativeSortExpr::new(
         NativeExpr::column(field.name().as_str()),
         sort_expr.options.descending,
@@ -548,26 +535,24 @@ mod tests {
 
     use arrow::{
         compute::SortOptions as ArrowSortOptions,
-        datatypes::{DataType, Field, Schema, SchemaRef},
+        datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit},
         record_batch::RecordBatch,
     };
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col};
     use query_engine::{
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec},
         plan::{
-            EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphConstructionOptions, GraphEdgeColumnBindings,
-            GraphPageRankParams, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder, WindowFunction,
-            WindowSpec, graph_result_schema_for_params,
+            EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions,
+            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphPageRankParams, JoinSpec, JoinType,
+            ProjectionOutput, QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec, graph_result_schema_for_params,
         },
         source::{GpuResidentSource, LiteralBatchSource, LocalParquetSource, SourceNode},
     };
 
     use super::{
-        declared_output_ordering_sort_spec, native_plan_reproduces_declared_output_ordering,
-        reestablish_declared_output_ordering_if_needed,
+        CapabilityReason, NativePlanNode, declared_output_ordering_sort_spec,
+        native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
     };
-    use crate::capability::CapabilityReason;
-
     #[test]
     fn order_reproduction_audit_accepts_local_parquet_filter_projection() {
         let mut builder = QueryPlanBuilder::new();
@@ -630,7 +615,7 @@ mod tests {
             .expect("a complete join output can be sorted before the host sink");
 
         assert!(appended);
-        assert!(matches!(plan.root_node().kind, query_engine::plan::PlanNode::Sort(_)));
+        assert!(matches!(plan.root_node().kind, NativePlanNode::Sort(_)));
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
     }
 
@@ -649,7 +634,7 @@ mod tests {
     fn declared_output_ordering_sort_spec_reuses_native_sort_key_type_admission() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "event_ts",
-            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             false,
         )]));
         let ordering = LexOrdering::new([PhysicalSortExpr::new(
@@ -797,13 +782,10 @@ mod tests {
         let output_schema = graph_result_schema_for_params(GraphAlgorithm::PageRank, &params);
         let graph = builder.add_graph_algorithm(
             source,
-            query_engine::plan::GraphAlgorithmSpec::new(
+            GraphAlgorithmSpec::new(
                 GraphAlgorithm::PageRank,
                 GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
-                GraphConstructionOptions {
-                    policy: query_engine::plan::GraphConstructionPolicy::RawLibcugraph,
-                    ..Default::default()
-                },
+                GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
                 params,
                 output_schema,
             ),

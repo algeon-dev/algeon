@@ -1,7 +1,17 @@
 use std::{ptr::NonNull, slice};
 
 use crate::{
-    core::{Error, ErrorCode, Result, error},
+    core::{
+        Error, ErrorCode, Result,
+        column::{
+            adopt_owned_column_view_for_test as adopt_owned_column_view_for_test_inner,
+            column_view_copy_fixed_width_to_host_for_benchmark,
+            column_view_to_fixed_width_host_bytes_for_test as column_view_to_fixed_width_host_bytes_for_test_inner,
+            column_view_to_raw_bytes_for_test as column_view_to_raw_bytes_for_test_inner,
+            trigger_fixed_width_host_byte_range_overflow_for_test,
+        },
+        error,
+    },
     testing::ColumnView,
 };
 
@@ -83,7 +93,7 @@ impl D2hBenchmarkBuffer {
             D2hBenchmarkStorage::Pageable(bytes) => bytes.as_mut_ptr(),
             D2hBenchmarkStorage::Pinned { ptr, .. } => ptr.as_ptr(),
         };
-        let copied = crate::core::column::column_view_copy_fixed_width_to_host_for_benchmark(view, host_ptr, capacity)?;
+        let copied = column_view_copy_fixed_width_to_host_for_benchmark(view, host_ptr, capacity)?;
         self.initialized_len = copied;
         Ok(copied)
     }
@@ -125,24 +135,24 @@ pub unsafe fn adopt_owned_column_view_for_test(
     raw: cudf_sys::cudf_column_view_handle,
     runtime: &crate::Runtime,
 ) -> Result<ColumnView<'static>> {
-    unsafe { crate::core::column::adopt_owned_column_view_for_test(raw, runtime) }
+    unsafe { adopt_owned_column_view_for_test_inner(raw, runtime) }
 }
 
 /// Trigger the internal raw-byte materialization helper on a borrowed column
 /// view so integration tests can lock down its downstream error contract.
 pub fn column_view_to_raw_bytes_for_test(view: &ColumnView<'_>) -> Result<Vec<u8>> {
-    crate::core::column::column_view_to_raw_bytes_for_test(view)
+    column_view_to_raw_bytes_for_test_inner(view)
 }
 
 /// Trigger the internal fixed-width host-byte materialization helper on a
 /// borrowed column view so integration tests can lock down its downstream
 /// error contract.
 pub fn column_view_to_fixed_width_host_bytes_for_test(view: &ColumnView<'_>) -> Result<Vec<u8>> {
-    crate::core::column::column_view_to_fixed_width_host_bytes_for_test(view)
+    column_view_to_fixed_width_host_bytes_for_test_inner(view)
 }
 
 /// Trigger the fixed-width host-byte materialization overflow contract used by
 /// integration tests.
 pub fn trigger_column_view_fixed_width_host_byte_range_overflow_for_test() -> Result<()> {
-    crate::core::column::trigger_fixed_width_host_byte_range_overflow_for_test()
+    trigger_fixed_width_host_byte_range_overflow_for_test()
 }

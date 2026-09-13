@@ -14,7 +14,7 @@ async fn unconsumed_statement_ticket_does_not_block_get_flight_info() {
     let first_ticket = first_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
 
     let mut second = tokio::spawn(async move { second_client.execute("select 2 as two".to_string(), None).await });
-    let second_info = tokio::time::timeout(Duration::from_secs(5), &mut second)
+    let second_info = timeout(Duration::from_secs(5), &mut second)
         .await
         .expect("second GetFlightInfo must not wait on an unconsumed ticket")
         .unwrap()
@@ -47,7 +47,7 @@ async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     let first_ticket = first_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
 
     let second_info =
-        tokio::time::timeout(Duration::from_secs(5), second_client.execute("select 2 as two".to_string(), None))
+        timeout(Duration::from_secs(5), second_client.execute("select 2 as two".to_string(), None))
             .await
             .expect("second GetFlightInfo should proceed while the first ticket is unconsumed")
             .unwrap();
@@ -55,7 +55,7 @@ async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     let batches = second_client.do_get(second_ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 
-    tokio::time::sleep(Duration::from_millis(75)).await;
+    sleep(Duration::from_millis(75)).await;
     let error = first_client.do_get(first_ticket).await.unwrap_err();
 
     let FlightError::Tonic(status) = error else {

@@ -3,28 +3,34 @@
 use std::{fs, process::Command, sync::Arc};
 
 use arrow::{
-    array::{Array, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, new_null_array},
-    datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
+    array::{Array, ArrayRef, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, StructArray, new_null_array},
+    datatypes::{
+        DataType as ArrowDataType, Date32Type, Decimal128Type, DurationNanosecondType, Field, Int32Type, Int64Type,
+        Schema, TimeUnit, TimestampMicrosecondType,
+    },
     record_batch::RecordBatch,
 };
 use cudf::{
     BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionBudgetStatus, TimestampResolution, TypeId,
     core::{Column, Table},
-    frame::dataframe::{GpuRecordBatch, InfoDetail},
+    frame::dataframe::{GpuRecordBatch, InfoDetail, ParquetSourceChunkReadOutput},
     io::{
-        parquet::{RemoteParquetProfile, RemoteReadMode},
+        parquet::{ParquetTableWriteOptions, RemoteParquetProfile, RemoteReadMode, write_parquet},
         source::{
-            LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceChunkPlanningPolicy,
-            SourceColumn, SourceColumnRef, SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate,
-            SourceReaderPredicateColumn, SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema,
-            ZERO_COLUMN_COUNT_COLUMN, build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
-            plan_local_parquet_source_chunks,
+            LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, PredicateDisposition, SourceChunk,
+            SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole, SourceOutputColumn,
+            SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn, SourceReaderPredicateLiteral,
+            SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN, build_local_parquet_reader_batch_predicate,
+            build_local_parquet_reader_predicate, plan_local_parquet_source_chunks,
         },
     },
     ops::ast::AstExpression,
-    runtime::QueryStageKind,
-    testing::prelude::*,
+    runtime::{QueryStageKind, Runtime},
+    testing::{
+        boundary::{last_boundary_observation_for_test, reset_boundary_observation_for_test},
+        prelude::*,
+    },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use tempfile::TempDir;
@@ -109,12 +115,12 @@ fn parquet_source_chunk_exact_preflight_returns_none_for_variable_width_output()
 
 fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<Column>, row_group_size_rows: i32) {
     let table = Table::from_columns(columns).unwrap();
-    let write_opts = cudf::io::parquet::ParquetTableWriteOptions::builder()
+    let write_opts = ParquetTableWriteOptions::builder()
         .filepath(path)
         .column_names(column_names)
         .row_group_size_rows(row_group_size_rows)
         .build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    write_parquet(&table, &write_opts).unwrap();
 }
 
 fn write_decimal_parquet_df(path: &std::path::Path, storage_type: TypeId) {
@@ -145,9 +151,9 @@ fn decimal_source_from_paths<'a>(paths: impl IntoIterator<Item = &'a std::path::
 }
 
 fn decimal_predicate_source(
-    rt: &cudf::Runtime,
+    rt: &Runtime,
     source: &LocalParquetSource,
-    chunk: &cudf::io::source::SourceChunk,
+    chunk: &SourceChunk,
     predicate: SourceReaderPredicate,
 ) -> LocalParquetSource {
     let predicate = build_local_parquet_reader_predicate(rt, source, chunk, &predicate).unwrap();
@@ -157,7 +163,7 @@ fn decimal_predicate_source(
 fn assert_decimal_amount_raws(df: &DataFrame, expected: &[i128]) {
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 2));
-    let amount = batch.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    let amount = batch.column(0).as_primitive::<Decimal128Type>();
     assert_eq!(amount.scale(), 2);
     assert_eq!(amount.values().as_ref(), expected);
 }
@@ -194,10 +200,7 @@ fn single_i32_source(path: &std::path::Path, stable_id: &str) -> LocalParquetSou
     .unwrap()
 }
 
-fn read_single_chunk_with_evidence(
-    rt: &cudf::Runtime,
-    source: &LocalParquetSource,
-) -> cudf::frame::dataframe::ParquetSourceChunkReadOutput {
+fn read_single_chunk_with_evidence(rt: &Runtime, source: &LocalParquetSource) -> ParquetSourceChunkReadOutput {
     let plan = plan_local_parquet_source_chunks(source, Default::default()).unwrap();
     assert_eq!(plan.chunks().len(), 1);
     DataFrame::read_parquet_source_chunk_with_evidence(rt, source, &plan.chunks()[0], SourceReadMode::FinalOutput)
@@ -458,8 +461,8 @@ fn read_parquet_source_chunk_does_not_confuse_top_level_column_with_same_named_n
         Field::new("s", ArrowDataType::Struct(vec![Arc::clone(&inner_field)].into()), true),
         Field::new("id", ArrowDataType::Int64, true),
     ]));
-    let inner: arrow::array::ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, None]));
-    let struct_array = arrow::array::StructArray::from(vec![(inner_field, inner)]);
+    let inner: ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, None]));
+    let struct_array = StructArray::from(vec![(inner_field, inner)]);
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(struct_array), Arc::new(Int64Array::from(vec![1, 2, 3, 4]))],
@@ -557,7 +560,7 @@ fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups(
     let batch = df.to_record_batch().unwrap();
     assert!(batch.column(1).is_null(0));
     assert!(batch.column(1).is_null(1));
-    assert_eq!(&batch.column(1).as_primitive::<arrow::datatypes::Int64Type>().values().as_ref()[2..], &[30, 40]);
+    assert_eq!(&batch.column(1).as_primitive::<Int64Type>().values().as_ref()[2..], &[30, 40]);
     let evidence = outcome.value().read_evidence().unwrap();
     assert_eq!(evidence.input_kind, "local_path_multi");
     assert_eq!(evidence.backend, "parquet_footer_materialized");
@@ -745,9 +748,9 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
     )
     .unwrap();
 
-    cudf::testing::boundary::reset_boundary_observation_for_test();
+    reset_boundary_observation_for_test();
     let final_frame = DataFrame::read_parquet_source(&rt, &source).unwrap();
-    let observation = cudf::testing::boundary::last_boundary_observation_for_test().unwrap();
+    let observation = last_boundary_observation_for_test().unwrap();
 
     assert_eq!(final_frame.column_names(), vec!["id_alias"]);
     assert_eq!(final_frame.num_rows(), 3);
@@ -1014,7 +1017,7 @@ fn read_parquet_source_chunk_applies_reader_predicate() {
     let frame =
         DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
 
-    assert_eq!(source.diagnostics().predicate_disposition(), cudf::io::source::PredicateDisposition::ReaderPushdown);
+    assert_eq!(source.diagnostics().predicate_disposition(), PredicateDisposition::ReaderPushdown);
     assert_eq!(frame.column_names(), vec!["id", "value"]);
     assert_eq!(frame.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3]);
     assert_eq!(frame.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![20, 30]);
@@ -1180,7 +1183,7 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
     assert_eq!(plan.chunks().len(), 2);
-    assert!(plan.chunks().iter().all(cudf::io::source::SourceChunk::selects_all_known_file_row_groups));
+    assert!(plan.chunks().iter().all(SourceChunk::selects_all_known_file_row_groups));
 
     let token = rt
         .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
@@ -1194,7 +1197,7 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     )
     .unwrap();
 
-    assert_eq!(source.diagnostics().predicate_disposition(), cudf::io::source::PredicateDisposition::ReaderPushdown);
+    assert_eq!(source.diagnostics().predicate_disposition(), PredicateDisposition::ReaderPushdown);
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
     assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("2"));
 }
@@ -1882,17 +1885,14 @@ fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values(
     assert!(batch.schema().field(8).is_nullable());
     assert!(batch.schema().field(9).is_nullable());
 
-    assert_eq!(batch.column(0).as_primitive::<arrow::datatypes::Int32Type>().values().as_ref(), &[1, 2]);
-    assert_eq!(batch.column(1).as_primitive::<arrow::datatypes::Decimal128Type>().values().as_ref(), &[12345, 12345]);
-    assert_eq!(batch.column(2).as_primitive::<arrow::datatypes::Date32Type>().values().as_ref(), &[19_481, 19_481]);
+    assert_eq!(batch.column(0).as_primitive::<Int32Type>().values().as_ref(), &[1, 2]);
+    assert_eq!(batch.column(1).as_primitive::<Decimal128Type>().values().as_ref(), &[12345, 12345]);
+    assert_eq!(batch.column(2).as_primitive::<Date32Type>().values().as_ref(), &[19_481, 19_481]);
     assert_eq!(
-        batch.column(3).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().values().as_ref(),
+        batch.column(3).as_primitive::<TimestampMicrosecondType>().values().as_ref(),
         &[1_700_000_123_456, 1_700_000_123_456]
     );
-    assert_eq!(
-        batch.column(4).as_primitive::<arrow::datatypes::DurationNanosecondType>().values().as_ref(),
-        &[-42_000_000, -42_000_000]
-    );
+    assert_eq!(batch.column(4).as_primitive::<DurationNanosecondType>().values().as_ref(), &[-42_000_000, -42_000_000]);
     assert!(batch.column(5).is_null(0));
     assert!(batch.column(5).is_null(1));
     for column_index in 6..=9 {

@@ -1,8 +1,11 @@
 //! Service close and quiescence-drain paths.
 
+#[cfg(any(test, feature = "test-hooks"))]
+use std::time::Duration;
 use std::{
-    sync::atomic::Ordering,
-    time::{Duration, Instant},
+    mem,
+    sync::{TryLockError, atomic::Ordering},
+    time::Instant,
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
@@ -14,7 +17,10 @@ use super::{
     },
     QueryService,
 };
-use crate::runtime::query_service::service::query_service_shutdown_timeout;
+use crate::runtime::{
+    deadline::{DeadlineMutexLockError, deadline_expired, deadline_remaining, mutex_lock_until},
+    query_service::service::query_service_shutdown_timeout,
+};
 
 impl QueryService {
     /// Closes admission and wakes every queued waiter.
@@ -28,14 +34,14 @@ impl QueryService {
         let (close_result, closed_requests) = match self.inner.admission.try_lock() {
             Ok(mut state) => {
                 state.closed = true;
-                let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
+                let closed_requests = mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
 
                 (Ok(()), closed_requests)
             },
-            Err(std::sync::TryLockError::Poisoned(error)) => {
+            Err(TryLockError::Poisoned(error)) => {
                 let mut state = error.into_inner();
                 state.closed = true;
-                let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
+                let closed_requests = mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
 
                 (
                     Err(QueryError::new(
@@ -47,7 +53,7 @@ impl QueryService {
                     closed_requests,
                 )
             },
-            Err(std::sync::TryLockError::WouldBlock) => (Ok(()), Vec::new()),
+            Err(TryLockError::WouldBlock) => (Ok(()), Vec::new()),
         };
         self.inner.service_epoch.invalidate();
         let stream_pool_close_result =
@@ -147,11 +153,9 @@ impl QueryService {
             Some(blocked_by_phase) => {
                 dependent_drain_phase_pending(QueryServiceDrainPhase::FinalCompletion, blocked_by_phase, operation)
             },
-            None if crate::runtime::deadline::deadline_expired(deadline) => {
-                QueryServiceDrainPhaseOutcome::DeadlineElapsed {
-                    phase: QueryServiceDrainPhase::FinalCompletion,
-                    error: query_service_shutdown_timeout(operation, None, "final_completion"),
-                }
+            None if deadline_expired(deadline) => QueryServiceDrainPhaseOutcome::DeadlineElapsed {
+                phase: QueryServiceDrainPhase::FinalCompletion,
+                error: query_service_shutdown_timeout(operation, None, "final_completion"),
             },
             None => QueryServiceDrainPhaseOutcome::Quiescent { phase: QueryServiceDrainPhase::FinalCompletion },
         });
@@ -163,35 +167,34 @@ impl QueryService {
         deadline: Instant,
         operation: &'static str,
     ) -> QueryServiceDrainPhaseOutcome {
-        let (mut state, admission_was_poisoned) =
-            match crate::runtime::deadline::mutex_lock_until(&self.inner.admission, deadline) {
-                Ok(state) => (state, false),
-                Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => {
-                    let state = match self.inner.admission.try_lock() {
-                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                        Ok(_) | Err(std::sync::TryLockError::WouldBlock) => {
-                            return QueryServiceDrainPhaseOutcome::PermanentFailure {
-                                phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                                error: QueryError::new(
-                                    QueryErrorCode::Internal,
-                                    operation,
-                                    "query service admission mutex poison state changed during shutdown recovery",
-                                )
-                                .with_fact("reason", "admission_mutex_poison_recovery_raced"),
-                            };
-                        },
-                    };
-                    (state, true)
-                },
-                Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
-                    return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
-                        phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                        error: query_service_shutdown_timeout(operation, None, "admission_mutex"),
-                    };
-                },
-            };
+        let (mut state, admission_was_poisoned) = match mutex_lock_until(&self.inner.admission, deadline) {
+            Ok(state) => (state, false),
+            Err(DeadlineMutexLockError::Poisoned) => {
+                let state = match self.inner.admission.try_lock() {
+                    Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                    Ok(_) | Err(TryLockError::WouldBlock) => {
+                        return QueryServiceDrainPhaseOutcome::PermanentFailure {
+                            phase: QueryServiceDrainPhase::AdmissionQuiescence,
+                            error: QueryError::new(
+                                QueryErrorCode::Internal,
+                                operation,
+                                "query service admission mutex poison state changed during shutdown recovery",
+                            )
+                            .with_fact("reason", "admission_mutex_poison_recovery_raced"),
+                        };
+                    },
+                };
+                (state, true)
+            },
+            Err(DeadlineMutexLockError::TimedOut) => {
+                return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
+                    phase: QueryServiceDrainPhase::AdmissionQuiescence,
+                    error: query_service_shutdown_timeout(operation, None, "admission_mutex"),
+                };
+            },
+        };
         state.closed = true;
-        let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
+        let closed_requests = mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
         if !closed_requests.is_empty() {
             // Release admission lock before completing queued requests and re-locking.
             drop(state);
@@ -220,7 +223,7 @@ impl QueryService {
         let mut waited_for_quiescence = false;
         loop {
             if state.lifecycle.is_quiescent() && state.queued.is_empty() && state.pending_preflight.is_empty() {
-                if waited_for_quiescence && crate::runtime::deadline::deadline_expired(deadline) {
+                if waited_for_quiescence && deadline_expired(deadline) {
                     return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
                         phase: QueryServiceDrainPhase::AdmissionQuiescence,
                         error: query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"),
@@ -228,13 +231,13 @@ impl QueryService {
                 }
                 return QueryServiceDrainPhaseOutcome::Quiescent { phase: QueryServiceDrainPhase::AdmissionQuiescence };
             }
-            if crate::runtime::deadline::deadline_expired(deadline) {
+            if deadline_expired(deadline) {
                 return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
                     phase: QueryServiceDrainPhase::AdmissionQuiescence,
                     error: query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"),
                 };
             }
-            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+            let Some(remaining) = deadline_remaining(deadline) else {
                 return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
                     phase: QueryServiceDrainPhase::AdmissionQuiescence,
                     error: query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"),

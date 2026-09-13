@@ -1,7 +1,7 @@
 use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{DataFusionError, Result, TableReference};
 use query_engine::plan::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, GraphAlgorithmParams as NativeGraphAlgorithmParams,
     GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphConstructionOptions as NativeGraphConstructionOptions,
@@ -10,7 +10,10 @@ use query_engine::plan::{
 };
 
 use super::{plan_error, registry::CugraphAlgorithm};
-use crate::error::{Error, ErrorCode};
+use crate::{
+    error::{Error, ErrorCode},
+    gpu_functions::parse_table_reference,
+};
 
 /// Cumulative host-memory ceilings for one explicit CPU-to-GPU-to-CPU graph
 /// island.
@@ -203,9 +206,9 @@ pub struct CugraphTableReference {
 
 impl CugraphTableReference {
     pub fn parse(raw: &str) -> Result<Self> {
-        let Some(reference) = crate::gpu_functions::parse_table_reference(raw) else {
-            return Err(crate::error::Error::new(
-                crate::error::ErrorCode::InvalidRequest,
+        let Some(reference) = parse_table_reference(raw) else {
+            return Err(Error::new(
+                ErrorCode::InvalidRequest,
                 "algeon_datafusion.cugraph_sql.table_reference",
                 format!(
                     "cuGraph table source '{raw}' must be a valid table, schema.table, or catalog.schema.table SQL identifier"
@@ -221,7 +224,7 @@ impl CugraphTableReference {
         &self.parts
     }
 
-    pub(crate) fn datafusion_reference(&self) -> datafusion::common::TableReference {
+    pub(crate) fn datafusion_reference(&self) -> TableReference {
         datafusion_table_reference_from_parts(&self.parts)
     }
 }
@@ -270,13 +273,11 @@ pub(crate) struct PredicateSourceSpec {
     pub(crate) columns: Vec<PredicateSourceColumn>,
 }
 
-fn datafusion_table_reference_from_parts(parts: &[String]) -> datafusion::common::TableReference {
+fn datafusion_table_reference_from_parts(parts: &[String]) -> TableReference {
     match parts {
-        [table] => datafusion::common::TableReference::bare(table.as_str()),
-        [schema, table] => datafusion::common::TableReference::partial(schema.as_str(), table.as_str()),
-        [catalog, schema, table] => {
-            datafusion::common::TableReference::full(catalog.as_str(), schema.as_str(), table.as_str())
-        },
+        [table] => TableReference::bare(table.as_str()),
+        [schema, table] => TableReference::partial(schema.as_str(), table.as_str()),
+        [catalog, schema, table] => TableReference::full(catalog.as_str(), schema.as_str(), table.as_str()),
         _ => unreachable!("CugraphTableReference::parse validates one to three identifier parts"),
     }
 }

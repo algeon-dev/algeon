@@ -1,7 +1,16 @@
 use std::sync::Arc;
 
 use super::{source::record_bounded_parquet_source_metrics, *};
-use crate::mode::StatisticalAggregateExecutionMode;
+use crate::{
+    admission::{
+        BoundedPipelineAdmission, bounded_join_unsupported_shape_facts_with_projection, bounded_pipeline_decision,
+        canonical_execution_scope_fingerprint, insert_bounded_join_rejection_projection_error_facts,
+    },
+    mode::StatisticalAggregateExecutionMode,
+    observability::RuntimeExecutionObservationScope,
+    plan::ResultSink,
+    rapids_backend::rapids_analysis_context,
+};
 
 // Bounded execution ownership boundary:
 // - pipeline: the bounded execution facade.
@@ -67,10 +76,10 @@ pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPo
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
-    admission: Option<&crate::admission::BoundedPipelineAdmission>,
+    admission: Option<&BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
-    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("query_engine.exec.bounded.execute_query_plan")?;
     if let Some(output) =
@@ -108,9 +117,7 @@ pub(super) fn execute_bounded_query_plan(
         ResultSink::GpuResident { .. } => {
             let output_bytes = frame.frame.device_allocated_size_bytes()?;
             let resident_owner = execution.context().retain_resident_output_owner(output_bytes)?;
-            let output_frame = frame
-                .frame
-                .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));
+            let output_frame = frame.frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(plan));
             let handle = match GpuResultHandle::new_with_resident_owner(
                 execution.context(),
                 output_frame,
@@ -146,38 +153,32 @@ pub(super) fn execute_bounded_query_plan(
 pub(super) fn preflight_bounded_join_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Result<Option<crate::admission::BoundedPipelineAdmission>> {
+) -> Result<Option<BoundedPipelineAdmission>> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         let mut error = unsupported_bounded_shape(
             "bounded native join execution requires an executable compiled pipeline",
             "bounded_join_plan_shape_unsupported",
         );
-        let decision = match crate::admission::bounded_pipeline_decision(
-            plan,
-            statistical_aggregate_execution_mode,
-            crate::rapids_backend::rapids_analysis_context(),
-        ) {
-            Ok(decision) => decision,
-            Err(projection_error) => {
-                let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
-                    plan,
-                    None,
-                    crate::rapids_backend::rapids_analysis_context(),
-                );
-                crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
-                for (key, value) in facts {
-                    error = error.with_fact(key, value);
-                }
-                return Err(error.with_source(projection_error));
-            },
-        };
+        let decision =
+            match bounded_pipeline_decision(plan, statistical_aggregate_execution_mode, rapids_analysis_context()) {
+                Ok(decision) => decision,
+                Err(projection_error) => {
+                    let mut facts =
+                        bounded_join_unsupported_shape_facts_with_projection(plan, None, rapids_analysis_context());
+                    insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
+                    for (key, value) in facts {
+                        error = error.with_fact(key, value);
+                    }
+                    return Err(error.with_source(projection_error));
+                },
+            };
         let Some(rejection_projection) = decision.rejection_projection() else {
             return Ok(decision.admission().cloned());
         };
-        let facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+        let facts = bounded_join_unsupported_shape_facts_with_projection(
             plan,
             Some(rejection_projection),
-            crate::rapids_backend::rapids_analysis_context(),
+            rapids_analysis_context(),
         );
         for (key, value) in facts {
             error = error.with_fact(key, value);
@@ -192,8 +193,8 @@ pub(super) fn preflight_bounded_join_plan(
 
 fn caller_visible_sink_kind(plan: &QueryPlan) -> &'static str {
     match plan.sink() {
-        crate::plan::ResultSink::HostArrow { .. } => "host_arrow",
-        crate::plan::ResultSink::GpuResident { .. } => "gpu_resident",
+        ResultSink::HostArrow { .. } => "host_arrow",
+        ResultSink::GpuResident { .. } => "gpu_resident",
     }
 }
 

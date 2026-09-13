@@ -1,9 +1,15 @@
 use std::{
-    sync::{Arc, atomic::Ordering},
-    time::Instant,
+    mem,
+    sync::{Arc, Mutex, Once, atomic::Ordering},
+    time::{Duration, Instant},
 };
 
-use query_engine::admission::AttemptCapabilityEvidence;
+use futures::stream::once;
+use query_engine::{
+    admission::AttemptCapabilityEvidence,
+    plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
+    runtime::cache_observation_fingerprint,
+};
 
 use super::{
     AlgeonNativeExecutionConfig, AlgeonNativeMetrics, Boundedness, BoxFuture, Column, CugraphAlgorithmParams,
@@ -27,7 +33,13 @@ use super::{
     register_graph_execution_plan_discovery, run_gpu_execution_task, task_context_with_cugraph_execution_ticket,
     validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
 };
-use crate::attempt::AlgeonAttemptExtension;
+use crate::{
+    attempt::AlgeonAttemptExtension,
+    native_exec::{
+        GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
+        gpu_function_occurrence_from_task_context,
+    },
+};
 
 #[derive(Clone, Debug)]
 pub struct CugraphAlgoExec {
@@ -38,9 +50,9 @@ pub struct CugraphAlgoExec {
     pub(super) result_options: CugraphResultPlanOptions,
     pub(super) native_execution_config: AlgeonNativeExecutionConfig,
     pub(super) host_boundary_config: GpuIslandHostBoundaryConfig,
-    pub(super) prepared_staged_inputs: Option<Arc<std::sync::Mutex<Option<StagedCugraphInputs>>>>,
+    pub(super) prepared_staged_inputs: Option<Arc<Mutex<Option<StagedCugraphInputs>>>>,
     pub(super) metrics_capture: Option<NativeExecutionMetricsCapture>,
-    pub(super) graph_claim_calibration_capture: crate::native_exec::GraphClaimCalibrationCapture,
+    pub(super) graph_claim_calibration_capture: GraphClaimCalibrationCapture,
     pub(super) edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
     pub(super) graph_residency: Option<GraphResidencyDescriptor>,
     pub(super) gpu_result_input_name: String,
@@ -194,7 +206,7 @@ impl CugraphAlgoExec {
             host_boundary_config,
             prepared_staged_inputs: None,
             metrics_capture,
-            graph_claim_calibration_capture: crate::native_exec::GraphClaimCalibrationCapture::default(),
+            graph_claim_calibration_capture: GraphClaimCalibrationCapture::default(),
             edge_source_canonical_facts,
             graph_residency,
             gpu_result_input_name,
@@ -218,8 +230,8 @@ impl CugraphAlgoExec {
 
     /// Returns the one post-seal attempt projection target for this cuGraph
     /// execution root. It is read only and has no graph/admission authority.
-    pub(crate) fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
-        crate::native_exec::SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
+    pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
+        SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
     }
 
     #[cfg(test)]
@@ -239,7 +251,7 @@ impl CugraphAlgoExec {
         self.edge_source =
             prepare_cugraph_source_metadata(Arc::clone(&self.edge_source), Arc::clone(&task_context)).await?;
         let mut predicate_sources = Vec::with_capacity(self.predicate_sources.len());
-        for source in std::mem::take(&mut self.predicate_sources) {
+        for source in mem::take(&mut self.predicate_sources) {
             predicate_sources.push(prepare_cugraph_source_metadata(source, Arc::clone(&task_context)).await?);
         }
         self.predicate_sources = predicate_sources;
@@ -257,8 +269,8 @@ impl CugraphAlgoExec {
         mut self,
         input_row_bounds: CugraphInputRowBounds,
         task_context: &TaskContext,
-        exact_edge_source_gpu_plan: Option<&query_engine::plan::QueryPlan>,
-    ) -> Result<(Self, query_engine::plan::QueryPlan)> {
+        exact_edge_source_gpu_plan: Option<&QueryPlan>,
+    ) -> Result<(Self, QueryPlan)> {
         let (execution_config, graph_execution_plan) = cugraph_execution_config_after_staging(
             &self.spec,
             self.edge_source.as_ref(),
@@ -424,9 +436,8 @@ impl CugraphAlgoExec {
                 .await;
         };
         let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
-        let correlation_fingerprint = native_context
-            .query_id()
-            .map(|query_id| query_engine::runtime::cache_observation_fingerprint(query_id.as_str()));
+        let correlation_fingerprint =
+            native_context.query_id().map(|query_id| cache_observation_fingerprint(query_id.as_str()));
         let attempt_id = task_context
             .session_config()
             .options()
@@ -593,7 +604,7 @@ impl CugraphAlgoExec {
         key: &GraphBfsSingleflightKey,
         batches: &[RecordBatch],
         output_device_bytes: Option<u64>,
-        elapsed: std::time::Duration,
+        elapsed: Duration,
     ) {
         let output_rows = batches
             .iter()
@@ -632,7 +643,7 @@ impl CugraphAlgoExec {
         key: &GraphBfsSingleflightKey,
         output_rows: u64,
         output_columns: u64,
-        elapsed: std::time::Duration,
+        elapsed: Duration,
     ) {
         let metrics = AlgeonNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
             .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
@@ -680,9 +691,8 @@ impl CugraphAlgoExec {
                 .record_datafusion_output(metrics));
         };
         let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
-        let correlation_fingerprint = native_context
-            .query_id()
-            .map(|query_id| query_engine::runtime::cache_observation_fingerprint(query_id.as_str()));
+        let correlation_fingerprint =
+            native_context.query_id().map(|query_id| cache_observation_fingerprint(query_id.as_str()));
         let attempt_id = task_context
             .session_config()
             .options()
@@ -828,7 +838,7 @@ impl CugraphAlgoExec {
         metrics: &AlgeonNativeMetrics,
         key: &GraphBfsSingleflightKey,
         batches: &[RecordBatch],
-        elapsed: std::time::Duration,
+        elapsed: Duration,
     ) {
         self.record_bfs_singleflight_host_follower_metrics_for_input(
             metrics,
@@ -845,7 +855,7 @@ impl CugraphAlgoExec {
         key: &GraphBfsSingleflightKey,
         batches: &[RecordBatch],
         input_boundary: &'static str,
-        elapsed: std::time::Duration,
+        elapsed: Duration,
     ) {
         let output_rows = batches
             .iter()
@@ -930,7 +940,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
         cugraph_deferred_execution_capability_evidence(&self.plan_definition())
     }
 
-    fn host_result_query_plan(&self) -> Result<Option<query_engine::plan::QueryPlan>> {
+    fn host_result_query_plan(&self) -> Result<Option<QueryPlan>> {
         cugraph_schema_query_plan(&self.plan_definition()).map(Some)
     }
 
@@ -939,16 +949,13 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        cugraph_schema_query_plan(&self.plan_definition())
-            .ok()
-            .as_ref()
-            .and_then(query_engine::plan::row_bounds::query_plan_hard_row_upper_bound)
+        cugraph_schema_query_plan(&self.plan_definition()).ok().as_ref().and_then(query_plan_hard_row_upper_bound)
     }
 
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
         cugraph_schema_query_plan(&self.plan_definition()).ok().and_then(|plan| {
             let key = plan.nodes().iter().find_map(|node| match &node.kind {
-                query_engine::plan::PlanNode::GraphAlgorithm(graph) => Some(graph.spec.unique_output_key_columns()),
+                PlanNode::GraphAlgorithm(graph) => Some(graph.spec.unique_output_key_columns()),
                 _ => None,
             })?;
             (!key.is_empty() && key.iter().all(|column| plan.output_schema().field_with_name(column).is_ok()))
@@ -956,10 +963,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
         })
     }
 
-    fn rewrite_subsumed_composed_consumer(
-        &self,
-        consumer_plan: &query_engine::plan::QueryPlan,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    fn rewrite_subsumed_composed_consumer(&self, consumer_plan: &QueryPlan) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         let Some(result_options) = pushed_logical_consumer_options(self, consumer_plan)? else {
             return Ok(None);
         };
@@ -975,7 +979,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
         .map(|producer| Some(Arc::new(producer) as Arc<dyn ExecutionPlan>))
     }
 
-    fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
+    fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
         self.native_execution_config.query_admission_ticket().into_iter().collect()
     }
 
@@ -986,7 +990,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
     ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
             let (mut prepared, staged_inputs) = self.clone().prepare_staged_attempt(Arc::clone(&task_context)).await?;
-            prepared.prepared_staged_inputs = Some(Arc::new(std::sync::Mutex::new(Some(staged_inputs))));
+            prepared.prepared_staged_inputs = Some(Arc::new(Mutex::new(Some(staged_inputs))));
             Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
         })
     }
@@ -1005,7 +1009,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
 
 pub(super) fn pushed_logical_consumer_options(
     producer: &CugraphAlgoExec,
-    consumer_plan: &query_engine::plan::QueryPlan,
+    consumer_plan: &QueryPlan,
 ) -> Result<Option<CugraphResultPlanOptions>> {
     if producer.spec.is_bfs_path_output()
         || !graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema())?
@@ -1078,7 +1082,7 @@ pub(super) fn cugraph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn Gr
 }
 
 pub(super) fn register_cugraph_execution_spis() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
+    static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
         register_gpu_resident_producer_discovery(cugraph_gpu_resident_producer);
         register_graph_execution_plan_discovery(cugraph_execution_plan);
@@ -1106,7 +1110,7 @@ impl GraphExecutionPlan for CugraphAlgoExec {
         cugraph_deferred_execution_capability_evidence(&self.plan_definition())
     }
 
-    fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
+    fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
         self.sealed_attempt_metrics_target()
     }
 
@@ -1235,17 +1239,15 @@ impl ExecutionPlan for CugraphAlgoExec {
         let metrics = AlgeonNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
             .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         self.validate_standalone_bounded_sources()?;
-        let output = futures::stream::once(async move {
+        let output = once(async move {
             let (exec, staged_inputs) = exec.prepare_staged_attempt(Arc::clone(&task_context)).await?;
             let execution_config = exec.native_execution_config.clone();
             let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let host_occurrence = match execution_config.query_admission_ticket_for_task_context(&task_context) {
                 Some(ticket) => {
-                    let occurrence_id = crate::native_exec::gpu_function_occurrence_from_task_context(
-                        &task_context,
-                        &exec.gpu_result_input_name,
-                    )?
-                    .unwrap_or_else(|| exec.gpu_result_input_name.clone());
+                    let occurrence_id =
+                        gpu_function_occurrence_from_task_context(&task_context, &exec.gpu_result_input_name)?
+                            .unwrap_or_else(|| exec.gpu_result_input_name.clone());
                     ticket.begin_host_occurrence(
                         &task_context,
                         &occurrence_id,

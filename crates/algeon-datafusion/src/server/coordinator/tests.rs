@@ -23,6 +23,7 @@ use query_engine::{
     },
     runtime::ExecutionCancellation,
 };
+use tokio::{task::yield_now, time::timeout};
 
 use super::{
     super::observability::{CapturedError, QueryStatsPayload},
@@ -37,7 +38,8 @@ use super::{
     *,
 };
 use crate::server::{
-    adapter_error::ErrorCode,
+    adapter_error::{Error as AdapterError, ErrorCode as AdapterErrorCode},
+    error::adapter_error_to_status,
     planner::NativePlanningDiagnostics,
     report::{GpuCandidate, PlanningReport},
 };
@@ -67,7 +69,7 @@ impl TestMaintenanceClock {
 
     async fn wait_for_sleepers(&self, expected: usize) {
         while self.sleepers.load(Ordering::SeqCst) < expected {
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     }
 }
@@ -664,12 +666,12 @@ fn wait_for_phase_sync(coordinator: &QueryCoordinator, query_id: &str, expected:
 }
 
 async fn wait_for_phase(coordinator: &QueryCoordinator, query_id: &str, expected: Option<QueryPhase>) {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    timeout(Duration::from_secs(1), async {
         loop {
             if phase(coordinator, query_id) == expected {
                 return;
             }
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     })
     .await
@@ -1301,7 +1303,7 @@ fn shutdown_race_into_execution_is_structured_cancelled_and_preserves_terminal()
 
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::Shutdown);
     let adapter = error.adapter_error("algeon_datafusion.server.flight.do_put_statement_update.into_execution");
-    assert_eq!(adapter.code(), ErrorCode::Cancelled);
+    assert_eq!(adapter.code(), AdapterErrorCode::Cancelled);
     assert_eq!(adapter.fact_value("query_coordinator_error"), Some("shutdown"));
     assert!(matches!(coordinator.terminal("do-put-shutdown-race"), Some(QueryTerminalOutcome::Cancelled)));
     assert!(matches!(
@@ -1324,7 +1326,7 @@ async fn manual_clock_expires_exact_ticket_retention_and_tombstone_boundaries_wi
 
     clock.wait_for_sleepers(1).await;
     clock.advance(Duration::from_secs(1) - Duration::from_nanos(1));
-    tokio::task::yield_now().await;
+    yield_now().await;
     assert_eq!(phase(&coordinator, "ticket"), Some(QueryPhase::Ticketed));
     clock.advance(Duration::from_nanos(1));
     wait_for_phase(&coordinator, "ticket", Some(QueryPhase::Retained)).await;
@@ -1337,7 +1339,7 @@ async fn manual_clock_expires_exact_ticket_retention_and_tombstone_boundaries_wi
     };
     let until_retention = retention_deadline.duration_since(clock.now());
     clock.advance(until_retention - Duration::from_nanos(1));
-    tokio::task::yield_now().await;
+    yield_now().await;
     assert_eq!(phase(&coordinator, "ticket"), Some(QueryPhase::Retained));
     clock.advance(Duration::from_nanos(1));
     wait_for_phase(&coordinator, "ticket", Some(QueryPhase::Tombstone)).await;
@@ -1350,7 +1352,7 @@ async fn manual_clock_expires_exact_ticket_retention_and_tombstone_boundaries_wi
     };
     let until_tombstone = tombstone_deadline.duration_since(clock.now());
     clock.advance(until_tombstone - Duration::from_nanos(1));
-    tokio::task::yield_now().await;
+    yield_now().await;
     assert_eq!(phase(&coordinator, "ticket"), Some(QueryPhase::Tombstone));
     clock.advance(Duration::from_nanos(1));
     wait_for_phase(&coordinator, "ticket", None).await;
@@ -2218,13 +2220,13 @@ fn full_stats_projection_keeps_cpu_baseline_failures_not_started() {
 fn status_terminal_preserves_adapter_source_chain() {
     let coordinator = QueryCoordinator::new(config());
     let mut execution = register(&coordinator, "status-source").into_execution().unwrap();
-    let error = crate::server::adapter_error::Error::new(
-        crate::server::adapter_error::ErrorCode::Internal,
+    let error = AdapterError::new(
+        AdapterErrorCode::Internal,
         "algeon_datafusion.server.flight.test.encode",
         "failed to encode response",
     )
     .with_source(std::io::Error::other("socket closed"));
-    let status = crate::server::error::adapter_error_to_status(&error);
+    let status = adapter_error_to_status(&error);
     execution.finish_status("flight_encode", &status);
 
     let payload = coordinator.query_stats("status-source").unwrap();

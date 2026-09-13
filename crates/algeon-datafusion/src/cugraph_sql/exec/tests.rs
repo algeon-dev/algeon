@@ -13,8 +13,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, ScalarValue, tree_node::TreeNodeRecursion},
-    execution::{context::TaskContext, runtime_env::RuntimeEnvBuilder},
+    common::{DataFusionError, Result as DataFusionResult, ScalarValue, Statistics, tree_node::TreeNodeRecursion},
+    datasource::{MemTable, source::DataSourceExec},
+    execution::{SessionStateBuilder, context::TaskContext, runtime_env::RuntimeEnvBuilder},
     logical_expr::Operator,
     physical_expr::{
         PhysicalExpr,
@@ -31,13 +32,15 @@ use parquet::{
 use query_engine::{
     admission::AttemptCapabilityEvidence,
     expr::{Expr, SortExpr, SortSpec},
-    plan::{PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
-    runtime::ExecutionCancellation,
+    observability::{AttemptDisposition, RuntimeTerminalOutcome},
+    plan::{NodeId, PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
+    runtime::{ExecutionCancellation, QueryAdmissionRequest},
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
-        LiteralBatchSource, LocalParquetFile, LocalParquetSource,
+        GraphSimpleDirectedEdgeTopology, LiteralBatchSource, LocalParquetFile, LocalParquetSource,
     },
 };
+use tokio::{task::yield_now, time::timeout};
 
 use super::*;
 use crate::{
@@ -46,17 +49,25 @@ use crate::{
     cugraph_sql::{
         CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource, CugraphGraphOptions,
         CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
-        CugraphTriangleCountAllParams,
+        CugraphTriangleCountAllParams, CugraphVertexIdDomain,
         exec::{
             input::{StagedCugraphSource, execute_edge_source_to_gpu, stage_cugraph_inputs},
             residency::{graph_residency_matches_edge_schema, native_graph_spec_for_residency},
         },
-        result_schema_for_params,
+        result_schema_for_params, result_schema_for_vertex_domain,
     },
-    error::{DataFusionErrorExt, ErrorCode},
+    error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
+    native::{
+        exact_row_count_for_datafusion_local_parquet_scan,
+        graph_residency_descriptor_for_datafusion_local_parquet_scan,
+        graph_vertex_upper_bound_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
+    },
     native_exec::{
-        GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
-        gpu_resident_producer_unique_output_key, query_admission_ticket_from_task_context,
+        GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget,
+        admission::QueryAdmissionTicket,
+        composed_admission_capability_evidence, gpu_resident_producer, gpu_resident_producer_unique_output_key,
+        graph::{GraphExecutionPlan, graph_execution_plan},
+        query_admission_ticket_from_task_context,
     },
     native_report::NativeDataFusionExecutionMetrics,
     session::AlgeonSessionStateBuilderExt,
@@ -70,7 +81,7 @@ fn backend_execution_config(backend: &InstalledTestGpuBackend) -> AlgeonNativeEx
     backend.optimizer_config().native_execution_config().clone()
 }
 
-fn admission_source(backend: &InstalledTestGpuBackend) -> crate::native_exec::QueryAdmissionSource {
+fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
     backend
         .optimizer_config()
         .native_execution_config()
@@ -128,7 +139,7 @@ struct CountingExec {
 #[derive(Debug)]
 struct CountingGpuResidentProducer {
     input_name: String,
-    ticket: Arc<crate::native_exec::admission::QueryAdmissionTicket>,
+    ticket: Arc<QueryAdmissionTicket>,
     capability_evidence: AttemptCapabilityEvidence,
     execute_count: Arc<AtomicUsize>,
     inner: EmptyExec,
@@ -156,7 +167,7 @@ impl ExecutionPlan for CountingGpuResidentProducer {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<datafusion::common::Statistics>> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         StatisticsContext::new().compute(&self.inner, &StatisticsArgs::new().with_partition(partition))
     }
 
@@ -192,7 +203,7 @@ impl GpuResidentProducer for CountingGpuResidentProducer {
         Ok(self.capability_evidence.clone())
     }
 
-    fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
+    fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
         vec![Arc::clone(&self.ticket)]
     }
 
@@ -258,7 +269,7 @@ impl ExecutionPlan for CountingExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<datafusion::common::Statistics>> {
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         StatisticsContext::new().compute(self.input.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 
@@ -397,7 +408,7 @@ fn native_edge_source(row_group_rows: Vec<u64>, config: &AlgeonNativeExecutionCo
 fn native_edge_source_with_root(
     row_group_rows: Vec<u64>,
     config: &AlgeonNativeExecutionConfig,
-    root: impl FnOnce(&mut QueryPlanBuilder, query_engine::plan::NodeId) -> query_engine::plan::NodeId,
+    root: impl FnOnce(&mut QueryPlanBuilder, NodeId) -> NodeId,
 ) -> Arc<dyn ExecutionPlan> {
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new("edges.parquet").with_row_group_rows(row_group_rows)],
@@ -420,8 +431,7 @@ fn native_graph_residency_edge_source_with_stable_id(
         .with_file_size_bytes(1024)
         .with_row_group_rows(vec![100, 200])
         .with_graph_simple_directed_edge_topology(
-            query_engine::source::GraphSimpleDirectedEdgeTopology::new(0, 1)
-                .expect("source and destination columns must differ"),
+            GraphSimpleDirectedEdgeTopology::new(0, 1).expect("source and destination columns must differ"),
         );
     let source = LocalParquetSource::from_files(
         vec![file],
@@ -497,11 +507,8 @@ fn pagerank_utf8_spec() -> CugraphAlgorithmSpec {
 fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
     let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None);
     let graph_options = algorithm.effective_default_graph_options(&CugraphGraphOptions::default());
-    let output_schema = crate::cugraph_sql::result_schema_for_vertex_domain(
-        algorithm,
-        &params,
-        Some(&crate::cugraph_sql::CugraphVertexIdDomain::StringLogical),
-    );
+    let output_schema =
+        result_schema_for_vertex_domain(algorithm, &params, Some(&CugraphVertexIdDomain::StringLogical));
     CugraphAlgorithmSpec {
         algorithm,
         table_name: CugraphTableReference::parse("edges").unwrap(),
@@ -519,11 +526,7 @@ fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
 fn numeric_graph_results_preserve_the_input_vertex_domain_for_every_vertex_column() {
     for algorithm in CugraphAlgorithm::all() {
         let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None);
-        let schema = crate::cugraph_sql::result_schema_for_vertex_domain(
-            algorithm,
-            &params,
-            Some(&crate::cugraph_sql::CugraphVertexIdDomain::Int32),
-        );
+        let schema = result_schema_for_vertex_domain(algorithm, &params, Some(&CugraphVertexIdDomain::Int32));
         for output in algorithm.definition().vertex_output_columns() {
             assert_eq!(
                 schema.field_with_name(output.name).unwrap().data_type(),
@@ -679,7 +682,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         AlgeonNativeExecutionConfig::bounded_default(),
     )
     .expect("path BFS producer should build");
-    assert!(crate::native_exec::gpu_resident_producer(&path_bfs).is_some());
+    assert!(gpu_resident_producer(&path_bfs).is_some());
     assert_eq!(
         gpu_resident_producer_unique_output_key(&path_bfs),
         Some(std::collections::BTreeSet::from(["path_index".to_string()])),
@@ -1051,7 +1054,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         AlgeonNativeExecutionConfig::bounded_default(),
     )
     .expect("string PageRank should build as a GPU-resident graph execution");
-    assert!(crate::native_exec::gpu_resident_producer(&pagerank).is_some());
+    assert!(gpu_resident_producer(&pagerank).is_some());
 
     let logical = CugraphAlgoExec::try_new(
         bfs_utf8_spec(),
@@ -1062,7 +1065,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         AlgeonNativeExecutionConfig::bounded_default(),
     )
     .expect("logical BFS should build as a GPU-resident graph execution");
-    assert!(crate::native_exec::gpu_resident_producer(&logical).is_some());
+    assert!(gpu_resident_producer(&logical).is_some());
 
     let numeric_path = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
@@ -1073,7 +1076,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         AlgeonNativeExecutionConfig::bounded_default(),
     )
     .expect("logical BFS path should build as a GPU-resident graph execution");
-    assert!(crate::native_exec::gpu_resident_producer(&numeric_path).is_some());
+    assert!(gpu_resident_producer(&numeric_path).is_some());
     assert_eq!(
         gpu_resident_producer_unique_output_key(&numeric_path),
         Some(std::collections::BTreeSet::from(["path_index".to_string()])),
@@ -1104,10 +1107,10 @@ fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
     let plan = &exec as &dyn ExecutionPlan;
 
     assert!(
-        crate::native_exec::gpu_resident_producer(plan).is_none(),
+        gpu_resident_producer(plan).is_none(),
         "mapping validation errors must not classify a malformed BFS as a GPU producer"
     );
-    let rejection = crate::native_exec::graph::GraphExecutionPlan::gpu_resident_output_rejection(&exec)
+    let rejection = GraphExecutionPlan::gpu_resident_output_rejection(&exec)
         .expect("mapping validation errors must be surfaced at the GPU boundary");
     let algeon = rejection.find_algeon_error().expect("mapping validation error must remain structured");
     assert_eq!(algeon.code(), ErrorCode::InvalidExecutionPlan);
@@ -1327,7 +1330,7 @@ async fn cugraph_producer_preparation_mints_one_post_hydration_ticket_for_host_a
         .native_execution_config
         .query_admission_ticket_id()
         .expect("post-hydration cuGraph producer must carry its graph-aware ticket");
-    assert!(crate::native_exec::graph::graph_execution_plan(prepared.as_ref()).is_some());
+    assert!(graph_execution_plan(prepared.as_ref()).is_some());
     let prepared_ticket = prepared_exec
         .native_execution_config
         .query_admission_ticket()
@@ -1506,14 +1509,12 @@ fn direct_composed_admission_context_config(
     consumer_plan: &QueryPlan,
     children: &[Arc<dyn ExecutionPlan>],
 ) -> AlgeonNativeExecutionConfig {
-    let evidence = crate::native_exec::composed_admission_capability_evidence(consumer_plan, children)
+    let evidence = composed_admission_capability_evidence(consumer_plan, children)
         .expect("direct composed fixture must issue one complete admission evidence");
     let admitted = backend
         .backend()
         .session_capability()
-        .admit_query_with_request(
-            query_engine::runtime::QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()),
-        )
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()))
         .expect("direct composed evidence must be admitted by the installed backend profile");
     drop(admitted);
     backend_execution_config(backend)
@@ -1631,9 +1632,9 @@ async fn cugraph_host_staging_completes_before_backend_gpu_admission() {
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cuGraph stream should build");
     let execution = tokio::spawn(async move { stream.try_next().await });
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    timeout(std::time::Duration::from_secs(5), async {
         while execute_count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     })
     .await
@@ -1669,7 +1670,7 @@ async fn cugraph_producer_preparation_enforces_the_cumulative_input_cap() {
     let algeon = error.find_algeon_error().expect("staging cap failure must remain structured");
 
     assert_eq!(algeon.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(algeon.status(), crate::error::ErrorStatus::Permanent);
+    assert_eq!(algeon.status(), ErrorStatus::Permanent);
     assert_eq!(algeon.fact_value("source_kind"), Some("side_input"));
     let edge_bytes = edge_bytes.to_string();
     assert_eq!(algeon.fact_value("staged_bytes"), Some(edge_bytes.as_str()));
@@ -1892,12 +1893,12 @@ fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
         .expect("cuGraph exec should register its execution SPIs");
     let plan = &exec as &dyn ExecutionPlan;
 
-    let producer = crate::native_exec::gpu_resident_producer(plan)
-        .expect("registered producer discovery should recognize cuGraph execution");
+    let producer =
+        gpu_resident_producer(plan).expect("registered producer discovery should recognize cuGraph execution");
     assert_eq!(producer.gpu_result_input_name(), exec.gpu_result_input_name);
 
-    let graph = crate::native_exec::graph::graph_execution_plan(plan)
-        .expect("registered graph admission discovery should recognize cuGraph execution");
+    let graph =
+        graph_execution_plan(plan).expect("registered graph admission discovery should recognize cuGraph execution");
     assert!(graph.graph_execution_capability_evidence().is_ok());
 }
 
@@ -1968,18 +1969,18 @@ async fn graph_residency_translates_parallel_datafusion_parquet_scan_without_ord
         ctx.sql("SELECT src, dst, weight FROM edges").await.unwrap().create_physical_plan().await.unwrap();
     let source = edge_source
         .as_ref()
-        .downcast_ref::<datafusion::datasource::source::DataSourceExec>()
+        .downcast_ref::<DataSourceExec>()
         .expect("parallel Parquet fixture should remain a direct DataFusion scan");
     let native_spec = native_graph_spec_for_residency(&pagerank_spec(), false);
 
-    let descriptor = crate::native::graph_residency_descriptor_for_datafusion_local_parquet_scan(source, &native_spec)
+    let descriptor = graph_residency_descriptor_for_datafusion_local_parquet_scan(source, &native_spec)
         .expect("parallel local-Parquet scan should retain a stable graph rowset descriptor");
 
     assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
     assert_eq!(descriptor.vertex_data_type, DataType::Int64);
     assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
     assert_eq!(
-        crate::native::exact_row_count_for_datafusion_local_parquet_scan(source),
+        exact_row_count_for_datafusion_local_parquet_scan(source),
         Some(3),
         "the cacheable local-Parquet bridge must retain the exact footer row count for graph admission"
     );
@@ -1993,11 +1994,11 @@ async fn graph_vertex_footer_bound_is_read_from_the_complete_datafusion_parquet_
     let edge_source = datafusion_parquet_edge_source(&path).await;
     let source = edge_source
         .as_ref()
-        .downcast_ref::<datafusion::datasource::source::DataSourceExec>()
+        .downcast_ref::<DataSourceExec>()
         .expect("single-file fixture should remain a direct DataFusion scan");
 
     assert_eq!(
-        crate::native::graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source),
+        graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source),
         Some(3),
         "graph admission must consume the footer fact bound to the exact local-Parquet edge rowset"
     );
@@ -2074,7 +2075,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
     let config = SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
-    let state = datafusion::execution::SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())
@@ -2095,7 +2096,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
         .create_physical_plan()
         .await
         .unwrap();
-    let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     assert_eq!(lowering.selected_count(), 1, "grouped BFS result should lower: {:#?}", lowering.report);
     let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
     let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
@@ -2110,7 +2111,7 @@ async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
-    let state = datafusion::execution::SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL")
@@ -2121,11 +2122,7 @@ async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
     let targets =
         RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int64Array::from(vec![2])) as ArrayRef])
             .unwrap();
-    ctx.register_table(
-        "targets",
-        Arc::new(datafusion::datasource::MemTable::try_new(target_schema, vec![vec![targets]]).unwrap()),
-    )
-    .unwrap();
+    ctx.register_table("targets", Arc::new(MemTable::try_new(target_schema, vec![vec![targets]]).unwrap())).unwrap();
 
     let plan = ctx
         .sql(
@@ -2183,7 +2180,7 @@ async fn force_atlas2_count_and_coordinate_sums_execute_natively() {
     let backend = test_gpu_backend();
     let state = backend
         .backend()
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+        .install_on(SessionStateBuilder::new_with_default_features())
         .unwrap()
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
@@ -2219,16 +2216,12 @@ async fn force_atlas2_count_and_coordinate_sums_execute_natively() {
         "ForceAtlas2 aggregate should execute: {execution_error:?}; sealed report: {report:#?}"
     );
     assert!(
-        matches!(
-            report.disposition,
-            query_engine::observability::AttemptDisposition::Native
-                | query_engine::observability::AttemptDisposition::PartialNative
-        ),
+        matches!(report.disposition, AttemptDisposition::Native | AttemptDisposition::PartialNative),
         "ForceAtlas2 aggregate must retain a native final plan: {:?}",
         report.disposition
     );
     assert!(
-        matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Succeeded),
+        matches!(report.outcome, RuntimeTerminalOutcome::Succeeded),
         "ForceAtlas2 aggregate must seal a success: {:?}",
         report.outcome
     );
@@ -2239,7 +2232,7 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_defa
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
     write_edge_parquet(&path);
-    let state = datafusion::execution::SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL")

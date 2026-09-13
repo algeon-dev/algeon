@@ -5,27 +5,37 @@ use std::ops::Deref;
 use algeon_datafusion::{
     attempt::{AttemptOptions, RuntimeObservationConfig},
     backend::{
-        AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+        AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
+        GpuMemoryOwnership,
     },
+    error::DataFusionErrorExt,
     native_exec::AlgeonNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::FinalPlanDisposition,
 };
-use datafusion::prelude::SessionContext;
-use futures::StreamExt;
-use query_engine::observability::{
-    AttemptDisposition, AttemptFailureCode, AttemptFailureFactValue, RuntimeTerminalOutcome,
+use datafusion::{
+    common::{Result as DataFusionResult, tree_node::TreeNodeRecursion},
+    execution::SessionStateBuilder,
+    physical_expr::PhysicalExpr,
+    physical_plan::{SendableRecordBatchStream, execute_stream},
+    prelude::SessionContext,
 };
+use futures::{StreamExt, stream::once};
+use query_engine::observability::{
+    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureCode,
+    AttemptFailureFactValue, AttemptHealthTransition, RuntimeTerminalOutcome,
+};
+use tokio::{sync::OwnedSemaphorePermit, time::sleep};
 
 /// Keeps process-wide backend ownership serialized until the backend has
 /// closed and released every resource that can retain its owner lease.
 struct BackendFixture {
     backend: Option<AlgeonGpuBackend>,
-    _guard: tokio::sync::OwnedSemaphorePermit,
+    _guard: OwnedSemaphorePermit,
 }
 
 impl BackendFixture {
-    fn new(queue_capacity: Option<usize>, resource_policy: algeon_datafusion::backend::AlgeonGpuQueuePolicy) -> Self {
+    fn new(queue_capacity: Option<usize>, resource_policy: AlgeonGpuQueuePolicy) -> Self {
         let guard = super::root_gpu_fixture::lock();
         let profile = AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 });
@@ -72,14 +82,11 @@ impl Drop for BackendFixture {
 }
 
 fn backend() -> BackendFixture {
-    BackendFixture::new(None, algeon_datafusion::backend::AlgeonGpuQueuePolicy::default())
+    BackendFixture::new(None, AlgeonGpuQueuePolicy::default())
 }
 
 fn context(backend: &AlgeonGpuBackend) -> SessionContext {
-    let state = backend
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .expect("install backend")
-        .build();
+    let state = backend.install_on(SessionStateBuilder::new_with_default_features()).expect("install backend").build();
     SessionContext::new_with_state(state)
 }
 
@@ -92,10 +99,7 @@ fn cpu_only_context(backend: &AlgeonGpuBackend) -> SessionContext {
         record_batch::RecordBatch,
     };
     use datafusion::datasource::MemTable;
-    let state = backend
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .expect("install backend")
-        .build();
+    let state = backend.install_on(SessionStateBuilder::new_with_default_features()).expect("install backend").build();
     let ctx = SessionContext::new_with_state(state);
     let schema = std::sync::Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
     let batch = RecordBatch::try_new(
@@ -193,10 +197,7 @@ async fn native_context(backend: &AlgeonGpuBackend) -> SessionContext {
         writer.write(&batch).expect("write fixture");
         writer.close().expect("close fixture");
     }
-    let state = backend
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .expect("install backend")
-        .build();
+    let state = backend.install_on(SessionStateBuilder::new_with_default_features()).expect("install backend").build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet(
         "native_rows",
@@ -236,13 +237,13 @@ async fn native_invocation_shares_one_admission_and_distinct_boundaries() {
     assert!(timestamps.cleanup_complete_ns.is_some(), "admitted attempts record cleanup completion");
     assert!(timestamps.report_ready_ns.is_some());
     assert!(report.cleanup_ns().is_some());
-    assert_eq!(report.cleanup_disposition, query_engine::observability::AttemptCleanupDisposition::Completed);
+    assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
     assert_eq!(
         report.capacity_disposition,
-        query_engine::observability::AttemptCapacityDisposition::Released,
+        AttemptCapacityDisposition::Released,
         "outer EOF terminalization precedes the native round cleanup commit"
     );
-    assert_eq!(report.health_transition, Some(query_engine::observability::AttemptHealthTransition::HealthyReuse));
+    assert_eq!(report.health_transition, Some(AttemptHealthTransition::HealthyReuse));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -322,17 +323,14 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     // The same attempt-bound plan executed through a raw session without the
     // invocation extension is rejected: fragments cannot observe a
     // plan-lifetime attempt.
-    let raw_state = backend
-        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
-        .expect("install backend")
-        .build();
+    let raw_state =
+        backend.install_on(SessionStateBuilder::new_with_default_features()).expect("install backend").build();
     let raw_ctx = SessionContext::new_with_state(raw_state);
-    let error = match datafusion::physical_plan::execute_stream(plan, raw_ctx.task_ctx()) {
+    let error = match execute_stream(plan, raw_ctx.task_ctx()) {
         Ok(_) => panic!("raw execution of an attempt-bound plan must be rejected"),
         Err(error) => error,
     };
-    let algeon_error =
-        algeon_datafusion::error::DataFusionErrorExt::find_algeon_error(&error).expect("structured algeon error");
+    let algeon_error = DataFusionErrorExt::find_algeon_error(&error).expect("structured algeon error");
     assert_eq!(algeon_error.fact_value("reason"), Some("attempt_execution_required"));
 }
 
@@ -374,24 +372,21 @@ async fn panic_in_result_stream_is_terminal_exactly_once_and_unwinds() {
         fn with_new_children(
             self: std::sync::Arc<Self>,
             _children: Vec<std::sync::Arc<dyn ExecutionPlan>>,
-        ) -> datafusion::common::Result<std::sync::Arc<dyn ExecutionPlan>> {
+        ) -> DataFusionResult<std::sync::Arc<dyn ExecutionPlan>> {
             Ok(self)
         }
         fn apply_expressions(
             &self,
-            _f: &mut dyn FnMut(
-                &std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
-            )
-                -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion>,
-        ) -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion> {
-            Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+            _f: &mut dyn FnMut(&std::sync::Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+        ) -> DataFusionResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
         fn execute(
             &self,
             _partition: usize,
             _context: std::sync::Arc<TaskContext>,
-        ) -> datafusion::common::Result<datafusion::physical_plan::SendableRecordBatchStream> {
-            let stream = futures::stream::once(async {
+        ) -> DataFusionResult<SendableRecordBatchStream> {
+            let stream = once(async {
                 panic!("injected attempt stream panic");
             });
             Ok(Box::pin(RecordBatchStreamAdapter::new(std::sync::Arc::clone(&self.schema), stream)))
@@ -423,7 +418,7 @@ async fn panic_in_result_stream_is_terminal_exactly_once_and_unwinds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandoned_reports_are_best_effort_delivery_loss_only() {
-    let backend = BackendFixture::new(Some(1), algeon_datafusion::backend::AlgeonGpuQueuePolicy::default());
+    let backend = BackendFixture::new(Some(1), AlgeonGpuQueuePolicy::default());
 
     let cpu_ctx = cpu_only_context(&backend);
     let first = backend.begin_attempt(AttemptOptions::default()).unwrap();
@@ -471,8 +466,7 @@ async fn close_before_planning_seals_backend_closing_without_admission() {
         .plan_sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows")
         .await
         .expect_err("a pre-planning attempt cannot create a plan after close");
-    let algeon_error =
-        algeon_datafusion::error::DataFusionErrorExt::find_algeon_error(&error).expect("structured close error");
+    let algeon_error = DataFusionErrorExt::find_algeon_error(&error).expect("structured close error");
     assert_eq!(algeon_error.fact_value("reason"), Some("backend_closing"));
 
     let report = completion.await;
@@ -632,7 +626,7 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
         })
         .unwrap();
     let error = expired.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap_err();
-    let algeon_error = algeon_datafusion::error::DataFusionErrorExt::find_algeon_error(&error).expect("typed error");
+    let algeon_error = DataFusionErrorExt::find_algeon_error(&error).expect("typed error");
     assert_eq!(algeon_error.fact_value("reason"), Some("deadline_expired"));
     let report = expired.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled));
@@ -651,7 +645,7 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
         })
         .unwrap();
     let mut stream = draining.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    sleep(std::time::Duration::from_millis(700)).await;
     let mut saw_error = false;
     while let Some(batch) = stream.next().await {
         saw_error = saw_error || batch.is_err();
@@ -667,7 +661,7 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() {
-    use algeon_datafusion::backend::AlgeonGpuQueuePolicy;
+    use AlgeonGpuQueuePolicy;
     let backend = BackendFixture::new(
         None,
         AlgeonGpuQueuePolicy::default().with_max_queue_wait(std::time::Duration::from_millis(50)),

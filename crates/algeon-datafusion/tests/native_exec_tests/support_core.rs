@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use algeon_datafusion::error::Error as AlgeonError;
 use arrow::{
     array::{Int32Array, Int64Array, StringViewArray},
     datatypes::{DataType, Field, Schema},
@@ -23,6 +24,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, filter::FilterExec},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+use futures::executor::block_on;
 
 pub(super) fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
     batch.column(index).as_any().downcast_ref::<Int32Array>().unwrap()
@@ -32,13 +34,11 @@ pub(super) fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
     batch.column(index).as_any().downcast_ref::<Int64Array>().unwrap()
 }
 
-pub(super) fn adapter_error(error: &DataFusionError) -> &algeon_datafusion::error::Error {
+pub(super) fn adapter_error(error: &DataFusionError) -> &AlgeonError {
     let DataFusionError::External(source) = error else {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
     };
-    source
-        .downcast_ref::<algeon_datafusion::error::Error>()
-        .expect("DataFusion external error should preserve adapter Error")
+    source.downcast_ref::<AlgeonError>().expect("DataFusion external error should preserve adapter Error")
 }
 
 pub(super) fn parquet_file_schema() -> Arc<Schema> {
@@ -166,9 +166,8 @@ pub(super) fn parquet_scan_with_target_partitions(
     let ctx = SessionContext::new_with_config(
         SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(target_partitions),
     );
-    let df =
-        futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
-    futures::executor::block_on(df.create_physical_plan()).unwrap()
+    let df = block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }
 
 pub(super) fn ilike_filter_plan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
@@ -209,18 +208,8 @@ pub(super) fn join_aggregate_sort_sql_plan_with_limit(
             .with_repartition_sorts(false)
             .with_target_partitions(1),
     );
-    futures::executor::block_on(ctx.register_parquet(
-        "left_input",
-        left.to_str().unwrap(),
-        ParquetReadOptions::default(),
-    ))
-    .unwrap();
-    futures::executor::block_on(ctx.register_parquet(
-        "right_input",
-        right.to_str().unwrap(),
-        ParquetReadOptions::default(),
-    ))
-    .unwrap();
+    block_on(ctx.register_parquet("left_input", left.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    block_on(ctx.register_parquet("right_input", right.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     let limit_clause = if limit { "LIMIT 2" } else { "" };
     let sql = format!(
         "
@@ -233,6 +222,6 @@ ORDER BY sum_x00 DESC, l.key ASC
  {limit_clause}
 "
     );
-    let df = futures::executor::block_on(ctx.sql(&sql)).unwrap();
-    futures::executor::block_on(df.create_physical_plan()).unwrap()
+    let df = block_on(ctx.sql(&sql)).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }

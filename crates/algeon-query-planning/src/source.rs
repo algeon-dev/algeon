@@ -16,6 +16,8 @@ use arrow::{
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 
+use crate::error::{QueryError, QueryErrorCode, Result};
+
 mod deletes;
 mod diagnostics;
 mod footer_facts;
@@ -61,7 +63,7 @@ pub use validation::validate_literal_batch_source;
 pub use validation::validate_local_parquet_source;
 
 #[doc(hidden)]
-pub fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> crate::error::Result<SchemaRef> {
+pub fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> Result<SchemaRef> {
     if source.is_zero_column_count_source() {
         return Ok(Arc::clone(&source.schema));
     }
@@ -76,8 +78,8 @@ pub fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> crat
             continue;
         }
         let field = source.schema.field_with_name(column).map_err(|error| {
-            crate::error::QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
                 "query_engine.local_parquet_source.execution_frame_schema",
                 "local parquet execution frame column is missing from the source schema",
             )

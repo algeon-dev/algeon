@@ -1,4 +1,4 @@
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::datatypes::{DataType, FieldRef, SchemaRef};
 use datafusion::{
     physical_expr::expressions::Column,
     physical_plan::{
@@ -178,7 +178,7 @@ fn distributed_aggregate_state_exprs_are_native_safe(
 }
 
 fn distributed_state_fields_match_schema(
-    state_fields: &[arrow::datatypes::FieldRef],
+    state_fields: &[FieldRef],
     schema: &SchemaRef,
     state_index_base: usize,
 ) -> bool {

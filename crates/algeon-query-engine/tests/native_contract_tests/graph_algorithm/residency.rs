@@ -1,3 +1,5 @@
+use query_engine::source::GraphSimpleDirectedEdgeTopology;
+
 #[test]
 fn graph_residency_descriptor_sees_through_edge_projection() {
     let plan = graph_edge_source_plan(&["src", "dst", "weight"], Some(&["src", "dst", "weight"]));
@@ -99,7 +101,7 @@ fn graph_residency_descriptor_carries_a_footer_vertex_bound_only_for_the_complet
 
 #[test]
 fn simple_directed_topology_proof_survives_only_column_preserving_native_projections() {
-    let topology = query_engine::source::GraphSimpleDirectedEdgeTopology::new(0, 1)
+    let topology = GraphSimpleDirectedEdgeTopology::new(0, 1)
         .expect("source and destination columns differ");
     let source = graph_local_parquet_source_with_file(
         &["src", "dst"],

@@ -20,14 +20,19 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use cudf::testing::arrow::{
+    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+    reset_arrow_host_interop_observation_for_test,
+};
 use datafusion::{
     datasource::MemTable,
     execution::SessionStateBuilder,
-    physical_plan::{ExecutionPlan, collect},
+    physical_plan::{ExecutionPlan, collect, displayable, execute_stream, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
+use tokio::{task::yield_now, time::timeout};
 
 const KNN_OPTIONS: &str = r#"{
   "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -93,15 +98,15 @@ async fn functions_only_keeps_native_supported_sql_on_cpu_without_gpu_activity()
         .create_physical_plan()
         .await
         .expect("physical ordinary SQL plan");
-    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
     assert!(rendered.contains("AggregateExec"), "ordinary SQL must remain in DataFusion:\n{rendered}");
     assert!(!rendered.contains("AlgeonNative"), "ordinary SQL must not be rewritten in functions-only:\n{rendered}");
 
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let batches = collect(plan, ctx.task_ctx()).await.expect("ordinary CPU SQL executes");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
     let admission = backend.admission_snapshot().expect("post-query admission snapshot");
     assert_eq!(admission.active_queries, 0);
     let device = backend.backend_metrics_snapshot().device(0).expect("device metrics");
@@ -149,7 +154,7 @@ async fn functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_ad
         .await
         .expect("physical plan");
     find_cuvs_exec(plan.as_ref()).expect("CuvsAlgoExec");
-    let rendered_plan = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    let rendered_plan = displayable(plan.as_ref()).indent(false).to_string();
     assert!(
         rendered_plan.contains("CugraphAlgoExec: algorithm=ForceAtlas2"),
         "the cuVS relation must retain its planned cuGraph producer:\n{rendered_plan}"
@@ -213,7 +218,7 @@ async fn assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(mode: AlgeonGpu
         sql_literal(KNN_OPTIONS),
     );
     let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
-    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
     assert_eq!(rendered.matches("CugraphAlgoExec: algorithm=ForceAtlas2").count(), 2, "{rendered}");
     assert_eq!(rendered.matches("CuvsAlgoExec").count(), 2, "{rendered}");
 
@@ -263,7 +268,7 @@ async fn functions_only_executes_cuvs_through_cpu_limit_into_cuvs() {
         sql_literal(KNN_OPTIONS),
     );
     let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
-    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
     assert_eq!(
         rendered.matches("CuvsAlgoExec").count(),
         2,
@@ -305,7 +310,7 @@ async fn functions_only_executes_two_gpu_branches_through_a_cpu_join_under_one_a
                FROM left_layout l JOIN right_layout r ON l.vertex = r.vertex \
                ORDER BY l.vertex";
     let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
-    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
     assert!(rendered.contains("HashJoinExec"), "the branch join must remain on DataFusion CPU:\n{rendered}");
 
     let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.expect("two GPU branches must execute");
@@ -337,12 +342,12 @@ async fn functions_only_stream_drop_releases_admission_and_the_plan_can_run_agai
     );
     let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
 
-    let mut stream = datafusion::physical_plan::execute_stream(Arc::clone(&plan), ctx.task_ctx()).unwrap();
+    let mut stream = execute_stream(Arc::clone(&plan), ctx.task_ctx()).unwrap();
     assert!(stream.next().await.transpose().unwrap().is_some());
     drop(stream);
-    tokio::time::timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(5), async {
         while backend.admission_snapshot().unwrap().active_queries != 0 {
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     })
     .await
@@ -352,9 +357,9 @@ async fn functions_only_stream_drop_releases_admission_and_the_plan_can_run_agai
     let batches =
         collect(plan, ctx.task_ctx()).await.expect("the same physical plan must start a fresh invocation round");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
-    tokio::time::timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(5), async {
         while backend.admission_snapshot().unwrap().active_queries != 0 {
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     })
     .await
@@ -833,8 +838,8 @@ fn find_cuvs_exec(plan: &dyn ExecutionPlan) -> Option<&CuvsAlgoExec> {
     plan.children().into_iter().find_map(|child| find_cuvs_exec(child.as_ref()))
 }
 
-fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> datafusion::physical_plan::metrics::MetricsSet {
-    fn append(metrics: &mut datafusion::physical_plan::metrics::MetricsSet, plan: &dyn ExecutionPlan) {
+fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> MetricsSet {
+    fn append(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
         if let Some(plan_metrics) = plan.metrics() {
             for metric in plan_metrics.iter() {
                 metrics.push(Arc::clone(metric));
@@ -845,7 +850,7 @@ fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> datafusion::physical_plan
         }
     }
 
-    let mut metrics = datafusion::physical_plan::metrics::MetricsSet::new();
+    let mut metrics = MetricsSet::new();
     append(&mut metrics, plan);
     metrics
 }

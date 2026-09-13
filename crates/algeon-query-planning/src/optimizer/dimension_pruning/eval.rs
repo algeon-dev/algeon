@@ -1,9 +1,9 @@
 use super::{
-    Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyFilter, Expr, Float32Array, Float64Array,
-    Int32Array, Int64Array, KeyRange, LargeStringArray, LiteralValue, LocalParquetPruningResolver, LocalParquetSource,
-    NodeId, PlanNode, QueryPlan, RecordBatch, SourceNode, StringArray, StringViewArray, UInt32Array, UInt64Array,
-    aggregate_group_output_name, reader_projection_indices, reader_projection_indices_for_exprs,
-    remap_unqualified_columns,
+    AggregateNode, Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyFilter, Expr, Float32Array,
+    Float64Array, Int32Array, Int64Array, KeyRange, LargeStringArray, LiteralValue, LocalParquetPruningResolver,
+    LocalParquetSource, NodeId, PlanNode, ProjectionNode, QueryPlan, RecordBatch, SourceNode, StringArray,
+    StringViewArray, UInt32Array, UInt64Array, aggregate_group_output_name, reader_projection_indices,
+    reader_projection_indices_for_exprs, remap_unqualified_columns,
 };
 
 pub(super) fn derive_dimension_key_filter(
@@ -95,34 +95,28 @@ fn derive_i64_expr_range_from_filtered_subtree_inner(
     }
 }
 
-fn remap_optional_projection_general_expr(
-    expr: Option<Expr>,
-    projection: &crate::plan::ProjectionNode,
-) -> Option<Option<Expr>> {
+fn remap_optional_projection_general_expr(expr: Option<Expr>, projection: &ProjectionNode) -> Option<Option<Expr>> {
     match expr {
         Some(expr) => remap_projection_general_expr(&expr, projection).map(Some),
         None => Some(None),
     }
 }
 
-fn remap_optional_aggregate_group_general_expr(
-    expr: Option<Expr>,
-    aggregate: &crate::plan::AggregateNode,
-) -> Option<Option<Expr>> {
+fn remap_optional_aggregate_group_general_expr(expr: Option<Expr>, aggregate: &AggregateNode) -> Option<Option<Expr>> {
     match expr {
         Some(expr) => remap_aggregate_group_general_expr(&expr, aggregate).map(Some),
         None => Some(None),
     }
 }
 
-fn remap_projection_general_expr(expr: &Expr, projection: &crate::plan::ProjectionNode) -> Option<Expr> {
+fn remap_projection_general_expr(expr: &Expr, projection: &ProjectionNode) -> Option<Expr> {
     remap_unqualified_columns(expr, &mut |column| {
         let output = projection.outputs.iter().find(|output| output.field.name() == column.name())?;
         Some(strip_alias(output.expr.clone()))
     })
 }
 
-fn remap_aggregate_group_general_expr(expr: &Expr, aggregate: &crate::plan::AggregateNode) -> Option<Expr> {
+fn remap_aggregate_group_general_expr(expr: &Expr, aggregate: &AggregateNode) -> Option<Expr> {
     remap_unqualified_columns(expr, &mut |column| {
         aggregate
             .spec

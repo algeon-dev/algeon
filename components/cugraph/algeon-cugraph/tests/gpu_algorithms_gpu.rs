@@ -28,11 +28,15 @@ use cugraph::{
         EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, SpectralClusteringParams,
         TriangleCountParams,
     },
+    error::ErrorKind,
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64, PositiveF64},
     random::RngState,
-    sampling::{NeighborSamplingParams, Node2VecRandomWalkParams, RandomWalkParams, TemporalSamplingComparison},
+    sampling::{
+        NeighborSamplingParams, Node2VecRandomWalkParams, RandomWalkParams, RandomWalkResult, SampleResult,
+        TemporalSamplingComparison,
+    },
     similarity::{AllPairsSimilarityParams, SimilarityParams},
     structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, KCoreParams, ScoreValues, VertexIds},
     traversal::{BfsParams, SsspParams},
@@ -522,7 +526,7 @@ fn neighbor_sampling_fixture(
 
 fn assert_random_walk_shape(
     handle: &cugraph::EnteredContext<'_>,
-    result: &cugraph::sampling::RandomWalkResult,
+    result: &RandomWalkResult,
     starts: &[i32],
     max_length: usize,
 ) {
@@ -555,7 +559,7 @@ fn neighbor_sampling_params() -> NeighborSamplingParams {
 
 fn assert_neighbor_sample_columns(
     handle: &cugraph::EnteredContext<'_>,
-    result: &cugraph::sampling::SampleResult,
+    result: &SampleResult,
     expect_temporal_columns: bool,
 ) {
     let minors = result.minors().expect("minors");
@@ -1541,7 +1545,7 @@ fn personalized_pagerank_rejects_mismatched_personalization_lengths() {
     let err = graph
         .personalized_pagerank(&entered, &PersonalizedPageRankParams::default(), &personalization)
         .expect_err("mismatched personalization must be rejected");
-    assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
 #[test]

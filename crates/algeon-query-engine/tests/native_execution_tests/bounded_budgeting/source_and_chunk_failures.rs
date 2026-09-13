@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::runtime::ExecutionCancellation;
+
 use super::*;
 
 #[test]
@@ -386,9 +388,8 @@ fn bounded_native_query_stops_recovery_at_the_next_cancellation_boundary() {
     // Only one row group fits, so recovery needs six halvings with a backoff
     // between each before the first read can succeed; the deadline elapses in
     // that window and the next boundary must exit with the cancellation cause.
-    let cancellation = query_engine::runtime::ExecutionCancellation::with_deadline(Some(
-        std::time::Instant::now() + std::time::Duration::from_millis(200),
-    ));
+    let cancellation =
+        ExecutionCancellation::with_deadline(Some(std::time::Instant::now() + std::time::Duration::from_millis(200)));
     let evidence = capability_evidence_for_fixture_plan(&plan).unwrap();
     let handle = suite_backend_with_policy(context.policy)
         .session_capability()

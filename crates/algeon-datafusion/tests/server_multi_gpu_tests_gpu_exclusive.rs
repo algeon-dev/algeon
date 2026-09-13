@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    net::TcpListener,
+    net::{SocketAddr, TcpListener},
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -16,7 +16,10 @@ use algeon_datafusion::{
     attempt::{AlgeonAttempt, AttemptOptions, AttemptStream},
     backend::{AlgeonGpuBackend, GpuDeviceMemoryLimit, GpuMemoryOwnership},
     native_exec::AlgeonNativeExecutionConfig,
-    server::{FlightSqlServer, ServerConfig, ServerShutdown},
+    server::{
+        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_GPU_DEVICES_ENV, FlightSqlServer, Result as ServerResult,
+        ServerConfig, ServerShutdown, backend_from_server_config, init_cuda_device,
+    },
 };
 use arrow::{
     array::{ArrayRef, Int64Array},
@@ -27,8 +30,12 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
 use tokio_util::sync::CancellationToken;
-use tonic::transport::Endpoint;
+use tonic::transport::{Channel, Endpoint};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const DEVICE_CAPACITY_BYTES: u64 = 8 * GIB;
@@ -61,10 +68,8 @@ fn two_device_server_config() -> ServerConfig {
     )
     .expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    let env = BTreeMap::from([
-        (algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV, path),
-        (algeon_datafusion::server::ALGEON_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
-    ]);
+    let env =
+        BTreeMap::from([(ALGEON_SERVER_CONFIG_FILE_ENV, path), (ALGEON_SERVER_GPU_DEVICES_ENV, "0,1".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("two-device test profile");
     config.gpu_memory_ownership =
         config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
@@ -107,21 +112,20 @@ fn write_rows_parquet(path: &Path, rows: i64) {
 struct TwoDeviceServer {
     backend: AlgeonGpuBackend,
     ctx: Arc<SessionContext>,
-    addr: std::net::SocketAddr,
+    addr: SocketAddr,
     shutdown: CancellationToken,
-    server: tokio::task::JoinHandle<algeon_datafusion::server::Result<()>>,
+    server: JoinHandle<ServerResult<()>>,
     _dir: tempfile::TempDir,
 }
 
 impl TwoDeviceServer {
     async fn spawn() -> Self {
-        let _ = algeon_datafusion::server::init_cuda_device(0);
+        let _ = init_cuda_device(0);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener address");
         let mut config = two_device_server_config();
         config.bind_addr = addr;
-        let backend =
-            algeon_datafusion::server::backend_from_server_config(&config).expect("two-device backend must build");
+        let backend = backend_from_server_config(&config).expect("two-device backend must build");
 
         let dir = tempfile::Builder::new().prefix("algeon-datafusion-placement-").tempdir().expect("tempdir");
         let parquet_path = dir.path().join("rows.parquet");
@@ -144,7 +148,7 @@ impl TwoDeviceServer {
         Self { backend, ctx, addr, shutdown, server, _dir: dir }
     }
 
-    async fn client(&self) -> FlightSqlServiceClient<tonic::transport::Channel> {
+    async fn client(&self) -> FlightSqlServiceClient<Channel> {
         let uri = format!("http://{}", self.addr);
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut backoff = Duration::from_millis(10);
@@ -153,7 +157,7 @@ impl TwoDeviceServer {
                 Ok(channel) => return FlightSqlServiceClient::new(channel),
                 Err(error) => {
                     assert!(Instant::now() < deadline, "server did not accept connections: {error:?}");
-                    tokio::time::sleep(backoff).await;
+                    sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_millis(250));
                 },
             }
@@ -176,13 +180,13 @@ impl TwoDeviceServer {
                 return;
             }
             assert!(Instant::now() < deadline, "expected active={active} queued={queued}, got {snapshot:?}");
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(20)).await;
         }
     }
 
     async fn shutdown(self) {
         self.shutdown.cancel();
-        tokio::time::timeout(Duration::from_secs(20), self.server)
+        timeout(Duration::from_secs(20), self.server)
             .await
             .expect("shutdown drains")
             .expect("server task should not panic")
@@ -243,7 +247,7 @@ async fn a_waiting_flight_query_runs_on_whichever_eligible_device_frees_first() 
     // Freeing exactly one device leaves the waiter a single eligible choice,
     // so the device it lands on is observable rather than a race.
     drop(second);
-    let batches = tokio::time::timeout(Duration::from_secs(120), queued)
+    let batches = timeout(Duration::from_secs(120), queued)
         .await
         .expect("the waiter admits once a device frees")
         .expect("waiting query task should not panic")

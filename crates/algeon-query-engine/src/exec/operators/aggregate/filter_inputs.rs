@@ -8,6 +8,7 @@ use super::{
     aggregate_spec_has_filters, budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
     execution_overrides, global_count_star_expr, lower_expr,
 };
+use crate::naming::unique_alias_with_suffix;
 
 pub(in crate::exec) fn prepare_filtered_aggregate_frame(
     context: &ExecutionContext,
@@ -146,5 +147,5 @@ fn aggregate_expr_input_type_unsupported_message(operation: &'static str) -> &'s
 
 fn unique_filtered_aggregate_alias(index: usize, fields: &[Field]) -> String {
     let base = format!("__algeon_native_filtered_aggregate_arg_{index}");
-    crate::naming::unique_alias_with_suffix(base.as_str(), |alias| fields.iter().any(|field| field.name() == alias))
+    unique_alias_with_suffix(base.as_str(), |alias| fields.iter().any(|field| field.name() == alias))
 }

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::rapids_backend::rapids_analysis_context;
+
 use super::*;
 
 #[test]
@@ -35,10 +37,9 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         Arc::clone(&output_schema),
         false,
     );
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_keyless_conditional_join_input_subplan_pipeline()
+        plan.capability_analysis(rapids_analysis_context()).admits_keyless_conditional_join_input_subplan_pipeline()
     );
 
     let context = bounded_join_execution_context(&runtime);
@@ -86,7 +87,7 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     );
     assert!(
         gpu_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_input_subplan_pipeline()
     );
     let gpu_result = execute_query_plan(&context, &gpu_plan).expect("GPU sink compiled keyless subplan should execute");

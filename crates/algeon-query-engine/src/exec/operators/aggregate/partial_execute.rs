@@ -4,9 +4,16 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
-use cudf::PreparedDataFrameGroupBy;
+use cudf::{PreparedDataFrameGroupBy, frame::factorization::Codebook};
 
 use super::{cudf_query_error, cudf_query_error_with_budget_details, groupby::rename_groupby_key_columns, *};
+use crate::{
+    capability::AggregateStrategyCapabilityDecision,
+    naming::unique_alias_with_suffix,
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
+};
 
 pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_budget(
     context: &ExecutionContext,
@@ -18,13 +25,13 @@ pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_
 ) -> Result<(PreparedDataFrameGroupBy, Duration)> {
     let input_rows = frame.num_rows() as u64;
     let prepare_timer = Instant::now();
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let prepare_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+    let prepare_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PreparedGroupbyPrepare,
-        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+        RuntimeOperatorStageKind::PreparedGroupbyPrepare,
+        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let prepared = match frame
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
@@ -63,7 +70,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     output_schema: &ArrowSchemaRef,
     aggregate: LoweredAggregate,
     expected_output_names: Vec<String>,
-    mut decision: crate::capability::AggregateStrategyCapabilityDecision,
+    mut decision: AggregateStrategyCapabilityDecision,
     selection_elapsed: Duration,
     token: &ExecutionBudgetToken,
     metrics: &ExecutionMetrics,
@@ -84,13 +91,13 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     decision.facts.insert("prepared_sort_groupby_max_group_size", facts.max_group_size.to_string());
 
     let aggregate_timer = Instant::now();
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let aggregate_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+    let aggregate_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PreparedGroupbyAggregate,
-        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+        RuntimeOperatorStageKind::PreparedGroupbyAggregate,
+        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
         cudf_query_error_with_budget_details(
@@ -155,7 +162,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     prepared_input_schema: ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     aggregate: LoweredAggregate,
-    mut decision: crate::capability::AggregateStrategyCapabilityDecision,
+    mut decision: AggregateStrategyCapabilityDecision,
     selection_elapsed: Duration,
     input_evidence: Option<PartialAggregateInputEvidence>,
     prepared_input: Option<(PreparedDataFrameGroupBy, Duration)>,
@@ -182,13 +189,13 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     decision.facts.insert("prepared_sort_groupby_max_group_size", facts.max_group_size.to_string());
 
     let aggregate_timer = Instant::now();
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
-    let aggregate_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
+    let aggregate_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PreparedGroupbyAggregate,
-        crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
+        RuntimeOperatorStageKind::PreparedGroupbyAggregate,
+        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
         cudf_query_error_with_budget_details(
@@ -256,7 +263,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     aggregate_output_schema: &ArrowSchemaRef,
     mut aggregate: LoweredAggregate,
     expected_output_names: Vec<String>,
-    decision: crate::capability::AggregateStrategyCapabilityDecision,
+    decision: AggregateStrategyCapabilityDecision,
     selection_elapsed: Duration,
     input_evidence: Option<PartialAggregateInputEvidence>,
     token: &ExecutionBudgetToken,
@@ -267,7 +274,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     let total_timer = Instant::now();
     let mut encode_elapsed = Duration::ZERO;
     let mut decode_elapsed = Duration::ZERO;
-    let mut encoded_key_decoders = HashMap::<String, cudf::frame::factorization::Codebook>::new();
+    let mut encoded_key_decoders = HashMap::<String, Codebook>::new();
 
     for index in 0..aggregate.key_columns.len() {
         let key_column = aggregate.key_columns[index].clone();
@@ -396,7 +403,7 @@ fn encoded_partial_key_dtype_requires_encoding(data_type: &ArrowDataType) -> boo
 
 fn unique_encoded_group_key_name(frame: &DataFrame, aggregate: &LoweredAggregate, key_index: usize) -> String {
     let base = format!("__algeon_native_encoded_group_key_{key_index}");
-    crate::naming::unique_alias_with_suffix(base.as_str(), |candidate| {
+    unique_alias_with_suffix(base.as_str(), |candidate| {
         frame.contains(candidate) || aggregate.output_names.iter().any(|name| name == candidate)
     })
 }

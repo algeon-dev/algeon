@@ -1,3 +1,5 @@
+use arrow::datatypes::{Float32Type, Float64Type};
+
 #[test]
 fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     let context = backend_context();
@@ -293,8 +295,8 @@ fn betweenness_k_resolves_to_sorted_first_vertices() {
         let mut scored: Vec<i64> = Vec::new();
         for row in 0..batch.num_rows() {
             let positive = match values.data_type() {
-                DataType::Float32 => values.as_primitive::<arrow::datatypes::Float32Type>().value(row) > 0.0,
-                DataType::Float64 => values.as_primitive::<arrow::datatypes::Float64Type>().value(row) > 0.0,
+                DataType::Float32 => values.as_primitive::<Float32Type>().value(row) > 0.0,
+                DataType::Float64 => values.as_primitive::<Float64Type>().value(row) > 0.0,
                 data_type => panic!("expected betweenness score column, got {data_type}"),
             };
             if positive {
@@ -411,8 +413,8 @@ fn betweenness_result_is_independent_of_device_budget() {
         let mut scored = 0u64;
         for row in 0..batch.num_rows() {
             let positive = match values.data_type() {
-                DataType::Float32 => values.as_primitive::<arrow::datatypes::Float32Type>().value(row) > 0.0,
-                DataType::Float64 => values.as_primitive::<arrow::datatypes::Float64Type>().value(row) > 0.0,
+                DataType::Float32 => values.as_primitive::<Float32Type>().value(row) > 0.0,
+                DataType::Float64 => values.as_primitive::<Float64Type>().value(row) > 0.0,
                 data_type => panic!("expected betweenness score column, got {data_type}"),
             };
             scored += u64::from(positive);

@@ -4,7 +4,7 @@ use crate::{
     execution_contracts::SourceChunkPlanningMode,
     expr::LiteralValue,
     plan::NodeId,
-    source::{ParquetReaderDecimalType, ParquetSourceLocation},
+    source::{ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource},
 };
 
 /// Planned chunks and metadata diagnostics for one source node.
@@ -94,7 +94,7 @@ pub struct SourceChunk {
     /// Local path used for diagnostics and footer reads.
     pub path: PathBuf,
     /// Resolved reader strategy and decode contract for this chunk.
-    pub resolved_source: crate::source::ResolvedParquetSource,
+    pub resolved_source: ResolvedParquetSource,
     /// Stable file identifier copied from the source definition.
     pub stable_id: String,
     /// Row groups selected for this chunk when row-group metadata is known.

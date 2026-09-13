@@ -2,7 +2,7 @@ use super::{
     BoundedExecutionAttempt, GpuDataFrame, LocalParquetSource, MemoryControlPolicy, QueryError, QueryErrorCode, Result,
     SourceChunk, SourceReadBudgetPolicy, cudf_budget_exhaustion, read_local_parquet_chunk, record_chunk_retry_error,
 };
-use crate::observability::SourceReadFact;
+use crate::{exec::retry::backoff_before_retry, observability::SourceReadFact};
 
 pub(in crate::exec::bounded) fn source_read_budget_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
     source_read_sizing(policy, chunk).requested_bytes
@@ -167,10 +167,7 @@ pub(in crate::exec::bounded::chunks) fn try_read_local_parquet_chunk_with_correc
     };
     record_chunk_retry_error(error, execution.metrics());
     execution.record_source_read(SourceReadFact::ChunkRetried);
-    crate::exec::retry::backoff_before_retry(
-        execution.context(),
-        "query_engine.exec.bounded.source_chunk_budget_retry",
-    )?;
+    backoff_before_retry(execution.context(), "query_engine.exec.bounded.source_chunk_budget_retry")?;
     execution.record_source_read(SourceReadFact::ChunkAttempted);
     read_local_parquet_chunk(
         execution.context(),

@@ -193,6 +193,10 @@ record() {
       printf 'phase\tstatus\tstarted\tduration\tlog\n'
       for row in "${PHASES[@]}"; do cat "${LOG_DIR}/.${row}.row" 2>/dev/null; done
     } >"${LOG_DIR}/summary.tsv.tmp" && mv "${LOG_DIR}/summary.tsv.tmp" "${LOG_DIR}/summary.tsv"
+    if [[ "${phase}" != gate && "${status}" != PENDING ]]; then
+      printf 'check_all: phase=%s status=%s duration=%s log=%s\n' \
+        "${phase}" "${status}" "${duration}" "${LOG_DIR}/${phase}.log"
+    fi
   } 9>"${LOG_DIR}/.summary.lock"
 }
 

@@ -2,10 +2,10 @@
 fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_evidence() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert_eq!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline(),
+        plan.capability_analysis(rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline(),
         analysis.admits_keyed_hash_join_resident_subplan_pipeline()
     );
     assert_eq!(analysis.keyed_hash_join_resident_subplan_admission, CapabilityDecision::Satisfied);
@@ -37,9 +37,9 @@ fn bounded_keyed_hash_join_resident_subplan_rejects_structural_equivalence_witho
     let plan = keyed_hash_join_resident_subplan_pipeline_plan(
         KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline());
     let CapabilityDecision::Rejected { reason, facts } = &analysis.keyed_hash_join_resident_subplan_admission else {
         panic!("structurally equivalent grouped aggregates must not satisfy resident-subplan admission");
     };
@@ -52,9 +52,9 @@ fn bounded_keyed_hash_join_resident_subplan_preserves_node_failure_locality() {
     let plan = keyed_hash_join_resident_subplan_pipeline_plan(
         KeyedHashJoinResidentSubplanPipelineVariant::UnsupportedRootResidualExpression,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline());
     let CapabilityDecision::Rejected { reason, facts } = &analysis.keyed_hash_join_resident_subplan_admission else {
         panic!("unsupported residual expression should reject keyed hash resident-subplan admission");
     };
@@ -70,12 +70,12 @@ fn bounded_keyed_hash_join_resident_subplan_non_matching_variants_use_full_sort_
         KeyedHashJoinResidentSubplanPipelineVariant::GroupedAggregateNotSum,
     ] {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(!analysis.admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
         assert!(analysis.admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
-        assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "{variant:?}");
-        assert!(modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_some(), "{variant:?}");
+        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
+        assert!(modeled_facts(&plan, rapids_analysis_context()).is_some(), "{variant:?}");
     }
 }
 
@@ -88,9 +88,9 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
     ] {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
-        assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
-        assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join(), "{variant:?}");
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
         // S3 admits the structurally equivalent aggregate through the compiled
         // contracts: without shared identity it simply compiles to two
         // separate aggregate tasks, so only the residual variants below stay
@@ -99,10 +99,10 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
             variant,
             KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate
         ) {
-            assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "{variant:?}");
+            assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
             continue;
         }
-        let facts = unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context())
+        let facts = unsupported_facts(&plan, rapids_analysis_context())
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
@@ -113,7 +113,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
 fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_post_root_filtering_join() {
     let plan =
         aggregate_over_join_subplan_topk_variant_plan(AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
@@ -128,17 +128,17 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_pos
         "post-root filtering join should be part of the post-root stage order evidence"
     );
 
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("post-root filtering join TopK plan should compile");
     assert_eq!(
-        query_engine::admission::compiled_bounded_pipeline_support(&pipeline)
+        compiled_bounded_pipeline_support(&pipeline)
             .expect("graph support check should not fail"),
-        query_engine::admission::CompiledBoundedPipelineSupport::Supported
+        CompiledBoundedPipelineSupport::Supported
     );
     assert_eq!(
-        query_engine::admission::compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
             .expect("plan-aware support check should not fail"),
-        query_engine::admission::CompiledBoundedPipelineSupport::Supported
+        CompiledBoundedPipelineSupport::Supported
     );
 }
 
@@ -147,9 +147,9 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_preserves_node_failure_lo
     let plan = aggregate_over_join_subplan_topk_variant_plan(
         AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
     let CapabilityDecision::Rejected { reason, facts } =
         &analysis.multi_join_aggregate_over_join_subplan_topk_admission
     else {
@@ -171,10 +171,10 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays
         let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
 
         assert!(
-            !plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+            !plan.capability_analysis(rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
             "{variant:?} must not satisfy the aggregate-over-join TopK capability evidence"
         );
-        assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "{variant:?}");
+        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
     }
 
     let plan = aggregate_over_join_subplan_topk_variant_plan(
@@ -182,14 +182,14 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays
     );
 
     assert!(
-        !plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        !plan.capability_analysis(rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "unsupported projection expression must not satisfy the aggregate-over-join TopK capability evidence"
     );
     assert!(
-        unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_some(),
+        unsupported_facts(&plan, rapids_analysis_context()).is_some(),
         "unsupported projection expression should remain rejected with bounded unsupported-shape facts"
     );
-    let facts = unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("rejected aggregate-over-join TopK variant should produce facts");
+    let facts = unsupported_facts(&plan, rapids_analysis_context()).expect("rejected aggregate-over-join TopK variant should produce facts");
     assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
     assert!(facts.contains_key("bounded_join_rejection_reason"));
 
@@ -200,23 +200,23 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays
     // cap failure at runtime, not an admission gate.
     let plan = aggregate_over_join_subplan_topk_variant_plan(AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide);
     assert!(
-        !plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        !plan.capability_analysis(rapids_analysis_context()).admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "ShallowMultiJoinSide must not satisfy the aggregate-over-join TopK capability evidence"
     );
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("ShallowMultiJoinSide should be admitted through the root TopK join/aggregate envelope");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "ShallowMultiJoinSide is admitted, not a bounded support gap");
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "ShallowMultiJoinSide is admitted, not a bounded support gap");
 }
 
 #[test]
 fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_capability_evidence() {
     let plan = resident_grouped_aggregate_subquery_filter_plan(false);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert_eq!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
+        plan.capability_analysis(rapids_analysis_context()).admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         analysis.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
     );
     assert_eq!(analysis.multi_join_resident_grouped_aggregate_subquery_filter_admission, CapabilityDecision::Satisfied);
@@ -240,11 +240,11 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_preserves_node_failure_loca
     let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
     );
     let CapabilityDecision::Rejected { reason, facts } =
@@ -268,7 +268,7 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_admission_stays_narrow() {
 
         assert!(
             !plan
-                .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+                .capability_analysis(rapids_analysis_context())
                 .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
             "{variant:?} must not be admitted by the resident grouped-aggregate TopK family"
         );
@@ -278,7 +278,7 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_admission_stays_narrow() {
 fn root_full_sort_shared_keyed_join_fanout_plan(
     shared_join_type: JoinType,
     interpose_shared_sort: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("d1", DataType::Int32, false),
@@ -418,13 +418,13 @@ fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_join_fanout() {
     // keyed joins is admitted through the SharedResidentFanout subcontract
     // instead of being rejected as an unsupported shared producer.
     let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::Inner, false);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert_eq!(analysis.root_full_sort_join_aggregate_admission, CapabilityDecision::Satisfied);
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("shared keyed-join fanout should be admitted through the root full-sort envelope");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootFullSortJoinAggregate);
 }
 
 #[test]
@@ -433,7 +433,7 @@ fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_semi_join_fanout() 
     // an ordinary resident frame, so sharing it is admitted on the same contract as a
     // keyed-hash producer. TPC-DS q64's shared producer is exactly this shape.
     let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::LeftSemi, false);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert_eq!(analysis.root_full_sort_join_aggregate_admission, CapabilityDecision::Satisfied);
 }
@@ -444,7 +444,7 @@ fn bounded_root_full_sort_join_aggregate_rejects_shared_producer_outside_every_a
     // shared producer whose node kind has no admitted class (here a Sort) must still be
     // rejected as an unsupported shared producer.
     let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::Inner, true);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     let CapabilityDecision::Rejected { reason, facts } = &analysis.root_full_sort_join_aggregate_admission else {
         panic!("a shared sort producer must reject root full-sort join/aggregate admission");

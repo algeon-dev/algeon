@@ -34,7 +34,7 @@ use std::{
     sync::Arc,
 };
 
-use query_planning::admission::pipeline_tasks_within_migrated_contract;
+use query_planning::{admission::pipeline_tasks_within_migrated_contract, dynamic_filter::DynamicFilterSet};
 
 use super::{
     executor::CompiledGpuTaskExecutor,
@@ -342,7 +342,7 @@ struct LaneJobCompletion {
     /// producers extend it. The coordinator merges successful completions'
     /// sets in commit order so probe-side consumers in later rounds keep
     /// their pruning. Failed rounds discard uncommitted sets like outputs.
-    dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet,
+    dynamic_filters: DynamicFilterSet,
 }
 
 struct LaneClaim {
@@ -856,7 +856,7 @@ fn run_lane_claims(
                         error.with_fact("execution_lane", lane).with_fact("reason", "lane_executor_unavailable"),
                     )),
                     secondary_cleanup_errors: Vec::new(),
-                    dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet::new(),
+                    dynamic_filters: DynamicFilterSet::new(),
                 },
             }
         }) {
@@ -898,7 +898,7 @@ fn run_lane_claims(
                 task_id,
                 outcome: Err(LaneJobError::Failed(error)),
                 secondary_cleanup_errors: Vec::new(),
-                dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet::new(),
+                dynamic_filters: DynamicFilterSet::new(),
             },
         })
         .collect())
@@ -910,7 +910,7 @@ fn run_lane_claim_inline(
     support: &LaneDispatchSupport,
     claim: &mut LaneClaim,
     dispatch: Option<&AggregateLaneDispatch>,
-    dynamic_filter_snapshot: &query_planning::dynamic_filter::DynamicFilterSet,
+    dynamic_filter_snapshot: &DynamicFilterSet,
 ) -> LaneJobCompletion {
     const LANE: usize = 0;
     let task_id = claim.task.id();
@@ -938,7 +938,7 @@ fn run_lane_claim_inline(
                 error.with_fact("execution_lane", LANE).with_fact("reason", "lane_executor_unavailable"),
             )),
             secondary_cleanup_errors: Vec::new(),
-            dynamic_filters: query_planning::dynamic_filter::DynamicFilterSet::new(),
+            dynamic_filters: DynamicFilterSet::new(),
         },
     }
 }
@@ -1377,16 +1377,14 @@ mod lane_width_tests {
         mode::StatisticalAggregateExecutionMode,
         pipeline::CompiledPipeline,
         plan::{NodeId, ProjectionOutput, QueryPlan, QueryPlanBuilder},
+        rapids_backend::rapids_analysis_context,
         source::{LiteralBatchSource, SourceNode},
     };
 
     fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
-        let decision = bounded_pipeline_decision(
-            plan,
-            StatisticalAggregateExecutionMode::default(),
-            crate::rapids_backend::rapids_analysis_context(),
-        )
-        .expect("bounded admission should not error");
+        let decision =
+            bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+                .expect("bounded admission should not error");
         decision.admission().expect("these plans use the compiled admission").pipeline().clone()
     }
 

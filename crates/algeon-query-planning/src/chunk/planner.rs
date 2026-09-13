@@ -1,4 +1,5 @@
 use super::{SourceChunk, SourceChunkBatch};
+use crate::source::ParquetReadStrategy;
 
 impl SourceChunkBatch {
     /// Splits a retryable multi-source batch into two ordered child batches.
@@ -124,9 +125,7 @@ fn chunk_multi_source_batch_rejection(chunk: &SourceChunk) -> Option<&'static st
     }
     if !matches!(
         chunk.resolved_source.read_strategy(),
-        crate::source::ParquetReadStrategy::LocalKvikio
-            | crate::source::ParquetReadStrategy::LocalCacheKvikio
-            | crate::source::ParquetReadStrategy::RemoteDirect
+        ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio | ParquetReadStrategy::RemoteDirect
     ) {
         return Some("ineligible_read_strategy");
     }

@@ -18,7 +18,7 @@ use datafusion::{
 use query_engine::{expr::Expr, plan::ProjectionOutput};
 use query_engine::{
     plan::{NativePlanCostReason, QueryPlanBuilder},
-    source::{LocalParquetSource, SourceNode},
+    source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
 use super::{physical::candidate_outcomes_from_report, *};
@@ -113,8 +113,7 @@ fn native_edge_exec() -> Arc<dyn ExecutionPlan> {
 fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into<String>) -> Arc<dyn ExecutionPlan> {
     let schema = one_column_schema();
     let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(query_engine::source::GpuResidentSource::new(input_name, schema)));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
     Arc::new(
         AlgeonNativeComposedExec::try_new(builder.finish_with_host_sink(source), vec![child], test_execution_config())
             .unwrap(),
@@ -590,10 +589,7 @@ mod cugraph {
         let child = cugraph_exec(memory_edge_source());
         let input_name = child.coverage_gpu_result_input_name().to_string();
         let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::GpuResident(query_engine::source::GpuResidentSource::new(
-            input_name,
-            child.schema(),
-        )));
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, child.schema())));
         let projected = builder.add_projection(
             source,
             vec![

@@ -29,6 +29,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 
+use super::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable;
+
 const DEFAULT_VERTEX_COUNT: i64 = 12_000;
 const DEFAULT_STRING_VERTEX_COUNT: i64 = 4_000;
 
@@ -1352,5 +1354,5 @@ fn optional_string_max_slowdown() -> Option<f64> {
 }
 
 fn handle_python_oracle_unavailable(message: impl AsRef<str>) -> ! {
-    crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
+    handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }

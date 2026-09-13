@@ -4,7 +4,7 @@ use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
-        column::{Column, ColumnView},
+        column::{Column, ColumnView, copy_view_to_owned},
         error::{self, Error, ErrorCode, Result},
         types::{DataType, TypeId},
     },
@@ -224,7 +224,7 @@ pub(crate) fn cast_impl(
 ) -> Result<Column> {
     let input_type = input.data_type()?;
     if input_type == *output_type {
-        return crate::core::column::copy_view_to_owned(input)
+        return copy_view_to_owned(input)
             .map(|col| col.with_execution_domain(Arc::clone(output_domain)))
             .map_err(|error| error.reanchor(operation));
     }

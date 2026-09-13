@@ -12,16 +12,26 @@ use std::{net::SocketAddr, sync::Arc, time::Instant};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
 use futures::future::BoxFuture;
-use query_engine::runtime::MemoryControlPolicy;
+use query_engine::runtime::{GpuBackendDeviceStartupRecord, MemoryControlPolicy};
+use tokio::{net::TcpListener, signal::ctrl_c, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
-use crate::server::backend::AlgeonGpuBackend;
 #[cfg(feature = "iceberg")]
 use crate::server::table_format::scan::credential_free_endpoint_identity;
+use crate::server::{
+    backend::{
+        AlgeonGpuBackend, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy,
+        GpuMemoryOwnership,
+    },
+    cugraph_sql::CUGRAPH_OPERATION_REGISTRY,
+    planner::DataFusionCpuExecutionPolicy,
+};
+#[cfg(feature = "iceberg")]
+pub(crate) use crate::table_format;
 pub(crate) use crate::{
     attempt, backend, capability, cugraph_sql, cuvs_sql, error as adapter_error, gpu_coverage, native_exec,
-    native_report, planner, report, session as adapter_session, table_format,
+    native_report, planner, report, session as adapter_session,
 };
 
 mod admission;
@@ -329,7 +339,7 @@ async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
             listener
                 .set_nonblocking(true)
                 .map_err(|error| ServerError::session("failed to set Flight SQL listener non-blocking", error))?;
-            let tokio_listener = tokio::net::TcpListener::from_std(listener)
+            let tokio_listener = TcpListener::from_std(listener)
                 .map_err(|error| ServerError::session("failed to adopt Flight SQL listener", error))?;
             // `TcpIncoming::from` leaves TCP_NODELAY unset; tonic's own
             // address-bound path defaults it to enabled, so restore it to keep
@@ -407,7 +417,7 @@ impl ShutdownSupervisorTrigger {
 /// concurrently, so neither component receives a second grace period.
 struct ShutdownSupervisor {
     trigger: ShutdownSupervisorTrigger,
-    task: Option<tokio::task::JoinHandle<Result<()>>>,
+    task: Option<JoinHandle<Result<()>>>,
 }
 
 impl ShutdownSupervisor {
@@ -517,13 +527,13 @@ fn shutdown_future(
     supervisor: ShutdownSupervisorTrigger,
     cancellations: Arc<cancel::QueryCancellation>,
     shutdown_token: CancellationToken,
-) -> (ShutdownFuture, Option<tokio::sync::oneshot::Receiver<tokio::task::JoinHandle<()>>>) {
+) -> (ShutdownFuture, Option<oneshot::Receiver<JoinHandle<()>>>) {
     match shutdown {
         ServerShutdown::OsSignals => {
             // Hand back the escalation-watchdog handle so we can abort it once
             // the server has drained. Without this, a SIGINT received after a
             // clean shutdown would still trigger the spawned `process::exit`.
-            let (watchdog_tx, watchdog_rx) = tokio::sync::oneshot::channel();
+            let (watchdog_tx, watchdog_rx) = oneshot::channel();
             let shutdown = async move {
                 wait_for_shutdown_signal().await;
                 let shutdown_plan = supervisor.begin_shutdown(Instant::now());
@@ -570,10 +580,7 @@ fn validate_injected_backend_matches_config(backend: &AlgeonGpuBackend, config: 
     validate_injected_startup_profiles(backend.device_startup_records(), config)
 }
 
-fn validate_injected_queue_policy(
-    injected: &crate::server::backend::AlgeonGpuQueuePolicy,
-    config: &ServerConfig,
-) -> Result<()> {
+fn validate_injected_queue_policy(injected: &AlgeonGpuQueuePolicy, config: &ServerConfig) -> Result<()> {
     let queue_policy = admission::server_queue_policy(config);
     if queue_policy.max_queued_attempts() != injected.max_queued_attempts() {
         return Err(ServerError::builder_conflict(
@@ -598,10 +605,7 @@ fn validate_injected_queue_policy(
 /// discovery and allocator installation.  A planner budget is intentionally
 /// absent from this comparison: it is an unadmitted planning template, while
 /// capacity and query limits are ordinal-local controller facts.
-fn validate_injected_startup_profiles(
-    records: &[query_engine::runtime::GpuBackendDeviceStartupRecord],
-    config: &ServerConfig,
-) -> Result<()> {
+fn validate_injected_startup_profiles(records: &[GpuBackendDeviceStartupRecord], config: &ServerConfig) -> Result<()> {
     let configured_profiles = configured_profile_map(config)?;
     let configured_ownership = configured_ownership_map(config)?;
     if records.len() != configured_profiles.len() {
@@ -698,9 +702,7 @@ fn validate_injected_startup_profiles(
     Ok(())
 }
 
-fn configured_profile_map(
-    config: &ServerConfig,
-) -> Result<std::collections::BTreeMap<usize, &crate::server::backend::AlgeonGpuDeviceProfile>> {
+fn configured_profile_map(config: &ServerConfig) -> Result<std::collections::BTreeMap<usize, &AlgeonGpuDeviceProfile>> {
     let selected = config.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
     let mut profiles = std::collections::BTreeMap::new();
     for profile in &config.gpu_device_profiles {
@@ -725,9 +727,7 @@ fn configured_profile_map(
     Ok(profiles)
 }
 
-fn configured_ownership_map(
-    config: &ServerConfig,
-) -> Result<std::collections::BTreeMap<usize, crate::server::backend::GpuMemoryOwnership>> {
+fn configured_ownership_map(config: &ServerConfig) -> Result<std::collections::BTreeMap<usize, GpuMemoryOwnership>> {
     let mut ownership = std::collections::BTreeMap::new();
     for (ordinal, value) in config.gpu_memory_ownership.iter().copied() {
         if ownership.insert(ordinal, value).is_some() {
@@ -751,9 +751,7 @@ fn configured_ownership_map(
     Ok(ownership)
 }
 
-fn expected_profile_bounds(
-    profile: &crate::server::backend::AlgeonGpuDeviceProfile,
-) -> Result<crate::server::backend::AlgeonGpuDeviceInstallationBounds> {
+fn expected_profile_bounds(profile: &AlgeonGpuDeviceProfile) -> Result<AlgeonGpuDeviceInstallationBounds> {
     if let Some(bounds) = profile.installation_bounds() {
         return Ok(bounds);
     }
@@ -771,7 +769,7 @@ fn expected_profile_bounds(
         )
         .with_fact("device_ordinal", profile.device_ordinal())
     })?;
-    Ok(crate::server::backend::AlgeonGpuDeviceInstallationBounds::new(
+    Ok(AlgeonGpuDeviceInstallationBounds::new(
         stream_pool_size,
         profile.max_active_attempts(),
         profile.max_active_attempts(),
@@ -799,8 +797,8 @@ fn validate_injected_session_matches_server_config(
     config: &ServerConfig,
 ) -> Result<()> {
     validate_injected_session_backend_binding(backend.is_session_state_bound(&ctx.state()))?;
-    let requires_single_partition = config.native_optimizer_config.datafusion_cpu_execution_policy()
-        == crate::server::planner::DataFusionCpuExecutionPolicy::Reject;
+    let requires_single_partition =
+        config.native_optimizer_config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Reject;
     let target_partitions = ctx.state().config_options().execution.target_partitions;
     if requires_single_partition && target_partitions != 1 {
         return Err(ServerError::builder_validation(
@@ -957,19 +955,19 @@ fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
 fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
 
 fn cugraph_registry_algorithm_count(config: &ServerConfig) -> usize {
-    config.cugraph.as_ref().map_or(0, |_| crate::server::cugraph_sql::CUGRAPH_OPERATION_REGISTRY.len())
+    config.cugraph.as_ref().map_or(0, |_| CUGRAPH_OPERATION_REGISTRY.len())
 }
 
 /// Emit a one-shot startup line summarizing the configured application-layer
 /// authentication mode. Authentication is intentionally owned by Flight RPCs,
 /// never by GPU admission or controller code.
-fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
+fn log_auth_mode_snapshot(mode: &AuthMode) {
     match mode {
-        auth::AuthMode::Disabled => tracing::warn!(
+        AuthMode::Disabled => tracing::warn!(
             auth_mode = "disabled",
             "Algeon Flight SQL server starting with auth DISABLED; every RPC will be accepted"
         ),
-        auth::AuthMode::BasicBearer { users, token_ttl_secs } => tracing::info!(
+        AuthMode::BasicBearer { users, token_ttl_secs } => tracing::info!(
             auth_mode = "basic_bearer",
             user_count = users.len(),
             token_ttl_secs = *token_ttl_secs,
@@ -1028,11 +1026,11 @@ struct IcebergBackendSnapshot<'a> {
 
 #[cfg(feature = "iceberg")]
 fn iceberg_backend_snapshot<'a>(
-    backend: &'a config::IcebergCatalogBackendConfig,
+    backend: &'a IcebergCatalogBackendConfig,
     source_access_policy: &'a crate::server::table_format::iceberg::SourceAccessPolicy,
 ) -> IcebergBackendSnapshot<'a> {
     match backend {
-        config::IcebergCatalogBackendConfig::Glue(glue) => IcebergBackendSnapshot {
+        IcebergCatalogBackendConfig::Glue(glue) => IcebergBackendSnapshot {
             catalog_type: "glue",
             warehouse: &glue.warehouse,
             glue_catalog_handle: &glue.catalog_handle,
@@ -1042,7 +1040,7 @@ fn iceberg_backend_snapshot<'a>(
             rest_uri: Cow::Borrowed("none"),
             rest_s3_endpoint: Cow::Borrowed("none"),
         },
-        config::IcebergCatalogBackendConfig::Rest(rest) => IcebergBackendSnapshot {
+        IcebergCatalogBackendConfig::Rest(rest) => IcebergBackendSnapshot {
             catalog_type: "rest",
             warehouse: &rest.warehouse,
             glue_catalog_handle: "none",
@@ -1071,12 +1069,12 @@ async fn wait_for_shutdown_signal() {
         Ok(stream) => stream,
         Err(error) => {
             tracing::error!(%error, "failed to install SIGTERM handler; relying on SIGINT only");
-            let _ = tokio::signal::ctrl_c().await;
+            let _ = ctrl_c().await;
             return;
         },
     };
     tokio::select! {
-        result = tokio::signal::ctrl_c() => {
+        result = ctrl_c() => {
             if let Err(error) = result {
                 tracing::error!(%error, "ctrl-c listener failed; shutting down");
             }

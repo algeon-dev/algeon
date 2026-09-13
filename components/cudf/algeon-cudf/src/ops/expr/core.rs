@@ -1,4 +1,5 @@
 use super::*;
+use crate::frame::series::reduction::infer_reduce_output_type;
 
 /// A declarative expression over DataFrame columns.
 ///
@@ -483,7 +484,7 @@ impl Expr {
                 let series = input.eval_with_context(ctx)?;
                 let dt = series.dtype()?;
                 let cv = series.view()?;
-                let out_type = crate::frame::series::reduction::infer_reduce_output_type(&dt, agg, "expr::reduce")?;
+                let out_type = infer_reduce_output_type(&dt, agg, "expr::reduce")?;
                 let scalar = reduction::reduce_impl(
                     &cv,
                     agg,

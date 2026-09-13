@@ -1,13 +1,15 @@
+#[cfg(feature = "glue")]
+use core::result::Result as CoreResult;
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use iceberg::{
-    Catalog, CatalogBuilder, NamespaceIdent, TableIdent,
+    Catalog, CatalogBuilder, Error as IcebergError, NamespaceIdent, Result as IcebergResult, TableIdent,
     io::{Storage, StorageConfig, StorageFactory},
 };
 #[cfg(feature = "glue")]
 use iceberg_storage_opendal::OpenDalStorageFactory;
 #[cfg(feature = "glue")]
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as DeError, ser::Error as SerError};
 
 use crate::{
     CatalogErrorKind, Error, ErrorContext, GlueCatalogConfig, Operation, ResolvedTable, RestCatalogConfig, Result,
@@ -119,7 +121,7 @@ impl CatalogBackend {
         }
     }
 
-    fn normalize(&self, operation: Operation, source: iceberg::Error) -> Error {
+    fn normalize(&self, operation: Operation, source: IcebergError) -> Error {
         Error::from_iceberg_error(operation, source).with_context(self.context())
     }
 }
@@ -253,24 +255,24 @@ impl fmt::Debug for GlueSourceStorageFactory {
 // redacted round trip could not reconstruct a working source policy.
 #[cfg(feature = "glue")]
 impl Serialize for GlueSourceStorageFactory {
-    fn serialize<S>(&self, _serializer: S) -> core::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, _serializer: S) -> CoreResult<S::Ok, S::Error>
     where S: Serializer {
-        Err(serde::ser::Error::custom("Algeon Glue source storage factories are process-local"))
+        Err(SerError::custom("Algeon Glue source storage factories are process-local"))
     }
 }
 
 #[cfg(feature = "glue")]
 impl<'de> Deserialize<'de> for GlueSourceStorageFactory {
-    fn deserialize<D>(_deserializer: D) -> core::result::Result<Self, D::Error>
+    fn deserialize<D>(_deserializer: D) -> CoreResult<Self, D::Error>
     where D: Deserializer<'de> {
-        Err(serde::de::Error::custom("Algeon Glue source storage factories are process-local"))
+        Err(DeError::custom("Algeon Glue source storage factories are process-local"))
     }
 }
 
 #[cfg(feature = "glue")]
 #[typetag::serde(name = "AlgeonGlueSourceStorageFactory")]
 impl StorageFactory for GlueSourceStorageFactory {
-    fn build(&self, _catalog_file_io_config: &StorageConfig) -> iceberg::Result<Arc<dyn Storage>> {
+    fn build(&self, _catalog_file_io_config: &StorageConfig) -> IcebergResult<Arc<dyn Storage>> {
         let source_config = StorageConfig::from_props(self.source_properties.clone());
         OpenDalStorageFactory::S3 { customized_credential_load: None }.build(&source_config)
     }

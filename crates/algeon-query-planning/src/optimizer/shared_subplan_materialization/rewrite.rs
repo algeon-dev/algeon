@@ -483,7 +483,7 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
                     format!("__algeon_native_shared_scalar_{}_{}", signature.aggregate_node_id.index(), index);
                 aggregate_expr.filter = Some(filter.clone());
                 if count_star {
-                    aggregate_expr.expr = Expr::literal(crate::expr::LiteralValue::Int64(1));
+                    aggregate_expr.expr = Expr::literal(LiteralValue::Int64(1));
                 }
                 ScalarFilteredAggregateOutput {
                     original_output_field: field.as_ref().clone(),
@@ -664,7 +664,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     .collect::<Vec<_>>(),
             ));
             return self.push_node(
-                PlanNode::Aggregate(crate::plan::AggregateNode { input, spec }),
+                PlanNode::Aggregate(AggregateNode { input, spec }),
                 PlanFacts::device(output_schema, SchemaBehavior::Aggregate),
             );
         }
@@ -833,14 +833,14 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                         JoinSide::Left => {
                             left_required.insert(column.clone());
                             output_projection.push(JoinOutputColumn::left(
-                                crate::expr::ColumnRef::input(0, column.clone(), column.clone()),
+                                ColumnRef::input(0, column.clone(), column.clone()),
                                 column.clone(),
                             ));
                         },
                         JoinSide::Right => {
                             right_required.insert(column.clone());
                             output_projection.push(JoinOutputColumn::right(
-                                crate::expr::ColumnRef::input(1, column.clone(), column.clone()),
+                                ColumnRef::input(1, column.clone(), column.clone()),
                                 column.clone(),
                             ));
                         },

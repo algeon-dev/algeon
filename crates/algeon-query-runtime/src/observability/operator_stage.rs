@@ -4,7 +4,10 @@
 //! and exactly one terminal state when control returns or unwinds. Pair events
 //! share the same [`RuntimeSpanId`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+};
 
 use query_planning::error::{QueryError, QueryErrorCode};
 
@@ -278,7 +281,7 @@ impl Drop for RuntimeOperatorStageGuard {
         }
         // Unwind or early-drop without an explicit terminal still leaves a
         // truthful terminal rather than an orphaned Started.
-        let lifecycle = if std::thread::panicking() {
+        let lifecycle = if thread::panicking() {
             RuntimeOperatorStageState::Failed { error_code: "panicked".to_string() }
         } else {
             RuntimeOperatorStageState::Failed { error_code: "dropped".to_string() }
@@ -353,7 +356,7 @@ mod tests {
     use crate::observability::{
         DeterministicRuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationPayload,
         RuntimeObservationSession, RuntimeOperatorStageKind, RuntimeQueryId, RuntimeTerminalOutcome,
-        write_runtime_observation_jsonl,
+        RuntimeTimelineEvent, write_runtime_observation_jsonl,
     };
 
     fn session_with_limits(max_records: u64) -> RuntimeObservationSession {
@@ -631,7 +634,7 @@ mod tests {
         for line in text.lines() {
             let value: serde_json::Value = serde_json::from_str(line).expect("json line");
             if value.get("record_type").and_then(|v| v.as_str()) == Some("timeline_event") {
-                let event: crate::observability::RuntimeTimelineEvent =
+                let event: RuntimeTimelineEvent =
                     serde_json::from_value(value.get("data").cloned().expect("data")).expect("event");
                 if let RuntimeObservationPayload::OperatorStage(stage) = event.payload {
                     let _ = stage.stage_kind.as_str();

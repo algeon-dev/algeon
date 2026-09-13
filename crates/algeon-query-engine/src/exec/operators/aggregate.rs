@@ -28,6 +28,7 @@ use crate::{
         AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision,
     },
     chunk::SourceChunk,
+    exec::retry::is_retryable_resource_error,
     materialization_sizing::{PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE},
     mode::StatisticalAggregateExecutionMode,
 };
@@ -1183,7 +1184,7 @@ fn decline_prepared_sort_groupby_runtime_preflight_for_resource_error(
     mut decision: AggregateStrategyCapabilityDecision,
     error: &QueryError,
 ) -> Option<AggregateStrategyCapabilityDecision> {
-    if !crate::exec::retry::is_retryable_resource_error(error) {
+    if !is_retryable_resource_error(error) {
         return None;
     }
     decision.facts.insert("prepared_sort_groupby_runtime_preflight_status", "declined_resource_error".to_string());

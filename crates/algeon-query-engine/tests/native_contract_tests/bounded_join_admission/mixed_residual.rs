@@ -32,10 +32,8 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
         for build_side in [JoinSide::Right, JoinSide::Left] {
             let plan = mixed_residual_multi_join_plan(join_type, build_side, projection.clone());
 
-            assert!(
-                !plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join()
-            );
-            assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+            assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+            assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
         }
     }
 
@@ -48,8 +46,8 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
             JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
         ],
     );
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
 
     // A mixed Left join building on the left is not a supported kernel shape:
     // the join node capability rejects it before any pipeline compiles.
@@ -61,9 +59,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
             JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
         ],
     );
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-    let facts = unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context())
-        .expect("left-build mixed left should produce facts");
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    let facts =
+        unsupported_facts(&plan, rapids_analysis_context()).expect("left-build mixed left should produce facts");
     assert_rejection_facts_are_family_free(&facts, "left_build_mixed_left");
     assert_eq!(
         facts.get("bounded_join_rejection_reason").map(String::as_str),
@@ -78,7 +76,7 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_
             JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
         ],
     );
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 }
 
 #[test]
@@ -88,8 +86,8 @@ fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
     // the whole multi-join once it compiles.
     let plan = valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(JoinType::LeftAnti, JoinType::Full);
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
 }
 
 #[test]
@@ -110,8 +108,8 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
     ] {
         let plan = mixed_residual_multi_join_plan(join_type, build_side, projection);
 
-        assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-        let facts = unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context())
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+        let facts = unsupported_facts(&plan, rapids_analysis_context())
             .expect("unsupported mixed semi/anti multi-join shape should produce facts");
         assert_rejection_facts_are_family_free(&facts, "invalid_mixed_semi_anti_multi_join");
         assert!(
@@ -141,18 +139,15 @@ fn bounded_multi_join_admits_aggregate_inputs_below_join_subtrees() {
     // so the retired closed-multi-join veto no longer rejects these shapes.
     let plan = mixed_residual_multi_join_with_aggregate_leaf_plan();
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
 
     for aggregate_leaf in
         [MultiJoinAggregateLeaf::FirstLeft, MultiJoinAggregateLeaf::FirstRight, MultiJoinAggregateLeaf::SecondRight]
     {
         let plan = hash_multi_join_with_aggregate_leaf_plan(aggregate_leaf);
 
-        assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-        assert!(
-            unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(),
-            "{aggregate_leaf:?}"
-        );
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{aggregate_leaf:?}");
     }
 }

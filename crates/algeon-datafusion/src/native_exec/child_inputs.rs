@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
+use arrow::{array::new_empty_array, datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
     common::{DataFusionError, Result, utils::memory::get_record_batch_memory_size},
     execution::{
@@ -19,10 +19,13 @@ use datafusion::{
     },
     physical_plan::ExecutionPlan,
 };
-use futures::{StreamExt, TryStreamExt};
-use query_engine::runtime::{
-    ExecutionCancellation, ExecutionContext,
-    resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+use futures::{StreamExt, TryStreamExt, stream::iter};
+use query_engine::{
+    native_error::cudf_query_error,
+    runtime::{
+        ExecutionCancellation, ExecutionContext,
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+    },
 };
 
 use super::{
@@ -287,7 +290,7 @@ async fn stage_child_partitions_bounded(
     reservation: &MemoryReservation,
 ) -> Result<Vec<RecordBatch>> {
     let depth = HOST_STAGING_PARTITION_POLL_DEPTH.clamp(1, partition_count.max(1));
-    let partitions = futures::stream::iter(0..partition_count)
+    let partitions = iter(0..partition_count)
         .map(|partition| {
             stage_child_partition(
                 spec,
@@ -398,8 +401,7 @@ fn record_batches_to_gpu(
         ))
     })?;
     let imported = if batches.is_empty() {
-        let arrays =
-            schema.fields().iter().map(|field| arrow::array::new_empty_array(field.data_type())).collect::<Vec<_>>();
+        let arrays = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
         let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).map_err(DataFusionError::from)?;
         cudf::DataFrame::from_record_batch(&runtime, &batch)
     } else {
@@ -409,7 +411,7 @@ fn record_batches_to_gpu(
         DataFusionError::from(Error::from_native(
             "algeon_datafusion.native_multi_child.host_input",
             "failed to import staged Arrow input into cuDF",
-            query_engine::native_error::cudf_query_error(
+            cudf_query_error(
                 "algeon_datafusion.native_multi_child.host_input",
                 "failed to import staged Arrow input into cuDF",
                 error,
@@ -421,9 +423,12 @@ fn record_batches_to_gpu(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
     };
 
     use arrow::{
@@ -439,7 +444,8 @@ mod tests {
             stream::RecordBatchStreamAdapter,
         },
     };
-    use futures::future::BoxFuture;
+    use futures::{future::BoxFuture, stream::once};
+    use tokio::time::sleep;
 
     use super::*;
     use crate::{
@@ -506,7 +512,7 @@ mod tests {
                 .get(partition)
                 .cloned()
                 .ok_or_else(|| DataFusionError::Execution(format!("missing test partition {partition}")))?;
-            let stream = futures::stream::once(async move { Ok(batch) });
+            let stream = once(async move { Ok(batch) });
             Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
         }
     }
@@ -581,13 +587,12 @@ mod tests {
             let stream = self.inner.execute(partition, context)?;
             let opener = async move {
                 if delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    sleep(Duration::from_millis(delay_ms)).await;
                 }
                 live_back.fetch_sub(1, Ordering::SeqCst);
             };
-            let delayed = futures::stream::once(opener)
-                .filter_map(|()| async { None::<Result<RecordBatch, DataFusionError>> })
-                .chain(stream);
+            let delayed =
+                once(opener).filter_map(|()| async { None::<Result<RecordBatch, DataFusionError>> }).chain(stream);
             Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.inner.schema), delayed)))
         }
     }
@@ -651,9 +656,9 @@ mod tests {
             assert_eq!(partition, 0);
             let batches = self.batches.clone();
             let delay_ms = self.delay_ms;
-            let drip = futures::stream::iter(batches.into_iter().map(Ok)).then(move |batch| async move {
+            let drip = iter(batches.into_iter().map(Ok)).then(move |batch| async move {
                 if delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    sleep(Duration::from_millis(delay_ms)).await;
                 }
                 batch
             });
@@ -912,7 +917,7 @@ mod tests {
         // sum while leaving wide margin for loaded CI runners.
         let (plan, execute_count, max_live) =
             delayed_child(vec![(1, 1.0, 1), (2, 2.0, 2), (3, 3.0, 3), (4, 4.0, 4)], vec![100, 100, 100, 100]);
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let staged = stage_native_children(
             vec![NativeChildInputSpec { input_name: "input".to_string(), role: "input", plan, projection: vec![0] }],
             Arc::new(TaskContext::default()),
@@ -930,7 +935,7 @@ mod tests {
         };
         assert_eq!(batches.len(), 4);
         assert!(
-            elapsed < std::time::Duration::from_millis(350),
+            elapsed < Duration::from_millis(350),
             "four overlapped 100ms opens must stage well under the 400ms serial sum, took {elapsed:?}"
         );
     }
@@ -990,7 +995,7 @@ mod tests {
                 .await
             }
         });
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
         cancellation.cancel();
         let error = staging.await.expect("staging task joins").unwrap_err();
         let typed = error.find_algeon_error().expect("structured staging cancellation");

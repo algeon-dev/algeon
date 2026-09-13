@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::DataType;
 use datafusion::parquet::schema::types::SchemaDescriptor;
+use parquet::file::metadata::{ColumnChunkMetaData, RowGroupMetaData};
 use query_engine::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
 
 use super::{
@@ -260,7 +261,7 @@ fn pruning_literal(value: &ScalarValue, column_type: &DataType) -> Option<Prunin
 }
 
 fn row_group_may_satisfy_expr(
-    row_group: &parquet::file::metadata::RowGroupMetaData,
+    row_group: &RowGroupMetaData,
     schema: &SchemaDescriptor,
     expr: &RowGroupPruningExpr,
 ) -> Option<bool> {
@@ -280,7 +281,7 @@ fn row_group_may_satisfy_expr(
 }
 
 fn row_group_may_satisfy_atom(
-    row_group: &parquet::file::metadata::RowGroupMetaData,
+    row_group: &RowGroupMetaData,
     schema: &SchemaDescriptor,
     atom: &RowGroupPruningAtom,
 ) -> Option<bool> {
@@ -305,10 +306,7 @@ fn row_group_may_satisfy_atom(
     }
 }
 
-fn row_group_may_satisfy_in_list(
-    column: &parquet::file::metadata::ColumnChunkMetaData,
-    literals: &[PruningLiteral],
-) -> Option<bool> {
+fn row_group_may_satisfy_in_list(column: &ColumnChunkMetaData, literals: &[PruningLiteral]) -> Option<bool> {
     if literals.is_empty() {
         return Some(false);
     }
@@ -324,7 +322,7 @@ fn row_group_may_satisfy_in_list(
 }
 
 fn row_group_may_satisfy_comparison(
-    column: &parquet::file::metadata::ColumnChunkMetaData,
+    column: &ColumnChunkMetaData,
     op: Operator,
     literal: &PruningLiteral,
 ) -> Option<bool> {

@@ -5,7 +5,7 @@ use datafusion::{
         physical_plan::{FileSource, ParquetSource},
         source::DataSourceExec,
     },
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, filter::FilterExec},
 };
 use query_engine::{
     expr::LimitSpec as NativeLimitSpec,
@@ -29,7 +29,8 @@ use crate::{
     native::{
         expression_contract::validate_physical_expr,
         lowering::{
-            LoweredNativeInput, RequiredFields, executable_schema_and_bindings, expr::lower_physical_expr_with_bindings,
+            LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
+            expr::lower_physical_expr_with_bindings, projection_outputs,
         },
         pruning::scan_predicate_without_dynamic_filter_hints,
         source::{
@@ -43,7 +44,7 @@ use crate::{
 
 pub(super) fn lower_local_parquet_source_input(
     source_exec: &DataSourceExec,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
@@ -193,13 +194,7 @@ pub(super) fn lower_local_parquet_source_input(
         {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (
-                builder.add_projection(
-                    scan_input_node,
-                    crate::native::lowering::projection_outputs(expressions, &schema)?,
-                ),
-                schema,
-            )
+            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?), schema)
         } else {
             (scan_input_node, scan_input_schema)
         }
@@ -238,7 +233,7 @@ pub(super) fn lower_local_parquet_source_input(
 
 fn lower_empty_local_parquet_source_input(
     source_exec: &DataSourceExec,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, CapabilityReason> {

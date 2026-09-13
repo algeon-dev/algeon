@@ -83,14 +83,25 @@ mod correlation_tests {
     use query_engine::observability::{
         QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationPayload,
         RuntimeObservationRecordDisposition, RuntimeReservationAction, RuntimeReservationDisposition,
-        RuntimeReservationId,
+        RuntimeReservationId, RuntimeReservationObservation,
     };
+    use tokio::{task::yield_now, time::timeout};
 
     use super::*;
-    use crate::server::coordinator::QueryTerminalOutcome;
+    use crate::server::{
+        attempt::AttemptOptions,
+        coordinator::QueryTerminalOutcome,
+        error::{
+            ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+        },
+        flight::{
+            frame_limiter::MAX_FLIGHT_FRAME_BYTES,
+            service::{BoundedTestFlightSqlService, bounded_test_service},
+        },
+    };
 
-    pub(super) fn test_service() -> super::super::service::BoundedTestFlightSqlService {
-        super::super::service::bounded_test_service(Duration::from_secs(30))
+    pub(super) fn test_service() -> BoundedTestFlightSqlService {
+        bounded_test_service(Duration::from_secs(30))
     }
 
     fn query_stats(service: &DatafusionAlgeonFlightSqlService, query_id: &str) -> String {
@@ -101,13 +112,13 @@ mod correlation_tests {
     }
 
     async fn sealed_query_stats(service: &DatafusionAlgeonFlightSqlService, query_id: &str) -> String {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        timeout(Duration::from_secs(5), async {
             loop {
                 let payload = query_stats(service, query_id);
                 if payload.contains("# sealed=true\n") {
                     return payload;
                 }
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
         })
         .await
@@ -270,7 +281,7 @@ mod correlation_tests {
 
         let mut stream = response.into_inner();
         let schema = stream.next().await.expect("schema frame").expect("schema frame is valid");
-        assert!(schema.encoded_len() <= super::super::frame_limiter::MAX_FLIGHT_FRAME_BYTES);
+        assert!(schema.encoded_len() <= MAX_FLIGHT_FRAME_BYTES);
         let status = stream
             .next()
             .await
@@ -287,25 +298,19 @@ mod correlation_tests {
             Some(correlation_id)
         );
         assert_eq!(
-            status.metadata().get(crate::server::error::ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            status.metadata().get(ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("host_materialization_limit_exceeded")
         );
         assert_eq!(
-            status.metadata().get(crate::server::error::ERROR_KIND_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            status.metadata().get(ERROR_KIND_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("resource_exhausted")
         );
         assert_eq!(
-            status
-                .metadata()
-                .get(crate::server::error::ERROR_STATUS_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
+            status.metadata().get(ERROR_STATUS_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("permanent")
         );
         assert_eq!(
-            status
-                .metadata()
-                .get(crate::server::error::ERROR_OPERATION_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
+            status.metadata().get(ERROR_OPERATION_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("algeon_datafusion.native_exec.host_batch_cursor")
         );
         assert!(status.message().contains("host materialization limit"), "{status:?}");
@@ -483,7 +488,7 @@ mod correlation_tests {
         );
         let attempt = service
             .admission
-            .begin_attempt(crate::server::attempt::AttemptOptions {
+            .begin_attempt(AttemptOptions {
                 query_id: Some(QUERY_ID.to_string()),
                 trace_context: None,
                 deadline: None,
@@ -505,7 +510,7 @@ mod correlation_tests {
         terminal.finish_success("stream");
         attempt.cancel_before_stream();
 
-        tokio::time::timeout(Duration::from_secs(1), terminal.wait_finished())
+        timeout(Duration::from_secs(1), terminal.wait_finished())
             .await
             .expect("rejected report handoff must release the terminal lease");
         assert!(terminal.is_finished());
@@ -545,7 +550,7 @@ mod correlation_tests {
         terminal.finish_success("stream");
         DatafusionAlgeonFlightSqlService::finish_missing_attempt_report_handoff(&handoff, QUERY_ID);
 
-        tokio::time::timeout(Duration::from_secs(1), terminal.wait_finished())
+        timeout(Duration::from_secs(1), terminal.wait_finished())
             .await
             .expect("missing report handoff must release the terminal lease");
         assert!(terminal.is_finished());
@@ -569,7 +574,7 @@ mod correlation_tests {
             .expect("query registration should create the coordinator record");
         let attempt = service
             .admission
-            .begin_attempt(crate::server::attempt::AttemptOptions {
+            .begin_attempt(AttemptOptions {
                 query_id: Some(QUERY_ID.to_string()),
                 trace_context: None,
                 deadline: None,
@@ -592,7 +597,7 @@ mod correlation_tests {
         let status = Status::internal("planning failed after report handoff rejection");
         planning.finish_captured("planning", &status, CapturedError::from_status(&status));
 
-        tokio::time::timeout(Duration::from_secs(1), async {
+        timeout(Duration::from_secs(1), async {
             loop {
                 if matches!(
                     service.coordinator.artifact(QUERY_ID),
@@ -601,7 +606,7 @@ mod correlation_tests {
                 ) {
                     return;
                 }
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
         })
         .await
@@ -698,38 +703,36 @@ mod correlation_tests {
         ));
         let reservation_id = RuntimeReservationId::new("rpc-reservation-1");
         assert!(matches!(
-            observation.record(|| RuntimeObservationPayload::Reservation(Box::new(
-                query_engine::observability::RuntimeReservationObservation {
-                    reservation_id: reservation_id.clone(),
-                    lineage_id: reservation_id,
-                    task_attempt_id: None,
-                    task_kind: Some("source_read".to_string()),
-                    action: RuntimeReservationAction::Reserve,
-                    denied_action: None,
-                    disposition: RuntimeReservationDisposition::Applied,
-                    alias: false,
-                    reservation_kind: "source_input".to_string(),
-                    memory_space: "device:0".to_string(),
-                    memory_boundary: "source_read".to_string(),
-                    requested_bytes: 128,
-                    granted_bytes: 128,
-                    charged_delta_bytes: 128,
-                    current_reserved_bytes: 128,
-                    budget_bytes: 4096,
-                    node_id: Some("source-node-1".to_string()),
-                    stage: Some("read".to_string()),
-                    chunk_index: Some(0),
-                    file_index: Some(0),
-                    source_location_id: Some(source_location_id.clone()),
-                    row_groups: Some(vec![0]),
-                    attempt: Some(1),
-                    max_attempts: Some(1),
-                    resident_resource_id: None,
-                    source_read_contract_quality: Some("exact".to_string()),
-                    source_read_planning_bytes: Some(128),
-                    source_read_estimated_bytes: Some(128),
-                }
-            ))),
+            observation.record(|| RuntimeObservationPayload::Reservation(Box::new(RuntimeReservationObservation {
+                reservation_id: reservation_id.clone(),
+                lineage_id: reservation_id,
+                task_attempt_id: None,
+                task_kind: Some("source_read".to_string()),
+                action: RuntimeReservationAction::Reserve,
+                denied_action: None,
+                disposition: RuntimeReservationDisposition::Applied,
+                alias: false,
+                reservation_kind: "source_input".to_string(),
+                memory_space: "device:0".to_string(),
+                memory_boundary: "source_read".to_string(),
+                requested_bytes: 128,
+                granted_bytes: 128,
+                charged_delta_bytes: 128,
+                current_reserved_bytes: 128,
+                budget_bytes: 4096,
+                node_id: Some("source-node-1".to_string()),
+                stage: Some("read".to_string()),
+                chunk_index: Some(0),
+                file_index: Some(0),
+                source_location_id: Some(source_location_id.clone()),
+                row_groups: Some(vec![0]),
+                attempt: Some(1),
+                max_attempts: Some(1),
+                resident_resource_id: None,
+                source_read_contract_quality: Some("exact".to_string()),
+                source_read_planning_bytes: Some(128),
+                source_read_estimated_bytes: Some(128),
+            }))),
             RuntimeObservationRecordDisposition::Retained { .. }
         ));
 

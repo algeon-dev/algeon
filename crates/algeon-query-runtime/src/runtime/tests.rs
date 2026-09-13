@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use ::object_store::ObjectStoreExt;
+use ::object_store::{ObjectStoreExt, memory::InMemory, path::Path};
 use query_planning::{
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -17,6 +17,7 @@ use super::{
     },
     *,
 };
+use crate::observability::AdmissionRequestId;
 
 fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
     let backend_metrics = super::backend_metrics::BackendMetricsStore::new(7, &[3])
@@ -47,7 +48,7 @@ fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
         health: "open".to_owned(),
         grants: vec![DeviceLedgerGrantRow {
             grant_id: 23,
-            admission_request_id: crate::observability::AdmissionRequestId::new(29),
+            admission_request_id: AdmissionRequestId::new(29),
             grant_bytes: 900,
             resident_owner_bytes: 640,
             frozen_resident_bytes: None,
@@ -232,8 +233,8 @@ fn p6_snapshot_json_v1_shapes_match_versioned_goldens() {
 #[test]
 fn object_store_fetch_returns_bytes_from_full_get() {
     let runtime = default_object_store_control_runtime().unwrap();
-    let store = Arc::new(::object_store::memory::InMemory::new());
-    let location = ::object_store::path::Path::from("part-0.parquet");
+    let store = Arc::new(InMemory::new());
+    let location = Path::from("part-0.parquet");
     runtime.block_on(store.put(&location, b"abcdef".as_ref().into())).unwrap();
 
     let bytes = ExecutionContext::fetch_object_store_bytes_on_runtime(runtime.as_ref(), store, location).unwrap();

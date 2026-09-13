@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
+use cudf::interop::contract::PreparedTableExport;
 use cugraph::{
     DeviceArray, EnteredContext, Forward, Graph, GraphBuilder, ResourceHandle, Transposed,
     centrality::{PageRankParams, PageRankResult},
@@ -32,7 +33,7 @@ type ForceAtlas2EntryPoint =
 type RngStateNew = fn(&EnteredContext<'_>, u64) -> Result<RngState>;
 type GraphFromPreparedTableForward = for<'export, 'buffers> fn(
     &EnteredContext<'_>,
-    &'export cudf::interop::contract::PreparedTableExport<'buffers>,
+    &'export PreparedTableExport<'buffers>,
     &TableGraphOptions,
 ) -> Result<Graph<Forward>>;
 

@@ -757,7 +757,7 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
     params.return_target_info = true;
     let params = GraphAlgorithmParams::Bfs(Box::new(params));
     let output_schema =
-        query_engine::plan::graph_result_schema_for_vertex_type(GraphAlgorithm::Bfs, &params, &DataType::Int32);
+        graph_result_schema_for_vertex_type(GraphAlgorithm::Bfs, &params, &DataType::Int32);
     let spec = GraphAlgorithmSpec::new(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),

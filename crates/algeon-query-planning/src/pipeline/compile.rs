@@ -10,10 +10,10 @@ use crate::{
     capability::{
         AggregateExecutionStage, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory,
         CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract,
-        EdgeContractKind, InputRole, ResultSinkKind, SubgraphInvariantKind,
+        EdgeContractKind, InputRole, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterReadiness},
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, Result},
     pipeline::model::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
         PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
@@ -44,7 +44,7 @@ pub(crate) enum PipelineCompilation {
 /// or invariant rejection is returned as an error instead of being converted to
 /// a report-family fallback. The resulting graph is consumed by the one
 /// capability-first bounded executor.
-pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::error::Result<CompiledPipeline> {
+pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<CompiledPipeline> {
     let pipeline = match compile_pipeline_graph(plan, analysis)? {
         GraphCompilation::Graph(pipeline) => pipeline,
         GraphCompilation::Rejected(projection) => return Err(contract_rejection_error(&projection)),
@@ -54,10 +54,7 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crat
 }
 
 /// Compiles a plan and reports a refused plan as a structured rejection.
-pub(crate) fn compile_pipeline_outcome(
-    plan: &QueryPlan,
-    analysis: &CapabilityAnalysis,
-) -> crate::error::Result<PipelineCompilation> {
+pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<PipelineCompilation> {
     let pipeline = match compile_pipeline_graph(plan, analysis) {
         Ok(GraphCompilation::Graph(pipeline)) => pipeline,
         Ok(GraphCompilation::Rejected(projection)) => return Ok(PipelineCompilation::Rejected(projection)),
@@ -112,7 +109,7 @@ fn contract_rejection_error(projection: &CapabilityRejectionProjection) -> Query
     )
 }
 
-fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::error::Result<GraphCompilation> {
+fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<GraphCompilation> {
     reject_local_capability_rejections(analysis)?;
 
     let node_order = reachable_postorder(plan)?;
@@ -138,7 +135,7 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> cr
     Ok(GraphCompilation::Graph(CompiledPipeline::new(tasks, edges, barriers, resources, sink)))
 }
 
-fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::error::Result<()> {
+fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<()> {
     // Only sink-reachable rejections refuse compilation: the task graph below
     // covers exactly the reachable subgraph, so a detached node, edge, or
     // invariant can neither execute nor break the schedule.
@@ -158,8 +155,8 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::e
         .filter(|edge| {
             analysis.reachable_node_ids.contains(&edge.producer)
                 && match edge.consumer {
-                    crate::capability::EdgeConsumer::Node(consumer) => analysis.reachable_node_ids.contains(&consumer),
-                    crate::capability::EdgeConsumer::Sink(_) => true,
+                    EdgeConsumer::Node(consumer) => analysis.reachable_node_ids.contains(&consumer),
+                    EdgeConsumer::Sink(_) => true,
                 }
         })
         .find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
@@ -252,7 +249,7 @@ impl NodeTasks {
     }
 }
 
-fn reachable_postorder(plan: &QueryPlan) -> crate::error::Result<Vec<NodeId>> {
+fn reachable_postorder(plan: &QueryPlan) -> Result<Vec<NodeId>> {
     let mut order = Vec::new();
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -266,7 +263,7 @@ fn visit_reachable(
     visiting: &mut BTreeSet<NodeId>,
     visited: &mut BTreeSet<NodeId>,
     order: &mut Vec<NodeId>,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     if visited.contains(&node_id) {
         return Ok(());
     }
@@ -289,7 +286,7 @@ fn collect_dependencies(
     plan: &QueryPlan,
     node_order: &[NodeId],
     node_set: &BTreeSet<NodeId>,
-) -> crate::error::Result<Vec<PlanDependency>> {
+) -> Result<Vec<PlanDependency>> {
     let mut dependencies = Vec::new();
     for consumer in node_order {
         let node = plan
@@ -316,7 +313,7 @@ fn validate_analysis_covers_plan(
     analysis: &CapabilityAnalysis,
     node_order: &[NodeId],
     dependencies: &[PlanDependency],
-) -> crate::error::Result<()> {
+) -> Result<()> {
     for node_id in node_order {
         if analysis.nodes.iter().all(|node| node.node_id != *node_id) {
             return Err(
@@ -349,8 +346,8 @@ fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::Limit(_) => InputRole::LimitInput,
         PlanNode::Union(_) => InputRole::UnionInput { input_index },
         PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
-        PlanNode::VectorAlgorithm(vector) => InputRole::VectorAlgorithmInput {
-            role: crate::capability::VectorInputRole::for_vector_input(vector, input_index),
+        PlanNode::VectorAlgorithm(vector) => {
+            InputRole::VectorAlgorithmInput { role: VectorInputRole::for_vector_input(vector, input_index) }
         },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
@@ -364,7 +361,7 @@ fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     }
 }
 
-fn assign_task_ids(plan: &QueryPlan, node_order: &[NodeId]) -> crate::error::Result<BTreeMap<NodeId, NodeTasks>> {
+fn assign_task_ids(plan: &QueryPlan, node_order: &[NodeId]) -> Result<BTreeMap<NodeId, NodeTasks>> {
     let mut task_ids = BTreeMap::new();
     let mut next = 0;
     for node_id in node_order {
@@ -397,7 +394,7 @@ fn build_tasks(
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-) -> crate::error::Result<Vec<PipelineTask>> {
+) -> Result<Vec<PipelineTask>> {
     let mut tasks = Vec::new();
     for node_id in node_order {
         let node = plan
@@ -518,7 +515,7 @@ fn input_resources(
     consumer: NodeId,
     dependencies: &[PlanDependency],
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-) -> crate::error::Result<Vec<ResidentResourceId>> {
+) -> Result<Vec<ResidentResourceId>> {
     dependencies
         .iter()
         .filter(|dependency| dependency.consumer == consumer)
@@ -531,7 +528,7 @@ fn join_input_resources(
     selector: InputRoleSelector,
     dependencies: &[PlanDependency],
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-) -> crate::error::Result<Vec<ResidentResourceId>> {
+) -> Result<Vec<ResidentResourceId>> {
     dependencies
         .iter()
         .filter(|dependency| {
@@ -552,7 +549,7 @@ fn build_plan_edges(
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-) -> crate::error::Result<Vec<PipelineEdge>> {
+) -> Result<Vec<PipelineEdge>> {
     let mut edges = Vec::new();
     for dependency in dependencies {
         let contract = edge_contract_for_dependency(analysis, dependency).ok_or_else(|| {
@@ -586,7 +583,7 @@ fn append_join_internal_edges(
     node_order: &[NodeId],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     edges: &mut Vec<PipelineEdge>,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     for node_id in node_order {
         let Some(node) = plan.node(*node_id) else {
             return Err(invalid("reachable query plan node is missing").with_fact("node_id", node_id));
@@ -614,7 +611,7 @@ fn append_dynamic_filter_control_edges(
     plan: &QueryPlan,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     edges: &mut Vec<PipelineEdge>,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     for route in plan.dynamic_filter_routes() {
         if route.readiness != DynamicFilterReadiness::ProducerCompleteBeforeConsumer {
             continue;
@@ -636,7 +633,7 @@ fn append_dynamic_filter_control_edges(
 fn dynamic_filter_producer_task(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     producer: &DynamicFilterProducer,
-) -> crate::error::Result<Option<PipelineTaskId>> {
+) -> Result<Option<PipelineTaskId>> {
     match producer {
         DynamicFilterProducer::HashJoinBuild { join_node_id, .. } => tasks_for(task_ids, *join_node_id)
             .and_then(|tasks| {
@@ -652,7 +649,7 @@ fn dynamic_filter_producer_task(
 fn dynamic_filter_consumer_task(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     consumer: &DynamicFilterConsumer,
-) -> crate::error::Result<Option<PipelineTaskId>> {
+) -> Result<Option<PipelineTaskId>> {
     match consumer {
         DynamicFilterConsumer::LocalParquetSource { source_node_id } => {
             tasks_for(task_ids, *source_node_id).map(|tasks| Some(tasks.output_task()))
@@ -674,7 +671,7 @@ fn append_sink_task(
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     tasks: &mut Vec<PipelineTask>,
     edges: &mut Vec<PipelineEdge>,
-) -> crate::error::Result<SinkCompilation> {
+) -> Result<SinkCompilation> {
     let ResultSink::HostArrow { input, .. } = plan.sink() else {
         return Ok(SinkCompilation { task: None });
     };
@@ -698,7 +695,7 @@ fn build_resources(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     sink_task: Option<PipelineTaskId>,
-) -> crate::error::Result<Vec<ResidentResource>> {
+) -> Result<Vec<ResidentResource>> {
     let mut resources = Vec::new();
     for node_id in node_order {
         let resource = resource_for(resource_ids, *node_id)?;
@@ -709,7 +706,7 @@ fn build_resources(
             .map(|dependency| {
                 tasks_for(task_ids, dependency.consumer).map(|tasks| tasks.input_task(dependency.input_role))
             })
-            .collect::<crate::error::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?;
         if plan.sink().input() == *node_id
             && let Some(sink_task) = sink_task
         {
@@ -736,7 +733,7 @@ fn build_barriers(
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_task: Option<PipelineTaskId>,
-) -> crate::error::Result<Vec<PipelineBarrier>> {
+) -> Result<Vec<PipelineBarrier>> {
     let mut barriers = Vec::new();
     for node_id in node_order {
         let node = plan
@@ -816,12 +813,12 @@ fn downstream_tasks(
     producer: NodeId,
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
-) -> crate::error::Result<Vec<PipelineTaskId>> {
+) -> Result<Vec<PipelineTaskId>> {
     let mut tasks = dependencies
         .iter()
         .filter(|dependency| dependency.producer == producer)
         .map(|dependency| tasks_for(task_ids, dependency.consumer).map(|tasks| tasks.input_task(dependency.input_role)))
-        .collect::<crate::error::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
     tasks.sort_unstable();
     tasks.dedup();
     Ok(tasks)
@@ -831,7 +828,7 @@ fn build_sink_boundary(
     plan: &QueryPlan,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_compilation: SinkCompilation,
-) -> crate::error::Result<SinkBoundary> {
+) -> Result<SinkBoundary> {
     let kind = match plan.sink() {
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
         ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
@@ -865,14 +862,14 @@ fn edge_kind_for_dependency(contract: &EdgeContract, input_role: InputRole) -> P
     }
 }
 
-fn tasks_for(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::error::Result<NodeTasks> {
+fn tasks_for(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> Result<NodeTasks> {
     task_ids
         .get(&node_id)
         .copied()
         .ok_or_else(|| invalid("query plan node has no assigned pipeline task").with_fact("node_id", node_id))
 }
 
-fn single_task(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::error::Result<PipelineTaskId> {
+fn single_task(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> Result<PipelineTaskId> {
     match tasks_for(task_ids, node_id)? {
         NodeTasks::Single { task } => Ok(task),
         NodeTasks::Join { .. } => {
@@ -881,10 +878,7 @@ fn single_task(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate
     }
 }
 
-fn resource_for(
-    resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-    node_id: NodeId,
-) -> crate::error::Result<ResidentResourceId> {
+fn resource_for(resource_ids: &BTreeMap<NodeId, ResidentResourceId>, node_id: NodeId) -> Result<ResidentResourceId> {
     resource_ids
         .get(&node_id)
         .copied()
@@ -915,10 +909,10 @@ fn input_role_label(role: InputRole) -> &'static str {
         InputRole::UnionInput { .. } => "union_input",
         InputRole::GraphAlgorithmInput => "graph_algorithm_input",
         InputRole::VectorAlgorithmInput { role } => match role {
-            crate::capability::VectorInputRole::Dataset => "vector_dataset_input",
-            crate::capability::VectorInputRole::Queries => "vector_queries_input",
-            crate::capability::VectorInputRole::Input => "vector_input",
-            crate::capability::VectorInputRole::InitialCentroids => "vector_initial_centroids_input",
+            VectorInputRole::Dataset => "vector_dataset_input",
+            VectorInputRole::Queries => "vector_queries_input",
+            VectorInputRole::Input => "vector_input",
+            VectorInputRole::InitialCentroids => "vector_initial_centroids_input",
         },
         InputRole::JoinBuildInput { .. } => "join_build_input",
         InputRole::JoinProbeInput { .. } => "join_probe_input",

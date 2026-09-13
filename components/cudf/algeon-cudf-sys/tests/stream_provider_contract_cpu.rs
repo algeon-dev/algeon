@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use cudf_sys::test_support;
+
 const STREAM_POOL_HEADER: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/include/cudf/detail/utilities/stream_pool.hpp"));
 const STREAM_POOL_SOURCE: &str =
@@ -102,7 +104,7 @@ fn fork(stream: *mut std::ffi::c_void, count: usize) -> Vec<usize> {
     let mut forks = vec![std::ptr::null_mut::<std::ffi::c_void>(); count];
     // The probe only reads the route registry; the raw values it returns are
     // compared as identities and never dereferenced.
-    let status = unsafe { cudf_sys::test_support::cudf_test_stream_provider_fork(stream, count, forks.as_mut_ptr()) };
+    let status = unsafe { test_support::cudf_test_stream_provider_fork(stream, count, forks.as_mut_ptr()) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     forks.into_iter().map(|fork| fork as usize).collect()
 }

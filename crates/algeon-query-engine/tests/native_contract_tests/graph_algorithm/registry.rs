@@ -1,3 +1,5 @@
+use query_engine::rapids_backend::rapids_analysis_context;
+
 #[test]
 fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     let plan = graph_plan(
@@ -321,7 +323,7 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink(graph);
 
-    let capability = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
+    let capability = plan.capability_analysis(rapids_analysis_context()).nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
     let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
         panic!("expected graph capability rejection");
     };

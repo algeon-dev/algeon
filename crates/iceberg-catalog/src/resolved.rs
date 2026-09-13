@@ -1,7 +1,8 @@
 use std::{fmt, sync::Arc};
 
 use iceberg::{
-    spec::{Literal, NestedField, PrimitiveLiteral, PrimitiveType, Type},
+    arrow::schema_to_arrow_schema,
+    spec::{Literal, NestedField, PrimitiveLiteral, PrimitiveType, Schema as IcebergSchema, Type},
     table::Table,
 };
 
@@ -118,8 +119,8 @@ impl fmt::Debug for ResolvedTable {
     }
 }
 
-fn iceberg_schema_to_neutral(schema: &iceberg::spec::Schema) -> Result<Schema> {
-    let arrow_schema = iceberg::arrow::schema_to_arrow_schema(schema).map_err(|error| {
+fn iceberg_schema_to_neutral(schema: &IcebergSchema) -> Result<Schema> {
+    let arrow_schema = schema_to_arrow_schema(schema).map_err(|error| {
         Error::new(ErrorCode::UnsupportedSchema, Operation::SchemaInterpretation, error.to_string())
             .with_context(ErrorContext { schema_id: Some(schema.schema_id()), ..ErrorContext::default() })
     })?;

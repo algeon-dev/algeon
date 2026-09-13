@@ -1,6 +1,6 @@
 use super::rewrite;
 use crate::{
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, Result},
     expr::{ColumnRef, Expr},
     plan::{
         JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, advisory_output_bytes, advisory_output_rows,
@@ -38,14 +38,14 @@ impl JoinBuildSideSelectionOptions {
     }
 
     /// Validates internal consistency for build-side selection thresholds.
-    pub fn validate(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         validate_nonzero_join_build_side_option("small_build_side_bytes", self.small_build_side_bytes)?;
         validate_nonzero_join_build_side_option("small_build_side_rows", self.small_build_side_rows)?;
         Ok(())
     }
 }
 
-fn validate_nonzero_join_build_side_option(field: &'static str, value: u64) -> crate::error::Result<()> {
+fn validate_nonzero_join_build_side_option(field: &'static str, value: u64) -> Result<()> {
     if value == 0 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -268,7 +268,7 @@ pub fn optimize_join_build_side_selection(
     }
 }
 
-fn join_build_side_selection_supported(join: &crate::plan::JoinNode) -> bool {
+fn join_build_side_selection_supported(join: &JoinNode) -> bool {
     if join.spec.keys.is_empty() || join.spec.output_projection.is_empty() || join.spec.build_artifact_id.is_some() {
         return false;
     }

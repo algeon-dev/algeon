@@ -8,13 +8,24 @@ use cudf::{
         error::{FactKeyName, FactValue},
     },
     frame::dataframe::ParquetReadOptions,
+    io::{
+        gds_driver_available,
+        parquet::{ParquetTableWriteOptions, write_parquet},
+    },
     runtime::QueryStageKind,
-    testing::prelude::*,
+    testing::{
+        boundary::{last_boundary_observation_for_test, reset_boundary_observation_for_test},
+        prelude::*,
+    },
+};
+use cudf_sys::test_support::{
+    CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME, CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT,
 };
 use tempfile::TempDir;
 
 use crate::common::{
-    arm_next_io_metadata_fault, column_from_slice, error_context_value, reset_io_metadata_fault, sample_runtime,
+    arm_next_io_metadata_fault, column_from_slice, dataframe_from_columns, error_context_value,
+    reset_io_metadata_fault, sample_runtime,
 };
 
 struct MetadataFaultReset;
@@ -35,14 +46,13 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id", "value"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id", "value"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
-    cudf::testing::boundary::reset_boundary_observation_for_test();
+    reset_boundary_observation_for_test();
     // Read back via DataFrame.
     let df = DataFrame::read_parquet(&rt, &path).unwrap();
-    let observation = cudf::testing::boundary::last_boundary_observation_for_test().unwrap();
+    let observation = last_boundary_observation_for_test().unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
@@ -72,9 +82,8 @@ fn test_read_parquet_with_options() {
     let c1 = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
     let c2 = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
     // Read with column selection and row limit.
     let opts = ParquetReadOptions::builder().filepath(&path).columns(&["b"]).num_rows(3).with_runtime(&rt).build();
@@ -97,9 +106,8 @@ fn test_read_parquet_from_host_buffer_uses_borrowed_bytes_without_retaining_them
     let c1 = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
     let c2 = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["a", "b"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
     let mut filebytes = fs::read(&path).unwrap();
     let opts = ParquetReadOptions::builder().columns(&["b"]).num_rows(3).with_runtime(&rt).build();
@@ -119,9 +127,8 @@ fn test_read_parquet_with_options_accepts_filebytes_source() {
     let rt = sample_runtime();
 
     let table = Table::from_columns(vec![column_from_slice(&[7i32, 8, 9]).unwrap()]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
     let filebytes = fs::read(&path).unwrap();
     let opts = ParquetReadOptions::builder().filebytes(&filebytes).with_runtime(&rt).build();
@@ -133,7 +140,7 @@ fn test_read_parquet_with_options_accepts_filebytes_source() {
 
 #[test]
 fn test_gds_driver_available_probe_returns_structured_result() {
-    if let Err(err) = cudf::io::gds_driver_available() {
+    if let Err(err) = gds_driver_available() {
         assert_eq!(err.operation(), "io::gds_driver_available");
         assert_eq!(error_context_value(&err, "resource").as_deref(), Some("cufile_driver"));
     }
@@ -146,9 +153,8 @@ fn test_read_parquet_with_options_rejects_empty_projection_as_invalid_input() {
     let rt = sample_runtime();
 
     let table = Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
     let opts = ParquetReadOptions::builder().filepath(&path).columns(&[]).with_runtime(&rt).build();
     let err = DataFrame::read_parquet_with_options(opts).expect_err("empty projection should fail clearly");
@@ -173,7 +179,7 @@ fn test_write_parquet_preserves_schema() {
 
     let c1 = column_from_slice(&[100i32, 200]).unwrap();
     let c2 = column_from_slice(&[1.5f64, 2.5]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
+    let df = dataframe_from_columns(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
 
     df.write_parquet(&path).unwrap();
 
@@ -199,11 +205,9 @@ fn test_roundtrip_create_write_read() {
     let c1 = column_from_slice(&[10i64, 20, 30]).unwrap();
     let c2 = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let c3 = column_from_slice(&[7i32, 8, 9]).unwrap();
-    let df = crate::common::dataframe_from_columns(
-        vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
-        vec![c1, c2, c3],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()], vec![c1, c2, c3])
+            .unwrap();
 
     df.write_parquet(&path).unwrap();
 
@@ -235,11 +239,10 @@ fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_tabl
     let rt = sample_runtime();
 
     let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    arm_next_io_metadata_fault(CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
     let err = DataFrame::read_parquet(&rt, &path).expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
@@ -265,11 +268,10 @@ fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_c
     let rt = sample_runtime();
 
     let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
-    let write_opts =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
-    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+    let write_opts = ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
+    arm_next_io_metadata_fault(CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
     let err = DataFrame::read_parquet(&rt, &path).expect_err("invalid UTF-8 metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);

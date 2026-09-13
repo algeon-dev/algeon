@@ -1,3 +1,5 @@
+use arrow::datatypes::{Decimal32Type as ArrowDecimal32Type, Decimal64Type as ArrowDecimal64Type};
+
 #[test]
 fn native_query_executes_union_over_gpu_resident_inputs() {
     let context = backend_context();
@@ -144,15 +146,12 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
         right,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "id", "left_id"),
-                query_engine::expr::ColumnRef::input(1, "id", "right_id"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "lval", "lval"), "lval"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "rval", "rval"), "rval"),
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "lval", "lval"), "lval"),
+            JoinOutputColumn::right(ColumnRef::input(1, "rval", "rval"), "rval"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -234,18 +233,15 @@ fn native_union_and_scalar_key_hash_join_carry_basic_list_payloads_from_gpu_inpu
         dimension,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "key", "payload_key"),
-                query_engine::expr::ColumnRef::input(1, "key", "dimension_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "key", "payload_key"), ColumnRef::input(1, "key", "dimension_key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "key", "key"), "key"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "ints", "ints"), "ints"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "flags", "flags"), "flags"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "tags", "tags"), "tags"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "scores", "scores"), "scores"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "label", "label"), "label"),
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ints", "ints"), "ints"),
+            JoinOutputColumn::left(ColumnRef::input(0, "flags", "flags"), "flags"),
+            JoinOutputColumn::left(ColumnRef::input(0, "tags", "tags"), "tags"),
+            JoinOutputColumn::left(ColumnRef::input(0, "scores", "scores"), "scores"),
+            JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -313,14 +309,10 @@ fn native_union_and_scalar_key_hash_join_carry_fixed_size_list_payloads_from_gpu
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "fixed_list_left",
-        Arc::clone(&payload_schema),
-    )));
-    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "fixed_list_right",
-        Arc::clone(&payload_schema),
-    )));
+    let left = builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new("fixed_list_left", Arc::clone(&payload_schema))));
+    let right = builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new("fixed_list_right", Arc::clone(&payload_schema))));
     let dimension = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
         "fixed_list_dimension",
         Arc::clone(&dimension_schema),
@@ -331,18 +323,12 @@ fn native_union_and_scalar_key_hash_join_carry_fixed_size_list_payloads_from_gpu
         dimension,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "key", "payload_key"),
-                query_engine::expr::ColumnRef::input(1, "key", "dimension_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "key", "payload_key"), ColumnRef::input(1, "key", "dimension_key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "key", "key"), "key"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "coordinates", "coordinates"),
-                "coordinates",
-            ),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "label", "label"), "label"),
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "coordinates", "coordinates"), "coordinates"),
+            JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -417,10 +403,7 @@ fn native_union_and_scalar_key_hash_join_carry_narrow_decimal_payloads_from_gpu_
     ]));
     let dimension_batch = RecordBatch::try_new(
         Arc::clone(&dimension_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
-            Arc::new(Int64Array::from(vec![1000, 2000, 3000, 4000])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int64Array::from(vec![1000, 2000, 3000, 4000]))],
     )
     .unwrap();
     let output_schema = Arc::new(Schema::new(vec![
@@ -449,22 +432,13 @@ fn native_union_and_scalar_key_hash_join_carry_narrow_decimal_payloads_from_gpu_
         dimension,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "key", "payload_key"),
-                query_engine::expr::ColumnRef::input(1, "key", "dimension_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "key", "payload_key"), ColumnRef::input(1, "key", "dimension_key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "key", "key"), "key"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "amount32", "amount32"),
-                "amount32",
-            ),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "amount64", "amount64"),
-                "amount64",
-            ),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "label", "label"), "label"),
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount32", "amount32"), "amount32"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount64", "amount64"), "amount64"),
+            JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -506,12 +480,9 @@ fn native_union_and_scalar_key_hash_join_carry_narrow_decimal_payloads_from_gpu_
     };
     assert_eq!(batch.schema(), output_schema);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(batch.column(1).as_primitive::<ArrowDecimal32Type>().values().as_ref(), &[100, 200, 300, 400]);
     assert_eq!(
-        batch.column(1).as_primitive::<arrow::datatypes::Decimal32Type>().values().as_ref(),
-        &[100, 200, 300, 400]
-    );
-    assert_eq!(
-        batch.column(2).as_primitive::<arrow::datatypes::Decimal64Type>().values().as_ref(),
+        batch.column(2).as_primitive::<ArrowDecimal64Type>().values().as_ref(),
         &[10_000, 20_000, 30_000, 40_000]
     );
     assert_eq!(int64_array(batch, 3).values().as_ref(), &[1000, 2000, 3000, 4000]);

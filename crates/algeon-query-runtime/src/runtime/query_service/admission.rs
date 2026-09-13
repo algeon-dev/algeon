@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::{Arc, Mutex, Weak},
+    mem,
+    sync::{Arc, Mutex, PoisonError, Weak},
     time::{Duration, Instant},
 };
 
@@ -14,8 +15,10 @@ use super::{
     admission_rejection, record_admission_lifecycle,
 };
 use crate::{
+    attempt::{AttemptFinalizer, AttemptFinalizerSlot, AttemptLifecycleError},
     observability::{
-        AdmissionLifecycleState, AdmissionRequestId, RuntimeObservationHandle, RuntimeObservationOwner,
+        AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionWaitFact, AttemptFailureSummary, AttemptId,
+        AttemptTerminalCommit, QueryCleanupSealDelivery, RuntimeObservationHandle, RuntimeObservationOwner,
         RuntimeTerminalOutcome,
     },
     runtime::{
@@ -137,7 +140,7 @@ impl Drop for PendingPreflightReservation {
 
 impl AdmissionLifecycleTracker {
     pub(super) fn begin_provisional(&self, service: Weak<QueryServiceInner>) -> AdmissionTicket {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let id = state.next_ticket_id;
         state.next_ticket_id = state.next_ticket_id.checked_add(1).expect("admission lifecycle ticket id overflow");
         let previous = state.tickets.insert(id, AdmissionTicketPhase::Provisional);
@@ -212,7 +215,7 @@ impl AdmissionLifecycleTracker {
     }
 
     pub(super) fn snapshot(&self) -> AdmissionLifecycleSnapshot {
-        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut snapshot = AdmissionLifecycleSnapshot::default();
         for phase in state.tickets.values() {
             match phase {
@@ -229,7 +232,7 @@ impl AdmissionLifecycleTracker {
     }
 
     pub(super) fn is_quiescent(&self) -> bool {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tickets.is_empty()
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).tickets.is_empty()
     }
 }
 
@@ -324,7 +327,7 @@ impl AdmissionState {
     /// records the post-sweep transition before another snapshot can observe
     /// the state.
     pub(super) fn take_queued_requests(&mut self) -> VecDeque<AdmissionRequest> {
-        std::mem::take(&mut self.queued)
+        mem::take(&mut self.queued)
     }
 
     /// Reinstalls the queue after a service-owned sweep and retains its peak.
@@ -355,7 +358,7 @@ impl AdmissionState {
 #[derive(Debug, Default)]
 struct QueuedAdmissionTerminalState {
     error: Option<QueryError>,
-    primary_failure: Option<crate::observability::AttemptFailureSummary>,
+    primary_failure: Option<AttemptFailureSummary>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -369,7 +372,7 @@ impl QueuedAdmissionTerminal {
     pub(super) fn record(&self, error: QueryError) -> RuntimeTerminalOutcome {
         let disposition = RuntimeTerminalOutcome::from_query_error(&error);
         let primary_failure = RuntimeTerminalOutcome::primary_failure_from_query_error(&error);
-        let mut terminal = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut terminal = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if terminal.error.is_none() {
             terminal.primary_failure = primary_failure;
             terminal.error = Some(error);
@@ -378,14 +381,14 @@ impl QueuedAdmissionTerminal {
     }
 
     pub(super) fn take(&self) -> Option<QueryError> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).error.take()
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).error.take()
     }
 
     /// Transfers the borrowed-error summary captured by queue maintenance to
     /// the completion path. The waiter may already have taken its full error,
     /// so the stable report must not reconstruct a generic fallback.
-    pub(super) fn take_primary_failure(&self) -> Option<crate::observability::AttemptFailureSummary> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).primary_failure.take()
+    pub(super) fn take_primary_failure(&self) -> Option<AttemptFailureSummary> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).primary_failure.take()
     }
 }
 
@@ -395,7 +398,7 @@ pub(super) struct AdmissionRequest {
     pub(super) observation: RuntimeObservationHandle,
     /// Engine-minted identity retained from request submission through the
     /// selected ledger grant and allocator-event correlation.
-    pub(super) attempt_id: crate::observability::AttemptId,
+    pub(super) attempt_id: AttemptId,
     pub(super) completion: QueryCompletion,
     /// Optional plan proof submitted by planning.  This is distinct from the
     /// always-resolved placement requirement below: no proof means execution
@@ -441,8 +444,8 @@ impl AdmissionRequest {
     }
 
     /// Captures FIFO queue identity when the waiter is selected.
-    pub(super) fn admission_wait_fact(&self) -> crate::observability::AttemptAdmissionWaitFact {
-        crate::observability::AttemptAdmissionWaitFact {
+    pub(super) fn admission_wait_fact(&self) -> AttemptAdmissionWaitFact {
+        AttemptAdmissionWaitFact {
             submission_sequence: self.submission_seq,
             overtake_limit: 0,
             overtakes_consumed: 0,
@@ -473,8 +476,8 @@ pub(super) fn missing_device_admission_entry_error(device_ordinal: usize) -> Que
 #[doc(hidden)]
 pub struct QueryCompletion {
     observation_owner: Option<RuntimeObservationOwner>,
-    attempt_finalizer_slot: Option<crate::attempt::AttemptFinalizerSlot>,
-    attempt_finalizer: Option<crate::attempt::AttemptFinalizer>,
+    attempt_finalizer_slot: Option<AttemptFinalizerSlot>,
+    attempt_finalizer: Option<AttemptFinalizer>,
     observation_permit: Option<ObservationPermit>,
     observation_activity: Option<QueryActivityLease>,
     completion_dispatcher: Option<ObservationCompletionDispatcher>,
@@ -484,7 +487,7 @@ pub struct QueryCompletion {
 impl QueryCompletion {
     pub(super) fn new(
         observation_owner: Option<RuntimeObservationOwner>,
-        attempt_finalizer_slot: Option<crate::attempt::AttemptFinalizerSlot>,
+        attempt_finalizer_slot: Option<AttemptFinalizerSlot>,
         observation_permit: Option<ObservationPermit>,
         observation_activity: Option<QueryActivityLease>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
@@ -512,7 +515,7 @@ impl QueryCompletion {
         if let Some(slot) = self.attempt_finalizer_slot.as_ref() {
             let finalizer = slot.take_for_admission().map_err(|error| {
                 QueryError::new(
-                    query_planning::error::QueryErrorCode::Internal,
+                    QueryErrorCode::Internal,
                     "query_engine.query_service.attempt_finalizer",
                     "attempt finalizer was unavailable while publishing admission",
                 )
@@ -535,7 +538,7 @@ impl QueryCompletion {
     /// unavailable in stable resource evidence rather than receiving a
     /// fabricated wall-clock timestamp.
     pub(super) fn attempt_monotonic_ns(&self) -> Option<u64> {
-        self.attempt_finalizer.as_ref().map(crate::attempt::AttemptFinalizer::monotonic_ns)
+        self.attempt_finalizer.as_ref().map(AttemptFinalizer::monotonic_ns)
     }
 
     pub(super) fn begin_query_cleanup(&self) {
@@ -555,7 +558,7 @@ impl QueryCompletion {
         self.finish(RuntimeTerminalOutcome::from_query_error(error));
     }
 
-    fn record_primary_failure(&self, summary: crate::observability::AttemptFailureSummary) {
+    fn record_primary_failure(&self, summary: AttemptFailureSummary) {
         if let Some(finalizer) = &self.attempt_finalizer {
             finalizer.record_primary_failure(summary);
         } else if let Some(slot) = &self.attempt_finalizer_slot {
@@ -577,7 +580,7 @@ impl QueryCompletion {
     pub(super) fn finish_terminal_disposition(
         self,
         disposition: RuntimeTerminalOutcome,
-        primary_failure: Option<crate::observability::AttemptFailureSummary>,
+        primary_failure: Option<AttemptFailureSummary>,
     ) {
         if let Some(summary) = primary_failure {
             self.record_primary_failure(summary);
@@ -659,13 +662,11 @@ impl QueryCompletion {
     /// Consumes the linear post-cleanup finalizer before the report seal.
     pub(super) fn finalize_attempt_after_gpu_cleanup(
         &mut self,
-        terminal_commit: crate::observability::AttemptTerminalCommit,
-    ) -> std::result::Result<(), crate::attempt::AttemptLifecycleError> {
+        terminal_commit: AttemptTerminalCommit,
+    ) -> std::result::Result<(), AttemptLifecycleError> {
         match self.attempt_finalizer.take() {
             Some(finalizer) => finalizer.finalize_admitted(terminal_commit),
-            None if self.attempt_finalizer_slot.is_some() => {
-                Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable)
-            },
+            None if self.attempt_finalizer_slot.is_some() => Err(AttemptLifecycleError::FinalizationUnavailable),
             None => Ok(()),
         }
     }
@@ -726,7 +727,7 @@ impl QueryCompletion {
                 // outcome and seals this same recorder right after taking it,
                 // so the seal belongs to it: sealing here too would race its
                 // outcome with this fallback, and the report is not lost.
-                Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable) => false,
+                Err(AttemptLifecycleError::FinalizationUnavailable) => false,
                 Err(error) => {
                     eprintln!(
                         "[query-engine] warning: failed to finalize unadmitted attempt before seal; suppressing report publication: {error}"
@@ -762,7 +763,7 @@ impl QueryCompletion {
 pub(super) struct QueryCompletionActivityTail {
     activity: Option<QueryActivityLease>,
     dispatcher: Option<ObservationCompletionDispatcher>,
-    delivery: Option<crate::observability::QueryCleanupSealDelivery>,
+    delivery: Option<QueryCleanupSealDelivery>,
     permit: Option<ObservationPermit>,
 }
 

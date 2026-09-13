@@ -604,7 +604,7 @@ mod tests {
     use static_assertions::assert_not_impl_any;
 
     use super::*;
-    use crate::ResourceHandle;
+    use crate::{ResourceHandle, error::ErrorKind};
 
     #[test]
     fn test_device_array_roundtrip() {
@@ -688,14 +688,14 @@ mod tests {
     #[test]
     fn test_host_array_view_rejects_undersized_slice() {
         let err = HostArrayView::new(&[0u8; 3], 2, DataType::Int32).expect_err("must reject undersized slice");
-        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "HostArrayView::new");
     }
 
     #[test]
     fn test_host_array_view_rejects_overflowing_size() {
         let err = HostArrayView::new(&[], usize::MAX, DataType::Int64).expect_err("must reject overflowing size math");
-        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "HostArrayView::new");
     }
 
@@ -712,7 +712,7 @@ mod tests {
             )
         }
         .expect_err("must reject overflowing size math");
-        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "RawDeviceArrayView::try_from_raw");
     }
 
@@ -722,7 +722,7 @@ mod tests {
         // dereference the pointer.
         let err = unsafe { RawDeviceArrayView::from_borrowed(std::ptr::null_mut(), None, "test_op", "view") }
             .expect_err("null borrowed view should be rejected");
-        assert_eq!(err.kind(), crate::error::ErrorKind::Unexpected);
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
         assert_eq!(err.operation(), "test_op");
     }
 

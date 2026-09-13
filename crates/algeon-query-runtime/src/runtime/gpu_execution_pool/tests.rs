@@ -10,8 +10,20 @@ use std::{
 };
 
 use futures::task::{ArcWake, waker_ref};
+use query_planning::error::{QueryErrorKind, QueryErrorStatus};
+use tokio::{
+    sync::{Semaphore, oneshot},
+    task::yield_now,
+};
 
 use super::*;
+use crate::{
+    observability::{
+        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner,
+        assert_live_topology_references_resolve,
+    },
+    runtime::context::{QueryResourceEpoch, QueryServiceEpoch, QueryServiceResourceEpoch},
+};
 
 #[derive(Default)]
 struct BlockingGate {
@@ -53,11 +65,11 @@ async fn wait_until(mut predicate: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !predicate() {
         assert!(Instant::now() < deadline, "condition was not satisfied before the test deadline");
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
 }
 
-fn observed_job_states(owner: &crate::observability::RuntimeObservationOwner) -> Vec<GpuJobLifecycleState> {
+fn observed_job_states(owner: &RuntimeObservationOwner) -> Vec<GpuJobLifecycleState> {
     owner
         .live_snapshot()
         .expect("observation remains live")
@@ -84,11 +96,7 @@ fn process_exit_joins_an_orphaned_gpu_execution_supervisor() {
 #[tokio::test(flavor = "current_thread")]
 async fn observed_job_defines_worker_and_records_host_lifecycle() {
     let pool = GpuExecutionPool::new(0, 1).unwrap();
-    let owner = crate::observability::RuntimeObservationOwner::new(
-        "gpu-job-success",
-        None,
-        crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let owner = RuntimeObservationOwner::new("gpu-job-success", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
 
     let value = pool.run_observed(GpuExecutionJobKind::QueryExecution, owner.handle(), async { 7_u8 }).await.unwrap();
 
@@ -98,7 +106,7 @@ async fn observed_job_defines_worker_and_records_host_lifecycle() {
         vec![GpuJobLifecycleState::Enqueued, GpuJobLifecycleState::Started, GpuJobLifecycleState::Finished]
     );
     let snapshot = owner.live_snapshot().unwrap();
-    crate::observability::assert_live_topology_references_resolve(&snapshot);
+    assert_live_topology_references_resolve(&snapshot);
     assert_eq!(snapshot.topology().filter(|row| matches!(row, RuntimeTopologyRecord::JobDefinition(_))).count(), 1);
     assert_eq!(snapshot.topology().filter(|row| matches!(row, RuntimeTopologyRecord::WorkerDefinition(_))).count(), 1);
 }
@@ -107,9 +115,9 @@ async fn observed_job_defines_worker_and_records_host_lifecycle() {
 async fn execution_context_setup_uses_execution_capacity_without_changing_its_observation_kind() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 8, 2, 1, 1, GpuExecutionQueryTracker::new())
         .unwrap();
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let task_release = Arc::clone(&release);
-    let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+    let (started_sender, started_receiver) = oneshot::channel();
     let first = {
         let pool = pool.clone();
         tokio::spawn(async move {
@@ -160,11 +168,8 @@ async fn opaque_executor_lease_forwards_only_awaited_execution() {
     let lease = GpuExecutorLease::from_pool(pool);
     assert_eq!(lease.run(GpuExecutionJobKind::QueryExecution, async { 7_u8 }).await.unwrap(), 7);
 
-    let owner = crate::observability::RuntimeObservationOwner::new(
-        "gpu-executor-lease",
-        None,
-        crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let owner =
+        RuntimeObservationOwner::new("gpu-executor-lease", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let scope_has_worker = lease
         .run_observed_scoped(GpuExecutionJobKind::QueryExecution, owner.handle(), |scope| async move {
             scope.gpu_job_id.is_some() && scope.gpu_worker_id.is_some()
@@ -177,11 +182,7 @@ async fn opaque_executor_lease_forwards_only_awaited_execution() {
 #[tokio::test(flavor = "current_thread")]
 async fn observed_job_abort_records_one_cancel_terminal() {
     let pool = GpuExecutionPool::new(0, 1).unwrap();
-    let owner = crate::observability::RuntimeObservationOwner::new(
-        "gpu-job-cancel",
-        None,
-        crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
+    let owner = RuntimeObservationOwner::new("gpu-job-cancel", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let task = {
         let pool = pool.clone();
         let observation = owner.handle();
@@ -217,10 +218,10 @@ async fn observed_job_abort_records_one_cancel_terminal() {
 #[test]
 fn dropping_woken_outer_after_child_finished_emits_no_post_terminal_cancel() {
     let pool = GpuExecutionPool::new(0, 1).unwrap();
-    let owner = crate::observability::RuntimeObservationOwner::new(
+    let owner = RuntimeObservationOwner::new(
         "gpu-job-finished-before-outer-drop",
         None,
-        crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+        RuntimeObservationConfig::bounded(32, 32 * 1024),
     );
     let gate = Arc::new(BlockingGate::default());
     let child_gate = Arc::clone(&gate);
@@ -257,12 +258,9 @@ fn dropping_woken_outer_after_child_finished_emits_no_post_terminal_cancel() {
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
     let pool = GpuExecutionPool::new(0, 1).unwrap();
-    let owner = crate::observability::RuntimeObservationOwner::new(
-        "gpu-inline-cancel",
-        None,
-        crate::observability::RuntimeObservationConfig::bounded(64, 64 * 1024),
-    );
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let owner =
+        RuntimeObservationOwner::new("gpu-inline-cancel", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
+    let (started_tx, started_rx) = oneshot::channel();
     let task = {
         let outer_pool = pool.clone();
         let nested_pool = pool.clone();
@@ -315,11 +313,8 @@ async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
 #[tokio::test(flavor = "current_thread")]
 async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
     let pool = GpuExecutionPool::new(0, 1).unwrap();
-    let owner = crate::observability::RuntimeObservationOwner::new(
-        "gpu-inline-panic",
-        None,
-        crate::observability::RuntimeObservationConfig::bounded(64, 64 * 1024),
-    );
+    let owner =
+        RuntimeObservationOwner::new("gpu-inline-panic", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
     let nested_pool = pool.clone();
     let nested_observation = owner.handle();
     let nested = pool
@@ -383,7 +378,7 @@ async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
         tokio::spawn(async move {
             while !stop_heartbeat.load(Ordering::Acquire) {
                 heartbeat.fetch_add(1, Ordering::Relaxed);
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
         })
     };
@@ -486,26 +481,18 @@ fn blocking_submit_saturates_fast_with_typed_error_on_min_pool() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let first = pool
-        .submit_blocking(
-            GpuExecutionJobKind::AttemptWork,
-            crate::observability::RuntimeObservationHandle::disabled(),
-            {
-                let gate = Arc::clone(&gate);
-                move || {
-                    gate.wait();
-                    7_u8
-                }
-            },
-        )
+        .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), {
+            let gate = Arc::clone(&gate);
+            move || {
+                gate.wait();
+                7_u8
+            }
+        })
         .expect("first blocking worker is admitted");
     assert_eq!(pool.snapshot().aux_jobs_available, 0, "the running worker holds the only execution slot");
 
     let saturated = pool
-        .submit_blocking(
-            GpuExecutionJobKind::AttemptWork,
-            crate::observability::RuntimeObservationHandle::disabled(),
-            || 9_u8,
-        )
+        .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), || 9_u8)
         .expect_err("saturation must fail fast, never queue an unbounded waiter");
     assert_eq!(saturated.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(saturated.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
@@ -526,31 +513,23 @@ fn blocking_join_resolves_only_after_the_class_slot_is_released() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let worker = pool
-        .submit_blocking(
-            GpuExecutionJobKind::AttemptWork,
-            crate::observability::RuntimeObservationHandle::disabled(),
-            {
-                let gate = Arc::clone(&gate);
-                move || {
-                    gate.wait();
-                    7_u8
-                }
-            },
-        )
+        .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), {
+            let gate = Arc::clone(&gate);
+            move || {
+                gate.wait();
+                7_u8
+            }
+        })
         .expect("blocking worker is admitted");
     wait_until_sync(|| pool.snapshot().active_jobs == 1);
     gate.release();
 
     assert_eq!(worker.join().expect("a started worker is drained and hands back its value"), 7_u8);
     assert_eq!(pool.snapshot().active_jobs, 0, "the joined worker no longer counts as active");
-    pool.submit_blocking(
-        GpuExecutionJobKind::AttemptWork,
-        crate::observability::RuntimeObservationHandle::disabled(),
-        || 9_u8,
-    )
-    .expect("the only class slot is reusable the moment the previous join resolves")
-    .join()
-    .expect("the resubmitted worker completes");
+    pool.submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), || 9_u8)
+        .expect("the only class slot is reusable the moment the previous join resolves")
+        .join()
+        .expect("the resubmitted worker completes");
 }
 
 #[test]
@@ -623,8 +602,6 @@ fn blocking_completion_notifies_in_finish_order_after_releasing_capacity() {
 /// concurrent close could complete) while the worker is still parked.
 #[test]
 fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
-    use crate::runtime::context::{QueryResourceEpoch, QueryServiceEpoch, QueryServiceResourceEpoch};
-
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let service_epoch = QueryServiceEpoch::new(None);
     let query_epoch = QueryResourceEpoch::new(None);
@@ -637,17 +614,13 @@ fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
 
     let gate = Arc::new(BlockingGate::default());
     let worker = pool
-        .submit_blocking(
-            GpuExecutionJobKind::AttemptWork,
-            crate::observability::RuntimeObservationHandle::disabled(),
-            {
-                let gate = Arc::clone(&gate);
-                move || {
-                    gate.wait();
-                    7_u8
-                }
-            },
-        )
+        .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), {
+            let gate = Arc::clone(&gate);
+            move || {
+                gate.wait();
+                7_u8
+            }
+        })
         .expect("blocking worker is admitted");
     wait_until_sync(|| pool.snapshot().active_jobs == 1);
 
@@ -684,9 +657,9 @@ fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
 #[tokio::test(flavor = "current_thread")]
 async fn blocking_completion_survives_release_cleanup_saturation() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
-    let (release_sender, release_receiver) = tokio::sync::oneshot::channel::<()>();
+    let (release_sender, release_receiver) = oneshot::channel::<()>();
     pool.spawn_release_cleanup_observed_with_completion(
-        crate::observability::RuntimeObservationHandle::disabled(),
+        RuntimeObservationHandle::disabled(),
         async move {
             let _ = release_receiver.await;
         },
@@ -696,20 +669,12 @@ async fn blocking_completion_survives_release_cleanup_saturation() {
     wait_until(|| pool.snapshot().active_jobs == 1).await;
 
     let saturated = pool
-        .spawn_release_cleanup_observed_with_completion(
-            crate::observability::RuntimeObservationHandle::disabled(),
-            async {},
-            || {},
-        )
+        .spawn_release_cleanup_observed_with_completion(RuntimeObservationHandle::disabled(), async {}, || {})
         .expect_err("cleanup saturation is typed, not a second waiter queue");
     assert_eq!(saturated.fact_value("reason"), Some("gpu_execution_pool_release_cleanup_saturated"));
 
     let worker = pool
-        .submit_blocking(
-            GpuExecutionJobKind::AttemptWork,
-            crate::observability::RuntimeObservationHandle::disabled(),
-            || 7_u8,
-        )
+        .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), || 7_u8)
         .expect("blocking completion uses its own class slot");
     assert_eq!(worker.join().expect("blocking worker completes during cleanup saturation"), 7_u8);
 
@@ -909,7 +874,7 @@ fn supervisor_teardown_panic_is_permanent_and_still_joinable() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let error = pool.close_and_wait_until(deadline).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("runtime_supervisor_panicked"));
     assert_eq!(error.fact_value("supervisor_stage"), Some("runtime_teardown"));
     pool.join_supervisor().unwrap();
@@ -939,7 +904,7 @@ fn observed_join_panic_wins_after_an_earlier_cleanup_deadline() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let error = pool.close_and_wait_until(deadline).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("runtime_supervisor_panicked"));
     assert_eq!(error.fact_value("supervisor_stage"), Some("thread_join"));
     let repeated = pool.join_supervisor().unwrap_err();
@@ -952,8 +917,8 @@ async fn panicked_jobs_are_structured_permanent_internal_errors() {
     let error = pool.run(GpuExecutionJobKind::QueryExecution, async { panic!("test panic") }).await.unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.kind(), query_planning::error::QueryErrorKind::Internal);
-    assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.kind(), QueryErrorKind::Internal);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("device_ordinal"), Some("6"));
     assert_eq!(error.fact_value("job_kind"), Some("query_execution"));
     assert_eq!(error.fact_value("reason"), Some("job_panicked"));

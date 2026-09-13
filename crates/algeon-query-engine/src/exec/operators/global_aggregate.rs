@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use cudf::interop::arrow_host::arrow_type_from_cudf_dtype as cudf_arrow_type_from_cudf_dtype;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CudfScalar, DataFrame,
@@ -432,7 +433,7 @@ fn frame_column_arrow_data_type(frame: &DataFrame, column: &str, operation: &'st
     let dtype = series.dtype().map_err(|error| {
         cudf_query_error(operation, "failed to inspect native column type", error).with_fact("column", column)
     })?;
-    cudf::interop::arrow_host::arrow_type_from_cudf_dtype(dtype).map_err(|error| {
+    cudf_arrow_type_from_cudf_dtype(dtype).map_err(|error| {
         cudf_query_error(operation, "failed to map native column type to Arrow", error).with_fact("column", column)
     })
 }

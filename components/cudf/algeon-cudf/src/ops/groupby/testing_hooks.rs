@@ -15,12 +15,10 @@ use crate::{
         error::Result,
         types::{DataType, TypeId},
     },
+    runtime::execution_domain::ExecutionDomain,
 };
 
-fn empty_i32_column_in_domain(
-    output_domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
-    operation: &'static str,
-) -> Result<Column> {
+fn empty_i32_column_in_domain(output_domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Column> {
     Column::empty_with_dtype_in_domain(DataType::new(TypeId::Int32), Arc::clone(output_domain), operation)
         .map_err(|e| e.reanchor(operation))
 }

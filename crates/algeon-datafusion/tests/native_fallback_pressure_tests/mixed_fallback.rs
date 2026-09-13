@@ -18,7 +18,7 @@ use arrow::{
     util::pretty::pretty_format_batches,
 };
 use datafusion::{
-    execution::SessionStateBuilder,
+    execution::{SessionState, SessionStateBuilder},
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
@@ -202,9 +202,7 @@ async fn run_datafusion_baseline_case(
     }
 }
 
-fn installed_final_native_rule(
-    state: &datafusion::execution::session_state::SessionState,
-) -> Option<&AlgeonNativePhysicalOptimizerRule> {
+fn installed_final_native_rule(state: &SessionState) -> Option<&AlgeonNativePhysicalOptimizerRule> {
     state.physical_optimizers().iter().find_map(|rule| {
         if rule.name() != ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME {
             return None;

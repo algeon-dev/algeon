@@ -11,7 +11,9 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{last_exec_mr_value, last_exec_stream_value, reset_exec_observation, sample_runtime};
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, reset_exec_observation, run_named_cases, sample_runtime,
+};
 
 fn assert_i32_series_eq(lhs: &Series, rhs: &Series) {
     assert_eq!(lhs.dtype().unwrap().id(), rhs.dtype().unwrap().id());
@@ -146,7 +148,7 @@ fn default_and_explicit_context_numeric_cast_validation_errors_match() {
 
 #[test]
 fn context_delegation_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "default_series_transform_ops_match_empty_execution_context",
             default_series_transform_ops_match_empty_execution_context,

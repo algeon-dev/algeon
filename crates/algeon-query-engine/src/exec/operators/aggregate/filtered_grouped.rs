@@ -16,6 +16,7 @@ use super::{
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
     *,
 };
+use crate::naming::unique_alias_with_suffix;
 
 // Admission decision plus segmentation plan for filtered grouped aggregates.
 #[derive(Debug, Clone)]
@@ -877,5 +878,5 @@ fn estimate_filtered_grouped_materialization_footprint(
 }
 
 fn unique_filtered_grouped_segment_alias(base: &str, fields: &[Field]) -> String {
-    crate::naming::unique_alias_with_suffix(base, |alias| fields.iter().any(|field| field.name() == alias))
+    unique_alias_with_suffix(base, |alias| fields.iter().any(|field| field.name() == alias))
 }

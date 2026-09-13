@@ -13,7 +13,8 @@ use std::sync::Arc;
 use cudf::{DataFrame, ErrorCode, TypeId, core::Column};
 
 use crate::common::{
-    column_from_slice, dataframe_device_ptr as device_ptr, error_context_value, fail_next_column_view_metadata_read,
+    column_from_slice, dataframe_device_ptr as device_ptr, dataframe_from_columns, error_context_value,
+    fail_next_column_view_metadata_read, run_named_cases, series as common_series,
 };
 
 // ===========================================================================
@@ -22,8 +23,8 @@ use crate::common::{
 
 /// Build a 3-row, 2-column DataFrame.
 fn sample_df() -> DataFrame {
-    let ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
-    let scores = crate::common::series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
+    let ids = common_series::<i32>("id", &[1, 2, 3]).unwrap();
+    let scores = common_series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
     DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
@@ -200,8 +201,7 @@ fn df_to_table_source_still_usable() {
 /// When the DataFrame is the sole owner of all columns (Arc strong
 /// count == 1), `into_table()` can unwrap without copying.
 fn df_into_table_unique_owner_no_extra_copy() {
-    let df = crate::common::dataframe_from_columns(vec!["a".into()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-        .unwrap();
+    let df = dataframe_from_columns(vec!["a".into()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let original_ptr = device_ptr(&df, "a");
     let (table, names) = df.try_into_table().unwrap();
@@ -257,7 +257,7 @@ fn filter_allocates_new_gpu_data() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = common_series::<bool>("mask", &[true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     let filtered_ptr = device_ptr(&filtered, "id");
@@ -307,7 +307,7 @@ fn rename_column_shares_arc() {
 /// `Series::as_column()` returns a `Column` reference that points to the
 /// same device data across repeated access.
 fn series_as_column_same_device_ptr_on_repeated_access() {
-    let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
+    let s = common_series::<i32>("x", &[1, 2]).unwrap();
     let col = s.as_column();
 
     assert_eq!(col.device_data_ptr().unwrap(), s.as_column().device_data_ptr().unwrap());
@@ -315,7 +315,7 @@ fn series_as_column_same_device_ptr_on_repeated_access() {
 
 /// `Series::as_column()` returns `&Column`; a direct borrow.
 fn series_column_returns_ref() {
-    let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = common_series::<i32>("c", &[1, 2, 3]).unwrap();
     let col_ref: &Column = s.as_column();
     assert_eq!(col_ref.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
@@ -323,7 +323,7 @@ fn series_column_returns_ref() {
 /// `Series::into_inner()` consumes the Series and returns the `Arc<Column>`.
 /// A clone of the Series shares the same device data.
 fn series_into_inner_shares_arc() {
-    let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = common_series::<i32>("c", &[1, 2, 3]).unwrap();
 
     let arc1 = s.clone().into_inner();
     let arc2 = s.into_inner();
@@ -336,7 +336,7 @@ fn series_into_inner_shares_arc() {
 
 /// `Series::arc()` returns a cloned `Arc<Column>` without consuming the Series.
 fn series_arc_accessor_shares_arc_without_consuming() {
-    let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
+    let s = common_series::<i32>("c", &[1, 2, 3]).unwrap();
 
     let cloned_arc = s.arc();
     let consumed_arc = s.clone().into_inner();
@@ -355,7 +355,7 @@ fn series_arc_accessor_shares_arc_without_consuming() {
 
 /// `Series::clone()` is a cheap Arc bump; same device pointer.
 fn series_clone_shares_gpu_data() {
-    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = common_series::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
 
     let ptr1 = s.as_column().device_data_ptr().unwrap();
@@ -370,7 +370,7 @@ fn series_clone_shares_gpu_data() {
 /// `filter()` with a Series mask produces a new GPU allocation.
 fn df_filter_gpu_allocates() {
     let df = sample_df();
-    let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
+    let mask = common_series::<bool>("mask", &[true, false, true]).unwrap();
 
     let filtered = df.filter(&mask).unwrap();
     assert_eq!(filtered.num_rows(), 2);
@@ -397,7 +397,7 @@ fn df_slicing_ops_gpu_allocate() {
 
 /// GPU-allocating unary ops on Series produce new columns.
 fn series_ops_gpu_allocate() {
-    let s = crate::common::series::<i32>("v", &[1, 2, 3]).unwrap();
+    let s = common_series::<i32>("v", &[1, 2, 3]).unwrap();
     let original_ptr = s.as_column().device_data_ptr().unwrap();
 
     let mask = s.gt_scalar(1i32).unwrap();
@@ -411,7 +411,7 @@ fn series_ops_gpu_allocate() {
 
 #[test]
 fn high_level_semantic_baseline_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("df_series_returns_owned_series", df_series_returns_owned_series),
         ("df_series_shares_device_pointer", df_series_shares_device_pointer),
         ("df_series_outlives_dataframe", df_series_outlives_dataframe),

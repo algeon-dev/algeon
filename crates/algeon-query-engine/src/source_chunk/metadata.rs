@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use object_store::path::Path as ObjectStorePath;
 use parquet::file::{
     metadata::ParquetMetaData,
     reader::{FileReader, SerializedFileReader},
@@ -13,9 +14,12 @@ use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
 };
+use tokio::task::JoinHandle;
 
 use crate::{
-    parquet_metadata::{fetch_object_store_parquet_metadata, read_parquet_footer_sidecar},
+    parquet_metadata::{
+        fetch_object_store_parquet_metadata, read_parquet_footer_sidecar, write_parquet_footer_sidecar_from_file,
+    },
     runtime::{ExecutionContext, S3ObjectStoreKey},
 };
 
@@ -270,7 +274,7 @@ impl FooterMetadataCacheEntry {
 
 struct PendingFooterMetadataFetch {
     key: SourceMetadataCacheKey,
-    handle: tokio::task::JoinHandle<()>,
+    handle: JoinHandle<()>,
     receiver: std::sync::mpsc::Receiver<Result<Arc<ParquetMetaData>>>,
     requirement: FooterMetadataRequirement,
 }
@@ -283,7 +287,7 @@ impl Drop for PendingFooterMetadataFetch {
 
 struct FooterMetadataFetch {
     wait_started: Instant,
-    handle: tokio::task::JoinHandle<()>,
+    handle: JoinHandle<()>,
     receiver: std::sync::mpsc::Receiver<Result<Arc<ParquetMetaData>>>,
 }
 
@@ -346,7 +350,7 @@ fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<Par
                 file.resolved_source.read_strategy(),
                 ParquetReadStrategy::LocalCacheKvikio | ParquetReadStrategy::RemoteDirect
             ) {
-                let _ = crate::parquet_metadata::write_parquet_footer_sidecar_from_file(path, content_identity);
+                let _ = write_parquet_footer_sidecar_from_file(path, content_identity);
             }
             Arc::new(reader.metadata().clone())
         })
@@ -462,7 +466,7 @@ fn source_file_can_fetch_object_store_footer(file: &LocalParquetFile) -> bool {
 struct SourceMetadataFetchLocation {
     bucket: String,
     region: String,
-    key: object_store::path::Path,
+    key: ObjectStorePath,
     storage_profile_id: Option<String>,
 }
 
@@ -519,7 +523,7 @@ fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -
     Ok(SourceMetadataFetchLocation {
         bucket: bucket.to_string(),
         region,
-        key: object_store::path::Path::from(key),
+        key: ObjectStorePath::from(key),
         storage_profile_id,
     })
 }

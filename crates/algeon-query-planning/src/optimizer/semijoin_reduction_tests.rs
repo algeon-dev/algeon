@@ -311,7 +311,7 @@ fn analyze_keys(
     plan: &QueryPlan,
     left_input: NodeId,
     keys: &[JoinKey],
-) -> Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
+) -> std::result::Result<SemijoinLineageAnalysis, SemijoinReductionRejectedReason> {
     SemijoinLineageAnalyzer::new(plan).analyze_left_semi_key_lineage(left_input, keys)
 }
 

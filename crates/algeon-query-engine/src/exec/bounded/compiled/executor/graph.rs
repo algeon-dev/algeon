@@ -1,17 +1,15 @@
 #[cfg(feature = "cugraph")]
 use std::collections::BTreeMap;
 
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
 #[cfg(feature = "cugraph")]
-use super::super::{
+use crate::exec::bounded::compiled::{
     helpers::{attach_task_facts, plan_node, single_output_resource},
     resource::CompiledGpuResourcePayload,
 };
-use super::{
-    super::helpers::invalid, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
-};
 #[cfg(feature = "cugraph")]
 use crate::exec::bounded::execute_bounded_graph_algorithm_from_inputs;
-use crate::{error::Result, pipeline::PipelineTask};
+use crate::{error::Result, exec::bounded::compiled::helpers::invalid, pipeline::PipelineTask};
 #[cfg(feature = "cugraph")]
 use crate::{
     exec::bounded::ResidentGpuFrame,

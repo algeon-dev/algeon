@@ -1,3 +1,4 @@
+use arrow::datatypes::SchemaRef;
 use query_engine::{
     admission::{BoundedPipelineDecision, bounded_pipeline_decision},
     backend::AnalysisContext,
@@ -5,6 +6,7 @@ use query_engine::{
     error::Result,
     expr::Expr,
     metrics::QueryMetrics,
+    mode::StatisticalAggregateExecutionMode,
     optimizer::NativeOptimizerOptions,
     pipeline::PipelineTaskKind,
     plan::QueryPlan,
@@ -36,7 +38,7 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _supported_backend_builder = GpuBackendCore::builder(draft);
     let _resident_input_map = GpuResidentInputMap::new();
     let _gpu_frame_new: fn(cudf::DataFrame) -> GpuDataFrame = GpuDataFrame::new;
-    let _gpu_handle_new: fn(&ExecutionContext, GpuDataFrame, arrow::datatypes::SchemaRef) -> Result<GpuResultHandle> =
+    let _gpu_handle_new: fn(&ExecutionContext, GpuDataFrame, SchemaRef) -> Result<GpuResultHandle> =
         GpuResultHandle::new;
     let _optimizer = NativeOptimizerOptions::default();
     let _pipeline_kind = PipelineTaskKind::SourceRead;
@@ -44,7 +46,7 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _triage = TriageSummary::healthy();
     let _bounded_decision: fn(
         &QueryPlan,
-        query_engine::mode::StatisticalAggregateExecutionMode,
+        StatisticalAggregateExecutionMode,
         AnalysisContext<'_>,
     ) -> Result<BoundedPipelineDecision> = bounded_pipeline_decision;
     let _source_validation: fn(&LocalParquetSource, AnalysisContext<'_>) -> Result<()> = validate_local_parquet_source;

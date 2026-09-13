@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use arrow::datatypes::DataType;
 use parquet::{
     basic::{ConvertedType, LogicalType, Type as ParquetPhysicalType},
     file::metadata::ParquetMetaData,
+    schema::types::ColumnDescriptor,
 };
 
 use crate::{
+    datatypes::arrow_decimal_scale_to_cudf_scale,
     error::{QueryError, QueryErrorCode, Result},
     expr::Expr,
     source::{
@@ -150,7 +153,7 @@ fn collect_reader_predicate_decimal_columns(source: &LocalParquetSource, expr: &
             if source
                 .schema
                 .field_with_name(column.name())
-                .is_ok_and(|field| matches!(field.data_type(), arrow::datatypes::DataType::Decimal128(_, _)))
+                .is_ok_and(|field| matches!(field.data_type(), DataType::Decimal128(_, _)))
             {
                 columns.insert(column.name().to_string());
             }
@@ -217,22 +220,18 @@ pub fn parquet_reader_decimal_types(
         .zip(&source.read_column_file_indices)
         .filter_map(|(column_name, file_index)| {
             let field = source.schema.field_with_name(column_name).ok()?;
-            if !matches!(field.data_type(), arrow::datatypes::DataType::Decimal128(_, _)) {
+            if !matches!(field.data_type(), DataType::Decimal128(_, _)) {
                 return None;
             }
             let descriptor = metadata.file_metadata().schema_descr().columns().get(*file_index)?;
             let (_precision, scale) = parquet_decimal_precision_scale(descriptor)?;
             let type_id = parquet_reader_decimal_type_id(descriptor)?;
-            Some(ParquetReaderDecimalType::new(
-                column_name.clone(),
-                type_id,
-                crate::datatypes::arrow_decimal_scale_to_cudf_scale(scale),
-            ))
+            Some(ParquetReaderDecimalType::new(column_name.clone(), type_id, arrow_decimal_scale_to_cudf_scale(scale)))
         })
         .collect()
 }
 
-fn parquet_decimal_precision_scale(descriptor: &parquet::schema::types::ColumnDescriptor) -> Option<(u8, i8)> {
+fn parquet_decimal_precision_scale(descriptor: &ColumnDescriptor) -> Option<(u8, i8)> {
     if let Some(LogicalType::Decimal(decimal)) = descriptor.logical_type_ref() {
         return Some((u8::try_from(decimal.precision).ok()?, i8::try_from(decimal.scale).ok()?));
     }
@@ -241,9 +240,7 @@ fn parquet_decimal_precision_scale(descriptor: &parquet::schema::types::ColumnDe
         .and_then(|(precision, scale)| Some((u8::try_from(precision).ok()?, i8::try_from(scale).ok()?)))
 }
 
-fn parquet_reader_decimal_type_id(
-    descriptor: &parquet::schema::types::ColumnDescriptor,
-) -> Option<ParquetReaderDecimalTypeId> {
+fn parquet_reader_decimal_type_id(descriptor: &ColumnDescriptor) -> Option<ParquetReaderDecimalTypeId> {
     match descriptor.physical_type() {
         ParquetPhysicalType::INT32 => Some(ParquetReaderDecimalTypeId::Decimal32),
         ParquetPhysicalType::INT64 => Some(ParquetReaderDecimalTypeId::Decimal64),

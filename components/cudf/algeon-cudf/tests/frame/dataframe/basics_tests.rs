@@ -1,8 +1,15 @@
 //! Tests for the DataFrame wrapper.
 
-use cudf::{DataFrame, ErrorCode, ErrorKind, core::Table, testing::prelude::*};
+use cudf::{
+    DataFrame, ErrorCode, ErrorKind,
+    core::Table,
+    testing::{dataframe::reassemble_dataframe_from_table_and_names_for_test, prelude::*},
+};
 
-use crate::common::{assert_duplicate_name_error, assert_missing_column_error, column_from_slice, error_context_value};
+use crate::common::{
+    assert_duplicate_name_error, assert_missing_column_error, column_from_slice, dataframe_from_columns,
+    error_context_value, run_named_cases, series,
+};
 
 // ---------------------------------------------------------------------------
 // Construction and column-by-name access
@@ -12,8 +19,7 @@ fn test_new_from_named_columns() {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
+    let df = dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
@@ -23,8 +29,7 @@ fn test_column_by_name() {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
+    let df = dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
     let col = df.series("id").unwrap();
     assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -37,7 +42,7 @@ fn test_reject_duplicate_column_names() {
     let c1 = column_from_slice(&[1i32, 2]).unwrap();
     let c2 = column_from_slice(&[3i32, 4]).unwrap();
 
-    let result = crate::common::dataframe_from_columns(vec!["x".to_string(), "x".to_string()], vec![c1, c2]);
+    let result = dataframe_from_columns(vec!["x".to_string(), "x".to_string()], vec![c1, c2]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -49,7 +54,7 @@ fn test_reject_duplicate_column_names() {
 fn test_reject_mismatched_names_columns_count() {
     let c1 = column_from_slice(&[1i32, 2]).unwrap();
 
-    let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1]);
+    let result = dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1]);
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -64,7 +69,7 @@ fn test_reject_mismatched_names_columns_count() {
 
 fn test_column_nonexistent_name_returns_error() {
     let c1 = column_from_slice(&[1i32, 2]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c1]).unwrap();
+    let df = dataframe_from_columns(vec!["x".to_string()], vec![c1]).unwrap();
 
     let result = df.series("nonexistent");
     assert!(result.is_err());
@@ -77,11 +82,9 @@ fn test_column_names_preserves_insertion_order() {
     let c2 = column_from_slice(&[2i32]).unwrap();
     let c3 = column_from_slice(&[3i32]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(
-        vec!["zebra".to_string(), "apple".to_string(), "mango".to_string()],
-        vec![c1, c2, c3],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["zebra".to_string(), "apple".to_string(), "mango".to_string()], vec![c1, c2, c3])
+            .unwrap();
 
     let names = df.column_names();
     assert_eq!(names, &["zebra", "apple", "mango"]);
@@ -91,7 +94,7 @@ fn test_column_index() {
     let c1 = column_from_slice(&[1i32]).unwrap();
     let c2 = column_from_slice(&[2i32]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1, c2]).unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1, c2]).unwrap();
 
     assert_eq!(df.column_index("a"), Some(0));
     assert_eq!(df.column_index("b"), Some(1));
@@ -102,7 +105,7 @@ fn test_column_names_and_index_give_equivalent_info() {
     let c1 = column_from_slice(&[1i32]).unwrap();
     let c2 = column_from_slice(&[2.0f64]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![c1, c2]).unwrap();
+    let df = dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![c1, c2]).unwrap();
 
     let names = df.column_names();
     assert_eq!(names.len(), 2);
@@ -114,7 +117,7 @@ fn test_column_names_and_index_give_equivalent_info() {
 
 fn test_column_accessor_validates_data() {
     let c1 = column_from_slice(&[1i32, 2]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c1]).unwrap();
+    let df = dataframe_from_columns(vec!["x".to_string()], vec![c1]).unwrap();
 
     let col = df.series("x").unwrap();
     assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![1, 2]);
@@ -158,7 +161,7 @@ fn test_from_table_mismatched_names_count() {
 fn test_into_table() {
     let c1 = column_from_slice(&[1i32, 2]).unwrap();
     let c2 = column_from_slice(&[3.0f64, 4.0]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
+    let df = dataframe_from_columns(vec!["x".to_string(), "y".to_string()], vec![c1, c2]).unwrap();
 
     let (table, names) = df.try_into_table().unwrap();
     assert_eq!(names, vec!["x", "y"]);
@@ -169,11 +172,10 @@ fn test_into_table() {
 }
 
 fn test_zero_column_dataframe_table_round_trip_preserves_row_count() {
-    let source =
-        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap()
-            .select(std::iter::empty::<&str>())
-            .unwrap();
+    let source = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
+        .unwrap()
+        .select(std::iter::empty::<&str>())
+        .unwrap();
 
     let copied = source.to_table_copy().unwrap();
     {
@@ -194,8 +196,7 @@ fn test_zero_column_dataframe_table_round_trip_preserves_row_count() {
     assert_eq!(table.testing_execution_domain_stream_value(), source.testing_execution_domain_stream_value());
     assert_eq!(table.testing_execution_domain_mr_value(), source.testing_execution_domain_mr_value());
 
-    let reassembled =
-        cudf::testing::dataframe::reassemble_dataframe_from_table_and_names_for_test(copied, Vec::new()).unwrap();
+    let reassembled = reassemble_dataframe_from_table_and_names_for_test(copied, Vec::new()).unwrap();
     assert_eq!(reassembled.num_columns(), 0);
     assert_eq!(reassembled.num_rows(), 3);
 
@@ -207,7 +208,7 @@ fn test_zero_column_dataframe_table_round_trip_preserves_row_count() {
 }
 
 fn test_empty_dataframe() {
-    let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
+    let df = dataframe_from_columns(vec![], vec![]).unwrap();
     assert_eq!(df.num_columns(), 0);
     assert!(df.column_names().is_empty());
 }
@@ -217,8 +218,8 @@ fn test_empty_dataframe() {
 // ---------------------------------------------------------------------------
 
 fn test_dataframe_macro_basic() {
-    let x = crate::common::series::<i32>("source_x", &[1, 2, 3]).unwrap();
-    let y = crate::common::series::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
+    let x = series::<i32>("source_x", &[1, 2, 3]).unwrap();
+    let y = series::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
 
     let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 
@@ -229,7 +230,7 @@ fn test_dataframe_macro_basic() {
 }
 
 fn test_dataframe_macro_single_column() {
-    let series = crate::common::series::<i32>("source_only", &[1, 2]).unwrap();
+    let series = series::<i32>("source_only", &[1, 2]).unwrap();
 
     let df = cudf::dataframe! { "only" => series }.unwrap();
 
@@ -238,8 +239,8 @@ fn test_dataframe_macro_single_column() {
 }
 
 fn test_dataframe_macro_trailing_comma() {
-    let a = crate::common::series::<i32>("source_a", &[1]).unwrap();
-    let b = crate::common::series::<i32>("source_b", &[2]).unwrap();
+    let a = series::<i32>("source_a", &[1]).unwrap();
+    let b = series::<i32>("source_b", &[2]).unwrap();
 
     let df = cudf::dataframe! {
         "a" => a,
@@ -252,7 +253,7 @@ fn test_dataframe_macro_trailing_comma() {
 }
 
 fn test_dataframe_macro_uses_pair_names_not_series_names() {
-    let source = crate::common::series::<i32>("upstream_name", &[11, 22]).unwrap();
+    let source = series::<i32>("upstream_name", &[11, 22]).unwrap();
 
     let df = cudf::dataframe! { "renamed" => source }.unwrap();
 
@@ -261,7 +262,7 @@ fn test_dataframe_macro_uses_pair_names_not_series_names() {
 
 #[test]
 fn basics_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_new_from_named_columns", test_new_from_named_columns),
         ("test_column_by_name", test_column_by_name),
         ("test_reject_duplicate_column_names", test_reject_duplicate_column_names),

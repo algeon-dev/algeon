@@ -29,7 +29,7 @@ use crate::{
         parquet::{
             self, ParquetMultiTableInput, ParquetMultiTableReadOptions, ParquetReadEvidence, ParquetTableReadOptions,
         },
-        source::{LocalParquetSource, LocalParquetSourceKind, SourceChunk, SourceReadMode},
+        source::{LocalParquetSource, LocalParquetSourceKind, SourceChunk, SourceReadMode, ZERO_COLUMN_COUNT_COLUMN},
     },
     runtime::{BoundaryKind, BudgetedExecutionOutcome, ExecutionBudgetToken, QueryStageKind, Runtime},
 };
@@ -292,7 +292,7 @@ fn read_parquet_source_chunk_frame_with_input(
     if source.kind() == LocalParquetSourceKind::MetadataRowCount {
         let count = chunk.known_row_count_i64()?.ok_or_else(|| missing_source_row_count_error(operation, chunk))?;
         let count_series = runtime.series(&[count])?;
-        let frame = DataFrame::from_series([(crate::io::source::ZERO_COLUMN_COUNT_COLUMN, count_series)])
+        let frame = DataFrame::from_series([(ZERO_COLUMN_COUNT_COLUMN, count_series)])
             .map_err(|error| error.reanchor(operation))?;
         let frame = project_source_frame(&frame, source, mode).map_err(|error| error.reanchor(operation))?;
         return Ok(ParquetSourceChunkReadOutput::new(frame, None));

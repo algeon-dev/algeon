@@ -5,6 +5,7 @@ use cudf::{
     DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
     testing::RawHandleTestingExt,
 };
+use cudf_sys::test_support;
 
 #[test]
 fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
@@ -23,7 +24,7 @@ fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
     assert_eq!(unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut foreign) }, cudf_sys::CUDF_SUCCESS);
     assert!(!foreign.is_null());
     assert_eq!(
-        unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current_untracked(foreign) },
+        unsafe { test_support::cudf_test_memory_resource_set_current_untracked(foreign) },
         cudf_sys::CUDF_SUCCESS,
     );
 
@@ -37,8 +38,8 @@ fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
 
     assert_eq!(
         unsafe {
-            cudf_sys::test_support::cudf_test_memory_resource_set_current_raw(
-                manager.resource().testing_raw_handle_value() as *mut core::ffi::c_void,
+            test_support::cudf_test_memory_resource_set_current_raw(
+                manager.resource().testing_raw_handle_value() as *mut core::ffi::c_void
             )
         },
         cudf_sys::CUDF_SUCCESS,

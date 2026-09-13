@@ -9,6 +9,7 @@ use super::{
     optimized_cache_path_fact, record_background_cache_chunk_fill_enqueue_runtime,
     record_background_cache_file_fill_enqueue_runtime, record_source_chunk_batch_read_runtime, record_source_read,
 };
+use crate::{chunk::SourceChunkBatch, source::LakehouseCacheFillMode};
 
 pub(super) fn record_background_cache_file_fill_enqueue(
     context: &ExecutionContext,
@@ -30,7 +31,7 @@ pub(super) fn record_background_cache_file_fill_enqueue(
             )
         },
     };
-    if file.resolved_source.lakehouse_cache_fill_mode == crate::source::LakehouseCacheFillMode::Background {
+    if file.resolved_source.lakehouse_cache_fill_mode == LakehouseCacheFillMode::Background {
         record_background_cache_file_fill_enqueue_runtime(source_node_id, source, file, file_index, outcome, context);
     }
 }
@@ -49,7 +50,7 @@ pub(super) fn record_background_cache_chunk_fill_enqueue(context: &ExecutionCont
             )
         },
     };
-    if chunk.resolved_source.lakehouse_cache_fill_mode == crate::source::LakehouseCacheFillMode::Background {
+    if chunk.resolved_source.lakehouse_cache_fill_mode == LakehouseCacheFillMode::Background {
         record_background_cache_chunk_fill_enqueue_runtime(chunk, outcome, context);
     }
 }
@@ -61,7 +62,7 @@ pub(super) fn record_background_cache_chunk_fill_enqueue(context: &ExecutionCont
 pub(super) fn read_optimized_local_cache_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
+    batch: &SourceChunkBatch,
     entry: &LakehouseOptimizedBatchCacheEntry,
     budget_bytes: u64,
     budget_boundary: &'static str,

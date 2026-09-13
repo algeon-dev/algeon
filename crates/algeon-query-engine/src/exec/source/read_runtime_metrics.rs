@@ -1,9 +1,13 @@
 use std::{collections::BTreeSet, time::Duration};
 
+use cudf::io::parquet::{ParquetPruningEvidence, ParquetReadEvidence, RemoteReadMode};
+use parquet::file::reader::SerializedFileReader;
+
 use super::{
     ExecutionContext, FileReader, LocalParquetFile, LocalParquetSource, NodeId, SourceChunk,
     SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics, record_source_read_row,
 };
+use crate::chunk::SourceChunkBatch;
 
 pub(super) fn record_background_cache_file_fill_enqueue_runtime(
     source_node_id: NodeId,
@@ -116,7 +120,7 @@ pub(super) fn record_source_chunk_read_runtime(
     output_rows: u64,
     elapsed: Duration,
     reader_dynamic_filter_count: usize,
-    read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    read_evidence: Option<&ParquetReadEvidence>,
     context: &ExecutionContext,
 ) {
     record_source_read_row(
@@ -161,7 +165,7 @@ pub(in crate::exec) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Op
     chunk.known_read_row_group_count().or_else(|| {
         (chunk.reads_all_row_groups && chunk.path.is_file())
             .then(|| {
-                parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+                SerializedFileReader::try_from(chunk.path.as_path())
                     .ok()
                     .map(|reader| reader.metadata().num_row_groups())
             })
@@ -175,12 +179,12 @@ pub(in crate::exec) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Op
 )]
 pub(super) fn record_source_chunk_batch_read_runtime(
     source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
+    batch: &SourceChunkBatch,
     read_kind: &'static str,
     output_rows: u64,
     elapsed: Duration,
     reader_dynamic_filter_count: usize,
-    read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    read_evidence: Option<&ParquetReadEvidence>,
     context: &ExecutionContext,
 ) {
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
@@ -254,7 +258,7 @@ pub(super) fn record_source_file_read_runtime(
     observed_row_group_count: u64,
     output_rows: u64,
     elapsed: Duration,
-    read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    read_evidence: Option<&ParquetReadEvidence>,
     context: &ExecutionContext,
 ) {
     record_source_read_row(
@@ -309,7 +313,7 @@ pub(super) fn record_source_file_read_runtime(
 }
 
 pub(super) fn source_read_parquet_evidence_metrics(
-    evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    evidence: Option<&ParquetReadEvidence>,
 ) -> SourceReadParquetEvidenceMetrics {
     let Some(evidence) = evidence else {
         return SourceReadParquetEvidenceMetrics::default();
@@ -317,11 +321,7 @@ pub(super) fn source_read_parquet_evidence_metrics(
     let pruning = evidence.pruning;
     SourceReadParquetEvidenceMetrics {
         input_kind: evidence.input_kind.to_string(),
-        remote_read_mode: evidence
-            .requested_remote_read_mode
-            .map(cudf::io::parquet::RemoteReadMode::as_str)
-            .unwrap_or("none")
-            .to_string(),
+        remote_read_mode: evidence.requested_remote_read_mode.map(RemoteReadMode::as_str).unwrap_or("none").to_string(),
         backend: evidence.backend.to_string(),
         backend_build_status: evidence.backend_build_status.as_str().to_string(),
         remote_bytes: evidence.remote_bytes,
@@ -334,7 +334,7 @@ pub(super) fn source_read_parquet_evidence_metrics(
     }
 }
 
-pub(super) fn bloom_pruning_status(pruning: Option<cudf::io::parquet::ParquetPruningEvidence>) -> Option<&'static str> {
+pub(super) fn bloom_pruning_status(pruning: Option<ParquetPruningEvidence>) -> Option<&'static str> {
     let pruning = pruning?;
     match (pruning.row_groups_after_stats_filter, pruning.row_groups_after_bloom_filter) {
         (Some(after_stats), Some(after_bloom)) if after_bloom < after_stats => Some("bloom_pruned"),

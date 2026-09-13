@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, fmt, hash::Hash, sync::Arc};
 
-use arrow::datatypes::{DataType, Field, FieldRef};
+use arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
 use datafusion::{
     common::{DFSchema, DFSchemaRef, Result},
     logical_expr::{Expr, FetchType, LogicalPlan, SkipType, UserDefinedLogicalNodeCore},
@@ -53,7 +53,7 @@ impl CuvsLogicalNode {
         &self.options
     }
 
-    pub fn output_schema(&self) -> arrow::datatypes::SchemaRef {
+    pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(self.schema.inner())
     }
 }

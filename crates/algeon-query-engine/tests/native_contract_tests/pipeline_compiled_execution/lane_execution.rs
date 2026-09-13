@@ -1,7 +1,16 @@
 use std::{sync::Condvar, time::Duration};
 
-use query_engine::exec::{
-    LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline, run_lane_dispatched,
+use arrow::array::{BooleanArray, Int64Array, StringArray};
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    error::QueryErrorCode,
+    exec::{
+        ExecutionMetrics, LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline,
+        run_lane_dispatched,
+    },
+    optimizer::{NativeOptimizerOptions, optimize_query_plan},
+    pipeline::SortStrategy,
+    rapids_backend::rapids_analysis_context,
 };
 
 use super::*;
@@ -43,12 +52,9 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("independent union branches use the same compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "literal union branches dispatch on lanes");
@@ -59,7 +65,7 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
     assert!(route.lane_capacity() > 0, "an admitted attempt owns at least one fork stream");
 
     let run = |requested_lanes: Option<usize>| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("lane-parity");
+        let metrics = ExecutionMetrics::detached("lane-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -133,12 +139,9 @@ fn lane_dispatch_executes_parquet_union_branches_on_production_path() {
     let limit = builder.add_limit(union, LimitSpec::fetch(10), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("parquet union branches use the compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(
@@ -245,12 +248,9 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("scan/filter/aggregate admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("scan/filter/aggregate admission should not error");
     let pipeline = decision.admission().expect("scan/filter/aggregate uses compiled admission").pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline));
     assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::Aggregate).count(), 1);
@@ -266,7 +266,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     )];
     let arrivals = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
     let run = |width: usize, coordinate: bool| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("aggregate-lane-parity");
+        let metrics = ExecutionMetrics::detached("aggregate-lane-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("aggregate pipeline is schedulable");
@@ -325,7 +325,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     let resident_pipeline = bounded_pipeline_decision(
         &resident_plan,
         StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
     )
     .expect("resident aggregate admission should not error")
     .admission()
@@ -386,7 +386,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     let grouped_pipeline = bounded_pipeline_decision(
         &grouped_plan,
         StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
+        rapids_analysis_context(),
     )
     .expect("grouped aggregate admission should not error")
     .admission()
@@ -495,12 +495,9 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         output_schema,
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("overflow aggregate admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("overflow aggregate admission should not error");
     let pipeline = decision.admission().expect("overflow aggregate uses compiled admission").pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline));
 
@@ -509,7 +506,7 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     let route = test_context.attempt_stream_provider_route().expect("overflow aggregate has a fork route");
     assert!(route.lane_capacity() >= 4);
     let run = |width: usize| -> std::result::Result<Vec<Option<i64>>, String> {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("aggregate-overflow-lane-parity");
+        let metrics = ExecutionMetrics::detached("aggregate-overflow-lane-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("overflow pipeline is schedulable");
@@ -580,12 +577,9 @@ fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
     );
     let plan = builder.finish_with_host_sink(join);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("join branches use the compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "join pipelines dispatch on lanes");
@@ -599,7 +593,7 @@ fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
     let route = test_context.attempt_stream_provider_route().expect("join attempt owns a fork route");
 
     let run = |requested_lanes: Option<usize>, gate: bool| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("join-lane-parity");
+        let metrics = ExecutionMetrics::detached("join-lane-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join pipeline is schedulable");
@@ -691,10 +685,7 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
         let values: Vec<i64> = (0..probe_rows.len() as i64).collect();
         let batch = RecordBatch::try_new(
             Arc::clone(&probe_schema),
-            vec![
-                Arc::new(Int32Array::from(probe_rows)) as ArrayRef,
-                Arc::new(arrow::array::Int64Array::from(values)) as ArrayRef,
-            ],
+            vec![Arc::new(Int32Array::from(probe_rows)) as ArrayRef, Arc::new(Int64Array::from(values)) as ArrayRef],
         )
         .expect("probe batch");
         let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
@@ -750,12 +741,9 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
             output_schema,
         );
         let plan = builder.finish_with_host_sink(join);
-        let decision = bounded_pipeline_decision(
-            &plan,
-            StatisticalAggregateExecutionMode::default(),
-            query_engine::rapids_backend::rapids_analysis_context(),
-        )
-        .expect("join admission should not error");
+        let decision =
+            bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+                .expect("join admission should not error");
         let pipeline = decision
             .admission()
             .unwrap_or_else(|| panic!("join {join_type} uses compiled admission"))
@@ -765,7 +753,7 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
         let test_context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
         let route = test_context.attempt_stream_provider_route().expect("join scaling route");
         let run = |width: usize| {
-            let metrics = query_engine::exec::ExecutionMetrics::detached("join-probe-scaling");
+            let metrics = ExecutionMetrics::detached("join-probe-scaling");
             let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
             let gpu_inputs = GpuResidentInputMap::new();
             let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join scaling schedulable");
@@ -814,13 +802,13 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
 
 fn bool_values(batch: &RecordBatch, column: usize) -> Vec<Option<bool>> {
     use arrow::array::Array as _;
-    let array = batch.column(column).as_any().downcast_ref::<arrow::array::BooleanArray>().expect("boolean column");
+    let array = batch.column(column).as_any().downcast_ref::<BooleanArray>().expect("boolean column");
     (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
 }
 
 fn int32_strlens_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, usize)> {
     use arrow::array::Array as _;
-    let strings = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().expect("utf8 payload column");
+    let strings = batch.column(1).as_any().downcast_ref::<StringArray>().expect("utf8 payload column");
     let mut pairs = int32_values(batch, 0)
         .into_iter()
         .zip((0..strings.len()).map(|index| {
@@ -856,7 +844,7 @@ fn int32_bool_pairs_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, Option<bool
 
 fn int32_strlen_int64_triples_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, usize, Option<i64>)> {
     use arrow::array::Array as _;
-    let strings = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().expect("utf8 payload column");
+    let strings = batch.column(1).as_any().downcast_ref::<StringArray>().expect("utf8 payload column");
     let mut triples = int32_values(batch, 0)
         .into_iter()
         .zip((0..strings.len()).map(|index| strings.value(index).len()))
@@ -893,7 +881,7 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
             Arc::clone(&probe_schema),
             vec![
                 Arc::new(Int32Array::from(keys.to_vec())) as ArrayRef,
-                Arc::new(arrow::array::StringArray::from(values)) as ArrayRef,
+                Arc::new(StringArray::from(values)) as ArrayRef,
             ],
         )
         .expect("chained probe batch");
@@ -955,12 +943,9 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         Arc::clone(&kv_schema),
     );
     let plan = builder.finish_with_host_sink(join2);
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("chained join admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("chained join admission should not error");
     let pipeline = decision.admission().expect("chained joins use compiled admission").pipeline().clone();
     assert_eq!(
         pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinBuild).count(),
@@ -971,7 +956,7 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
     let test_context = runtime.acquire_context_for_plan(&plan).expect("chained join context");
     let route = test_context.attempt_stream_provider_route().expect("chained join route");
     let run = |width: Option<usize>| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("chained-hash-parallel");
+        let metrics = ExecutionMetrics::detached("chained-hash-parallel");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("chained pipeline is schedulable");
@@ -1049,7 +1034,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
             Arc::clone(&probe_schema),
             vec![
                 Arc::new(Int32Array::from(keys.to_vec())) as ArrayRef,
-                Arc::new(arrow::array::StringArray::from(values)) as ArrayRef,
+                Arc::new(StringArray::from(values)) as ArrayRef,
             ],
         )
         .expect("partitioned chain probe batch");
@@ -1074,7 +1059,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         Arc::clone(&build_schema),
         vec![
             Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
-            Arc::new(arrow::array::Int64Array::from(vec![100, 200])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![100, 200])) as ArrayRef,
         ],
     )
     .expect("partitioned chain build batch");
@@ -1132,18 +1117,15 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         Arc::clone(&kvw_schema),
     );
     let plan = builder.finish_with_host_sink(join2);
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("partitioned chain admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("partitioned chain admission should not error");
     let pipeline = decision.admission().expect("partitioned chain uses compiled admission").pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("partitioned chain runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("partitioned chain context");
     let route = test_context.attempt_stream_provider_route().expect("partitioned chain route");
     let run = |width: Option<usize>| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("chained-partitioned-parallel");
+        let metrics = ExecutionMetrics::detached("chained-partitioned-parallel");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("partitioned pipeline is schedulable");
@@ -1236,7 +1218,7 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         Arc::clone(&left_schema),
         vec![
             Arc::new(Int32Array::from(vec![Some(1), None, Some(2), Some(2)])) as ArrayRef,
-            Arc::new(arrow::array::Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
         ],
     )
     .expect("null-key left batch");
@@ -1244,7 +1226,7 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         Arc::clone(&right_schema),
         vec![
             Arc::new(Int32Array::from(vec![Some(2), None, Some(3)])) as ArrayRef,
-            Arc::new(arrow::array::Int64Array::from(vec![200, 300, 400])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![200, 300, 400])) as ArrayRef,
         ],
     )
     .expect("null-key right batch");
@@ -1264,7 +1246,7 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         let runtime = lane_shared_runtime(cudf::Runtime::new().expect("parity runtime"));
         let test_context = runtime.acquire_context_for_plan(plan).expect("parity context");
         let route = test_context.attempt_stream_provider_route().expect("parity route");
-        let metrics = query_engine::exec::ExecutionMetrics::detached("join-kind-parity");
+        let metrics = ExecutionMetrics::detached("join-kind-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(pipeline).expect("parity pipeline is schedulable");
@@ -1296,16 +1278,12 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
     }
 
     fn admit(label: &str, plan: &QueryPlan) -> CompiledPipeline {
-        bounded_pipeline_decision(
-            plan,
-            StatisticalAggregateExecutionMode::default(),
-            query_engine::rapids_backend::rapids_analysis_context(),
-        )
-        .expect("parity admission should not error")
-        .admission()
-        .unwrap_or_else(|| panic!("{label}: parity shape uses compiled admission"))
-        .pipeline()
-        .clone()
+        bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("parity admission should not error")
+            .admission()
+            .unwrap_or_else(|| panic!("{label}: parity shape uses compiled admission"))
+            .pipeline()
+            .clone()
     }
 
     // (label, join_type, build_side, null_equality, residual)
@@ -1494,18 +1472,15 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
         Arc::clone(&schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("cancel admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("cancel admission should not error");
     let pipeline = decision.admission().expect("cancel join uses compiled admission").pipeline().clone();
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("cancel context");
     let route = test_context.attempt_stream_provider_route().expect("cancel route");
     assert!(route.lane_capacity() >= 2, "cancel test needs two branch lanes");
-    let metrics = query_engine::exec::ExecutionMetrics::detached("join-lane-cancel");
+    let metrics = ExecutionMetrics::detached("join-lane-cancel");
     let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("cancel pipeline is schedulable");
@@ -1563,7 +1538,7 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
         Err(error) => error,
     };
     canceller.join().expect("the cancelling thread joins");
-    assert_eq!(error.code(), query_engine::error::QueryErrorCode::Cancelled, "cancellation is typed");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled, "cancellation is typed");
     assert!(executor.take_host_output().is_err(), "no sink output is committed on a cancelled join run");
 }
 
@@ -1583,7 +1558,7 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
         Arc::clone(&probe_schema),
         vec![
             Arc::new(Int32Array::from(vec![1, 1, 2, 2, 3, 3])) as ArrayRef,
-            Arc::new(arrow::array::Int64Array::from(vec![0, 1, 2, 3, 4, 5])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5])) as ArrayRef,
         ],
     )
     .expect("pruning probe batch");
@@ -1617,29 +1592,26 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
         Arc::clone(&output_schema),
     );
     let raw = builder.finish_with_host_sink(join);
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         raw,
-        &query_engine::optimizer::NativeOptimizerOptions::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert!(
         !optimized.plan.dynamic_filter_routes().is_empty(),
         "optimizer discovers a build-to-probe dynamic-filter route"
     );
     let plan = optimized.plan;
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("pruning admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("pruning admission should not error");
     let pipeline = decision.admission().expect("pruning shape uses compiled admission").pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("pruning runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("pruning context");
     let route = test_context.attempt_stream_provider_route().expect("pruning route");
     let run = |width: Option<usize>| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("join-lane-pruning");
+        let metrics = ExecutionMetrics::detached("join-lane-pruning");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pruning pipeline is schedulable");
@@ -1705,7 +1677,7 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
         Arc::clone(&probe_schema),
         vec![
             Arc::new(Int32Array::from(vec![1, 2, 2, 3])) as ArrayRef,
-            Arc::new(arrow::array::Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
         ],
     )
     .expect("resident probe batch");
@@ -1734,12 +1706,9 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
         Arc::clone(&count_schema),
     );
     let plan = builder.finish_gpu_resident(aggregate);
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("resident admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("resident admission should not error");
     let pipeline = decision.admission().expect("resident join uses compiled admission").pipeline().clone();
     assert!(
         is_resident_aggregate_lane_pipeline(&pipeline),
@@ -1805,12 +1774,9 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let limit = builder.add_limit(sort, LimitSpec::new(0, 6), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("sort/top-k admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("sort/top-k admission should not error");
     let pipeline = decision.admission().expect("union sort/top-k uses compiled admission").pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "union sort/top-k dispatches on lanes");
     let sort_task = pipeline
@@ -1819,7 +1785,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
         .find(|task| task.kind() == PipelineTaskKind::FinalSort)
         .expect("union sort/top-k compiles a final sort task");
     assert!(
-        matches!(sort_task.sort_strategy(), Some(query_engine::pipeline::SortStrategy::FusedTopK { .. })),
+        matches!(sort_task.sort_strategy(), Some(SortStrategy::FusedTopK { .. })),
         "sort/limit fuses into a stream-capable top-k"
     );
 
@@ -1828,7 +1794,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let route = test_context.attempt_stream_provider_route().expect("admitted sort owns a fork route");
     let arrivals = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
     let run = |requested_lanes: Option<usize>, coordinate: bool| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-lane-parity");
+        let metrics = ExecutionMetrics::detached("sort-lane-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("sort pipeline is schedulable");
@@ -1910,12 +1876,9 @@ fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("saturation admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("saturation admission should not error");
     let pipeline = decision.admission().expect("literal union uses compiled admission").pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "literal union dispatches on lanes");
 
@@ -1933,7 +1896,7 @@ fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
 
     let lanes = Arc::new(Mutex::new(Vec::new()));
     let run = |lanes: &Arc<Mutex<Vec<usize>>>| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("saturation-fallback");
+        let metrics = ExecutionMetrics::detached("saturation-fallback");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("union pipeline is schedulable");
@@ -2002,12 +1965,9 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     let limit = builder.add_limit(sort, LimitSpec::new(2, 5), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("offset sort admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("offset sort admission should not error");
     let pipeline = decision.admission().expect("offset sort uses compiled admission").pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "single-frame sort dispatches on lanes");
 
@@ -2018,7 +1978,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     // its input expands into local candidates, so production routing must
     // offer the whole fork pool, not width 1.
     {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-width-request");
+        let metrics = ExecutionMetrics::detached("sort-width-request");
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),
             (*test_context).clone(),
@@ -2051,14 +2011,14 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
         let full_pipeline = bounded_pipeline_decision(
             &full_plan,
             StatisticalAggregateExecutionMode::default(),
-            query_engine::rapids_backend::rapids_analysis_context(),
+            rapids_analysis_context(),
         )
         .expect("full sort admission should not error")
         .admission()
         .expect("full sort uses compiled admission")
         .pipeline()
         .clone();
-        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-width-request");
+        let metrics = ExecutionMetrics::detached("sort-width-request");
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),
             (*test_context).clone(),
@@ -2070,7 +2030,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
         assert_eq!(support.requested_lanes, 1, "single-source full sort keeps the leaf cap");
     }
     let run = |requested_lanes: Option<usize>| {
-        let metrics = query_engine::exec::ExecutionMetrics::detached("sort-offset-parity");
+        let metrics = ExecutionMetrics::detached("sort-offset-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("offset sort is schedulable");

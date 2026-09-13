@@ -9,7 +9,12 @@ use arrow::{
 use super::{compiled::ResidentFrameStreamPayload, *};
 use crate::{
     exec::{operators::final_global_aggregate_spec, source::record_bounded_parquet_source_metrics},
-    observability::SourceReadFact,
+    observability::{
+        RuntimeObservationRecordClass, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity,
+        RuntimeOperatorStageKind, RuntimePlanNodeId, RuntimeTaskId, RuntimeTopologyRecord, SourceReadFact,
+        TaskDefinitionRow, stage_context_from_execution,
+    },
+    rapids_backend::rapids_analysis_context,
 };
 
 mod final_merge;
@@ -114,7 +119,7 @@ pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
     bounded: &BoundedPlan<'_>,
 ) -> Result<CommittedPartial> {
     execution.context().check_cancellation("query_engine.exec.bounded.aggregate")?;
-    validate_local_parquet_source(bounded.source, crate::rapids_backend::rapids_analysis_context())?;
+    validate_local_parquet_source(bounded.source, rapids_analysis_context())?;
     bounded.validate_capabilities()?;
 
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
@@ -466,29 +471,27 @@ pub(in crate::exec::bounded) fn start_aggregate_chunk_stage(
     chunk_index: usize,
     attempt: usize,
     input_rows: u64,
-) -> crate::observability::RuntimeOperatorStageGuard {
-    let (observation, plan_execution_id, parent_span_id) =
-        crate::observability::stage_context_from_execution(execution.context());
+) -> RuntimeOperatorStageGuard {
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
     let fork =
         execution.context().attempt_claimed_fork_index().map_or_else(|| "root".to_string(), |fork| fork.to_string());
-    let task_id =
-        crate::observability::RuntimeTaskId::new(format!("aggregate.{node_id}.chunk{chunk_index}.fork{fork}",));
+    let task_id = RuntimeTaskId::new(format!("aggregate.{node_id}.chunk{chunk_index}.fork{fork}",));
     if let Some(plan_execution_id) = &plan_execution_id {
-        observation.record_topology(crate::observability::RuntimeObservationRecordClass::TaskDefinition, || {
-            crate::observability::RuntimeTopologyRecord::TaskDefinition(crate::observability::TaskDefinitionRow {
+        observation.record_topology(RuntimeObservationRecordClass::TaskDefinition, || {
+            RuntimeTopologyRecord::TaskDefinition(TaskDefinitionRow {
                 plan_execution_id: plan_execution_id.clone(),
                 task_id: task_id.clone(),
-                plan_node_id: Some(crate::observability::RuntimePlanNodeId::new(node_id.to_string())),
+                plan_node_id: Some(RuntimePlanNodeId::new(node_id.to_string())),
                 task_kind: "aggregate_chunk".to_string(),
             })
         });
     }
-    crate::observability::RuntimeOperatorStageGuard::start(
+    RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::PartialAggregate,
-        crate::observability::RuntimeOperatorStageIdentity::new()
+        RuntimeOperatorStageKind::PartialAggregate,
+        RuntimeOperatorStageIdentity::new()
             .with_node_id(node_id.to_string())
             .with_task_id(task_id)
             .with_chunk_index(chunk_index)

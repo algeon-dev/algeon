@@ -7,9 +7,10 @@ use cudf::{
     frame::dataframe::{JsonReadOptions, JsonWriteOptions},
     testing::prelude::*,
 };
+use cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT;
 use tempfile::TempDir;
 
-use crate::common::{arm_next_io_metadata_fault, error_context_value, reset_io_metadata_fault, sample_runtime};
+use crate::common::{arm_next_io_metadata_fault, error_context_value, reset_io_metadata_fault, sample_runtime, series};
 
 struct MetadataFaultReset;
 
@@ -29,8 +30,8 @@ fn test_dataframe_json_roundtrip_convenience() {
     let path = dir.path().join("test.jsonl");
     let rt = sample_runtime();
 
-    let s1 = crate::common::series("ids", &[1i32, 2, 3]).unwrap();
-    let s2 = crate::common::series("values", &[10.0f64, 20.0, 30.0]).unwrap();
+    let s1 = series("ids", &[1i32, 2, 3]).unwrap();
+    let s2 = series("values", &[10.0f64, 20.0, 30.0]).unwrap();
     let df = DataFrame::from_series([("ids", s1), ("values", s2)]).unwrap();
     df.write_json(&path).unwrap();
 
@@ -49,9 +50,9 @@ fn test_dataframe_json_preserves_column_names() {
     let path = dir.path().join("names.jsonl");
     let rt = sample_runtime();
 
-    let s1 = crate::common::series("alpha", &[100i64]).unwrap();
-    let s2 = crate::common::series("beta", &[200i64]).unwrap();
-    let s3 = crate::common::series("gamma", &[300i64]).unwrap();
+    let s1 = series("alpha", &[100i64]).unwrap();
+    let s2 = series("beta", &[200i64]).unwrap();
+    let s3 = series("gamma", &[300i64]).unwrap();
     let df = DataFrame::from_series([("alpha", s1), ("beta", s2), ("gamma", s3)]).unwrap();
     df.write_json(&path).unwrap();
 
@@ -72,7 +73,7 @@ fn test_dataframe_json_roundtrip_with_options() {
     let path = dir.path().join("opts.jsonl");
     let rt = sample_runtime();
 
-    let s1 = crate::common::series("x", &[42i32]).unwrap();
+    let s1 = series("x", &[42i32]).unwrap();
     let df = DataFrame::from_series([("x", s1)]).unwrap();
 
     let write_opts = JsonWriteOptions::builder().filepath(&path).build();
@@ -90,7 +91,7 @@ fn test_dataframe_json_write_no_nulls_option() {
     let path = dir.path().join("no_nulls.jsonl");
     let rt = sample_runtime();
 
-    let s1 = crate::common::series("a", &[1i32, 2]).unwrap();
+    let s1 = series("a", &[1i32, 2]).unwrap();
     let df = DataFrame::from_series([("a", s1)]).unwrap();
 
     let write_opts = JsonWriteOptions::builder().filepath(&path).include_nulls(false).build();
@@ -163,7 +164,7 @@ fn test_dataframe_json_read_rejects_missing_schema_metadata_for_nonempty_table()
 
     std::fs::write(&path, "{\"id\":1,\"value\":10}\n{\"id\":2,\"value\":20}\n").unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    arm_next_io_metadata_fault(CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
     let err = DataFrame::read_json(&rt, &path).expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);

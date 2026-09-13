@@ -14,6 +14,7 @@ use crate::{
         error::{self, Error, ErrorCode, Result},
         types::TypeId,
     },
+    interop::cuda_stream_handle,
     ops::validation::FiniteFloat32ValidationProof,
     runtime::{
         BoundaryObservation, DenseMatrixLayout, ExecutionBindingId, ExecutionPlacement, PackedFloat32Matrix, Runtime,
@@ -49,7 +50,7 @@ pub(super) struct UniformListFloat32Proof {
 }
 
 impl UniformListFloat32Proof {
-    pub(super) fn matches_producer(self, producer: &Arc<crate::core::Column>) -> bool {
+    pub(super) fn matches_producer(self, producer: &Arc<Column>) -> bool {
         self.producer_column_identity == Arc::as_ptr(producer) as usize
             && self.binding_id == producer.execution_domain().binding_id()
             && self.placement == producer.execution_domain().placement()
@@ -103,7 +104,7 @@ impl FixedSizeListStructuralProof {
         )
     }
 
-    pub(super) fn matches_producer(self, producer: &Arc<crate::core::Column>) -> bool {
+    pub(super) fn matches_producer(self, producer: &Arc<Column>) -> bool {
         self.producer_column_identity == Arc::as_ptr(producer) as usize
             && self.binding_id == producer.execution_domain().binding_id()
             && self.placement == producer.execution_domain().placement()
@@ -467,8 +468,7 @@ fn pack_validated_list_float32_child_into_runtime(
             .with_detail("child_byte_offset", child_byte_offset.to_string())
             .with_detail("reason", "validated_list_child_address_overflow")
     })?;
-    let stream = crate::interop::cuda_stream_handle(runtime.stream())
-        .map_err(|error| error::from_interop_in(error, operation))?;
+    let stream = cuda_stream_handle(runtime.stream()).map_err(|error| error::from_interop_in(error, operation))?;
     let lease = export
         .try_activate_read_lease(
             ReadStartAuthority::ConsumerStream { stream },

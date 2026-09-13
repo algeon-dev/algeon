@@ -1,15 +1,18 @@
 use std::time::Instant;
 
-use super::super::{
-    BoundedCompiledJoinProbeState, BoundedCompiledMixedLeftJoinProbeState, BoundedCompiledPreparedJoinBuildState,
-    BoundedExecutionAttempt, CompiledJoinExecutionStrategy, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, compiled_join_input_columns, dataframe_mixed_join_options,
-    execution_overrides, join_index_error, join_side_output_upper_bound_bytes, lower_join_residual_predicate,
-    materialize_left_only_join_output_projection, observe_device_memory_bytes,
-    prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
-    residual_input_columns,
+use crate::{
+    capability::keyed_residual_left_match_join_capable,
+    exec::bounded::join::compiled::{
+        BoundedCompiledJoinProbeState, BoundedCompiledMixedLeftJoinProbeState, BoundedCompiledPreparedJoinBuildState,
+        BoundedExecutionAttempt, CompiledJoinExecutionStrategy, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId,
+        ResidentFrameStreamPayload, ResidentGpuFrame, Result, compiled_join_input_columns,
+        dataframe_mixed_join_options, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
+        lower_join_residual_predicate, materialize_left_only_join_output_projection, observe_device_memory_bytes,
+        prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
+        residual_input_columns,
+    },
+    metrics::{JoinOperatorMetrics, OperatorMetrics},
 };
-use crate::capability::keyed_residual_left_match_join_capable;
 
 pub(in crate::exec::bounded::join::compiled) fn mixed_left_match_probe_supported(
     node: &JoinNode,
@@ -115,9 +118,9 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
     execution.metrics().add_operator_time(operator_time + timer.elapsed());
     let output = GpuDataFrame::new(output);
     let output_bytes = observe_device_memory_bytes(&output, execution.metrics())?;
-    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(OperatorMetrics::join(
         node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_mixed_left_match_join".to_string(),

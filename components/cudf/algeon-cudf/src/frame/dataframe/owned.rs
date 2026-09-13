@@ -16,6 +16,7 @@ use crate::{
     frame::series::Series,
     internal::{
         hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
+        reassemble::dataframe_from_table_and_names,
         resolve::validate_no_duplicate_names,
     },
     ops::groupby,
@@ -456,7 +457,7 @@ impl DataFrame {
     /// Create a DataFrame from a Table and column names, decomposing the
     /// table into Arc-wrapped columns.
     pub(crate) fn from_table_with_names(table: Table, names: Vec<String>) -> Result<Self> {
-        crate::internal::reassemble::dataframe_from_table_and_names(table, names)
+        dataframe_from_table_and_names(table, names)
     }
 
     /// Returns owned column names.

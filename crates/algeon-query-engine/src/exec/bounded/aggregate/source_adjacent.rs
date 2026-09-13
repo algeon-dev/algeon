@@ -1,12 +1,22 @@
 use std::time::Instant;
 
 use super::{final_merge::partition_final_merge_partial, partitioned::partitioned_aggregate_partition_count, *};
-use crate::exec::bounded::{
-    chunks::{
-        bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
-        execute_source_adjacent_batch_uncommitted,
+use crate::{
+    exec::{
+        bounded::{
+            chunks::{
+                bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
+                execute_source_adjacent_batch_uncommitted,
+            },
+            compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
+        },
+        retry::backoff_before_retry,
     },
-    compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
+    naming::unique_alias_with_suffix,
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
+    rapids_backend::rapids_analysis_context,
 };
 
 /// Source and aggregate ownership needed by a batch worker; downstream plan
@@ -915,7 +925,7 @@ fn execute_source_adjacent_raw_source_batch(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
-            crate::exec::retry::backoff_before_retry(
+            backoff_before_retry(
                 execution.context(),
                 "query_engine.exec.bounded.source_adjacent_raw_source_batch_split_retry",
             )?;
@@ -965,7 +975,7 @@ fn source_adjacent_raw_source_batches(
         || bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         || bounded.source.scan_limit.is_some()
         || bounded.source.reader_predicate.as_ref().is_some_and(|predicate| {
-            !bounded.source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
+            !bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context())
         })
     {
         return singleton_source_chunk_batches(chunks);
@@ -1204,14 +1214,13 @@ fn hash_partition_source_adjacent_raw_chunk(
     let original_columns = matches!(partitioner, SourceAdjacentAggregatePartitioner::RowBalanced)
         .then(|| raw_frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>());
     let input_rows = raw_frame.num_rows() as u64;
-    let (observation, plan_execution_id, parent_span_id) =
-        crate::observability::stage_context_from_execution(execution.context());
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::HashPartition,
-        crate::observability::RuntimeOperatorStageIdentity::new()
+        RuntimeOperatorStageKind::HashPartition,
+        RuntimeOperatorStageIdentity::new()
             .with_node_id(node_id.to_string())
             .with_chunk_index(chunk_index)
             .with_input_rows(input_rows),
@@ -1419,7 +1428,7 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
         execution.device_budget_bytes(),
     ) {
         execution.metrics().record_retry_resource_exhausted();
-        if let Err(error) = crate::exec::retry::backoff_before_retry(
+        if let Err(error) = backoff_before_retry(
             execution.context(),
             "query_engine.exec.bounded.source_adjacent_partition_aggregate_split_retry",
         ) {
@@ -1735,7 +1744,7 @@ fn release_aligned_partials_reverse(mut partials: Vec<SourceAdjacentAlignedParti
 
 fn unique_source_adjacent_partition_column_name(frame: &cudf::DataFrame) -> String {
     let base = "__algeon_native_source_adjacent_partition_row_id";
-    crate::naming::unique_alias_with_suffix(base, |candidate| frame.contains(candidate))
+    unique_alias_with_suffix(base, |candidate| frame.contains(candidate))
 }
 
 fn source_adjacent_aggregate_task_id(node_id: NodeId, stage: &'static str, suffix: impl std::fmt::Display) -> String {
@@ -1782,7 +1791,7 @@ mod tests {
     fn grouped_aggregate_raw_batches_respect_grouped_target() {
         use std::sync::Arc;
 
-        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
         use crate::{
             execution_contracts::SourceChunkPlanningMode,
@@ -1840,7 +1849,7 @@ mod tests {
             source: &'a LocalParquetSource,
             filter: &'a FilterNode,
             aggregate: &'a AggregateNode,
-            schema: &'a arrow::datatypes::SchemaRef,
+            schema: &'a SchemaRef,
         ) -> BoundedPlan<'a> {
             BoundedPlan {
                 source_id: NodeId::from_index_for_internal_use(1),
@@ -1858,7 +1867,7 @@ mod tests {
             }
         }
 
-        let schema: arrow::datatypes::SchemaRef = Arc::new(Schema::new(vec![Field::new("k", DataType::Utf8, true)]));
+        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("k", DataType::Utf8, true)]));
         let source = LocalParquetSource::from_files(
             vec![LocalParquetFile::new("/tmp/grouped.parquet")],
             Arc::clone(&schema),

@@ -18,9 +18,12 @@ use super::{
     release_partials_reverse,
 };
 use crate::{
-    exec::bounded::{
-        BoundedPartitionTargetPolicy, ResidentGpuFrame,
-        compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+    exec::{
+        bounded::{
+            BoundedPartitionTargetPolicy, ResidentGpuFrame,
+            compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+        },
+        retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
     },
     runtime::resident::GpuDataFrame,
 };
@@ -491,14 +494,14 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         loop {
             match self.merge_prefix(execution, partition_index, inputs, fan_in.min(available)) {
                 Ok(()) => return Ok(()),
-                Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
-                    crate::exec::retry::record_retryable_resource_error(&error, execution.metrics());
+                Err(error) if is_retryable_resource_error(&error) => {
+                    record_retryable_resource_error(&error, execution.metrics());
                     if attempt < self.max_attempts
                         && let Some(reduced) = reduce_merge_fan_in(fan_in)
                     {
                         fan_in = reduced;
                         attempt += 1;
-                        crate::exec::retry::backoff_before_retry(
+                        backoff_before_retry(
                             execution.context(),
                             "query_engine.exec.bounded.compiled_incremental_merge_fan_in_retry",
                         )?;

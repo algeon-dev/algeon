@@ -1,3 +1,5 @@
+use query_engine::rapids_backend::rapids_analysis_context;
+
 use super::*;
 
 #[path = "join_shapes/duplicate_aggregates.rs"]
@@ -58,7 +60,7 @@ async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisor
         }
     }
 
-    fn native_join_advisory_rows(plan: &query_engine::plan::QueryPlan) -> Vec<u64> {
+    fn native_join_advisory_rows(plan: &QueryPlan) -> Vec<u64> {
         native_joins(plan)
             .into_iter()
             .map(|join| {
@@ -455,14 +457,8 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
     let projection: Arc<dyn ExecutionPlan> = Arc::new(
         ProjectionExec::try_new(
             [
-                ProjectionExpr {
-                    expr: Arc::new(datafusion::physical_expr::expressions::Column::new("n_name", 0)),
-                    alias: "supp_nation".to_string(),
-                },
-                ProjectionExpr {
-                    expr: Arc::new(datafusion::physical_expr::expressions::Column::new("n_name", 1)),
-                    alias: "cust_nation".to_string(),
-                },
+                ProjectionExpr { expr: Arc::new(Column::new("n_name", 0)), alias: "supp_nation".to_string() },
+                ProjectionExpr { expr: Arc::new(Column::new("n_name", 1)), alias: "cust_nation".to_string() },
             ],
             join,
         )
@@ -553,7 +549,7 @@ fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_execu
         .unwrap(),
     );
     let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("n_name", 0)),
+        Arc::new(Column::new("n_name", 0)),
         ArrowSortOptions::new(false, false),
     )])
     .unwrap();
@@ -699,13 +695,8 @@ fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap()
     let left_schema = left.schema();
     let right_schema = right.schema();
     let filter_schema = Arc::new(Schema::new(vec![left_schema.field(1).clone(), right_schema.field(1).clone()]));
-    let filter_expr = binary(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-        Operator::Gt,
-        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 1)),
-        &filter_schema,
-    )
-    .unwrap();
+    let filter_expr =
+        binary(Arc::new(Column::new("dup", 0)), Operator::Gt, Arc::new(Column::new("dup", 1)), &filter_schema).unwrap();
     let filter = JoinFilter::new(
         filter_expr,
         vec![ColumnIndex { index: 1, side: JoinSide::Left }, ColumnIndex { index: 1, side: JoinSide::Right }],
@@ -715,10 +706,7 @@ fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap()
         HashJoinExec::try_new(
             left,
             right,
-            vec![(
-                Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-                Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-            )],
+            vec![(Arc::new(Column::new("dup", 0)), Arc::new(Column::new("dup", 0)))],
             Some(filter),
             &JoinType::Right,
             Some(vec![1, left_schema.fields().len() + 1]),
@@ -728,11 +716,9 @@ fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap()
         )
         .unwrap(),
     );
-    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-        ArrowSortOptions::new(false, false),
-    )])
-    .unwrap();
+    let sort_exprs =
+        LexOrdering::new([PhysicalSortExpr::new(Arc::new(Column::new("dup", 0)), ArrowSortOptions::new(false, false))])
+            .unwrap();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, join).with_fetch(Some(10)));
 
     let result = lower_physical_plan_to_native(plan);

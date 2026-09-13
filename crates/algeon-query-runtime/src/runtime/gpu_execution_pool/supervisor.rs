@@ -4,7 +4,9 @@
 use std::sync::atomic::AtomicBool;
 use std::{
     any::Any,
+    panic,
     panic::AssertUnwindSafe,
+    sync,
     sync::{
         Arc, Condvar, Mutex, Weak,
         atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -15,13 +17,16 @@ use std::{
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::runtime::Handle;
+use tokio::runtime::{Builder, Handle};
 
 use super::{
     BUILD_OPERATION, CURRENT_POOL_ID, CURRENT_WORKER_INDEX, GpuExecutionPool, GpuExecutionPoolInner, SHUTDOWN_OPERATION,
 };
-use crate::runtime::process_exit::{
-    ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
+use crate::runtime::{
+    deadline::{DeadlineMutexLockError, deadline_remaining, mutex_lock_until},
+    process_exit::{
+        ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
+    },
 };
 
 pub(super) struct RuntimeSupervisor {
@@ -96,7 +101,7 @@ impl RuntimeSupervisor {
             .name(format!("algeon-gpu-{device_ordinal}-supervisor"))
             .spawn(move || {
                 (|| {
-                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                    let runtime = Builder::new_multi_thread()
                         .worker_threads(worker_count)
                         .thread_name(format!("algeon-gpu-{device_ordinal}"))
                         .on_thread_start({
@@ -129,7 +134,7 @@ impl RuntimeSupervisor {
                         return;
                     }
 
-                    let teardown = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let teardown = panic::catch_unwind(AssertUnwindSafe(|| {
                         thread_control.wait_for_exit_request();
                         #[cfg(test)]
                         if thread_control.panic_during_teardown.load(Ordering::Acquire) {
@@ -198,7 +203,7 @@ impl RuntimeSupervisor {
             },
         };
 
-        *supervisor.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
+        *supervisor.join.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(join);
         Ok((handle, supervisor))
     }
 
@@ -206,12 +211,11 @@ impl RuntimeSupervisor {
         let shutdown: Arc<dyn ProcessExitShutdown> =
             Arc::new(ProcessExitGpuExecutionPool { inner, supervisor: Arc::clone(self) });
         let registration = register_cuda_process_exit_shutdown(shutdown);
-        *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
+        *self.process_exit_registration.lock().unwrap_or_else(sync::PoisonError::into_inner) = registration;
     }
 
     fn unregister_process_exit(&self) {
-        let registration =
-            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let registration = self.process_exit_registration.lock().unwrap_or_else(sync::PoisonError::into_inner).take();
         if let Some(registration) = registration {
             registration.unregister();
         }
@@ -225,23 +229,18 @@ impl RuntimeSupervisor {
     }
 
     pub(super) fn request_exit_from_drop(&self) {
-        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.control.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.exit_requested = true;
         self.control.changed.notify_all();
     }
 
     pub(super) fn wait_for_exit_until(&self, deadline: Instant) -> Result<()> {
-        let mut state =
-            crate::runtime::deadline::mutex_lock_until(&self.control.state, deadline).map_err(|error| match error {
-                crate::runtime::deadline::DeadlineMutexLockError::Poisoned => {
-                    supervisor_state_poisoned(self.device_ordinal)
-                },
-                crate::runtime::deadline::DeadlineMutexLockError::TimedOut => {
-                    supervisor_exit_timeout(self.device_ordinal)
-                },
-            })?;
+        let mut state = mutex_lock_until(&self.control.state, deadline).map_err(|error| match error {
+            DeadlineMutexLockError::Poisoned => supervisor_state_poisoned(self.device_ordinal),
+            DeadlineMutexLockError::TimedOut => supervisor_exit_timeout(self.device_ordinal),
+        })?;
         while state.exit.is_none() {
-            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+            let Some(remaining) = deadline_remaining(deadline) else {
                 return Err(supervisor_exit_timeout(self.device_ordinal));
             };
             let (next, timeout) = self
@@ -333,7 +332,7 @@ impl RuntimeSupervisor {
 
     pub(super) fn join_for_process_exit(&self) {
         self.request_exit_from_drop();
-        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut join = self.join.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let Some(handle) = join.take() else {
             return;
         };
@@ -365,14 +364,14 @@ impl ProcessExitShutdown for ProcessExitGpuExecutionPool {
 
 impl RuntimeSupervisorControl {
     fn wait_for_exit_request(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         while !state.exit_requested {
-            state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self.changed.wait(state).unwrap_or_else(sync::PoisonError::into_inner);
         }
     }
 
     fn publish_exit(&self, exit: RuntimeSupervisorExit) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.exit = Some(exit);
         self.changed.notify_all();
     }

@@ -14,6 +14,7 @@ use super::{
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
     reduce_merge_fan_in, release_nested_partials_reverse, release_partials_reverse, validate_aggregate_output_names,
 };
+use crate::exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error};
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -114,7 +115,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
                     {
                         merge_fan_in = reduced_fan_in;
                         attempt += 1;
-                        crate::exec::retry::backoff_before_retry(
+                        backoff_before_retry(
                             execution.context(),
                             "query_engine.exec.bounded.compiled_final_merge_fan_in_retry",
                         )?;
@@ -654,11 +655,11 @@ fn release_compiled_merge_level_items(mut items: Vec<CompiledMergeLevelItem>) {
 }
 
 fn is_retryable_compiled_final_merge_error(error: &QueryError) -> bool {
-    crate::exec::retry::is_retryable_resource_error(error)
+    is_retryable_resource_error(error)
 }
 
 fn record_compiled_final_merge_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
-    crate::exec::retry::record_retryable_resource_error(error, metrics);
+    record_retryable_resource_error(error, metrics);
 }
 
 /// Normalizes a raw partial into merge state without finalizing AVG. Raw

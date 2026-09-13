@@ -8,7 +8,7 @@
 use std::fmt::Write;
 
 use datafusion::physical_plan::metrics::MetricsSet;
-use query_engine::contract_report::CapabilityDecisionRow;
+use query_engine::{contract_report::CapabilityDecisionRow, optimizer::NativeOptimizerDiagnostics};
 
 use super::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionRow, NativeDynamicFilterRuntimeMetricRow,
@@ -178,9 +178,7 @@ pub(super) fn format_source_read_runtime_rows(rows: &[NativeSourceReadRuntimeMet
     format_stable_nested_metric_rows(rows, NativeSourceReadRuntimeMetricRow::to_stable_kv_row)
 }
 
-pub(super) fn format_native_optimizer_diagnostics(
-    diagnostics: &query_engine::optimizer::NativeOptimizerDiagnostics,
-) -> String {
+pub(super) fn format_native_optimizer_diagnostics(diagnostics: &NativeOptimizerDiagnostics) -> String {
     let rows = diagnostics.stable_rule_rows();
     if rows.is_empty() {
         return "none".to_string();

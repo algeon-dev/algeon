@@ -5,12 +5,20 @@ use cudf::{
     ExecutionBudgetStatus, GroupByAgg,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
-    testing::prelude::*,
+    testing::{
+        groupby::{
+            trigger_groupby_duplicate_result_column_consumption_for_test,
+            trigger_groupby_result_column_index_out_of_bounds_for_test,
+            trigger_groupby_result_group_index_out_of_bounds_for_test,
+        },
+        prelude::*,
+    },
 };
 
 use crate::common::{
-    arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice, error_context_value,
-    last_exec_mr_value, reset_exec_observation, with_test_runtime,
+    arm_next_groupby_negative_total_columns_fault, assert_missing_column_error, column_from_slice,
+    dataframe_from_columns, error_context_value, last_exec_mr_value, reset_exec_observation, run_named_cases,
+    with_test_runtime,
 };
 
 fn assert_high_level_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -66,8 +74,7 @@ fn test_groupby_single_key_sum() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
@@ -93,8 +100,7 @@ fn test_groupby_single_key_sum() {
 fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let specs = [AggSpec::new("value", GroupByAgg::Sum)];
     let expected = df.groupby(["key"]).agg(&specs).unwrap();
     let token = with_test_runtime(|runtime| {
@@ -134,8 +140,7 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
 fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let specs = [AggSpec::new("value", GroupByAgg::Sum)];
     let expected = df.groupby(["key"]).agg(&specs).unwrap();
     let token = with_test_runtime(|runtime| {
@@ -212,11 +217,9 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
 fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
     let partkeys = column_from_slice(&[10i32, 20, 10, 20, 30]).unwrap();
     let quantities = column_from_slice(&[4.0f64, 10.0, 8.0, 30.0, 5.0]).unwrap();
-    let df = crate::common::dataframe_from_columns(
-        vec!["l_partkey".to_string(), "l_quantity".to_string()],
-        vec![partkeys, quantities],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["l_partkey".to_string(), "l_quantity".to_string()], vec![partkeys, quantities])
+            .unwrap();
     let specs = [AggSpec::new("l_quantity", GroupByAgg::Mean)];
     let token = with_test_runtime(|runtime| {
         runtime
@@ -246,8 +249,7 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
 fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
         runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("grouped_sum")).unwrap()
     });
@@ -272,8 +274,7 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
 fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
         runtime
             .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
@@ -294,8 +295,7 @@ fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_
 fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
         runtime
             .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
@@ -315,8 +315,7 @@ fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budg
 fn test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
         runtime
             .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
@@ -341,8 +340,7 @@ fn test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_d
 fn test_groupby_agg_with_budget_preserves_foreign_output_invariant_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
     let token = with_test_runtime(|runtime| {
         runtime
             .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("grouped_sum"))
@@ -364,8 +362,7 @@ fn test_groupby_agg_with_budget_preserves_foreign_output_invariant_without_budge
 fn test_groupby_rejects_empty_group_keys_with_stable_contract() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df.groupby(Vec::<&str>::new()).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
 
@@ -380,8 +377,7 @@ fn test_groupby_rejects_empty_group_keys_with_stable_contract() {
 fn test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df.groupby(Vec::<&str>::new()).sum(["value"]).unwrap_err();
 
@@ -399,8 +395,7 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "score".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "score".to_string()], vec![keys, vals]).unwrap();
 
     let result = df
         .groupby(["key"])
@@ -433,11 +428,8 @@ fn test_groupby_multiple_keys() {
     let k1 = column_from_slice(&[10i32, 20, 10, 20]).unwrap();
     let vals = column_from_slice(&[100i64, 200, 300, 400]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(
-        vec!["a".to_string(), "b".to_string(), "value".to_string()],
-        vec![k0, k1, vals],
-    )
-    .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string(), "b".to_string(), "value".to_string()], vec![k0, k1, vals])
+        .unwrap();
 
     let result = df.groupby(["a", "b"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap();
 
@@ -455,8 +447,7 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df
         .groupby(["key"])
@@ -470,8 +461,7 @@ fn test_groupby_nonexistent_key_column_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df
         .groupby(["missing_key"])
@@ -486,8 +476,7 @@ fn test_groupby_result_column_naming_convention() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let prices = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "price".to_string()], vec![keys, prices]).unwrap();
+    let df = dataframe_from_columns(vec!["id".to_string(), "price".to_string()], vec![keys, prices]).unwrap();
 
     let result = df
         .groupby(["id"])
@@ -517,11 +506,8 @@ fn test_groupby_interleaved_multi_column_agg_ordering() {
     let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
     let b = column_from_slice(&[1i64, 2, 3, 4]).unwrap();
 
-    let df = crate::common::dataframe_from_columns(
-        vec!["key".to_string(), "a".to_string(), "b".to_string()],
-        vec![keys, a, b],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["key".to_string(), "a".to_string(), "b".to_string()], vec![keys, a, b]).unwrap();
 
     let result = df
         .groupby(["key"])
@@ -556,8 +542,7 @@ fn test_groupby_high_level_rejects_negative_foreign_result_column_count_with_sta
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     arm_next_groupby_negative_total_columns_fault();
     let err = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
@@ -579,8 +564,7 @@ fn test_groupby_no_aggregations_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
 
-    let df =
-        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
 
     let err = df.groupby(["key"]).agg(&[]).expect_err("expected error for empty aggregation");
 
@@ -593,7 +577,7 @@ fn test_groupby_no_aggregations_returns_error() {
 }
 
 fn test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract() {
-    let err = cudf::testing::groupby::trigger_groupby_result_group_index_out_of_bounds_for_test().unwrap_err();
+    let err = trigger_groupby_result_group_index_out_of_bounds_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -612,7 +596,7 @@ fn test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract() {
 }
 
 fn test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract() {
-    let err = cudf::testing::groupby::trigger_groupby_result_column_index_out_of_bounds_for_test().unwrap_err();
+    let err = trigger_groupby_result_column_index_out_of_bounds_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -633,7 +617,7 @@ fn test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract() 
 }
 
 fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract() {
-    let err = cudf::testing::groupby::trigger_groupby_duplicate_result_column_consumption_for_test().unwrap_err();
+    let err = trigger_groupby_duplicate_result_column_consumption_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -653,7 +637,7 @@ fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract(
 
 #[test]
 fn dataframe_groupby_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_groupby_single_key_sum", test_groupby_single_key_sum),
         (
             "test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg",

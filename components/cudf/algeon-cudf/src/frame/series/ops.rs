@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use super::owned::Series;
 use crate::{
-    core::{error::Result, scalar::Scalar},
+    core::{error::Result, scalar::Scalar, types::CudfType},
     ops::binary::{self, BinaryOperator},
 };
 
@@ -138,7 +138,7 @@ impl_scalar_series_op!(Rem, rem, BinaryOperator::Mod, u8, u16, u32, u64, i8, i16
 /// 3. Dispatches to `binary_operation_sv`.
 /// 4. Overrides the result column's execution domain to match the `Series`.
 /// 5. Wraps the result as a `Series`.
-fn scalar_left_op<T: crate::core::types::CudfType>(series: &Series, lhs: T, op: BinaryOperator) -> Result<Series> {
+fn scalar_left_op<T: CudfType>(series: &Series, lhs: T, op: BinaryOperator) -> Result<Series> {
     let scalar = Scalar::from_value_in_domain(lhs, series.column.execution_domain())?;
     let col_view = series.column.view()?;
 

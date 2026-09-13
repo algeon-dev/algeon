@@ -2,7 +2,7 @@
 
 use cudf::{AggSpec, ErrorCode, ErrorKind, GroupByAgg};
 
-use crate::common::{column_from_slice, error_context_value};
+use crate::common::{column_from_slice, dataframe_from_columns, error_context_value, run_named_cases};
 
 fn assert_empty_group_key_contract(err: &cudf::Error, operation: &str) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -17,8 +17,7 @@ fn assert_empty_group_key_contract(err: &cudf::Error, operation: &str) {
 fn high_level_group_key_apis_share_empty_key_contract() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let values = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
-    let df = crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, values])
-        .unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, values]).unwrap();
 
     let groupby_err = df.groupby(Vec::<&str>::new()).agg(&[AggSpec::new("value", GroupByAgg::Sum)]).unwrap_err();
     let cumcount_err = df.group_cumcount(Vec::<&str>::new()).unwrap_err();
@@ -29,7 +28,7 @@ fn high_level_group_key_apis_share_empty_key_contract() {
 
 #[test]
 fn shared_group_key_validation_tests_cases() {
-    crate::common::run_named_cases(&[(
+    run_named_cases(&[(
         "high_level_group_key_apis_share_empty_key_contract",
         high_level_group_key_apis_share_empty_key_contract,
     )]);

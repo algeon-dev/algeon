@@ -7,8 +7,11 @@ mod support;
 use std::time::{Duration, Instant};
 
 use arrow::record_batch::RecordBatch;
+use arrow_flight::error::FlightError;
+use cudf::{DeviceId, testing::memory::PhysicalMemoryPressureLease};
 use futures::TryStreamExt;
 use support::{CONCURRENCY_SQL, ConcurrencyServer, MANAGED_CAPACITY_BYTES, QUERY_CAP_BYTES};
+use tokio::time::sleep;
 
 /// Large enough that the sort cannot fit in the few hundred MiB the pressure
 /// lease deliberately leaves free, while staying far inside the query cap so
@@ -23,9 +26,8 @@ async fn a_physically_exhausted_device_fails_the_query_without_quarantining_itse
     // The lease allocates through its own CUDA resource, outside the manager
     // the ledger accounts for, so admission still succeeds and the failure has
     // to come from the driver rather than from the query's cap.
-    let lease =
-        cudf::testing::memory::PhysicalMemoryPressureLease::establish(cudf::DeviceId::new(0).expect("device zero"))
-            .expect("bounded physical pressure must be establishable on an installed device");
+    let lease = PhysicalMemoryPressureLease::establish(DeviceId::new(0).expect("device zero"))
+        .expect("bounded physical pressure must be establishable on an installed device");
     let facts = lease.facts();
     assert!(facts.bytes_held > 0, "the lease must actually hold device memory: {facts:?}");
 
@@ -43,7 +45,7 @@ async fn a_physically_exhausted_device_fails_the_query_without_quarantining_itse
         .await
         .expect_err("a sort that cannot fit in free device memory must fail");
     let status = match error {
-        arrow_flight::error::FlightError::Tonic(status) => *status,
+        FlightError::Tonic(status) => *status,
         other => panic!("expected a tonic Status, got {other:?}"),
     };
     let code = status
@@ -68,7 +70,7 @@ async fn a_physically_exhausted_device_fails_the_query_without_quarantining_itse
             break;
         }
         assert!(Instant::now() < deadline, "capacity was not returned after physical OOM: {report:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
     }
 
     let released = lease.release_and_verify().expect("pressure lease releases cleanly");
@@ -107,9 +109,8 @@ async fn a_bounded_streaming_query_survives_device_starvation_arriving_mid_strea
     let mut batches = 1usize;
 
     // Take every free byte on the device once the query is already streaming.
-    let lease =
-        cudf::testing::memory::PhysicalMemoryPressureLease::establish(cudf::DeviceId::new(0).expect("device zero"))
-            .expect("bounded physical pressure must be establishable");
+    let lease = PhysicalMemoryPressureLease::establish(DeviceId::new(0).expect("device zero"))
+        .expect("bounded physical pressure must be establishable");
     let free_under_pressure = lease.facts().free_under_pressure_bytes;
 
     // Bounded streaming releases each chunk before reading the next, so the

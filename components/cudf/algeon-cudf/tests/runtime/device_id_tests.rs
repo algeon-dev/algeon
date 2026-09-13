@@ -2,7 +2,7 @@
 
 use cudf::{DeviceId, ErrorCode, ErrorKind};
 
-use crate::common::error_context_value;
+use crate::common::{error_context_value, run_named_cases};
 
 fn new_device_zero_succeeds() {
     let id = DeviceId::new(0).unwrap();
@@ -58,7 +58,7 @@ fn device_id_is_copy() {
 
 #[test]
 fn device_id_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("new_device_zero_succeeds", new_device_zero_succeeds),
         ("new_device_out_of_range_returns_error", new_device_out_of_range_returns_error),
         ("current_returns_device_zero", current_returns_device_zero),

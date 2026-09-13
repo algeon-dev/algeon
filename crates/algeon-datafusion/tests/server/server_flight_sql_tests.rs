@@ -14,20 +14,25 @@ use algeon_datafusion::server::ERROR_OPERATION_METADATA_KEY;
 use algeon_datafusion::{
     attempt::AttemptOptions,
     backend::{AlgeonGpuBackend, GpuDeviceMemoryLimit, GpuMemoryOwnership},
+    gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION,
     native_exec::AlgeonNativeExecutionConfig,
+    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
     server::{
-        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, ServerConfig,
+        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, ERROR_CODE_METADATA_KEY,
+        ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, REASON_METADATA_KEY, ServerConfig,
         ServerShutdown, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
-        UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, serve_with_listener,
+        UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, backend_from_server_config, build_session_context_with_backend,
+        serve_with_listener,
     },
 };
 use arrow::{
     array::{
-        Array, BooleanArray, Decimal128Array, Int32Array, Int64Array, ListArray, StringArray, UInt8Array, UInt32Array,
-        UnionArray,
+        Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, Int32Array, Int64Array, ListArray, StringArray,
+        StringViewArray, UInt8Array, UInt32Array, UnionArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema},
+    ipc::convert::try_schema_from_ipc_buffer,
     record_batch::RecordBatch,
 };
 use arrow_flight::{
@@ -44,7 +49,7 @@ use arrow_flight::{
 };
 use datafusion::{
     catalog::Session,
-    datasource::{TableProvider, TableType},
+    datasource::{TableProvider, TableType, empty::EmptyTable},
     execution::SessionStateBuilder,
     logical_expr::{
         Expr, LogicalPlan,
@@ -54,6 +59,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     sql::sqlparser::ast::TableFactor,
 };
+use tokio::time::{sleep, timeout};
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {
     config.gpu_memory_ownership =
@@ -69,7 +75,7 @@ fn test_server_config_with_env(mut env: std::collections::BTreeMap<&'static str,
     let path = dir.path().join("server.toml");
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    env.insert(algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV, path);
+    env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, path);
     ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("explicit test device profile")
 }
 
@@ -101,11 +107,11 @@ fn build_injected_test_backend(config: &mut ServerConfig) -> AlgeonGpuBackend {
             AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
-    algeon_datafusion::server::backend_from_server_config(config).expect("injected backend test profile must build")
+    backend_from_server_config(config).expect("injected backend test profile must build")
 }
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use prost::Message as _;
+use prost::{Message as _, bytes::Bytes};
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, transport::Endpoint};
 

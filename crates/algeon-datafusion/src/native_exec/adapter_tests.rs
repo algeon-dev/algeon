@@ -15,12 +15,15 @@ mod exec_plans;
 use std::{collections::HashMap, fs, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
-    backend::{AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
+    backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::ErrorCode,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{
+        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
+        native::wrap_direct_native_plan_with_admission_ticket,
+    },
     report::CandidateOutcome,
 };
 use arrow::{
@@ -45,7 +48,7 @@ use query_engine::{
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::QueryPlanBuilder,
     runtime::{ExecutionCancellation, LakehouseCacheFillConfig, SourceChunkPlanningMode},
-    source::SourceNode,
+    source::{GpuResidentSource, SourceNode},
 };
 use support_core::*;
 
@@ -54,7 +57,7 @@ fn backend_fixture() -> InstalledTestGpuBackend {
         template_execution_config(),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
-        crate::backend::AlgeonGpuQueuePolicy::default(),
+        AlgeonGpuQueuePolicy::default(),
     )
 }
 
@@ -64,7 +67,7 @@ fn bound_execution_config(fixture: &InstalledTestGpuBackend) -> AlgeonNativeExec
 
 fn admitted_plan(fixture: &InstalledTestGpuBackend, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let config = bound_execution_config(fixture);
-    crate::planner::native::wrap_direct_native_plan_with_admission_ticket(plan, &config)
+    wrap_direct_native_plan_with_admission_ticket(plan, &config)
         .expect("a directly built native plan must mint its execution admission ticket")
 }
 
@@ -263,8 +266,7 @@ async fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordin
     let consumer_plan = {
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::GpuResident(
-            query_engine::source::GpuResidentSource::new("fragment_input", Arc::clone(&internal_schema))
-                .with_row_count_upper_bound(3),
+            GpuResidentSource::new("fragment_input", Arc::clone(&internal_schema)).with_row_count_upper_bound(3),
         ));
         builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema))
     };

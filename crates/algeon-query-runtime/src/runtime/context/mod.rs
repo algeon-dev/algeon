@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use arrow::datatypes::SchemaRef;
+use cudf::Runtime as CudfRuntime;
 use query_planning::{
     admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
@@ -9,6 +11,7 @@ use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     mode::StatisticalAggregateExecutionMode,
 };
+use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
     CacheFillByteBudget, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy, GpuExecutionPool,
@@ -16,21 +19,25 @@ use super::{
     ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, StreamLease,
     allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
     attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
+    cache::local_parquet::GpuLocalParquetSourceCache,
     cache_events::LakehouseCacheFillEventSink,
     cache_fill::CacheFillConcurrencyGate,
     default_service_stream_pool_size_for_device,
-    gpu::ledger::ResidentOwnerLease,
+    gpu::{GrantIdentity, ledger::ResidentOwnerLease},
     io_lifecycle::{IoLifecycle, IoLifecycleLease},
     object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
     resident::{GpuResidentInputMap, GpuResultHandle},
+    service_stream::StreamCleanupOutcome,
 };
+#[cfg(feature = "cugraph")]
+use super::{allocator_correlation::CacheScopeCorrelationGuard, cache::resident_graph::GpuResidentGraphCache};
 use crate::{
     metrics::{QueryId, TraceId},
     native_error::cudf_query_error,
     observability::{
-        PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle, RuntimePlanExecutionLifecycle,
-        RuntimeQueryLifecycle, RuntimeStreamLeaseScope, RuntimeTerminalOutcome, RuntimeTraceId,
-        SealedRuntimeObservationSnapshot,
+        AttemptId, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle,
+        RuntimeObservationOwner, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeStreamLeaseScope,
+        RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
     },
 };
 
@@ -78,7 +85,7 @@ pub struct ExecutionContext {
     /// Engine-minted identity for the physical attempt that admitted this context.
     ///
     /// Direct contexts are not attempt-bound and therefore leave this absent.
-    attempt_id: Option<crate::observability::AttemptId>,
+    attempt_id: Option<AttemptId>,
     /// Attempt-local carrier for exact resident-cache allocator failures.
     /// Direct contexts carry an inert value because they have no sealed
     /// attempt report that could truthfully own the evidence.
@@ -86,9 +93,9 @@ pub struct ExecutionContext {
     /// Shared query-local bounded runtime observation session.
     runtime_observation: RuntimeObservationHandle,
     /// Shared terminal owner carried by query-service contexts.
-    runtime_observation_owner: Option<crate::observability::RuntimeObservationOwner>,
+    runtime_observation_owner: Option<RuntimeObservationOwner>,
     /// Current plan-execution scope installed while native execution runs.
-    runtime_execution_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
+    runtime_execution_scope: Option<RuntimeExecutionObservationScope>,
     /// Explicit plan/GPU correlation inherited by service-stream acquisitions.
     runtime_stream_lease_scope: RuntimeStreamLeaseScope,
     /// Shared cudf runtime used for GPU work.
@@ -96,7 +103,7 @@ pub struct ExecutionContext {
     /// Runtime ownership is explicit: callers may inject an `Arc` to share a
     /// stream, allocator, and device across query plans, or allow the builder to
     /// create a fresh runtime from the configured device/memory-resource policy.
-    runtime: Arc<cudf::Runtime>,
+    runtime: Arc<CudfRuntime>,
     /// Dedicated executor used for synchronous GPU work on this context's device.
     gpu_execution_pool: GpuExecutionPool,
     /// Runtime allocator construction policy recorded for diagnostics.
@@ -146,11 +153,11 @@ pub struct ExecutionContext {
     source_chunk_planning_mode: SourceChunkPlanningMode,
     /// Backend-owned source cache for this context's device, when the
     /// ordinal profile opted into resident caching.
-    resident_source_cache: Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache>,
+    resident_source_cache: Option<GpuLocalParquetSourceCache>,
     /// Backend-owned graph cache for this context's device, when the ordinal
     /// profile opted into resident caching.
     #[cfg(feature = "cugraph")]
-    resident_graph_cache: Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache>,
+    resident_graph_cache: Option<GpuResidentGraphCache>,
     /// Service-level lakehouse cache-fill resource configuration.
     lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     /// Service-level pool used by bounded source-read workers.
@@ -162,7 +169,7 @@ pub struct ExecutionContext {
     /// Structured completion/failure events from asynchronous lakehouse cache fills.
     lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
     /// Service-scoped async runtime used for object-store control-plane work and cache maintenance.
-    object_store_control_runtime: Arc<tokio::runtime::Runtime>,
+    object_store_control_runtime: Arc<TokioRuntime>,
     /// Cached object-store clients used by metadata and cache-maintenance work.
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     /// Deployment-level IO capability probes used for readiness/reporting.
@@ -194,14 +201,14 @@ struct ActivatedDeferredResidentPhase {
     consumer_execution_scope_fingerprint: String,
     inputs: Vec<ActivatedDeferredResidentInput>,
     capability_evidence: AttemptCapabilityEvidence,
-    grant_identity: crate::runtime::gpu::GrantIdentity,
+    grant_identity: GrantIdentity,
 }
 
 #[derive(Debug)]
 struct ActivatedDeferredResidentInput {
     producer_execution_scope_fingerprint: String,
     input_name: String,
-    input_schema: arrow::datatypes::SchemaRef,
+    input_schema: SchemaRef,
     input_memory_identity: cudf::DataFrameMemoryIdentity,
     input_row_count: u64,
 }
@@ -281,11 +288,11 @@ pub struct LeasedExecutionContext {
 #[derive(Debug)]
 pub struct RuntimeObservedExecutionContext {
     context: ExecutionContext,
-    observation: crate::observability::RuntimeObservationOwner,
+    observation: RuntimeObservationOwner,
 }
 
 impl RuntimeObservedExecutionContext {
-    pub(super) fn new(context: ExecutionContext, observation: crate::observability::RuntimeObservationOwner) -> Self {
+    pub(super) fn new(context: ExecutionContext, observation: RuntimeObservationOwner) -> Self {
         Self { context, observation }
     }
 
@@ -295,12 +302,12 @@ impl RuntimeObservedExecutionContext {
     }
 
     /// Returns the owner-only terminal-seal capability.
-    pub fn observation(&self) -> &crate::observability::RuntimeObservationOwner {
+    pub fn observation(&self) -> &RuntimeObservationOwner {
         &self.observation
     }
 
     /// Returns the execution context together with its shared owner.
-    pub fn into_parts(self) -> (ExecutionContext, crate::observability::RuntimeObservationOwner) {
+    pub fn into_parts(self) -> (ExecutionContext, RuntimeObservationOwner) {
         (self.context, self.observation)
     }
 }
@@ -383,13 +390,13 @@ pub(super) struct ExecutionContextParts {
     pub(super) io_lifecycle: Option<IoLifecycle>,
     pub(super) query_id: Option<QueryId>,
     pub(super) trace_id: Option<TraceId>,
-    pub(super) attempt_id: Option<crate::observability::AttemptId>,
+    pub(super) attempt_id: Option<AttemptId>,
     pub(super) cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     pub(super) runtime_observation: RuntimeObservationHandle,
-    pub(super) runtime_observation_owner: Option<crate::observability::RuntimeObservationOwner>,
-    pub(super) runtime_execution_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
+    pub(super) runtime_observation_owner: Option<RuntimeObservationOwner>,
+    pub(super) runtime_execution_scope: Option<RuntimeExecutionObservationScope>,
     pub(super) runtime_stream_lease_scope: RuntimeStreamLeaseScope,
-    pub(super) runtime: Arc<cudf::Runtime>,
+    pub(super) runtime: Arc<CudfRuntime>,
     pub(super) gpu_execution_pool: GpuExecutionPool,
     pub(super) memory_policy: MemoryResourcePolicy,
     pub(super) memory_control_policy: MemoryControlPolicy,
@@ -404,15 +411,15 @@ pub(super) struct ExecutionContextParts {
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
-    pub(super) resident_source_cache: Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache>,
+    pub(super) resident_source_cache: Option<GpuLocalParquetSourceCache>,
     #[cfg(feature = "cugraph")]
-    pub(super) resident_graph_cache: Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache>,
+    pub(super) resident_graph_cache: Option<GpuResidentGraphCache>,
     pub(super) lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     pub(super) service_stream_pool: ServiceStreamPool,
     pub(super) lakehouse_cache_fill_budget: CacheFillByteBudget,
     pub(super) lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate,
     pub(super) lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
-    pub(super) object_store_control_runtime: Arc<tokio::runtime::Runtime>,
+    pub(super) object_store_control_runtime: Arc<TokioRuntime>,
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
     pub(super) deployment_io_capability: DeploymentIoCapability,
     pub(super) cancellation: ExecutionCancellation,
@@ -440,7 +447,7 @@ impl ExecutionContext {
     /// constructed by the caller.
     // No production callers; kept private-but-present so tests/ui/public_api
     // pins that this constructor stays unreachable outside the crate.
-    pub fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
+    pub fn from_runtime(runtime: CudfRuntime) -> Result<Self> {
         Self::from_shared_runtime(Arc::new(runtime))
     }
 
@@ -450,7 +457,7 @@ impl ExecutionContext {
     /// stream, device placement, allocator policy, or boundary observer state.
     // No production callers; kept private-but-present so tests/ui/public_api
     // pins that this constructor stays unreachable outside the crate.
-    pub fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
+    pub fn from_shared_runtime(runtime: Arc<CudfRuntime>) -> Result<Self> {
         let service_stream_pool =
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
                 .expect("default service stream pool size is non-zero");
@@ -584,7 +591,7 @@ impl ExecutionContext {
     }
 
     /// Returns the cudf runtime used for all GPU operations.
-    pub fn runtime(&self) -> Result<cudf::Runtime> {
+    pub fn runtime(&self) -> Result<CudfRuntime> {
         let operation = "query_engine.runtime.context.runtime";
         // Validate the query/service epoch at acquisition time, but do not
         // embed it in GPU allocations. Escaping allocations are owned by a
@@ -614,7 +621,7 @@ impl ExecutionContext {
     ///
     /// The caller receives the same runtime object, not a new runtime with
     /// copied configuration.
-    pub fn shared_runtime(&self) -> Result<Arc<cudf::Runtime>> {
+    pub fn shared_runtime(&self) -> Result<Arc<CudfRuntime>> {
         self.runtime().map(Arc::new)
     }
 
@@ -669,7 +676,7 @@ impl ExecutionContext {
     /// This remains absent for direct contexts because they are not part of a
     /// public execution-attempt lifecycle.
     #[doc(hidden)]
-    pub fn attempt_id(&self) -> Option<crate::observability::AttemptId> {
+    pub fn attempt_id(&self) -> Option<AttemptId> {
         self.attempt_id
     }
 
@@ -681,7 +688,7 @@ impl ExecutionContext {
     pub fn begin_cache_scope_allocator_correlation(
         &self,
         scope: Arc<cudf::CacheAllocationScope>,
-    ) -> Option<crate::runtime::allocator_correlation::CacheScopeCorrelationGuard> {
+    ) -> Option<CacheScopeCorrelationGuard> {
         self.cache_scope_allocator_correlation.begin(scope)
     }
 
@@ -701,7 +708,7 @@ impl ExecutionContext {
     }
 
     /// Returns the active native plan-execution scope.
-    pub fn runtime_execution_scope(&self) -> Option<&crate::observability::RuntimeExecutionObservationScope> {
+    pub fn runtime_execution_scope(&self) -> Option<&RuntimeExecutionObservationScope> {
         self.runtime_execution_scope.as_ref()
     }
 
@@ -724,10 +731,7 @@ impl ExecutionContext {
 
     /// Returns a clone scoped to one native plan invocation.
     #[doc(hidden)]
-    pub fn with_runtime_execution_scope(
-        &self,
-        scope: crate::observability::RuntimeExecutionObservationScope,
-    ) -> Result<Self> {
+    pub fn with_runtime_execution_scope(&self, scope: RuntimeExecutionObservationScope) -> Result<Self> {
         let mut context = self.with_runtime_observation_handle(scope.observation().clone())?;
         context.runtime_stream_lease_scope.plan_execution_id = Some(scope.plan_execution_id().clone());
         context.runtime_execution_scope = Some(scope);
@@ -782,7 +786,7 @@ impl ExecutionContext {
     /// Returns the backend-owned local-Parquet cache for this context's
     /// ordinal, if its device profile enabled resident caching.
     #[doc(hidden)]
-    pub fn resident_source_cache(&self) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
+    pub fn resident_source_cache(&self) -> Option<GpuLocalParquetSourceCache> {
         self.resident_source_cache.clone()
     }
 
@@ -790,12 +794,12 @@ impl ExecutionContext {
     /// ordinal, if its device profile enabled resident caching.
     #[cfg(feature = "cugraph")]
     #[doc(hidden)]
-    pub fn resident_graph_cache(&self) -> Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache> {
+    pub fn resident_graph_cache(&self) -> Option<GpuResidentGraphCache> {
         self.resident_graph_cache.clone()
     }
     pub(super) fn install_root_stream_cleanup_completion(
         &self,
-        before_quiescence: impl FnOnce(crate::runtime::service_stream::StreamCleanupOutcome) + Send + 'static,
+        before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
         after_quiescence: impl FnOnce() + Send + 'static,
     ) -> bool {
         let Some(stream_lease) = &self.stream_lease_guard else {
@@ -926,7 +930,7 @@ impl ExecutionContext {
     }
 
     /// Immutable grant identity owned by this admitted attempt domain.
-    pub fn attempt_allocation_grant_identity(&self) -> Option<crate::runtime::gpu::GrantIdentity> {
+    pub fn attempt_allocation_grant_identity(&self) -> Option<GrantIdentity> {
         self.attempt_allocation_domain.as_ref().map(AttemptAllocationDomain::grant_identity)
     }
 

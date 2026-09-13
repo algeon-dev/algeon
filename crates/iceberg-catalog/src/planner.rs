@@ -6,13 +6,14 @@ use std::{
 
 use futures::StreamExt;
 use iceberg::{
-    scan::FileScanTask,
+    Error as IcebergError, Result as IcebergResult,
+    scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
-        DataContentType, DataFileFormat, Literal, NameMapping as VendorNameMapping, PrimitiveLiteral, PrimitiveType,
-        TableProperties, Transform,
+        DataContentType, DataFileFormat, Literal, MappedField, NameMapping as VendorNameMapping, PrimitiveLiteral,
+        PrimitiveType, SnapshotRef, TableProperties, Transform, Type,
     },
 };
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout as tokio_timeout};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -151,7 +152,7 @@ impl<'a> ScanPlanner<'a> {
         Ok(())
     }
 
-    fn frozen_snapshot(&self, options: &ScanPlanningOptions) -> Result<Option<iceberg::spec::SnapshotRef>> {
+    fn frozen_snapshot(&self, options: &ScanPlanningOptions) -> Result<Option<SnapshotRef>> {
         let Some(snapshot_id) = self.resolved.facts().snapshot.snapshot_id else {
             if options.snapshot_id.is_some() {
                 return Err(self.invalid_metadata(
@@ -251,7 +252,7 @@ impl<'a> ScanPlanner<'a> {
 
     async fn load_manifest_semantics(
         &self,
-        snapshot: &iceberg::spec::SnapshotRef,
+        snapshot: &SnapshotRef,
         control: &PlanningControl,
     ) -> Result<ManifestSemantics> {
         let manifest_list =
@@ -334,7 +335,7 @@ impl<'a> ScanPlanner<'a> {
 
     fn task_to_delete_file(
         &self,
-        task_delete: &iceberg::scan::FileScanTaskDeleteFile,
+        task_delete: &FileScanTaskDeleteFile,
         semantics: &ManifestSemantics,
     ) -> Result<DeleteFile> {
         let manifest_delete = semantics.delete.get(&task_delete.file_path).ok_or_else(|| {
@@ -413,7 +414,7 @@ impl<'a> ScanPlanner<'a> {
             .collect()
     }
 
-    fn source_error(&self, operation: Operation, source: iceberg::Error) -> Error {
+    fn source_error(&self, operation: Operation, source: IcebergError) -> Error {
         Error::from_iceberg_error(operation, source).with_context(self.error_context())
     }
 
@@ -505,18 +506,18 @@ impl PlanningControl {
     }
 
     async fn wait<T, F>(&self, operation: Operation, future: F) -> Result<T>
-    where F: Future<Output = iceberg::Result<T>> {
+    where F: Future<Output = IcebergResult<T>> {
         self.check(operation)?;
         let timeout = self.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         let result = match (timeout, self.cancellation.as_ref()) {
             (Some(timeout), Some(cancellation)) => {
                 tokio::select! {
                     _ = cancellation.cancelled() => return Err(self.cancelled(operation)),
-                    result = tokio::time::timeout(timeout, future) => result.map_err(|_elapsed| self.timed_out(operation))?,
+                    result = tokio_timeout(timeout, future) => result.map_err(|_elapsed| self.timed_out(operation))?,
                 }
             },
             (Some(timeout), None) => {
-                tokio::time::timeout(timeout, future).await.map_err(|_elapsed| self.timed_out(operation))?
+                tokio_timeout(timeout, future).await.map_err(|_elapsed| self.timed_out(operation))?
             },
             (None, Some(cancellation)) => {
                 tokio::select! {
@@ -571,11 +572,7 @@ fn partition_transform(transform: Transform) -> PartitionTransform {
     }
 }
 
-fn partition_scalar(
-    value: Option<&Literal>,
-    result_type: &iceberg::spec::Type,
-    planner: &ScanPlanner<'_>,
-) -> Result<ScalarValue> {
+fn partition_scalar(value: Option<&Literal>, result_type: &Type, planner: &ScanPlanner<'_>) -> Result<ScalarValue> {
     let Some(value) = value else {
         return Ok(ScalarValue::Null);
     };
@@ -585,7 +582,7 @@ fn partition_scalar(
             "Iceberg partition values must be primitive literals",
         ));
     };
-    let iceberg::spec::Type::Primitive(result_type) = result_type else {
+    let Type::Primitive(result_type) = result_type else {
         return Err(planner.invalid_metadata(
             Operation::SchemaInterpretation,
             "Iceberg partition transform produced a non-primitive result type",
@@ -631,7 +628,7 @@ fn neutral_name_mapping(mapping: &VendorNameMapping) -> NameMapping {
     NameMapping { fields: mapping.fields().iter().map(neutral_name_mapping_field).collect() }
 }
 
-fn neutral_name_mapping_field(field: &iceberg::spec::MappedField) -> NameMappingField {
+fn neutral_name_mapping_field(field: &MappedField) -> NameMappingField {
     NameMappingField {
         field_id: field.field_id(),
         names: field.names().to_vec(),
@@ -648,8 +645,8 @@ mod tests {
         expr::Reference,
         io::FileIO,
         spec::{
-            DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter, ManifestWriterBuilder,
-            Struct, TableMetadata, TableProperties,
+            DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, ManifestListWriter,
+            ManifestWriterBuilder, Struct, TableMetadata, TableProperties,
         },
         table::Table,
     };
@@ -826,7 +823,7 @@ mod tests {
                 missing_default: None,
             }],
             predicate: crate::PredicateIntent::none(),
-            iceberg_predicate: Some(Reference::new("y").greater_than(iceberg::spec::Datum::long(0))),
+            iceberg_predicate: Some(Reference::new("y").greater_than(Datum::long(0))),
             source_limit: SourceLimit { row_limit: Some(10), file_limit: Some(1) },
             pruning: crate::PruningIntent::default(),
         };

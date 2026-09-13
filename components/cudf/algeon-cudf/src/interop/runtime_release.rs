@@ -8,7 +8,7 @@ use std::{
 use rapids_interop::ReleaseSynchronization;
 
 use super::*;
-use crate::runtime::{CudaEvent, CudaStream, DeviceId, device_guard::DeviceEntryGuard};
+use crate::runtime::{CudaEvent, CudaStream, DeviceId, device_guard::DeviceEntryGuard, quarantine_device_resource};
 
 /// Consumer-supplied completion authority for owned-transfer release.
 ///
@@ -142,7 +142,7 @@ impl<T> Drop for RuntimeOwnedTransferState<T> {
                 ManuallyDrop::drop(&mut owner);
             },
             Err(error) => {
-                crate::runtime::quarantine_device_resource(device, "RuntimeOwnedTransferState::drop", &error);
+                quarantine_device_resource(device, "RuntimeOwnedTransferState::drop", &error);
             },
         }
     }

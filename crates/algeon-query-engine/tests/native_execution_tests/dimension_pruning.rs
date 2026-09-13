@@ -1,5 +1,12 @@
 use std::{path::Path, sync::Arc};
 
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    expr::ColumnRef,
+    optimizer::{NativeOptimizerChange, optimize_query_plan},
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -31,14 +38,10 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
     write_record_batch_with_row_group_rows(&fact_path, Arc::clone(&fact_schema), fact_batch, 1);
 
     let plan = dimension_pruning_plan(&dim_path, &dim_schema, &fact_path, &fact_schema);
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
-        plan,
-        &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
-    );
+    let optimizer_result =
+        optimize_query_plan(plan, &Default::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
-    assert_eq!(optimizer_result.change, query_engine::optimizer::NativeOptimizerChange::Changed);
+    assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.dimension_derived_row_group_pruning.applied_count, 1);
     let candidate = optimizer_result
         .diagnostics
@@ -62,7 +65,7 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {
-            query_engine::plan::PlanNode::Source(source) => match source.as_ref() {
+            PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source) if source.files.first().is_some_and(|file| file.path == fact_path) => {
                     Some(source)
                 },
@@ -81,7 +84,7 @@ fn dimension_pruning_plan(
     dim_schema: &Arc<Schema>,
     fact_path: &Path,
     fact_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut dim_source =
         LocalParquetSource::from_path(dim_path, Arc::clone(dim_schema), vec!["dim_key".to_string(), "day".to_string()]);
     dim_source = dim_source.with_reader_predicate(Expr::binary(
@@ -118,14 +121,11 @@ fn dimension_pruning_plan(
         fact,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "dim_key", "dim_key"),
-                query_engine::expr::ColumnRef::input(1, "fact_key", "fact_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "dim_key", "dim_key"), ColumnRef::input(1, "fact_key", "fact_key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "dim_key", "dim_key"), "dim_key"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "payload", "payload"), "payload"),
+            JoinOutputColumn::left(ColumnRef::input(0, "dim_key", "dim_key"), "dim_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "payload", "payload"), "payload"),
         ]),
         Arc::clone(&output_schema),
     );

@@ -1,7 +1,8 @@
 use arrow::datatypes::{DataType, SchemaRef};
+use query_engine::plan::GraphVertexIdTypeSupport;
 use serde_json::{Map, Value, json};
 
-use super::super::{
+use crate::cugraph_sql::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsPredicateInputs, CugraphBfsSource,
     CugraphBfsSourceVertex, CugraphGraphOptions, CugraphPageRankParams, CugraphSqlConfig, CugraphVertexSelector,
     stable_result_schema,
@@ -29,8 +30,8 @@ pub(super) fn schema_json_value(schema: &SchemaRef) -> Value {
 
 pub(super) fn vertex_id_contract_json(algorithm: CugraphAlgorithm) -> Value {
     let numeric_endpoint_types = match algorithm.native_algorithm().vertex_id_type_support() {
-        query_engine::plan::GraphVertexIdTypeSupport::Int32OrInt64 => json!(["Int32", "Int64"]),
-        query_engine::plan::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => json!(["Int32"]),
+        GraphVertexIdTypeSupport::Int32OrInt64 => json!(["Int32", "Int64"]),
+        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => json!(["Int32"]),
     };
     let logical_string = algorithm.definition().logical_string_contract();
     json!({

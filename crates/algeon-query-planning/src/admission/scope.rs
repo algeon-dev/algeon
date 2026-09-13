@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::{DeferredGraphExecutionScopeIdentity, QueryPlan, canonical_execution_scope_fingerprint},
+    util::log_safe_fingerprint,
 };
 
 /// Host boundary crossed by one GPU function occurrence.
@@ -62,7 +63,7 @@ impl AttemptExecutionOccurrence {
             execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
             deferred_execution_scope_identity: deferred_graph_facts
                 .then(|| DeferredGraphExecutionScopeIdentity::for_plan(plan)),
-            output_schema_fingerprint: crate::admission::log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
+            output_schema_fingerprint: log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
             boundary: AttemptExecutionBoundary::HostArrow,
             predecessors,
         }
@@ -92,7 +93,7 @@ impl AttemptExecutionOccurrence {
 
     #[doc(hidden)]
     pub fn matches_schema(&self, plan: &QueryPlan) -> bool {
-        self.output_schema_fingerprint == crate::admission::log_safe_fingerprint(&format!("{:?}", plan.output_schema()))
+        self.output_schema_fingerprint == log_safe_fingerprint(&format!("{:?}", plan.output_schema()))
     }
 
     #[doc(hidden)]
@@ -285,7 +286,7 @@ impl AttemptExecutionScope {
     pub fn for_query_plan(plan: &QueryPlan) -> Self {
         Self {
             execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
-            output_schema_fingerprint: crate::admission::log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
+            output_schema_fingerprint: log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
             producer_occurrences: Vec::new(),
         }
     }

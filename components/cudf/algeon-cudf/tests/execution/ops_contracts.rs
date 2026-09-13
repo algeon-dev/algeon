@@ -16,6 +16,7 @@ mod join_hash_join_execution_tests {
     use crate::common::{
         column_from_strs_nullable, dependency_wait_call_count_for_stream, explicit_i32_column, last_exec_mr_value,
         last_exec_stream_value, lock_event_observation, reset_dependency_observation, reset_exec_observation,
+        run_named_cases,
     };
 
     const JOIN_NO_MATCH: i32 = i32::MIN;
@@ -957,7 +958,7 @@ mod join_hash_join_execution_tests {
 
     #[test]
     fn join_hash_join_execution_tests_cases() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "one_shot_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
                 one_shot_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
@@ -1104,7 +1105,9 @@ mod join_hash_join_execution_tests {
 mod copying_execution_tests {
     use cudf::{ExecutionOverrides, Runtime, core::Table, ops::copying, testing::prelude::*};
 
-    use crate::common::{explicit_i32_column, last_exec_mr_value, last_exec_stream_value, reset_exec_observation};
+    use crate::common::{
+        explicit_i32_column, last_exec_mr_value, last_exec_stream_value, reset_exec_observation, run_named_cases,
+    };
 
     fn scatter_supports_mixed_same_device_domains_and_uses_target_provenance() {
         let source = Table::from_columns(vec![explicit_i32_column(&[100, 200], 968)]).unwrap();
@@ -1186,7 +1189,7 @@ mod copying_execution_tests {
 
     #[test]
     fn copying_execution_tests_cases() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "scatter_supports_mixed_same_device_domains_and_uses_target_provenance",
                 scatter_supports_mixed_same_device_domains_and_uses_target_provenance,

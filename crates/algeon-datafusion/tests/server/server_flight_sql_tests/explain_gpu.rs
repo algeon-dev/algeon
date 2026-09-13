@@ -74,7 +74,7 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     assert_eq!(advertised_schema.fields().iter().map(|field| field.name()).collect::<Vec<_>>(), expected_columns);
     assert_eq!(
         advertised_schema.metadata().get("algeon_datafusion.explain_gpu.schema_version"),
-        Some(&algeon_datafusion::gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION.to_string())
+        Some(&EXPLAIN_GPU_SCHEMA_VERSION.to_string())
     );
     let (stream_schema, batches) = execute_flight_info_with_stream_schema(&mut client, rows_info).await;
     assert_eq!(stream_schema, advertised_schema);
@@ -328,11 +328,11 @@ fn assert_coverage_rows_equal_except_query_id(expected: &RecordBatch, actual: &R
     }
 }
 
-fn utf8_values(array: &arrow::array::ArrayRef) -> Vec<String> {
+fn utf8_values(array: &ArrayRef) -> Vec<String> {
     if let Some(values) = array.as_any().downcast_ref::<StringArray>() {
         return values.iter().map(|value| value.expect("fixture labels are non-null").to_string()).collect();
     }
-    if let Some(values) = array.as_any().downcast_ref::<arrow::array::StringViewArray>() {
+    if let Some(values) = array.as_any().downcast_ref::<StringViewArray>() {
         return values.iter().map(|value| value.expect("fixture labels are non-null").to_string()).collect();
     }
     panic!("mixed-boundary result label must be a UTF-8 Arrow array, got {:?}", array.data_type());

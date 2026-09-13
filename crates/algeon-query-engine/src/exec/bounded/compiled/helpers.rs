@@ -5,7 +5,7 @@ use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 use crate::{
     admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     capability::{
-        KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan,
+        KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan,
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
     },
     error::{QueryError, QueryErrorCode, Result},
@@ -94,8 +94,8 @@ pub(super) fn join_strategy_from_facts(
     )
     .map_err(|decision| {
         let (reason, facts) = match decision {
-            crate::capability::KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),
-            crate::capability::KeyedHashJoinStrategyDecision::Selected { .. } => {
+            KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),
+            KeyedHashJoinStrategyDecision::Selected { .. } => {
                 unreachable!("selected strategy decisions do not map to strategy-selection errors")
             },
         };

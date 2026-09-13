@@ -12,6 +12,7 @@ use super::{
     preaggregate_measure_states, preaggregate_schema, preaggregate_spec, preaggregate_state_aliases,
     push_unique_preagg_group_column, rewrite, rewritten_join_key_after_preagg, unique_measure_input_alias,
 };
+use crate::{plan::UnionNode, source::SourceNode};
 
 pub(in crate::optimizer::aggregate_join_pushdown) struct AggregateJoinPushdownRewriter<'a> {
     pub(in crate::optimizer::aggregate_join_pushdown) original: &'a QueryPlan,
@@ -577,7 +578,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             })
             .collect::<Vec<_>>();
         let partial_union = self.push_node(
-            PlanNode::Union(crate::plan::UnionNode { inputs: branch_aggregates }),
+            PlanNode::Union(UnionNode { inputs: branch_aggregates }),
             PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Union),
         );
         let final_spec = final_aggregate_spec_after_union_preagg(preagg_spec, preagg_schema)?;
@@ -608,14 +609,14 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         let node = self.nodes.get(node_id.index()).filter(|node| node.id == node_id)?;
         match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                crate::source::SourceNode::LocalParquet(source) => source
+                SourceNode::LocalParquet(source) => source
                     .diagnostics
                     .selected_row_group_stats
                     .as_ref()
                     .and_then(|stats| stats.selected_source_bytes())
                     .or(source.diagnostics.known_bytes),
-                crate::source::SourceNode::GpuResident(_) => None,
-                crate::source::SourceNode::LiteralBatch(source) => source
+                SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(source) => source
                     .batches
                     .iter()
                     .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
@@ -644,7 +645,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         let node = self.nodes.get(node_id.index()).filter(|node| node.id == node_id)?;
         match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                crate::source::SourceNode::LocalParquet(source) => {
+                SourceNode::LocalParquet(source) => {
                     let rows = source
                         .files
                         .iter()
@@ -655,8 +656,8 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                     let rows = source.scan_limit.map_or(rows, |limit| rows.min(limit as u64));
                     Some(source.max_rows.map_or(rows, |max_rows| rows.min(max_rows as u64)))
                 },
-                crate::source::SourceNode::GpuResident(_) => None,
-                crate::source::SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),
+                SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),
             },
             PlanNode::Projection(projection) => self.estimated_rewritten_output_rows(projection.input),
             PlanNode::Filter(filter) => self.estimated_rewritten_output_rows(filter.input),

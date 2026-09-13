@@ -7,7 +7,7 @@
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     catalog::Session,
-    common::DataFusionError,
+    common::{DataFusionError, TableReference},
     datasource::provider_as_source,
     execution::{SessionState, context::SessionConfig},
     logical_expr::{LogicalPlan, LogicalPlanBuilder},
@@ -326,7 +326,7 @@ struct ResolvedSchemaOnlyInput {
 async fn resolve_schema_only_input(
     session: &dyn Session,
     name: &str,
-    table_reference: datafusion::common::TableReference,
+    table_reference: TableReference,
 ) -> std::result::Result<ResolvedSchemaOnlyInput, String> {
     let state = session.as_any().downcast_ref::<SessionState>().ok_or_else(|| {
         "GPU validation requires a DataFusion SessionState so named relations can be resolved".to_string()

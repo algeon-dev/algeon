@@ -14,17 +14,19 @@ use std::{
     thread,
 };
 
+use cudf::{DeviceMemoryManager, DeviceMemoryManagerInstallationState, DeviceMemoryManagerOptions};
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::task::spawn_blocking;
 
 #[cfg(feature = "qualification")]
 use super::DeviceQuarantineInjection;
 #[cfg(test)]
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
-    DeploymentIoCapability, DeviceCapabilities, DeviceFacts, DeviceLedgerReport, DeviceMemoryFailureReport,
-    DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest,
-    QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
-    QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    CacheSourceEventSnapshot, DeploymentIoCapability, DeviceCacheReport, DeviceCapabilities, DeviceFacts,
+    DeviceLedgerReport, DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot,
+    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
+    QueryService, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
@@ -42,6 +44,7 @@ use crate::{
         BeginAttemptRequest,
     },
     native_error::cudf_query_error,
+    observability::QueryAttemptReport,
 };
 
 const BUILD_OPERATION: &str = "query_engine.gpu_backend_core.build";
@@ -750,7 +753,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
         }
     }
     let allocation_limit_bytes = native_allocation_limit_bytes(device)?;
-    cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(|error| {
+    DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(|error| {
         cudf_query_error(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
             .with_fact("field", "device_memory_manager_options")
             .with_fact("device_ordinal", device.profile.device_ordinal)
@@ -1081,7 +1084,7 @@ pub struct GpuBackendDeviceStartupRecord {
     pub facts: DeviceFacts,
     pub capacity_bytes: u64,
     /// Full ordinal-local resource-controller profile frozen after discovery.
-    pub resource_profile: crate::runtime::DeviceResourceProfile,
+    pub resource_profile: DeviceResourceProfile,
     pub memory_ownership: GpuMemoryOwnership,
     pub memory_limit: GpuDeviceMemoryLimit,
     pub backend_reserve_bytes: u64,
@@ -1090,7 +1093,7 @@ pub struct GpuBackendDeviceStartupRecord {
     pub worker_count: usize,
     pub lane_count: usize,
     pub install_telemetry: bool,
-    pub memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
+    pub memory_manager_installation: DeviceMemoryManagerInstallationState,
     /// Persistent engine health epoch bound to this device installation.
     pub device_health_generation: u64,
     /// Backend-owner health epoch for this published core generation.
@@ -1278,7 +1281,7 @@ impl GpuBackendCore {
     pub async fn close_and_wait_async(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         reject_reentrant_observation_close()?;
         let coordinator = Arc::clone(&self.coordinator);
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
             coordinator.close_and_wait_until(deadline)
         })
@@ -1343,7 +1346,7 @@ impl GpuBackendSession {
         self.observation_core.backend_metrics.refresh_telemetry(refresh)
     }
 
-    pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<crate::observability::QueryAttemptReport>> {
+    pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         self.observation_core.attempt_completion_queue.as_ref().map_or_else(Vec::new, |queue| queue.drain(max))
     }
 
@@ -1414,13 +1417,13 @@ impl GpuBackendSession {
         self.with_service(QueryService::device_ledger_reports)
     }
 
-    pub fn device_cache_reports(&self) -> Result<Vec<crate::runtime::DeviceCacheReport>> {
+    pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
         self.with_service(QueryService::device_cache_reports)
     }
 
     /// Returns bounded owner-emitted source-cache observations for diagnostic
     /// correlation with public attempt reports.
-    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<crate::runtime::CacheSourceEventSnapshot>> {
+    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
         self.with_service(QueryService::device_cache_source_event_snapshots)
     }
 
@@ -1561,7 +1564,7 @@ impl ResourceGeneration {
 
 #[derive(Debug)]
 enum ConstructionResource {
-    MemoryManager(cudf::DeviceMemoryManager),
+    MemoryManager(DeviceMemoryManager),
     StreamPool(super::ServiceStreamPool),
     DeviceContext(super::DeviceContext),
     ExecutionPool(super::GpuExecutionPool),
@@ -1576,7 +1579,7 @@ pub struct ConstructionResourceJournal {
 
 impl ConstructionResourceJournal {
     #[doc(hidden)]
-    pub fn record_memory_manager(&self, manager: cudf::DeviceMemoryManager) -> Result<()> {
+    pub fn record_memory_manager(&self, manager: DeviceMemoryManager) -> Result<()> {
         self.record(ConstructionResource::MemoryManager(manager))
     }
 
@@ -1676,7 +1679,16 @@ fn next_backend_identity() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use tokio::runtime::Builder as TokioRuntimeBuilder;
+
     use super::*;
+    use crate::{
+        observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTerminalOutcome},
+        runtime::{
+            BACKEND_METRIC_DEVICE_CAPACITY, GdsDriverProbeStatus, GpuExecutionJobKind, GpuExecutionPool,
+            KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryActivityLease, SourceSchedulerPolicy,
+        },
+    };
 
     #[derive(Debug)]
     struct ActivityPermitOrderingProbe {
@@ -1776,7 +1788,7 @@ mod tests {
         let begin = backend.begin_attempt(BeginAttemptRequest::default()).expect("inert backend begins an attempt");
         begin.owner.register_sealed_report_sink(|_| panic!("injected peer sink panic"));
 
-        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         let first = backend.backend_metrics_snapshot();
         assert_eq!(first.attempts.completed(BackendAttemptDisposition::Unplanned, BackendAttemptOutcome::Succeeded), 1,);
 
@@ -1838,15 +1850,15 @@ mod tests {
         let backend = inert_backend_for_observation_delivery_test();
         let (sender, receiver) = mpsc::sync_channel(1);
         let observer_backend = backend.clone();
-        let owner = crate::observability::RuntimeObservationOwner::new(
+        let owner = RuntimeObservationOwner::new(
             "reentrant-observation-close",
             None,
-            crate::observability::RuntimeObservationConfig::bounded(8, 4 * 1024),
+            RuntimeObservationConfig::bounded(8, 4 * 1024),
         );
         owner.register_seal_observer(move |_| {
             let sync = observer_backend.close_and_wait(Duration::from_secs(1));
             let until = observer_backend.close_and_wait_until(Instant::now() + Duration::from_secs(1));
-            let asynchronous = tokio::runtime::Builder::new_current_thread()
+            let asynchronous = TokioRuntimeBuilder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("test builds current-thread runtime")
@@ -1854,9 +1866,7 @@ mod tests {
             sender.send((sync, until, asynchronous)).expect("test receives close rejections");
         });
 
-        owner
-            .finish_query(Some(crate::observability::RuntimeTerminalOutcome::Succeeded))
-            .expect("test seals observation owner");
+        owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).expect("test seals observation owner");
         let (sync, until, asynchronous) = receiver.recv_timeout(Duration::from_secs(2)).expect("observer delivered");
         for error in [sync.unwrap_err(), until.unwrap_err(), asynchronous.unwrap_err()] {
             assert_eq!(error.code(), QueryErrorCode::Internal);
@@ -1991,7 +2001,6 @@ mod tests {
     }
 
     fn deployment() -> DeploymentIoCapability {
-        use super::super::{GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus};
         DeploymentIoCapability::from_probe_inputs(
             NvidiaFsProbeStatus::DriverMissing,
             KvikioCompatModeStatus::Unset,
@@ -2069,7 +2078,7 @@ mod tests {
         let _owner_test = live_backend_test_lock();
         // This fails before device installation, so use a bounded synthetic
         // ordinal that the fixed-cardinality backend metrics store accepts.
-        let device_ordinal = super::super::BACKEND_METRIC_DEVICE_CAPACITY - 3;
+        let device_ordinal = BACKEND_METRIC_DEVICE_CAPACITY - 3;
         for failing_lane in
             [ObservationCompletionWorkerLane::Observation, ObservationCompletionWorkerLane::ActivityTail]
         {
@@ -2144,7 +2153,7 @@ mod tests {
     #[test]
     fn automatic_bounds_keep_device_source_work_independent_of_execution_prefetch() {
         let execution = QueryExecutionConfig {
-            source_scheduler_policy: crate::runtime::SourceSchedulerPolicy::new(7),
+            source_scheduler_policy: SourceSchedulerPolicy::new(7),
             ..QueryExecutionConfig::default()
         };
         let mut draft = GpuBackendCoreDraft::new(
@@ -2170,7 +2179,7 @@ mod tests {
         let lifecycle = backend.observation_core.lifecycle.clone();
         let observed_active_gpu_permits = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let (completion, completed) = mpsc::sync_channel(1);
-        let activity = crate::runtime::QueryActivityLease::new(ActivityPermitOrderingProbe {
+        let activity = QueryActivityLease::new(ActivityPermitOrderingProbe {
             lifecycle: lifecycle.clone(),
             backend: backend.clone(),
             observed_active_gpu_permits: Arc::clone(&observed_active_gpu_permits),
@@ -2211,10 +2220,10 @@ mod tests {
     fn backend_observation_quiescence_waits_for_detached_seal_observers() {
         let _owner_test = live_backend_test_lock();
         let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
-        let owner = crate::observability::RuntimeObservationOwner::new(
+        let owner = RuntimeObservationOwner::new(
             "detached-seal-observer",
             None,
-            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+            RuntimeObservationConfig::bounded(32, 32 * 1024),
         );
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let observer_gate = Arc::clone(&gate);
@@ -2274,7 +2283,7 @@ mod tests {
         let first = backend
             .session_capability()
             .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_activity(
-                crate::runtime::QueryActivityLease::new(ReentrantCloseActivityProbe {
+                QueryActivityLease::new(ReentrantCloseActivityProbe {
                     backend: backend.clone(),
                     entered: entered_sender,
                     completion: completion_sender,
@@ -2307,7 +2316,7 @@ mod tests {
         let _owner_test = live_backend_test_lock();
         // The probe stops before device installation; keep the ordinal inside
         // the backend metrics store's frozen device-label domain.
-        let ordinal = super::super::BACKEND_METRIC_DEVICE_CAPACITY - 1;
+        let ordinal = BACKEND_METRIC_DEVICE_CAPACITY - 1;
         let config = one_device_backend_draft(ordinal);
 
         let error = GpuBackendCore::builder(config)
@@ -2365,12 +2374,12 @@ mod tests {
         let ordinal = usize::MAX - 2;
         let owner_lease = claim_live_backend(&[ordinal]).unwrap();
         let journal = Arc::new(ConstructionResourceJournal::default());
-        let pool = super::super::GpuExecutionPool::new(ordinal, 1).unwrap();
+        let pool = GpuExecutionPool::new(ordinal, 1).unwrap();
         journal.record_execution_pool(pool.clone()).unwrap();
         let gate = Arc::new(BlockingGate::default());
         let worker_gate = Arc::clone(&gate);
         let (started_sender, started_receiver) = mpsc::sync_channel(0);
-        pool.spawn(super::super::GpuExecutionJobKind::Cleanup, async move {
+        pool.spawn(GpuExecutionJobKind::Cleanup, async move {
             started_sender.send(()).unwrap();
             worker_gate.wait();
         })
@@ -2416,12 +2425,12 @@ mod tests {
         let ordinal = usize::MAX - 3;
         let owner_lease = claim_live_backend(&[ordinal]).expect("test claims the live owner");
         let journal = Arc::new(ConstructionResourceJournal::default());
-        let pool = super::super::GpuExecutionPool::new(ordinal, 1).expect("test execution pool");
+        let pool = GpuExecutionPool::new(ordinal, 1).expect("test execution pool");
         journal.record_execution_pool(pool.clone()).expect("journal records the execution pool");
         let gate = Arc::new(BlockingGate::default());
         let worker_gate = Arc::clone(&gate);
         let (started_sender, started_receiver) = mpsc::sync_channel(0);
-        pool.spawn(super::super::GpuExecutionJobKind::Cleanup, async move {
+        pool.spawn(GpuExecutionJobKind::Cleanup, async move {
             started_sender.send(()).expect("cleanup job start receiver remains live");
             worker_gate.wait();
         })
@@ -2510,13 +2519,13 @@ mod tests {
 
         // A CPU-only attempt terminalizes without GPU cleanup and publishes
         // its report; only then may observation quiescence complete.
-        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         let report = begin
             .completion
             .completion()
             .wait_timeout(Duration::from_secs(5))
             .expect("the attempt publishes its report during close");
-        assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
         drop(begin);
         assert_eq!(session.attempt_counters_snapshot().reports_ready, 1);
         let close = backend.close_and_wait(Duration::from_secs(10)).unwrap();
@@ -2528,10 +2537,10 @@ mod tests {
         let backend = inert_backend_for_observation_delivery_test();
         let begin = backend.begin_attempt(BeginAttemptRequest::default()).expect("attempt begins before close");
 
-        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         let completion = begin.completion.completion();
         let report = completion.wait_timeout(Duration::from_secs(2)).expect("report is ready before close");
-        assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
 
         assert!(backend.close());
         let close = backend
@@ -2571,13 +2580,13 @@ mod tests {
 
             let attempts_begun = match begin {
                 Ok(begin) => {
-                    begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+                    begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
                     let report = begin
                         .completion
                         .completion()
                         .wait_timeout(Duration::from_secs(2))
                         .expect("winning begin publishes");
-                    assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
+                    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
                     1
                 },
                 Err(error) => {
@@ -2609,12 +2618,12 @@ mod tests {
 
         let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
         drop(begin.completion);
-        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Dropped).unwrap();
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Dropped).unwrap();
         drop(begin.owner);
 
         let drained = session.take_abandoned_attempt_reports(8);
         assert_eq!(drained.len(), 1);
-        assert!(matches!(drained[0].outcome, crate::observability::RuntimeTerminalOutcome::Dropped));
+        assert!(matches!(drained[0].outcome, RuntimeTerminalOutcome::Dropped));
         let counters = session.attempt_counters_snapshot();
         assert_eq!(counters.completion_queue_pushed, 1);
         assert_eq!(counters.completion_queue_overflowed, 0);

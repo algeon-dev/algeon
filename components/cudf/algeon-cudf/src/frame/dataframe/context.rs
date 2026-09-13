@@ -13,7 +13,7 @@ use crate::{
     frame::{factorization::Codebook, series::Series},
     ops::{
         ast::AstExpression,
-        join::{MergeOptions, SizedConditionalPairJoinType},
+        join::{MergeOptions, SizedConditionalPairJoinType, SizedMixedJoinType},
         sorting::SortOptions,
     },
     runtime::ExecutionOverrides,
@@ -495,13 +495,7 @@ impl DataFrameExecutionScope<'_, '_, '_> {
         predicate: &'a AstExpression,
         options: DataFrameMixedJoinOptions,
     ) -> Result<DataFrameMixedJoinSizeData<'a>> {
-        self.df.mixed_join_size_data_in_context(
-            right,
-            predicate,
-            options,
-            crate::ops::join::SizedMixedJoinType::Inner,
-            self.ctx,
-        )
+        self.df.mixed_join_size_data_in_context(right, predicate, options, SizedMixedJoinType::Inner, self.ctx)
     }
 
     /// Begin retained size-data computation for a mixed left join using the borrowed execution override.
@@ -511,13 +505,7 @@ impl DataFrameExecutionScope<'_, '_, '_> {
         predicate: &'a AstExpression,
         options: DataFrameMixedJoinOptions,
     ) -> Result<DataFrameMixedJoinSizeData<'a>> {
-        self.df.mixed_join_size_data_in_context(
-            right,
-            predicate,
-            options,
-            crate::ops::join::SizedMixedJoinType::Left,
-            self.ctx,
-        )
+        self.df.mixed_join_size_data_in_context(right, predicate, options, SizedMixedJoinType::Left, self.ctx)
     }
 
     /// Begin retained size-data computation for a mixed full join using the borrowed execution override.
@@ -527,13 +515,7 @@ impl DataFrameExecutionScope<'_, '_, '_> {
         predicate: &'a AstExpression,
         options: DataFrameMixedJoinOptions,
     ) -> Result<DataFrameMixedJoinSizeData<'a>> {
-        self.df.mixed_join_size_data_in_context(
-            right,
-            predicate,
-            options,
-            crate::ops::join::SizedMixedJoinType::Full,
-            self.ctx,
-        )
+        self.df.mixed_join_size_data_in_context(right, predicate, options, SizedMixedJoinType::Full, self.ctx)
     }
 
     /// Produce mixed full join row-index pairs using the borrowed execution override.

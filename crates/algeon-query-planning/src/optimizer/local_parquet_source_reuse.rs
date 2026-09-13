@@ -8,8 +8,8 @@ use arrow::datatypes::{DataType, Field, Schema};
 use super::{consumers_by_node, dynamic_filter as dynamic_filter_optimizer, rewrite};
 use crate::{
     backend::AnalysisContext,
-    dynamic_filter::DynamicFilterConsumer,
-    error::{QueryError, QueryErrorCode},
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterRoute},
+    error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, CaseWhen, Expr},
     plan::{
         FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
@@ -43,7 +43,7 @@ impl LocalParquetSourceReuseOptions {
     }
 
     /// Validates internal consistency for local Parquet source-reuse limits.
-    pub fn validate(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.max_variant_selected_bytes == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -320,7 +320,7 @@ fn dynamic_filter_source_route_signatures(
     signatures
 }
 
-fn dynamic_filter_source_route_signature(route: &crate::dynamic_filter::DynamicFilterRoute) -> String {
+fn dynamic_filter_source_route_signature(route: &DynamicFilterRoute) -> String {
     format!(
         "producer_kind={};producer_node={};producer_columns={};consumer_columns={};lowering={}",
         route.producer.kind(),

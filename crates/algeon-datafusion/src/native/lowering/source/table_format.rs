@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, filter::FilterExec};
 use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, file::reader::FileReader};
 use query_engine::{
     expr::{Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue},
@@ -79,7 +79,7 @@ use schema_match::{
 
 pub(super) fn lower_table_format_source_input(
     scan_exec: &AlgeonIcebergScanExec,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
@@ -184,7 +184,7 @@ pub(super) fn lower_table_format_source_input(
 fn table_format_native_source_for_group(
     scan_plan: &TableFormatScanPlan,
     group: &TableFormatSourceReadGroup,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     file_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     source_scan_limit: Option<usize>,
@@ -243,7 +243,7 @@ fn table_format_native_source_for_group(
 
 fn lower_empty_table_format_source_input(
     scan_exec: &AlgeonIcebergScanExec,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, CapabilityReason> {
@@ -275,7 +275,7 @@ fn reader_predicate_proves_table_format_source_at_most_one_row(
 }
 
 fn table_format_reader_pushdown_predicate(
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     source_output_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     native_source: &NativeLocalParquetSource,

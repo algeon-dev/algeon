@@ -1,14 +1,26 @@
 //! Tests for Column, ColumnView, and DeviceSlice.
 
-use cudf::{DataType, ErrorCode, TypeId, testing::prelude::*};
+use cudf::{
+    DataType, ErrorCode, TypeId,
+    core::{DeviceSlice as CudfDeviceSlice, column::DeviceSlice as CudfColumnDeviceSlice},
+    ops::dictionary::{encode, indices},
+    testing::{
+        column::{
+            column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
+            trigger_column_view_fixed_width_host_byte_range_overflow_for_test,
+        },
+        prelude::*,
+    },
+};
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, error_context_value, fail_next_column_view_metadata_read,
-    last_exec_mr_value, last_exec_stream_value, reset_exec_observation,
+    column_from_device_ptr, column_from_slice, column_from_slice_nullable, column_from_strs, empty_column,
+    error_context_value, fail_next_column_view_metadata_read, last_exec_mr_value, last_exec_stream_value, null_column,
+    reset_exec_observation, run_named_cases,
 };
 
 fn test_create_empty_column() {
-    let col = crate::common::empty_column(TypeId::Int32).unwrap();
+    let col = empty_column(TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 0);
     assert!(view.is_empty().unwrap());
@@ -17,7 +29,7 @@ fn test_create_empty_column() {
 
 fn test_create_empty_decimal_column_preserves_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
-    let col = crate::common::empty_column(dtype).unwrap();
+    let col = empty_column(dtype).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 0);
     assert_eq!(view.data_type().unwrap(), dtype);
@@ -434,7 +446,7 @@ fn test_testing_slice_view_rejects_end_overflow_with_row_range_context() {
 }
 
 fn test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract() {
-    let err = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test().unwrap_err();
+    let err = trigger_column_view_fixed_width_host_byte_range_overflow_for_test().unwrap_err();
     let expected = usize::MAX.to_string();
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
@@ -478,11 +490,11 @@ fn test_core_domain_modules_export_documented_surface() {
 }
 
 fn test_device_slice_stays_under_core_domain_module() {
-    let _: Option<cudf::core::column::DeviceSlice<'static>> = None;
+    let _: Option<CudfColumnDeviceSlice<'static>> = None;
 }
 
 fn test_device_slice_is_reexported_at_crate_root() {
-    let _: Option<cudf::core::DeviceSlice<'static>> = None;
+    let _: Option<CudfDeviceSlice<'static>> = None;
 }
 
 // --- DeviceSlice tests ---
@@ -521,8 +533,7 @@ fn test_to_raw_bytes_rejects_non_byte_type_with_stable_contract() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
 
-    let err = cudf::testing::column::column_view_to_raw_bytes_for_test(&view)
-        .expect_err("expected Int32 raw-byte export to fail");
+    let err = column_view_to_raw_bytes_for_test(&view).expect_err("expected Int32 raw-byte export to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
@@ -532,10 +543,10 @@ fn test_to_raw_bytes_rejects_non_byte_type_with_stable_contract() {
 }
 
 fn test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract() {
-    let col = crate::common::column_from_strs(&["alpha", "beta"]).unwrap();
+    let col = column_from_strs(&["alpha", "beta"]).unwrap();
     let view = col.testing_view().unwrap();
 
-    let err = cudf::testing::column::column_view_to_fixed_width_host_bytes_for_test(&view)
+    let err = column_view_to_fixed_width_host_bytes_for_test(&view)
         .expect_err("expected STRING fixed-width host export to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
@@ -610,9 +621,9 @@ fn test_device_slice_from_dictionary_indices() {
     let col = column_from_slice(&data).unwrap();
     let view = col.testing_view().unwrap();
 
-    let dict = cudf::ops::dictionary::encode(&view, TypeId::Int32).unwrap();
+    let dict = encode(&view, TypeId::Int32).unwrap();
     let dict_view = dict.testing_view().unwrap();
-    let indices_view = cudf::ops::dictionary::indices(&dict_view).unwrap();
+    let indices_view = indices(&dict_view).unwrap();
 
     let slice = indices_view.device_slice::<i32>().unwrap();
     assert_eq!(slice.len(), 6);
@@ -637,7 +648,7 @@ fn test_from_device_ptr_i32_roundtrip() {
     let device_ptr = src_view.device_data_ptr().unwrap();
     let len = src_view.len().unwrap();
 
-    let new_col = unsafe { crate::common::column_from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() };
+    let new_col = unsafe { column_from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() };
 
     let new_view = new_col.testing_view().unwrap();
     assert_eq!(new_view.len().unwrap(), 5);
@@ -656,7 +667,7 @@ fn test_from_device_ptr_f64_roundtrip() {
     let device_ptr = src_view.device_data_ptr().unwrap();
     let len = src_view.len().unwrap();
 
-    let new_col = unsafe { crate::common::column_from_device_ptr(device_ptr, len, TypeId::Float64).unwrap() };
+    let new_col = unsafe { column_from_device_ptr(device_ptr, len, TypeId::Float64).unwrap() };
 
     let host_data = new_col.testing_view().unwrap().to_vec::<f64>().unwrap();
     assert_eq!(host_data, original_data);
@@ -670,7 +681,7 @@ fn test_from_device_ptr_i64_roundtrip() {
     let device_ptr = src_view.device_data_ptr().unwrap();
     let len = src_view.len().unwrap();
 
-    let new_col = unsafe { crate::common::column_from_device_ptr(device_ptr, len, TypeId::Int64).unwrap() };
+    let new_col = unsafe { column_from_device_ptr(device_ptr, len, TypeId::Int64).unwrap() };
 
     let host_data = new_col.testing_view().unwrap().to_vec::<i64>().unwrap();
     assert_eq!(host_data, original_data);
@@ -687,7 +698,7 @@ fn test_from_device_ptr_independent_of_source() {
         let device_ptr = src_view.device_data_ptr().unwrap();
         let len = src_view.len().unwrap();
 
-        unsafe { crate::common::column_from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() }
+        unsafe { column_from_device_ptr(device_ptr, len, TypeId::Int32).unwrap() }
         // src_col is dropped here
     };
 
@@ -703,7 +714,7 @@ fn test_from_device_ptr_empty() {
     let src_view = src_col.testing_view().unwrap();
     let device_ptr = src_view.device_data_ptr().unwrap();
 
-    let new_col = unsafe { crate::common::column_from_device_ptr(device_ptr, 0, TypeId::Int32).unwrap() };
+    let new_col = unsafe { column_from_device_ptr(device_ptr, 0, TypeId::Int32).unwrap() };
 
     let new_view = new_col.testing_view().unwrap();
     assert_eq!(new_view.len().unwrap(), 0);
@@ -713,7 +724,7 @@ fn test_from_device_ptr_empty() {
 
 fn test_from_device_ptr_null_pointer_with_zero_len() {
     // Null pointer with len 0 should succeed (no data to copy).
-    let new_col = unsafe { crate::common::column_from_device_ptr(std::ptr::null(), 0, TypeId::Int32).unwrap() };
+    let new_col = unsafe { column_from_device_ptr(std::ptr::null(), 0, TypeId::Int32).unwrap() };
 
     let new_view = new_col.testing_view().unwrap();
     assert_eq!(new_view.len().unwrap(), 0);
@@ -721,7 +732,7 @@ fn test_from_device_ptr_null_pointer_with_zero_len() {
 
 fn test_from_device_ptr_null_pointer_with_nonzero_len() {
     // Null pointer with len > 0 should fail.
-    let result = unsafe { crate::common::column_from_device_ptr(std::ptr::null(), 5, TypeId::Int32) };
+    let result = unsafe { column_from_device_ptr(std::ptr::null(), 5, TypeId::Int32) };
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
@@ -743,34 +754,31 @@ fn test_from_device_ptr_various_types() {
     let data_i8 = vec![1i8, -1, 127];
     let col = column_from_slice(&data_i8).unwrap();
     let v = col.testing_view().unwrap();
-    let new_col = unsafe {
-        crate::common::column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Int8).unwrap()
-    };
+    let new_col =
+        unsafe { column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Int8).unwrap() };
     assert_eq!(new_col.testing_view().unwrap().to_vec::<i8>().unwrap(), data_i8);
 
     // u32
     let data_u32 = vec![0u32, 42, u32::MAX];
     let col = column_from_slice(&data_u32).unwrap();
     let v = col.testing_view().unwrap();
-    let new_col = unsafe {
-        crate::common::column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::UInt32).unwrap()
-    };
+    let new_col =
+        unsafe { column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::UInt32).unwrap() };
     assert_eq!(new_col.testing_view().unwrap().to_vec::<u32>().unwrap(), data_u32);
 
     // f32
     let data_f32 = vec![1.0f32, -0.5, 3.125];
     let col = column_from_slice(&data_f32).unwrap();
     let v = col.testing_view().unwrap();
-    let new_col = unsafe {
-        crate::common::column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Float32).unwrap()
-    };
+    let new_col =
+        unsafe { column_from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap(), TypeId::Float32).unwrap() };
     let result = new_col.testing_view().unwrap().to_vec::<f32>().unwrap();
     assert_eq!(result, data_f32);
 }
 
 fn test_from_device_ptr_rejects_non_fixed_width_type() {
     // from_device_ptr must only accept fixed-width primitive types.
-    let result = unsafe { crate::common::column_from_device_ptr(std::ptr::null(), 0, TypeId::String) };
+    let result = unsafe { column_from_device_ptr(std::ptr::null(), 0, TypeId::String) };
 
     assert!(result.is_err());
     let err = result.err().unwrap();
@@ -785,17 +793,17 @@ fn test_from_device_ptr_rejects_non_fixed_width_type() {
     );
 }
 
-// --- crate::common::null_column() tests ---
+// --- null_column() tests ---
 
 fn test_nulls_int32_empty() {
-    let col = crate::common::null_column(TypeId::Int32, 0).unwrap();
+    let col = null_column(TypeId::Int32, 0).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 0);
     assert_eq!(view.data_type().unwrap().id(), TypeId::Int32);
 }
 
 fn test_nulls_int64() {
-    let col = crate::common::null_column(TypeId::Int64, 100).unwrap();
+    let col = null_column(TypeId::Int64, 100).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 100);
     assert_eq!(view.null_count().unwrap(), 100);
@@ -804,7 +812,7 @@ fn test_nulls_int64() {
 }
 
 fn test_nulls_float32() {
-    let col = crate::common::null_column(TypeId::Float32, 50).unwrap();
+    let col = null_column(TypeId::Float32, 50).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 50);
     assert_eq!(view.null_count().unwrap(), 50);
@@ -813,14 +821,14 @@ fn test_nulls_float32() {
 }
 
 fn test_nulls_bool8() {
-    let col = crate::common::null_column(TypeId::Bool8, 10).unwrap();
+    let col = null_column(TypeId::Bool8, 10).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 10);
     assert_eq!(view.null_count().unwrap(), 10);
 }
 
 fn test_nulls_string() {
-    let col = crate::common::null_column(TypeId::String, 25).unwrap();
+    let col = null_column(TypeId::String, 25).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 25);
     assert_eq!(view.null_count().unwrap(), 25);
@@ -829,7 +837,7 @@ fn test_nulls_string() {
 
 fn test_nulls_decimal64_preserve_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
-    let col = crate::common::null_column(dtype, 5).unwrap();
+    let col = null_column(dtype, 5).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 5);
     assert_eq!(view.null_count().unwrap(), 5);
@@ -847,14 +855,14 @@ fn test_nulls_preserves_type() {
         TypeId::Bool8,
         TypeId::String,
     ] {
-        let col = crate::common::null_column(type_id, 5).unwrap();
+        let col = null_column(type_id, 5).unwrap();
         let view = col.testing_view().unwrap();
         assert_eq!(view.data_type().unwrap().id(), type_id);
     }
 }
 
 fn test_nulls_rejects_length_over_i32_max() {
-    let result = crate::common::null_column(TypeId::Int8, (i32::MAX as usize) + 1);
+    let result = null_column(TypeId::Int8, (i32::MAX as usize) + 1);
     assert!(result.is_err());
     let err = match result {
         Ok(_) => panic!("expected len > i32::MAX to be rejected"),
@@ -871,7 +879,7 @@ fn test_nulls_rejects_length_over_i32_max() {
 }
 
 fn test_nulls_rejects_list_type_with_stable_contract() {
-    let err = crate::common::null_column(TypeId::List, 5).expect_err("expected List null-column construction to fail");
+    let err = null_column(TypeId::List, 5).expect_err("expected List null-column construction to fail");
 
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
@@ -886,7 +894,7 @@ fn test_nulls_rejects_list_type_with_stable_contract() {
 
 #[test]
 fn column_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_create_empty_column", test_create_empty_column),
         ("test_create_empty_decimal_column_preserves_scale", test_create_empty_decimal_column_preserves_scale),
         ("test_create_i32_column", test_create_i32_column),

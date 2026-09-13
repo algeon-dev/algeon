@@ -10,14 +10,14 @@ use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, dataframe_device_ptr as device_ptr, error_context_value,
-    last_exec_stream_value, lock_event_observation, reset_exec_observation,
+    last_exec_stream_value, lock_event_observation, reset_exec_observation, run_named_cases, series,
 };
 
 /// Helper: build a 3-row, 3-column DataFrame.
 fn sample_df() -> DataFrame {
-    let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
-    let scores = crate::common::series::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
-    let flags = crate::common::series::<i32>("flags", &[100, 200, 300]).unwrap();
+    let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
+    let scores = series::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
+    let flags = series::<i32>("flags", &[100, 200, 300]).unwrap();
 
     DataFrame::from_series([("id", ids), ("score", scores), ("flag", flags)]).unwrap()
 }
@@ -205,9 +205,7 @@ fn test_select_empty_preserves_row_count() {
 
 fn test_select_wide_projection_reorders_columns_without_copying() {
     let pairs: Vec<(String, Series)> = (0..16)
-        .map(|idx| {
-            (format!("c{idx}"), crate::common::series::<i32>(format!("source_{idx}"), &[idx, idx + 100]).unwrap())
-        })
+        .map(|idx| (format!("c{idx}"), series::<i32>(format!("source_{idx}"), &[idx, idx + 100]).unwrap()))
         .collect();
     let df = DataFrame::from_series(pairs).unwrap();
 
@@ -244,7 +242,7 @@ fn test_select_is_metadata_only_no_execution_or_device_copy() {
 
 fn test_with_column_adds_new_column() {
     let df = sample_df();
-    let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
+    let extra = series::<i64>("extra", &[100, 200, 300]).unwrap();
 
     let result = df.with_column("extra", extra).unwrap();
 
@@ -255,7 +253,7 @@ fn test_with_column_adds_new_column() {
 
 fn test_with_column_replaces_existing_column() {
     let df = sample_df();
-    let new_score = crate::common::series::<f64>("new_score", &[99.0, 88.0, 77.0]).unwrap();
+    let new_score = series::<f64>("new_score", &[99.0, 88.0, 77.0]).unwrap();
 
     let result = df.with_column("score", new_score).unwrap();
 
@@ -268,7 +266,7 @@ fn test_with_column_preserves_arc_sharing_for_unchanged() {
     let id_ptr = device_ptr(&df, "id");
     let flag_ptr = device_ptr(&df, "flag");
 
-    let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
+    let extra = series::<i64>("extra", &[100, 200, 300]).unwrap();
     let result = df.with_column("extra", extra).unwrap();
 
     assert_eq!(id_ptr, device_ptr(&result, "id"));
@@ -277,7 +275,7 @@ fn test_with_column_preserves_arc_sharing_for_unchanged() {
 
 fn test_with_column_shares_arc_from_input_series() {
     let df = sample_df();
-    let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
+    let extra = series::<i64>("extra", &[100, 200, 300]).unwrap();
     let extra_arc = extra.clone().into_inner();
 
     let result = df.with_column("extra", extra).unwrap();
@@ -289,7 +287,7 @@ fn test_with_column_shares_arc_from_input_series() {
 
 fn test_with_column_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
-    let wrong_len = crate::common::series::<i32>("x", &[1, 2]).unwrap(); // 2 rows
+    let wrong_len = series::<i32>("x", &[1, 2]).unwrap(); // 2 rows
 
     let result = df.with_column("x", wrong_len);
 
@@ -309,8 +307,8 @@ fn test_with_column_row_count_mismatch_returns_error() {
 
 fn test_assign_adds_multiple_new_columns() {
     let df = sample_df();
-    let a = crate::common::series::<i32>("a", &[10, 20, 30]).unwrap();
-    let b = crate::common::series::<f64>("b", &[1.0, 2.0, 3.0]).unwrap();
+    let a = series::<i32>("a", &[10, 20, 30]).unwrap();
+    let b = series::<f64>("b", &[1.0, 2.0, 3.0]).unwrap();
 
     let result = df.assign([("a", a), ("b", b)]).unwrap();
 
@@ -321,7 +319,7 @@ fn test_assign_adds_multiple_new_columns() {
 
 fn test_assign_replaces_existing_column() {
     let df = sample_df();
-    let new_score = crate::common::series::<f64>("s", &[99.0, 88.0, 77.0]).unwrap();
+    let new_score = series::<f64>("s", &[99.0, 88.0, 77.0]).unwrap();
 
     let result = df.assign([("score", new_score)]).unwrap();
 
@@ -331,8 +329,8 @@ fn test_assign_replaces_existing_column() {
 
 fn test_assign_mix_of_add_and_replace() {
     let df = sample_df();
-    let new_id = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let extra = crate::common::series::<i64>("x", &[100, 200, 300]).unwrap();
+    let new_id = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let extra = series::<i64>("x", &[100, 200, 300]).unwrap();
 
     let result = df.assign([("id", new_id), ("extra", extra)]).unwrap();
 
@@ -345,7 +343,7 @@ fn test_assign_preserves_arc_sharing_for_unchanged() {
     let id_ptr = device_ptr(&df, "id");
     let flag_ptr = device_ptr(&df, "flag");
 
-    let new_score = crate::common::series::<f64>("s", &[99.0, 88.0, 77.0]).unwrap();
+    let new_score = series::<f64>("s", &[99.0, 88.0, 77.0]).unwrap();
     let result = df.assign([("score", new_score)]).unwrap();
 
     assert_eq!(id_ptr, device_ptr(&result, "id"));
@@ -354,7 +352,7 @@ fn test_assign_preserves_arc_sharing_for_unchanged() {
 
 fn test_assign_shares_arc_from_input_series() {
     let df = sample_df();
-    let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
+    let extra = series::<i64>("extra", &[100, 200, 300]).unwrap();
     let extra_arc = extra.clone().into_inner();
 
     let result = df.assign([("extra", extra)]).unwrap();
@@ -365,7 +363,7 @@ fn test_assign_shares_arc_from_input_series() {
 
 fn test_assign_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
-    let wrong = crate::common::series::<i32>("x", &[1]).unwrap(); // 1 row
+    let wrong = series::<i32>("x", &[1]).unwrap(); // 1 row
 
     let result = df.assign([("x", wrong)]);
 
@@ -389,8 +387,8 @@ fn test_assign_empty_iterator_returns_same_schema() {
 
 fn test_assign_duplicate_names_last_wins() {
     let df = sample_df();
-    let first = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
-    let second = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let first = series::<i32>("x", &[1, 2, 3]).unwrap();
+    let second = series::<i32>("x", &[10, 20, 30]).unwrap();
 
     let result = df.assign([("extra", first), ("extra", second)]).unwrap();
 
@@ -400,7 +398,7 @@ fn test_assign_duplicate_names_last_wins() {
 
 fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
     let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
-    let replacement = crate::common::series::<i32>("replacement", &[7, 8, 9]).unwrap();
+    let replacement = series::<i32>("replacement", &[7, 8, 9]).unwrap();
 
     let result = df.assign([("replacement", replacement)]).unwrap();
 
@@ -411,7 +409,7 @@ fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
 
 fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
     let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
-    let wrong = crate::common::series::<i32>("replacement", &[7, 8]).unwrap();
+    let wrong = series::<i32>("replacement", &[7, 8]).unwrap();
 
     let result = df.assign([("replacement", wrong)]);
 
@@ -446,7 +444,7 @@ fn test_without_columns_then_assign_preserves_sharing() {
     let id_ptr = device_ptr(&df, "id");
 
     let dropped = df.without_columns(["score", "flag"]).unwrap();
-    let extra = crate::common::series::<f64>("extra", &[1.0, 2.0, 3.0]).unwrap();
+    let extra = series::<f64>("extra", &[1.0, 2.0, 3.0]).unwrap();
     let result = dropped.assign([("extra", extra)]).unwrap();
 
     assert_eq!(id_ptr, device_ptr(&result, "id"));
@@ -464,7 +462,7 @@ fn test_rename_columns_then_without_columns_preserves_sharing() {
 
 fn test_with_series_then_rename_columns_preserves_sharing() {
     let df = sample_df();
-    let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
+    let extra = series::<i64>("extra", &[100, 200, 300]).unwrap();
     let extra_arc = extra.clone().into_inner();
 
     let with_extra = df.with_column("extra", extra).unwrap();
@@ -476,7 +474,7 @@ fn test_with_series_then_rename_columns_preserves_sharing() {
 
 fn test_with_column_on_zero_column_frame_preserves_logical_row_count() {
     let df = sample_df().select(std::iter::empty::<&str>()).unwrap();
-    let values = crate::common::series::<i32>("values", &[11, 22, 33]).unwrap();
+    let values = series::<i32>("values", &[11, 22, 33]).unwrap();
 
     let result = df.with_column("values", values).unwrap();
 
@@ -487,7 +485,7 @@ fn test_with_column_on_zero_column_frame_preserves_logical_row_count() {
 
 fn test_with_column_on_zero_column_frame_rejects_row_count_mismatch() {
     let df = sample_df().select(std::iter::empty::<&str>()).unwrap();
-    let values = crate::common::series::<i32>("values", &[11, 22]).unwrap();
+    let values = series::<i32>("values", &[11, 22]).unwrap();
 
     let result = df.with_column("values", values);
 
@@ -497,7 +495,7 @@ fn test_with_column_on_zero_column_frame_rejects_row_count_mismatch() {
 
 fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() {
     let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
-    let values = crate::common::series::<i32>("values", &[11, 22]).unwrap();
+    let values = series::<i32>("values", &[11, 22]).unwrap();
 
     let result = df.with_column("values", values);
 
@@ -519,7 +517,7 @@ fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column()
 
 #[test]
 fn metadata_ops_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_without_columns_removes_single_column", test_without_columns_removes_single_column),
         ("test_without_columns_removes_multiple_columns", test_without_columns_removes_multiple_columns),
         (

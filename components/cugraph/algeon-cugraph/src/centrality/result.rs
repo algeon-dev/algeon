@@ -21,6 +21,11 @@ use cugraph_sys::{
 use crate::{
     array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::{
+        betweenness_result_to_dataframe, edge_betweenness_centrality_result_to_dataframe,
+        eigenvector_centrality_result_to_dataframe, hits_result_to_dataframe, katz_centrality_result_to_dataframe,
+        page_rank_result_to_dataframe,
+    },
     error::{Error, ErrorKind, Result, require_non_null},
     handle::ResourceHandleLease,
     structure::typed_results::{IntegerValues, ScoreValues, VertexIds},
@@ -186,7 +191,7 @@ impl PageRankResult {
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::page_rank_result_to_dataframe(self, runtime)
+        page_rank_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("PageRankResult::to_dataframe"))
     }
 }
@@ -231,7 +236,7 @@ impl EigenvectorCentralityResult {
 
     /// Convert this eigenvector centrality result to a cudf DataFrame.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::eigenvector_centrality_result_to_dataframe(self, runtime)
+        eigenvector_centrality_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("EigenvectorCentralityResult::to_dataframe"))
     }
 
@@ -287,7 +292,7 @@ impl KatzCentralityResult {
 
     /// Convert this Katz centrality result to a cudf DataFrame.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::katz_centrality_result_to_dataframe(self, runtime)
+        katz_centrality_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("KatzCentralityResult::to_dataframe"))
     }
 
@@ -453,7 +458,7 @@ impl EdgeBetweennessCentralityResult {
 
     /// Convert this edge betweenness centrality result to a cudf DataFrame.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::edge_betweenness_centrality_result_to_dataframe(self, runtime)
+        edge_betweenness_centrality_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("EdgeBetweennessCentralityResult::to_dataframe"))
     }
 }
@@ -540,8 +545,7 @@ impl HitsResult {
 
     /// Convert this HITS result to a cudf DataFrame.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::hits_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("HitsResult::to_dataframe"))
+        hits_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("HitsResult::to_dataframe"))
     }
 }
 
@@ -597,7 +601,7 @@ impl BetweennessCentralityResult {
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::betweenness_result_to_dataframe(self, runtime)
+        betweenness_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("BetweennessCentralityResult::to_dataframe"))
     }
 }
