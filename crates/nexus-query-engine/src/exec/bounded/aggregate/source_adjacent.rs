@@ -414,6 +414,19 @@ fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64
     values.into_iter().try_fold(0u64, |total, value| value.map(|value| total.saturating_add(value)))
 }
 
+/// Hash-partitioned chunk handed from the partition step to the slice loop.
+///
+/// Carrying the partitioned frame out by value ends the raw input's lifetime at
+/// the partition boundary: `hash_partition_by` has already copied every row into
+/// an independent table, so keeping the input alive across the slice loop would
+/// hold a whole decoded chunk beside the partitioned copy for no further use.
+struct PartitionedSourceAdjacentChunk {
+    frame: cudf::DataFrame,
+    offsets: Vec<usize>,
+    original_columns: Option<Vec<String>>,
+    token: ExecutionBudgetToken,
+}
+
 fn partition_source_adjacent_raw_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -422,6 +435,46 @@ fn partition_source_adjacent_raw_chunk(
     partition_count: usize,
     partitioner: &SourceAdjacentAggregatePartitioner,
 ) -> Result<Vec<Option<CommittedPartial>>> {
+    let PartitionedSourceAdjacentChunk { frame: partitioned_frame, offsets, original_columns, token } =
+        hash_partition_source_adjacent_raw_chunk(execution, node_id, chunk_index, raw, partition_count, partitioner)?;
+    let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
+    match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
+        Ok(_) => {},
+        Err(error) => {
+            return Err(error);
+        },
+    }
+
+    let mut partitions = Vec::with_capacity(partition_count);
+    for partition in 0..partition_count {
+        match slice_source_adjacent_aggregate_partition(
+            execution,
+            node_id,
+            &partitioned_frame,
+            &offsets,
+            original_columns.as_deref(),
+            partition,
+            partitioner.retain_empty_partition(partition),
+            &token,
+        ) {
+            Ok(frame) => partitions.push(frame),
+            Err(error) => {
+                release_optional_partials_reverse(partitions);
+                return Err(error);
+            },
+        }
+    }
+    Ok(partitions)
+}
+
+fn hash_partition_source_adjacent_raw_chunk(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    chunk_index: usize,
+    raw: CommittedPartial,
+    partition_count: usize,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+) -> Result<PartitionedSourceAdjacentChunk> {
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
@@ -530,35 +583,13 @@ fn partition_source_adjacent_raw_chunk(
         },
     };
     let (partitioned_frame, offsets) = partitioned.into_parts();
-    let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
-        Ok(_) => {},
-        Err(error) => {
-            return Err(error);
-        },
-    }
-
-    let mut partitions = Vec::with_capacity(partition_count);
-    for partition in 0..partition_count {
-        match slice_source_adjacent_aggregate_partition(
-            execution,
-            node_id,
-            &partitioned_frame,
-            &offsets,
-            original_columns.as_deref(),
-            partition,
-            partitioner.retain_empty_partition(partition),
-        ) {
-            Ok(frame) => partitions.push(frame),
-            Err(error) => {
-                release_optional_partials_reverse(partitions);
-                return Err(error);
-            },
-        }
-    }
-    Ok(partitions)
+    Ok(PartitionedSourceAdjacentChunk { frame: partitioned_frame, offsets, original_columns, token })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "partition slice inputs (frame, offsets, output columns, partition identity) and its execution budget are distinct domain values"
+)]
 fn slice_source_adjacent_aggregate_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -567,6 +598,7 @@ fn slice_source_adjacent_aggregate_partition(
     output_columns: Option<&[String]>,
     partition: usize,
     retain_empty: bool,
+    token: &ExecutionBudgetToken,
 ) -> Result<Option<CommittedPartial>> {
     let start = *offsets.get(partition).ok_or_else(|| {
         unsupported_bounded_shape(
@@ -584,18 +616,20 @@ fn slice_source_adjacent_aggregate_partition(
     if len == 0 && !retain_empty {
         return Ok(None);
     }
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
-            "failed to slice source-adjacent hash-partitioned aggregate input",
-            error,
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("partition", partition)
-        .with_fact("partition_rows", len)
-    })?;
+    let sliced = budgeted_value(
+        frame.slice_with_budget(start, len, token).map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
+                "failed to slice source-adjacent hash-partitioned aggregate input",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("partition", partition)
+            .with_fact("partition_rows", len)
+        })?,
+        execution.metrics_mut(),
+        "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
+    );
     let sliced = if let Some(output_columns) = output_columns {
         let output_refs = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
         sliced.select(output_refs).map_err(|error| {

@@ -1765,6 +1765,7 @@ pub fn cudf::DataFrame::filter_isin(&self, &str, &cudf::Series) -> cudf::core::e
 pub fn cudf::DataFrame::gather(&self, &cudf::Series) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::head(&self, usize) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::slice(&self, usize, usize) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrame::slice_with_budget(&self, usize, usize, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::tail(&self, usize) -> cudf::core::error::Result<Self>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::filter_all<I>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = cudf::Expr>
@@ -3434,6 +3435,7 @@ pub fn cudf::DataFrame::filter_isin(&self, &str, &cudf::Series) -> cudf::core::e
 pub fn cudf::DataFrame::gather(&self, &cudf::Series) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::head(&self, usize) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::slice(&self, usize, usize) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrame::slice_with_budget(&self, usize, usize, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::tail(&self, usize) -> cudf::core::error::Result<Self>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::filter_all<I>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = cudf::Expr>
@@ -7781,6 +7783,7 @@ pub fn cudf::DataFrame::filter_isin(&self, &str, &cudf::Series) -> cudf::core::e
 pub fn cudf::DataFrame::gather(&self, &cudf::Series) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::head(&self, usize) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::slice(&self, usize, usize) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrame::slice_with_budget(&self, usize, usize, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::tail(&self, usize) -> cudf::core::error::Result<Self>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::filter_all<I>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = cudf::Expr>

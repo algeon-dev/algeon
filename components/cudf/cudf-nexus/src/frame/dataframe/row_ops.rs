@@ -11,8 +11,8 @@ use crate::{
     internal::{hash::fast_index_map_with_capacity, resolve::missing_column_error},
     ops::{self, copying, filter},
     runtime::{
-        Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
-        execution_resolver::ResolvedExecution,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, Runtime, execution_context::ExecutionOverrides,
+        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
@@ -101,6 +101,36 @@ impl DataFrame {
         let take = n.min(total);
         let start = total - take;
         self.gather_range(start, take)
+    }
+
+    /// Return `length` rows starting at `offset` under a hard execution budget.
+    ///
+    /// `slice` materializes a physical gather copy, so the output allocation is
+    /// routed through the token's stream-bound reservation. A rejection carries
+    /// the token's member accounting (peak, current, and failed allocation
+    /// counts) instead of the bare allocator message.
+    pub fn slice_with_budget(
+        &self,
+        offset: usize,
+        length: usize,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let operation = "dataframe::slice_with_budget";
+        let ctx = token.execution_overrides();
+        let total = self.num_rows();
+        let start = offset.min(total);
+        let take = length.min(total - start);
+        let output = self
+            .gather_range_in_context(start, take, &ctx, operation)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
+        let report = token
+            .reservation_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output.num_rows());
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
     }
 
     /// Return `length` rows starting at `offset`.
