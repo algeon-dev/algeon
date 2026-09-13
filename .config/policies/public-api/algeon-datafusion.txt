@@ -525,6 +525,7 @@ pub use algeon_datafusion::cuvs_sql::CuvsOptionKind
 pub use algeon_datafusion::cuvs_sql::CuvsOptionValidationError
 pub use algeon_datafusion::cuvs_sql::CuvsOutputContract
 pub use algeon_datafusion::cuvs_sql::CuvsRelationRole
+pub use algeon_datafusion::cuvs_sql::CuvsVectorElementType
 pub use algeon_datafusion::cuvs_sql::canonicalize_cuvs_options
 pub struct algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
 impl algeon_datafusion::cuvs_sql::AlgeonQueryPlanner

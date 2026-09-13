@@ -21,11 +21,13 @@ use algeon_datafusion::{
 };
 use arrow::{
     array::{Array, BooleanArray, StringArray},
-    datatypes::DataType,
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
 };
 use datafusion::{
     catalog::Session,
     common::{DFSchema, DataFusionError, Result as DataFusionResult, config::Dialect, tree_node::TreeNodeRecursion},
+    datasource::MemTable,
     execution::{
         SessionStateBuilder,
         context::{QueryPlanner, TaskContext},
@@ -47,8 +49,8 @@ use datafusion::{
     },
 };
 use query_engine::plan::{
-    CUVS_ID_TYPES, CuvsIdType, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
-    vector_pca_output_schema,
+    CUVS_ID_TYPES, CuvsIdType, CuvsOutputContract, CuvsVectorElementType, vector_kmeans_output_schema,
+    vector_knn_output_schema, vector_pca_output_schema,
 };
 
 #[path = "cuvs_sql_fixtures.rs"]
@@ -65,6 +67,11 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         [CuvsRelationRole::Dataset, CuvsRelationRole::Queries]
     );
     assert_eq!(CuvsOperation::KMeans.descriptor().relation_roles, [CuvsRelationRole::Input]);
+    assert_eq!(CuvsRelationRole::X.as_str(), "x");
+    assert_eq!(CuvsRelationRole::Y.as_str(), "y");
+    for descriptor in CUVS_OPERATION_REGISTRY {
+        assert_eq!(descriptor.vector_element_support, &[CuvsVectorElementType::Float32]);
+    }
 
     let knn = cuvs_options_json_schema(CuvsOperation::BruteForceKnn);
     assert_eq!(knn["additionalProperties"], false);
@@ -164,8 +171,24 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
                 });
             assert_eq!(captured_role["description"], role.description());
         }
+        for role in roles.as_array().unwrap() {
+            assert_eq!(
+                role["fields"]["features"]["element_types"],
+                serde_json::json!(
+                    descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>()
+                ),
+            );
+        }
         let result_schema =
             serde_json::from_str::<serde_json::Value>(captured["result_schemas_json"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            result_schema["output_contract"],
+            match descriptor.output_contract {
+                CuvsOutputContract::KnnNeighbors => "knn_neighbors",
+                CuvsOutputContract::KMeansAssignments => "kmeans_assignments",
+                CuvsOutputContract::PcaComponents => "pca_components",
+            },
+        );
         let fields = result_schema["fields"].as_array().unwrap();
         assert_eq!(fields.len(), descriptor.output_fields.len());
         for (field, expected) in fields.iter().zip(descriptor.output_fields) {
@@ -193,13 +216,12 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         assert!(page.contains(&format!("SQL function: `{}`", descriptor.sql_function_name)), "{}", page_path.display());
         assert!(page.contains(descriptor.quickstart_sql), "{}", page_path.display());
         let headings = [
-            "## Signature",
             "## Quickstart",
             "## Inputs",
+            "### Vector element types",
             "## Arguments and options",
             "## Output",
             "## Limits",
-            "## Validate the call",
         ];
         let mut previous_heading = 0;
         for heading in headings {
@@ -209,6 +231,9 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         }
         for relation_role in descriptor.relation_roles {
             assert!(page.contains(&format!("`{}`", relation_role.as_str())), "{}", page_path.display());
+        }
+        for element in descriptor.vector_element_support {
+            assert!(page.contains(&format!("| `{}` |", element.as_str())), "{}", page_path.display());
         }
         for option in descriptor.options.iter().filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
         {
@@ -240,7 +265,7 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
     )
     .await;
     let knn = find_cuvs_node(&knn).unwrap();
-    let expected_knn = vector_brute_force_knn_output_schema(DataType::Utf8, DataType::Int64);
+    let expected_knn = vector_knn_output_schema(DataType::Utf8, DataType::Int64);
     let expected_knn = DFSchema::try_from(expected_knn.as_ref().clone()).unwrap();
     assert_eq!(knn.schema().as_ref(), &expected_knn);
 
@@ -741,6 +766,30 @@ async fn unified_gpu_validation_details_locate_the_failing_argument_or_field() {
         for (key, value) in expected.as_object().unwrap() {
             assert_eq!(&details[key], value, "{call}: {details}");
         }
+    }
+}
+
+#[tokio::test]
+async fn unsupported_vector_elements_report_the_operation_support_subset() {
+    let ctx = cuvs_context();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("vector", DataType::List(Arc::new(Field::new("item", DataType::Float64, false))), false),
+    ]));
+    let batch = RecordBatch::new_empty(Arc::clone(&schema));
+    let table = MemTable::try_new(schema, vec![vec![batch]]).expect("list fixture");
+    ctx.register_table("float64_list_vectors", Arc::new(table)).expect("register list fixture");
+    let cases = [
+        "SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM dataset_vectors",
+        "SELECT id, vector FROM float64_list_vectors",
+    ];
+    for input in cases {
+        let sql = format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}(input => ({input}), n_clusters => 1)");
+        let error = ctx.state().create_logical_plan(&sql).await.expect_err(&sql);
+        let typed = error.find_algeon_error().expect("structured unsupported vector element error");
+        assert_eq!(typed.code(), ErrorCode::UnsupportedType, "{sql}: {typed:?}");
+        assert_eq!(typed.facts().get("expected_type"), Some("Float32"), "{sql}");
+        assert!(typed.message().contains("Float32"), "{sql}: {typed}");
     }
 }
 

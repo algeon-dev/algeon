@@ -904,6 +904,8 @@ fn input_role_label(role: InputRole) -> &'static str {
             VectorInputRole::Dataset => "vector_dataset_input",
             VectorInputRole::Queries => "vector_queries_input",
             VectorInputRole::Input => "vector_input",
+            VectorInputRole::X => "vector_x_input",
+            VectorInputRole::Y => "vector_y_input",
             VectorInputRole::InitialCentroids => "vector_initial_centroids_input",
         },
         InputRole::JoinBuildInput { .. } => "join_build_input",

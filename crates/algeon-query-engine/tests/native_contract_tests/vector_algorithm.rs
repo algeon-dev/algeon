@@ -14,7 +14,7 @@ use query_engine::{
         JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm,
         VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
         VectorKMeansParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options,
-        vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
+        vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
     },
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
@@ -27,11 +27,11 @@ fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {
         vec![CuvsOperation::BruteForceKnn, CuvsOperation::KMeans, CuvsOperation::Pca]
     );
     assert_eq!(CUVS_OPERATION_REGISTRY.len(), 3);
-    assert_eq!(CuvsOperation::BruteForceKnn.descriptor().output_contract, CuvsOutputContract::BruteForceKnn);
+    assert_eq!(CuvsOperation::BruteForceKnn.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
     assert_eq!(CuvsOperation::KMeans.descriptor().output_contract, CuvsOutputContract::KMeansAssignments);
     assert_eq!(CuvsOperation::Pca.descriptor().output_contract, CuvsOutputContract::PcaComponents);
     assert_eq!(
-        vector_brute_force_knn_output_schema(DataType::Utf8, DataType::Int64)
+        vector_knn_output_schema(DataType::Utf8, DataType::Int64)
             .fields()
             .iter()
             .map(|field| field.name())
@@ -85,10 +85,7 @@ fn typed_vector_builders_preserve_schemas_input_order_and_display() {
     };
     assert_eq!(knn_node.spec.algorithm, VectorAlgorithm::BruteForceKnn);
     assert_eq!(knn_node.inputs.len(), 2);
-    assert_eq!(
-        knn_node.output_schema().as_ref(),
-        vector_brute_force_knn_output_schema(DataType::Int64, DataType::Int64).as_ref()
-    );
+    assert_eq!(knn_node.output_schema().as_ref(), vector_knn_output_schema(DataType::Int64, DataType::Int64).as_ref());
     let knn_display = knn.to_string();
     assert!(knn_display.contains("VectorAlgorithm"));
     assert!(knn_display.contains("algorithm=brute_force_knn"));
@@ -415,6 +412,7 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
         ])),
         1,
         vector_pca_output_schema(DataType::Int64, 1),
@@ -620,7 +618,7 @@ fn knn_plan_with_k(k: usize) -> QueryPlan {
     let spec = VectorAlgorithmSpec::new(
         VectorAlgorithm::BruteForceKnn,
         VectorAlgorithmParams::BruteForceKnn(params),
-        vector_brute_force_knn_output_schema(DataType::Int64, DataType::Int64),
+        vector_knn_output_schema(DataType::Int64, DataType::Int64),
     );
     let root = builder.add_vector_algorithm(spec);
     builder.finish_with_host_sink(root)
@@ -635,7 +633,7 @@ fn knn_spec(dataset: NodeId, queries: NodeId) -> VectorAlgorithmSpec {
             3,
             VectorDistanceMetric::L2Expanded,
         )),
-        vector_brute_force_knn_output_schema(DataType::Int64, DataType::Int64),
+        vector_knn_output_schema(DataType::Int64, DataType::Int64),
     )
 }
 

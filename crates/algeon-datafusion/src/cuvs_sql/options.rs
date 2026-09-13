@@ -79,7 +79,7 @@ pub(super) fn validate_options(operation: CuvsOperation, raw: &str) -> Result<Cu
     let bindings =
         operation.descriptor().relation_roles.iter().copied().map(|role| binding(object, role)).collect::<Vec<_>>();
     let option_u32 = |name: &str| object.get(name).and_then(Value::as_u64).map(|value| value as u32);
-    let knn_k = (operation.descriptor().output_contract == CuvsOutputContract::BruteForceKnn)
+    let knn_k = (operation.descriptor().output_contract == CuvsOutputContract::KnnNeighbors)
         .then(|| option_u32("k").expect("canonical kNN options contain k"));
     let kmeans_clusters = (operation.descriptor().output_contract == CuvsOutputContract::KMeansAssignments)
         .then(|| option_u32("n_clusters").expect("canonical KMeans options contain n_clusters"));

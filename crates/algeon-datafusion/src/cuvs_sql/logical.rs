@@ -6,7 +6,7 @@ use datafusion::{
     logical_expr::{Expr, FetchType, LogicalPlan, SkipType, UserDefinedLogicalNodeCore},
 };
 use query_engine::plan::{
-    CuvsIdType, vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
+    CuvsIdType, CuvsVectorElementType, vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
 };
 
 use super::{
@@ -194,7 +194,7 @@ fn validate_relation_binding(
         CuvsDenseVectorBinding::Columns(columns) => {
             for column in columns {
                 let field = resolve_field(operation, schema, role, column)?;
-                require_nonnullable_float32(operation, role, column, field)?;
+                require_supported_vector_element(operation, role, column, field)?;
             }
             Ok(Some(columns.len()))
         },
@@ -209,11 +209,11 @@ fn validate_relation_binding(
             }
             match field.data_type() {
                 DataType::FixedSizeList(element, dimension) if *dimension > 0 => {
-                    require_nonnullable_float32(operation, role, column, element)?;
+                    require_supported_vector_element(operation, role, column, element)?;
                     Ok(Some(*dimension as usize))
                 },
                 DataType::List(element) | DataType::LargeList(element) => {
-                    require_nonnullable_float32(operation, role, column, element)?;
+                    require_supported_vector_element(operation, role, column, element)?;
                     Ok(None)
                 },
                 actual => Err(unsupported_type(
@@ -221,7 +221,10 @@ fn validate_relation_binding(
                     role,
                     column,
                     actual,
-                    "FixedSizeList<Float32, D>, List<Float32>, or LargeList<Float32>",
+                    format!(
+                        "FixedSizeList, List, or LargeList with non-null {} elements",
+                        supported_vector_elements(operation)
+                    ),
                 )),
             }
         },
@@ -237,7 +240,11 @@ fn resolve_field<'a>(
     schema.field_with_unqualified_name(name).map_err(|_| field_not_found(operation, role, name))
 }
 
-fn require_nonnullable_float32(
+fn supported_vector_elements(operation: CuvsOperation) -> String {
+    operation.descriptor().vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>().join(", ")
+}
+
+fn require_supported_vector_element(
     operation: CuvsOperation,
     role: &'static str,
     name: &str,
@@ -250,8 +257,10 @@ fn require_nonnullable_float32(
             format!("cuVS {role} feature field '{name}' must be non-nullable"),
         ));
     }
-    if field.data_type() != &DataType::Float32 {
-        return Err(unsupported_type(operation, role, name, field.data_type(), "Float32"));
+    if CuvsVectorElementType::from_data_type(field.data_type())
+        .is_none_or(|element| !operation.descriptor().vector_element_support.contains(&element))
+    {
+        return Err(unsupported_type(operation, role, name, field.data_type(), supported_vector_elements(operation)));
     }
     Ok(())
 }
@@ -345,10 +354,10 @@ fn derive_output_schema(
     dimensions: &[Option<usize>],
 ) -> Result<DFSchemaRef> {
     let schema = match operation.descriptor().output_contract {
-        CuvsOutputContract::BruteForceKnn => {
+        CuvsOutputContract::KnnNeighbors => {
             let dataset_id = output_id_field(inputs[0].schema(), options.bindings()[0].id(), "neighbor_id")?;
             let query_id = output_id_field(inputs[1].schema(), options.bindings()[1].id(), "query_id")?;
-            vector_brute_force_knn_output_schema(query_id.data_type().clone(), dataset_id.data_type().clone())
+            vector_knn_output_schema(query_id.data_type().clone(), dataset_id.data_type().clone())
         },
         CuvsOutputContract::KMeansAssignments => vector_kmeans_output_schema(
             output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),

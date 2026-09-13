@@ -244,6 +244,8 @@ pub query_planning::capability::VectorInputRole::Dataset
 pub query_planning::capability::VectorInputRole::InitialCentroids
 pub query_planning::capability::VectorInputRole::Input
 pub query_planning::capability::VectorInputRole::Queries
+pub query_planning::capability::VectorInputRole::X
+pub query_planning::capability::VectorInputRole::Y
 impl query_planning::capability::VectorInputRole
 pub const fn query_planning::capability::VectorInputRole::as_str(self) -> &'static str
 pub struct query_planning::capability::AggregateStrategyCandidateRejection
@@ -1881,6 +1883,7 @@ pub query_planning::pipeline::PipelineTaskKind::SinkMaterialize
 pub query_planning::pipeline::PipelineTaskKind::SourceRead
 pub query_planning::pipeline::PipelineTaskKind::Unary
 pub query_planning::pipeline::PipelineTaskKind::Union
+pub query_planning::pipeline::PipelineTaskKind::VectorAlgorithm
 pub query_planning::pipeline::PipelineTaskKind::Window
 impl query_planning::pipeline::PipelineTaskKind
 pub const fn query_planning::pipeline::PipelineTaskKind::as_str(self) -> &'static str
@@ -2117,16 +2120,26 @@ pub const fn query_planning::plan::CuvsOptionKind::default_f64(self) -> core::op
 pub const fn query_planning::plan::CuvsOptionKind::default_str(self) -> core::option::Option<&'static str>
 pub const fn query_planning::plan::CuvsOptionKind::default_u64(self) -> core::option::Option<u64>
 pub enum query_planning::plan::CuvsOutputContract
-pub query_planning::plan::CuvsOutputContract::BruteForceKnn
 pub query_planning::plan::CuvsOutputContract::KMeansAssignments
+pub query_planning::plan::CuvsOutputContract::KnnNeighbors
 pub query_planning::plan::CuvsOutputContract::PcaComponents
 pub enum query_planning::plan::CuvsRelationRole
 pub query_planning::plan::CuvsRelationRole::Dataset
 pub query_planning::plan::CuvsRelationRole::Input
 pub query_planning::plan::CuvsRelationRole::Queries
+pub query_planning::plan::CuvsRelationRole::X
+pub query_planning::plan::CuvsRelationRole::Y
 impl query_planning::plan::CuvsRelationRole
 pub const fn query_planning::plan::CuvsRelationRole::as_str(self) -> &'static str
 pub const fn query_planning::plan::CuvsRelationRole::description(self) -> &'static str
+pub enum query_planning::plan::CuvsVectorElementType
+pub query_planning::plan::CuvsVectorElementType::Float32
+pub query_planning::plan::CuvsVectorElementType::Float64
+pub query_planning::plan::CuvsVectorElementType::Int8
+pub query_planning::plan::CuvsVectorElementType::UInt8
+impl query_planning::plan::CuvsVectorElementType
+pub const fn query_planning::plan::CuvsVectorElementType::as_str(self) -> &'static str
+pub fn query_planning::plan::CuvsVectorElementType::from_data_type(&arrow_schema::datatype::DataType) -> core::option::Option<Self>
 pub enum query_planning::plan::DataPlacement
 pub query_planning::plan::DataPlacement::Device
 pub query_planning::plan::DataPlacement::Host
@@ -2511,6 +2524,7 @@ pub query_planning::plan::CuvsOperationDescriptor::relation_roles: &'static [que
 pub query_planning::plan::CuvsOperationDescriptor::sql_function_name: &'static str
 pub query_planning::plan::CuvsOperationDescriptor::summary: &'static str
 pub query_planning::plan::CuvsOperationDescriptor::use_this_when: &'static str
+pub query_planning::plan::CuvsOperationDescriptor::vector_element_support: &'static [query_planning::plan::CuvsVectorElementType]
 impl query_planning::plan::CuvsOperationDescriptor
 pub fn query_planning::plan::CuvsOperationDescriptor::option(&self, &str) -> core::option::Option<&'static query_planning::plan::CuvsOptionDefinition>
 pub fn query_planning::plan::CuvsOperationDescriptor::options_json_schema(&self) -> serde_json::value::Value
@@ -3057,8 +3071,8 @@ pub fn query_planning::plan::graph_result_schema_for_vertex_type(query_planning:
 pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, &query_planning::plan::NativePlanCostOptions) -> query_planning::plan::NativePlanCostDecision
 pub fn query_planning::plan::planned_resident_graph_key(&query_planning::plan::GraphResidencyDescriptor, &query_planning::plan::GraphAlgorithmSpec) -> core::option::Option<query_planning::plan::ResidentGraphKey>
 pub fn query_planning::plan::stable_graph_result_schema(query_planning::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef
-pub fn query_planning::plan::vector_brute_force_knn_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_kmeans_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::vector_knn_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_pca_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
 pub mod query_planning::source
 pub enum query_planning::source::ByteRangeDisposition

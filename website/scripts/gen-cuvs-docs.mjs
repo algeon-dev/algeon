@@ -46,6 +46,11 @@ function loadSpecs() {
       if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length === 0 || spec.relation_roles.some(role => !role?.name)) {
         throw new Error(`${file}: relation_roles_json must contain named roles`);
       }
+      const elements = spec.relation_roles[0]?.fields?.features?.element_types;
+      if (!Array.isArray(elements) || elements.length === 0 || elements.some(element => typeof element !== 'string') ||
+          spec.relation_roles.some(role => JSON.stringify(role.fields?.features?.element_types) !== JSON.stringify(elements))) {
+        throw new Error(`${file}: vector element types must be identical across relation roles`);
+      }
       if (!Array.isArray(spec.argument_descriptions) || !Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) {
         throw new Error(`${file}: descriptor arrays have an invalid shape`);
       }
@@ -103,6 +108,10 @@ function assertRenderableOutputFields(spec) {
   }
 }
 
+function vectorElementTypes(spec) {
+  return spec.relation_roles[0].fields.features.element_types;
+}
+
 function renderInputs(spec) {
   return [
     'Each relation argument is a parenthesized `SELECT` subquery that the planner keeps as a real child; metadata validation resolves a registered table or view for the same role instead. See [Vector Inputs](../vector-inputs.mdx) for the relation identity rules and the ID, dense-vector type, null, finite-value, and runtime-dimension contract.',
@@ -110,6 +119,10 @@ function renderInputs(spec) {
     table(['Role', 'Required', 'Validation reference', 'Description'], spec.relation_roles.map(role => [
       code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
     ])),
+    '',
+    '### Vector element types',
+    '',
+    table(['Supported element type'], vectorElementTypes(spec).map(element => [code(element)])),
   ].join('\n');
 }
 
@@ -175,7 +188,7 @@ function renderVectorBindingShapes(spec) {
   const bindingOption = Object.values(spec.options_schema.properties || {}).find(option => option?.properties?.vector?.oneOf);
   if (!bindingOption) {
     return [
-      'Each relation subquery must project a non-null `id` field followed by either one or more non-null `Float32` feature fields or one non-null list vector field named `vector`.',
+      `Each relation subquery must project a non-null ${code('id')} field followed by either one or more non-null feature fields of a supported element type (${vectorElementTypes(spec).map(code).join(', ')}) or one non-null list vector field named ${code('vector')}.`,
       '',
       'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.',
     ].join('\n');
@@ -192,7 +205,7 @@ function renderVectorBindingShapes(spec) {
     '',
     table(['Shape', 'JSON', 'Contract'], [
       [
-        'Wide Float32 columns',
+        'Wide feature columns',
         code('{"vector":{"columns":["d0","d1"]}}'),
         cell(columns.description),
       ],
