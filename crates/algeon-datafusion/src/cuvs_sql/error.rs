@@ -71,7 +71,7 @@ pub(super) fn feature_disabled(operation: CuvsOperation) -> DataFusionError {
         "cuVS vector algorithm execution requires the cuvs Cargo feature",
     )
     .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
-    .with_log_safe_fact("reason", "cuvs_feature_disabled")
+    .with_log_safe_fact("reason", "required_feature_disabled")
     .with_log_safe_fact("required_feature", "cuvs")
     .with_log_safe_fact("host_fallback", "disabled")
     .into()

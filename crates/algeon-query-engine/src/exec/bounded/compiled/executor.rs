@@ -40,6 +40,7 @@ mod routing;
 mod source;
 mod terminal;
 mod unary;
+mod vector;
 
 pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -> bool {
     matches!(
@@ -208,6 +209,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::Union => self.execute_union_task(task, state),
             PipelineTaskKind::EdgeNormalize => self.execute_edge_normalize_task(task, state),
             PipelineTaskKind::GraphAlgorithm => self.execute_graph_algorithm_task(task, state),
+            PipelineTaskKind::VectorAlgorithm => self.execute_vector_algorithm_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
         self.execution.metrics().close_budget_window(task.id(), budget_window);

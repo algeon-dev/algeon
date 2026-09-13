@@ -943,7 +943,7 @@ async fn execution_rejects_a_disabled_cuvs_feature_before_any_child_executes() {
     };
     let typed = error.find_algeon_error().expect("structured cuVS feature-disabled error");
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
+    assert_eq!(typed.facts().get("reason"), Some("required_feature_disabled"));
     assert_eq!(typed.facts().get("required_feature"), Some("cuvs"));
     assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
     assert_eq!(execute_count.load(Ordering::SeqCst), 0, "feature rejection must precede child execution");

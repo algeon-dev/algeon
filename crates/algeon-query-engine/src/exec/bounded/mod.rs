@@ -87,6 +87,17 @@ pub(super) fn execute_bounded_query_plan(
     {
         return Ok(output);
     }
+    let unreachable = plan.unreachable_node_ids();
+    if plan
+        .nodes()
+        .iter()
+        .any(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::VectorAlgorithm(_)))
+    {
+        return Err(unsupported_bounded_shape(
+            "vector execution requires an admitted compiled pipeline",
+            "compiled_vector_pipeline_required",
+        ));
+    }
 
     if plan.contains_join() {
         reject_bounded_join_plan(context, plan)?;

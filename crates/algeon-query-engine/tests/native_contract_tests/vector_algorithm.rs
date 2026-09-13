@@ -3,11 +3,12 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use query_engine::{
     admission::bounded_pipeline_decision,
-    capability::CapabilityDecision,
+    capability::{CapabilityDecision, EdgeConsumer, EdgeContractKind, InputRole, VectorInputRole},
     dimension_pruning::local_dimension_pruning_resolver,
     exec::preflight_query_plan,
-    expr::{ColumnRef, Expr},
+    expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
+    pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{
         CUVS_OPERATION_REGISTRY, CuvsOperation, CuvsOutputContract, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
         JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm,
@@ -433,20 +434,164 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
 }
 
 #[test]
-fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker() {
-    for plan in [knn_plan(false), knn_plan(true)] {
-        assert!(plan.contains_vector_algorithm());
+fn vector_operations_compile_with_role_ordered_resident_inputs() {
+    let dataset_schema = relation_schema("id");
+    let query_schema = relation_schema("query_id");
+    let centroid_schema = relation_schema("centroid_id");
+    let cases = [
+        (
+            "brute_force_knn",
+            knn_plan(false),
+            vec![
+                (NodeId::from_index_for_internal_use(0), VectorInputRole::Dataset, dataset_schema),
+                (NodeId::from_index_for_internal_use(1), VectorInputRole::Queries, query_schema),
+            ],
+        ),
+        (
+            "kmeans",
+            kmeans_plan_with_initial_centroids(),
+            vec![
+                (NodeId::from_index_for_internal_use(0), VectorInputRole::Input, relation_schema("id")),
+                (NodeId::from_index_for_internal_use(1), VectorInputRole::InitialCentroids, centroid_schema),
+            ],
+        ),
+        (
+            "pca",
+            pca_plan(),
+            vec![(NodeId::from_index_for_internal_use(0), VectorInputRole::Input, relation_schema("id"))],
+        ),
+    ];
+
+    for (algorithm, plan, expected_inputs) in cases {
+        let vector_node_id = plan.root_id();
+        let PlanNode::VectorAlgorithm(vector) = &plan.root_node().kind else {
+            panic!("{algorithm} root should be a vector algorithm");
+        };
+        let analysis = plan.capability_analysis(rapids_analysis_context());
+        let vector_edges = analysis
+            .edges
+            .iter()
+            .filter(|edge| edge.consumer == EdgeConsumer::Node(vector_node_id))
+            .collect::<Vec<_>>();
+        assert_eq!(vector_edges.len(), expected_inputs.len(), "{algorithm} edge count");
+
+        for (input_index, (producer, role, expected_schema)) in expected_inputs.iter().enumerate() {
+            assert_eq!(vector.inputs[input_index], *producer, "{algorithm} vector input order");
+            let edge = vector_edges
+                .iter()
+                .find(|edge| edge.producer == *producer)
+                .unwrap_or_else(|| panic!("{algorithm} is missing the edge for {role:?}"));
+            assert_eq!(
+                edge.input_role,
+                InputRole::VectorAlgorithmInput { role: *role },
+                "{algorithm} edge role for input {input_index}"
+            );
+            assert!(edge.contract_kinds.contains(&EdgeContractKind::VectorAlgorithmInput { role: *role }));
+            assert_eq!(
+                plan.node(*producer).expect("vector producer exists").output_schema().as_ref(),
+                expected_schema.as_ref(),
+                "{algorithm} producer schema for {role:?}"
+            );
+        }
+
         let decision = bounded_pipeline_decision(&plan, Default::default(), rapids_analysis_context())
             .expect("bounded admission should classify vector plan");
-        assert!(decision.admission().is_none());
-        let projection = decision.rejection_projection().expect("vector plan should have a bounded rejection");
-        // The compiler owns vector coverage: it reports the structural
-        // refusal itself instead of an incidental envelope verdict, and the
-        // refusal carries no memory-sizing blocker facts.
-        assert_eq!(projection.reason, "compiled_pipeline_graph_not_constructible");
-        assert!(!projection.facts.contains_key("memory_boundary"));
-        assert!(!projection.facts.contains_key("required_contract"));
+        let admission = decision.admission().unwrap_or_else(|| {
+            panic!("{algorithm} should compile without coverage rejection: {:?}", decision.rejection_projection())
+        });
+        assert!(decision.rejection_projection().is_none());
+        let pipeline = admission.pipeline();
+        let vector_tasks =
+            pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::VectorAlgorithm).collect::<Vec<_>>();
+        assert_eq!(vector_tasks.len(), 1, "{algorithm} should have one compiled vector task");
+        let vector_task = vector_tasks[0];
+        assert_eq!(vector_task.plan_node(), Some(vector_node_id));
+        assert_eq!(vector_task.input_resources().len(), expected_inputs.len());
+        assert_eq!(vector_task.output_resources().len(), 1);
+
+        for (input_index, (producer, role, _)) in expected_inputs.iter().enumerate() {
+            let resource_id = vector_task.input_resources()[input_index];
+            let resource = pipeline
+                .resources()
+                .iter()
+                .find(|resource| resource.id() == resource_id)
+                .unwrap_or_else(|| panic!("{algorithm} {role:?} input resource is missing"));
+            let producer_task = pipeline
+                .tasks()
+                .iter()
+                .find(|task| task.id() == resource.producer())
+                .expect("resident resource producer task exists");
+            assert_eq!(producer_task.plan_node(), Some(*producer), "{algorithm} {role:?} resource producer");
+            assert!(resource.consumers().contains(&vector_task.id()), "{algorithm} {role:?} resource consumer");
+        }
     }
+}
+
+#[test]
+fn vector_algorithm_composes_with_relational_tasks_and_keeps_resident_handoffs() {
+    let schema = relation_schema("id");
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+    let filtered = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("x"), BinaryOp::Gt, Expr::literal(LiteralValue::Float32(0.0))),
+        Arc::clone(&schema),
+    );
+    let projected = builder.add_projection(
+        filtered,
+        schema
+            .fields()
+            .iter()
+            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+            .collect(),
+    );
+    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::Pca,
+        VectorAlgorithmParams::Pca(VectorPcaParams::new(
+            VectorRelationBinding::new(projected, VectorRowIdBinding::column("id"), ["x", "y"]),
+            1,
+        )),
+        vector_pca_output_schema(DataType::Int64, 1),
+    ));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("pc_0", DataType::Float32, false),
+    ]));
+    let output = builder.add_projection(
+        vector,
+        vec![
+            ProjectionOutput::new(Expr::column("id"), output_schema.field(0).clone()),
+            ProjectionOutput::new(Expr::column("pc_0"), output_schema.field(1).clone()),
+        ],
+    );
+    let plan = builder.finish_with_host_sink(output);
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("relational operators can surround a vector task");
+    pipeline.validate().expect("compiled vector composition satisfies resident task contracts");
+
+    let task_for_node = |node| {
+        pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.plan_node() == Some(node))
+            .unwrap_or_else(|| panic!("compiled task for plan node {node} is missing"))
+    };
+    let vector_task = task_for_node(vector);
+    let upstream_task = task_for_node(projected);
+    let downstream_task = task_for_node(output);
+    assert_eq!(vector_task.kind(), PipelineTaskKind::VectorAlgorithm);
+    assert_eq!(upstream_task.kind(), PipelineTaskKind::Unary);
+    assert_eq!(downstream_task.kind(), PipelineTaskKind::Unary);
+
+    let input_resource = vector_task.input_resources()[0];
+    let input = pipeline.resources().iter().find(|resource| resource.id() == input_resource).unwrap();
+    assert_eq!(input.producer(), upstream_task.id());
+    assert!(input.consumers().contains(&vector_task.id()));
+
+    let output_resource = vector_task.output_resources()[0];
+    let output = pipeline.resources().iter().find(|resource| resource.id() == output_resource).unwrap();
+    assert_eq!(output.producer(), vector_task.id());
+    assert!(output.consumers().contains(&downstream_task.id()));
 }
 
 fn knn_plan(with_join_input: bool) -> QueryPlan {
@@ -499,6 +644,24 @@ fn kmeans_plan() -> QueryPlan {
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
     let params =
         VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 4);
+    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::KMeans,
+        VectorAlgorithmParams::KMeans(params),
+        vector_kmeans_output_schema(DataType::Int64),
+    ));
+    builder.finish_with_host_sink(root)
+}
+
+fn kmeans_plan_with_initial_centroids() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", relation_schema("id"))));
+    let centroids = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "initial_centroids",
+        relation_schema("centroid_id"),
+    )));
+    let params =
+        VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]), 2)
+            .with_initial_centroids(VectorRelationBinding::new(centroids, VectorRowIdBinding::RowIndex, ["x", "y"]));
     let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
         VectorAlgorithm::KMeans,
         VectorAlgorithmParams::KMeans(params),

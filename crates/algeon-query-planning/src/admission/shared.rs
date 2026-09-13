@@ -119,7 +119,9 @@ fn capability_first_bounded_pipeline_admission_impl(
         // until their compiled contracts migrate.
         return Ok(None);
     }
-    let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) || converged {
+    let vector_task_contract = pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::VectorAlgorithm)
+        && pipeline_tasks_within_migrated_contract(&pipeline);
+    let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) || converged || vector_task_contract {
         analysis.capability_envelope_label()
     } else {
         match envelope_admission {

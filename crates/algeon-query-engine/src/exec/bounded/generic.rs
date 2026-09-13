@@ -1,4 +1,4 @@
-#[cfg(any(feature = "cugraph", feature = "cuvs"))]
+#[cfg(feature = "cugraph")]
 use std::collections::BTreeMap;
 #[cfg(feature = "cugraph")]
 use std::iter::once;
@@ -24,16 +24,11 @@ use super::{DataFrame, execute_graph_algorithm_sanitized, graph_preparation_bypa
 use crate::exec::graph_algorithm::{bounded_betweenness::*, graph_empty_input_prevalidated, statistics::*};
 #[cfg(not(feature = "cugraph"))]
 use crate::exec::graph_algorithm_feature_disabled;
-#[cfg(feature = "cuvs")]
-use crate::exec::validate_vector_algorithm_execution;
 #[cfg(feature = "cugraph")]
 use crate::plan::GraphAlgorithmSpec;
 use crate::{
     admission::canonical_execution_scope_fingerprint,
-    exec::{
-        execute_vector_algorithm,
-        source::{ScheduledLocalParquetReadOutput, read_local_parquet_source, record_bounded_parquet_source_metrics},
-    },
+    exec::source::{ScheduledLocalParquetReadOutput, read_local_parquet_source, record_bounded_parquet_source_metrics},
     observability::SourceReadFact,
     plan::{EdgeNormalizeNode, GraphAlgorithmNode},
     rapids_backend::rapids_analysis_context,
@@ -170,29 +165,11 @@ fn execute_bounded_generic_node(
         PlanNode::GraphAlgorithm(graph) => {
             execute_bounded_generic_graph_algorithm(execution, plan, id, graph, gpu_inputs)
         },
-        PlanNode::VectorAlgorithm(vector) => {
-            #[cfg(feature = "cuvs")]
-            {
-                validate_vector_algorithm_execution(id, vector)?;
-                let mut inputs = BTreeMap::new();
-                for input_id in &vector.inputs {
-                    if !inputs.contains_key(input_id) {
-                        let input = execute_bounded_generic_node(execution, plan, *input_id, gpu_inputs)?;
-                        inputs.insert(*input_id, input.frame);
-                    }
-                }
-                let frame = execute_vector_algorithm(execution.context(), plan, id, vector, &inputs)?;
-                let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
-                Ok(ResidentGpuFrame { frame, device_bytes })
-            }
-            #[cfg(not(feature = "cuvs"))]
-            {
-                match execute_vector_algorithm(id, vector) {
-                    Ok(_) => unreachable!("cuVS-disabled execution cannot produce a GPU frame"),
-                    Err(error) => Err(error),
-                }
-            }
-        },
+        PlanNode::VectorAlgorithm(_) => Err(unsupported_bounded_shape(
+            "bounded vector execution requires an admitted compiled pipeline",
+            "compiled_vector_pipeline_required",
+        )
+        .with_fact("node_id", id)),
         PlanNode::Aggregate(aggregate) => {
             let input = match plan.node(aggregate.input).map(|node| &node.kind) {
                 Some(PlanNode::Aggregate(_)) => match BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input) {

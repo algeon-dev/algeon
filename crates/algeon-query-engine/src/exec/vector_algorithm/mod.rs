@@ -11,6 +11,6 @@ mod disabled;
 mod enabled;
 
 #[cfg(not(feature = "cuvs"))]
-pub(in crate::exec) use disabled::execute_vector_algorithm;
+pub(in crate::exec) use disabled::vector_algorithm_execution_unavailable;
 #[cfg(feature = "cuvs")]
 pub(in crate::exec) use enabled::{execute_vector_algorithm, validate_vector_algorithm_execution};

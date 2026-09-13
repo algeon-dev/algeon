@@ -8,7 +8,7 @@
 //! [`output::QueryExecutionResult`] so callers can record them after choosing host or
 //! GPU-resident output handling.
 
-#[cfg(any(feature = "cugraph", feature = "cuvs"))]
+#[cfg(feature = "cugraph")]
 use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
@@ -340,6 +340,32 @@ fn execute_query_plan_output(
 ) -> Result<Output> {
     context.check_cancellation("query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan, rapids_analysis_context())?;
+    let vector_node = if plan.contains_vector_algorithm() {
+        let unreachable = plan.unreachable_node_ids();
+        plan.nodes()
+            .iter()
+            .find(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::VectorAlgorithm(_)))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "cuvs"))]
+    if let Some(node) = vector_node
+        && let PlanNode::VectorAlgorithm(vector) = &node.kind
+    {
+        return Err(vector_algorithm_execution_unavailable(node.id, vector));
+    }
+    if let Some(node) = vector_node
+        && !context.memory_control_policy().is_bounded()
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "query_engine.vector_algorithm.admission",
+            "vector execution requires a bounded compiled pipeline",
+        )
+        .with_fact("node_id", node.id)
+        .with_fact("operator", "vector_algorithm")
+        .with_fact("reason", "compiled_vector_pipeline_required"));
+    }
     let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
     // Derive the per-query exact-order scope here so every context clone,
     // including the source-read worker contexts on spawned threads, observes
@@ -479,24 +505,13 @@ fn execute_node(
                 Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
             }
         },
-        PlanNode::VectorAlgorithm(vector) => {
-            #[cfg(feature = "cuvs")]
-            {
-                validate_vector_algorithm_execution(node.id, vector)?;
-                let mut inputs = BTreeMap::new();
-                for input_id in &vector.inputs {
-                    if !inputs.contains_key(input_id) {
-                        let input = execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics)?;
-                        inputs.insert(*input_id, input);
-                    }
-                }
-                execute_vector_algorithm(context, plan, node.id, vector, &inputs)
-            }
-            #[cfg(not(feature = "cuvs"))]
-            {
-                execute_vector_algorithm(node.id, vector)
-            }
-        },
+        PlanNode::VectorAlgorithm(_) => Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "query_engine.vector_algorithm.execute",
+            "vector execution requires the compiled pipeline",
+        )
+        .with_fact("node_id", node.id)
+        .with_fact("reason", "compiled_vector_pipeline_required")),
     }?;
 
     record_device_memory_observation(&frame, metrics)?;

@@ -494,6 +494,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
             | PipelineTaskKind::Window
             | PipelineTaskKind::Union
             | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::VectorAlgorithm
             | PipelineTaskKind::EdgeNormalize
             | PipelineTaskKind::FinalSort
             | PipelineTaskKind::Limit => 2,
@@ -669,6 +670,7 @@ fn operator_class_rank(kind: PipelineTaskKind) -> u8 {
         PipelineTaskKind::Aggregate
         | PipelineTaskKind::Union
         | PipelineTaskKind::GraphAlgorithm
+        | PipelineTaskKind::VectorAlgorithm
         | PipelineTaskKind::JoinMaterialize
         | PipelineTaskKind::FinalSort => 3,
         PipelineTaskKind::EdgeNormalize => 2,

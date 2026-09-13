@@ -342,6 +342,8 @@ pub enum PipelineTaskKind {
     EdgeNormalize,
     /// Execute one graph algorithm after its edge and side-input frames are resident.
     GraphAlgorithm,
+    /// Execute one vector algorithm after its relation input frames are resident.
+    VectorAlgorithm,
     /// Materialize the explicit result sink.
     SinkMaterialize,
 }
@@ -364,6 +366,7 @@ impl PipelineTaskKind {
             Self::Union => "union",
             Self::EdgeNormalize => "edge_normalize",
             Self::GraphAlgorithm => "graph_algorithm",
+            Self::VectorAlgorithm => "vector_algorithm",
             Self::SinkMaterialize => "sink_materialize",
         }
     }

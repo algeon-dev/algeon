@@ -25,7 +25,7 @@ name = "query_runtime"
 
 [features]
 default = []
-cugraph = ["dep:cugraph", "query-planning/cugraph"]
+cugraph = ["dep:cugraph"]
 nvml = ["dep:nvml-wrapper"]
 # Controlled device-quarantine qualification: closes admission on one live
 # device ledger through the same gate placement uses. No generic fault API.

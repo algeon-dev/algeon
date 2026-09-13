@@ -76,6 +76,7 @@ impl ContractGraph<'_> {
                 | PipelineTaskKind::Union
                 | PipelineTaskKind::EdgeNormalize
                 | PipelineTaskKind::GraphAlgorithm
+                | PipelineTaskKind::VectorAlgorithm
                 | PipelineTaskKind::SinkMaterialize => {
                     self.tasks[index].clone().with_accepted_input_form(AcceptedInputForm::Frame)
                 },
@@ -127,6 +128,7 @@ impl ContractGraph<'_> {
                 }
             },
             PipelineTaskKind::Limit => self.single_input_ordering(producer).cloned(),
+            PipelineTaskKind::VectorAlgorithm => None,
             _ => None,
         }
     }
@@ -221,6 +223,7 @@ impl ContractGraph<'_> {
                     ResidentDataForm::Frame
                 }
             },
+            PipelineTaskKind::VectorAlgorithm => ResidentDataForm::Frame,
             _ => ResidentDataForm::Frame,
         }
     }

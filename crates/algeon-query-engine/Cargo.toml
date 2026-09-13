@@ -29,7 +29,7 @@ name = "query_engine"
 
 [features]
 default = []
-cugraph = ["dep:cugraph", "dep:cugraph-sys", "query-planning/cugraph", "query-runtime/cugraph"]
+cugraph = ["dep:cugraph", "dep:cugraph-sys", "query-runtime/cugraph"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["query-runtime/nvml"]
