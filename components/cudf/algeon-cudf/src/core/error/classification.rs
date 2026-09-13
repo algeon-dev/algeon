@@ -17,7 +17,7 @@ use super::{
 /// Coarse classification of a `cudf::Error` for downstream mapping.
 ///
 /// Each variant corresponds to one branch of the canonical
-/// `code_for_cudf_error` policy. Downstreams map this to their own
+/// `code_for_cudf_error` policy. Downstream map this to their own
 /// `ErrorCode`/`QueryErrorCode` without reimplementing the policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CudfErrorClassification {

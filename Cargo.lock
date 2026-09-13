@@ -119,6 +119,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "algeon-cuml"
+version = "0.1.0"
+dependencies = [
+ "algeon-cudf",
+ "algeon-cuml-sys",
+ "algeon-interop",
+ "static_assertions",
+]
+
+[[package]]
+name = "algeon-cuml-sys"
+version = "0.1.0"
+dependencies = [
+ "algeon-build-support",
+ "cmake",
+]
+
+[[package]]
 name = "algeon-cuvs"
 version = "0.1.0"
 dependencies = [

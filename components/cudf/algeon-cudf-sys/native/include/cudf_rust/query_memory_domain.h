@@ -33,6 +33,12 @@ cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_ha
                                                      size_t limit_bytes,
                                                      cudf_reservation_handle* out,
                                                      cudf_memory_resource_handle* out_resource);
+cudf_status_t cudf_query_memory_domain_attach_raw_stream(cudf_query_memory_domain_handle domain,
+                                                         void* raw_stream,
+                                                         uint64_t reservation_id,
+                                                         size_t limit_bytes,
+                                                         cudf_reservation_handle* out,
+                                                         cudf_memory_resource_handle* out_resource);
 cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle domain,
                                              cudf_memory_resource_usage_t* out);
 cudf_status_t cudf_query_memory_domain_identity(cudf_query_memory_domain_handle domain,

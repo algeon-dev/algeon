@@ -1,0 +1,4 @@
+CUML_RUST_1.0 {
+  global: cuml_*;
+  local: *;
+};

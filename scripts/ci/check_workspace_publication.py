@@ -41,6 +41,8 @@ PUBLISHED = frozenset(
         "algeon-cugraph-sys",
         "algeon-cuvs",
         "algeon-cuvs-sys",
+        "algeon-cuml",
+        "algeon-cuml-sys",
         "algeon-build-support",
         "algeon-interop",
     }

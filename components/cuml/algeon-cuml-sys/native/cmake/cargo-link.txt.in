@@ -1,0 +1,6 @@
+cargo:rustc-link-search=native=@CMAKE_INSTALL_PREFIX@/@lib_dir@
+cargo:rustc-link-lib=dylib=cuml_rust
+cargo:rustc-link-arg=-Wl,-rpath,@CMAKE_INSTALL_PREFIX@/@lib_dir@
+cargo:rustc-link-arg=-Wl,-rpath,@CUML_INSTALL_DIR@/lib
+cargo:rustc-link-arg=-Wl,-rpath,@CUDF_INSTALL_DIR@/lib
+cargo:rustc-link-arg=-Wl,-rpath,@CUDAToolkit_LIBRARY_DIR@

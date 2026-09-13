@@ -5,14 +5,15 @@ readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly expected_paths=(
   components/cudf/cudf
   components/cugraph/cugraph
+  components/cuml/cuml
   components/cuvs/cuvs
 )
 
 case "${1:-}" in
   '') selected_paths=("${expected_paths[@]}") ;;
-  cudf | cugraph | cuvs) selected_paths=("components/$1/$1") ;;
+  cudf | cugraph | cuvs | cuml) selected_paths=("components/$1/$1") ;;
   *)
-    printf 'usage: %s [cudf|cugraph|cuvs]\n' "${0##*/}" >&2
+    printf 'usage: %s [cudf|cugraph|cuvs|cuml]\n' "${0##*/}" >&2
     exit 2
     ;;
 esac
@@ -31,7 +32,7 @@ mapfile -t registered_paths < <(
     | sort
 )
 [[ "${#registered_paths[@]}" -eq "${#expected_paths[@]}" ]] \
-  || fail ".gitmodules must register exactly the three native component sources"
+  || fail ".gitmodules must register exactly the four native component sources"
 
 for index in "${!expected_paths[@]}"; do
   [[ "${registered_paths[${index}]}" == "${expected_paths[${index}]}" ]] \
@@ -59,9 +60,14 @@ for path in "${selected_paths[@]}"; do
   head_entry=$(git ls-tree HEAD -- "${path}") \
     || fail "cannot inspect the HEAD gitlink for ${path}"
   read -r head_mode head_type head_revision head_path head_extra <<<"${head_entry}"
-  [[ "${head_mode}" == 160000 && "${head_type}" == commit && "${head_revision}" == "${pinned}" \
-    && "${head_path}" == "${path}" && -z "${head_extra:-}" ]] \
-    || fail "the index gitlink for ${path} must match the root HEAD"
+  if [[ -n "${head_entry}" ]]; then
+    [[ "${head_mode}" == 160000 && "${head_type}" == commit && "${head_revision}" == "${pinned}" \
+      && "${head_path}" == "${path}" && -z "${head_extra:-}" ]] \
+      || fail "the index gitlink for ${path} must match the root HEAD"
+  else
+    [[ "$(git diff --cached --name-status -- "${path}")" == $'A\t'"${path}" ]] \
+      || fail "new gitlink ${path} must be staged as an addition"
+  fi
 
   [[ -d "${path}" && -e "${path}/.git" && ! -L "${path}" ]] \
     || fail "the ${path} submodule must be initialized and must not be a symlink"

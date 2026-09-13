@@ -2919,6 +2919,12 @@ unsafe extern "C" {
         partition_offsets_len: usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    pub fn cudf_memory_manager_route_current_resource_raw(
+        manager: cudf_memory_manager_handle,
+        raw_stream: *mut core::ffi::c_void,
+        resource: cudf_memory_resource_handle,
+        out: *mut cudf_current_resource_route_handle,
+    ) -> cudf_status_t;
     pub fn cudf_memory_manager_attach_reservation(
         manager: cudf_memory_manager_handle,
         stream: cudf_stream_handle,
@@ -2935,6 +2941,14 @@ unsafe extern "C" {
     pub fn cudf_memory_manager_attach_reservation_to_arena(
         manager: cudf_memory_manager_handle,
         stream: cudf_stream_handle,
+        arena: cudf_reservation_arena_handle,
+        reservation_id: u64,
+        limit_bytes: usize,
+        out: *mut cudf_reservation_handle,
+    ) -> cudf_status_t;
+    pub fn cudf_memory_manager_attach_reservation_to_arena_raw(
+        manager: cudf_memory_manager_handle,
+        raw_stream: *mut core::ffi::c_void,
         arena: cudf_reservation_arena_handle,
         reservation_id: u64,
         limit_bytes: usize,
@@ -2962,6 +2976,14 @@ unsafe extern "C" {
     pub fn cudf_query_memory_domain_attach_stream(
         domain: cudf_query_memory_domain_handle,
         stream: cudf_stream_handle,
+        reservation_id: u64,
+        limit_bytes: usize,
+        out: *mut cudf_reservation_handle,
+        out_resource: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+    pub fn cudf_query_memory_domain_attach_raw_stream(
+        domain: cudf_query_memory_domain_handle,
+        raw_stream: *mut core::ffi::c_void,
         reservation_id: u64,
         limit_bytes: usize,
         out: *mut cudf_reservation_handle,

@@ -98,7 +98,7 @@ mod usage;
 #[cfg(test)]
 mod tests;
 
-pub use domain::{QueryMemoryDomain, ReservationArena, StreamReservationLease};
+pub use domain::{QueryMemoryDomain, RawStreamReservationLease, ReservationArena, StreamReservationLease};
 pub use failure::{
     AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity, AllocatorEventRead,
     AllocatorEventRingBounds, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo, DeviceMemoryFailureSource,
@@ -109,7 +109,7 @@ pub use installation::{
     DeviceMemoryManagerInstallationOutcome, DeviceMemoryManagerInstallationOutcomeKind,
     DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationState, DeviceMemoryManagerInstallationStatus,
 };
-pub use manager::{CurrentResourceRouteLease, DeviceMemoryManager};
+pub use manager::{CurrentResourceRouteLease, DeviceMemoryManager, RawCurrentResourceRouteLease};
 pub use options::{DeviceMemoryManagerBase, DeviceMemoryManagerOptions, QueryMemoryDomainOptions};
 pub use resource::DeviceMemoryResource;
 pub use usage::{
