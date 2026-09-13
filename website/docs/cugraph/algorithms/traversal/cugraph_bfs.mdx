@@ -67,7 +67,7 @@ Logical string side-input limitations:
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `depth_limit` | `integer\|null` | `null` | min 0 | optional non-negative BFS depth limit |
+| `depth_limit` | `integer\|null` | `null` | min 0; max 9223372036854776000 | optional non-negative BFS depth limit |
 | `output_mode` | `string` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | BFS output shape |
 | `return_target_info` | `boolean` | `false` |  | whether raw or normalized BFS output includes target information |
 | `source_vertex` | `integer\|string` |  |  | scalar source vertex; BFS source selectors are mutually exclusive |

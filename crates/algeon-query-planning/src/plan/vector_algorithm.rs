@@ -161,11 +161,22 @@ pub struct CuvsOutputFieldDefinition {
 pub struct CuvsOptionValidationError {
     code: &'static str,
     message: String,
+    argument: Option<&'static str>,
 }
 
 impl CuvsOptionValidationError {
     pub fn code(&self) -> &'static str {
         self.code
+    }
+
+    /// The declared option this error concerns, when it is attributable to one.
+    pub fn argument(&self) -> Option<&'static str> {
+        self.argument
+    }
+
+    fn for_argument(mut self, argument: &'static str) -> Self {
+        self.argument = Some(argument);
+        self
     }
 
     pub fn message(&self) -> &str {
@@ -493,8 +504,8 @@ pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
         output_fields: KNN_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT *
 FROM cuvs_brute_force_knn(
-  dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors),
-  queries => (SELECT query_id AS id, d0, d1 FROM query_vectors),
+  dataset => (SELECT id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT id, d0, d1 FROM query_vectors),
   k => 8,
   metric => 'l2_expanded'
 );"#,
@@ -517,7 +528,7 @@ FROM cuvs_brute_force_knn(
         output_fields: KMEANS_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT id, cluster_id
 FROM cuvs_kmeans(
-  input => (SELECT item_id AS id, d0, d1 FROM input_vectors),
+  input => (SELECT id, d0, d1 FROM input_vectors),
   n_clusters => 8
 )
 ORDER BY row_ordinal;"#,
@@ -540,7 +551,7 @@ ORDER BY row_ordinal;"#,
         output_fields: PCA_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT id, pc_0, pc_1
 FROM cuvs_pca(
-  input => (SELECT item_id AS id, d0, d1 FROM input_vectors),
+  input => (SELECT id, d0, d1 FROM input_vectors),
   n_components => 2
 )
 ORDER BY row_ordinal;"#,
@@ -627,7 +638,8 @@ pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<
                 return Err(option_error(
                     "missing_or_invalid_option",
                     format!("cuVS option '{}' is required", option.name),
-                ));
+                )
+                .for_argument(option.name));
             }
             let default = match option.kind {
                 CuvsOptionKind::PositiveInteger { default: Some(value), .. } => json!(value),
@@ -639,7 +651,7 @@ pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<
             object.insert(option.name.to_string(), default);
             continue;
         };
-        validate_option_value(option, value)?;
+        validate_option_value(option, value).map_err(|error| error.for_argument(option.name))?;
     }
     Ok(Value::Object(object))
 }
@@ -742,7 +754,7 @@ fn validate_relation_binding_value(
 }
 
 fn option_error(code: &'static str, message: impl Into<String>) -> CuvsOptionValidationError {
-    CuvsOptionValidationError { code, message: message.into() }
+    CuvsOptionValidationError { code, message: message.into(), argument: None }
 }
 
 /// Vector algorithm identity carried by the native IR.

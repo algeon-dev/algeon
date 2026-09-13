@@ -21,8 +21,8 @@ use super::{
     CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphBfsSource, CugraphBfsSourceVertex, CugraphLogicalNode,
     CugraphRelationRole, CugraphSqlConfig,
     definitions::{
-        CugraphAllowedValue, CugraphArgumentKind, CugraphArgumentType, CugraphRelationColumnType,
-        CugraphValueDefinition, CugraphValueRange, arguments_for_algorithm,
+        CugraphAllowedValue, CugraphArgumentDefinition, CugraphArgumentKind, CugraphArgumentType,
+        CugraphRelationColumnType, CugraphValueDefinition, CugraphValueRange, arguments_for_algorithm,
     },
     relation_planner::relation_role,
 };
@@ -361,12 +361,17 @@ fn invalid_graph_error(
     error: &DataFusionError,
     mut details: serde_json::Map<String, Value>,
 ) -> GpuCallValidation {
-    let error_code = error
-        .find_algeon_error()
-        .and_then(|error| error.fact_value("reason"))
-        .unwrap_or("invalid_argument")
-        .to_string();
-    details.entry("path".to_string()).or_insert_with(|| Value::String("relations".to_string()));
+    let typed = error.find_algeon_error();
+    let error_code = typed.and_then(|error| error.fact_value("reason")).unwrap_or("invalid_argument").to_string();
+    if let Some(argument) = typed.and_then(|error| error.fact_value("argument")) {
+        details.insert("path".to_string(), Value::String(format!("options.{argument}")));
+        details.insert("argument".to_string(), Value::String(argument.to_string()));
+    } else if let Some(role) = typed.and_then(|error| error.fact_value("relation_role")) {
+        details.insert("path".to_string(), Value::String(format!("relations.{role}")));
+        details.insert("relation_role".to_string(), Value::String(role.to_string()));
+    } else {
+        details.entry("path".to_string()).or_insert_with(|| Value::String("options".to_string()));
+    }
     GpuCallValidation {
         valid: false,
         error_code: Some(error_code),
@@ -449,7 +454,7 @@ fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlCon
         .collect::<serde_json::Map<_, _>>();
     let required_relations =
         relations.iter().filter(|argument| argument.required).map(|argument| argument.name).collect::<Vec<_>>();
-    json!({
+    let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "required": ["relations", "options"],
@@ -462,7 +467,71 @@ fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlCon
             },
             "options": options_schema(algorithm, config)
         }
-    })
+    });
+    let constraints = group_constraints(algorithm, true);
+    if !constraints.is_empty() {
+        schema["allOf"] = Value::Array(constraints);
+    }
+    schema
+}
+
+/// Projects argument groups (`min_count`/`max_count` over their members) as
+/// JSON Schema so a standard validator rejects the same selector conflicts the
+/// binder rejects. A nullable value member counts as present only when it is
+/// not `null`, matching the binder. With `with_relations` false the constraint
+/// is scoped to the options object: pairs with a relation member are skipped
+/// and a minimum count that a relation could satisfy is not asserted.
+fn group_constraints(algorithm: CugraphAlgorithm, with_relations: bool) -> Vec<Value> {
+    let arguments = arguments_for_algorithm(algorithm);
+    let mut group_names = Vec::new();
+    for argument in arguments {
+        if let Some(group) = argument.group
+            && !group_names.contains(&group.name)
+        {
+            group_names.push(group.name);
+        }
+    }
+    let mut constraints = Vec::new();
+    for name in group_names {
+        let all_members = arguments
+            .iter()
+            .filter(|argument| argument.group.is_some_and(|group| group.name == name))
+            .collect::<Vec<_>>();
+        let group = all_members[0].group.expect("group members carry their group");
+        let has_relation_member =
+            all_members.iter().any(|argument| matches!(argument.kind, CugraphArgumentKind::Relation { .. }));
+        let members = all_members
+            .iter()
+            .copied()
+            .filter(|argument| with_relations || matches!(argument.kind, CugraphArgumentKind::Value(_)))
+            .collect::<Vec<_>>();
+        if group.max_count == 1 {
+            for (index, first) in members.iter().enumerate() {
+                for second in &members[index + 1..] {
+                    constraints.push(json!({
+                        "not": {"allOf": [argument_present(first, with_relations), argument_present(second, with_relations)]}
+                    }));
+                }
+            }
+        }
+        if group.min_count >= 1 && (with_relations || !has_relation_member) {
+            constraints.push(json!({
+                "anyOf": members.iter().map(|member| argument_present(member, with_relations)).collect::<Vec<_>>()
+            }));
+        }
+    }
+    constraints
+}
+
+fn argument_present(argument: &CugraphArgumentDefinition, nested: bool) -> Value {
+    match argument.kind {
+        CugraphArgumentKind::Relation { .. } => json!({"properties": {"relations": {"required": [argument.name]}}}),
+        CugraphArgumentKind::Value(_) => {
+            let present =
+                json!({"required": [argument.name], "properties": {argument.name: {"not": {"type": "null"}}}});
+            if nested { json!({"properties": {"options": present}}) } else { present }
+        },
+    }
 }
 
 fn options_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Value {
@@ -483,7 +552,7 @@ fn options_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Val
         .collect::<serde_json::Map<_, _>>();
     let required =
         values.iter().filter(|(argument, _)| argument.required).map(|(argument, _)| argument.name).collect::<Vec<_>>();
-    json!({
+    let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": format!("{} value arguments", algorithm.function_name()),
         "description": "Named cuGraph value arguments. Relation fields are derived from resolved relation schemas.",
@@ -491,14 +560,20 @@ fn options_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Val
         "additionalProperties": false,
         "required": required,
         "properties": properties,
-    })
+    });
+    let constraints = group_constraints(algorithm, false);
+    if !constraints.is_empty() {
+        schema["allOf"] = Value::Array(constraints);
+    }
+    schema
 }
 
 fn value_schema(algorithm: CugraphAlgorithm, definition: CugraphValueDefinition, config: &CugraphSqlConfig) -> Value {
     let mut schema = match definition.value_type {
         CugraphArgumentType::Boolean => json!({"type": "boolean"}),
-        CugraphArgumentType::Int64 => json!({"type": "integer"}),
-        CugraphArgumentType::UInt32 | CugraphArgumentType::UInt64 => json!({"type": "integer", "minimum": 0}),
+        CugraphArgumentType::Int64 => json!({"type": "integer", "minimum": i64::MIN, "maximum": i64::MAX}),
+        CugraphArgumentType::UInt32 => json!({"type": "integer", "minimum": 0, "maximum": u32::MAX}),
+        CugraphArgumentType::UInt64 => json!({"type": "integer", "minimum": 0, "maximum": u64::MAX}),
         CugraphArgumentType::Float64 => json!({"type": "number"}),
         CugraphArgumentType::Utf8 => json!({"type": "string"}),
         CugraphArgumentType::VertexId => json!({"type": ["integer", "string"]}),

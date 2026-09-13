@@ -54,11 +54,11 @@ Logical string side-input limitations:
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `ensemble_size` | `integer` | `10` | min 1 | number of ECG ensemble iterations |
-| `max_level` | `integer` | `100` | min 1 | maximum hierarchy level, at least 1 |
+| `ensemble_size` | `integer` | `10` | min 1; max 4294967295 | number of ECG ensemble iterations |
+| `max_level` | `integer` | `100` | min 1; max 4294967295 | maximum hierarchy level, at least 1 |
 | `min_weight` | `number` | `0.001` | min 0 | minimum ECG edge weight |
 | `resolution` | `number` | `1` | &gt; 0 | positive community resolution |
-| `seed` | `integer` | `0` | min 0 | random initialization seed |
+| `seed` | `integer` | `0` | min 0; max 18446744073709552000 | random initialization seed |
 | `threshold` | `number` | `1e-7` | min 0 | non-negative convergence threshold |
 
 ### Graph construction options

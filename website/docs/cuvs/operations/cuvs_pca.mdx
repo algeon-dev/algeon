@@ -25,7 +25,7 @@ The call below expects the registered relation `input_vectors` (the `input` role
 ```sql
 SELECT id, pc_0, pc_1
 FROM cuvs_pca(
-  input => (SELECT item_id AS id, d0, d1 FROM input_vectors),
+  input => (SELECT id, d0, d1 FROM input_vectors),
   n_components => 2
 )
 ORDER BY row_ordinal;

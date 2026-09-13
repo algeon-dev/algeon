@@ -54,9 +54,9 @@ Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are no
 | `evs_tolerance` | `number` | `0.01` | min 0 | non-negative eigenvalue solver tolerance |
 | `k_means_max_iterations` | `integer` | `100` | min 1; max 2147483647 | k-means iteration limit |
 | `k_means_tolerance` | `number` | `0.001` | min 0 | non-negative k-means tolerance |
-| `n_clusters` | `integer` | `2` | min 1 | number of spectral clusters |
-| `n_eigenvectors` | `integer` | `2` | min 1 | number of spectral eigenvectors |
-| `seed` | `integer` | `0` | min 0 | random initialization seed |
+| `n_clusters` | `integer` | `2` | min 1; max 4294967295 | number of spectral clusters |
+| `n_eigenvectors` | `integer` | `2` | min 1; max 4294967295 | number of spectral eigenvectors |
+| `seed` | `integer` | `0` | min 0; max 18446744073709552000 | random initialization seed |
 
 ### Graph construction options
 

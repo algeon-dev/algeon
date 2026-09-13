@@ -141,3 +141,119 @@ async fn cugraph_named_relation_planner_keeps_side_inputs_as_children() {
     let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("named BFS must retain its graph boundary");
     assert_eq!(cugraph.children().len(), 2, "edge and side-input relations remain graph inputs");
 }
+
+#[tokio::test]
+async fn cugraph_named_binder_rejects_conflicting_relations_and_values() {
+    let ctx = named_sql_context();
+    let cases = [
+        (
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => 0, \
+             include_vertices => (SELECT vertex_id AS vertex FROM sources), \
+             exclude_vertices => (SELECT vertex_id AS vertex FROM excluded))",
+            "include_vertices and exclude_vertices are mutually exclusive",
+        ),
+        (
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => 0, \
+             sources => (SELECT vertex_id AS vertex FROM sources))",
+            "exactly one of source_vertex, source_vertices, or sources",
+        ),
+        (
+            "SELECT * FROM cugraph_jaccard(edges => (SELECT src, dst FROM edges), directed => true, \
+             vertex_pairs => (SELECT src AS first, dst AS second FROM edges))",
+            "requires directed=false",
+        ),
+        (
+            "SELECT * FROM cugraph_betweenness_centrality(edges => (SELECT src, dst FROM edges), \
+             seeds => make_array(0, 1), k => 2)",
+            "seeds",
+        ),
+        (
+            "SELECT * FROM cugraph_force_atlas2(edges => (SELECT src, dst FROM edges), prevent_overlapping => true, \
+             vertex_attributes => (SELECT vertex_id AS vertex, CAST(1.0 AS FLOAT) AS mass FROM sources))",
+            "prevent_overlapping=true requires vertex_attributes.radius",
+        ),
+        (
+            "SELECT * FROM cugraph_personalized_pagerank(edges => (SELECT src, dst FROM edges))",
+            "required argument 'personalization' is missing",
+        ),
+        (
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => 0, \
+             include_edge_ids => (SELECT vertex_id AS edge_id FROM sources))",
+            "include_edge_ids requires edges.edge_id",
+        ),
+    ];
+    for (sql, expected) in cases {
+        let error = ctx.sql(sql).await.expect_err(sql).to_string();
+        assert!(error.contains(expected), "{sql}\nunexpected error: {error}");
+    }
+}
+
+#[tokio::test]
+async fn cugraph_force_atlas2_binds_both_optional_relations_as_children() {
+    let ctx = named_sql_context();
+    let plan = ctx
+        .state()
+        .create_logical_plan(
+            "SELECT * FROM cugraph_force_atlas2(\
+             edges => (SELECT src, dst FROM edges), prevent_overlapping => true, \
+             vertex_attributes => (SELECT vertex_id AS vertex, CAST(0.5 AS FLOAT) AS radius FROM sources), \
+             initial_positions => (SELECT vertex_id AS vertex, CAST(0.0 AS FLOAT) AS x, CAST(1.0 AS FLOAT) AS y \
+             FROM sources))",
+        )
+        .await
+        .unwrap();
+    let rendered = plan.display_indent().to_string();
+    assert!(
+        rendered.contains("relation_roles=[edges,vertex_attributes,initial_positions]"),
+        "unexpected plan: {rendered}"
+    );
+    assert_eq!(
+        plan.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        ["vertex", "x", "y"]
+    );
+}
+
+#[tokio::test]
+async fn cugraph_named_relation_binder_rejects_ambiguous_contract_columns() {
+    let ctx = named_sql_context();
+    let cases = [
+        (
+            "SELECT * FROM cugraph_pagerank(\
+             edges => (SELECT a.src, a.dst, a.weight, b.weight FROM edges a CROSS JOIN edges b))",
+            "column 'weight' is ambiguous",
+        ),
+        (
+            "SELECT * FROM cugraph_pagerank(\
+             edges => (SELECT a.src, b.src, a.dst FROM edges a JOIN edges b ON a.dst = b.src))",
+            "column 'src' is ambiguous",
+        ),
+        (
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => 0, \
+             exclude_vertices => (SELECT a.vertex, b.vertex FROM (SELECT vertex_id AS vertex FROM excluded) a \
+             CROSS JOIN (SELECT vertex_id AS vertex FROM excluded) b))",
+            "exclude_vertices relation column 'vertex' is ambiguous",
+        ),
+    ];
+    for (sql, expected) in cases {
+        let error = ctx.sql(sql).await.expect_err(sql);
+        assert!(error.to_string().contains(expected), "{sql}\nunexpected error: {error}");
+        assert!(typed_algeon_error(&error).fact_value("relation_role").is_some(), "{sql}");
+    }
+}
+
+#[tokio::test]
+async fn cugraph_named_binder_accepts_typed_literals_and_null_selectors() {
+    let ctx = named_sql_context();
+    for sql in [
+        "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => CAST(1 AS BIGINT))",
+        "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), source_vertex => CAST(1 AS INT))",
+        "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM edges), \
+         source_vertices => make_array(CAST(1 AS INT), 2))",
+        "SELECT * FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM edges), \
+         source_vertex => CAST(2 AS SMALLINT), cutoff => -CAST(0 AS DOUBLE))",
+        "SELECT * FROM cugraph_betweenness_centrality(edges => (SELECT src, dst FROM edges), k => NULL, \
+         seeds => make_array(0, 1))",
+    ] {
+        ctx.state().create_logical_plan(sql).await.unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+}

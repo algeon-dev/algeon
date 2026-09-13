@@ -54,9 +54,9 @@ Logical string side-input limitations:
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `max_level` | `integer` | `100` | min 1 | maximum hierarchy level, at least 1 |
+| `max_level` | `integer` | `100` | min 1; max 4294967295 | maximum hierarchy level, at least 1 |
 | `resolution` | `number` | `1` | &gt; 0 | positive community resolution |
-| `seed` | `integer` | `0` | min 0 | random initialization seed |
+| `seed` | `integer` | `0` | min 0; max 18446744073709552000 | random initialization seed |
 | `theta` | `number` | `1` | &gt; 0 | positive Leiden refinement scale |
 
 ### Graph construction options

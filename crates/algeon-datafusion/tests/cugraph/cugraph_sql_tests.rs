@@ -30,14 +30,14 @@ fn typed_algeon_error(error: &DataFusionError) -> &Error {
     error.find_algeon_error().expect("cuGraph DataFusion error must preserve the typed Algeon error")
 }
 
+#[cfg(test)]
+#[path = "cugraph_sql_tests/binder.rs"]
+mod binder;
 #[path = "cugraph_sql_tests/gpu.rs"]
 pub mod gpu;
 #[cfg(test)]
 #[path = "cugraph_sql_tests/metadata.rs"]
 mod metadata;
-#[cfg(test)]
-#[path = "cugraph_sql_tests/parser.rs"]
-mod parser;
 #[cfg(test)]
 #[path = "cugraph_sql_tests/planning.rs"]
 mod planning;

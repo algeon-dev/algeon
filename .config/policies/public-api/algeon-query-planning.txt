@@ -2546,6 +2546,7 @@ pub query_planning::plan::CuvsOptionDefinition::name: &'static str
 pub query_planning::plan::CuvsOptionDefinition::required: bool
 pub struct query_planning::plan::CuvsOptionValidationError
 impl query_planning::plan::CuvsOptionValidationError
+pub fn query_planning::plan::CuvsOptionValidationError::argument(&self) -> core::option::Option<&'static str>
 pub fn query_planning::plan::CuvsOptionValidationError::code(&self) -> &'static str
 pub fn query_planning::plan::CuvsOptionValidationError::message(&self) -> &str
 pub struct query_planning::plan::CuvsOutputFieldDefinition

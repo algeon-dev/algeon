@@ -535,11 +535,13 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
     let validation_schema: serde_json::Value =
         serde_json::from_str(described_batch.column(10).as_any().downcast_ref::<StringArray>().unwrap().value(0))
             .unwrap();
-    assert_eq!(
-        validation_schema["properties"]["options"]["description"],
-        "Named cuVS value arguments. Relation bindings are derived from the resolved relation schemas."
-    );
-    assert!(validation_schema["properties"]["options"].get("properties").is_none());
+    let options_schema: serde_json::Value =
+        serde_json::from_str(described_batch.column(8).as_any().downcast_ref::<StringArray>().unwrap().value(0))
+            .unwrap();
+    assert_eq!(validation_schema["properties"]["options"], options_schema);
+    assert_eq!(options_schema["additionalProperties"], false);
+    assert!(options_schema["required"].as_array().unwrap().contains(&serde_json::json!("n_components")));
+    assert!(options_schema["properties"].get("input").is_none());
 
     let call = serde_json::json!({
         "relations": {"input": {"table": "canonical_vectors"}},
@@ -659,6 +661,90 @@ async fn relation_arguments_require_parenthesized_subqueries() {
         let typed = error.find_algeon_error().unwrap_or_else(|| panic!("missing typed error for {sql}: {error:?}"));
         assert_eq!(typed.code(), ErrorCode::InvalidRequest, "{sql}");
         assert_eq!(typed.facts().get("reason"), Some("relation_argument_not_subquery"), "{sql}");
+    }
+}
+
+#[tokio::test]
+async fn named_binder_is_order_independent_and_rejects_duplicate_missing_and_positional_arguments() {
+    let ctx = cuvs_context();
+    let canonical = format!(
+        "SELECT * FROM {CUVS_KMEANS_FUNCTION}(\
+             input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), n_clusters => 1, max_iter => 5)"
+    );
+    let reordered = format!(
+        "SELECT * FROM {CUVS_KMEANS_FUNCTION}(\
+             max_iter => 5, n_clusters => 1, input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors))"
+    );
+    let canonical = ctx.state().create_logical_plan(&canonical).await.unwrap();
+    let reordered = ctx.state().create_logical_plan(&reordered).await.unwrap();
+    assert_eq!(canonical.display_indent().to_string(), reordered.display_indent().to_string());
+
+    let cases = [
+        (
+            format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}(\
+                     input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), n_clusters => 1, n_clusters => 2)"
+            ),
+            "duplicate_argument",
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_KMEANS_FUNCTION}(input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors))"
+            ),
+            "missing_argument",
+        ),
+        (
+            format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}((SELECT item_id AS id, d0, d1 FROM dataset_vectors), 1)"),
+            "positional_argument_not_supported",
+        ),
+    ];
+    for (sql, reason) in cases {
+        let error = ctx.state().create_logical_plan(&sql).await.expect_err(&sql);
+        let typed = error.find_algeon_error().unwrap_or_else(|| panic!("missing typed error for {sql}: {error:?}"));
+        assert_eq!(typed.facts().get("reason"), Some(reason), "{sql}");
+    }
+}
+
+#[cfg(feature = "cuvs")]
+#[tokio::test]
+async fn unified_gpu_validation_details_locate_the_failing_argument_or_field() {
+    let ctx = cuvs_context();
+    let cases = [
+        (
+            r#"{"relations":{"input":{"table":"canonical_vectors"}},"options":{"n_clusters":0}}"#,
+            "missing_or_invalid_option",
+            serde_json::json!({"path": "options.n_clusters", "argument": "n_clusters"}),
+        ),
+        (
+            r#"{"relations":{"input":{"table":"canonical_vectors"}},"options":{}}"#,
+            "missing_or_invalid_option",
+            serde_json::json!({"path": "options.n_clusters", "argument": "n_clusters"}),
+        ),
+        (
+            r#"{"relations":{"input":{"table":"dataset_vectors"}},"options":{"n_clusters":1}}"#,
+            "column_not_found",
+            serde_json::json!({"path": "relations.input.fields.id", "relation_role": "input", "field": "id"}),
+        ),
+        (
+            r#"{"relations":{"input":{"table":"missing_vectors"}},"options":{"n_clusters":1}}"#,
+            "table_not_found",
+            serde_json::json!({"path": "relations.input", "relation_role": "input"}),
+        ),
+    ];
+    for (call, code, expected) in cases {
+        let sql = format!(
+            "SELECT error_code, details_json FROM gpu_validate_call('{CUVS_KMEANS_FUNCTION}', '{}')",
+            call.replace('\'', "''")
+        );
+        let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+        let batch = &batches[0];
+        let error_code = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0).to_string();
+        let details: serde_json::Value =
+            serde_json::from_str(batch.column(1).as_any().downcast_ref::<StringArray>().unwrap().value(0)).unwrap();
+        assert_eq!(error_code, code, "{call}: {details}");
+        for (key, value) in expected.as_object().unwrap() {
+            assert_eq!(&details[key], value, "{call}: {details}");
+        }
     }
 }
 
