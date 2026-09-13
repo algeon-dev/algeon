@@ -11,8 +11,9 @@ use std::{
 use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 use algeon_datafusion::{
     cuvs_sql::{
-        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION, CuvsAlgoExec,
-        CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationRole, cuvs_options_json_schema,
+        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION,
+        CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsOptionKind,
+        CuvsRelationRole, cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -50,7 +51,8 @@ use datafusion::{
 };
 use query_engine::plan::{
     CUVS_ID_TYPES, CuvsIdType, CuvsOutputContract, CuvsVectorElementType, vector_kmeans_output_schema,
-    vector_knn_output_schema, vector_pca_output_schema,
+    vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
+    vector_top_k_output_schema,
 };
 
 #[path = "cuvs_sql_fixtures.rs"]
@@ -61,7 +63,16 @@ use fixtures::{KMEANS_OPTIONS, cuvs_context};
 #[test]
 fn canonical_registry_drives_names_relations_and_json_schemas() {
     let names = CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.sql_function_name).collect::<Vec<_>>();
-    assert_eq!(names, [CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_PCA_FUNCTION]);
+    assert_eq!(
+        names,
+        [
+            CUVS_BRUTE_FORCE_KNN_FUNCTION,
+            CUVS_PAIRWISE_DISTANCE_FUNCTION,
+            CUVS_TOP_K_FUNCTION,
+            CUVS_KMEANS_FUNCTION,
+            CUVS_PCA_FUNCTION
+        ]
+    );
     assert_eq!(
         CuvsOperation::BruteForceKnn.descriptor().relation_roles,
         [CuvsRelationRole::Dataset, CuvsRelationRole::Queries]
@@ -187,6 +198,8 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
                 CuvsOutputContract::KnnNeighbors => "knn_neighbors",
                 CuvsOutputContract::KMeansAssignments => "kmeans_assignments",
                 CuvsOutputContract::PcaComponents => "pca_components",
+                CuvsOutputContract::PairwiseDistances => "pairwise_distances",
+                CuvsOutputContract::TopKValues => "top_k_values",
             },
         );
         let fields = result_schema["fields"].as_array().unwrap();
@@ -268,6 +281,33 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
     let expected_knn = vector_knn_output_schema(DataType::Utf8, DataType::Int64);
     let expected_knn = DFSchema::try_from(expected_knn.as_ref().clone()).unwrap();
     assert_eq!(knn.schema().as_ref(), &expected_knn);
+
+    let pairwise = logical_plan(
+        &ctx,
+        &format!(
+            "SELECT * FROM {CUVS_PAIRWISE_DISTANCE_FUNCTION}(\
+                 x => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                 y => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+                 metric => 'inner_product')"
+        ),
+    )
+    .await;
+    let pairwise = find_cuvs_node(&pairwise).unwrap();
+    let expected = vector_pairwise_distance_output_schema(DataType::Int64, DataType::Utf8);
+    assert_eq!(pairwise.schema().as_ref(), &DFSchema::try_from(expected.as_ref().clone()).unwrap());
+
+    let top_k = logical_plan(
+        &ctx,
+        &format!(
+            "SELECT * FROM {CUVS_TOP_K_FUNCTION}(\
+                 input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                 k => 2, select => 'max')"
+        ),
+    )
+    .await;
+    let top_k = find_cuvs_node(&top_k).unwrap();
+    let expected = vector_top_k_output_schema(DataType::Int64);
+    assert_eq!(top_k.schema().as_ref(), &DFSchema::try_from(expected.as_ref().clone()).unwrap());
 
     let kmeans = logical_plan(
         &ctx,
@@ -833,6 +873,25 @@ async fn local_validation_rejects_schema_dimension_option_and_empty_input_contra
             ),
             ErrorCode::InvalidRequest,
             Some("vector_dimension_mismatch"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_PAIRWISE_DISTANCE_FUNCTION}(\
+                     x => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                     y => (SELECT query_id AS id, d0 FROM one_dim_queries), \
+                     metric => 'cosine')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("vector_dimension_mismatch"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_TOP_K_FUNCTION}(\
+                     input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                     k => 3, select => 'max')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("k_exceeds_dimension"),
         ),
         (
             format!(

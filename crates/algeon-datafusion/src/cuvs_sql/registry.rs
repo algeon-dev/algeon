@@ -6,9 +6,10 @@
 //! operation map or schema definition.
 
 pub use query_engine::plan::{
-    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
-    CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,
-    CuvsOptionValidationError, CuvsOutputContract, CuvsRelationRole, CuvsVectorElementType, canonicalize_cuvs_options,
+    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY,
+    CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsDenseVectorBinding, CuvsIdType,
+    CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind, CuvsOptionValidationError,
+    CuvsOutputContract, CuvsRelationRole, CuvsVectorElementType, canonicalize_cuvs_options,
 };
 
 /// Generate the frozen options schema from the canonical operation descriptor.

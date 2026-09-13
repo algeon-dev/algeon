@@ -33,6 +33,7 @@ pub struct CuvsValidatedOptions {
     canonical_json: String,
     bindings: Vec<CuvsVectorRelationBinding>,
     knn_k: Option<u32>,
+    top_k_k: Option<u32>,
     kmeans_clusters: Option<u32>,
     pca_components: Option<u32>,
 }
@@ -48,6 +49,10 @@ impl CuvsValidatedOptions {
 
     pub fn knn_k(&self) -> Option<u32> {
         self.knn_k
+    }
+
+    pub fn top_k_k(&self) -> Option<u32> {
+        self.top_k_k
     }
 
     pub fn kmeans_clusters(&self) -> Option<u32> {
@@ -81,11 +86,20 @@ pub(super) fn validate_options(operation: CuvsOperation, raw: &str) -> Result<Cu
     let option_u32 = |name: &str| object.get(name).and_then(Value::as_u64).map(|value| value as u32);
     let knn_k = (operation.descriptor().output_contract == CuvsOutputContract::KnnNeighbors)
         .then(|| option_u32("k").expect("canonical kNN options contain k"));
+    let top_k_k =
+        (operation == CuvsOperation::TopK).then(|| option_u32("k").expect("canonical Top-K options contain k"));
     let kmeans_clusters = (operation.descriptor().output_contract == CuvsOutputContract::KMeansAssignments)
         .then(|| option_u32("n_clusters").expect("canonical KMeans options contain n_clusters"));
     let pca_components = (operation.descriptor().output_contract == CuvsOutputContract::PcaComponents)
         .then(|| option_u32("n_components").expect("canonical PCA options contain n_components"));
-    Ok(CuvsValidatedOptions { canonical_json: canonical.to_string(), bindings, knn_k, kmeans_clusters, pca_components })
+    Ok(CuvsValidatedOptions {
+        canonical_json: canonical.to_string(),
+        bindings,
+        knn_k,
+        top_k_k,
+        kmeans_clusters,
+        pca_components,
+    })
 }
 
 pub(super) fn options_from_named_values(

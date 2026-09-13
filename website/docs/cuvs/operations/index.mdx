@@ -23,6 +23,14 @@ for the bounded-preflight and server-cache boundary.
   query-local nearest-neighbor search. Use it for filtered candidate generation
   and exact batch reranking; it does not create a persistent ANN index.
 
+## Distances and Selection
+
+- [Pairwise Distance](./cuvs_pairwise_distance.mdx) emits one metric value
+  for each x and y row pair. Its output cardinality is the product of the
+  evaluated relation sizes.
+- [Vector Top-K](./cuvs_top_k.mdx) selects the smallest or largest k values
+  from each row's dense vector, with one-based ranks and zero-based positions.
+
 ## Clustering
 
 - [KMeans](./cuvs_kmeans.mdx) fits and assigns clusters in one SQL

@@ -44,7 +44,7 @@ gitlinks:
 ```text
 components/cudf/cudf/       # Algeon cuDF fork
 components/cugraph/cugraph/ # Algeon cuGraph fork
-components/cuvs/cuvs/       # official RAPIDS cuVS (not a fork)
+components/cuvs/cuvs/       # Algeon cuVS fork
 ```
 
 Verify that all three are initialized and match the root commit; every line

@@ -22,6 +22,20 @@ fn brute_force_validates_native_outputs_before_success() {
 }
 
 #[test]
+fn pairwise_and_selection_use_pinned_calls_and_validate_outputs() {
+    let pairwise = include_str!("../src/pairwise.rs");
+    assert!(pairwise.contains("cuvsPairwiseDistance("));
+    assert!(pairwise.contains("out.validate_native_input(operation)"));
+    assert!(pairwise.contains("validate_matrix_binding(resources, x, operation)?"));
+    assert!(pairwise.contains("validate_matrix_binding(resources, y, operation)?"));
+
+    let selection = include_str!("../src/select_k.rs");
+    assert!(selection.contains("cuvsSelectKBatched("));
+    assert!(selection.contains("out_positions.validate_native_index_range("));
+    assert!(selection.contains("out_values.validate_native_input(operation)"));
+}
+
+#[test]
 fn kmeans_revalidates_native_centroids_before_model_construction() {
     let source = include_str!("../src/kmeans.rs");
     assert!(source.contains("centroids.validate_native_output_finite(resources, operation)?"));

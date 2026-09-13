@@ -203,7 +203,7 @@ algeon/
 ├── components/cugraph/          # cugraph and cugraph-sys
 │   └── cugraph/                 # pinned cuGraph fork submodule
 ├── components/cuvs/             # cuvs and cuvs-sys
-│   └── cuvs/                    # pinned official cuVS submodule
+│   └── cuvs/                    # pinned cuVS fork submodule
 ├── crates/algeon-datafusion/    # DataFusion adapter
 │   └── src/
 ├── crates/                      # Planning, runtime, engine, and support crates

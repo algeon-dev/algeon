@@ -29,6 +29,7 @@ use cudf::{
 use cuvs::{
     BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, KMeansInit, KMeansMetric, KMeansModel,
     KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams, ValidatedDeviceTensor, fit_transform_owned,
+    pairwise_distance_into, select_k_into,
 };
 
 #[derive(Debug)]
@@ -408,6 +409,65 @@ fn brute_force_search_writes_caller_owned_device_buffers() {
     assert!(neighbors.iter().all(|neighbor| (0..10).contains(neighbor)));
     assert!(distances.iter().all(|distance| distance.is_finite()));
     assert_eq!(&neighbors[..3], &[0, 1, 2]);
+}
+
+#[test]
+fn pairwise_metrics_match_host_oracles_and_reject_foreign_bindings() {
+    let (runtime, resources, _reservation) = resources();
+    let x = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.0, 0.0, 1.0]).unwrap();
+    let y = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.0, 1.0, 1.0]).unwrap();
+    let x_tensor = x.as_validated_matrix(&resources, 2, 2).unwrap();
+    let y_tensor = y.as_validated_matrix(&resources, 2, 2).unwrap();
+    for (metric, expected) in [
+        (DistanceMetric::L2Expanded, [0.0_f32, 1.0, 2.0, 1.0]),
+        (DistanceMetric::L2SqrtExpanded, [0.0_f32, 1.0, 2.0_f32.sqrt(), 1.0]),
+        (DistanceMetric::CosineExpanded, [0.0_f32, 1.0 - 1.0 / 2.0_f32.sqrt(), 1.0, 1.0 - 1.0 / 2.0_f32.sqrt()]),
+        (DistanceMetric::InnerProduct, [1.0_f32, 1.0, 0.0, 1.0]),
+    ] {
+        let mut out = DeviceBuffer::<f32>::new(&resources, 4).unwrap();
+        pairwise_distance_into(&resources, &x_tensor, &y_tensor, metric, &mut out).unwrap();
+        for (actual, expected) in f32_to_host(&runtime, out).into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-4, "{metric:?}: {actual} != {expected}");
+        }
+    }
+    let other_stream = CudaStream::new().unwrap();
+    let other_runtime =
+        Arc::new(Runtime::builder().with_device(runtime.device()).with_stream(other_stream).build().unwrap());
+    let other_resources = CuvsResources::for_runtime(other_runtime).unwrap();
+    let mut out = DeviceBuffer::<f32>::new(&resources, 4).unwrap();
+    let error = pairwise_distance_into(&other_resources, &x_tensor, &y_tensor, DistanceMetric::L2Expanded, &mut out)
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn batched_top_k_selects_min_and_max_and_validates_boundaries() {
+    let (runtime, resources, _reservation) = resources();
+    let input = DeviceBuffer::from_slice(&resources, &[4.0_f32, 1.0, 3.0, 2.0, 0.0, 8.0]).unwrap();
+    let tensor = input.as_validated_matrix(&resources, 2, 3).unwrap();
+    for (select_min, expected_values, expected_positions) in
+        [(true, [1.0_f32, 3.0, 0.0, 2.0], [1_i64, 2, 1, 0]), (false, [4.0_f32, 3.0, 8.0, 2.0], [0_i64, 2, 2, 0])]
+    {
+        let mut values = DeviceBuffer::<f32>::new(&resources, 4).unwrap();
+        let mut positions = DeviceBuffer::<i64>::new(&resources, 4).unwrap();
+        select_k_into(&resources, &tensor, 2, select_min, &mut values, &mut positions).unwrap();
+        assert_eq!(f32_to_host(&runtime, values), expected_values);
+        assert_eq!(i64_to_host(&runtime, positions), expected_positions);
+    }
+    let mut values = DeviceBuffer::<f32>::new(&resources, 2).unwrap();
+    let mut positions = DeviceBuffer::<i64>::new(&resources, 2).unwrap();
+    assert_eq!(
+        select_k_into(&resources, &tensor, 4, true, &mut values, &mut positions).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
+    let foreign_stream = CudaStream::new().unwrap();
+    let foreign_runtime =
+        Arc::new(Runtime::builder().with_device(runtime.device()).with_stream(foreign_stream).build().unwrap());
+    let foreign = CuvsResources::for_runtime(foreign_runtime).unwrap();
+    assert_eq!(
+        select_k_into(&foreign, &tensor, 1, true, &mut values, &mut positions).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
 }
 
 #[test]

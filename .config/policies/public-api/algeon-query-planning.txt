@@ -2097,7 +2097,9 @@ pub fn query_planning::plan::CuvsIdType::from_data_type(&arrow_schema::datatype:
 pub enum query_planning::plan::CuvsOperation
 pub query_planning::plan::CuvsOperation::BruteForceKnn
 pub query_planning::plan::CuvsOperation::KMeans
+pub query_planning::plan::CuvsOperation::PairwiseDistance
 pub query_planning::plan::CuvsOperation::Pca
+pub query_planning::plan::CuvsOperation::TopK
 impl query_planning::plan::CuvsOperation
 pub fn query_planning::plan::CuvsOperation::all() -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = Self> + core::clone::Clone
 pub fn query_planning::plan::CuvsOperation::descriptor(self) -> &'static query_planning::plan::CuvsOperationDescriptor
@@ -2122,7 +2124,9 @@ pub const fn query_planning::plan::CuvsOptionKind::default_u64(self) -> core::op
 pub enum query_planning::plan::CuvsOutputContract
 pub query_planning::plan::CuvsOutputContract::KMeansAssignments
 pub query_planning::plan::CuvsOutputContract::KnnNeighbors
+pub query_planning::plan::CuvsOutputContract::PairwiseDistances
 pub query_planning::plan::CuvsOutputContract::PcaComponents
+pub query_planning::plan::CuvsOutputContract::TopKValues
 pub enum query_planning::plan::CuvsRelationRole
 pub query_planning::plan::CuvsRelationRole::Dataset
 pub query_planning::plan::CuvsRelationRole::Input
@@ -2419,7 +2423,9 @@ pub query_planning::plan::ShiftDirection::Lead
 pub enum query_planning::plan::VectorAlgorithm
 pub query_planning::plan::VectorAlgorithm::BruteForceKnn
 pub query_planning::plan::VectorAlgorithm::KMeans
+pub query_planning::plan::VectorAlgorithm::PairwiseDistance
 pub query_planning::plan::VectorAlgorithm::Pca
+pub query_planning::plan::VectorAlgorithm::TopK
 impl query_planning::plan::VectorAlgorithm
 pub const fn query_planning::plan::VectorAlgorithm::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::plan::VectorAlgorithm
@@ -2427,7 +2433,9 @@ pub fn query_planning::plan::VectorAlgorithm::fmt(&self, &mut core::fmt::Formatt
 pub enum query_planning::plan::VectorAlgorithmParams
 pub query_planning::plan::VectorAlgorithmParams::BruteForceKnn(query_planning::plan::VectorBruteForceKnnParams)
 pub query_planning::plan::VectorAlgorithmParams::KMeans(query_planning::plan::VectorKMeansParams)
+pub query_planning::plan::VectorAlgorithmParams::PairwiseDistance(query_planning::plan::VectorPairwiseDistanceParams)
 pub query_planning::plan::VectorAlgorithmParams::Pca(query_planning::plan::VectorPcaParams)
+pub query_planning::plan::VectorAlgorithmParams::TopK(query_planning::plan::VectorTopKParams)
 impl query_planning::plan::VectorAlgorithmParams
 pub fn query_planning::plan::VectorAlgorithmParams::relation_bindings(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = &query_planning::plan::VectorRelationBinding> + '_)>
 pub const fn query_planning::plan::VectorAlgorithmParams::supports_algorithm(&self, query_planning::plan::VectorAlgorithm) -> bool
@@ -3029,6 +3037,10 @@ pub query_planning::plan::VectorKMeansParams::tolerance: f64
 impl query_planning::plan::VectorKMeansParams
 pub fn query_planning::plan::VectorKMeansParams::new(query_planning::plan::VectorRelationBinding, usize) -> Self
 pub fn query_planning::plan::VectorKMeansParams::with_initial_centroids(self, query_planning::plan::VectorRelationBinding) -> Self
+pub struct query_planning::plan::VectorPairwiseDistanceParams
+pub query_planning::plan::VectorPairwiseDistanceParams::metric: query_planning::plan::VectorDistanceMetric
+pub query_planning::plan::VectorPairwiseDistanceParams::x: query_planning::plan::VectorRelationBinding
+pub query_planning::plan::VectorPairwiseDistanceParams::y: query_planning::plan::VectorRelationBinding
 pub struct query_planning::plan::VectorPcaParams
 pub query_planning::plan::VectorPcaParams::flip_signs_based_on_u: bool
 pub query_planning::plan::VectorPcaParams::input: query_planning::plan::VectorRelationBinding
@@ -3046,6 +3058,10 @@ pub query_planning::plan::VectorRelationBinding::vector: query_planning::plan::C
 impl query_planning::plan::VectorRelationBinding
 pub fn query_planning::plan::VectorRelationBinding::new(query_planning::plan::NodeId, query_planning::plan::VectorRowIdBinding, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
 pub fn query_planning::plan::VectorRelationBinding::new_vector_column(query_planning::plan::NodeId, query_planning::plan::VectorRowIdBinding, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct query_planning::plan::VectorTopKParams
+pub query_planning::plan::VectorTopKParams::input: query_planning::plan::VectorRelationBinding
+pub query_planning::plan::VectorTopKParams::k: usize
+pub query_planning::plan::VectorTopKParams::select_min: bool
 pub struct query_planning::plan::WindowNode
 pub query_planning::plan::WindowNode::input: query_planning::plan::NodeId
 pub query_planning::plan::WindowNode::spec: query_planning::plan::WindowSpec
@@ -3059,7 +3075,9 @@ pub const query_planning::plan::CUVS_BRUTE_FORCE_KNN_FUNCTION: &str
 pub const query_planning::plan::CUVS_ID_TYPES: &[query_planning::plan::CuvsIdType]
 pub const query_planning::plan::CUVS_KMEANS_FUNCTION: &str
 pub const query_planning::plan::CUVS_OPERATION_REGISTRY: &[query_planning::plan::CuvsOperationDescriptor]
+pub const query_planning::plan::CUVS_PAIRWISE_DISTANCE_FUNCTION: &str
 pub const query_planning::plan::CUVS_PCA_FUNCTION: &str
+pub const query_planning::plan::CUVS_TOP_K_FUNCTION: &str
 pub const query_planning::plan::DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD: u64
 pub const query_planning::plan::GRAPH_OPERATION_REGISTRY: &[query_planning::plan::GraphOperationDefinition]
 pub fn query_planning::plan::canonicalize_cuvs_options(query_planning::plan::CuvsOperation, &str) -> core::result::Result<serde_json::value::Value, query_planning::plan::CuvsOptionValidationError>
@@ -3073,7 +3091,9 @@ pub fn query_planning::plan::planned_resident_graph_key(&query_planning::plan::G
 pub fn query_planning::plan::stable_graph_result_schema(query_planning::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_kmeans_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_knn_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::vector_pairwise_distance_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_pca_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::vector_top_k_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub mod query_planning::source
 pub enum query_planning::source::ByteRangeDisposition
 pub query_planning::source::ByteRangeDisposition::CoalescedFullFiles

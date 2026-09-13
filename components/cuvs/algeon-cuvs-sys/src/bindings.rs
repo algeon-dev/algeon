@@ -2920,3 +2920,15 @@ unsafe extern "C" {
         out_idx: *mut DLManagedTensor,
     ) -> cuvsError_t;
 }
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Select the k smallest or largest values from each row of a device\n matrix.\n\n Requires batch >= 1 and 1 <= k <= len. Each row of `in_val` has `len` values.\n `out_idx` receives their int64 column positions in [0, len). When `sorted` is\n true, each output row is ordered by\n value (ascending for `select_min`, descending otherwise). The order of equal\n values is unspecified.\n\n @param[in]  res         cuvsResources_t handle\n @param[in]  in_val      DLManagedTensor* shape [batch, len], float32, row-major device\n @param[out] out_val     DLManagedTensor* shape [batch, k], float32, row-major device\n @param[out] out_idx     DLManagedTensor* shape [batch, k], int64, row-major device\n @param[in]  select_min  Select smallest values if true, largest if false\n @param[in]  sorted      Order each output row by value if true\n @return cuvsError_t"]
+    pub fn cuvsSelectKBatched(
+        res: cuvsResources_t,
+        in_val: *mut DLManagedTensor,
+        out_val: *mut DLManagedTensor,
+        out_idx: *mut DLManagedTensor,
+        select_min: bool,
+        sorted: bool,
+    ) -> cuvsError_t;
+}

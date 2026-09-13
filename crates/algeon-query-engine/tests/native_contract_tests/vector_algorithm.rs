@@ -14,7 +14,8 @@ use query_engine::{
         JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm,
         VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
         VectorKMeansParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options,
-        vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
+        vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
+        vector_pca_output_schema, vector_top_k_output_schema,
     },
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
@@ -24,10 +25,18 @@ use query_engine::{
 fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {
     assert_eq!(
         CuvsOperation::all().collect::<Vec<_>>(),
-        vec![CuvsOperation::BruteForceKnn, CuvsOperation::KMeans, CuvsOperation::Pca]
+        vec![
+            CuvsOperation::BruteForceKnn,
+            CuvsOperation::PairwiseDistance,
+            CuvsOperation::TopK,
+            CuvsOperation::KMeans,
+            CuvsOperation::Pca
+        ]
     );
-    assert_eq!(CUVS_OPERATION_REGISTRY.len(), 3);
+    assert_eq!(CUVS_OPERATION_REGISTRY.len(), 5);
     assert_eq!(CuvsOperation::BruteForceKnn.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
+    assert_eq!(CuvsOperation::PairwiseDistance.descriptor().output_contract, CuvsOutputContract::PairwiseDistances);
+    assert_eq!(CuvsOperation::TopK.descriptor().output_contract, CuvsOutputContract::TopKValues);
     assert_eq!(CuvsOperation::KMeans.descriptor().output_contract, CuvsOutputContract::KMeansAssignments);
     assert_eq!(CuvsOperation::Pca.descriptor().output_contract, CuvsOutputContract::PcaComponents);
     assert_eq!(
@@ -37,6 +46,18 @@ fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {
             .map(|field| field.name())
             .collect::<Vec<_>>(),
         vec!["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"]
+    );
+    assert_eq!(
+        vector_pairwise_distance_output_schema(DataType::Utf8, DataType::Int32)
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<Vec<_>>(),
+        vec!["x_ordinal", "x_id", "y_ordinal", "y_id", "distance"]
+    );
+    assert_eq!(
+        vector_top_k_output_schema(DataType::Utf8).fields().iter().map(|field| field.name()).collect::<Vec<_>>(),
+        vec!["row_ordinal", "id", "rank", "position", "value"]
     );
     assert_eq!(
         vector_kmeans_output_schema(DataType::Int32).fields().iter().map(|field| field.name()).collect::<Vec<_>>(),
@@ -412,7 +433,6 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("x", DataType::Float64, false),
-            Field::new("y", DataType::Float64, false),
         ])),
         1,
         vector_pca_output_schema(DataType::Int64, 1),
@@ -674,9 +694,16 @@ fn pca_plan() -> QueryPlan {
 
 fn pca_plan_with_schema(schema: SchemaRef, n_components: usize, output_schema: SchemaRef) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
+    let features = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .filter(|name| *name != "id")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let params = VectorPcaParams::new(
-        VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]),
+        VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), features),
         n_components,
     );
     let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
