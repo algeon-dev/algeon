@@ -15,9 +15,12 @@
 //!   [`PartitionedPreparedTableExport`] and
 //!   [`PartitionedOwnedTableTransfer`]
 //!
-//! Import shared contract nouns from this crate. Consumer-specific crates such
-//! as `cudf` provide adapter methods, runtime integration, and ABI glue on
-//! top of this contract rather than re-owning the shared vocabulary.
+//! Independent producers and consumers import shared contract nouns directly
+//! from this crate through its `rapids_interop` library name. Users that
+//! already depend on `cudf` can import the same types from
+//! `cudf::interop::contract`. Consumer-specific crates provide adapter methods,
+//! runtime integration, and ABI glue on top of this contract rather than
+//! re-owning the shared vocabulary.
 //!
 //! # Contract Summary
 //!

@@ -18,7 +18,13 @@ use common::{
         triangle_graph_dataframe,
     },
 };
-use cudf::testing::prelude::*;
+use cudf::{
+    interop::contract::{
+        ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
+        LeaseBackend, LeaseCompletionResult, LeaseExportContext, ReadStartBinding,
+    },
+    testing::prelude::*,
+};
 use cudf_sys::test_support;
 use cugraph::{
     array::DeviceArray,
@@ -32,10 +38,6 @@ use cugraph::{
     handle::ResourceHandle,
     traversal::{BfsParams, BfsPredicateParams},
     types::GraphProperties,
-};
-use rapids_interop::{
-    ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
-    LeaseBackend, LeaseCompletionResult, LeaseExportContext, ReadStartBinding,
 };
 
 fn test_handle() -> ResourceHandle {
@@ -86,7 +88,7 @@ impl ActiveLeaseBackend for CountingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseCompletionResult> {
+    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
         self.complete_calls.fetch_add(1, Ordering::SeqCst);
         Ok(LeaseCompletionResult::FallbackSynchronized)
     }
@@ -95,7 +97,7 @@ impl ActiveLeaseBackend for CountingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<()> {
+    ) -> cudf::interop::contract::Result<()> {
         self.drop_incomplete_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -110,7 +112,7 @@ impl ActiveLeaseBackend for FailingActivationBackend {
         _export: &LeaseExportContext,
         _read_start: ReadStartBinding,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseActivation> {
+    ) -> cudf::interop::contract::Result<LeaseActivation> {
         Err(InteropError::new(InteropErrorKind::InvalidView, "test backend forced activation failure"))
     }
 
@@ -122,7 +124,7 @@ impl ActiveLeaseBackend for FailingActivationBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseCompletionResult> {
+    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
         Ok(LeaseCompletionResult::FallbackSynchronized)
     }
 
@@ -130,7 +132,7 @@ impl ActiveLeaseBackend for FailingActivationBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<()> {
+    ) -> cudf::interop::contract::Result<()> {
         Ok(())
     }
 }
@@ -185,7 +187,7 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
         _export: &LeaseExportContext,
         read_start: ReadStartBinding,
         completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseActivation> {
+    ) -> cudf::interop::contract::Result<LeaseActivation> {
         self.recorded.lock().expect("recorded").push(RecordedLeaseBindings {
             activate_read_start: read_start.into(),
             activate_completion: completion.into(),
@@ -202,7 +204,7 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseCompletionResult> {
+    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
         let mut recorded = self.recorded.lock().expect("recorded");
         let last = recorded.last_mut().expect("activate should run before complete");
         last.complete_completion = completion.into();
@@ -213,7 +215,7 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<()> {
+    ) -> cudf::interop::contract::Result<()> {
         Ok(())
     }
 }

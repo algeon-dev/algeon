@@ -2,12 +2,12 @@ use cudf::{
     Runtime, Series,
     interop::{
         arrow_device::DeviceArrowColumnExport,
+        contract::{
+            CompletionAuthority, InteropError, OwnedColumnTransfer, PreparedColumnExport, ReadStartAuthority,
+            ReleaseSynchronization,
+        },
         runtime_release::{OwnedColumnTransferReleaser, TransferCompletionAuthority},
     },
-};
-use rapids_interop::{
-    CompletionAuthority, InteropError, OwnedColumnTransfer, PreparedColumnExport, ReadStartAuthority,
-    ReleaseSynchronization,
 };
 
 fn assert_series_prepared_export(

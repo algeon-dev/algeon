@@ -24,7 +24,7 @@ pub trait DeviceElement: CudfType + Copy + 'static {
     const DLPACK_BITS: u8;
     /// RAPIDS interop type a prepared cuDF column must carry to be read as a
     /// tensor of this element.
-    const INTEROP_TYPE: rapids_interop::TypeId;
+    const INTEROP_TYPE: cudf::interop::contract::TypeId;
 
     /// Returns whether host values are valid native cuVS input.
     ///
@@ -38,7 +38,7 @@ pub trait DeviceElement: CudfType + Copy + 'static {
 impl DeviceElement for f32 {
     const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLFloat as u8;
     const DLPACK_BITS: u8 = 32;
-    const INTEROP_TYPE: rapids_interop::TypeId = rapids_interop::TypeId::Float32;
+    const INTEROP_TYPE: cudf::interop::contract::TypeId = cudf::interop::contract::TypeId::Float32;
 
     fn valid_native_input(values: &[Self]) -> bool {
         values.iter().all(|value| value.is_finite())
@@ -48,13 +48,13 @@ impl DeviceElement for f32 {
 impl DeviceElement for i32 {
     const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLInt as u8;
     const DLPACK_BITS: u8 = 32;
-    const INTEROP_TYPE: rapids_interop::TypeId = rapids_interop::TypeId::Int32;
+    const INTEROP_TYPE: cudf::interop::contract::TypeId = cudf::interop::contract::TypeId::Int32;
 }
 
 impl DeviceElement for i64 {
     const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLInt as u8;
     const DLPACK_BITS: u8 = 64;
-    const INTEROP_TYPE: rapids_interop::TypeId = rapids_interop::TypeId::Int64;
+    const INTEROP_TYPE: cudf::interop::contract::TypeId = cudf::interop::contract::TypeId::Int64;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

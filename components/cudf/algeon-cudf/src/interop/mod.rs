@@ -15,13 +15,20 @@
 //! To import into `cudf`, call `try_import_from_*_into_runtime` with the
 //! destination [`crate::Runtime`]. [`runtime_release`] and [`arrow_device`]
 //! expose `cudf`-specific advanced controls; [`arrow_host`] converts through
-//! host `RecordBatch` values.
+//! host `RecordBatch` values. Import the shared types used by these APIs from
+//! [`contract`]. Independent producers and consumers can instead depend on
+//! `algeon-interop` directly and import the same types from `rapids_interop`.
 
 pub mod arrow_device;
 pub mod arrow_host;
 mod borrowed;
 mod column;
 mod consumer_import;
+/// Native-independent interop contracts used by the `cudf` adapters.
+///
+/// This re-exports the `rapids_interop` crate, so values imported through this
+/// module have the same types as values imported directly from that crate.
+pub use rapids_interop as contract;
 mod contracts;
 mod errors;
 pub(crate) mod execution;

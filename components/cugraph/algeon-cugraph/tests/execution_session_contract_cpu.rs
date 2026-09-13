@@ -32,7 +32,7 @@ type ForceAtlas2EntryPoint =
 type RngStateNew = fn(&EnteredContext<'_>, u64) -> Result<RngState>;
 type GraphFromPreparedTableForward = for<'export, 'buffers> fn(
     &EnteredContext<'_>,
-    &'export rapids_interop::PreparedTableExport<'buffers>,
+    &'export cudf::interop::contract::PreparedTableExport<'buffers>,
     &TableGraphOptions,
 ) -> Result<Graph<Forward>>;
 

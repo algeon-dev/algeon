@@ -13,16 +13,21 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DeviceMemoryResource, ErrorCode, Runtime, TypeId, frame::dataframe::GpuRecordBatch,
-    interop::cuda_explicit_completion_required_lease_backend, runtime::stream::CudaStream,
+    DataFrame, DeviceMemoryResource, ErrorCode, Runtime, TypeId,
+    frame::dataframe::GpuRecordBatch,
+    interop::{
+        contract::{
+            ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
+            IncompleteDropBehavior, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
+            ReadStartBinding,
+        },
+        cuda_explicit_completion_required_lease_backend,
+    },
+    runtime::stream::CudaStream,
 };
 use cuvs::{
     BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, KMeansInit, KMeansMetric, KMeansModel,
     KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams, ValidatedDeviceTensor, fit_transform_owned,
-};
-use rapids_interop::{
-    ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
-    IncompleteDropBehavior, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext, ReadStartBinding,
 };
 
 #[derive(Debug)]
@@ -31,11 +36,11 @@ struct TrackingWitness {
 }
 
 impl CompletionWitnessBackend for TrackingWitness {
-    fn is_ready(&self) -> rapids_interop::Result<bool> {
+    fn is_ready(&self) -> cudf::interop::contract::Result<bool> {
         Ok(false)
     }
 
-    fn synchronize(&self) -> rapids_interop::Result<()> {
+    fn synchronize(&self) -> cudf::interop::contract::Result<()> {
         self.synchronizations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -56,7 +61,7 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
         _export: &LeaseExportContext,
         _read_start: ReadStartBinding,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseActivation> {
+    ) -> cudf::interop::contract::Result<LeaseActivation> {
         Ok(LeaseActivation::noop())
     }
 
@@ -68,7 +73,7 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseCompletionResult> {
+    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
         Ok(LeaseCompletionResult::Completed(CompletionWitness::with_backend(
             CompletionWitnessKind::ConsumerStream,
             Arc::new(TrackingWitness { synchronizations: Arc::clone(&self.synchronizations) }),
@@ -79,7 +84,7 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> rapids_interop::Result<()> {
+    ) -> cudf::interop::contract::Result<()> {
         self.synchronizations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

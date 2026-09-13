@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use rapids_interop::TypeId as InteropTypeId;
+use cudf::interop::contract::TypeId as InteropTypeId;
 
 use super::types::borrowed_type_to_cugraph;
 use crate::{

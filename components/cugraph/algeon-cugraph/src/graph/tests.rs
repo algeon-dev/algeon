@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use rapids_interop::{CompletionWitnessBackend, CompletionWitnessKind};
+use cudf::interop::contract::{CompletionWitnessBackend, CompletionWitnessKind};
 
 use super::*;
 use crate::{
@@ -21,12 +21,12 @@ use crate::{
 struct FailingCompletionWitness;
 
 impl CompletionWitnessBackend for FailingCompletionWitness {
-    fn is_ready(&self) -> rapids_interop::Result<bool> {
+    fn is_ready(&self) -> cudf::interop::contract::Result<bool> {
         Ok(false)
     }
 
-    fn synchronize(&self) -> rapids_interop::Result<()> {
-        Err(InteropError::new(rapids_interop::InteropErrorKind::ReadinessUnavailable, "injected sync failure"))
+    fn synchronize(&self) -> cudf::interop::contract::Result<()> {
+        Err(InteropError::new(cudf::interop::contract::InteropErrorKind::ReadinessUnavailable, "injected sync failure"))
     }
 
     fn as_any(&self) -> &dyn Any {

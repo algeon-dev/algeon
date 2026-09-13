@@ -9,10 +9,10 @@ use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr::NonNull, sync::Arc};
 
 use cudf::{
     CurrentResourceRouteLease, DeviceId, DeviceMemoryManager,
+    interop::contract::{ExecutionBinding, InteropError, InteropErrorKind},
     runtime::{BindingExtensionGuard, BindingExtensionInitError, BindingExtensionLease},
 };
 use cugraph_sys::{cugraph_resource_handle_get_comm_size, cugraph_resource_handle_get_rank, cugraph_resource_handle_t};
-use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use crate::{
     cuda::{DeviceGuard, DeviceResourceKind, drop_device_resource},

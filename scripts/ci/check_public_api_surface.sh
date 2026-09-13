@@ -52,6 +52,7 @@ CRATES=(
   "algeon-query-engine"
   "algeon-query-planning"
   "algeon-query-runtime"
+  "algeon-interop"
   "bench"
   "algeon-cudf"
   "algeon-cugraph"

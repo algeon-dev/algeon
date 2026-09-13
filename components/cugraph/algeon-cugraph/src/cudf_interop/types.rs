@@ -1,5 +1,4 @@
-use cudf::TypeId as CudfTypeId;
-use rapids_interop::TypeId as InteropTypeId;
+use cudf::{TypeId as CudfTypeId, interop::contract::TypeId as InteropTypeId};
 
 use crate::types::DataType;
 

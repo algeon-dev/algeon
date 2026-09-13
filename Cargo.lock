@@ -106,7 +106,6 @@ dependencies = [
  "algeon-cudf",
  "algeon-cudf-sys",
  "algeon-cugraph-sys",
- "algeon-interop",
  "anyhow",
  "cc",
  "static_assertions",
@@ -125,7 +124,6 @@ version = "0.1.0"
 dependencies = [
  "algeon-cudf",
  "algeon-cuvs-sys",
- "algeon-interop",
  "arrow",
  "static_assertions",
 ]

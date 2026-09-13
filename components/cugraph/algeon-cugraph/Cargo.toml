@@ -30,7 +30,6 @@ test-hooks = ["cudf-sys/test-hooks"]
 cudf.workspace = true
 cudf-sys.workspace = true
 cugraph-sys.workspace = true
-rapids-interop.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

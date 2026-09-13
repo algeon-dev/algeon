@@ -11,9 +11,11 @@ use common::{
         bfs_graph_dataframe,
     },
 };
-use cudf::interop::runtime_release::TransferCompletionAuthority;
+use cudf::interop::{
+    contract::{InteropErrorKind, ReleaseSynchronization, TransferCompletionRule},
+    runtime_release::TransferCompletionAuthority,
+};
 use cugraph::handle::ResourceHandle;
-use rapids_interop::{InteropErrorKind, ReleaseSynchronization, TransferCompletionRule};
 
 fn test_handle() -> ResourceHandle {
     let runtime = explicit_runtime_owner();

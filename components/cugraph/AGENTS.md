@@ -18,10 +18,11 @@ SQL planning, runtime admission, and query execution follow the root
 - Safe graph, algorithm, result, and cuDF interop APIs belong in
   `cugraph/`; bindgen and native contract resolution belong in
   `cugraph-sys/`.
-- `cudf`, `rapids-interop`, and `cuvs` are root-workspace component
-  dependencies. `components/cugraph/cugraph/` is the pinned native source; the
-  default cuVS prefix is `target/native/cuvs-install`, while an explicitly
-  selected compatible external prefix is supported.
+- `cudf` and `cuvs` are root-workspace component dependencies. Shared interop
+  contract types are imported from `cudf::interop::contract`, owned by
+  `components/algeon-interop`. `components/cugraph/cugraph/` is the pinned
+  native source; the default cuVS prefix is `target/native/cuvs-install`,
+  while an explicitly selected compatible external prefix is supported.
 - Preserve the two component crates and their dependency direction inside the
   root workspace.
 

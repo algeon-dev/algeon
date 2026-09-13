@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
+use cudf::interop::contract::PreparedTableExport;
 use cugraph::{
     array::DeviceArray,
     centrality::PageRankParams,
@@ -12,7 +13,6 @@ use cugraph::{
     handle::{EnteredContext, ResourceHandle},
     types::GraphProperties,
 };
-use rapids_interop::PreparedTableExport;
 
 const EDGE_COLUMN_NAMES: &[&str] = &["src", "dst", "weight"];
 
