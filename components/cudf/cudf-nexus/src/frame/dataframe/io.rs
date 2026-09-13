@@ -278,6 +278,40 @@ fn parquet_source_budget_context(
     facts
 }
 
+/// Whether this chunk continues the previous chunk's reader input instead of
+/// opening its own.
+///
+/// Chunk planning splits one file into row-group chunks, so a batch repeats the
+/// same file once per chunk. Each reader input opens its own file handle and
+/// parses the footer again, so an unmerged batch consumes file descriptors and
+/// footer parses proportional to row groups rather than to files.
+///
+/// Merging is exact rather than approximate: chunks of a file stay adjacent and
+/// ascending, and libcudf reads each input's selection in the given order, so
+/// the concatenated selection is the order the separate inputs would have
+/// produced. Whole-file chunks carry no selection to concatenate, and remote
+/// sources carry per-input read state, so both keep one input each.
+fn source_chunk_continues_previous_reader_input(
+    chunk: &SourceChunk,
+    previous_file_index: Option<usize>,
+    omit_row_groups: bool,
+) -> bool {
+    !omit_row_groups && chunk.remote_source().is_none() && previous_file_index == Some(chunk.file_index())
+}
+
+fn merged_reader_input_count(chunks: &[SourceChunk]) -> usize {
+    let omit_row_groups = chunks.iter().all(SourceChunk::selects_all_known_file_row_groups);
+    let mut previous_file_index = None;
+    let mut inputs = 0usize;
+    for chunk in chunks {
+        if !source_chunk_continues_previous_reader_input(chunk, previous_file_index, omit_row_groups) {
+            inputs += 1;
+        }
+        previous_file_index = Some(chunk.file_index());
+    }
+    inputs
+}
+
 fn parquet_source_batch_budget_context(
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
@@ -287,6 +321,7 @@ fn parquet_source_batch_budget_context(
     facts.insert("source_kind".to_string(), local_parquet_source_kind_str(source.kind()).to_string());
     facts.insert("source_read_mode".to_string(), source_read_mode_str(mode).to_string());
     facts.insert("chunk_count".to_string(), chunks.len().to_string());
+    facts.insert("reader_input_count".to_string(), merged_reader_input_count(chunks).to_string());
     facts.insert("read_columns".to_string(), comma_separated_strings(source.read_columns()));
     facts.insert("read_column_count".to_string(), source.read_columns().len().to_string());
     facts.insert("projected_columns".to_string(), source_column_names(source.output_columns()));
@@ -1345,18 +1380,10 @@ fn read_parquet_source_chunks_frame(
 
     let omit_row_groups = chunks.iter().all(SourceChunk::selects_all_known_file_row_groups);
     let mut inputs = Vec::with_capacity(chunks.len());
-    let mut row_groups_per_file = (!omit_row_groups).then(|| Vec::with_capacity(chunks.len()));
+    let mut row_groups_per_file = (!omit_row_groups).then(|| Vec::<Vec<i32>>::with_capacity(chunks.len()));
+    let mut previous_file_index: Option<usize> = None;
     for chunk in chunks {
         source.validate_chunk_partition_values(chunk, operation)?;
-        if let Some(remote_source) = chunk.remote_source() {
-            let mut remote_source = remote_source.clone();
-            if let Some(known_file_bytes) = chunk.known_file_bytes() {
-                remote_source = remote_source.with_known_size_bytes(known_file_bytes);
-            }
-            inputs.push(ParquetMultiTableInput::RemoteSource(remote_source));
-        } else {
-            inputs.push(ParquetMultiTableInput::LocalPath(std::path::PathBuf::from(chunk.reader_path())));
-        }
         if !omit_row_groups && chunk.reads_all_row_groups() {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedOperation,
@@ -1367,6 +1394,21 @@ fn read_parquet_source_chunks_frame(
             .with_detail("chunk_index", chunk.chunk_index().to_string())
             .with_detail("file_index", chunk.file_index().to_string())
             .with_detail("path", source_chunk_diagnostic_path(chunk)));
+        }
+        let merges_into_previous =
+            source_chunk_continues_previous_reader_input(chunk, previous_file_index, omit_row_groups);
+        previous_file_index = Some(chunk.file_index());
+
+        if !merges_into_previous {
+            if let Some(remote_source) = chunk.remote_source() {
+                let mut remote_source = remote_source.clone();
+                if let Some(known_file_bytes) = chunk.known_file_bytes() {
+                    remote_source = remote_source.with_known_size_bytes(known_file_bytes);
+                }
+                inputs.push(ParquetMultiTableInput::RemoteSource(remote_source));
+            } else {
+                inputs.push(ParquetMultiTableInput::LocalPath(std::path::PathBuf::from(chunk.reader_path())));
+            }
         }
         if let Some(row_groups_per_file) = row_groups_per_file.as_mut() {
             let row_groups = chunk.row_group_indexes_i32()?;
@@ -1381,7 +1423,10 @@ fn read_parquet_source_chunks_frame(
                 .with_detail("file_index", chunk.file_index().to_string())
                 .with_detail("path", source_chunk_diagnostic_path(chunk)));
             }
-            row_groups_per_file.push(row_groups);
+            match row_groups_per_file.last_mut() {
+                Some(selection) if merges_into_previous => selection.extend(row_groups),
+                _ => row_groups_per_file.push(row_groups),
+            }
         }
     }
 

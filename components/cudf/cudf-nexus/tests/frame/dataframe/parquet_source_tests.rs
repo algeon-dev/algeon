@@ -1021,6 +1021,63 @@ fn read_parquet_source_chunk_applies_reader_predicate() {
 }
 
 #[test]
+fn read_parquet_source_chunks_with_budget_reads_one_file_through_one_reader_input() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("batch-fan-in-first.parquet");
+    let second = dir.path().join("batch-fan-in-second.parquet");
+    let rt = sample_runtime();
+
+    if !write_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4, 5, 6], 2)
+        || !write_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
+    {
+        return;
+    }
+
+    let source = LocalParquetSource::data(
+        [
+            LocalParquetFile::new(&first, "first", [])
+                .unwrap()
+                .with_row_group_metadata(vec![128, 128, 128], vec![2, 2, 2])
+                .unwrap(),
+            LocalParquetFile::new(&second, "second", [])
+                .unwrap()
+                .with_row_group_metadata(vec![128, 128], vec![2, 2])
+                .unwrap(),
+        ],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    // One row group per chunk is the shape that opened one file handle and
+    // reparsed one footer per row group before same-file chunks were merged.
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
+    assert_eq!(plan.chunks().len(), 5);
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
+        .unwrap();
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    assert_eq!(
+        outcome.value().frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(),
+        vec![1, 2, 3, 4, 5, 6, 10, 20, 30, 40],
+    );
+    assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("5"));
+    assert_eq!(outcome.report().context_facts().get("reader_input_count").map(String::as_str), Some("2"));
+    assert_eq!(outcome.report().output_rows(), Some(10));
+}
+
+#[test]
 fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file_order() {
     let dir = TempDir::new().unwrap();
     let first = dir.path().join("batch-first.parquet");

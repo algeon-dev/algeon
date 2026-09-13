@@ -924,10 +924,14 @@ mod tests {
         register_tpcds_tables_with_native_metadata(&ctx, &root).await.unwrap();
 
         let provider = ctx.table_provider("reason").await.unwrap();
+        let schema = provider.schema();
         assert_eq!(
-            provider.schema().metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY),
+            schema.field_with_name("r_reason_sk").unwrap().metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY),
             Some(&r#"[["r_reason_sk"]]"#.to_string())
         );
+        // Source-scoped evidence must not reach the shared schema namespace,
+        // where a join would drop one keyed source's entry for another's.
+        assert_eq!(schema.metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
