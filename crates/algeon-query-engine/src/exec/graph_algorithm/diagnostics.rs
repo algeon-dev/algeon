@@ -318,6 +318,7 @@ mod tests {
         assert_eq!(dependency_error.cugraph_allocation_source(), None);
     }
 
+    #[cfg(feature = "test-hooks")]
     #[test]
     fn cugraph_allocation_failures_map_to_the_same_taxonomy_as_cudf() {
         // The cuGraph boundary must classify allocation failures by the same

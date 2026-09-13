@@ -7,8 +7,9 @@ use std::{
     },
 };
 
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 use algeon_datafusion::{
-    cugraph_sql::CugraphAlgoExec,
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION, CuvsAlgoExec,
         CuvsLogicalNode, CuvsOperation, CuvsRelationArgumentSyntax, CuvsRelationRole, cuvs_options_json_schema,
@@ -825,7 +826,10 @@ async fn execution_rejects_a_disabled_cuvs_feature_before_any_child_executes() {
     let rebound = Arc::new(exec.clone())
         .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
         .expect("rebind counting children");
-    let error = rebound.execute(0, Arc::new(TaskContext::default())).expect_err("disabled cuVS feature must reject");
+    let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
+        Ok(_) => panic!("disabled cuVS feature must reject"),
+        Err(error) => error,
+    };
     let typed = error.find_algeon_error().expect("structured cuVS feature-disabled error");
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
@@ -929,14 +933,6 @@ fn find_cuvs_exec(plan: &dyn ExecutionPlan) -> Option<&CuvsAlgoExec> {
 fn assert_schema(schema: &DFSchema, names: &[&str]) {
     assert_eq!(schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), names);
     assert!(schema.fields().iter().all(|field| !field.is_nullable()));
-}
-
-#[cfg(not(feature = "cuvs"))]
-fn assert_feature_disabled(error: DataFusionError) {
-    let typed = error.find_algeon_error().expect("structured cuVS feature-disabled error");
-    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
-    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
 }
 
 fn sql_literal(json: &str) -> String {

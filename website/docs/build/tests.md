@@ -293,11 +293,11 @@ cargo hack check --workspace --all-features --locked --rust-version --workspace-
 ```
 
 Feature-isolation is the one repository-owned exception to the all-features
-rule; it proves each package's no-feature and non-default feature
-configurations compile and proves nothing about tests:
+rule. It compiles every target in each package's no-feature and non-default
+feature configurations. It does not execute tests:
 
 ```bash
-cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
+cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked --keep-going
 ```
 
 `scripts/check_all.sh` runs that exact matrix as six package shards

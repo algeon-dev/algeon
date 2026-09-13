@@ -789,18 +789,20 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use ::object_store::memory::InMemory;
     use arrow::{
         array::{ArrayRef, Int64Array, StructArray, UInt32Array},
         datatypes::{Field, Fields, Schema},
         record_batch::RecordBatch,
     };
-    use datafusion::parquet::{
-        arrow::ArrowWriter,
-        data_type::FixedLenByteArray,
-        file::{
-            properties::WriterProperties,
-            reader::{FileReader, SerializedFileReader},
+    use datafusion::{
+        object_store::memory::InMemory,
+        parquet::{
+            arrow::ArrowWriter,
+            data_type::FixedLenByteArray,
+            file::{
+                properties::WriterProperties,
+                reader::{FileReader, SerializedFileReader},
+            },
         },
     };
     use parquet::{file::metadata::ColumnChunkMetaData, schema::parser::parse_message_type};

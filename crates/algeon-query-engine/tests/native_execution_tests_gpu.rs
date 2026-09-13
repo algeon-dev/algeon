@@ -353,11 +353,15 @@ impl BackendQueryContext {
 
 fn capability_evidence_for_fixture_plan(plan: &QueryPlan) -> QueryEngineResult<AttemptCapabilityEvidence> {
     preflight_query_plan(plan)?;
-    let mut evidence = AttemptCapabilityEvidence::for_query_plan(plan);
+    let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
     #[cfg(feature = "cugraph")]
-    if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))) {
-        evidence.attest_cugraph_graph_execution_scope(plan);
-    }
+    let evidence = {
+        let mut evidence = evidence;
+        if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))) {
+            evidence.attest_cugraph_graph_execution_scope(plan);
+        }
+        evidence
+    };
     Ok(evidence)
 }
 

@@ -65,14 +65,11 @@ datafusion = { workspace = true }
 dashmap = { version = "6.2", optional = true }
 fnv = { workspace = true }
 futures = { workspace = true }
-object_store = { workspace = true, optional = true }
-opendal = { workspace = true, optional = true }
 parquet = { workspace = true, default-features = true }
 prost = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true, optional = true }
 toml = { version = "1.1", optional = true }

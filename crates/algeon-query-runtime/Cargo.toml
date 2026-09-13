@@ -54,3 +54,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 [dev-dependencies]
 async-trait = { workspace = true }
 cudf-sys = { workspace = true, features = ["test-hooks"] }
+query-planning = { workspace = true, features = ["test-hooks"] }

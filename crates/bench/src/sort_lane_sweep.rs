@@ -456,9 +456,9 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         )
         .await?;
     }
-    let mut mixed_items: Vec<(&str, &str)> = vec![("heavy", HEAVY_SQL), ("light", LIGHT_SQL), ("vector", VECTOR_SQL)];
+    let mixed_items: Vec<(&str, &str)> = vec![("heavy", HEAVY_SQL), ("light", LIGHT_SQL), ("vector", VECTOR_SQL)];
     #[cfg(feature = "cugraph")]
-    mixed_items.push(("graph", GRAPH_SQL));
+    let mixed_items = mixed_items.into_iter().chain([("graph", GRAPH_SQL)]).collect::<Vec<_>>();
     let mut references: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
     references.insert("heavy", reference.as_ref().expect("single section sets the heavy reference").clone());
     for (label, sql) in &mixed_items {

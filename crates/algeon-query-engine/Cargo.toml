@@ -36,7 +36,7 @@ nvml = ["query-runtime/nvml"]
 # Forwards the controlled device-quarantine qualification capability the DataFusion adapter exposes.
 qualification = ["query-runtime/qualification"]
 # Enables the crate-private seams consumed by the registered GPU execution harness.
-test-hooks = ["query-planning/test-hooks", "query-runtime/test-hooks", "cugraph?/test-hooks"]
+test-hooks = ["query-planning/test-hooks", "query-runtime/test-hooks", "cudf-sys/test-hooks", "cugraph?/test-hooks"]
 
 [lints]
 workspace = true
@@ -68,6 +68,8 @@ rapids-build-support = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+query-planning = { workspace = true, features = ["test-hooks"] }
+query-runtime = { workspace = true, features = ["test-hooks"] }
 
 # autotests = false above: every tests/*.rs harness must be registered here
 # explicitly: unregistered files are silently ignored by cargo.

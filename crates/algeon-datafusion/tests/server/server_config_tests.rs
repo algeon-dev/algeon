@@ -2,11 +2,12 @@
 use std::path::PathBuf;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::cugraph_sql::CugraphGraphOptions;
 #[cfg(feature = "iceberg")]
 use algeon_datafusion::table_format::{self, TableFormatLakehouseCachePolicy};
 use algeon_datafusion::{
     backend::GpuDeviceMemoryLimit,
-    cugraph_sql::CugraphGraphOptions,
     error::ErrorCode,
     native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonGpuExecutionMode, DataFusionCpuExecutionPolicy},
