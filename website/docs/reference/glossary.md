@@ -81,8 +81,7 @@ defined here.
 - `Allocation domain`: the device-memory accounting scope an attempt
   allocates within, capped by its grant; each device's resident cache has its
   own shared domain outside any grant. See
-  [Allocation enforcement](../design/admission.mdx#allocation-enforcement) and
-  [Cache Design](../design/cache.mdx#one-gpu-cache-domain-per-device).
+  [Allocation enforcement](../design/admission.mdx#allocation-enforcement).
 - `Bounded execution`: a query runs inside the GPU memory cap it was
   granted; an allocation beyond that cap returns a typed allocation error
   instead of spilling or replaying on CPU. Planning checks kernels, types,
@@ -97,8 +96,7 @@ defined here.
   [Lakehouse and workspace boundary](../design/index.mdx#lakehouse-and-workspace-boundary).
 - `Residency`: the lifecycle of GPU-cached values:
   `AttemptOwned -> Evictable <-> Pinned -> Destroyed`, with every resident
-  byte charged to the device ledger. See
-  [Cache Design](../design/cache.mdx#one-gpu-cache-domain-per-device).
+  byte charged to the device ledger.
 - `Provenance`: the recorded origin of a GPU-resident value: the device,
   stream, and producing source or graph contract. Interop hands values forward
   only within a matching provenance domain instead of round-tripping through

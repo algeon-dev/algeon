@@ -92,8 +92,9 @@ To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon
   or disk in the style of [cuCascade](https://github.com/NVIDIA/cuCascade).
 - **Algorithm coverage is fixed.** Only the documented cuGraph and cuVS
   functions are available; unsupported types, options, and algorithms return
-  structured planning errors. The cuVS surface is still growing, and the
-  [cuOpt SQL API](./cuopt/overview.mdx) is work in progress.
+  structured planning errors. The cuVS surface is still growing, and both the
+  [cuML SQL API](./cuml/overview.mdx) and [cuOpt SQL API](./cuopt/overview.mdx)
+  are work in progress.
 - **GPU file scans are Parquet-only.** Iceberg position deletes are supported
   when their scan is otherwise supported; equality deletes, delete vectors,
   non-Parquet files, and other source types stay on the DataFusion path.

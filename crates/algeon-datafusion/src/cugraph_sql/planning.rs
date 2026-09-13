@@ -30,9 +30,10 @@ use datafusion::{
 #[cfg(not(feature = "cugraph"))]
 use super::CugraphAlgorithm;
 use super::{
-    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CugraphAlgorithmParams,
-    CugraphAlgorithmSpec, CugraphVertexIdDomain, PredicateSourceColumnRole, PredicateSourceSpec, plan_error,
-    validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
+    CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphVertexIdDomain, PredicateSourceColumnRole,
+    PredicateSourceSpec, plan_error, validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
+    vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
@@ -209,6 +210,22 @@ pub(super) fn validate_edge_source_schema(
     })?;
     let domain = vertex_id_domain_for_call(spec.algorithm, &spec.params, src.data_type(), dst.data_type())?;
     validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
+    // Graph admission rejects any other weight dtype; checking here keeps
+    // `gpu_validate_call` in agreement with execution.
+    if let Ok(weight) = schema.field_with_name(CUGRAPH_EDGE_WEIGHT_COLUMN)
+        && !matches!(weight.data_type(), DataType::Float32 | DataType::Float64)
+    {
+        return Err(Error::new(
+            ErrorCode::UnsupportedType,
+            "algeon_datafusion.cugraph_sql.edge_source_schema",
+            format!(
+                "cuGraph edge weight column 'weight' must have dtype Float32 or Float64, found {:?}",
+                weight.data_type()
+            ),
+        )
+        .with_fact("reason", "unsupported_weight_dtype")
+        .into());
+    }
     if spec.has_edge_id {
         let edge_id = schema.field_with_name(CUGRAPH_EDGE_ID_COLUMN).map_err(|_| {
             DataFusionError::from(Error::new(

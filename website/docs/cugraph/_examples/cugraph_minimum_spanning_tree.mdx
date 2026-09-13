@@ -14,7 +14,7 @@ era-local links available. The graph is the AI literature across all years
 from the demo-dataset page applies:
 
 ```sql
-CREATE VIEW ai_all_nodes AS
+CREATE OR REPLACE VIEW ai_all_nodes AS
 SELECT paper_id, year FROM papers
 WHERE year BETWEEN 1900 AND 2020 AND primary_fos IN (
   'Deep learning', 'Artificial neural network', 'Convolutional neural network',
@@ -22,7 +22,7 @@ WHERE year BETWEEN 1900 AND 2020 AND primary_fos IN (
   'Reinforcement learning', 'Image segmentation', 'Feature extraction',
   'Object detection', 'Speech recognition');
 
-CREATE TABLE ai_era_vertex_ids AS
+CREATE OR REPLACE TABLE ai_era_vertex_ids AS
 SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
 FROM (SELECT e.src AS paper_id FROM citation_edges e
       JOIN ai_all_nodes a ON a.paper_id = e.src
@@ -32,7 +32,7 @@ FROM (SELECT e.src AS paper_id FROM citation_edges e
       JOIN ai_all_nodes a ON a.paper_id = e.src
       JOIN ai_all_nodes b ON b.paper_id = e.dst);
 
-CREATE VIEW ai_era_edges AS
+CREATE OR REPLACE VIEW ai_era_edges AS
 SELECT va.vid AS src, vb.vid AS dst, CAST(ABS(a.year - b.year) AS DOUBLE) AS year_gap
 FROM citation_edges e
 JOIN ai_all_nodes a ON a.paper_id = e.src

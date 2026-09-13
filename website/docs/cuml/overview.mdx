@@ -1,0 +1,27 @@
+---
+sidebar_position: 1
+slug: /cuml
+description: SQL-visible cuML machine learning over Algeon SQL sessions (work in progress).
+---
+
+# cuML SQL API (WIP)
+
+:::note[Work in progress]
+
+The cuML SQL surface is under development. The `cuml_*` table functions are
+not yet exposed in a release: there is no `cuml` Cargo feature yet, and a
+query that calls a `cuml_*` function currently fails as an unknown table
+function. The shape described below is the intended direction and may change.
+
+:::
+
+Algeon plans to expose NVIDIA RAPIDS
+[**cuML**](https://github.com/rapidsai/cuml) as SQL table functions over
+DataFusion SQL sessions, following the same pattern as the
+[cuGraph SQL API](../cugraph/overview.mdx) and the
+[cuVS SQL API](../cuvs/overview.mdx): each `cuml_*` function reads a relation
+of feature inputs, runs a GPU machine learning workload, and returns rows you can
+join and filter alongside the rest of your query.
+
+Until the functions ship, `gpu_list_functions` does not list a `cuml` family,
+and no relation shape or option schema is final.

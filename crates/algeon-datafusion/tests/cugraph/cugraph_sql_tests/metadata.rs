@@ -581,6 +581,56 @@ async fn cugraph_vertex_id_descriptors_match_registry_string_contracts() {
 }
 
 #[tokio::test]
+async fn cugraph_descriptor_weight_data_types_match_validation() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    let weights = [
+        ("int32_weights", DataType::Int32),
+        ("int64_weights", DataType::Int64),
+        ("float32_weights", DataType::Float32),
+        ("float64_weights", DataType::Float64),
+    ];
+    for (table, weight_type) in &weights {
+        register_edge_memtable(&ctx, table, DataType::Int32, DataType::Int32, weight_type.clone());
+    }
+
+    for (function, options) in [
+        ("cugraph_pagerank", serde_json::json!({})),
+        ("cugraph_sssp", serde_json::json!({"source_vertex": 0})),
+        ("cugraph_minimum_spanning_tree", serde_json::json!({})),
+    ] {
+        let batches = ctx
+            .sql(&format!("SELECT relation_roles_json FROM gpu_describe_function('{function}')"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let relations = json_value(string_value(single_batch(&batches), 0, 0));
+        let weight = relations[0]["fields"].as_array().unwrap().iter().find(|field| field["name"] == "weight").unwrap();
+        let advertised = weight["data_types"].as_array().unwrap();
+
+        for (table, weight_type) in &weights {
+            let batch = validate(&ctx, function, table, options.clone()).await;
+            let accepted = bool_value(&batch, 0, 0);
+            assert_eq!(
+                accepted,
+                advertised.contains(&serde_json::json!(format!("{weight_type:?}"))),
+                "{function} with {weight_type:?} weights: {}",
+                string_value(&batch, 2, 0)
+            );
+            if !accepted {
+                assert_eq!(string_value(&batch, 1, 0), "unsupported_weight_dtype");
+                assert_eq!(json_value(string_value(&batch, 8, 0))["relation_role"], "edges");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn cugraph_string_selector_descriptors_publish_their_logical_types() {
     let state = SessionStateBuilder::new_with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())

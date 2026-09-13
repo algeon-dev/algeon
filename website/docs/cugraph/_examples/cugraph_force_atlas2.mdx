@@ -6,26 +6,33 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Lay out an ego network on the GPU
 
-Three statements build the one-hop neighborhood around *Attention Is All You
-Need* (its ~40 references, its 110 most-cited citers, and every citation among
-them), and ForceAtlas2 returns drawable coordinates. A second call
-(`cugraph_louvain` on the same edge view) colors the clusters:
+A seed view resolves *Attention Is All You Need* from its title, two views
+build the one-hop neighborhood around it (its ~40 references, its 110
+most-cited citers, and every citation among them), and ForceAtlas2 returns
+drawable coordinates. A second call (`cugraph_louvain` on the same edge view)
+colors the clusters:
 
 ```sql
-CREATE VIEW attention_ego_nodes AS
+CREATE OR REPLACE VIEW attention_seed AS
+SELECT paper_id FROM papers
+WHERE title = 'Attention is all you need' AND year = 2017;
+
+CREATE OR REPLACE VIEW attention_ego_nodes AS
 SELECT paper_id FROM (
-  SELECT dst AS paper_id FROM citation_edges WHERE src = 2963403868
+  SELECT e.dst AS paper_id
+  FROM citation_edges e JOIN attention_seed s ON s.paper_id = e.src
   UNION ALL
   SELECT src AS paper_id FROM (
     SELECT e.src, p.n_citation
-    FROM citation_edges_by_dst e JOIN papers p ON p.paper_id = e.src
-    WHERE e.dst = 2963403868
-    ORDER BY p.n_citation DESC LIMIT 110) t
+    FROM citation_edges_by_dst e
+    JOIN attention_seed s ON s.paper_id = e.dst
+    JOIN papers p ON p.paper_id = e.src
+    ORDER BY p.n_citation DESC, e.src LIMIT 110) t
   UNION ALL
-  SELECT 2963403868 AS paper_id
+  SELECT paper_id FROM attention_seed
 ) u GROUP BY paper_id;
 
-CREATE VIEW attention_ego_edges AS
+CREATE OR REPLACE VIEW attention_ego_edges AS
 SELECT e.src, e.dst
 FROM citation_edges e
 JOIN attention_ego_nodes a ON a.paper_id = e.src
@@ -56,22 +63,25 @@ members):
 bit-reproducible; expect different (equally valid) coordinates on each run;
 on larger graphs individual vertices may land far apart. If downstream queries
 must agree on positions, snapshot into the
-mutable `datafusion.public` workspace with `CREATE TABLE … AS`; that does not
+mutable `datafusion.public` workspace with `CREATE OR REPLACE TABLE … AS`; that does not
 write back to the Iceberg source catalog.
 
 ### Refine a saved layout with radius and mass
 
 The optional relations are complete vertex-domain tables. This second pass
 uses the first pass as its warm start and supplies one radius and mass value
-for every vertex:
+for every vertex. The first pass is a table snapshot rather than a view: the
+final query reads it twice, and a view would rerun the non-reproducible layout
+once per read, so the two side inputs would disagree:
 
 ```sql
-CREATE VIEW initial_layout AS
+-- Local workspace snapshot; this does not write to lake.citation_network.
+CREATE OR REPLACE TABLE initial_layout AS
 SELECT vertex, x, y
 FROM cugraph_force_atlas2(
   edges => (SELECT src, dst FROM attention_ego_edges), max_iter => 250, seed => 42);
 
-CREATE VIEW layout_attributes AS
+CREATE OR REPLACE VIEW layout_attributes AS
 SELECT vertex,
        CAST(0.75 AS REAL) AS radius,
        CAST(1.0 AS REAL) AS mass

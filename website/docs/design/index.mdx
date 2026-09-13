@@ -30,8 +30,7 @@ Algeon's GPU execution path, as opposed to DataFusion's CPU operators.
   inside your service boundary rather than replacing it.
 - **Flight SQL operator:** Read
   [Lakehouse and workspace boundary](#lakehouse-and-workspace-boundary), then
-  use server config, [cache policy](./cache.mdx), and diagnostics as the
-  deployment contract.
+  use server config and diagnostics as the deployment contract.
 - **Graph or vector SQL user:** Jump to
   [Specialized GPU functions](#specialized-gpu-functions). Discover and
   validate calls before running GPU work.
@@ -78,7 +77,7 @@ Arrow rows through that same interface. In between:
 are planned as `GraphAlgorithm` and `VectorAlgorithm` nodes of the same IR and
 use the same admission and allocation path.
 
-Three pages carry the details behind this flow:
+Two pages carry the details behind this flow:
 
 - [Native Lowering & Final Plans](./native-lowering.mdx): the plan-time
   boundary: candidate recognition, the `algeon_datafusion_native` rule,
@@ -86,8 +85,6 @@ Three pages carry the details behind this flow:
 - [Admission & Memory Governance](./admission.mdx): the runtime boundary:
   process-wide admission, per-device ledgers, immutable grants, and
   allocation enforcement shared by library and server modes.
-- [Cache Design](./cache.mdx): the data-reuse boundary: lakehouse object
-  bytes, decoded cuDF sources, resident cuGraph graphs, eviction, and sizing.
 
 ## Crates and ownership
 
@@ -396,8 +393,7 @@ contract each one must keep stable.
 | GPU memory, streams, source readers, or graph/vector interop | `components/cudf`, `components/cugraph`, `components/cuvs` | Component crate APIs and FFI error mapping |
 | Public diagnostics | `crates/algeon-datafusion/src/native_report/schema.rs`, `crates/algeon-datafusion/src/native_exec/metrics/`, `crates/algeon-datafusion/src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 
-Cache-specific routing is on [Cache Design](./cache.mdx#where-to-change-cache-behavior);
-lowering extension steps are on
+Lowering extension steps are on
 [Extending native lowering](./native-lowering.mdx#extending-native-lowering).
 The [Glossary](../reference/glossary.md) defines the terms used across these
 pages.

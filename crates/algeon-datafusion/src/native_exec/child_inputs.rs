@@ -39,16 +39,6 @@ const MULTI_CHILD_HOST_INPUT_MEMORY_CONSUMER: &str = "NativeMultiChild[host-inpu
 /// operation.
 pub(crate) const DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES: usize = 1024 * 1024 * 1024;
 
-/// How many partitions of one ordinary child stage concurrently.
-///
-/// Bounds open partition streams and transient pre-reservation batches while overlapping
-/// async partition open and poll latency. Retained staging still passes the same
-/// reserve-before-push accounting under `max_staging_bytes` and the DataFusion pool, in
-/// stable partition and batch order; this only sizes the in-flight window, never the cap.
-/// Ready-order merging would reorder `LIMIT`/`OFFSET` rows and exact statistical summation,
-/// so the buffered (order-preserving) window is required rather than an unordered one.
-const HOST_STAGING_PARTITION_POLL_DEPTH: usize = 4;
-
 #[derive(Clone)]
 pub(crate) struct NativeChildInputSpec {
     pub(crate) input_name: String,
@@ -271,15 +261,16 @@ fn check_cancellation(cancellation: &ExecutionCancellation) -> Result<()> {
     })
 }
 
-/// Stages one ordinary child's partitions with a bounded order-preserving poll window.
+/// Stages one ordinary child's partitions with every partition in flight, in stable order.
 ///
-/// `buffered` overlaps partition open and poll latency while yielding partitions in stable
-/// ordinal order regardless of completion order, so ordered output and exact statistical
-/// inputs keep deterministic partition and batch order. Bytes are claimed against
+/// A DataFusion operator can hold one output partition until its siblings progress (a
+/// CollectLeft hash join's dynamic filter waits for every probe partition to report build
+/// bounds), so a window narrower than the partition count deadlocks. `buffered` yields
+/// partitions in ordinal order regardless of completion order: ready-order merging would
+/// reorder `LIMIT`/`OFFSET` rows and exact statistical summation. Bytes are claimed against
 /// `max_staging_bytes` before the pool reservation grows, in first-seen order; the retained
-/// total therefore never exceeds the cap even with several partitions in flight. Any error
-/// or cancellation drops the in-flight partitions and returns every claimed byte with
-/// `reservation`.
+/// total therefore never exceeds the cap. Any error or cancellation drops the in-flight
+/// partitions and returns every claimed byte with `reservation`.
 async fn stage_child_partitions_bounded(
     spec: &NativeChildInputSpec,
     task_context: Arc<TaskContext>,
@@ -289,7 +280,6 @@ async fn stage_child_partitions_bounded(
     staged_bytes: &AtomicUsize,
     reservation: &MemoryReservation,
 ) -> Result<Vec<RecordBatch>> {
-    let depth = HOST_STAGING_PARTITION_POLL_DEPTH.clamp(1, partition_count.max(1));
     let partitions = iter(0..partition_count)
         .map(|partition| {
             stage_child_partition(
@@ -302,7 +292,7 @@ async fn stage_child_partitions_bounded(
                 reservation,
             )
         })
-        .buffered(depth)
+        .buffered(partition_count.max(1))
         .try_collect::<Vec<Vec<RecordBatch>>>()
         .await?;
     check_cancellation(cancellation)?;
@@ -519,8 +509,7 @@ mod tests {
 
     /// Partitions with staggered open latency still stage in stable ordinal order, each
     /// executed exactly once, so ordered output and exact statistical inputs never observe
-    /// ready order. The async open delay models remote partition latency; overlap happens
-    /// only inside the bounded poll window.
+    /// ready order. The async open delay models remote partition latency.
     #[derive(Debug)]
     struct DelayedExec {
         inner: CountingExec,
@@ -888,7 +877,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_polling_stages_partitions_in_stable_order_not_ready_order() {
+    async fn polling_stages_partitions_in_stable_order_not_ready_order() {
         // Partition 0 opens slowly and partition 1 instantly: ready order is inverted, but
         // staged order must stay ordinal so ordered output and exact statistics never shift.
         let (plan, execute_count, _max_live) = delayed_child(vec![(10, 1.0, 100), (20, 2.0, 200)], vec![150, 0]);
@@ -911,12 +900,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_polling_overlaps_partition_open_latency_within_a_capped_window() {
-        // Four partitions with 100ms open latency each: a serial poller needs at least 400ms.
-        // The bounded window overlaps the opens; the bound below stays far under the serial
-        // sum while leaving wide margin for loaded CI runners.
-        let (plan, execute_count, max_live) =
-            delayed_child(vec![(1, 1.0, 1), (2, 2.0, 2), (3, 3.0, 3), (4, 4.0, 4)], vec![100, 100, 100, 100]);
+    async fn polling_keeps_every_partition_in_flight() {
+        // Eight partitions with 100ms open latency each: a serial poller needs at least 800ms,
+        // and a window narrower than the partition count would leave some partitions unopened
+        // while others wait on them. The bound below stays far under the serial sum while
+        // leaving wide margin for loaded CI runners.
+        let values = (1..=8).map(|id| (id, id as f32, id)).collect();
+        let (plan, execute_count, max_live) = delayed_child(values, vec![100; 8]);
         let started = Instant::now();
         let staged = stage_native_children(
             vec![NativeChildInputSpec { input_name: "input".to_string(), role: "input", plan, projection: vec![0] }],
@@ -928,15 +918,15 @@ mod tests {
         .unwrap();
         let elapsed = started.elapsed();
 
-        assert_eq!(execute_count.load(Ordering::SeqCst), 4);
-        assert_eq!(max_live.load(Ordering::SeqCst), 4, "the window polls every partition at once");
+        assert_eq!(execute_count.load(Ordering::SeqCst), 8);
+        assert_eq!(max_live.load(Ordering::SeqCst), 8, "staging polls every partition at once");
         let StagedNativeChild::Host { batches, .. } = &staged.children[0] else {
             panic!("ordinary child must be host staged")
         };
-        assert_eq!(batches.len(), 4);
+        assert_eq!(batches.len(), 8);
         assert!(
             elapsed < Duration::from_millis(350),
-            "four overlapped 100ms opens must stage well under the 400ms serial sum, took {elapsed:?}"
+            "eight overlapped 100ms opens must stage well under the 800ms serial sum, took {elapsed:?}"
         );
     }
 

@@ -21,7 +21,7 @@ use datafusion::{
         PhysicalExpr,
         expressions::{binary, col, lit},
     },
-    physical_plan::{StatisticsArgs, StatisticsContext, collect, empty::EmptyExec, filter::FilterExec},
+    physical_plan::{StatisticsArgs, StatisticsContext, collect, displayable, empty::EmptyExec, filter::FilterExec},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::future::BoxFuture;
@@ -1360,6 +1360,53 @@ async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
     assert!(runtime.memory_pool.reserved() > 0, "only the transferred owner retains the reservation");
     drop(staged_inputs);
     assert_eq!(runtime.memory_pool.reserved(), 0, "dropping the sole staged-input owner releases the reservation");
+}
+
+#[tokio::test]
+async fn cugraph_host_staging_polls_every_partition_of_a_dynamic_filter_join() {
+    let dir = tempfile::tempdir().unwrap();
+    for file in ["a.parquet", "b.parquet", "c.parquet"] {
+        write_edge_parquet(&dir.path().join(file));
+    }
+    let ctx = SessionContext::new_with_config(SessionConfig::new().with_target_partitions(4));
+    ctx.register_parquet("edges", dir.path().to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let keys = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef],
+    )
+    .unwrap();
+    ctx.register_batch("keys", keys).unwrap();
+    let edge_source = ctx
+        .sql("SELECT e.src, e.dst, e.weight FROM edges e JOIN keys k ON k.id = e.src")
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let rendered = displayable(edge_source.as_ref()).indent(true).to_string();
+    assert!(rendered.contains("mode=CollectLeft") && rendered.contains("DynamicFilter"), "{rendered}");
+    assert_eq!(edge_source.properties().output_partitioning().partition_count(), 3, "{rendered}");
+
+    // Each probe partition of the join waits until every probe partition has reported its
+    // build bounds, so staging that drains partitions one at a time never completes.
+    let staged = timeout(
+        std::time::Duration::from_secs(30),
+        stage_cugraph_inputs(
+            &pagerank_spec(),
+            edge_source,
+            vec![],
+            Arc::new(TaskContext::default()),
+            &ExecutionCancellation::new(),
+            1024 * 1024,
+        ),
+    )
+    .await
+    .expect("host staging must poll every probe partition of the dynamic-filter join")
+    .expect("host graph inputs should stage");
+    let StagedCugraphSource::Host { batches, .. } = &staged.edge else {
+        panic!("a DataFusion join edge source stages on the host")
+    };
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 9);
 }
 
 #[tokio::test]

@@ -7,9 +7,9 @@ use cugraph::{
 };
 
 use super::{
-    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
-    QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params, map_cugraph_error,
-    normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
+    DataFrame, ExecutionContext, ExecutionOverrides, GpuDataFrame, GraphAlgorithmExecutionInputs,
+    GraphAlgorithmExecutionResult, NodeId, QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params,
+    map_cugraph_error, normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
 use crate::plan::{
     GraphAlgorithmParams, GraphAlgorithmSpec, GraphForceAtlas2InitialPositionsInput,
@@ -59,6 +59,7 @@ pub(super) fn execute_force_atlas2(
             ))?;
             let result = match graph.vertex_dtype() {
                 DataType::Int32 => force_atlas2_with_side_inputs::<i32>(
+                    runtime,
                     entered,
                     graph,
                     &mut rng_state,
@@ -67,6 +68,7 @@ pub(super) fn execute_force_atlas2(
                     initial_positions.as_ref(),
                 )?,
                 DataType::Int64 => force_atlas2_with_side_inputs::<i64>(
+                    runtime,
                     entered,
                     graph,
                     &mut rng_state,
@@ -208,6 +210,7 @@ fn force_atlas2_side_input_column(
 }
 
 fn force_atlas2_with_side_inputs<V>(
+    runtime: &cudf::Runtime,
     entered: &cugraph::EnteredContext<'_>,
     graph: &mut cugraph::Graph<cugraph::Forward>,
     rng_state: &mut RngState,
@@ -218,11 +221,16 @@ fn force_atlas2_with_side_inputs<V>(
 where
     V: CugraphElement + cudf::CudfType,
 {
+    // The cuGraph handle has routed this stream's current-resource allocations to the query
+    // domain, so side-input checks run on that stream and resource rather than cuDF's default
+    // execution context, whose different route the adaptor rejects.
+    let overrides =
+        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     if let Some(attributes) = attributes {
-        validate_force_atlas2_vertex_series::<V>(&attributes.vertex, "vertex_attributes.vertex")?;
+        validate_force_atlas2_vertex_series::<V>(&attributes.vertex, "vertex_attributes.vertex", &overrides)?;
     }
     if let Some(positions) = positions {
-        validate_force_atlas2_vertex_series::<V>(&positions.vertex, "initial_positions.vertex")?;
+        validate_force_atlas2_vertex_series::<V>(&positions.vertex, "initial_positions.vertex", &overrides)?;
     }
 
     let attribute_vertex_slice = attributes
@@ -293,7 +301,11 @@ where
         .map_err(map_cugraph_error("query_engine.graph_algorithm.force_atlas2", "cuGraph ForceAtlas2 failed"))
 }
 
-fn validate_force_atlas2_vertex_series<V: cudf::CudfType>(series: &cudf::Series, role: &'static str) -> Result<()> {
+fn validate_force_atlas2_vertex_series<V: cudf::CudfType>(
+    series: &cudf::Series,
+    role: &'static str,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<()> {
     let dtype = series.dtype().map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.force_atlas2_side_input",
@@ -302,7 +314,7 @@ fn validate_force_atlas2_vertex_series<V: cudf::CudfType>(series: &cudf::Series,
         )
     })?;
     if dtype.id() != V::TYPE_ID
-        || series.nunique().map_err(|error| {
+        || series.nunique_in(overrides).map_err(|error| {
             cudf_query_error(
                 "query_engine.graph_algorithm.force_atlas2_side_input",
                 "failed to validate ForceAtlas2 side-input vertex uniqueness",

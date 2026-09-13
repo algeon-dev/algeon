@@ -3,7 +3,7 @@ use std::{error::Error, time::Duration};
 use arrow::{
     array::{
         Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
-        LargeStringArray, StringArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        LargeStringArray, StringArray, StringViewArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
     datatypes::DataType,
     record_batch::RecordBatch,
@@ -124,6 +124,7 @@ fn value_to_string(array: &ArrayRef, row: usize) -> String {
     downcast_value!(array, row, Float64Array, f64);
     downcast_value!(array, row, StringArray, str);
     downcast_value!(array, row, LargeStringArray, str);
+    downcast_value!(array, row, StringViewArray, str);
     format!("<unsupported:{}>", data_type_name(array.data_type()))
 }
 

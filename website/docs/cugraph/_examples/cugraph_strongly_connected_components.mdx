@@ -13,7 +13,7 @@ then count the multi-paper components:
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.
-CREATE TABLE scc_snapshot AS
+CREATE OR REPLACE TABLE scc_snapshot AS
 SELECT vertex, label
 FROM cugraph_strongly_connected_components(
   edges => (SELECT src, dst FROM citation_edges), directed => true);

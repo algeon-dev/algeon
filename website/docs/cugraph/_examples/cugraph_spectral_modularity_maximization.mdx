@@ -8,20 +8,20 @@ This cuGraph C API algorithm needs Int32 vertex ids, and AMiner paper ids overfl
 Int32, so the example uses the
 [SQL renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-cugraph-c-api-algorithms)
 on a graph worth clustering: the k=30 citation core (every paper keeps at
-least 30 combined in+out citation links inside the subgraph, as in the
+least 30 citation neighbors inside the subgraph, as in the
 [k-core example](../algorithms/structure/cugraph_k_core.mdx)). One algorithm's
 output becomes the next algorithm's input, with a window function in between:
 
 ```sql
-CREATE TABLE kcore30_edges AS
+CREATE OR REPLACE TABLE kcore30_edges AS
 SELECT src, dst
 FROM cugraph_k_core(edges => (SELECT src, dst FROM citation_edges), k => 30);
 
-CREATE TABLE kcore_vertex_ids AS
+CREATE OR REPLACE TABLE kcore_vertex_ids AS
 SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
 FROM (SELECT src AS paper_id FROM kcore30_edges UNION SELECT dst FROM kcore30_edges);
 
-CREATE VIEW kcore30_i32 AS
+CREATE OR REPLACE VIEW kcore30_i32 AS
 SELECT a.vid AS src, b.vid AS dst
 FROM kcore30_edges e
 JOIN kcore_vertex_ids a ON a.paper_id = e.src
@@ -72,5 +72,5 @@ answers is "which satellite communities are spectrally separable from the
 core, given exactly `n_clusters` slots". The tight `evs_tolerance` matters;
 the loose default stops the eigensolver early and the satellites smear into
 the nucleus. Cluster ids are arbitrary and k-means may move a few boundary
-papers between runs; snapshot with `CREATE TABLE ... AS` per the
+papers between runs; snapshot with `CREATE OR REPLACE TABLE ... AS` per the
 [demo dataset guide](../demo-dataset.mdx) before building on the labels.
