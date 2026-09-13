@@ -20,8 +20,7 @@ Before you start:
 Run the steps in order: cuDF/RMM → cuVS → cuGraph → the Rust workspace. Each
 native step prints where it installed and fails early if the previous layer
 is missing or was built for a different CUDA target. When a step fails, the
-message names the component and the rebuild command; the failures whose text
-does not point at the cause are in [Troubleshooting](./troubleshooting.md).
+message names the component and the rebuild command.
 
 ## 1. Clone and initialize the repository
 
@@ -314,6 +313,4 @@ done
 ```
 
 The check compares the native layers against each other only; it does not
-compare them against the GPU installed in this host. A binary that links but
-aborts on its first kernel launch is covered in
-[Troubleshooting](./troubleshooting.md#gpu-op-aborts-cudaerrornokernelimagefordevice).
+compare them against the GPU installed in this host.

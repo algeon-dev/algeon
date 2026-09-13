@@ -13,7 +13,6 @@ import {
   prose,
   renderFunctionPage,
   table,
-  validationBlock,
   write,
 } from './gpu-docs-common.mjs';
 
@@ -225,7 +224,7 @@ function renderOutputSchema(spec) {
       cell(field.repeats ? `${field.description} ${repeatedFieldSentence(field)}` : field.description),
     ])),
     '',
-    '**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
+    '**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
   ].join('\n');
 }
 
@@ -249,11 +248,7 @@ function renderPage(spec) {
     output: renderOutputSchema(spec),
     examples: null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    validation: validationBlock({
-      functionName: spec.function_name,
-      call: entry.validation.call,
-      discoveryLink: '../../reference/gpu-function-catalog.mdx',
-    }),
+    discoveryLink: '../../reference/gpu-function-catalog.mdx',
   });
 }
 

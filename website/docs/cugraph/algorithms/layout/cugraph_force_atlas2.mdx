@@ -14,12 +14,6 @@ Official cuGraph reference: [Python API](https://docs.rapids.ai/api/cugraph/stab
 
 Place vertices in two dimensions with a force-directed simulation that attracts connected vertices and repels vertices from one another.
 
-## Signature
-
-```sql
-cugraph_force_atlas2(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, vertex_attributes => (relation subquery), initial_positions => (relation subquery), max_iter => value, outbound_attraction_distribution => value, lin_log_mode => value, prevent_overlapping => value, overlap_scaling_ratio => value, edge_weight_influence => value, jitter_tolerance => value, barnes_hut_optimize => value, barnes_hut_theta => value, scaling_ratio => value, strong_gravity_mode => value, gravity => value, verbose => value, seed => value)
-```
-
 ## Quickstart
 
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
@@ -81,7 +75,7 @@ This function requires `directed=false` (undirected/symmetric graph); all other 
 | `x` | `Float32` | no | X coordinate assigned by ForceAtlas2. |
 | `y` | `Float32` | no | Y coordinate assigned by ForceAtlas2. |
 
-These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -96,15 +90,4 @@ import Examples from '../../_examples/cugraph_force_atlas2.mdx';
 - radius, mobility, mass, x, and y side-input columns must be Float32
 - prevent_overlapping=true requires a radius binding
 
-## Validate the call
-
-Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cugraph_force_atlas2',
-  '{"relations":{"edges":{"table":"target_edges"}},"options":{}}'
-);
-```
-
-See [GPU Function Catalog API](../../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).

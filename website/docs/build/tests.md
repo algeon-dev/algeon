@@ -74,7 +74,7 @@ FAIL: full pre-merge gate reported problems.
 ```
 
 - A native-library or CUDA-architecture failure in the `tests` phase is
-  usually a stale or mismatched prefix: see [Troubleshooting](./troubleshooting.md).
+  usually a stale or mismatched prefix.
 - A single failing phase is fastest to iterate on with the
   [targeted edit loops](#targeted-edit-loops) below, then rerun the full gate.
 - An exit with status 2 before any phase is an argument, environment, or

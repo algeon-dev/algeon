@@ -1,4 +1,5 @@
 ---
+draft: true
 sidebar_position: 6
 description: "The native-library failure modes whose fix is not documented anywhere else: cryptic configure aborts and runtime kernel errors."
 ---

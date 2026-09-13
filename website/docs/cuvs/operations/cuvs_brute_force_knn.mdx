@@ -12,12 +12,6 @@ SQL function: `cuvs_brute_force_knn`
 
 Exact brute-force nearest-neighbor search over dense vectors.
 
-## Signature
-
-```sql
-cuvs_brute_force_knn(dataset => (relation subquery), queries => (relation subquery), k => value, metric => value)
-```
-
 ## Quickstart
 
 The call below expects the registered relations `dataset_vectors` (the `dataset` role) and `query_vectors` (the `queries` role), each passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
@@ -74,7 +68,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 | `rank` | `UInt32` | no | One-based neighbor rank within a query. Order consumers explicitly by query_ordinal, rank. |
 | `distance` | `Float32` | no | Metric value; smaller is better for distance metrics, while inner_product prefers larger values. |
 
-**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 
 ## Limits
 
@@ -84,15 +78,4 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 - The evaluated dataset must be non-empty and k must not exceed its row count. An empty query relation may return an empty result with the stable schema.
 - Dataset and query vector dimensions must match after both relation children are evaluated.
 
-## Validate the call
-
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cuvs_brute_force_knn',
-  '{"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"query_vectors"}},"options":{"k":8,"metric":"l2_expanded"}}'
-);
-```
-
-See [GPU Function Catalog API](../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

@@ -14,12 +14,6 @@ Official cuGraph reference: [C API](https://docs.rapids.ai/api/cugraph/stable/ap
 
 Count the number of three-vertex cycles incident to every vertex in the graph.
 
-## Signature
-
-```sql
-cugraph_triangle_count_all(edges => (relation subquery), directed => value, renumber => value, construction_policy => value)
-```
-
 ## Quickstart
 
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
@@ -63,7 +57,7 @@ This function requires `directed=false` (undirected/symmetric graph); all other 
 | `vertex` | `Int64\|Utf8` | no | Vertex whose triangle participation is reported. |
 | `triangle_count` | `Int64` | no | Number of triangles incident to the vertex. |
 
-These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -75,15 +69,4 @@ import Examples from '../../_examples/cugraph_triangle_count_all.mdx';
 
 _No algorithm-specific limitations._
 
-## Validate the call
-
-Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cugraph_triangle_count_all',
-  '{"relations":{"edges":{"table":"target_edges"}},"options":{}}'
-);
-```
-
-See [GPU Function Catalog API](../../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).

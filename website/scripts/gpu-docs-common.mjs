@@ -97,17 +97,6 @@ export function sqlBlock(sql) {
   return ['```sql', sql, '```'].join('\n');
 }
 
-export function validationBlock({ functionName, call, discoveryLink, intro }) {
-  if (!call || typeof call !== 'object') throw new Error(`${functionName}: no renderable validation call`);
-  return [
-    intro ?? 'Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:',
-    '',
-    sqlBlock(`SELECT * FROM gpu_validate_call(\n  '${functionName}',\n  '${JSON.stringify(call)}'\n);`),
-    '',
-    `See [GPU Function Catalog API](${discoveryLink}) for the full \`gpu_validate_call\` contract.`,
-  ].join('\n');
-}
-
 export function narrativeExampleImport(importPath) {
   return [`import Examples from '${importPath}';`, '', '<Examples />'].join('\n');
 }
@@ -123,10 +112,10 @@ export function renderFunctionPage({
   output,
   examples,
   limits,
-  validation,
+  discoveryLink,
 }) {
   // Page order is fixed: purpose, minimal call, inputs, arguments and
-  // options, output, optional long-form examples, limits, validation.
+  // options, output, optional long-form examples, limits.
   const parts = [
     '---',
     `title: ${title}`,
@@ -142,12 +131,8 @@ export function renderFunctionPage({
   ];
   if (reference != null) parts.push('', reference);
   parts.push('', prose(spec.summary));
-  const headings = ['Signature', 'Quickstart', 'Inputs', 'Arguments and options', 'Output'];
+  const headings = ['Quickstart', 'Inputs', 'Arguments and options', 'Output'];
   parts.push(
-    '',
-    '## Signature',
-    '',
-    sqlBlock(spec.signature),
     '',
     '## Quickstart',
     '',
@@ -169,8 +154,12 @@ export function renderFunctionPage({
     parts.push('', '## Examples', '', examples);
     headings.push('Examples');
   }
-  parts.push('', '## Limits', '', limits, '', '## Validate the call', '', validation);
-  headings.push('Limits', 'Validate the call');
+  const limitsParts = [limits];
+  if (discoveryLink) {
+    limitsParts.push('', `To dry-run validate relation metadata, column types, and options without execution, see [\`gpu_validate_call\`](${discoveryLink}).`);
+  }
+  parts.push('', '## Limits', '', limitsParts.join('\n'));
+  headings.push('Limits');
   const page = parts.join('\n');
   assertPageContract(spec.function_name, page, headings);
   return page;

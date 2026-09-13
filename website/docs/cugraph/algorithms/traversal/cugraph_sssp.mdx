@@ -14,12 +14,6 @@ Official cuGraph reference: [C API](https://docs.rapids.ai/api/cugraph/stable/ap
 
 Compute minimum path distances and predecessors from one source vertex, using edges.weight or unit cost 1 when that field is omitted.
 
-## Signature
-
-```sql
-cugraph_sssp(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, source_vertex => value, cutoff => value)
-```
-
 ## Quickstart
 
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, and starts from source vertex `123`. Substitute your own registered relations.
@@ -67,7 +61,7 @@ Graph construction follows the shared defaults (`directed=true`, renumbering, `p
 | `distance` | `Float64` | no | Shortest weighted-path distance from the source vertex. |
 | `predecessor` | `Int64\|Utf8` | yes | Previous vertex on the shortest-path tree, null for the source or unreachable vertices. |
 
-These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -79,15 +73,4 @@ import Examples from '../../_examples/cugraph_sssp.mdx';
 
 - omitting edges.weight assigns unit cost 1 to every edge
 
-## Validate the call
-
-Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cugraph_sssp',
-  '{"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":123}}'
-);
-```
-
-See [GPU Function Catalog API](../../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).

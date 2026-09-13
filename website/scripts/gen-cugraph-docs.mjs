@@ -16,7 +16,6 @@ import {
   prose,
   renderFunctionPage,
   table,
-  validationBlock,
   write,
 } from './gpu-docs-common.mjs';
 
@@ -615,7 +614,7 @@ function renderSchemas(spec) {
       code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
     ]));
   });
-  blocks.push('These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.');
+  blocks.push('These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.');
   return blocks.join('\n\n');
 }
 
@@ -674,12 +673,7 @@ function renderPage(spec) {
     output: renderSchemas(spec),
     examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),
     limits: renderLimitations(spec),
-    validation: validationBlock({
-      functionName: spec.function_name,
-      call: example.call,
-      discoveryLink: '../../../reference/gpu-function-catalog.mdx',
-      intro: 'Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:',
-    }),
+    discoveryLink: '../../../reference/gpu-function-catalog.mdx',
   });
 }
 
@@ -689,12 +683,11 @@ function renderCheatsheet(specs) {
     '',
     `The live catalog contains **${specs.length} SQL-visible cuGraph functions**.`,
     '',
-    table(['Function', 'Family', 'Signature', 'Summary', 'Official API'], specs.map(spec => {
+    table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = documentationFor(spec.function_name);
       return [
         `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
-        code(spec.signature),
         cell(docsText(spec.summary)),
         `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
       ];
