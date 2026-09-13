@@ -25,7 +25,7 @@ const OPERATIONS_DIR = join(DOCS_DIR, 'operations');
 // These presentation families are documentation navigation only. They do not
 // alter SQL names or introduce an execution API family.
 const FAMILIES = {
-  vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn'] },
+  vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn', 'cuvs_ivf_flat'] },
   distances_and_selection: { label: 'Distances and Selection', functions: ['cuvs_pairwise_distance', 'cuvs_top_k'] },
   clustering: { label: 'Clustering', functions: ['cuvs_kmeans'] },
   dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuvs_pca'] },
@@ -81,7 +81,7 @@ function presentation(spec) {
 }
 
 const RENDERED_OPTION_KEYS = new Set([
-  'type', 'default', 'enum', 'minimum', 'maximum', 'minLength', 'minItems',
+  'type', 'default', 'enum', 'minimum', 'exclusiveMinimum', 'maximum', 'minLength', 'minItems',
   'oneOf', 'description', 'additionalProperties', 'properties', 'required',
 ]);
 
@@ -131,6 +131,7 @@ function optionConstraints(option) {
   const constraints = [];
   if (option.enum) constraints.push(`one of ${option.enum.map(value => code(JSON.stringify(value))).join(', ')}`);
   if ('minimum' in option) constraints.push(`minimum ${option.minimum}`);
+  if ('exclusiveMinimum' in option) constraints.push(`greater than ${option.exclusiveMinimum}`);
   if ('maximum' in option) constraints.push(`maximum ${option.maximum}`);
   if ('minLength' in option) constraints.push(`minimum string length ${option.minLength}`);
   if ('minItems' in option) constraints.push(`at least ${option.minItems} item${option.minItems === 1 ? '' : 's'}`);

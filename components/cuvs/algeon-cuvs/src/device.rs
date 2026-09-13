@@ -220,6 +220,17 @@ impl<T: DeviceElement> DeviceBuffer<T> {
 }
 
 impl DeviceBuffer<f32> {
+    pub(crate) fn validate_native_distances_for_valid_neighbors(
+        &self,
+        neighbors: &DeviceBuffer<i64>,
+        sentinel: i64,
+        operation: &'static str,
+    ) -> Result<()> {
+        self.inner
+            .validate_finite_float32_for_valid_neighbors(neighbors.inner(), sentinel)
+            .map_err(|error| from_cudf(operation, error))
+    }
+
     pub(crate) fn validate_native_input(&mut self, operation: &'static str) -> Result<()> {
         let (validated_len, validated_binding, validated_device) = {
             let proof = self.inner.validate_finite_float32().map_err(|error| from_cudf(operation, error))?;
@@ -270,6 +281,18 @@ impl DeviceBuffer<f32> {
 }
 
 impl DeviceBuffer<i64> {
+    pub(crate) fn validate_native_index_range_or_sentinel(
+        &self,
+        min_inclusive: i64,
+        max_exclusive: i64,
+        sentinel: i64,
+        operation: &'static str,
+    ) -> Result<()> {
+        self.inner
+            .validate_int64_range_or_sentinel(min_inclusive, max_exclusive, sentinel)
+            .map_err(|error| from_cudf(operation, error))
+    }
+
     pub(crate) fn validate_native_index_range(
         &self,
         min_inclusive: i64,

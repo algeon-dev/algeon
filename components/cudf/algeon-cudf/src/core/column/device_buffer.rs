@@ -324,6 +324,29 @@ impl DeviceBuffer {
         Ok(ValidatedInt64DeviceBufferRange { buffer: self, proof })
     }
 
+    /// Validate that each Int64 value is in the range or equals `sentinel`.
+    pub fn validate_int64_range_or_sentinel(
+        &self,
+        min_inclusive: i64,
+        max_exclusive: i64,
+        sentinel: i64,
+    ) -> Result<()> {
+        validation::validate_int64_buffer_range_or_sentinel(self, min_inclusive, max_exclusive, sentinel)
+            .map_err(|error| error.reanchor("device_buffer::validate_int64_range_or_sentinel"))
+    }
+
+    /// Mark infinite-distance placeholder slots as missing neighbors on the retained execution stream.
+    pub fn normalize_missing_neighbor_indices(&mut self, distances: &Self, sentinel: i64) -> Result<()> {
+        validation::normalize_missing_neighbor_indices(self, distances, sentinel)
+            .map_err(|error| error.reanchor("device_buffer::normalize_missing_neighbor_indices"))
+    }
+
+    /// Validate finite Float32 values at every position whose Int64 neighbor is not the sentinel.
+    pub fn validate_finite_float32_for_valid_neighbors(&self, neighbors: &Self, sentinel: i64) -> Result<()> {
+        validation::validate_finite_float32_for_valid_neighbors(self, neighbors, sentinel)
+            .map_err(|error| error.reanchor("device_buffer::validate_finite_float32_for_valid_neighbors"))
+    }
+
     /// Consume this buffer and return the raw FFI handle **without** running
     /// `Drop`.
     ///

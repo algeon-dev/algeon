@@ -3,14 +3,15 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{Series, frame::dataframe::GpuRecordBatch};
 use cuvs::{
-    BruteForceIndex, CuvsResources, DeviceBuffer, DeviceElement, DistanceMetric, KMeansInit, KMeansMetric, KMeansModel,
-    KMeansParams, MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor,
-    fit_transform_owned, pairwise_distance_into, select_k_into,
+    BruteForceIndex, CuvsResources, DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams,
+    IvfFlatSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout, OwnedFloat32Matrix,
+    PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into,
+    select_k_into,
 };
 
 use super::assembly::{
-    assemble_brute_force_knn_output, assemble_kmeans_output, assemble_pairwise_distance_output, assemble_pca_output,
-    assemble_top_k_output,
+    KnnAssemblyParams, assemble_kmeans_output, assemble_knn_output, assemble_pairwise_distance_output,
+    assemble_pca_output, assemble_top_k_output,
 };
 use crate::{
     exec::{GpuDataFrame, *},
@@ -19,8 +20,8 @@ use crate::{
     },
     plan::{
         CuvsDenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-        VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorTopKParams,
+        VectorDistanceMetric, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams,
+        VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorTopKParams,
     },
 };
 
@@ -79,9 +80,89 @@ pub(in crate::exec) fn execute_vector_algorithm(
     })?;
 
     match &node.spec.params {
-        VectorAlgorithmParams::BruteForceKnn(params) => {
-            execute_brute_force_knn(context, plan, node_id, params, inputs, &resources, native_version)
-        },
+        VectorAlgorithmParams::BruteForceKnn(params) => execute_knn(
+            context,
+            plan,
+            node_id,
+            KnnExecutionOptions {
+                dataset: &params.dataset,
+                queries: &params.queries,
+                k: params.k,
+                metric: params.metric,
+                algorithm: VectorAlgorithm::BruteForceKnn,
+                n_lists: None,
+                missing_neighbor: None,
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
+                                   queries: &ValidatedDeviceTensor<'_>,
+                                   output_rows| {
+                    run_knn_native(
+                        context,
+                        node_id,
+                        VectorAlgorithm::BruteForceKnn,
+                        &resources,
+                        native_version,
+                        dataset,
+                        queries,
+                        output_rows,
+                        || BruteForceIndex::build(&resources, dataset, distance_metric(params.metric)),
+                        |index, neighbors, distances| {
+                            index.search_into(queries, params.k, neighbors, distances).map(|_| ())
+                        },
+                        "failed to execute exact kNN search",
+                    )
+                },
+            },
+            inputs,
+            &resources,
+            native_version,
+        ),
+        VectorAlgorithmParams::IvfFlat(params) => execute_knn(
+            context,
+            plan,
+            node_id,
+            KnnExecutionOptions {
+                dataset: &params.dataset,
+                queries: &params.queries,
+                k: params.k,
+                metric: params.metric,
+                algorithm: VectorAlgorithm::IvfFlat,
+                n_lists: Some(params.n_lists),
+                missing_neighbor: Some(i64::MAX),
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
+                                   queries: &ValidatedDeviceTensor<'_>,
+                                   output_rows| {
+                    let mut build = IvfFlatIndexParams::new(distance_metric(params.metric), params.n_lists);
+                    build.kmeans_n_iters = params.kmeans_n_iters;
+                    build.kmeans_trainset_fraction = params.kmeans_trainset_fraction;
+                    run_knn_native(
+                        context,
+                        node_id,
+                        VectorAlgorithm::IvfFlat,
+                        &resources,
+                        native_version,
+                        dataset,
+                        queries,
+                        output_rows,
+                        || IvfFlatIndex::build(&resources, dataset, build),
+                        |index, neighbors, distances| {
+                            index
+                                .search_into(
+                                    queries,
+                                    params.k,
+                                    IvfFlatSearchParams { n_probes: params.n_probes },
+                                    neighbors,
+                                    distances,
+                                )
+                                .map(|_| ())
+                        },
+                        "failed to execute IVF-Flat kNN search",
+                    )
+                },
+            },
+            inputs,
+            &resources,
+            native_version,
+        ),
         VectorAlgorithmParams::PairwiseDistance(params) => {
             execute_pairwise_distance(context, plan, node_id, params, inputs, &resources, native_version)
         },
@@ -112,22 +193,121 @@ pub(in crate::exec) fn validate_vector_algorithm_execution(node_id: NodeId, node
     .with_fact("reason", "unknown_vector_algorithm_payload"))
 }
 
-fn execute_brute_force_knn(
+struct KnnExecutionOptions<'a, F> {
+    dataset: &'a VectorRelationBinding,
+    queries: &'a VectorRelationBinding,
+    k: usize,
+    metric: VectorDistanceMetric,
+    algorithm: VectorAlgorithm,
+    n_lists: Option<u32>,
+    missing_neighbor: Option<i64>,
+    build_and_search: F,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the observer needs the native call's device shapes and execution identity"
+)]
+fn run_knn_native<I>(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    algorithm: VectorAlgorithm,
+    resources: &CuvsResources,
+    native_version: (u16, u16, u16),
+    dataset: &ValidatedDeviceTensor<'_>,
+    queries: &ValidatedDeviceTensor<'_>,
+    output_rows: usize,
+    build: impl FnOnce() -> cuvs::Result<I>,
+    search: impl FnOnce(&I, &mut DeviceBuffer<i64>, &mut DeviceBuffer<f32>) -> cuvs::Result<()>,
+    search_error: &'static str,
+) -> Result<(DeviceBuffer<i64>, DeviceBuffer<f32>)> {
+    let dataset_rows = dataset.rows().map_err(|error| {
+        cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN dataset shape", error)
+    })?;
+    let dimension = dataset.columns().map_err(|error| {
+        cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN dataset dimension", error)
+    })?;
+    let query_rows = queries.rows().map_err(|error| {
+        cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN query shape", error)
+    })?;
+    let dataset_bytes = matrix_bytes(dataset_rows, dimension, node_id, "dataset")?;
+    let index = observe_native(
+        context,
+        node_id,
+        algorithm,
+        resources,
+        native_version,
+        "build_index",
+        dataset_rows,
+        dataset_bytes,
+        None,
+        None,
+        || {
+            context.check_cancellation("query_engine.vector_algorithm.before_index_build")?;
+            let index = build().map_err(|error| {
+                cuvs_query_error(NATIVE_OPERATION, "failed to build the query-local kNN index", error)
+            })?;
+            context.check_cancellation("query_engine.vector_algorithm.after_index_build")?;
+            Ok(index)
+        },
+    )?;
+    let mut neighbors = DeviceBuffer::<i64>::new(resources, output_rows)
+        .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN neighbor output", error))?;
+    let mut distances = DeviceBuffer::<f32>::new(resources, output_rows)
+        .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN distance output", error))?;
+    let query_bytes = matrix_bytes(query_rows, dimension, node_id, "queries")?;
+    let native_output_bytes = output_rows
+        .checked_mul(std::mem::size_of::<i64>() + std::mem::size_of::<f32>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| size_overflow(node_id, "native_output_bytes"))?;
+    observe_native(
+        context,
+        node_id,
+        algorithm,
+        resources,
+        native_version,
+        "search",
+        query_rows,
+        query_bytes,
+        Some(output_rows),
+        Some(native_output_bytes),
+        || {
+            context.check_cancellation("query_engine.vector_algorithm.before_search")?;
+            search(&index, &mut neighbors, &mut distances)
+                .map_err(|error| cuvs_query_error(NATIVE_OPERATION, search_error, error))?;
+            context.check_cancellation("query_engine.vector_algorithm.after_search")?;
+            Ok(())
+        },
+    )?;
+    Ok((neighbors, distances))
+}
+
+fn execute_knn<F>(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    params: &VectorBruteForceKnnParams,
+    knn: KnnExecutionOptions<'_, F>,
     inputs: &BTreeMap<NodeId, GpuDataFrame>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
-) -> Result<GpuDataFrame> {
-    let dataset = relation_input(inputs, &params.dataset, node_id, "dataset")?;
-    let queries = relation_input(inputs, &params.queries, node_id, "queries")?;
+) -> Result<GpuDataFrame>
+where
+    F: FnOnce(
+        &ValidatedDeviceTensor<'_>,
+        &ValidatedDeviceTensor<'_>,
+        usize,
+    ) -> Result<(DeviceBuffer<i64>, DeviceBuffer<f32>)>,
+{
+    let KnnExecutionOptions { dataset, queries, k, metric, algorithm, n_lists, missing_neighbor, build_and_search } =
+        knn;
+    let params = KnnAssemblyParams { dataset, queries, k, metric, missing_neighbor };
+    let dataset = relation_input(inputs, params.dataset, node_id, "dataset")?;
+    let queries = relation_input(inputs, params.queries, node_id, "queries")?;
     let dataset_rows = dataset.num_rows();
     if dataset_rows == 0 {
         return Err(vector_input_error(
             node_id,
-            VectorAlgorithm::BruteForceKnn,
+            algorithm,
             "empty_dataset",
             "kNN dataset must contain at least one row",
         )
@@ -136,22 +316,34 @@ fn execute_brute_force_knn(
     if params.k > dataset_rows {
         return Err(vector_input_error(
             node_id,
-            VectorAlgorithm::BruteForceKnn,
+            algorithm,
             "k_exceeds_dataset_rows",
             "kNN k must not exceed the evaluated dataset row count",
         )
         .with_fact("k", params.k)
         .with_fact("dataset_rows", dataset_rows));
     }
-    let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id, VectorAlgorithm::BruteForceKnn)?;
+    if let Some(n_lists) = n_lists
+        && n_lists as usize > dataset_rows
+    {
+        return Err(vector_input_error(
+            node_id,
+            algorithm,
+            "n_lists_exceeds_dataset_rows",
+            "IVF-Flat n_lists must not exceed the evaluated dataset row count",
+        )
+        .with_fact("n_lists", n_lists)
+        .with_fact("dataset_rows", dataset_rows));
+    }
+    let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id, algorithm)?;
 
     with_relation_tensor(
         context,
         plan,
         node_id,
-        VectorAlgorithm::BruteForceKnn,
+        algorithm,
         "dataset",
-        &params.dataset,
+        params.dataset,
         dataset,
         resources,
         native_version,
@@ -181,11 +373,11 @@ fn execute_brute_force_knn(
                         invalid_node_reference(params.queries.input, "vector query relation references a missing input")
                     })?
                     .output_schema();
-                let query_dimension = relation_dimension(&params.queries, query_schema, node_id, "queries")?;
+                let query_dimension = relation_dimension(params.queries, query_schema, node_id, "queries")?;
                 if query_dimension != dimension {
                     return Err(vector_input_error(
                         node_id,
-                        VectorAlgorithm::BruteForceKnn,
+                        algorithm,
                         "feature_dimension_mismatch",
                         "kNN dataset and query dimensions must match at execution",
                     )
@@ -198,24 +390,31 @@ fn execute_brute_force_knn(
                 let distances = resources.runtime().series(&[] as &[f32]).map_err(|error| {
                     cudf_query_error(EXECUTE_OPERATION, "failed to construct empty kNN distance output", error)
                 })?;
-                return observe_assembly(
-                    context,
-                    node_id,
-                    VectorAlgorithm::BruteForceKnn,
-                    resources,
-                    native_version,
-                    output_rows,
-                    || assemble_brute_force_knn_output(context, params, dataset, queries, neighbors, distances),
-                );
+                return observe_assembly(context, node_id, algorithm, resources, native_version, output_rows, || {
+                    assemble_knn_output(
+                        context,
+                        KnnAssemblyParams {
+                            dataset: params.dataset,
+                            queries: params.queries,
+                            k: params.k,
+                            metric: params.metric,
+                            missing_neighbor,
+                        },
+                        dataset,
+                        queries,
+                        neighbors,
+                        distances,
+                    )
+                });
             }
 
             with_relation_tensor(
                 context,
                 plan,
                 node_id,
-                VectorAlgorithm::BruteForceKnn,
+                algorithm,
                 "queries",
-                &params.queries,
+                params.queries,
                 queries,
                 resources,
                 native_version,
@@ -244,67 +443,14 @@ fn execute_brute_force_knn(
                     if query_dimension != dimension {
                         return Err(vector_input_error(
                             node_id,
-                            VectorAlgorithm::BruteForceKnn,
+                            algorithm,
                             "feature_dimension_mismatch",
                             "kNN dataset and query dimensions must match at execution",
                         )
                         .with_fact("dataset_dimension", dimension)
                         .with_fact("query_dimension", query_dimension));
                     }
-                    let metric = distance_metric(params.metric);
-                    let dataset_bytes = matrix_bytes(dataset_rows, dimension, node_id, "dataset")?;
-                    let index = observe_native(
-                        context,
-                        node_id,
-                        VectorAlgorithm::BruteForceKnn,
-                        resources,
-                        native_version,
-                        "build_index",
-                        dataset_rows,
-                        dataset_bytes,
-                        None,
-                        None,
-                        || {
-                            context.check_cancellation("query_engine.vector_algorithm.before_index_build")?;
-                            let index = BruteForceIndex::build(resources, dataset_tensor, metric).map_err(|error| {
-                                cuvs_query_error(NATIVE_OPERATION, "failed to build the query-local kNN index", error)
-                            })?;
-                            context.check_cancellation("query_engine.vector_algorithm.after_index_build")?;
-                            Ok(index)
-                        },
-                    )?;
-
-                    let mut neighbors = DeviceBuffer::<i64>::new(resources, output_rows).map_err(|error| {
-                        cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN neighbor output", error)
-                    })?;
-                    let mut distances = DeviceBuffer::<f32>::new(resources, output_rows).map_err(|error| {
-                        cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN distance output", error)
-                    })?;
-                    let query_bytes = matrix_bytes(query_rows, query_dimension, node_id, "queries")?;
-                    let native_output_bytes = output_rows
-                        .checked_mul(std::mem::size_of::<i64>() + std::mem::size_of::<f32>())
-                        .and_then(|bytes| u64::try_from(bytes).ok())
-                        .ok_or_else(|| size_overflow(node_id, "native_output_bytes"))?;
-                    observe_native(
-                        context,
-                        node_id,
-                        VectorAlgorithm::BruteForceKnn,
-                        resources,
-                        native_version,
-                        "search",
-                        query_rows,
-                        query_bytes,
-                        Some(output_rows),
-                        Some(native_output_bytes),
-                        || {
-                            context.check_cancellation("query_engine.vector_algorithm.before_search")?;
-                            index.search_into(query_tensor, params.k, &mut neighbors, &mut distances).map_err(
-                                |error| cuvs_query_error(NATIVE_OPERATION, "failed to execute exact kNN search", error),
-                            )?;
-                            context.check_cancellation("query_engine.vector_algorithm.after_search")?;
-                            Ok(())
-                        },
-                    )?;
+                    let (neighbors, distances) = build_and_search(dataset_tensor, query_tensor, output_rows)?;
 
                     let neighbors = Series::from_column(neighbors.into_column().map_err(|error| {
                         cuvs_query_error(EXECUTE_OPERATION, "failed to adopt kNN neighbor output", error)
@@ -319,22 +465,25 @@ fn execute_brute_force_knn(
                         cudf_query_error(EXECUTE_OPERATION, "failed to wrap kNN distance output", error)
                     })?;
 
-                    observe_assembly(
-                        context,
-                        node_id,
-                        VectorAlgorithm::BruteForceKnn,
-                        resources,
-                        native_version,
-                        output_rows,
-                        || {
-                            context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
-                            let output = assemble_brute_force_knn_output(
-                                context, params, dataset, queries, neighbors, distances,
-                            )?;
-                            context.check_cancellation("query_engine.vector_algorithm.after_assembly")?;
-                            Ok(output)
-                        },
-                    )
+                    observe_assembly(context, node_id, algorithm, resources, native_version, output_rows, || {
+                        context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
+                        let output = assemble_knn_output(
+                            context,
+                            KnnAssemblyParams {
+                                dataset: params.dataset,
+                                queries: params.queries,
+                                k: params.k,
+                                metric: params.metric,
+                                missing_neighbor,
+                            },
+                            dataset,
+                            queries,
+                            neighbors,
+                            distances,
+                        )?;
+                        context.check_cancellation("query_engine.vector_algorithm.after_assembly")?;
+                        Ok(output)
+                    })
                 },
             )
         },

@@ -465,6 +465,9 @@ mod tests {
             VectorAlgorithmParams::BruteForceKnn(params) => {
                 assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
             },
+            VectorAlgorithmParams::IvfFlat(params) => {
+                assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
+            },
             VectorAlgorithmParams::PairwiseDistance(params) => {
                 assert_eq!(vector.inputs, [params.x.input, params.y.input], "{label}");
             },

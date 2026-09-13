@@ -298,6 +298,17 @@ fn format_vector_algorithm_params(params: &super::VectorAlgorithmParams) -> Stri
             params.k,
             params.metric
         ),
+        super::VectorAlgorithmParams::IvfFlat(params) => format!(
+            "dataset=({}) queries=({}) k={} metric={} n_lists={} n_probes={} kmeans_n_iters={} kmeans_trainset_fraction={}",
+            format_vector_relation(&params.dataset),
+            format_vector_relation(&params.queries),
+            params.k,
+            params.metric,
+            params.n_lists,
+            params.n_probes,
+            params.kmeans_n_iters,
+            params.kmeans_trainset_fraction
+        ),
         super::VectorAlgorithmParams::PairwiseDistance(params) => format!(
             "x=({}) y=({}) metric={}",
             format_vector_relation(&params.x),

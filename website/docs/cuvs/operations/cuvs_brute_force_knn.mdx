@@ -32,7 +32,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 | Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `dataset` | yes | `table` | Dense-vector rows searched by the exact kNN operation. |
+| `dataset` | yes | `table` | Dense-vector rows indexed for nearest-neighbor search. |
 | `queries` | yes | `table` | Dense-vector query rows matched against the evaluated dataset. |
 
 ### Vector element types

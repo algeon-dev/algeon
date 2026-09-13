@@ -6,9 +6,9 @@ use query_engine::{
     expr::Expr as NativeExpr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-        VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding,
-        VectorTopKParams,
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansInit, VectorKMeansMetric,
+        VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+        VectorRowIdBinding, VectorTopKParams,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -104,6 +104,26 @@ pub(super) fn lower_cuvs_query_plan(
                 _ => unreachable!("canonical kNN metric is registry validated"),
             },
         )),
+        CuvsOperation::IvfFlat => {
+            let metric = match value_str(operation, &canonical, "metric")? {
+                "l2_expanded" => VectorDistanceMetric::L2Expanded,
+                "l2_sqrt_expanded" => VectorDistanceMetric::L2SqrtExpanded,
+                "cosine" => VectorDistanceMetric::CosineExpanded,
+                "inner_product" => VectorDistanceMetric::InnerProduct,
+                _ => unreachable!("canonical IVF-Flat metric is registry validated"),
+            };
+            let mut params = VectorIvfFlatParams::new(
+                relations[0].clone(),
+                relations[1].clone(),
+                value_usize(operation, &canonical, "k")?,
+                metric,
+                value_u32(operation, &canonical, "n_lists")?,
+            );
+            params.n_probes = value_u32(operation, &canonical, "n_probes")?;
+            params.kmeans_n_iters = value_u32(operation, &canonical, "kmeans_n_iters")?;
+            params.kmeans_trainset_fraction = value_f64(operation, &canonical, "kmeans_trainset_fraction")?;
+            VectorAlgorithmParams::IvfFlat(params)
+        },
         CuvsOperation::PairwiseDistance => VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
             x: relations[0].clone(),
             y: relations[1].clone(),
@@ -155,6 +175,7 @@ pub(super) fn lower_cuvs_query_plan(
     };
     let algorithm = match operation {
         CuvsOperation::BruteForceKnn => VectorAlgorithm::BruteForceKnn,
+        CuvsOperation::IvfFlat => VectorAlgorithm::IvfFlat,
         CuvsOperation::PairwiseDistance => VectorAlgorithm::PairwiseDistance,
         CuvsOperation::TopK => VectorAlgorithm::TopK,
         CuvsOperation::KMeans => VectorAlgorithm::KMeans,
