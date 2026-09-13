@@ -1,10 +1,10 @@
 //! Result types for centrality algorithms.
 //!
-//! Both PageRank and betweenness centrality return a
-//! `cugraph_centrality_result_t` from the C API. This module provides a shared
-//! internal wrapper ([`CentralityResult`]) and algorithm-specific newtypes
-//! ([`PageRankResult`], [`BetweennessCentralityResult`]) that expose only the
-//! methods relevant to each algorithm.
+//! PageRank, eigenvector centrality, Katz centrality, and betweenness
+//! centrality all return a `cugraph_centrality_result_t` from the C API with
+//! the same field layout, so they share one result type ([`CentralityResult`]).
+//! [`BetweennessCentralityResult`] wraps it separately because betweenness
+//! never populates `num_iterations`/`converged`.
 
 use std::marker::PhantomData;
 
@@ -22,9 +22,7 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
     cudf_interop::{
-        betweenness_result_to_dataframe, edge_betweenness_centrality_result_to_dataframe,
-        eigenvector_centrality_result_to_dataframe, hits_result_to_dataframe, katz_centrality_result_to_dataframe,
-        page_rank_result_to_dataframe,
+        centrality_result_to_dataframe, edge_betweenness_centrality_result_to_dataframe, hits_result_to_dataframe,
     },
     error::{Error, ErrorKind, Result, require_non_null},
     handle::ResourceHandleLease,
@@ -32,17 +30,23 @@ use crate::{
     types::try_from_bool_t,
 };
 
-/// Internal shared wrapper for `cugraph_centrality_result_t`.
+/// Result of a PageRank, eigenvector centrality, or Katz centrality
+/// computation.
 ///
-/// Not part of the public API. Algorithm-specific newtypes ([`PageRankResult`],
-/// [`BetweennessCentralityResult`]) wrap this and expose the relevant subset of
-/// methods.
-pub(crate) struct CentralityResult {
+/// Provides access to vertex ids, centrality values, iteration count, and
+/// convergence status. Freed on drop.
+pub struct CentralityResult {
     raw: *mut cugraph_centrality_result_t,
     device: i32,
     // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
     _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl std::fmt::Debug for CentralityResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CentralityResult").finish_non_exhaustive()
+    }
 }
 
 impl CentralityResult {
@@ -96,13 +100,31 @@ impl CentralityResult {
         }
     }
 
-    pub(crate) fn num_iterations(&self) -> usize {
+    /// Get the vertex ids as a runtime-typed device array view.
+    ///
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.vertices_raw()?)
+    }
+
+    /// Get the centrality scores as a runtime-typed device array view.
+    ///
+    /// Returns [`ScoreValues::F32`] or [`ScoreValues::F64`] depending on the
+    /// graph's weight type.
+    pub fn scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.values_raw()?)
+    }
+
+    /// Number of iterations performed by the solver.
+    pub fn num_iterations(&self) -> usize {
         // SAFETY: `self.raw` is a live centrality result owned by this
         // wrapper for the duration of the call.
         unsafe { cugraph_centrality_result_get_num_iterations(self.raw) }
     }
 
-    pub(crate) fn converged(&self) -> Result<bool> {
+    /// Whether the algorithm converged within the maximum iterations.
+    pub fn converged(&self) -> Result<bool> {
         // SAFETY: `self.raw` is a live centrality result owned by this
         // wrapper for the duration of the call.
         let b = unsafe { cugraph_centrality_result_converged(self.raw) };
@@ -110,6 +132,19 @@ impl CentralityResult {
             Error::new(ErrorKind::Unexpected, "CentralityResult::converged")
                 .with_message(format!("invalid bool_t value returned by cuGraph: {}", b.0))
         })
+    }
+
+    /// Convert this centrality result to a cudf DataFrame.
+    ///
+    /// Returns a 2-column DataFrame:
+    /// - `"vertex"`: vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"value"`: centrality values with the underlying result dtype (`Float32` or `Float64`)
+    ///
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        centrality_result_to_dataframe(self, runtime)
+            .map_err(|e: Error| e.with_operation("CentralityResult::to_dataframe"))
     }
 }
 
@@ -124,197 +159,14 @@ impl Drop for CentralityResult {
     }
 }
 
-/// Result of a PageRank computation.
-///
-/// Provides access to vertex ids, centrality values, iteration count, and
-/// convergence status. Freed on drop.
-pub struct PageRankResult(CentralityResult);
-
-impl std::fmt::Debug for PageRankResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PageRankResult").finish_non_exhaustive()
-    }
-}
-
-impl PageRankResult {
-    /// Wrap a raw centrality result pointer as a `PageRankResult`.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be a valid, non-null pointer returned by
-    /// `cugraph_pagerank_allow_nonconvergence`.
-    /// Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(
-        raw: *mut cugraph_centrality_result_t,
-        device: i32,
-        resource_handle_lease: Option<ResourceHandleLease>,
-    ) -> Result<Self> {
-        // SAFETY: the caller transfers ownership of a live cuGraph result to
-        // this wrapper on success.
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
-    }
-
-    /// Get the vertex ids as a runtime-typed device array view.
-    ///
-    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
-    /// graph's vertex type.
-    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.0.vertices_raw()?)
-    }
-
-    /// Get the PageRank scores as a runtime-typed device array view.
-    ///
-    /// Returns [`ScoreValues::F32`] or [`ScoreValues::F64`] depending on the
-    /// graph's weight type.
-    pub fn scores(&self) -> Result<ScoreValues<'_>> {
-        ScoreValues::from_raw(self.0.values_raw()?)
-    }
-
-    /// Number of iterations performed by the PageRank solver.
-    pub fn num_iterations(&self) -> usize {
-        self.0.num_iterations()
-    }
-
-    /// Whether the PageRank algorithm converged within the maximum iterations.
-    pub fn converged(&self) -> Result<bool> {
-        self.0.converged()
-    }
-}
-
-impl PageRankResult {
-    /// Convert this PageRank result to a cudf DataFrame.
-    ///
-    /// Returns a 2-column DataFrame:
-    /// - `"vertex"`: vertex ids with the underlying result dtype (`Int32` or `Int64`)
-    /// - `"value"`: PageRank values with the underlying result dtype (`Float32` or `Float64`)
-    ///
-    /// Device-to-device copy: unavoidable because the cugraph C API owns
-    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
-    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        page_rank_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("PageRankResult::to_dataframe"))
-    }
-}
-
-/// Result of an eigenvector centrality computation.
-pub struct EigenvectorCentralityResult(CentralityResult);
-
-impl std::fmt::Debug for EigenvectorCentralityResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EigenvectorCentralityResult").finish_non_exhaustive()
-    }
-}
-
-impl EigenvectorCentralityResult {
-    /// Wrap a raw centrality result pointer as an `EigenvectorCentralityResult`.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be a valid, non-null pointer returned by
-    /// `cugraph_eigenvector_centrality`. Ownership is transferred to this
-    /// struct.
-    pub(crate) unsafe fn from_raw(
-        raw: *mut cugraph_centrality_result_t,
-        device: i32,
-        resource_handle_lease: Option<ResourceHandleLease>,
-    ) -> Result<Self> {
-        // SAFETY: caller upholds the contract documented on this fn, which matches
-        // `CentralityResult::from_raw`'s requirements (valid non-null pointer with
-        // transferred ownership).
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
-    }
-
-    /// Get the vertex ids as a runtime-typed device array view.
-    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.0.vertices_raw()?)
-    }
-
-    /// Get the eigenvector centrality scores as a runtime-typed device array view.
-    pub fn scores(&self) -> Result<ScoreValues<'_>> {
-        ScoreValues::from_raw(self.0.values_raw()?)
-    }
-
-    /// Convert this eigenvector centrality result to a cudf DataFrame.
-    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        eigenvector_centrality_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("EigenvectorCentralityResult::to_dataframe"))
-    }
-
-    /// Number of power-iteration steps performed by the eigenvector
-    /// centrality solver.
-    pub fn num_iterations(&self) -> usize {
-        self.0.num_iterations()
-    }
-
-    /// Whether the eigenvector centrality solver converged within the
-    /// configured `max_iterations`.
-    pub fn converged(&self) -> Result<bool> {
-        self.0.converged()
-    }
-}
-
-/// Result of a Katz centrality computation.
-pub struct KatzCentralityResult(CentralityResult);
-
-impl std::fmt::Debug for KatzCentralityResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KatzCentralityResult").finish_non_exhaustive()
-    }
-}
-
-impl KatzCentralityResult {
-    /// Wrap a raw centrality result pointer as a `KatzCentralityResult`.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be a valid, non-null pointer returned by
-    /// `cugraph_katz_centrality`. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(
-        raw: *mut cugraph_centrality_result_t,
-        device: i32,
-        resource_handle_lease: Option<ResourceHandleLease>,
-    ) -> Result<Self> {
-        // SAFETY: caller upholds the contract documented on this fn, which matches
-        // `CentralityResult::from_raw`'s requirements (valid non-null pointer with
-        // transferred ownership).
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
-    }
-
-    /// Get the vertex ids as a runtime-typed device array view.
-    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.0.vertices_raw()?)
-    }
-
-    /// Get the Katz centrality scores as a runtime-typed device array view.
-    pub fn scores(&self) -> Result<ScoreValues<'_>> {
-        ScoreValues::from_raw(self.0.values_raw()?)
-    }
-
-    /// Convert this Katz centrality result to a cudf DataFrame.
-    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        katz_centrality_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("KatzCentralityResult::to_dataframe"))
-    }
-
-    /// Number of power-iteration steps performed by the Katz centrality
-    /// solver.
-    pub fn num_iterations(&self) -> usize {
-        self.0.num_iterations()
-    }
-
-    /// Whether the Katz centrality solver converged within the configured
-    /// `max_iterations`.
-    pub fn converged(&self) -> Result<bool> {
-        self.0.converged()
-    }
-}
-
 /// Result of a betweenness centrality computation.
 ///
-/// Provides access to vertex ids and their betweenness centrality values.
-/// Unlike [`PageRankResult`], this does not expose iteration count or
-/// convergence status since betweenness centrality is not an iterative
-/// algorithm. Freed on drop.
+/// Wraps [`CentralityResult`] rather than returning it directly: cuGraph's C
+/// API builds the betweenness result through the same constructor as the
+/// iterative algorithms, which defaults `num_iterations` to 0 and `converged`
+/// to false. Betweenness centrality is not iterative and never overwrites
+/// those fields, so they would read as "did not converge" if exposed; this
+/// wrapper hides them. Freed on drop.
 pub struct BetweennessCentralityResult(CentralityResult);
 
 impl std::fmt::Debug for BetweennessCentralityResult {
@@ -578,7 +430,7 @@ impl BetweennessCentralityResult {
     /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
     /// graph's vertex type.
     pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.0.vertices_raw()?)
+        self.0.vertex_ids()
     }
 
     /// Get the betweenness centrality scores as a runtime-typed device array view.
@@ -586,7 +438,7 @@ impl BetweennessCentralityResult {
     /// Returns [`ScoreValues::F32`] or [`ScoreValues::F64`] depending on the
     /// graph's weight type.
     pub fn scores(&self) -> Result<ScoreValues<'_>> {
-        ScoreValues::from_raw(self.0.values_raw()?)
+        self.0.scores()
     }
 }
 
@@ -601,7 +453,7 @@ impl BetweennessCentralityResult {
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        betweenness_result_to_dataframe(self, runtime)
+        centrality_result_to_dataframe(&self.0, runtime)
             .map_err(|e: Error| e.with_operation("BetweennessCentralityResult::to_dataframe"))
     }
 }

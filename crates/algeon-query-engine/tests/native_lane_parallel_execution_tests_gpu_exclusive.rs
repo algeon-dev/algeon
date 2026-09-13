@@ -55,11 +55,7 @@ use query_engine::{
 };
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 
-struct LaneBackend {
-    core: GpuBackendCore,
-}
-
-static LANE_BACKEND: Mutex<Option<LaneBackend>> = Mutex::new(None);
+static LANE_BACKEND: Mutex<Option<GpuBackendCore>> = Mutex::new(None);
 
 fn build_lane_backend() -> Result<GpuBackendCore> {
     let deployment = DeploymentIoCapability::from_probe_inputs(
@@ -87,15 +83,15 @@ fn build_lane_backend() -> Result<GpuBackendCore> {
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()
 }
 
-fn ensure_lane_backend(backend: &mut Option<LaneBackend>) -> Result<()> {
+fn ensure_lane_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {
     if backend.is_none() {
-        *backend = Some(LaneBackend { core: build_lane_backend()? });
+        *backend = Some(build_lane_backend()?);
     }
     Ok(())
 }
 
 struct LaneBackendGuard {
-    backend: RefCell<MutexGuard<'static, Option<LaneBackend>>>,
+    backend: RefCell<MutexGuard<'static, Option<GpuBackendCore>>>,
 }
 
 impl LaneBackendGuard {
@@ -116,7 +112,6 @@ impl LaneBackendGuard {
         let handle = backend
             .as_ref()
             .expect("lane backend is installed")
-            .core
             .session_capability()
             .admit_query_with_request(request)?;
         let context = handle.acquire_context()?;

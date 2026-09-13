@@ -5,7 +5,7 @@
 //! semantics. It intentionally avoids one near-identical test per public API.
 use cudf::{
     AggSpec, DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
+    ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
     core::{Scalar, memory::DeviceMemoryResource},
     frame::dataframe::{JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
@@ -662,7 +662,6 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
     assert_all_observed_exec_mrs_are_manager_mr(&token);
     assert_eq!(report.request().boundary(), "scalar_series");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -700,7 +699,6 @@ fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
     assert_all_observed_exec_mrs_are_manager_mr(&token);
     assert_eq!(report.request().boundary(), "value_series");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -728,7 +726,6 @@ fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
     assert_all_observed_exec_mrs_are_manager_mr(&token);
     assert_eq!(report.request().boundary(), "null_series");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -778,7 +775,6 @@ fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() 
 
     assert_eq!(report.request().boundary(), "scalar_column");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));

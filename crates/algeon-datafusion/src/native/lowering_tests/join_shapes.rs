@@ -45,7 +45,7 @@ async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisor
         common::stats::Precision,
         physical_plan::{StatisticsArgs, StatisticsContext, joins::HashJoinExec},
     };
-    use query_engine::plan::{AdvisoryStatistic, AdvisoryStatisticsProvenance};
+    use query_engine::plan::AdvisoryStatistic;
 
     fn datafusion_join_row_estimates(plan: &dyn ExecutionPlan, rows: &mut Vec<u64>) {
         if plan.downcast_ref::<HashJoinExec>().is_some() {
@@ -66,7 +66,6 @@ async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisor
             .map(|join| {
                 let advisory =
                     join.spec.advisory_output_statistics.expect("every lowered Q03 join carries an advisory");
-                assert_eq!(advisory.provenance, AdvisoryStatisticsProvenance::FrontendPlannerEstimate);
                 assert_eq!(advisory.bytes, AdvisoryStatistic::Absent, "DataFusion has no byte estimate for joins");
                 let AdvisoryStatistic::Inexact(rows) = advisory.rows else {
                     panic!("advisory rows should keep DataFusion's inexact precision: {advisory:?}");

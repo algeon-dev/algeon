@@ -40,10 +40,10 @@ pub fn frontend_output_records(plan: &QueryPlan) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "node": binding.node.index(),
                 "schema": format!("{:?}", binding.schema),
-                "scope": format!("{:?}", binding.scope),
+                "scope": "WholeOutput",
                 "frontend": binding.frontend,
                 "frontend_version": binding.frontend_version,
-                "provenance": format!("{:?}", binding.statistics.provenance),
+                "provenance": "FrontendPlannerEstimate",
                 "rows": format!("{:?}", binding.statistics.rows),
                 "bytes": format!("{:?}", binding.statistics.bytes),
                 "unknown_reason": binding.unknown_reason.map(|reason| format!("{reason:?}")),

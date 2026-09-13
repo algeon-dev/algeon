@@ -8,7 +8,12 @@ use super::{
     UInt8Array, UInt16Array, UInt32Array, UInt64Array, i256,
 };
 
-pub(super) fn collect_canonical_rows(schema: &Schema, batches: &[RecordBatch]) -> Result<Vec<CanonicalRow>, String> {
+/// Collects each row as a sortable `Vec<CanonicalField>`, used for
+/// order-insensitive parity comparison.
+pub(super) fn collect_canonical_rows(
+    schema: &Schema,
+    batches: &[RecordBatch],
+) -> Result<Vec<Vec<CanonicalField>>, String> {
     let mut rows = Vec::new();
     for batch in batches {
         if batch.schema().fields().len() != schema.fields().len() {
@@ -27,16 +32,10 @@ pub(super) fn collect_canonical_rows(schema: &Schema, batches: &[RecordBatch]) -
                     .map_err(|err| format!("column {column_index} row {row_index}: {err}"))?;
                 fields.push(field);
             }
-            rows.push(CanonicalRow { fields });
+            rows.push(fields);
         }
     }
     Ok(rows)
-}
-
-/// Sortable row representation used for order-insensitive parity comparison.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct CanonicalRow {
-    pub(super) fields: Vec<CanonicalField>,
 }
 
 /// Value representation that preserves Arrow type distinctions in fingerprints.
@@ -200,16 +199,16 @@ pub(super) fn downcast<'a, T: Array + 'static>(array: &'a dyn Array, name: &str)
 
 pub(super) fn compare_canonical_rows(
     schema: &Schema,
-    cpu: &CanonicalRow,
-    native: &CanonicalRow,
+    cpu: &[CanonicalField],
+    native: &[CanonicalField],
     tolerance: ParityFloatTolerance,
     float_tolerant: bool,
     options: ParityCompareOptions,
 ) -> Option<String> {
-    if cpu.fields.len() != native.fields.len() {
-        return Some(format!("column count differs: cpu={} native={}", cpu.fields.len(), native.fields.len()));
+    if cpu.len() != native.len() {
+        return Some(format!("column count differs: cpu={} native={}", cpu.len(), native.len()));
     }
-    for (index, (cpu_field, native_field)) in cpu.fields.iter().zip(native.fields.iter()).enumerate() {
+    for (index, (cpu_field, native_field)) in cpu.iter().zip(native.iter()).enumerate() {
         let name = schema.field(index).name();
         if !canonical_field_equal(cpu_field, native_field, tolerance, float_tolerant, options) {
             return Some(format!(

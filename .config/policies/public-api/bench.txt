@@ -150,15 +150,6 @@ pub bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::Accept
 pub bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
 impl bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
 pub const fn bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::as_str(self) -> &'static str
-pub enum bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
-pub bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::Accepted
-pub bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::RejectedBeforeExecution
-impl bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
-pub const fn bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::as_str(self) -> &'static str
-pub enum bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
-pub bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::NativeQueryPlan
-impl bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
-pub const fn bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::as_str(self) -> &'static str
 pub enum bench::report_workload::tpch::AnalyticalOlapWorkloadClass
 pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::AggregateSortTopK
 pub bench::report_workload::tpch::AnalyticalOlapWorkloadClass::DecorrelatableSubquery
@@ -169,8 +160,6 @@ impl bench::report_workload::tpch::AnalyticalOlapWorkloadClass
 pub const fn bench::report_workload::tpch::AnalyticalOlapWorkloadClass::as_str(self) -> &'static str
 pub struct bench::report_workload::tpch::AnalyticalOlapQuery
 pub bench::report_workload::tpch::AnalyticalOlapQuery::capability_first_admission: bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
-pub bench::report_workload::tpch::AnalyticalOlapQuery::current_admission: bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
-pub bench::report_workload::tpch::AnalyticalOlapQuery::expected_lowering: bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
 pub bench::report_workload::tpch::AnalyticalOlapQuery::id: &'static str
 pub bench::report_workload::tpch::AnalyticalOlapQuery::sql: &'static str
 pub bench::report_workload::tpch::AnalyticalOlapQuery::workload_class: bench::report_workload::tpch::AnalyticalOlapWorkloadClass

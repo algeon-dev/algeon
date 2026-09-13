@@ -98,7 +98,7 @@ fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<Nati
 pub(super) fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics) -> NativeSourceDiagnosticSummary {
     let stats = diagnostics.selected_row_group_stats.as_ref();
     NativeSourceDiagnosticSummary {
-        format: format!("{:?}", diagnostics.format),
+        format: "Parquet".to_string(),
         source_read_strategy: diagnostics.source_read_strategy.clone(),
         credential_mode: diagnostics.credential_mode.clone(),
         lakehouse_cache_status: diagnostics.lakehouse_cache_status.clone(),

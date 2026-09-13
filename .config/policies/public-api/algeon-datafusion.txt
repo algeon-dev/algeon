@@ -524,7 +524,6 @@ pub use algeon_datafusion::cuvs_sql::CuvsOptionDefinition
 pub use algeon_datafusion::cuvs_sql::CuvsOptionKind
 pub use algeon_datafusion::cuvs_sql::CuvsOptionValidationError
 pub use algeon_datafusion::cuvs_sql::CuvsOutputContract
-pub use algeon_datafusion::cuvs_sql::CuvsRelationArgumentSyntax
 pub use algeon_datafusion::cuvs_sql::CuvsRelationRole
 pub use algeon_datafusion::cuvs_sql::canonicalize_cuvs_options
 pub struct algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
@@ -751,10 +750,6 @@ pub algeon_datafusion::gpu_coverage::QueryGpuCandidateReasonKind::PlanShape
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateReasonKind::Source
 impl algeon_datafusion::gpu_coverage::QueryGpuCandidateReasonKind
 pub const fn algeon_datafusion::gpu_coverage::QueryGpuCandidateReasonKind::as_str(self) -> &'static str
-pub enum algeon_datafusion::gpu_coverage::QueryGpuCoverageConfidence
-pub algeon_datafusion::gpu_coverage::QueryGpuCoverageConfidence::PlanTimeOnly
-impl algeon_datafusion::gpu_coverage::QueryGpuCoverageConfidence
-pub const fn algeon_datafusion::gpu_coverage::QueryGpuCoverageConfidence::as_str(self) -> &'static str
 pub enum algeon_datafusion::gpu_coverage::QueryGpuPlanningOutcome
 pub algeon_datafusion::gpu_coverage::QueryGpuPlanningOutcome::Planned(algeon_datafusion::gpu_coverage::FinalPlanCoverage)
 pub algeon_datafusion::gpu_coverage::QueryGpuPlanningOutcome::Rejected(algeon_datafusion::gpu_coverage::QueryGpuPlanningRejection)
@@ -798,7 +793,6 @@ pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::remedy: core::opt
 pub algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome::selection: algeon_datafusion::report::CandidateOutcomeKind
 pub struct algeon_datafusion::gpu_coverage::QueryGpuCoverage
 pub algeon_datafusion::gpu_coverage::QueryGpuCoverage::candidate_outcomes: alloc::vec::Vec<algeon_datafusion::gpu_coverage::QueryGpuCandidateOutcome>
-pub algeon_datafusion::gpu_coverage::QueryGpuCoverage::confidence: algeon_datafusion::gpu_coverage::QueryGpuCoverageConfidence
 pub algeon_datafusion::gpu_coverage::QueryGpuCoverage::cugraph_calls: alloc::vec::Vec<algeon_datafusion::gpu_coverage::QueryGpuCugraphCall>
 pub algeon_datafusion::gpu_coverage::QueryGpuCoverage::input_physical_plan_root: core::option::Option<alloc::string::String>
 pub algeon_datafusion::gpu_coverage::QueryGpuCoverage::input_physical_plan_shape: core::option::Option<alloc::string::String>
@@ -851,7 +845,6 @@ pub const algeon_datafusion::gpu_functions::GPU_VALIDATE_CALL_FUNCTION: &str
 pub mod algeon_datafusion::native_exec
 pub use algeon_datafusion::native_exec::AggregateStrategyExecutionOptions
 pub use algeon_datafusion::native_exec::DynamicFilterExecutionOptions
-pub use algeon_datafusion::native_exec::ExecutionBoundaryPolicy
 pub use algeon_datafusion::native_exec::KeyedHashJoinStrategyOptions
 pub use algeon_datafusion::native_exec::LakehouseCacheFillConfig
 pub use algeon_datafusion::native_exec::MemoryControlPolicy
@@ -914,7 +907,6 @@ pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_B
 pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES: u64
 pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS: usize
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::boundary_policy(&self) -> query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::bounded(u64, u64, usize, usize, usize) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::bounded_default() -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::dynamic_filter_execution_options(&self) -> query_planning::dynamic_filter::DynamicFilterExecutionOptions
@@ -935,7 +927,6 @@ pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_stora
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::trace_id(&self) -> core::option::Option<&query_planning::correlation::TraceId>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_aggregate_strategy_execution_options(self, query_planning::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_boundary_policy(self, query_planning::execution_contracts::ExecutionBoundaryPolicy) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_dynamic_filter_execution_options(self, query_planning::dynamic_filter::DynamicFilterExecutionOptions) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_host_output_memory_pool_accounting(self, bool) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, query_planning::capability::join::KeyedHashJoinStrategyOptions) -> Self

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use cudf::Runtime as CudfRuntime;
+use cudf::{DeviceId, Runtime as CudfRuntime};
 use query_planning::{
     admission::AttemptCapabilityEvidence,
     capability::AggregateStrategyExecutionOptions,
@@ -14,9 +14,9 @@ use query_planning::{
 use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
-    CacheFillByteBudget, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy, GpuExecutionPool,
-    GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, MemorySpaceId,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, StreamLease,
+    CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig,
+    MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode,
+    SourceSchedulerPolicy, StreamLease,
     allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
     attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
     cache::local_parquet::GpuLocalParquetSourceCache,
@@ -144,9 +144,6 @@ pub struct ExecutionContext {
     /// Shared attempt fork-stream routing owner. Aliases are retained by
     /// derived contexts until their corresponding stream lease drains.
     attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
-    /// Execution boundary contract used by source reads, build/probe reuse, and
-    /// result materialization.
-    boundary_policy: ExecutionBoundaryPolicy,
     /// Source scheduling policy for bounded local Parquet reads.
     source_scheduler_policy: SourceSchedulerPolicy,
     /// Source chunk planning mode for bounded local Parquet reads.
@@ -408,7 +405,6 @@ pub(super) struct ExecutionContextParts {
     pub(super) attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
-    pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
     pub(super) resident_source_cache: Option<GpuLocalParquetSourceCache>,
@@ -489,7 +485,6 @@ impl ExecutionContext {
             attempt_member_lease: None,
             attempt_stream_provider_route: None,
             attempt_stream_provider_alias: None,
-            boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             resident_source_cache: None,
@@ -545,7 +540,6 @@ impl ExecutionContext {
             attempt_member_lease: parts.attempt_member_lease,
             attempt_stream_provider_route: parts.attempt_stream_provider_route,
             _attempt_stream_provider_alias: parts.attempt_stream_provider_alias,
-            boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
             resident_source_cache: parts.resident_source_cache,
@@ -830,14 +824,9 @@ impl ExecutionContext {
         self.query_epoch.as_ref().map_or(Ok(()), |epoch| epoch.check_open(operation))
     }
 
-    /// Reports the effective device placement derived from the runtime.
-    pub fn device_placement(&self) -> DevicePlacement {
-        DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
-    }
-
-    /// Reports the default device memory space used for bounded reservation accounting.
-    pub fn device_memory_space(&self) -> MemorySpaceId {
-        MemorySpaceId::Device { device_ordinal: self.runtime.device().ordinal() }
+    /// CUDA device that runs this context's work.
+    pub fn device(&self) -> DeviceId {
+        self.runtime.device()
     }
 
     /// Returns the memory-resource construction policy recorded for this context.
@@ -945,11 +934,6 @@ impl ExecutionContext {
             MemoryControlPolicy::Unbounded => None,
             MemoryControlPolicy::Bounded { device_budget_bytes, .. } => Some(device_budget_bytes),
         }
-    }
-
-    /// Returns the execution boundary policy.
-    pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
-        self.boundary_policy
     }
 
     /// Returns source scheduling controls for bounded source execution.

@@ -129,7 +129,7 @@ fn print_human(coverage: &QueryGpuCoverage) {
             println!("detail: {}", rejection.detail);
         },
     }
-    println!("confidence: {}", coverage.confidence.as_str());
+    println!("confidence: plan_time_only");
     println!("planning_did_io: {}", coverage.planning_did_io);
     println!("optimizer_config_source: {}", coverage.validated_under.optimizer_config_source);
     println!("execution_mode: {}", coverage.validated_under.execution_mode.as_deref().unwrap_or("absent"));

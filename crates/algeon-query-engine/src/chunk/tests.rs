@@ -19,9 +19,9 @@ use super::{
 };
 use crate::{
     error::QueryErrorCode,
-    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode},
     expr::{BinaryOp, Expr, LiteralValue},
     plan::NodeId,
+    runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
     source::{
         CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, LocalParquetFile, LocalParquetSource,
         ParquetPositionDeleteFile, ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation,

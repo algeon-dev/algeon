@@ -134,8 +134,8 @@ impl QueryService {
     ) -> Result<Vec<PlacementCandidateSnapshot>> {
         let mut placements = Vec::new();
         for ordinal in ordinals {
-            let entry = device_entries.get(&ordinal).ok_or_else(|| missing_device_admission_entry_error(ordinal))?;
-            let requirement = &entry.requirement;
+            let requirement =
+                device_entries.get(&ordinal).ok_or_else(|| missing_device_admission_entry_error(ordinal))?;
             let placement_request = PlacementRequest::new(0)
                 .with_requested_query_cap_bytes(requested_query_cap_bytes)
                 .with_attempt_requirement(requirement.clone())
@@ -196,7 +196,6 @@ impl QueryService {
             let requirement = device_entries
                 .get(&fallback_device_ordinal)
                 .ok_or_else(|| missing_device_admission_entry_error(fallback_device_ordinal))?
-                .requirement
                 .clone();
             let required_capabilities = required_capabilities_for_placement(&requirement);
             if !self.device_supports_capabilities(fallback_device_ordinal, &required_capabilities) {

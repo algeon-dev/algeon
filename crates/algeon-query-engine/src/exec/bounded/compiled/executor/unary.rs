@@ -1,4 +1,4 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 use crate::{
     error::Result,
     exec::{
@@ -13,7 +13,7 @@ use crate::{
         },
         operators::execute_filter_with_budget,
     },
-    pipeline::{PipelineTask, ResourceSharing},
+    pipeline::{PipelineTask, ResidentResourceId, ResourceSharing},
     plan::PlanNode,
 };
 
@@ -22,7 +22,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let input = *task.input_resources().first().ok_or_else(|| {
             invalid("compiled unary task has no input resource")
@@ -227,6 +227,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str())),
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, frame)]))
+        Ok(vec![(output, frame)])
     }
 }

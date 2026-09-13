@@ -205,14 +205,10 @@ impl DataFrame {
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         let raw = match join_type {
             join::JoinType::Inner => {
-                join::conditional_inner_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+                join::conditional_inner_join_indices_in(&left_table, &right_table, predicate, ctx)?
             },
-            join::JoinType::Left => {
-                join::conditional_left_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
-            },
-            join::JoinType::Full => {
-                join::conditional_full_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
-            },
+            join::JoinType::Left => join::conditional_left_join_indices_in(&left_table, &right_table, predicate, ctx)?,
+            join::JoinType::Full => join::conditional_full_join_indices_in(&left_table, &right_table, predicate, ctx)?,
         };
         pair_indices_from_raw(raw, operation)
     }
@@ -226,8 +222,7 @@ impl DataFrame {
     ) -> Result<DataFrameConditionalFullJoinSizeData<'a>> {
         let operation = "dataframe::with_execution::conditional_full_join_size_data";
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
-        let state =
-            join::conditional_full_join_begin_size_data_in(left_table.table(), right_table.table(), predicate, ctx)?;
+        let state = join::conditional_full_join_begin_size_data_in(&left_table, &right_table, predicate, ctx)?;
         Ok(DataFrameConditionalFullJoinSizeData { state, _left: self.clone(), _right: right.clone() })
     }
 
@@ -244,15 +239,15 @@ impl DataFrame {
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         let raw = match join_type {
             join::SizedConditionalPairJoinType::Inner => join::conditional_inner_join_indices_with_output_size_in(
-                left_table.table(),
-                right_table.table(),
+                &left_table,
+                &right_table,
                 predicate,
                 output_size,
                 ctx,
             )?,
             join::SizedConditionalPairJoinType::Left => join::conditional_left_join_indices_with_output_size_in(
-                left_table.table(),
-                right_table.table(),
+                &left_table,
+                &right_table,
                 predicate,
                 output_size,
                 ctx,
@@ -273,10 +268,10 @@ impl DataFrame {
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         match join_type {
             join::SizedConditionalPairJoinType::Inner => {
-                join::conditional_inner_join_size_in(left_table.table(), right_table.table(), predicate, ctx)
+                join::conditional_inner_join_size_in(&left_table, &right_table, predicate, ctx)
             },
             join::SizedConditionalPairJoinType::Left => {
-                join::conditional_left_join_size_in(left_table.table(), right_table.table(), predicate, ctx)
+                join::conditional_left_join_size_in(&left_table, &right_table, predicate, ctx)
             },
         }
     }
@@ -292,9 +287,9 @@ impl DataFrame {
         let operation = "dataframe::with_execution::conditional_single_side_join_indices";
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         let raw = if semi_join {
-            join::conditional_left_semi_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+            join::conditional_left_semi_join_indices_in(&left_table, &right_table, predicate, ctx)?
         } else {
-            join::conditional_left_anti_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+            join::conditional_left_anti_join_indices_in(&left_table, &right_table, predicate, ctx)?
         };
         single_side_indices_from_raw(raw, operation)
     }
@@ -312,16 +307,16 @@ impl DataFrame {
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         let raw = if semi_join {
             join::conditional_left_semi_join_indices_with_output_size_in(
-                left_table.table(),
-                right_table.table(),
+                &left_table,
+                &right_table,
                 predicate,
                 output_size,
                 ctx,
             )?
         } else {
             join::conditional_left_anti_join_indices_with_output_size_in(
-                left_table.table(),
-                right_table.table(),
+                &left_table,
+                &right_table,
                 predicate,
                 output_size,
                 ctx,
@@ -341,9 +336,9 @@ impl DataFrame {
         let operation = "dataframe::with_execution::conditional_single_side_join_size";
         let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
         if semi_join {
-            join::conditional_left_semi_join_size_in(left_table.table(), right_table.table(), predicate, ctx)
+            join::conditional_left_semi_join_size_in(&left_table, &right_table, predicate, ctx)
         } else {
-            join::conditional_left_anti_join_size_in(left_table.table(), right_table.table(), predicate, ctx)
+            join::conditional_left_anti_join_size_in(&left_table, &right_table, predicate, ctx)
         }
     }
 }

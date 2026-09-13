@@ -2,8 +2,7 @@
 
 use arrow::{array::Decimal128Array, datatypes::DataType as ArrowDataType};
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, TypeId,
     frame::dataframe::InfoDetail,
     ops::{col, lit_null, when},
     testing::prelude::*,
@@ -323,7 +322,6 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(result.series("sum").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
     assert_eq!(report.request().boundary(), "shape_with_columns");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -382,7 +380,6 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(result.series("qty").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
     assert_eq!(report.request().boundary(), "shape_cast");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -417,7 +414,6 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
     assert_amount_decimal128_scale_8(result);
     assert_eq!(report.request().boundary(), "shape_cast_decimal_scale");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));

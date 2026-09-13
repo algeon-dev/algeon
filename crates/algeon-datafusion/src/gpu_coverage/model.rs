@@ -56,6 +56,9 @@ pub struct QueryGpuPlanningRejection {
 }
 
 /// Structured answer for "will this query's planned path avoid DataFusion CPU execution?"
+///
+/// The answer is derived from planning alone, so every JSON projection reports
+/// `"confidence": "plan_time_only"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCoverage {
     pub planning_outcome: QueryGpuPlanningOutcome,
@@ -64,7 +67,6 @@ pub struct QueryGpuCoverage {
     pub runtime_caveats: Vec<QueryGpuRuntimeCaveat>,
     pub planning_did_io: bool,
     pub validated_under: QueryGpuValidatedUnder,
-    pub confidence: QueryGpuCoverageConfidence,
     /// Root captured from the authoritative DataFusion physical plan before
     /// the native optimizer attempted replacement.
     pub input_physical_plan_root: Option<String>,
@@ -95,7 +97,6 @@ impl QueryGpuCoverage {
             runtime_caveats,
             planning_did_io,
             validated_under,
-            confidence: QueryGpuCoverageConfidence::PlanTimeOnly,
             input_physical_plan_root: diagnostics
                 .map(|diagnostics| diagnostics.input_plan_root.clone())
                 .filter(|root| !root.is_empty()),
@@ -132,7 +133,6 @@ impl QueryGpuCoverage {
             runtime_caveats: Vec::new(),
             planning_did_io,
             validated_under,
-            confidence: QueryGpuCoverageConfidence::PlanTimeOnly,
             input_physical_plan_root: diagnostics
                 .map(|diagnostics| diagnostics.input_plan_root.clone())
                 .filter(|root| !root.is_empty()),
@@ -182,7 +182,7 @@ impl QueryGpuCoverage {
             "runtime_caveats": self.runtime_caveats.iter().map(QueryGpuRuntimeCaveat::to_json).collect::<Vec<_>>(),
             "planning_did_io": self.planning_did_io,
             "validated_under": self.validated_under.to_json(),
-            "confidence": self.confidence.as_str(),
+            "confidence": "plan_time_only",
             "input_physical_plan_root": self.input_physical_plan_root,
             "input_physical_plan_shape": self.input_physical_plan_shape,
             "physical_plan_root": self.physical_plan_root,
@@ -365,18 +365,5 @@ impl QueryGpuValidatedUnder {
             "optimizer_fingerprint": self.optimizer_fingerprint,
             "catalog_snapshot": self.catalog_snapshot,
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuCoverageConfidence {
-    PlanTimeOnly,
-}
-
-impl QueryGpuCoverageConfidence {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PlanTimeOnly => "plan_time_only",
-        }
     }
 }

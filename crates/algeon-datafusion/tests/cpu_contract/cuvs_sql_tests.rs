@@ -12,8 +12,7 @@ use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 use algeon_datafusion::{
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION, CuvsAlgoExec,
-        CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationArgumentSyntax, CuvsRelationRole,
-        cuvs_options_json_schema,
+        CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationRole, cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -66,9 +65,6 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         [CuvsRelationRole::Dataset, CuvsRelationRole::Queries]
     );
     assert_eq!(CuvsOperation::KMeans.descriptor().relation_roles, [CuvsRelationRole::Input]);
-    assert!(CUVS_OPERATION_REGISTRY.iter().all(|descriptor| {
-        descriptor.relation_argument_syntax == CuvsRelationArgumentSyntax::ParenthesizedSubquery
-    }));
 
     let knn = cuvs_options_json_schema(CuvsOperation::BruteForceKnn);
     assert_eq!(knn["additionalProperties"], false);

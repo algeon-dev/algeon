@@ -61,9 +61,9 @@ pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityEnvelope, CapabilityEnvelopeAdmission,
     CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
     ConstraintRef, ConstraintScope, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, InvariantId,
-    NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty, RequiredProperty, ResidentResource,
-    ResidualRequirement, ResultSinkKind, STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS, ScheduleConstraint,
-    SharedProducerIdentity, SourceFormatCapability, SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
+    NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty, ResidentResource, ResidualRequirement,
+    ResultSinkKind, STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS, ScheduleConstraint, SourceFormatCapability,
+    SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
 };
 #[doc(hidden)]
 pub use node::is_cudf_median_input_type;

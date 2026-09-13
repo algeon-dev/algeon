@@ -42,7 +42,7 @@ pub(crate) use boundary::{
 };
 pub use budget::{
     BudgetedExecutionOutcome, ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, ExecutionBudgetToken,
+    ExecutionBudgetToken,
 };
 pub use cache_allocation::{
     CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, CacheAllocationScopeId,

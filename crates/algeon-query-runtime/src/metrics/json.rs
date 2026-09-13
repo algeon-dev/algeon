@@ -1,12 +1,6 @@
 use std::collections::BTreeMap;
 
-use query_planning::{
-    execution_contracts::{
-        BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
-        SourceReadBoundary,
-    },
-    graph_observation::GraphMeasuredPeakRow,
-};
+use query_planning::graph_observation::GraphMeasuredPeakRow;
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -28,7 +22,6 @@ impl QueryMetrics {
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
             "memory_control_policy": self.memory_control_policy.as_str(),
-            "execution_boundary_policy": execution_boundary_policy_json(self.execution_boundary_policy),
             "completeness": self.completeness_json(),
             "descriptors": Self::descriptors().iter().map(|descriptor| descriptor.to_json()).collect::<Vec<_>>(),
             "metrics": self.described_metrics_json(),
@@ -104,22 +97,6 @@ impl QueryMetrics {
             "device_to_host_materialized_bytes" => json!(self.boundary.device_to_host_materialized_bytes),
             "device_to_device_copies" => json!(self.boundary.device_to_device_copies),
             "device_to_device_copied_bytes" => json!(self.boundary.device_to_device_copied_bytes),
-            "source_read_boundary_direct_device" => json!(policy_count(
-                self.execution_boundary_policy.source_read(),
-                SourceReadBoundary::DirectDeviceLocalParquet,
-            )),
-            "build_materialization_boundary_query_scoped" => json!(policy_count(
-                self.execution_boundary_policy.build_materialization(),
-                BuildMaterializationBoundary::QueryScopedGpuHashJoin,
-            )),
-            "probe_execution_boundary_reusable" => json!(policy_count(
-                self.execution_boundary_policy.probe_execution(),
-                ProbeExecutionBoundary::ReusableGpuHashJoin,
-            )),
-            "result_materialization_boundary_explicit" => json!(policy_count(
-                self.execution_boundary_policy.result_materialization(),
-                ResultMaterializationBoundary::ExplicitSink,
-            )),
             "max_task_observed_peak_bytes" => optional_u64_json(self.max_task_observed_peak_bytes),
             "max_task_observed_peak_bytes_observed" => json!(self.max_task_observed_peak_bytes.is_some()),
             "max_task_retained_bytes" => optional_u64_json(self.max_task_retained_bytes),
@@ -465,19 +442,6 @@ impl AggregateStrategyDecisionMetrics {
             "facts": facts_json(&self.facts),
         })
     }
-}
-
-fn execution_boundary_policy_json(policy: ExecutionBoundaryPolicy) -> Value {
-    json!({
-        "source_read": policy.source_read().as_str(),
-        "build_materialization": policy.build_materialization().as_str(),
-        "probe_execution": policy.probe_execution().as_str(),
-        "result_materialization": policy.result_materialization().as_str(),
-    })
-}
-
-fn policy_count<T: PartialEq>(actual: T, expected: T) -> u64 {
-    u64::from(actual == expected)
 }
 
 fn optional_query_id(value: Option<&QueryId>) -> Option<&str> {

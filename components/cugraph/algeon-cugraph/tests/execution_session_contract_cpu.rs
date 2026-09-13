@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 use cudf::interop::contract::PreparedTableExport;
 use cugraph::{
     DeviceArray, EnteredContext, Forward, Graph, GraphBuilder, ResourceHandle, Transposed,
-    centrality::{PageRankParams, PageRankResult},
+    centrality::{CentralityResult, PageRankParams},
     community::{LouvainParams, LouvainResult},
     cudf_interop::{TableGraphOptions, graph_from_prepared_table_export},
     error::Result,
@@ -26,7 +26,7 @@ fn rust_sources(root: &std::path::Path, out: &mut Vec<PathBuf>) {
 type DeviceArrayNewI32 = fn(&EnteredContext<'_>, usize) -> Result<DeviceArray<i32>>;
 type DeviceArrayFromSliceI32 = fn(&EnteredContext<'_>, &[i32]) -> Result<DeviceArray<i32>>;
 type BuildForwardGraph = fn(&GraphBuilder<'_>, &EnteredContext<'_>) -> Result<Graph<Forward>>;
-type PageRankEntryPoint = fn(&mut Graph<Transposed>, &EnteredContext<'_>, &PageRankParams) -> Result<PageRankResult>;
+type PageRankEntryPoint = fn(&mut Graph<Transposed>, &EnteredContext<'_>, &PageRankParams) -> Result<CentralityResult>;
 type LouvainEntryPoint = fn(&mut Graph<Forward>, &EnteredContext<'_>, &LouvainParams) -> Result<LouvainResult>;
 type ForceAtlas2EntryPoint =
     fn(&mut Graph<Forward>, &EnteredContext<'_>, &mut RngState, &ForceAtlas2Params) -> Result<LayoutResult>;

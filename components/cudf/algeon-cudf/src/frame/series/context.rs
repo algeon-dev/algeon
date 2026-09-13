@@ -12,13 +12,13 @@ use crate::{
         error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         row_range,
         scalar::{IntoRuntimeScalar, Scalar},
+        table::TableView,
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
     frame::{
         dataframe::DataFrame,
         factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized},
     },
-    internal::temp_table::TempTableView,
     ops::{
         binary::{self, BinaryOperator},
         concatenate,
@@ -330,10 +330,10 @@ impl Series {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let (orders, null_orders) = options.resolve(1, operation)?;
         let cv = self.column.view()?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let sorted = sort_table_impl(
-            ttv.table(),
+            &ttv,
             SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             options.stable,
             SortExecution::new(&output_domain, exec_options.options(), operation),
@@ -485,10 +485,10 @@ impl Series {
     pub(super) fn unique_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let result = stream_compaction::distinct_impl(
-            ttv.table(),
+            &ttv,
             stream_compaction::DistinctConfig::new(
                 &[0],
                 DuplicateKeepOption::KeepAny,
@@ -571,10 +571,10 @@ impl Series {
         let map_view = map.view()?;
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let result = gather_impl(
-            ttv.table(),
+            &ttv,
             &map_view,
             cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
@@ -608,10 +608,10 @@ impl Series {
         }
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let result = gather_impl(
-            ttv.table(),
+            &ttv,
             &idx_cv,
             cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
@@ -645,9 +645,9 @@ impl Series {
         consumer_fence.order_input(mask_cv.execution_domain())?;
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
-        let result = apply_boolean_mask_impl(ttv.table(), &mask_cv, &output_domain, exec_options.options(), operation)?;
+        let result = apply_boolean_mask_impl(&ttv, &mask_cv, &output_domain, exec_options.options(), operation)?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
     }
@@ -659,16 +659,10 @@ impl Series {
     pub(super) fn dropna_with_context(&self, ctx: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Series> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
-        let result = stream_compaction::drop_nulls_impl(
-            ttv.table(),
-            &[0],
-            1,
-            &output_domain,
-            exec_options.options(),
-            operation,
-        )?;
+        let result =
+            stream_compaction::drop_nulls_impl(&ttv, &[0], 1, &output_domain, exec_options.options(), operation)?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
     }
@@ -684,10 +678,10 @@ impl Series {
     ) -> Result<Series> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let result = stream_compaction::distinct_impl(
-            ttv.table(),
+            &ttv,
             stream_compaction::DistinctConfig::new(
                 &[0],
                 DuplicateKeepOption::KeepAny,
@@ -713,12 +707,12 @@ impl Series {
 
         let keys_view = self.column.view().map_err(|e| e.reanchor(operation))?;
         let values_view = self.column.view().map_err(|e| e.reanchor(operation))?;
-        let ttv = TempTableView::from_column_views(vec![keys_view])?;
+        let ttv = TableView::from_borrowed_column_views_in_domain(vec![keys_view], None, operation)?;
         let aggs = [GroupByAgg::Count { include_nulls: false }];
         let requests = [AggregationRequest { values: &values_view, aggregations: &aggs }];
         let exec_options = output_domain.enter_execution()?;
         let gb = groupby_aggregate_impl(
-            ttv.table(),
+            &ttv,
             &requests,
             NullPolicy::Exclude,
             false,

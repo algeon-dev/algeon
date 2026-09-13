@@ -191,10 +191,6 @@ impl AdmissionTestHandle {
         self.handle.grant_identity().expect("admitted handle owns a live grant identity")
     }
 
-    fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
-        self.handle.boundary_policy()
-    }
-
     fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
         self.handle.source_scheduler_policy()
     }

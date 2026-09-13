@@ -5,10 +5,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use query_planning::{
-    execution_contracts::{ExecutionBoundaryPolicy, MemoryControlPolicy},
-    graph_observation::GraphMeasuredPeakRow,
-};
+use query_planning::{execution_contracts::MemoryControlPolicy, graph_observation::GraphMeasuredPeakRow};
 
 mod aggregate;
 mod backend_descriptor;
@@ -72,8 +69,6 @@ pub struct QueryMetrics {
     pub source_read_runtime_rows: Vec<SourceReadRuntimeMetrics>,
     /// Memory policy used by the native bounded executor.
     pub memory_control_policy: MemoryControlPolicy,
-    /// Boundary policy used for host/device materialization.
-    pub execution_boundary_policy: ExecutionBoundaryPolicy,
     /// Number of input batches observed by native execution.
     pub input_batches: u64,
     /// Number of input rows observed by native execution.

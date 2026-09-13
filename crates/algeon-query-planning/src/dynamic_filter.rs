@@ -42,28 +42,6 @@ impl fmt::Display for DynamicFilterId {
     }
 }
 
-/// Runtime ordering contract between a dynamic-filter producer and consumer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DynamicFilterReadiness {
-    /// Consumer must wait until the producer payload is complete.
-    ProducerCompleteBeforeConsumer,
-}
-
-impl DynamicFilterReadiness {
-    /// Stable lower-case code used by diagnostics.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ProducerCompleteBeforeConsumer => "producer_complete_before_consumer",
-        }
-    }
-}
-
-impl fmt::Display for DynamicFilterReadiness {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Dynamic-filter payload kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DynamicFilterKind {
@@ -239,6 +217,9 @@ impl DynamicFilterConsumer {
 }
 
 /// Producer/consumer route for one native dynamic filter.
+///
+/// The consumer waits until the producer payload is complete; pipeline
+/// compilation adds a control edge from producer task to consumer task.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DynamicFilterRoute {
     /// Plan-local dynamic-filter id.
@@ -255,12 +236,10 @@ pub struct DynamicFilterRoute {
     pub filter_kinds: Vec<DynamicFilterKind>,
     /// Consumer lowering selected during route discovery.
     pub consumer_lowering: DynamicFilterConsumerLowering,
-    /// Runtime readiness contract.
-    pub readiness: DynamicFilterReadiness,
 }
 
 impl DynamicFilterRoute {
-    /// Creates a route with a producer-complete-before-consumer readiness contract.
+    /// Creates a route.
     pub fn new(
         id: DynamicFilterId,
         producer: DynamicFilterProducer,
@@ -270,16 +249,7 @@ impl DynamicFilterRoute {
         filter_kinds: Vec<DynamicFilterKind>,
         consumer_lowering: DynamicFilterConsumerLowering,
     ) -> Self {
-        Self {
-            id,
-            producer,
-            consumer,
-            producer_columns,
-            consumer_columns,
-            filter_kinds,
-            consumer_lowering,
-            readiness: DynamicFilterReadiness::ProducerCompleteBeforeConsumer,
-        }
+        Self { id, producer, consumer, producer_columns, consumer_columns, filter_kinds, consumer_lowering }
     }
 
     /// Stage where this route can first reduce consumer-side work.

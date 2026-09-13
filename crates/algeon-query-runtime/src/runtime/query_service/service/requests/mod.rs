@@ -40,9 +40,9 @@ const ADMISSION_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10)
 use super::{
     super::{
         admission::{
-            AdmissionRequest, AdmissionState, AdmissionTicket, DeviceAdmissionEntries, DeviceAdmissionEntry,
-            PendingPreflightReservation, PlacedQuery, QueryCompletion, admission_cancellation_or_deadline_error,
-            admission_queue_full_error, finish_removed_request_error, service_overloaded_error,
+            AdmissionRequest, AdmissionState, AdmissionTicket, DeviceAdmissionEntries, PendingPreflightReservation,
+            PlacedQuery, QueryCompletion, admission_cancellation_or_deadline_error, admission_queue_full_error,
+            finish_removed_request_error, service_overloaded_error,
         },
         admission_rejection,
         handle::{QueryHandle, QueryHandleLifetime},
@@ -81,8 +81,7 @@ impl QueryService {
         }
         let evidence = request.planned_capability_evidence();
         self.resolve_device_admission_entries_with(candidate_ordinals, |_ordinal| {
-            let requirement = evidence.cloned().unwrap_or_else(|| base_requirement.clone());
-            Ok(DeviceAdmissionEntry { requirement })
+            Ok(evidence.cloned().unwrap_or_else(|| base_requirement.clone()))
         })
     }
 
@@ -92,7 +91,7 @@ impl QueryService {
         mut resolve: F,
     ) -> Result<(DeviceAdmissionEntries, Vec<usize>)>
     where
-        F: FnMut(usize) -> Result<DeviceAdmissionEntry>,
+        F: FnMut(usize) -> Result<AttemptRequirement>,
     {
         let mut entries = DeviceAdmissionEntries::new();
         let mut first_rejection = None;
@@ -123,7 +122,7 @@ impl QueryService {
         resolve: F,
     ) -> Result<(DeviceAdmissionEntries, Vec<usize>)>
     where
-        F: FnMut(usize) -> Result<DeviceAdmissionEntry>,
+        F: FnMut(usize) -> Result<AttemptRequirement>,
     {
         self.resolve_device_admission_entries_with(candidate_ordinals, resolve)
     }

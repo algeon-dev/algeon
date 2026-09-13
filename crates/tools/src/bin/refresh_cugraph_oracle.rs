@@ -45,19 +45,6 @@ struct CliOptions {
     workspace_root: Option<PathBuf>,
 }
 
-#[derive(Debug)]
-enum CliError {
-    Usage(String),
-}
-
-impl std::fmt::Display for CliError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Usage(message) => write!(f, "{message}"),
-        }
-    }
-}
-
 fn print_usage() {
     eprintln!(
         "refresh_cugraph_oracle: regenerate local cuGraph oracle JSON\n\
@@ -71,7 +58,7 @@ fn print_usage() {
     );
 }
 
-fn parse_args() -> Result<CliOptions, CliError> {
+fn parse_args() -> Result<CliOptions, String> {
     let mut opts = CliOptions {
         python: PathBuf::from(std::env::var("ALGEON_CUGRAPH_PYTHON").unwrap_or_else(|_| "python3".to_string())),
         ..Default::default()
@@ -81,34 +68,32 @@ fn parse_args() -> Result<CliOptions, CliError> {
         match arg.as_str() {
             "--all" => opts.select_all = true,
             "--algorithm" => {
-                opts.algorithm = Some(args.next().ok_or_else(|| CliError::Usage("--algorithm needs a value".into()))?);
+                opts.algorithm = Some(args.next().ok_or_else(|| "--algorithm needs a value".to_string())?);
             },
             "--dataset" => {
-                opts.dataset = Some(args.next().ok_or_else(|| CliError::Usage("--dataset needs a value".into()))?);
+                opts.dataset = Some(args.next().ok_or_else(|| "--dataset needs a value".to_string())?);
             },
             "--check" => opts.check_only = true,
             "--force" => opts.force = true,
             "--python" => {
-                opts.python =
-                    PathBuf::from(args.next().ok_or_else(|| CliError::Usage("--python needs a value".into()))?);
+                opts.python = PathBuf::from(args.next().ok_or_else(|| "--python needs a value".to_string())?);
             },
             "--workspace-root" => {
-                opts.workspace_root = Some(PathBuf::from(
-                    args.next().ok_or_else(|| CliError::Usage("--workspace-root needs a value".into()))?,
-                ));
+                opts.workspace_root =
+                    Some(PathBuf::from(args.next().ok_or_else(|| "--workspace-root needs a value".to_string())?));
             },
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
             },
-            other => return Err(CliError::Usage(format!("unknown argument '{other}'"))),
+            other => return Err(format!("unknown argument '{other}'")),
         }
     }
     if !opts.select_all && opts.algorithm.is_none() && opts.dataset.is_none() {
-        return Err(CliError::Usage("specify at least one of --all, --algorithm, --dataset (see --help)".into()));
+        return Err("specify at least one of --all, --algorithm, --dataset (see --help)".to_string());
     }
     if opts.check_only && opts.force {
-        return Err(CliError::Usage("--check and --force cannot be combined".into()));
+        return Err("--check and --force cannot be combined".to_string());
     }
     Ok(opts)
 }

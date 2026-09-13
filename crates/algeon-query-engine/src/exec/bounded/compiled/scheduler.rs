@@ -31,9 +31,9 @@ const OPERATION: &str = "query_engine.exec.bounded.compiled.scheduler";
 /// pipeline, and [`CompiledPipelineState`] owns every live payload. A task
 /// reads its inputs through the state; a payload the executor takes out of the
 /// state, for example with `consume_task_input_resource`, is the executor's to
-/// release, including when the task then fails. Payloads returned in
-/// [`CompiledTaskOutput`] move into the state when the task completes. The
-/// scheduler passes each payload still in the state to exactly one of
+/// release, including when the task then fails. Payloads returned from
+/// [`execute_task`](Self::execute_task) move into the state when the task
+/// completes. The scheduler passes each payload still in the state to exactly one of
 /// [`release_resource`](Self::release_resource) or
 /// [`cleanup_resource`](Self::cleanup_resource), or leaves a resource that
 /// outlives the run, such as the sink output, in the state returned by a
@@ -64,7 +64,7 @@ pub trait CompiledTaskExecutor {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
-    ) -> Result<CompiledTaskOutput<Self::Resource>>;
+    ) -> Result<Vec<(ResidentResourceId, Self::Resource)>>;
 
     /// Releases a payload whose resource lifetime ended when a task completed.
     ///
@@ -92,26 +92,6 @@ pub trait CompiledTaskExecutor {
     /// error cleanup.
     fn before_scheduling_cycle(&mut self) -> Result<()> {
         Ok(())
-    }
-}
-
-/// The resident resources produced by one compiled task.
-#[doc(hidden)]
-pub struct CompiledTaskOutput<T> {
-    produced_resources: Vec<(ResidentResourceId, T)>,
-}
-
-impl<T> CompiledTaskOutput<T> {
-    pub fn new(produced_resources: Vec<(ResidentResourceId, T)>) -> Self {
-        Self { produced_resources }
-    }
-
-    pub fn empty() -> Self {
-        Self { produced_resources: Vec::new() }
-    }
-
-    pub fn into_produced_resources(self) -> Vec<(ResidentResourceId, T)> {
-        self.produced_resources
     }
 }
 
@@ -406,21 +386,20 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 );
                 return Err(error);
             }
-            let released =
-                match self.commit_claimed_task(task, output.into_produced_resources(), &mut state, &mut flights) {
-                    Ok(released) => released,
-                    Err(error) => {
-                        fail_task_lifecycle(&mut task_lifecycle, &error);
-                        cleanup_preserving_primary(
-                            executor,
-                            &mut state,
-                            observation_scope,
-                            CleanupFailurePhase::TaskCompletion,
-                            &error,
-                        );
-                        return Err(error);
-                    },
-                };
+            let released = match self.commit_claimed_task(task, output, &mut state, &mut flights) {
+                Ok(released) => released,
+                Err(error) => {
+                    fail_task_lifecycle(&mut task_lifecycle, &error);
+                    cleanup_preserving_primary(
+                        executor,
+                        &mut state,
+                        observation_scope,
+                        CleanupFailurePhase::TaskCompletion,
+                        &error,
+                    );
+                    return Err(error);
+                },
+            };
             if let Err(error) = release_completed_resources(executor, released, |cleanup_error| {
                 record_cleanup_failure(observation_scope, CleanupFailurePhase::CompletedResourceRelease, cleanup_error);
             }) {
@@ -797,7 +776,7 @@ mod tests {
             &mut self,
             task: &PipelineTask,
             _state: &mut CompiledPipelineState<Self::Resource>,
-        ) -> Result<CompiledTaskOutput<Self::Resource>> {
+        ) -> Result<Vec<(ResidentResourceId, Self::Resource)>> {
             if task.id() == self.terminal_task {
                 if self.panic {
                     panic!("scheduler lifecycle unwind probe");
@@ -813,9 +792,7 @@ mod tests {
                 return Err(QueryError::new(QueryErrorCode::Internal, OPERATION, "scheduler lifecycle failure probe")
                     .with_fact("primary_marker", "retained"));
             }
-            Ok(CompiledTaskOutput::new(
-                task.output_resources().iter().map(|resource| (*resource, resource.to_string())).collect(),
-            ))
+            Ok(task.output_resources().iter().map(|resource| (*resource, resource.to_string())).collect())
         }
 
         fn release_resource(&mut self, resource: ResidentResourceId, _payload: Self::Resource) -> Result<()> {

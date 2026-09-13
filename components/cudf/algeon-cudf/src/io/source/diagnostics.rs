@@ -2,10 +2,9 @@ use std::fmt;
 
 use super::*;
 
-/// Derived source diagnostics.
+/// Derived diagnostics for a local Parquet source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostics {
-    pub(super) format: SourceFormat,
     pub(super) direct_device_read: bool,
     pub(super) file_count: usize,
     pub(super) ranged_file_count: usize,
@@ -50,7 +49,6 @@ impl SourceDiagnostics {
             };
 
         Self {
-            format: SourceFormat::Parquet,
             direct_device_read: true,
             file_count: source.files.len(),
             ranged_file_count: 0,
@@ -74,11 +72,6 @@ impl SourceDiagnostics {
             pure_filter_column_count,
             rejected_features: Vec::new(),
         }
-    }
-
-    /// Source file format.
-    pub fn format(&self) -> SourceFormat {
-        self.format
     }
 
     /// Whether the current local Parquet execution path can honor all
@@ -153,13 +146,6 @@ impl SourceDiagnostics {
     pub fn rejected_features(&self) -> &[RejectedSourceFeature] {
         &self.rejected_features
     }
-}
-
-/// Source format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SourceFormat {
-    /// Parquet.
-    Parquet,
 }
 
 /// Predicate support summary.
@@ -287,9 +273,6 @@ macro_rules! stable_display {
     };
 }
 
-stable_display!(SourceFormat, {
-    SourceFormat::Parquet => "parquet",
-});
 stable_display!(PredicateDisposition, {
     PredicateDisposition::Absent => "absent",
     PredicateDisposition::PruningOnly => "pruning_only",

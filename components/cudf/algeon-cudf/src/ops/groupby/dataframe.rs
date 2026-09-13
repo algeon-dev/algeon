@@ -505,9 +505,9 @@ impl<'a> GroupBy<'a> {
 
         let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
         let prepared = if self.options.keys_are_sorted() {
-            PreparedGroupBy::new_sorted_in(keys_table.table(), self.options.null_policy(), ctx)
+            PreparedGroupBy::new_sorted_in(&keys_table, self.options.null_policy(), ctx)
         } else {
-            PreparedGroupBy::new_in(keys_table.table(), self.options.null_policy(), ctx)
+            PreparedGroupBy::new_in(&keys_table, self.options.null_policy(), ctx)
         }?;
         prepared.prepare_groups()
     }
@@ -529,12 +529,12 @@ impl<'a> GroupBy<'a> {
             let key_indices = resolve_column_names(columns, &key_refs, operation)?;
 
             let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
-            let execution = ResolvedExecution::unary(keys_table.table().execution_domain(), ctx, operation)?;
+            let execution = ResolvedExecution::unary(keys_table.execution_domain(), ctx, operation)?;
             let mut handle = ptr::null_mut();
             error::check_status_in_with_details(
                 unsafe {
                     cudf_sys::cudf_prepared_groupby_create_ex(
-                        keys_table.table().raw_handle(),
+                        keys_table.raw_handle(),
                         self.options.null_policy().to_raw(),
                         i32::from(self.options.keys_are_sorted()),
                         &mut handle,
@@ -680,7 +680,7 @@ impl<'a> GroupBy<'a> {
             .collect();
 
         let gb_result = groupby_aggregate_impl(
-            keys_table.table(),
+            &keys_table,
             &requests,
             self.options.null_policy(),
             self.options.keys_are_sorted(),
@@ -828,7 +828,7 @@ impl<'a> GroupBy<'a> {
             .collect();
 
         let result = groupby_shift_impl(
-            keys_table.table(),
+            &keys_table,
             &requests,
             self.options.null_policy(),
             keys_are_sorted,

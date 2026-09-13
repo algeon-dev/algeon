@@ -125,14 +125,10 @@ pub(super) fn lower_projection_input(
     let required_projection = required_projection_exprs(projection.projection, required_output_fields)?;
     let mut child_required = BTreeSet::new();
     let mut validated_projection = Vec::with_capacity(required_projection.len());
-    for projection_expr in &required_projection {
+    for projection_expr in required_projection.iter().copied() {
         validated_projection
-            .push(validate_physical_expr_contract(projection_expr.expr, &projection.projection.input().schema())?);
-        collect_required_field_indices(
-            projection_expr.expr,
-            &projection.projection.input().schema(),
-            &mut child_required,
-        )?;
+            .push(validate_physical_expr_contract(projection_expr, &projection.projection.input().schema())?);
+        collect_required_field_indices(projection_expr, &projection.projection.input().schema(), &mut child_required)?;
     }
     let mut child_predicate_required = BTreeSet::new();
     for index in required_output_fields.predicate_indices(projection.projection.schema().fields().len())? {
@@ -151,10 +147,11 @@ pub(super) fn lower_projection_input(
     let (schema, bindings) = executable_schema_and_bindings(&projection.projection.schema(), required_output_fields)?;
     let expressions = required_projection
         .iter()
+        .copied()
         .zip(validated_projection.iter())
         .zip(bindings.iter())
         .map(|((projection_expr, validated), binding)| {
-            debug_assert!(Arc::ptr_eq(projection_expr.expr, validated.expr()));
+            debug_assert!(Arc::ptr_eq(projection_expr, validated.expr()));
             let expr = lower_validated_physical_expr_with_bindings(validated, Some(&input.bindings))?;
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
@@ -188,20 +185,16 @@ pub(super) fn add_projection_node_with_input(
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
-struct RequiredProjectionExpr<'a> {
-    expr: &'a Arc<dyn PhysicalExpr>,
-}
-
 fn required_projection_exprs<'a>(
     projection: &'a ProjectionExec,
     required_output_fields: &RequiredFields,
-) -> Result<Vec<RequiredProjectionExpr<'a>>, CapabilityReason> {
+) -> Result<Vec<&'a Arc<dyn PhysicalExpr>>, CapabilityReason> {
     let indices = required_output_fields.requested_indices(projection.expr().len())?;
     let exprs = indices
         .into_iter()
         .map(|index| {
             let projection_expr = projection.expr().get(index).ok_or(CapabilityReason::UnsupportedExpression)?;
-            Ok(RequiredProjectionExpr { expr: &projection_expr.expr })
+            Ok(&projection_expr.expr)
         })
         .collect::<Result<Vec<_>, CapabilityReason>>()?;
     Ok(exprs)

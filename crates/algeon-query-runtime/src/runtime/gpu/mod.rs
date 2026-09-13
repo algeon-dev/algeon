@@ -38,11 +38,3 @@ pub use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normaliz
 pub use placement::PlacementRequest;
 pub use profile::{DeviceCapabilities, DeviceCapability, DeviceResourceEnvelope, DeviceResourceProfile};
 pub(crate) use registry::DeviceRegistry;
-
-/// Query placement selected by the service scheduler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Placement {
-    /// All work for the query runs on one CUDA device.
-    Single(cudf::DeviceId),
-}

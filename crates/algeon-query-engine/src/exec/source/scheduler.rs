@@ -28,10 +28,7 @@ use crate::{
         RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId, SourceReadFact, SourceReadLifecycleState,
         TaskDefinitionRow, WorkerDefinitionRow,
     },
-    runtime::{
-        AttemptWorkLease, DevicePlacement, ExecutionCancellation, GpuExecutorLease, SupervisedWorker,
-        SupervisedWorkerJoin,
-    },
+    runtime::{AttemptWorkLease, ExecutionCancellation, GpuExecutorLease, SupervisedWorker, SupervisedWorkerJoin},
 };
 
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
@@ -181,10 +178,7 @@ impl SourceReadObservation {
             })
         });
         observation.observation.record_topology(RuntimeObservationRecordClass::WorkerDefinition, || {
-            let device_ordinal = match context.device_placement() {
-                DevicePlacement::SingleDevice { device_ordinal } => u32::try_from(device_ordinal).ok(),
-                _ => None,
-            };
+            let device_ordinal = u32::try_from(context.device().ordinal()).ok();
             RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
                 plan_execution_id: Some(scope.plan_execution_id().clone()),
                 worker_id,

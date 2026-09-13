@@ -4,6 +4,7 @@ use crate::{
     core::{
         column::Column,
         error::{Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        table::TableView,
     },
     frame::{
         dataframe::{
@@ -17,11 +18,8 @@ use crate::{
         series::Series,
     },
     hash::{FastHashSet, FastIndexMap, fast_index_map_with_capacity},
-    internal::{
-        resolve::{
-            build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
-        },
-        temp_table::TempTableView,
+    internal::resolve::{
+        build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
     },
     ops::{ast::AstExpression, join, replace},
     runtime::{
@@ -54,10 +52,10 @@ mod mixed_left;
 pub use mixed_left::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState};
 
 struct MixedDataFrameJoinTables<'a> {
-    left_equality: TempTableView<'a>,
-    right_equality: TempTableView<'a>,
-    left_conditional: TempTableView<'a>,
-    right_conditional: TempTableView<'a>,
+    left_equality: TableView<'a>,
+    right_equality: TableView<'a>,
+    left_conditional: TableView<'a>,
+    right_conditional: TableView<'a>,
 }
 
 fn string_refs(values: &[String]) -> Vec<&str> {
@@ -69,7 +67,7 @@ fn predicate_tables<'a>(
     right: &'a DataFrame,
     options: &DataFramePredicateJoinOptions,
     operation: &'static str,
-) -> Result<(TempTableView<'a>, TempTableView<'a>)> {
+) -> Result<(TableView<'a>, TableView<'a>)> {
     let left_names = options.left_column_names();
     let right_names = options.right_column_names();
     if left_names.is_empty() || right_names.is_empty() {
@@ -226,7 +224,7 @@ fn resolve_probe_key_table<'a, I, S>(
     probe_on: I,
     build_key_count: usize,
     operation: &'static str,
-) -> Result<TempTableView<'a>>
+) -> Result<TableView<'a>>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,

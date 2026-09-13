@@ -517,7 +517,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             datafusion_order_preserved_side: join.spec.datafusion_order_preserved_side,
             build_artifact_id: None,
             mark_column_name: None,
-            cardinality_contract: None,
+            at_most_one_match_side: None,
             total_payload_bound_preserving_outputs: Vec::new(),
             advisory_output_statistics: None,
         };

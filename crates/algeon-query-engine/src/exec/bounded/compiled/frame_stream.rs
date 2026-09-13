@@ -68,14 +68,18 @@ impl YieldedFrame {
     }
 }
 
-struct YieldedFrameReleaseGuard {
+pub(crate) struct YieldedFrameReleaseGuard {
     live_counter: Arc<AtomicU64>,
     contributed_bytes: u64,
     drained: bool,
 }
 
 impl YieldedFrameReleaseGuard {
-    fn new(live_counter: Arc<AtomicU64>, contributed_bytes: u64, increment_on_create: bool) -> Self {
+    pub(in crate::exec::bounded) fn new(
+        live_counter: Arc<AtomicU64>,
+        contributed_bytes: u64,
+        increment_on_create: bool,
+    ) -> Self {
         if increment_on_create {
             // Relaxed ordering: this counter is accounting only, never a
             // happens-before edge; saturation preserves the serial semantics.
@@ -86,7 +90,7 @@ impl YieldedFrameReleaseGuard {
         Self { live_counter, contributed_bytes, drained: false }
     }
 
-    fn take_for_release(&mut self, double_take_message: &'static str) {
+    pub(crate) fn take_for_release(&mut self, double_take_message: &'static str) {
         assert!(!self.drained, "{double_take_message}");
         let _ = self.live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
             Some(live.saturating_sub(self.contributed_bytes))
@@ -133,22 +137,8 @@ impl YieldedFrameCounterTestHarness {
         self.live_counter.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameCounterTestGuard {
-        YieldedFrameCounterTestGuard {
-            release_guard: YieldedFrameReleaseGuard::new(Arc::clone(&self.live_counter), contributed_bytes, true),
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct YieldedFrameCounterTestGuard {
-    release_guard: YieldedFrameReleaseGuard,
-}
-
-#[cfg(test)]
-impl YieldedFrameCounterTestGuard {
-    pub(crate) fn take_for_release(&mut self) {
-        self.release_guard.take_for_release("YieldedFrameCounterTestGuard::take_for_release called twice");
+    pub(crate) fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameReleaseGuard {
+        YieldedFrameReleaseGuard::new(Arc::clone(&self.live_counter), contributed_bytes, true)
     }
 }
 

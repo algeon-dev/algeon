@@ -8,8 +8,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext},
 };
 use query_engine::plan::{
-    AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance,
-    AdvisoryStatisticsScope, AdvisoryUnknownReason, NodeId, QueryPlanBuilder,
+    AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason, NodeId, QueryPlanBuilder,
 };
 
 use super::LoweredNativeInput;
@@ -20,7 +19,6 @@ pub(super) fn output_statistics(plan: &dyn ExecutionPlan) -> Option<AdvisoryOutp
     Some(AdvisoryOutputStatistics {
         rows: lower_statistic(statistics.num_rows),
         bytes: lower_statistic(statistics.total_byte_size),
-        provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
     })
 }
 
@@ -56,7 +54,6 @@ pub(super) fn attach(builder: &mut QueryPlanBuilder, node: NodeId, schema: &Sche
     builder.set_advisory_output(AdvisoryOutputBinding {
         node,
         schema: Arc::clone(schema),
-        scope: AdvisoryStatisticsScope::WholeOutput,
         frontend: "DataFusion".to_owned(),
         frontend_version: datafusion::DATAFUSION_VERSION.to_owned(),
         statistics,
@@ -65,11 +62,7 @@ pub(super) fn attach(builder: &mut QueryPlanBuilder, node: NodeId, schema: &Sche
 }
 
 fn absent() -> AdvisoryOutputStatistics {
-    AdvisoryOutputStatistics {
-        rows: AdvisoryStatistic::Absent,
-        bytes: AdvisoryStatistic::Absent,
-        provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
-    }
+    AdvisoryOutputStatistics { rows: AdvisoryStatistic::Absent, bytes: AdvisoryStatistic::Absent }
 }
 
 pub(super) fn attach_input(
@@ -87,7 +80,6 @@ pub(super) fn attach_input(
             builder.set_advisory_output(AdvisoryOutputBinding {
                 node: output.node,
                 schema: Arc::clone(&output.schema),
-                scope: AdvisoryStatisticsScope::WholeOutput,
                 frontend: "DataFusion".to_owned(),
                 frontend_version: datafusion::DATAFUSION_VERSION.to_owned(),
                 statistics: absent(),

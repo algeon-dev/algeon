@@ -279,15 +279,12 @@ fn device_entries_keep_distinct_ordinal_capability_requirements() {
     let second = distinct_capability_requirement();
     let (entries, compatible) = service
         .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
-            Ok(DeviceAdmissionEntry { requirement: if ordinal == 0 { first.clone() } else { second.clone() } })
+            Ok(if ordinal == 0 { first.clone() } else { second.clone() })
         })
         .expect("both concrete candidates resolve");
 
     assert_eq!(compatible, vec![0, 1]);
-    assert_ne!(
-        entries.get(&0).expect("ordinal zero entry").requirement,
-        entries.get(&1).expect("ordinal one entry").requirement
-    );
+    assert_ne!(entries.get(&0).expect("ordinal zero entry"), entries.get(&1).expect("ordinal one entry"));
 }
 
 #[test]
@@ -303,7 +300,7 @@ fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
                 )
                 .with_fact("reason", "sort_owner_candidate_device_unavailable"))
             } else {
-                Ok(DeviceAdmissionEntry { requirement: requirement() })
+                Ok(requirement())
             }
         })
         .expect("one healthy candidate remains");

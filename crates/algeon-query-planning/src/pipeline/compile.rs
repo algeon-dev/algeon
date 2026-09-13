@@ -12,7 +12,7 @@ use crate::{
         CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract,
         EdgeContractKind, InputRole, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
     },
-    dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterReadiness},
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer},
     error::{QueryError, QueryErrorCode, Result},
     pipeline::model::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
@@ -123,14 +123,14 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
     append_join_internal_edges(plan, &node_order, &task_ids, &mut edges)?;
     append_dynamic_filter_control_edges(plan, &task_ids, &mut edges)?;
 
-    let sink_compilation = append_sink_task(plan, &task_ids, &resource_ids, &mut tasks, &mut edges)?;
-    let resources = build_resources(plan, &node_order, &dependencies, &task_ids, &resource_ids, sink_compilation.task)?;
+    let sink_task = append_sink_task(plan, &task_ids, &resource_ids, &mut tasks, &mut edges)?;
+    let resources = build_resources(plan, &node_order, &dependencies, &task_ids, &resource_ids, sink_task)?;
     let (tasks, resources) = match resolve_task_and_resource_contracts(plan, tasks, resources, &edges) {
         Ok(resolved) => resolved,
         Err(projection) => return Ok(GraphCompilation::Rejected(projection)),
     };
-    let barriers = build_barriers(plan, &node_order, &dependencies, &task_ids, sink_compilation.task)?;
-    let sink = build_sink_boundary(plan, &task_ids, sink_compilation)?;
+    let barriers = build_barriers(plan, &node_order, &dependencies, &task_ids, sink_task)?;
+    let sink = build_sink_boundary(plan, &task_ids, sink_task)?;
 
     Ok(GraphCompilation::Graph(CompiledPipeline::new(tasks, edges, barriers, resources, sink)))
 }
@@ -203,11 +203,6 @@ struct PlanDependency {
 enum NodeTasks {
     Single { task: PipelineTaskId },
     Join { build: PipelineTaskId, probe: PipelineTaskId, materialize: PipelineTaskId },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SinkCompilation {
-    task: Option<PipelineTaskId>,
 }
 
 impl NodeTasks {
@@ -613,9 +608,6 @@ fn append_dynamic_filter_control_edges(
     edges: &mut Vec<PipelineEdge>,
 ) -> Result<()> {
     for route in plan.dynamic_filter_routes() {
-        if route.readiness != DynamicFilterReadiness::ProducerCompleteBeforeConsumer {
-            continue;
-        }
         let Some(producer) = dynamic_filter_producer_task(task_ids, &route.producer)? else {
             continue;
         };
@@ -671,9 +663,9 @@ fn append_sink_task(
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     tasks: &mut Vec<PipelineTask>,
     edges: &mut Vec<PipelineEdge>,
-) -> Result<SinkCompilation> {
+) -> Result<Option<PipelineTaskId>> {
     let ResultSink::HostArrow { input, .. } = plan.sink() else {
-        return Ok(SinkCompilation { task: None });
+        return Ok(None);
     };
     let sink_task = PipelineTaskId::new(tasks.len());
     let input_resource = resource_for(resource_ids, *input)?;
@@ -685,7 +677,7 @@ fn append_sink_task(
         PipelineEdge::new(edge_id, tasks_for(task_ids, *input)?.output_task(), sink_task, PipelineEdgeKind::SinkInput)
             .with_resources(vec![input_resource]),
     );
-    Ok(SinkCompilation { task: Some(sink_task) })
+    Ok(Some(sink_task))
 }
 
 fn build_resources(
@@ -827,13 +819,13 @@ fn downstream_tasks(
 fn build_sink_boundary(
     plan: &QueryPlan,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
-    sink_compilation: SinkCompilation,
+    sink_task: Option<PipelineTaskId>,
 ) -> Result<SinkBoundary> {
     let kind = match plan.sink() {
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
         ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
     };
-    let input = match sink_compilation.task {
+    let input = match sink_task {
         Some(task) => task,
         None => tasks_for(task_ids, plan.sink().input())?.output_task(),
     };
@@ -855,7 +847,7 @@ fn edge_kind_for_dependency(contract: &EdgeContract, input_role: InputRole) -> P
     match input_role {
         InputRole::JoinBuildInput { .. } => PipelineEdgeKind::JoinBuildInput,
         InputRole::JoinProbeInput { .. } => PipelineEdgeKind::JoinProbeInput,
-        _ if { contract.contract_kinds.iter().any(|kind| matches!(kind, EdgeContractKind::SharedProducer { .. })) } => {
+        _ if contract.contract_kinds.contains(&EdgeContractKind::SharedProducer) => {
             PipelineEdgeKind::SharedResidentProducer
         },
         _ => PipelineEdgeKind::ResidentFrame,

@@ -144,15 +144,6 @@ pub use query_runtime::metrics::CompiledTaskId
 pub use query_runtime::metrics::PlanNodeId
 pub use query_runtime::metrics::QueryId
 pub use query_runtime::metrics::TraceId
-pub enum query_runtime::metrics::BackendDurationProjectionError
-pub query_runtime::metrics::BackendDurationProjectionError::UnsupportedUnit
-pub query_runtime::metrics::BackendDurationProjectionError::UnsupportedUnit::metric_name: &'static str
-pub query_runtime::metrics::BackendDurationProjectionError::UnsupportedUnit::unit: query_runtime::metrics::BackendMetricUnit
-impl core::convert::From<query_runtime::metrics::BackendDurationProjectionError> for query_runtime::runtime::BackendMetricProjectionError
-pub fn query_runtime::runtime::BackendMetricProjectionError::from(query_runtime::metrics::BackendDurationProjectionError) -> Self
-impl core::error::Error for query_runtime::metrics::BackendDurationProjectionError
-impl core::fmt::Display for query_runtime::metrics::BackendDurationProjectionError
-pub fn query_runtime::metrics::BackendDurationProjectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[repr(usize)] pub enum query_runtime::metrics::BackendMetric
 pub query_runtime::metrics::BackendMetric::admission_active_attempts
 pub query_runtime::metrics::BackendMetric::admission_live_grant_bytes
@@ -215,6 +206,14 @@ pub fn query_runtime::metrics::AggregateStrategyDecisionMetrics::to_json(&self) 
 pub struct query_runtime::metrics::BackendDurationHistogramProjection
 pub query_runtime::metrics::BackendDurationHistogramProjection::bucket_bounds: alloc::vec::Vec<f64>
 pub query_runtime::metrics::BackendDurationHistogramProjection::sum: f64
+pub struct query_runtime::metrics::BackendDurationProjectionError
+pub query_runtime::metrics::BackendDurationProjectionError::metric_name: &'static str
+pub query_runtime::metrics::BackendDurationProjectionError::unit: query_runtime::metrics::BackendMetricUnit
+impl core::convert::From<query_runtime::metrics::BackendDurationProjectionError> for query_runtime::runtime::BackendMetricProjectionError
+pub fn query_runtime::runtime::BackendMetricProjectionError::from(query_runtime::metrics::BackendDurationProjectionError) -> Self
+impl core::error::Error for query_runtime::metrics::BackendDurationProjectionError
+impl core::fmt::Display for query_runtime::metrics::BackendDurationProjectionError
+pub fn query_runtime::metrics::BackendDurationProjectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_runtime::metrics::BackendMetricDescriptor
 pub query_runtime::metrics::BackendMetricDescriptor::buckets: &'static [u64]
 pub query_runtime::metrics::BackendMetricDescriptor::kind: query_runtime::metrics::BackendMetricKind
@@ -406,7 +405,6 @@ pub query_runtime::metrics::QueryMetrics::dynamic_filter_runtime_rows: alloc::ve
 pub query_runtime::metrics::QueryMetrics::dynamic_filter_skipped_count: u64
 pub query_runtime::metrics::QueryMetrics::dynamic_filter_source_bytes_pruned: u64
 pub query_runtime::metrics::QueryMetrics::dynamic_filter_source_post_decode_rows_filtered: u64
-pub query_runtime::metrics::QueryMetrics::execution_boundary_policy: query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub query_runtime::metrics::QueryMetrics::filtered_join_build_count: u64
 pub query_runtime::metrics::QueryMetrics::filtered_join_hash_table_bytes: u64
 pub query_runtime::metrics::QueryMetrics::filtered_join_probe_state_bytes: u64
@@ -1979,7 +1977,6 @@ pub fn query_runtime::observability::write_runtime_observation_jsonl<W: core::io
 pub mod query_runtime::runtime
 pub use query_runtime::runtime::AlgeonGpuInventory
 pub use query_runtime::runtime::AlgeonNvmlTelemetry
-pub use query_runtime::runtime::BuildMaterializationBoundary
 pub use query_runtime::runtime::CacheGraphActivity
 pub use query_runtime::runtime::CacheSourceActivity
 pub use query_runtime::runtime::CacheSourceEventSnapshot
@@ -1991,25 +1988,18 @@ pub use query_runtime::runtime::DeviceLedger
 pub use query_runtime::runtime::DeviceLedgerGrantRow
 pub use query_runtime::runtime::DeviceLedgerReport
 pub use query_runtime::runtime::DeviceMemoryFailureReport
-pub use query_runtime::runtime::DevicePlacement
 pub use query_runtime::runtime::DeviceResourceEnvelope
 pub use query_runtime::runtime::DeviceResourceProfile
 pub use query_runtime::runtime::DeviceTelemetrySnapshot
 pub use query_runtime::runtime::DeviceTelemetryStatus
-pub use query_runtime::runtime::ExecutionBoundaryPolicy
 pub use query_runtime::runtime::GpuInventory
 pub use query_runtime::runtime::GpuTelemetry
 pub use query_runtime::runtime::LedgerSnapshot
 pub use query_runtime::runtime::MemoryControlPolicy
 pub use query_runtime::runtime::MemoryGrant
 pub use query_runtime::runtime::MemoryResourcePolicy
-pub use query_runtime::runtime::MemorySpaceId
-pub use query_runtime::runtime::Placement
-pub use query_runtime::runtime::ProbeExecutionBoundary
 pub use query_runtime::runtime::ReservationKind
-pub use query_runtime::runtime::ResultMaterializationBoundary
 pub use query_runtime::runtime::SourceChunkPlanningMode
-pub use query_runtime::runtime::SourceReadBoundary
 pub use query_runtime::runtime::SourceSchedulerPolicy
 pub use query_runtime::runtime::cache_observation_fingerprint
 pub use query_runtime::runtime::device_budget_bytes_from_facts
@@ -2030,7 +2020,6 @@ pub struct query_runtime::runtime::resident::GpuFilteredJoinBuildHandle
 impl query_runtime::runtime::resident::GpuFilteredJoinBuildHandle
 pub fn query_runtime::runtime::resident::GpuFilteredJoinBuildHandle::build_keys(&self) -> &[alloc::string::String]
 pub fn query_runtime::runtime::resident::GpuFilteredJoinBuildHandle::device_allocated_size_bytes(&self) -> u64
-pub fn query_runtime::runtime::resident::GpuFilteredJoinBuildHandle::device_placement(&self) -> query_planning::execution_contracts::DevicePlacement
 pub fn query_runtime::runtime::resident::GpuFilteredJoinBuildHandle::null_equality(&self) -> query_planning::plan::join::JoinNullEquality
 pub fn query_runtime::runtime::resident::GpuFilteredJoinBuildHandle::placement(&self) -> cudf::runtime::placement::ExecutionPlacement
 pub fn query_runtime::runtime::resident::GpuFilteredJoinBuildHandle::runtime(&self) -> &alloc::sync::Arc<cudf::runtime::owner::Runtime>
@@ -2038,7 +2027,6 @@ pub struct query_runtime::runtime::resident::GpuHashJoinBuildHandle
 impl query_runtime::runtime::resident::GpuHashJoinBuildHandle
 pub fn query_runtime::runtime::resident::GpuHashJoinBuildHandle::build_keys(&self) -> &[alloc::string::String]
 pub fn query_runtime::runtime::resident::GpuHashJoinBuildHandle::device_allocated_size_bytes(&self) -> u64
-pub fn query_runtime::runtime::resident::GpuHashJoinBuildHandle::device_placement(&self) -> query_planning::execution_contracts::DevicePlacement
 pub fn query_runtime::runtime::resident::GpuHashJoinBuildHandle::null_equality(&self) -> query_planning::plan::join::JoinNullEquality
 pub fn query_runtime::runtime::resident::GpuHashJoinBuildHandle::placement(&self) -> cudf::runtime::placement::ExecutionPlacement
 pub fn query_runtime::runtime::resident::GpuHashJoinBuildHandle::runtime(&self) -> &alloc::sync::Arc<cudf::runtime::owner::Runtime>
@@ -2054,7 +2042,6 @@ pub fn query_runtime::runtime::resident::GpuPreparedHostBatch::estimated_materia
 pub fn query_runtime::runtime::resident::GpuPreparedHostBatch::num_rows(&self) -> usize
 pub struct query_runtime::runtime::resident::GpuResultHandle
 impl query_runtime::runtime::resident::GpuResultHandle
-pub fn query_runtime::runtime::resident::GpuResultHandle::device_placement(&self) -> query_planning::execution_contracts::DevicePlacement
 pub fn query_runtime::runtime::resident::GpuResultHandle::frame(&self) -> &cudf::frame::dataframe::owned::DataFrame
 pub fn query_runtime::runtime::resident::GpuResultHandle::graph_residency(&self) -> core::option::Option<&query_planning::plan::graph_algorithm::residency::GraphResidencyDescriptor>
 pub fn query_runtime::runtime::resident::GpuResultHandle::into_gpu_frame(self) -> query_runtime::runtime::resident::GpuDataFrame
@@ -2362,14 +2349,12 @@ pub fn query_runtime::runtime::ExecutionContext::aggregate_strategy_execution_op
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_id(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> query_planning::error::Result<core::option::Option<cudf::core::memory::usage::QueryMemoryDomainUsage>>
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_grant_identity(&self) -> core::option::Option<GrantIdentity>
-pub fn query_runtime::runtime::ExecutionContext::boundary_policy(&self) -> query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub fn query_runtime::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::builder() -> query_runtime::runtime::context::builder::ExecutionContextBuilder
 pub fn query_runtime::runtime::ExecutionContext::cancellation(&self) -> &query_runtime::runtime::ExecutionCancellation
 pub fn query_runtime::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::datafusion_order_tracking(&self) -> bool
-pub fn query_runtime::runtime::ExecutionContext::device_memory_space(&self) -> query_planning::execution_contracts::MemorySpaceId
-pub fn query_runtime::runtime::ExecutionContext::device_placement(&self) -> query_planning::execution_contracts::DevicePlacement
+pub fn query_runtime::runtime::ExecutionContext::device(&self) -> cudf::runtime::device::DeviceId
 pub fn query_runtime::runtime::ExecutionContext::execution_budget_token(&self, cudf::runtime::budget::ExecutionBudgetRequest) -> query_planning::error::Result<cudf::runtime::budget::ExecutionBudgetToken>
 pub fn query_runtime::runtime::ExecutionContext::from_runtime(cudf::runtime::owner::Runtime) -> query_planning::error::Result<Self>
 pub fn query_runtime::runtime::ExecutionContext::from_shared_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> query_planning::error::Result<Self>
@@ -2653,7 +2638,6 @@ pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_h
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_owner(self, query_runtime::observability::RuntimeObservationOwner) -> Self
 pub struct query_runtime::runtime::QueryExecutionConfig
 pub query_runtime::runtime::QueryExecutionConfig::aggregate_strategy_execution_options: query_planning::capability::aggregate::AggregateStrategyExecutionOptions
-pub query_runtime::runtime::QueryExecutionConfig::boundary_policy: query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub query_runtime::runtime::QueryExecutionConfig::dynamic_filter_execution_options: query_planning::dynamic_filter::DynamicFilterExecutionOptions
 pub query_runtime::runtime::QueryExecutionConfig::keyed_hash_join_strategy_options: query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub query_runtime::runtime::QueryExecutionConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig
@@ -2679,7 +2663,6 @@ pub fn query_runtime::runtime::QueryHandle::admission_sequence(&self) -> u64
 pub fn query_runtime::runtime::QueryHandle::admission_wait(&self) -> core::time::Duration
 pub fn query_runtime::runtime::QueryHandle::admission_wait_fact(&self) -> core::option::Option<query_runtime::observability::AttemptAdmissionWaitFact>
 pub fn query_runtime::runtime::QueryHandle::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
-pub fn query_runtime::runtime::QueryHandle::boundary_policy(&self) -> query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub fn query_runtime::runtime::QueryHandle::device_budget_bytes(&self) -> u64
 pub fn query_runtime::runtime::QueryHandle::device_ordinal(&self) -> usize
 pub fn query_runtime::runtime::QueryHandle::dynamic_filter_execution_options(&self) -> query_planning::dynamic_filter::DynamicFilterExecutionOptions

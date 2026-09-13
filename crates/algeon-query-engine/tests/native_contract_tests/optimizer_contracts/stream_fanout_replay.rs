@@ -10,7 +10,6 @@ fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
     let candidate = &result.diagnostics.stream_fanout_replay.candidates[0];
     assert!(candidate.applied);
     assert_eq!(candidate.consumer_count, 2);
-    assert_eq!(candidate.rejected_reason, None);
     assert!(result.plan.node_count() > original_node_count);
     assert_eq!(max_direct_join_probe_consumer_count(&result.plan), 1);
 }

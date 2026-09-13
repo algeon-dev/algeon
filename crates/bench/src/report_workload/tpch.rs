@@ -34,8 +34,7 @@ use workloads::tpch::{TPCH_QUERIES, WorkloadResult, register_tpch_tables};
 mod analytical_olap;
 
 pub use analytical_olap::{
-    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapCurrentAdmission, AnalyticalOlapLoweringExpectation, AnalyticalOlapQuery,
+    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission, AnalyticalOlapQuery,
     AnalyticalOlapWorkloadClass, analytical_olap_datafusion_planning_workload_items,
     analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
     analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,

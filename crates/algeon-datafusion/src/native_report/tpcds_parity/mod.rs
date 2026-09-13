@@ -72,7 +72,7 @@ mod report;
 
 // Private sibling-visibility imports. Submodules pick up these names via
 // `use super::*;` because child modules can see their parent's private uses.
-use canonical::{CanonicalField, CanonicalRow, collect_canonical_rows, compare_canonical_rows};
+use canonical::{CanonicalField, collect_canonical_rows, compare_canonical_rows};
 use compare::{ParityCompareOptions, compare_record_batches_with_options};
 pub use compare::{
     ParityComparisonResult, compare_record_batches, sql_has_top_level_order_by,

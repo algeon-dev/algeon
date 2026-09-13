@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 use crate::{
     dynamic_filter::DynamicFilterProducer,
     error::Result,
@@ -21,7 +21,7 @@ use crate::{
         },
         operators::execute_window,
     },
-    pipeline::{CompiledPipeline, PipelineTask, ResidentDataForm, SortStrategy},
+    pipeline::{CompiledPipeline, PipelineTask, ResidentDataForm, ResidentResourceId, SortStrategy},
     plan::{PlanNode, QueryPlan},
 };
 
@@ -30,7 +30,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
@@ -195,14 +195,14 @@ impl CompiledGpuTaskExecutor<'_> {
             | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => None,
         };
         self.produce_aggregate_group_key_dynamic_filters(node_id, node.output_schema(), group_key_state.as_deref())?;
-        Ok(CompiledTaskOutput::new(vec![(output, frame)]))
+        Ok(vec![(output, frame)])
     }
 
     pub(super) fn execute_window_task(
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
@@ -240,14 +240,14 @@ impl CompiledGpuTaskExecutor<'_> {
             },
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 
     pub(super) fn execute_final_sort_task(
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
@@ -299,10 +299,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 },
             }
             .map_err(|error| attach_task_facts(error, task, node_id))?;
-            return Ok(CompiledTaskOutput::new(vec![(
-                output,
-                CompiledGpuResource::frame_with_applied_limit(frame, limit_node_id),
-            )]));
+            return Ok(vec![(output, CompiledGpuResource::frame_with_applied_limit(frame, limit_node_id))]);
         }
 
         let input_payload = state.resource_payload(input)?;
@@ -313,7 +310,7 @@ impl CompiledGpuTaskExecutor<'_> {
             input_payload.clone_frame(),
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 }
 

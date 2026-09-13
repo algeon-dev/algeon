@@ -45,7 +45,7 @@ impl SourceMetadataCache {
         &mut self,
         source: &LocalParquetSource,
         file: &LocalParquetFile,
-        context: Option<&SourceMetadataLoadContext<'_>>,
+        context: Option<&ExecutionContext>,
     ) -> Result<FooterMetadataLoad> {
         let requirement =
             FooterMetadataRequirement::for_source_file_requirement(source_file_requires_footer_metadata(source, file));
@@ -80,7 +80,7 @@ impl SourceMetadataCache {
     pub(super) fn prefetch_footer_metadata_for_source(
         &mut self,
         source: &LocalParquetSource,
-        context: Option<&SourceMetadataLoadContext<'_>>,
+        context: Option<&ExecutionContext>,
     ) -> Result<FooterMetadataLoad> {
         let Some(context) = context else {
             return Ok(FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 });
@@ -165,9 +165,7 @@ impl SourceMetadataCache {
             if pending.is_empty() {
                 break;
             }
-            context
-                .execution_context
-                .check_cancellation("query_engine.source_metadata.object_store_footer_prefetch")?;
+            context.check_cancellation("query_engine.source_metadata.object_store_footer_prefetch")?;
             let Some(remaining) = OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT.checked_sub(timer.elapsed()) else {
                 for pending_fetch in pending.drain(..) {
                     match pending_fetch.receiver.try_recv() {
@@ -245,13 +243,6 @@ impl SourceMetadataCache {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[doc(hidden)]
-pub struct SourceMetadataLoadContext<'a> {
-    #[doc(hidden)]
-    pub execution_context: &'a ExecutionContext,
-}
-
 #[derive(Debug, Clone)]
 struct FooterMetadataCacheEntry {
     metadata: Option<Arc<ParquetMetaData>>,
@@ -308,12 +299,12 @@ impl FooterMetadataRequirement {
 }
 
 fn spawn_footer_metadata_fetch(
-    context: &SourceMetadataLoadContext<'_>,
+    context: &ExecutionContext,
     fetch_location: SourceMetadataFetchLocation,
     _operation: &'static str,
     requirement: FooterMetadataRequirement,
 ) -> Result<Option<FooterMetadataFetch>> {
-    let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
+    let store = match context.s3_object_store(S3ObjectStoreKey {
         bucket: fetch_location.bucket.clone(),
         region: fetch_location.region.clone(),
         storage_profile_id: fetch_location.storage_profile_id.clone(),
@@ -325,7 +316,7 @@ fn spawn_footer_metadata_fetch(
     let wait_started = Instant::now();
     let (sender, receiver) = std::sync::mpsc::channel();
     let key = fetch_location.key;
-    let handle = context.execution_context.spawn_object_store_control_task(
+    let handle = context.spawn_object_store_control_task(
         move || fetch_object_store_parquet_metadata(store, key),
         move |fetch_result| {
             let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
@@ -378,7 +369,7 @@ fn cache_footer_metadata_miss(file: &LocalParquetFile) -> bool {
 }
 
 fn load_object_store_parquet_footer_metadata(
-    context: &SourceMetadataLoadContext<'_>,
+    context: &ExecutionContext,
     file: &LocalParquetFile,
     requirement: FooterMetadataRequirement,
 ) -> Result<Option<Arc<ParquetMetaData>>> {
@@ -386,7 +377,7 @@ fn load_object_store_parquet_footer_metadata(
         return Ok(None);
     }
     const OPERATION: &str = "query_engine.source_metadata.object_store_footer";
-    context.execution_context.check_cancellation(OPERATION)?;
+    context.check_cancellation(OPERATION)?;
     let fetch_location = match source_metadata_fetch_location(file) {
         Ok(fetch_location) => fetch_location,
         Err(error) if requirement.is_required() => return Err(error),
@@ -397,7 +388,7 @@ fn load_object_store_parquet_footer_metadata(
     };
     let FooterMetadataFetch { wait_started, handle: fetch_handle, receiver } = fetch;
     loop {
-        if let Err(error) = context.execution_context.check_cancellation(OPERATION) {
+        if let Err(error) = context.check_cancellation(OPERATION) {
             fetch_handle.abort();
             return Err(error);
         }
@@ -587,7 +578,7 @@ pub(super) fn read_parquet_metadata(
     source: &LocalParquetSource,
     file: &LocalParquetFile,
     metadata_cache: &mut SourceMetadataCache,
-    metadata_load_context: Option<&SourceMetadataLoadContext<'_>>,
+    metadata_load_context: Option<&ExecutionContext>,
 ) -> Result<SourceMetadataLoad> {
     let needs_object_store_decimal_contract =
         object_store_decimal_reader_predicate_requires_footer_contract(source, file);
@@ -640,7 +631,7 @@ pub(super) fn read_parquet_metadata(
 pub fn source_footer_metadata(
     source: &LocalParquetSource,
     cache: &mut SourceMetadataCache,
-    context: Option<&SourceMetadataLoadContext<'_>>,
+    context: Option<&ExecutionContext>,
 ) -> Result<Vec<Option<Arc<ParquetMetaData>>>> {
     source.files.iter().map(|file| Ok(cache.footer_metadata(source, file, context)?.metadata)).collect()
 }
@@ -711,12 +702,7 @@ pub fn footer_verified_object_store_reader_decimal_types_with_supplied_cache(
         file_with_supplied_types = file.clone().with_reader_decimal_types(supplied_reader_decimal_types.to_vec());
         &file_with_supplied_types
     };
-    let metadata_load = read_parquet_metadata(
-        source,
-        file,
-        metadata_cache,
-        Some(&SourceMetadataLoadContext { execution_context: context }),
-    )?;
+    let metadata_load = read_parquet_metadata(source, file, metadata_cache, Some(context))?;
     Ok(Some(metadata_load.reader_decimal_types))
 }
 

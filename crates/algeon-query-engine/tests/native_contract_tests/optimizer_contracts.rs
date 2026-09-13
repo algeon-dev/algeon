@@ -37,9 +37,9 @@ use query_engine::{
         optimize_shared_resident_extraction, seed_dimension_derived_reader_predicates,
     },
     plan::{
-        AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance, GraphAlgorithm,
-        GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
-        GraphConstructionOptions, GraphEdgeColumnBindings, GraphPredicateInput, NodeId, QueryPlan,
+        AdvisoryOutputStatistics, AdvisoryStatistic, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
+        GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+        GraphEdgeColumnBindings, GraphPredicateInput, NodeId, QueryPlan,
     },
     rapids_backend::rapids_analysis_context,
     source::LocalParquetSource,

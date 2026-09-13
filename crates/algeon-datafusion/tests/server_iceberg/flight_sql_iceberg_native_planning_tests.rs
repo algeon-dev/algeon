@@ -522,12 +522,12 @@ fn assert_executable_iceberg_datafusion_plan(plan: &dyn ExecutionPlan) {
 /// only consumed the leaf; that is the regression this test pins.
 fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
     let rendered = displayable(plan).indent(false).to_string();
-    let native_root = find_algeon_native_exec_root(plan).unwrap_or_else(|| {
+    let native_root_ancestor_names = find_algeon_native_exec_root(plan).unwrap_or_else(|| {
         panic!("native profile rewrite did not produce a native execution wrapper; plan:\n{rendered}");
     });
     for forbidden in CPU_PIPELINE_OPERATORS_ABSORBED_BY_NATIVE_REWRITE {
         assert!(
-            !native_root.ancestor_names.iter().any(|name| name == forbidden),
+            !native_root_ancestor_names.iter().any(|name| name == forbidden),
             "native profile rewrite left `{forbidden}` above the native execution root; \
              the whole accepted subtree must collapse into a single native pipeline. plan:\n{rendered}",
         );
@@ -575,16 +575,12 @@ fn find_operator<'a>(plan: &'a dyn ExecutionPlan, operator: &str) -> Option<&'a 
     plan.children().into_iter().find_map(|child| find_operator(child.as_ref(), operator))
 }
 
-struct NativeRootDescent {
-    ancestor_names: Vec<String>,
-}
-
-fn find_algeon_native_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDescent> {
+fn find_algeon_native_exec_root(plan: &dyn ExecutionPlan) -> Option<Vec<String>> {
     let mut ancestor_names = Vec::new();
     let mut cursor: &dyn ExecutionPlan = plan;
     loop {
         if matches!(cursor.name(), "AlgeonNativeExec" | "AlgeonNativeComposedExec") {
-            return Some(NativeRootDescent { ancestor_names });
+            return Some(ancestor_names);
         }
         ancestor_names.push(cursor.name().to_string());
         let children = cursor.children();

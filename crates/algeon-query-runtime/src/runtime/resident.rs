@@ -35,7 +35,7 @@ use query_planning::{
 use crate::{
     native_error::cudf_query_error,
     runtime::{
-        DevicePlacement, ExecutionCancellation, ExecutionContext,
+        ExecutionCancellation, ExecutionContext,
         cache::local_parquet::GpuLocalParquetSourceCachePin,
         gpu::ledger::{MemoryGrant, ResidentOwnerLease},
     },
@@ -443,7 +443,6 @@ impl GpuDataFrame {
 pub struct GpuResultHandle {
     batch: GpuRecordBatch,
     runtime: Arc<cudf::Runtime>,
-    device_placement: DevicePlacement,
     resident_owner: Option<ResidentOwnerLease>,
     retained_source_owners: Vec<RetainedSourceOwner>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
@@ -468,7 +467,6 @@ pub struct ProducerExecutionIdentity {
 pub struct GpuLocalParquetCachedResult {
     batch: GpuRecordBatch,
     allocation_lease: Arc<cudf::CacheAllocationLease>,
-    device_placement: DevicePlacement,
 }
 
 /// Bounded native GPU-to-host cursor retaining every owner required by the
@@ -478,7 +476,6 @@ pub struct GpuHostBatchCursor {
     output_schema: SchemaRef,
     cancellation: ExecutionCancellation,
     _runtime: Arc<cudf::Runtime>,
-    _device_placement: DevicePlacement,
     _resident_owner: Option<ResidentOwnerLease>,
     _retained_source_owners: Vec<RetainedSourceOwner>,
     _source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
@@ -629,7 +626,6 @@ impl GpuResultHandle {
         Ok(Self {
             batch,
             runtime: context.shared_runtime()?,
-            device_placement: context.device_placement(),
             resident_owner,
             retained_source_owners,
             source_cache_pin,
@@ -657,7 +653,6 @@ impl GpuResultHandle {
         let Self {
             batch,
             runtime: _,
-            device_placement: _,
             resident_owner,
             retained_source_owners,
             source_cache_pin,
@@ -679,11 +674,6 @@ impl GpuResultHandle {
     /// Shared cuDF runtime that created the handle.
     pub fn runtime(&self) -> &Arc<cudf::Runtime> {
         &self.runtime
-    }
-
-    /// Native-engine device placement recorded at handle creation.
-    pub fn device_placement(&self) -> DevicePlacement {
-        self.device_placement
     }
 
     /// Observed physical device bytes for this result handle.
@@ -795,7 +785,7 @@ impl GpuResultHandle {
         let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
             cudf_query_error(OPERATION, "failed to bind query-neutral local Parquet cache value", error)
         })?;
-        Ok(GpuLocalParquetCachedResult { batch, allocation_lease, device_placement: self.device_placement })
+        Ok(GpuLocalParquetCachedResult { batch, allocation_lease })
     }
 
     /// Current cuDF execution placement for the underlying batch.
@@ -855,7 +845,6 @@ impl GpuResultHandle {
         let Self {
             batch,
             runtime,
-            device_placement,
             resident_owner,
             retained_source_owners,
             source_cache_pin,
@@ -874,7 +863,6 @@ impl GpuResultHandle {
             output_schema,
             cancellation,
             _runtime: runtime,
-            _device_placement: device_placement,
             _resident_owner: resident_owner,
             _retained_source_owners: retained_source_owners,
             _source_cache_pin: source_cache_pin,
@@ -972,9 +960,7 @@ impl GpuLocalParquetCachedResult {
     pub fn checkout(&self, context: &ExecutionContext, pin: GpuLocalParquetSourceCachePin) -> Result<GpuResultHandle> {
         const OPERATION: &str = "query_engine.gpu_local_parquet_source_cache.checkout";
         let query_runtime = context.shared_runtime()?;
-        if query_runtime.device() != self.allocation_lease.domain().device()
-            || self.device_placement != context.device_placement()
-        {
+        if query_runtime.device() != self.allocation_lease.domain().device() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 OPERATION,
@@ -992,7 +978,6 @@ impl GpuLocalParquetCachedResult {
         Ok(GpuResultHandle {
             batch,
             runtime: query_runtime,
-            device_placement: context.device_placement(),
             resident_owner: None,
             retained_source_owners: Vec::new(),
             source_cache_pin: Some(pin),
@@ -1055,7 +1040,6 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
 pub struct GpuHashJoinBuildHandle {
     hash_join: DataFrameHashJoin,
     runtime: Arc<cudf::Runtime>,
-    device_placement: DevicePlacement,
     build_keys: Vec<String>,
     null_equality: JoinNullEquality,
     device_allocated_size_bytes: u64,
@@ -1069,7 +1053,6 @@ pub struct GpuHashJoinBuildHandle {
 pub struct GpuFilteredJoinBuildHandle {
     filtered_join: DataFrameFilteredJoin,
     runtime: Arc<cudf::Runtime>,
-    device_placement: DevicePlacement,
     build_keys: Vec<String>,
     null_equality: JoinNullEquality,
     device_allocated_size_bytes: u64,
@@ -1105,7 +1088,6 @@ impl GpuFilteredJoinBuildHandle {
             build_keys: filtered_join.build_keys().to_vec(),
             filtered_join,
             runtime: context.shared_runtime()?,
-            device_placement: context.device_placement(),
             null_equality,
             device_allocated_size_bytes,
         })
@@ -1119,11 +1101,6 @@ impl GpuFilteredJoinBuildHandle {
     /// Shared cuDF runtime that created this reusable build artifact.
     pub fn runtime(&self) -> &Arc<cudf::Runtime> {
         &self.runtime
-    }
-
-    /// Native-engine device placement recorded at artifact creation.
-    pub fn device_placement(&self) -> DevicePlacement {
-        self.device_placement
     }
 
     /// Current cuDF execution placement for the retained build side.
@@ -1177,7 +1154,6 @@ impl GpuHashJoinBuildHandle {
             build_keys: hash_join.build_keys().to_vec(),
             hash_join,
             runtime: context.shared_runtime()?,
-            device_placement: context.device_placement(),
             null_equality,
             device_allocated_size_bytes,
         })
@@ -1191,11 +1167,6 @@ impl GpuHashJoinBuildHandle {
     /// Shared cuDF runtime that created this reusable build artifact.
     pub fn runtime(&self) -> &Arc<cudf::Runtime> {
         &self.runtime
-    }
-
-    /// Native-engine device placement recorded at artifact creation.
-    pub fn device_placement(&self) -> DevicePlacement {
-        self.device_placement
     }
 
     /// Current cuDF execution placement for the retained build side.

@@ -9,4 +9,4 @@ pub mod connected_components;
 mod result;
 
 pub use connected_components::ConnectedComponentsParams;
-pub use result::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult};
+pub use result::LabelingResult;

@@ -169,13 +169,11 @@ impl QueryMetrics {
         let query_id = self.query_id.clone();
         let trace_id = self.trace_id.clone();
         let memory_control_policy = self.memory_control_policy;
-        let execution_boundary_policy = self.execution_boundary_policy;
         let plan_task_mapping_datafusion_shape = self.plan_task_mapping_datafusion_shape.clone();
         *self = checkpoint.metrics.clone();
         self.query_id = query_id;
         self.trace_id = trace_id;
         self.memory_control_policy = memory_control_policy;
-        self.execution_boundary_policy = execution_boundary_policy;
         self.plan_task_mapping_datafusion_shape = plan_task_mapping_datafusion_shape;
         self.apply_source_read_checkpoint(checkpoint);
         self.stamp_existing_rows_with_query_id();

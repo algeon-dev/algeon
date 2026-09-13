@@ -7,13 +7,11 @@ use crate::{
     core::{
         column::{Column, position_sequence_in_domain},
         error::{self, Result},
+        table::TableView,
     },
     frame::series::Series,
     hash::FastIndexMap,
-    internal::{
-        resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
-        temp_table::TempTableView,
-    },
+    internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
     ops::{
         groupby::{GroupByScanRequest, NullPolicy, groupby_scan_sorted},
         join::MergeOptions,
@@ -383,12 +381,21 @@ impl DataFrame {
         let stable_key_columns;
         let keys_table = if stable_row_position.is_some() {
             stable_key_columns = self.sort_key_columns_in_domain(&key_indices, &output_domain, operation)?;
-            Self::build_stable_sort_key_table_for_sorted_order(&stable_key_columns, stable_row_position.as_ref())?
+            Self::build_stable_sort_key_table_for_sorted_order(
+                &stable_key_columns,
+                stable_row_position.as_ref(),
+                operation,
+            )?
         } else {
-            Self::build_sort_key_table_for_sorted_order(self.columns_map(), &key_indices, stable_row_position.as_ref())?
+            Self::build_sort_key_table_for_sorted_order(
+                self.columns_map(),
+                &key_indices,
+                stable_row_position.as_ref(),
+                operation,
+            )?
         };
         let sorted_order = sorting::sorted_order_impl(
-            keys_table.table(),
+            &keys_table,
             sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
         )?
@@ -422,7 +429,8 @@ impl DataFrame {
     fn build_stable_sort_key_table_for_sorted_order<'a>(
         key_columns: &'a [Arc<Column>],
         stable_row_position: Option<&'a Column>,
-    ) -> Result<TempTableView<'a>> {
+        operation: &'static str,
+    ) -> Result<TableView<'a>> {
         let mut views = Vec::with_capacity(key_columns.len() + usize::from(stable_row_position.is_some()));
         for column in key_columns {
             views.push(column.view()?);
@@ -431,14 +439,15 @@ impl DataFrame {
             views.push(stable_row_position.view()?);
         }
 
-        TempTableView::from_column_views(views)
+        TableView::from_borrowed_column_views_in_domain(views, None, operation)
     }
 
     fn build_sort_key_table_for_sorted_order<'a>(
         columns: &'a FastIndexMap<String, Arc<Column>>,
         key_indices: &[usize],
         stable_row_position: Option<&'a Column>,
-    ) -> Result<TempTableView<'a>> {
+        operation: &'static str,
+    ) -> Result<TableView<'a>> {
         let mut views = Vec::with_capacity(key_indices.len() + usize::from(stable_row_position.is_some()));
         for &idx in key_indices {
             let (_, column) = columns.get_index(idx).expect("resolved sort key index remains valid");
@@ -451,7 +460,7 @@ impl DataFrame {
         if views.is_empty() {
             build_borrowed_table_view_from_columns(columns, &[])
         } else {
-            TempTableView::from_column_views(views)
+            TableView::from_borrowed_column_views_in_domain(views, None, operation)
         }
     }
 
@@ -529,7 +538,7 @@ impl DataFrame {
         let value_view = value_column.1.view()?;
         let aggregations = [agg];
         let requests = [GroupByScanRequest { values: &value_view, aggregations: &aggregations }];
-        let mut output = groupby_scan_sorted(keys_table.table(), &requests, NullPolicy::Include)?;
+        let mut output = groupby_scan_sorted(&keys_table, &requests, NullPolicy::Include)?;
         let result = output.results.pop().and_then(|mut columns| columns.pop()).ok_or_else(|| {
             error::invariant_violation(operation, "grouped scan returned no result column")
                 .with_detail("requested_aggregations", "1")

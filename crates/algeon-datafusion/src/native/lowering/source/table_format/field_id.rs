@@ -30,11 +30,6 @@ impl TableFormatFieldIdReadBinding {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct TableFormatFileReadBindings {
-    pub(super) bindings: Vec<TableFormatFieldIdReadBinding>,
-}
-
 pub(super) fn validate_table_format_direct_file_column_field_ids(
     scan_plan: &TableFormatScanPlan,
     mappings: &[&TableFormatColumnMapping],
@@ -111,7 +106,7 @@ pub(super) fn table_format_file_field_id_read_bindings(
     footer_schema: &Schema,
     requirements: &NativeParquetColumnRequirements,
     mappings: &BTreeMap<&str, &TableFormatColumnMapping>,
-) -> Result<TableFormatFileReadBindings, CapabilityReason> {
+) -> Result<Vec<TableFormatFieldIdReadBinding>, CapabilityReason> {
     let mut bindings = Vec::new();
     let mut seen = BTreeSet::new();
     for column in &requirements.scan_output_columns {
@@ -145,7 +140,7 @@ pub(super) fn table_format_file_field_id_read_bindings(
             data_type: field.data_type().clone(),
         });
     }
-    Ok(TableFormatFileReadBindings { bindings })
+    Ok(bindings)
 }
 
 pub(super) fn footer_field_by_id(schema: &Schema, field_id: i32) -> Option<(usize, &Field)> {

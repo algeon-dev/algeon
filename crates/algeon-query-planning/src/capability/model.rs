@@ -264,6 +264,9 @@ pub enum ProducedProperty {
 }
 
 /// Producer-consumer capability for one dependency edge.
+///
+/// Every edge requires its producer to yield a GPU-resident cudf frame;
+/// `decision` is rejected with `missing_edge_required_property` otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeContract {
     /// Producer node for this dependency.
@@ -274,8 +277,6 @@ pub struct EdgeContract {
     pub contract_kinds: Vec<EdgeContractKind>,
     /// Semantic input slot on the consumer.
     pub input_role: InputRole,
-    /// Producer properties required by the consumer.
-    pub required_properties: Vec<RequiredProperty>,
     /// Whether this edge satisfies its consumer contract.
     pub decision: CapabilityDecision,
 }
@@ -311,11 +312,9 @@ pub enum EdgeContractKind {
         /// Zero-based union input index.
         input_index: usize,
     },
-    /// Shared resident producer identity contract.
-    SharedProducer {
-        /// Identity evidence that lets multiple consumers reuse the producer.
-        identity: SharedProducerIdentity,
-    },
+    /// Multiple consumers reuse one resident producer because
+    /// common-subexpression elimination preserved the same producer node id.
+    SharedProducer,
     /// Generic resident-frame flow between native nodes.
     ResidentFrameFlow,
     /// Materialized join output required by a downstream consumer.
@@ -331,13 +330,6 @@ pub enum EdgeContractKind {
     },
     /// Final result materialization boundary.
     ExplicitSinkMaterialization,
-}
-
-/// Identity evidence used for resident producers with multiple consumers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SharedProducerIdentity {
-    /// Common-subexpression elimination preserved the same producer node id.
-    SameNodeIdAfterCse,
 }
 
 /// Consumer endpoint for an edge.
@@ -431,13 +423,6 @@ impl VectorInputRole {
             Self::InitialCentroids => "initial_centroids",
         }
     }
-}
-
-/// Property required from an edge producer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RequiredProperty {
-    /// Producer must yield a GPU-resident cudf frame.
-    ResidentFrame,
 }
 
 /// Stable identifier for an invariant inside one analysis result.

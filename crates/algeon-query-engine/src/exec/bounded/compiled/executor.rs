@@ -7,10 +7,7 @@ use std::{
 use arrow::record_batch::RecordBatch;
 
 use super::{
-    CompiledGpuResource,
-    helpers::invalid,
-    resource::CompiledGpuResourcePayload,
-    scheduler::{CompiledTaskExecutor, CompiledTaskOutput},
+    CompiledGpuResource, helpers::invalid, resource::CompiledGpuResourcePayload, scheduler::CompiledTaskExecutor,
     state::CompiledPipelineState,
 };
 use crate::{
@@ -186,7 +183,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
-    ) -> Result<CompiledTaskOutput<Self::Resource>> {
+    ) -> Result<Vec<(ResidentResourceId, Self::Resource)>> {
         self.execution.context().check_cancellation("query_engine.exec.bounded.compiled.task")?;
         self.execution.metrics().record_compiled_pipeline_task_mapping(
             task.id(),

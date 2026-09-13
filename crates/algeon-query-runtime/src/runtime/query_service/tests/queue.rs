@@ -377,10 +377,7 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     assert_eq!(active.device_ordinal(), 1);
 
     let mut waiter = service.enqueue_admission().expect("request enters the shared queue");
-    let entries = DeviceAdmissionEntries::from([
-        (0, DeviceAdmissionEntry { requirement: requirement() }),
-        (1, DeviceAdmissionEntry { requirement: requirement() }),
-    ]);
+    let entries = DeviceAdmissionEntries::from([(0, requirement()), (1, requirement())]);
     {
         let mut state = service.inner.admission.lock().expect("admission state");
         state

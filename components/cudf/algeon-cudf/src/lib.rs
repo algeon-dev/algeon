@@ -285,8 +285,7 @@ pub use runtime::{
     AttemptStreamProviderAlias, AttemptStreamProviderRegistration, BoundaryKind, BoundaryObservation, BoundaryObserver,
     BudgetedExecutionOutcome, CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease,
     CacheAllocationScope, CacheAllocationScopeId, CacheAllocationScopeIdentity, DenseMatrixLayout, DeviceId,
-    ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetStatus,
-    ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, PackedFloat32Matrix, QueryExecutionContext, Runtime,
-    RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome,
-    ValidatedPackedFloat32Matrix,
+    ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken,
+    ExecutionOverrides, ExecutionPlacement, PackedFloat32Matrix, QueryExecutionContext, Runtime, RuntimeAffinityAnchor,
+    RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome, ValidatedPackedFloat32Matrix,
 };

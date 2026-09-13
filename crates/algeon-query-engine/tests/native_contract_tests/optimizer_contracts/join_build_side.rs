@@ -312,7 +312,6 @@ fn join_build_side_selection_prefers_conservative_evidence_over_advisory_estimat
         .with_advisory_output_statistics(AdvisoryOutputStatistics {
             rows: AdvisoryStatistic::Inexact(100),
             bytes: AdvisoryStatistic::Inexact(1_024),
-            provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
         }),
         schema(&["s_key"]),
     );
@@ -879,7 +878,6 @@ fn advisory_rows(rows: u64) -> AdvisoryOutputStatistics {
     AdvisoryOutputStatistics {
         rows: AdvisoryStatistic::Inexact(rows),
         bytes: AdvisoryStatistic::Absent,
-        provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
     }
 }
 

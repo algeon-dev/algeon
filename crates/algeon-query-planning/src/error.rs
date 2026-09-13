@@ -628,7 +628,7 @@ struct QueryErrorRepr {
     cugraph_allocation_source: Option<CugraphAllocationSource>,
     graph_cache_scope_peak_bytes: Option<u64>,
     source: Option<BoxedSourceError>,
-    cleanup_disposition: Option<CleanupDisposition>,
+    cleanup_deadline_elapsed: bool,
 }
 
 /// Closed cuGraph allocation-failure provenance retained independently of
@@ -658,11 +658,6 @@ impl CugraphAllocationSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CleanupDisposition {
-    DeadlineElapsed,
-}
-
 impl QueryError {
     /// Creates a native-engine error with a stable operation id and message.
     ///
@@ -689,7 +684,7 @@ impl QueryError {
             cugraph_allocation_source: None,
             graph_cache_scope_peak_bytes: None,
             source: None,
-            cleanup_disposition: None,
+            cleanup_deadline_elapsed: false,
         }))
     }
 
@@ -701,13 +696,13 @@ impl QueryError {
     #[must_use]
     #[doc(hidden)]
     pub fn with_cleanup_deadline_elapsed(mut self) -> Self {
-        self.0.cleanup_disposition = Some(CleanupDisposition::DeadlineElapsed);
+        self.0.cleanup_deadline_elapsed = true;
         self
     }
 
     #[doc(hidden)]
     pub fn is_cleanup_deadline_elapsed(&self) -> bool {
-        self.0.cleanup_disposition == Some(CleanupDisposition::DeadlineElapsed)
+        self.0.cleanup_deadline_elapsed
     }
 
     /// Adds one machine-readable fact.

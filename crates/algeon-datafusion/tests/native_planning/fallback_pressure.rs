@@ -53,10 +53,7 @@ mod analytical_olap_planning;
 #[path = "../support/tpch_report.rs"]
 mod tpch_report;
 
-use analytical_olap_planning::{
-    ANALYTICAL_OLAP_ADMISSION_EXPECTATIONS, AnalyticalOlapCurrentAdmission, analytical_olap_admission,
-    analytical_olap_datafusion_planning_workload_items,
-};
+use analytical_olap_planning::analytical_olap_datafusion_planning_workload_items;
 use tpch_report::{
     TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_scalar_fallback_pressure_workload_items,
 };

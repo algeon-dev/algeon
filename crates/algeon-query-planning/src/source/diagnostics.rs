@@ -64,11 +64,10 @@ impl SelectedRowGroupStats {
 ///
 /// Diagnostics explain why a source can or cannot use the native direct device
 /// path. They are intentionally structural so adapters and tests can assert on
-/// stable fields instead of parsing displayed plans.
+/// stable fields instead of parsing displayed plans. Every native source reads
+/// Parquet files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostics {
-    /// Source file/data format.
-    pub format: SourceFormat,
     /// Comma-separated high-level Parquet read strategies represented by this source.
     pub source_read_strategy: String,
     /// Comma-separated credential modes represented by this source.
@@ -170,7 +169,6 @@ impl SourceDiagnostics {
         let scan_limit_disposition =
             if columns.scan_limit.is_some() { ScanLimitDisposition::Represented } else { ScanLimitDisposition::Absent };
         Self {
-            format: SourceFormat::Parquet,
             source_read_strategy: summarize_source_read_strategy(files),
             credential_mode: summarize_credential_mode(files),
             lakehouse_cache_status: summarize_lakehouse_cache_status(files),
@@ -480,13 +478,6 @@ impl ScanLimitDisposition {
             Self::Rejected => "rejected",
         }
     }
-}
-
-/// Source format represented by native source metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SourceFormat {
-    /// Apache Parquet files.
-    Parquet,
 }
 
 /// Disposition of a source-level predicate.

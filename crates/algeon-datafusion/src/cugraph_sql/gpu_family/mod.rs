@@ -24,6 +24,7 @@ use super::{
         CugraphAllowedValue, CugraphArgumentDefinition, CugraphArgumentKind, CugraphArgumentType,
         CugraphRelationColumnType, CugraphValueDefinition, CugraphValueRange, arguments_for_algorithm,
     },
+    registry::NATIVE_LOGICAL_ID_TYPE,
     relation_planner::relation_role,
 };
 use crate::{
@@ -662,7 +663,7 @@ fn numeric_endpoint_types(algorithm: CugraphAlgorithm) -> &'static [&'static str
 }
 
 fn logical_string_endpoint_types(algorithm: CugraphAlgorithm) -> &'static [&'static str] {
-    if algorithm.definition().logical_string_contract().is_some() { &LOGICAL_STRING_ENDPOINT_TYPES } else { &[] }
+    if algorithm.definition().supports_logical_string_vertices() { &LOGICAL_STRING_ENDPOINT_TYPES } else { &[] }
 }
 
 /// Arrow dtypes a relation column may carry. Vertex columns of side inputs must
@@ -683,12 +684,12 @@ fn relation_column_data_types(
 }
 
 fn vertex_id_contract(algorithm: CugraphAlgorithm) -> Value {
-    let logical_string = algorithm.definition().logical_string_contract();
+    let logical_string = algorithm.definition().supports_logical_string_vertices();
     json!({
         "numeric_endpoint_types": numeric_endpoint_types(algorithm),
         "logical_string_endpoint_types": logical_string_endpoint_types(algorithm),
-        "logical_string_output_type": logical_string.map(|_| "Utf8"),
-        "native_logical_mapping_type": logical_string.map(|contract| format!("{:?}", contract.native_id_type.data_type())),
+        "logical_string_output_type": logical_string.then_some("Utf8"),
+        "native_logical_mapping_type": logical_string.then(|| format!("{NATIVE_LOGICAL_ID_TYPE:?}")),
         "edge_id_supported_for_logical_string": false,
         "call_specific_authority": "gpu_validate_call",
     })

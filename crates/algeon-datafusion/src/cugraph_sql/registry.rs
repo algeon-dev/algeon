@@ -112,18 +112,9 @@ pub struct CugraphOperationDefinition {
     pub sql_function_name: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum CugraphLogicalNativeIdType {
-    Int64,
-}
-
-impl CugraphLogicalNativeIdType {
-    pub(crate) const fn data_type(self) -> DataType {
-        match self {
-            Self::Int64 => DataType::Int64,
-        }
-    }
-}
+/// Native vertex id type that the per-call codebook assigns to logical
+/// string vertices.
+pub(crate) const NATIVE_LOGICAL_ID_TYPE: DataType = DataType::Int64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CugraphLogicalOutputMultiplicity {
@@ -137,12 +128,6 @@ pub(crate) struct CugraphLogicalOutputColumn {
     pub(crate) name: &'static str,
     pub(crate) nullable: bool,
     pub(crate) multiplicity: CugraphLogicalOutputMultiplicity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct CugraphLogicalStringContract {
-    pub(crate) native_id_type: CugraphLogicalNativeIdType,
-    pub(crate) output_columns: &'static [CugraphLogicalOutputColumn],
 }
 
 const ONE_VERTEX_LOGICAL_OUTPUT: &[CugraphLogicalOutputColumn] = &[CugraphLogicalOutputColumn {
@@ -207,7 +192,7 @@ impl CugraphOperationDefinition {
     /// Whether this SQL function supports logical string vertex IDs through
     /// the shared per-call codebook.
     pub const fn supports_logical_string_vertices(&self) -> bool {
-        self.logical_string_contract().is_some()
+        self.logical_string_output_columns().is_some()
     }
 
     pub(crate) const fn vertex_output_columns(&self) -> &'static [CugraphLogicalOutputColumn] {
@@ -240,15 +225,16 @@ impl CugraphOperationDefinition {
         }
     }
 
-    pub(crate) const fn logical_string_contract(&self) -> Option<CugraphLogicalStringContract> {
+    /// Output columns decoded back to logical strings, or `None` when the
+    /// algorithm does not opt in to logical string vertex mapping.
+    pub(crate) const fn logical_string_output_columns(&self) -> Option<&'static [CugraphLogicalOutputColumn]> {
         if matches!(
             self.algorithm,
             CugraphAlgorithm::MinimumSpanningTree | CugraphAlgorithm::SpectralModularityMaximization
         ) {
             return None;
         }
-        let output_columns = self.vertex_output_columns();
-        Some(CugraphLogicalStringContract { native_id_type: CugraphLogicalNativeIdType::Int64, output_columns })
+        Some(self.vertex_output_columns())
     }
 }
 

@@ -15,7 +15,7 @@ use super::{
     Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan, result_schema_for_params,
     vertex_id_domain_for_call,
 };
-use crate::cugraph_sql::registry::CugraphLogicalOutputColumn;
+use crate::cugraph_sql::registry::{CugraphLogicalOutputColumn, NATIVE_LOGICAL_ID_TYPE};
 
 const LOGICAL_VERTEX_COLUMN: &str = "__vertex_id_str";
 const NATIVE_VERTEX_COLUMN: &str = "__vertex_id";
@@ -51,15 +51,12 @@ pub(super) fn add_logical_mapping_plan(
     predicate_nodes: Vec<NodeId>,
     predicate_schemas: Vec<SchemaRef>,
 ) -> Result<LogicalMappingPlan> {
-    let native_id_type = spec
-        .algorithm
-        .definition()
-        .logical_string_contract()
-        .ok_or_else(|| {
-            plan(format!("cuGraph {} does not opt in to logical string vertex mapping", spec.algorithm.function_name()))
-        })?
-        .native_id_type
-        .data_type();
+    if !spec.algorithm.definition().supports_logical_string_vertices() {
+        return Err(plan(format!(
+            "cuGraph {} does not opt in to logical string vertex mapping",
+            spec.algorithm.function_name()
+        )));
+    }
     let mut mapped_inputs = Vec::new();
     if let Some((batch, column)) = logical_literal_vertex_batch(spec)? {
         let schema = batch.schema();
@@ -79,7 +76,6 @@ pub(super) fn add_logical_mapping_plan(
     }
     for ((node, schema), source) in predicate_nodes.into_iter().zip(predicate_schemas).zip(source_specs) {
         let columns = source
-            .roles
             .into_iter()
             .filter(|role| {
                 matches!(
@@ -123,7 +119,7 @@ pub(super) fn add_logical_mapping_plan(
     );
     let codebook_schema = Arc::new(Schema::new(vec![
         Field::new(LOGICAL_VERTEX_COLUMN, DataType::Utf8, false),
-        Field::new(NATIVE_VERTEX_COLUMN, native_id_type.clone(), false),
+        Field::new(NATIVE_VERTEX_COLUMN, NATIVE_LOGICAL_ID_TYPE, false),
     ]));
     let codebook = builder.add_window(
         sorted,
@@ -142,11 +138,10 @@ pub(super) fn add_logical_mapping_plan(
         &[CUGRAPH_EDGE_SOURCE_COLUMN.to_string(), CUGRAPH_EDGE_DESTINATION_COLUMN.to_string()],
         codebook,
         false,
-        &native_id_type,
     )?;
     let mut encoded_predicates = Vec::with_capacity(mapped_inputs.len());
     for (node, schema, columns) in mapped_inputs {
-        let (encoded, _) = encode_relation_columns(builder, node, schema, &columns, codebook, true, &native_id_type)?;
+        let (encoded, _) = encode_relation_columns(builder, node, schema, &columns, codebook, true)?;
         encoded_predicates.push(encoded);
     }
 
@@ -166,7 +161,7 @@ pub(super) fn decode_logical_graph_result(
     mut root_schema: SchemaRef,
     codebook: NodeId,
 ) -> Result<(NodeId, SchemaRef)> {
-    let contract = spec.algorithm.definition().logical_string_contract().ok_or_else(|| {
+    let logical_output_columns = spec.algorithm.definition().logical_string_output_columns().ok_or_else(|| {
         plan(format!("cuGraph {} does not opt in to logical string vertex mapping", spec.algorithm.function_name()))
     })?;
     let bfs_path_outputs = [
@@ -190,7 +185,7 @@ pub(super) fn decode_logical_graph_result(
         CugraphAlgorithmParams::Bfs(params) if params.output.mode == CugraphBfsOutputMode::Path => {
             bfs_path_outputs.as_slice()
         },
-        _ => contract.output_columns,
+        _ => logical_output_columns,
     };
     for column in output_columns {
         (root, root_schema) =
@@ -231,7 +226,6 @@ fn encode_relation_columns(
     columns: &[String],
     codebook: NodeId,
     preserve_nulls: bool,
-    native_id_type: &DataType,
 ) -> Result<(NodeId, SchemaRef)> {
     for column in columns {
         let field = schema
@@ -264,7 +258,7 @@ fn encode_relation_columns(
                 .filter(|field| Some(field.name().as_str()) != temporary_key)
                 .map(|current| {
                     if current.name() == column {
-                        Field::new(column, native_id_type.clone(), preserve_nulls)
+                        Field::new(column, NATIVE_LOGICAL_ID_TYPE, preserve_nulls)
                     } else {
                         current.as_ref().clone()
                     }

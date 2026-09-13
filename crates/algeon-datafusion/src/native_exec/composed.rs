@@ -510,20 +510,18 @@ impl DisplayAs for AlgeonNativeComposedExec {
         match t {
             DisplayFormatType::Default => write!(
                 f,
-                "AlgeonNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
+                "AlgeonNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
                 self.plan.node_count(),
                 self.gpu_inputs.len(),
                 self.execution_config.memory_control_policy(),
-                self.execution_config.boundary_policy(),
                 self.plan.contains_edge_normalize(),
             ),
             DisplayFormatType::Verbose => write!(
                 f,
-                "AlgeonNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
+                "AlgeonNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
                 self.plan.node_count(),
                 self.gpu_inputs.len(),
                 self.execution_config.memory_control_policy(),
-                self.execution_config.boundary_policy(),
                 self.plan.contains_edge_normalize(),
                 native_plan_one_line(&self.plan),
             ),
@@ -533,7 +531,6 @@ impl DisplayAs for AlgeonNativeComposedExec {
                 writeln!(f, "sink=host_arrow")?;
                 writeln!(f, "native_pipeline_execution_mode=bounded")?;
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
-                writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "input_boundary=gpu_resident")?;
                 writeln!(f, "output_boundary=device_to_host")?;
                 writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())?;

@@ -26,8 +26,8 @@ use arrow::{
 };
 use cudf::{
     AggSpec as CudfAggSpec, BudgetedExecutionOutcome, DataFrame, DuplicateKeepOption, ExecutionBudgetRequest,
-    ExecutionBudgetToken, ExecutionOverrides, GroupByAgg, GroupByOptions, ReduceAgg, Runtime,
-    ShiftSpec as CudfShiftSpec, SortOptions as CudfSortOptions,
+    ExecutionBudgetToken, ExecutionOverrides, GroupByAgg, GroupByOptions, ReduceAgg, ShiftSpec as CudfShiftSpec,
+    SortOptions as CudfSortOptions,
     core::Scalar as CudfScalar,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
     io::source::SourceReadMode,
@@ -57,7 +57,7 @@ pub(crate) use bounded::pipeline::YieldedFrameCounterTestHarness;
 #[doc(hidden)]
 pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledTaskExecutor, CompiledTaskOutput, LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched,
+    CompiledTaskExecutor, LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched,
 };
 use edge_normalize::execute_edge_normalize;
 #[cfg(feature = "test-hooks")]
@@ -115,7 +115,7 @@ use crate::{
     prepared::*,
     rapids_backend::rapids_analysis_context,
     runtime::{
-        DevicePlacement, ExecutionContext, MemoryControlPolicy, ReservationKind, RetryFacts,
+        ExecutionContext, MemoryControlPolicy, ReservationKind, RetryFacts,
         resident::{
             GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
         },
@@ -164,51 +164,19 @@ static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 ///
 /// `hash_join_builds` memorizes reusable cuDF hash-join artifacts for repeated
 /// probes against the same build node, build keys, and null-equality contract.
-/// The repository retains the query runtime and device placement that produced
-/// the artifacts, and is released with this scratch object at query end.
-/// Bounded execution does not use this repository: each bounded join builds its
+/// Each handle retains the query runtime that produced it, and the map is
+/// released with this scratch object at query end.
+/// Bounded execution does not use this map: each bounded join builds its
 /// own `GpuHashJoinBuildHandle` and observes the retained bytes after the build
 /// (see `bounded::join::hash::build_bounded_hash_join`).
 pub(super) struct ExecutionScratch {
     node_results: HashMap<NodeId, GpuDataFrame>,
-    hash_join_builds: HashJoinBuildRepository,
+    hash_join_builds: HashMap<HashJoinCacheKey, GpuHashJoinBuildHandle>,
 }
 
 impl ExecutionScratch {
-    pub(super) fn new(context: &ExecutionContext) -> Result<Self> {
-        Ok(Self {
-            node_results: HashMap::new(),
-            hash_join_builds: HashJoinBuildRepository::new(context.shared_runtime()?, context.device_placement()),
-        })
-    }
-}
-
-// Per-query cache of reusable cuDF hash-join builds for repeated probes.
-pub(super) struct HashJoinBuildRepository {
-    runtime: Arc<Runtime>,
-    device_placement: DevicePlacement,
-    cache: HashMap<HashJoinCacheKey, GpuHashJoinBuildHandle>,
-}
-
-impl HashJoinBuildRepository {
-    fn new(runtime: Arc<Runtime>, device_placement: DevicePlacement) -> Self {
-        Self { runtime, device_placement, cache: HashMap::new() }
-    }
-
-    pub(super) fn get(&self, key: &HashJoinCacheKey) -> Option<&GpuHashJoinBuildHandle> {
-        debug_assert_eq!(
-            self.device_placement,
-            DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
-        );
-        self.cache.get(key)
-    }
-
-    pub(super) fn insert(&mut self, key: HashJoinCacheKey, hash_join: GpuHashJoinBuildHandle) {
-        debug_assert_eq!(
-            self.device_placement,
-            DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
-        );
-        self.cache.insert(key, hash_join);
+    pub(super) fn new() -> Self {
+        Self { node_results: HashMap::new(), hash_join_builds: HashMap::new() }
     }
 }
 
@@ -352,13 +320,7 @@ fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &Q
 }
 
 fn query_metrics(context: &ExecutionContext, query_id: QueryId, trace_id: Option<TraceId>) -> QueryMetrics {
-    QueryMetrics {
-        query_id,
-        trace_id,
-        memory_control_policy: context.memory_control_policy(),
-        execution_boundary_policy: context.boundary_policy(),
-        ..Default::default()
-    }
+    QueryMetrics { query_id, trace_id, memory_control_policy: context.memory_control_policy(), ..Default::default() }
 }
 
 fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> QueryError {
@@ -391,7 +353,7 @@ fn execute_query_plan_output(
     let output = if context.memory_control_policy().is_bounded() {
         execute_bounded_query_plan(context, plan, bounded_admission, gpu_inputs, metrics, observation_scope)?
     } else {
-        let mut scratch = ExecutionScratch::new(context)?;
+        let mut scratch = ExecutionScratch::new();
         let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
         match plan.sink() {
             ResultSink::GpuResident { .. } => Output::GpuResident(gpu_result_handle(context, plan, frame)?),

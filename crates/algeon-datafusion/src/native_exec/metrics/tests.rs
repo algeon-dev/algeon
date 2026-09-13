@@ -88,7 +88,7 @@ fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     assert_eq!(recording_names, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES);
     assert_eq!(
         recording_names.len(),
-        105,
+        101,
         "the ordered public metric count must include the sealed-attempt and graph-claim calibration rows"
     );
 

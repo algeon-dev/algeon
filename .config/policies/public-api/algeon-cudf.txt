@@ -4807,12 +4807,6 @@ pub cudf::io::source::SourceColumnRef::ZeroColumnCount
 pub enum cudf::io::source::SourceColumnRole
 pub cudf::io::source::SourceColumnRole::Output
 pub cudf::io::source::SourceColumnRole::PureFilter
-pub enum cudf::io::source::SourceFormat
-pub cudf::io::source::SourceFormat::Parquet
-impl cudf::io::source::SourceFormat
-pub const fn cudf::io::source::SourceFormat::as_str(self) -> &'static str
-impl core::fmt::Display for cudf::io::source::SourceFormat
-pub fn cudf::io::source::SourceFormat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cudf::io::source::SourceReadMode
 pub cudf::io::source::SourceReadMode::ExecutionFrame
 pub cudf::io::source::SourceReadMode::FinalOutput
@@ -4979,7 +4973,6 @@ impl cudf::io::source::SourceDiagnostics
 pub fn cudf::io::source::SourceDiagnostics::byte_range_disposition(&self) -> cudf::io::source::ByteRangeDisposition
 pub fn cudf::io::source::SourceDiagnostics::direct_device_read(&self) -> bool
 pub fn cudf::io::source::SourceDiagnostics::file_count(&self) -> usize
-pub fn cudf::io::source::SourceDiagnostics::format(&self) -> cudf::io::source::SourceFormat
 pub fn cudf::io::source::SourceDiagnostics::known_bytes(&self) -> core::option::Option<u64>
 pub fn cudf::io::source::SourceDiagnostics::output_column_count(&self) -> usize
 pub fn cudf::io::source::SourceDiagnostics::partition_column_disposition(&self) -> cudf::io::source::PartitionColumnDisposition
@@ -6565,10 +6558,6 @@ pub cudf::runtime::ExecutionBudgetEnforcement::ReservationArenaMember
 pub cudf::runtime::ExecutionBudgetEnforcement::StreamBoundReservation
 impl cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetEnforcement::as_str(self) -> &'static str
-#[non_exhaustive] pub enum cudf::runtime::ExecutionBudgetStatus
-pub cudf::runtime::ExecutionBudgetStatus::ReservationEnforced
-impl cudf::ExecutionBudgetStatus
-pub fn cudf::ExecutionBudgetStatus::as_str(self) -> &'static str
 #[non_exhaustive] pub enum cudf::runtime::QueryStageKind
 pub cudf::runtime::QueryStageKind::FinalMaterialize
 pub cudf::runtime::QueryStageKind::InteropExport
@@ -6741,7 +6730,6 @@ pub fn cudf::ExecutionBudgetReport::output_bytes(&self) -> core::option::Option<
 pub fn cudf::ExecutionBudgetReport::output_rows(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::request(&self) -> &cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetReport::retained_bytes(&self) -> core::option::Option<usize>
-pub fn cudf::ExecutionBudgetReport::status(&self) -> cudf::ExecutionBudgetStatus
 pub struct cudf::runtime::ExecutionBudgetRequest
 impl cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetRequest::boundary(&self) -> &str
@@ -7114,10 +7102,6 @@ pub cudf::ExecutionBudgetEnforcement::ReservationArenaMember
 pub cudf::ExecutionBudgetEnforcement::StreamBoundReservation
 impl cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetEnforcement::as_str(self) -> &'static str
-#[non_exhaustive] pub enum cudf::ExecutionBudgetStatus
-pub cudf::ExecutionBudgetStatus::ReservationEnforced
-impl cudf::ExecutionBudgetStatus
-pub fn cudf::ExecutionBudgetStatus::as_str(self) -> &'static str
 pub enum cudf::Expr
 pub cudf::Expr::Alias
 pub cudf::Expr::Alias::inner: alloc::boxed::Box<cudf::Expr>
@@ -8253,7 +8237,6 @@ pub fn cudf::ExecutionBudgetReport::output_bytes(&self) -> core::option::Option<
 pub fn cudf::ExecutionBudgetReport::output_rows(&self) -> core::option::Option<usize>
 pub fn cudf::ExecutionBudgetReport::request(&self) -> &cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetReport::retained_bytes(&self) -> core::option::Option<usize>
-pub fn cudf::ExecutionBudgetReport::status(&self) -> cudf::ExecutionBudgetStatus
 pub struct cudf::ExecutionBudgetRequest
 impl cudf::ExecutionBudgetRequest
 pub fn cudf::ExecutionBudgetRequest::boundary(&self) -> &str

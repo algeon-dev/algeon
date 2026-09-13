@@ -10,7 +10,7 @@ fn yielded_frame_explicit_release_decrements_live_counter_once() {
     let mut yielded = harness.yield_bytes(64);
     assert_eq!(harness.live_bytes(), 64);
 
-    yielded.take_for_release();
+    yielded.take_for_release("yielded_frame test double release");
     assert_eq!(harness.live_bytes(), 0);
 
     drop(yielded);
@@ -39,10 +39,11 @@ fn yielded_frame_double_release_panics_without_double_decrement() {
     let mut yielded = harness.yield_bytes(256);
     assert_eq!(harness.live_bytes(), 256);
 
-    yielded.take_for_release();
+    yielded.take_for_release("yielded_frame test double release");
     assert_eq!(harness.live_bytes(), 0);
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| yielded.take_for_release()));
+    let result =
+        panic::catch_unwind(AssertUnwindSafe(|| yielded.take_for_release("yielded_frame test double release")));
     assert!(result.is_err(), "second release should panic");
     assert_eq!(harness.live_bytes(), 0);
 }
@@ -55,10 +56,10 @@ fn yielded_frame_multiple_yields_release_independently() {
     let mut third = harness.yield_bytes(23);
     assert_eq!(harness.live_bytes(), 51);
 
-    second.take_for_release();
+    second.take_for_release("yielded_frame test double release");
     assert_eq!(harness.live_bytes(), 34);
-    first.take_for_release();
+    first.take_for_release("yielded_frame test double release");
     assert_eq!(harness.live_bytes(), 23);
-    third.take_for_release();
+    third.take_for_release("yielded_frame test double release");
     assert_eq!(harness.live_bytes(), 0);
 }

@@ -45,7 +45,7 @@ fn format_dynamic_filter_route(route: &DynamicFilterRoute, f: &mut fmt::Formatte
     let padding = "  ".repeat(indent);
     writeln!(
         f,
-        "{padding}{} DynamicFilterRoute producer_kind={} producer_node={} consumer_kind={} consumer_node={} producer_columns={} consumer_columns={} filter_kinds={} consumer_lowering={} consumer_reduction_stage={} readiness={}",
+        "{padding}{} DynamicFilterRoute producer_kind={} producer_node={} consumer_kind={} consumer_node={} producer_columns={} consumer_columns={} filter_kinds={} consumer_lowering={} consumer_reduction_stage={} readiness=producer_complete_before_consumer",
         route.id,
         route.producer.kind(),
         route.producer.node_id(),
@@ -56,7 +56,6 @@ fn format_dynamic_filter_route(route: &DynamicFilterRoute, f: &mut fmt::Formatte
         route.filter_kinds.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
         route.consumer_lowering,
         route.consumer_reduction_stage(),
-        route.readiness,
     )
 }
 
@@ -84,14 +83,13 @@ impl QueryNode {
                     );
                     writeln!(
                         f,
-                        "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} row_group_stats={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} max_rows={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
+                        "{padding}{} LocalParquetSource files={} path={} format=Parquet direct_device_read={} known_bytes={} selected_row_groups={} row_group_stats={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} max_rows={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
                         self.id,
                         source.diagnostics.file_count,
                         source
                             .files
                             .first()
                             .map_or_else(|| "none".to_string(), |file| file.location.diagnostic_location()),
-                        source.diagnostics.format,
                         source.diagnostics.direct_device_read,
                         source.diagnostics.known_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
                         source
