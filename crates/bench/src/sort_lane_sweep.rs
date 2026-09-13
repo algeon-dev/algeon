@@ -64,8 +64,8 @@ const HEAVY_SQL: &str = "SELECT k, v FROM a UNION ALL SELECT k, v FROM b ORDER B
 const LIGHT_SQL: &str = "SELECT COUNT(*) AS n, SUM(v) AS s FROM a WHERE k > 0";
 #[cfg(feature = "cugraph")]
 const GRAPH_SQL: &str =
-    "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank('edges', 'src', 'dst', 'weight')";
-const VECTOR_SQL: &str = r#"SELECT COUNT(*) AS n, SUM(neighbor_id) AS total FROM cuvs_brute_force_knn((SELECT item_id, d0, d1 FROM dataset_vectors), (SELECT query_id, d0, d1 FROM query_vectors), '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":5,"metric":"l2_sqrt_expanded"}')"#;
+    "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM edges))";
+const VECTOR_SQL: &str = r#"SELECT COUNT(*) AS n, SUM(neighbor_id) AS total FROM cuvs_brute_force_knn(dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), k => 5, metric => 'l2_sqrt_expanded')"#;
 
 const MIXED_ROUNDS: usize = 5;
 

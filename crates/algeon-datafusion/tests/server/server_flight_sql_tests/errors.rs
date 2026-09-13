@@ -169,7 +169,10 @@ async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
     .await;
 
     let flight_info = client
-        .execute("SELECT * FROM cugraph_pagerank('feature_off_cugraph_edges')".to_string(), None)
+        .execute(
+            "SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM feature_off_cugraph_edges))".to_string(),
+            None,
+        )
         .await
         .expect("the enabled feature-off frontend must issue a statement ticket");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();

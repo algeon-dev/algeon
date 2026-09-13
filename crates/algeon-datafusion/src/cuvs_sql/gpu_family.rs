@@ -14,7 +14,10 @@ use datafusion::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{CUVS_OPERATION_REGISTRY, CuvsLogicalNode, CuvsOperation, CuvsOutputContract, CuvsRelationRole};
+use super::{
+    CUVS_OPERATION_REGISTRY, CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsOutputContract, CuvsRelationRole,
+    options::options_from_named_values,
+};
 use crate::{
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{
@@ -113,13 +116,32 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             }
         }
 
-        let options_json = request.options.to_string();
+        let option_values = request.options.as_object().cloned().unwrap_or_default();
+        let options_json = match options_from_named_values(operation, &inputs, option_values) {
+            Ok(options_json) => options_json,
+            Err(error) => {
+                let mut details = base_details(operation, relation_details);
+                let (error_code, message) = validation_error(&error);
+                details["validation_error_code"] = Value::String(error_code.clone());
+                return GpuCallValidation {
+                    valid: false,
+                    error_code: Some(error_code),
+                    message,
+                    function_name: operation.descriptor().sql_function_name.to_string(),
+                    relations_resolved: true,
+                    normalized_call: request.normalized_json(),
+                    output_schema: json!({}),
+                    would_execute_gpu: false,
+                    details,
+                };
+            },
+        };
         match CuvsLogicalNode::try_new(operation, inputs, &options_json) {
             Ok(node) => {
                 let canonical_options: Value = serde_json::from_str(node.validated_options().canonical_json())
                     .expect("canonical cuVS options are valid JSON");
                 let mut normalized = request.clone();
-                normalized.options = canonical_options;
+                normalized.options = canonical_value_options(operation, &canonical_options);
                 let mut details = base_details(operation, relation_details);
                 details["output_contract"] =
                     Value::String(output_contract_name(operation.descriptor().output_contract).to_string());
@@ -166,26 +188,38 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                 "name": role.as_str(),
                 "required": true,
                 "reference": {"type": "table"},
+                "fields": {
+                    "id": {
+                        "required": true,
+                        "nullable": false,
+                        "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]
+                    },
+                    "features": {
+                        "one_of": [
+                            {
+                                "shape": "wide",
+                                "rule": "Every non-id field is a non-null Float32 feature; projection order defines vector dimension order."
+                            },
+                            {
+                                "shape": "list",
+                                "field": "vector",
+                                "rule": "The non-null vector field is FixedSizeList<Float32>, List<Float32>, or LargeList<Float32>, with no other non-id fields."
+                            }
+                        ]
+                    }
+                },
                 "description": role.description(),
             })
         })
         .collect::<Vec<_>>();
-    let options_schema = descriptor.options_json_schema();
+    let options_schema = value_options_schema(operation);
     GpuFunctionDescriptor {
         function_name: descriptor.sql_function_name.to_string(),
         provider: CUVS_PROVIDER.to_string(),
         signature: signature(operation),
         summary: descriptor.summary.to_string(),
         relation_roles: Value::Array(relation_roles),
-        argument_descriptions: json!([
-            {
-                "name": "options_json",
-                "position": descriptor.relation_roles.len() + 1,
-                "type": "JSON string literal",
-                "required": true,
-                "description": "cuVS operation options and relation-column bindings"
-            }
-        ]),
+        argument_descriptions: argument_descriptions(operation),
         options_schema,
         result_schemas: result_schemas(operation),
         validation_request_schema: validation_request_schema(descriptor.relation_roles),
@@ -196,15 +230,71 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
 }
 
 fn signature(operation: CuvsOperation) -> String {
-    let roles = operation
-        .descriptor()
+    let descriptor = operation.descriptor();
+    let arguments = descriptor
         .relation_roles
         .iter()
-        .map(|role| format!("({} relation subquery)", role.as_str()))
-        .chain(std::iter::once("options_json".to_string()))
+        .map(|role| format!("{} => (relation subquery)", role.as_str()))
+        .chain(
+            descriptor
+                .options
+                .iter()
+                .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+                .map(|option| format!("{} => value", option.name)),
+        )
         .collect::<Vec<_>>()
         .join(", ");
-    format!("{}({roles})", operation.descriptor().sql_function_name)
+    format!("{}({arguments})", descriptor.sql_function_name)
+}
+
+fn value_options_schema(operation: CuvsOperation) -> Value {
+    let mut schema = operation.descriptor().options_json_schema();
+    let object = schema.as_object_mut().expect("cuVS options schema is an object");
+    let properties = object
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("cuVS options schema properties are an object");
+    for role in operation.descriptor().relation_roles {
+        properties.remove(role.as_str());
+    }
+    let required =
+        object.get_mut("required").and_then(Value::as_array_mut).expect("cuVS options schema required is an array");
+    required.retain(|name| {
+        name.as_str().is_none_or(|name| !operation.descriptor().relation_roles.iter().any(|role| role.as_str() == name))
+    });
+    schema
+}
+
+fn argument_descriptions(operation: CuvsOperation) -> Value {
+    Value::Array(
+        operation
+            .descriptor()
+            .options
+            .iter()
+            .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+            .map(|option| {
+                json!({
+                    "name": option.name,
+                    "required": option.required,
+                    "description": option.description,
+                    "schema": value_options_schema(operation)["properties"][option.name].clone(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn canonical_value_options(operation: CuvsOperation, canonical: &Value) -> Value {
+    let canonical = canonical.as_object().expect("canonical cuVS options are an object");
+    Value::Object(
+        operation
+            .descriptor()
+            .options
+            .iter()
+            .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+            .filter_map(|option| canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value)))
+            .collect(),
+    )
 }
 
 fn result_schemas(operation: CuvsOperation) -> Value {
@@ -250,9 +340,8 @@ fn validation_request_schema(roles: &[CuvsRelationRole]) -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema_version", "relations", "options"],
+        "required": ["relations", "options"],
         "properties": {
-            "schema_version": {"const": 1},
             "relations": {
                 "type": "object",
                 "additionalProperties": false,
@@ -261,7 +350,7 @@ fn validation_request_schema(roles: &[CuvsRelationRole]) -> Value {
             },
             "options": {
                 "type": "object",
-                "description": "cuVS operation options and relation-column bindings. See options_schema_json."
+                "description": "Named cuVS value arguments. Relation bindings are derived from the resolved relation schemas."
             },
         }
     })
@@ -271,17 +360,13 @@ fn examples(operation: CuvsOperation) -> Value {
     let descriptor = operation.descriptor();
     let options = match operation {
         CuvsOperation::BruteForceKnn => json!({
-            "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-            "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
             "k": 8,
             "metric":"l2_expanded"
         }),
         CuvsOperation::KMeans => json!({
-            "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
             "n_clusters": 8
         }),
         CuvsOperation::Pca => json!({
-            "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
             "n_components": 2
         }),
     };
@@ -299,7 +384,7 @@ fn examples(operation: CuvsOperation) -> Value {
         },
         "validation": {
             "function_name": descriptor.sql_function_name,
-            "call": {"schema_version": 1, "relations": relations, "options": options}
+            "call": {"relations": relations, "options": options}
         }
     }])
 }

@@ -49,7 +49,8 @@ connection to the rest of the field runs through a decades-older one.
 SELECT pa.year AS year_a, substr(pa.title, 1, 38) AS paper_a,
        pb.year AS year_b, substr(pb.title, 1, 38) AS paper_b,
        ABS(pa.year - pb.year) AS gap
-FROM cugraph_minimum_spanning_tree('ai_era_edges', 'src', 'dst', 'year_gap') m
+FROM cugraph_minimum_spanning_tree(
+  edges => (SELECT src, dst, year_gap AS weight FROM ai_era_edges)) m
 JOIN ai_era_vertex_ids va ON va.vid = m.src
 JOIN ai_era_vertex_ids vb ON vb.vid = m.dst
 JOIN papers pa ON pa.paper_id = va.paper_id

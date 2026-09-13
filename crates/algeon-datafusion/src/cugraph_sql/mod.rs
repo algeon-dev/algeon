@@ -1,27 +1,29 @@
-//! SQL-facing cuGraph table-function contracts.
+//! Relation-aware cuGraph SQL planning and execution contracts.
 //!
-//! This family recognizes table-function calls in `parser`, resolves their
-//! named relations through `table_function`, and executes native graph plans
-//! through `exec`. Registry identity, option validation, call types, and GPU
-//! metadata remain separate owners even though planning begins at the table
-//! provider rather than a relation-aware logical node.
+//! The adapter binds named relation and value arguments, validates canonical
+//! child schemas, and lowers one logical graph node through the shared Algeon
+//! query planner. Native graph IR and device execution remain owned below this
+//! DataFusion boundary.
 
 #[cfg(all(test, feature = "cugraph"))]
 #[path = "composed_planning_tests.rs"]
 mod composed_planning_tests;
+mod definitions;
 mod error;
 #[cfg(feature = "cugraph")]
 mod exec;
 mod gpu_family;
+mod logical;
 mod options;
 /// Registry of cuGraph parity specs shared by parity tests and oracle-refresh tooling.
 /// Hidden from the normal report contract; enable the `bench-support` feature to use it.
 #[cfg(feature = "bench-support")]
 #[doc(hidden)]
 pub mod parity;
-mod parser;
+mod planning;
+mod query_planner;
 mod registry;
-mod table_function;
+mod relation_planner;
 mod types;
 #[cfg(not(feature = "cugraph"))]
 use error::feature_disabled as cugraph_feature_disabled;
@@ -31,7 +33,9 @@ pub use exec::CugraphAlgoExec;
 #[cfg(feature = "cugraph")]
 pub(crate) use exec::native_graph_input_execution_plan;
 pub(crate) use gpu_family::CugraphGpuFunctionFamily;
-pub use parser::parse_cugraph_algorithm_spec;
+pub(crate) use logical::{CugraphLogicalNode, CugraphRelationRole};
+pub(crate) use planning::is_feature_disabled_execution_plan;
+pub(crate) use query_planner::CugraphExtensionPlanner;
 #[cfg(feature = "cugraph")]
 pub(crate) use registry::CugraphLogicalOutputMultiplicity;
 pub use registry::{
@@ -46,9 +50,17 @@ pub use registry::{
     CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
     CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgorithm, CugraphOperationDefinition,
 };
+pub(crate) use relation_planner::cugraph_relation_planner;
+pub(crate) use types::{
+    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CugraphVertexIdDomain,
+    PredicateSourceColumnRole, PredicateSourceSpec, result_schema_for_vertex_domain,
+    validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+};
 #[cfg(feature = "cugraph")]
-pub use table_function::CugraphAlgoTableProvider;
-pub(crate) use table_function::{cugraph_table_functions, is_feature_disabled_execution_plan};
+pub(crate) use types::{
+    CUGRAPH_EDGE_WEIGHT_COLUMN, CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN,
+    CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN, CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN,
+};
 pub use types::{
     CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessCentralityParams, CugraphBetweennessSeeds,
     CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsPredicateInputs, CugraphBfsSource,
@@ -60,11 +72,6 @@ pub use types::{
     CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
     CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphPageRankPersonalizationTable,
     CugraphPersonalizedPageRankParams, CugraphSccParams, CugraphSimilarityParams, CugraphSpectralClusteringParams,
-    CugraphSqlConfig, CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphVertexPairTable,
-    CugraphVertexSelector, CugraphWccParams, GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params,
-    stable_result_schema,
-};
-pub(crate) use types::{
-    CugraphVertexIdDomain, PredicateSourceColumnRole, PredicateSourceSpec, result_schema_for_vertex_domain,
-    validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+    CugraphSqlConfig, CugraphSsspParams, CugraphTriangleCountAllParams, CugraphVertexPairTable, CugraphVertexSelector,
+    CugraphWccParams, GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params, stable_result_schema,
 };

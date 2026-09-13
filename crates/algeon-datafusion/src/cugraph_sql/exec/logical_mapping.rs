@@ -7,12 +7,13 @@ use arrow::{
 use query_engine::plan::NodeId;
 
 use super::{
-    AggregateSpec, ColumnRef, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds,
-    CugraphBfsOutputMode, CugraphBfsParams, CugraphBfsSourceVertex, CugraphLogicalOutputMultiplicity,
-    CugraphVertexSelector, DataFusionError, DataType, Error, ErrorCode, GraphAlgorithm, GraphAlgorithmParams,
-    GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LiteralBatchSource, NativeExpr,
-    PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result, Schema, SchemaRef, SortExpr,
-    SortSpec, SourceNode, WindowFunction, WindowSpec, plan_error, result_schema_for_params, vertex_id_domain_for_call,
+    AggregateSpec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, ColumnRef, CugraphAlgorithmParams,
+    CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsParams, CugraphBfsSourceVertex,
+    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, DataFusionError, DataType, Error, ErrorCode,
+    GraphAlgorithm, GraphAlgorithmParams, GraphBfsParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
+    LiteralBatchSource, NativeExpr, PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result,
+    Schema, SchemaRef, SortExpr, SortSpec, SourceNode, WindowFunction, WindowSpec, plan_error,
+    result_schema_for_params, vertex_id_domain_for_call,
 };
 use crate::cugraph_sql::registry::CugraphLogicalOutputColumn;
 
@@ -28,11 +29,11 @@ pub(super) struct LogicalMappingPlan {
 }
 
 pub(super) fn graph_uses_logical_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<bool> {
-    let source = edge_schema.field_with_name(&spec.src_col).map_err(|_| {
-        plan_error(format!("cuGraph logical vertex mapping could not find edge column '{}'", spec.src_col))
-    })?;
-    let destination = edge_schema.field_with_name(&spec.dst_col).map_err(|_| {
-        plan_error(format!("cuGraph logical vertex mapping could not find edge column '{}'", spec.dst_col))
+    let source = edge_schema
+        .field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN)
+        .map_err(|_| plan_error("cuGraph logical vertex mapping could not find canonical edge source column 'src'"))?;
+    let destination = edge_schema.field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN).map_err(|_| {
+        plan_error("cuGraph logical vertex mapping could not find canonical edge destination column 'dst'")
     })?;
     Ok(vertex_id_domain_for_call(spec.algorithm, &spec.params, source.data_type(), destination.data_type())?
         .is_string_logical())
@@ -81,15 +82,29 @@ pub(super) fn add_logical_mapping_plan(
     }
     for ((node, schema), source) in predicate_nodes.into_iter().zip(predicate_schemas).zip(source_specs) {
         let columns = source
-            .columns
+            .roles
             .into_iter()
-            .filter(|column| column.role == PredicateSourceColumnRole::Vertex)
-            .map(|column| column.name)
+            .filter(|role| {
+                matches!(
+                    role,
+                    PredicateSourceColumnRole::Vertex
+                        | PredicateSourceColumnRole::Source
+                        | PredicateSourceColumnRole::Destination
+                        | PredicateSourceColumnRole::FirstVertex
+                        | PredicateSourceColumnRole::SecondVertex
+                )
+            })
+            .map(PredicateSourceColumnRole::canonical_name)
+            .map(str::to_string)
             .collect();
         mapped_inputs.push((node, schema, columns));
     }
 
-    let mut domain_sources = vec![(edge, Arc::clone(&edge_schema), vec![spec.src_col.clone(), spec.dst_col.clone()])];
+    let mut domain_sources = vec![(
+        edge,
+        Arc::clone(&edge_schema),
+        vec![CUGRAPH_EDGE_SOURCE_COLUMN.to_string(), CUGRAPH_EDGE_DESTINATION_COLUMN.to_string()],
+    )];
     domain_sources.extend(mapped_inputs.iter().cloned());
     let codebook_schema = Arc::new(Schema::new(vec![Field::new(LOGICAL_VERTEX_COLUMN, DataType::Utf8, false)]));
     let branches = domain_sources
@@ -127,7 +142,7 @@ pub(super) fn add_logical_mapping_plan(
         builder,
         edge,
         edge_schema,
-        &[spec.src_col.clone(), spec.dst_col.clone()],
+        &[CUGRAPH_EDGE_SOURCE_COLUMN.to_string(), CUGRAPH_EDGE_DESTINATION_COLUMN.to_string()],
         codebook,
         false,
         &native_id_type,

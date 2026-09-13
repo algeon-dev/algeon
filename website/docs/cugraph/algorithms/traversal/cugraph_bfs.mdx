@@ -17,61 +17,61 @@ Visit reachable vertices in increasing unweighted hop distance from one or more 
 ## Signature
 
 ```sql
-cugraph_bfs(table_name, source_vertex_or_vertices [, src_col, dst_col [, weight_col [, options_json]]])
+cugraph_bfs(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, sources => (relation subquery), include_vertices => (relation subquery), exclude_vertices => (relation subquery), target_vertices => (relation subquery), include_edge_ids => (relation subquery), include_edges => (relation subquery), source_vertex => value, source_vertices => value, depth_limit => value, output_mode => value, return_target_info => value)
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`, and starts from source vertex `123`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, and starts from source vertex `123`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{"depth_limit":4}');
+SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4);
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
+
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `sources` | no | vertex | optional BFS source relation; exactly one of sources, source_vertex, and source_vertices is required |
+| `include_vertices` | no | vertex | vertices retained by BFS predicate filtering |
+| `exclude_vertices` | no | vertex | vertices removed by BFS predicate filtering |
+| `target_vertices` | no | vertex | BFS target vertices required for path output or target information |
+| `include_edge_ids` | no | edge_id | edge identifiers retained by BFS predicate filtering |
+| `include_edges` | no | src, dst, edge_id (optional) | edge predicate relation with src, dst, and optional edge_id columns |
 
 Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
 Logical string side-input limitations:
 
 - edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
-- string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col
+- string logical vertex-domain BFS rejects edges.edge_id and edge-id predicate relations
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `sources` | no | vertex | optional BFS source relation; exactly one of sources, source_vertex, and source_vertices is required |
+| `include_vertices` | no | vertex | vertices retained by BFS predicate filtering |
+| `exclude_vertices` | no | vertex | vertices removed by BFS predicate filtering |
+| `target_vertices` | no | vertex | BFS target vertices required for path output or target information |
+| `include_edge_ids` | no | edge_id | edge identifiers retained by BFS predicate filtering |
+| `include_edges` | no | src, dst, edge_id (optional) | edge predicate relation with src, dst, and optional edge_id columns |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `source_vertex_or_vertices` | `Int64\|Utf8\|List<Int64>\|List<Utf8>\|null-with-source_vertices_table` | yes |  | selector: literal scalar/list source selector, or NULL with source_vertices_table/source_vertex_col options |
-| `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding but ignored by BFS traversal; semantic effect: none for traversal; BFS distance is a hop count |
-
-### JSON options
+### Named value arguments
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `depth_limit` | `Int64\|null` | `null` | min 0 | Maximum BFS depth in hops; null means unbounded traversal. |
-| `edge_id_col` | `Utf8\|null` | `null` | valid when integer vertex domain only | Edge-id column in the edge relation used by edge-id predicate options. |
-| `exclude_vertex_col` | `Utf8\|null` | `null` | required when exclude_vertices_table is set; column of `exclude_vertices_table`; type ref `vertex_domain` | Column in exclude_vertices_table containing excluded vertex identifiers. |
-| `exclude_vertices_table` | `Utf8\|null` | `null` | side input (exclude_vertices, cols: `exclude_vertex_col`) | Optional relation containing the vertex denylist. |
-| `include_edge_dst_col` | `Utf8\|null` | `null` | required when include_edges_table is set; column of `include_edges_table`; type ref `vertex_domain` | Destination endpoint column in include_edges_table. |
-| `include_edge_id_col` | `Utf8\|null` | `null` | valid when edge_id_col is set; column of `include_edges_table`; type ref `edge_id_domain` | Optional edge-id column in include_edges_table; when omitted, include_edges matching uses only endpoint columns. |
-| `include_edge_ids_col` | `Utf8\|null` | `null` | defaults to edge_id_col when omitted and include_edge_ids_table is set; column of `include_edge_ids_table`; type ref `edge_id_domain` | Column in include_edge_ids_table containing allowed edge identifiers. |
-| `include_edge_ids_table` | `Utf8\|null` | `null` | required with `edge_id_col`; side input (include_edge_ids, cols: `include_edge_ids_col`) | Optional relation containing allowed edge identifiers. |
-| `include_edge_src_col` | `Utf8\|null` | `null` | required when include_edges_table is set; column of `include_edges_table`; type ref `vertex_domain` | Source endpoint column in include_edges_table. |
-| `include_edges_table` | `Utf8\|null` | `null` | side input (include_edges, cols: `include_edge_src_col`, `include_edge_dst_col`, `include_edge_id_col`) | Optional relation containing allowed edge endpoints and, when edge_id_col is configured, optional edge identifiers. |
-| `include_vertex_col` | `Utf8\|null` | `null` | required when include_vertices_table is set; column of `include_vertices_table`; type ref `vertex_domain` | Column in include_vertices_table containing allowed vertex identifiers. |
-| `include_vertices_table` | `Utf8\|null` | `null` | side input (include_vertices, cols: `include_vertex_col`) | Optional relation containing the vertex allowlist. |
-| `output_mode` | `Utf8` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | Selects the BFS result shape: raw traversal rows, normalized reachability rows, or one reconstructed source-to-target path. |
-| `return_target_info` | `Boolean` | `false` | valid when output_mode in [raw, normalized] | Adds target_found and target_distance columns when target_vertices_table is supplied. |
-| `source_vertex_col` | `Utf8\|null` | `null` | required with `source_vertices_table`; column of `source_vertices_table`; type ref `vertex_domain` | Column in source_vertices_table containing BFS source vertex identifiers. |
-| `source_vertices_table` | `Utf8\|null` | `null` | required with `source_vertex_col`; side input (source_vertices, cols: `source_vertex_col`) | Optional relation containing BFS source vertices. Use source_vertex=NULL in the positional SQL argument when this option is set. |
-| `target_vertex_col` | `Utf8\|null` | `null` | required when output_mode=path or return_target_info=true; column of `target_vertices_table`; type ref `vertex_domain` | Column in target_vertices_table containing target vertex identifiers. |
-| `target_vertices_table` | `Utf8\|null` | `null` | required when output_mode=path or return_target_info=true; side input (target_vertices, cols: `target_vertex_col`) | Optional relation containing target vertices for path output or target reachability metadata. |
+| `depth_limit` | `integer\|null` | `null` | min 0 | optional non-negative BFS depth limit |
+| `output_mode` | `string` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | BFS output shape |
+| `return_target_info` | `boolean` | `false` |  | whether raw or normalized BFS output includes target information |
+| `source_vertex` | `integer\|string` |  |  | scalar source vertex; BFS source selectors are mutually exclusive |
+| `source_vertices` | `array` |  |  | non-empty homogeneous BFS source vertex array; mutually exclusive with source_vertex and sources |
 
 ### Graph construction options
 
@@ -137,12 +137,12 @@ import Examples from '../../_examples/cugraph_bfs.mdx';
 
 ## Limits
 
-- source lists and source_vertices_table are multi-source BFS, not one BFS per source
-- source lists and source_vertices_table must contain at most one source per connected component
+- source_vertices and the sources relation are multi-source BFS, not one BFS per source
+- source_vertices and the sources relation must contain at most one source per connected component
 - raw/normalized output does not expose origin source per vertex
-- string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col
+- string logical vertex-domain BFS rejects edges.edge_id and edge-id predicate relations
 - path output requires exactly one target row at execution time
-- options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker
+- descriptor option schema is typed registry metadata; validate_call remains the authoritative call-specific checker
 
 ## Validate the call
 
@@ -151,7 +151,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_bfs',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":123,"src_col":"src","dst_col":"dst","depth_limit":4}}'
+  '{"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":123,"depth_limit":4}}'
 );
 ```
 

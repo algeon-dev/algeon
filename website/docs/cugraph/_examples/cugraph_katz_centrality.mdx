@@ -14,11 +14,11 @@ movement:
 ```sql
 WITH katz AS (
   SELECT vertex, ROW_NUMBER() OVER (ORDER BY value DESC) AS katz_rank
-  FROM cugraph_katz_centrality('citation_edges', 'src', 'dst', NULL,
-                               '{"alpha": 0.05}')),
+  FROM cugraph_katz_centrality(
+    edges => (SELECT src, dst FROM citation_edges), alpha => 0.05)),
 deg AS (
   SELECT vertex, in_degree, ROW_NUMBER() OVER (ORDER BY in_degree DESC) AS degree_rank
-  FROM cugraph_in_degrees_all('citation_edges', 'src', 'dst'))
+  FROM cugraph_in_degrees_all(edges => (SELECT src, dst FROM citation_edges)))
 SELECT p.title, p.year, k.katz_rank, d.degree_rank, d.in_degree
 FROM katz k
 JOIN deg d ON d.vertex = k.vertex

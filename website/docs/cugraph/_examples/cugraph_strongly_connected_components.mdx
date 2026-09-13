@@ -15,8 +15,8 @@ then count the multi-paper components:
 -- Local workspace snapshot; this does not write to lake.citation_network.
 CREATE TABLE scc_snapshot AS
 SELECT vertex, label
-FROM cugraph_strongly_connected_components('citation_edges', 'src', 'dst', NULL,
-                                           '{"directed":true}');
+FROM cugraph_strongly_connected_components(
+  edges => (SELECT src, dst FROM citation_edges), directed => true);
 
 WITH loops AS (
   SELECT label, COUNT(*) AS members FROM scc_snapshot

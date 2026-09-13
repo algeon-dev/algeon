@@ -14,7 +14,8 @@ output becomes the next algorithm's input, with a window function in between:
 
 ```sql
 CREATE TABLE kcore30_edges AS
-SELECT src, dst FROM cugraph_k_core('citation_edges', 'src', 'dst', NULL, '{"k": 30}');
+SELECT src, dst
+FROM cugraph_k_core(edges => (SELECT src, dst FROM citation_edges), k => 30);
 
 CREATE TABLE kcore_vertex_ids AS
 SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
@@ -28,10 +29,10 @@ JOIN kcore_vertex_ids b ON b.paper_id = e.dst;
 
 WITH labeled AS (
   SELECT s."partition" AS cluster, p.primary_fos
-  FROM cugraph_spectral_modularity_maximization('kcore30_i32', 'src', 'dst', NULL,
-    '{"n_clusters": 6, "n_eigenvectors": 6,
-      "evs_tolerance": 0.00001, "evs_max_iterations": 2000,
-      "k_means_max_iterations": 1000}') s
+  FROM cugraph_spectral_modularity_maximization(
+    edges => (SELECT src, dst FROM kcore30_i32), n_clusters => 6,
+    n_eigenvectors => 6, evs_tolerance => 0.00001,
+    evs_max_iterations => 2000, k_means_max_iterations => 1000) s
   JOIN kcore_vertex_ids v ON v.vid = s.vertex
   JOIN papers p ON p.paper_id = v.paper_id),
 counts AS (

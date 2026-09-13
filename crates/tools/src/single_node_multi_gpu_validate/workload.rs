@@ -155,7 +155,7 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "pagerank",
             format!(
                 "SELECT COUNT(*) AS vertices, SUM(value) AS total \
-                 FROM {CUGRAPH_PAGERANK_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight')"
+                 FROM {CUGRAPH_PAGERANK_FUNCTION}(edges => (SELECT src, dst, weight FROM {DBLP_EDGE_TABLE}))"
             ),
             true,
         ),
@@ -163,14 +163,14 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "pagerank_unweighted",
             format!(
                 "SELECT COUNT(*) AS vertices, SUM(value) AS total \
-                 FROM {CUGRAPH_PAGERANK_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', NULL)"
+                 FROM {CUGRAPH_PAGERANK_FUNCTION}(edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}))"
             ),
             true,
         ),
         (
             "pagerank_topk",
             format!(
-                "SELECT vertex, value FROM {CUGRAPH_PAGERANK_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight') \
+                "SELECT vertex, value FROM {CUGRAPH_PAGERANK_FUNCTION}(edges => (SELECT src, dst, weight FROM {DBLP_EDGE_TABLE})) \
                  ORDER BY value DESC LIMIT 100"
             ),
             true,
@@ -178,24 +178,26 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
         (
             "bfs",
             format!(
-                "SELECT COUNT(*) AS reached FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
-                 '{{\"output_mode\": \"normalized\"}}')"
+                "SELECT COUNT(*) AS reached FROM {CUGRAPH_BFS_FUNCTION}(\
+                 edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), source_vertex => {DBLP_TRAVERSAL_SOURCE}, \
+                 output_mode => 'normalized')"
             ),
             true,
         ),
         (
             "bfs_topk",
             format!(
-                "SELECT vertex, distance, predecessor FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
-                 '{{\"construction_policy\": \"raw_libcugraph\"}}') ORDER BY distance LIMIT 100"
+                "SELECT vertex, distance, predecessor FROM {CUGRAPH_BFS_FUNCTION}(\
+                 edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), source_vertex => {DBLP_TRAVERSAL_SOURCE}, \
+                 construction_policy => 'raw_libcugraph') ORDER BY distance LIMIT 100"
             ),
             true,
         ),
         (
             "sssp",
             format!(
-                "SELECT COUNT(*) AS reached FROM {CUGRAPH_SSSP_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', \
-                 'weight')"
+                "SELECT COUNT(*) AS reached FROM {CUGRAPH_SSSP_FUNCTION}(\
+                 edges => (SELECT src, dst, weight FROM {DBLP_EDGE_TABLE}), source_vertex => {DBLP_TRAVERSAL_SOURCE})"
             ),
             true,
         ),
@@ -203,7 +205,7 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "wcc",
             format!(
                 "SELECT COUNT(*) AS vertices FROM \
-                 {CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst')"
+                 {CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION}(edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}))"
             ),
             true,
         ),
@@ -220,8 +222,9 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "force_atlas2",
             format!(
                 "SELECT COUNT(*) AS vertices, SUM(x) AS sum_x, SUM(y) AS sum_y \
-                 FROM {CUGRAPH_FORCE_ATLAS2_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight', \
-                 '{{\"max_iter\": 200, \"seed\": 20260804, \"barnes_hut_optimize\": true}}')"
+                 FROM {CUGRAPH_FORCE_ATLAS2_FUNCTION}(\
+                 edges => (SELECT src, dst, weight FROM {DBLP_EDGE_TABLE}), max_iter => 200, seed => 20260804, \
+                 barnes_hut_optimize => true)"
             ),
             true,
         ),
@@ -230,11 +233,12 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             format!(
                 "WITH pagerank AS ( \
                  SELECT vertex, value AS pagerank_value \
-                 FROM {CUGRAPH_PAGERANK_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight') \
+                 FROM {CUGRAPH_PAGERANK_FUNCTION}(edges => (SELECT src, dst, weight FROM {DBLP_EDGE_TABLE})) \
                  ), layout AS ( \
                  SELECT vertex, x, y \
-                 FROM {CUGRAPH_FORCE_ATLAS2_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', 'weight', \
-                 '{{\"max_iter\": 200, \"seed\": 20260804, \"barnes_hut_optimize\": true}}') \
+                 FROM {CUGRAPH_FORCE_ATLAS2_FUNCTION}(\
+                 edges => (SELECT src, dst, weight FROM {DBLP_EDGE_TABLE}), max_iter => 200, seed => 20260804, \
+                 barnes_hut_optimize => true) \
                  ) \
                  SELECT p.vertex, p.pagerank_value, l.x, l.y \
                  FROM layout l JOIN pagerank p ON p.vertex = l.vertex \
@@ -246,8 +250,9 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "bfs_deep",
             format!(
                 "SELECT vertex, distance, reachable \
-                 FROM {CUGRAPH_BFS_FUNCTION}('{DBLP_EDGE_TABLE}', {DBLP_TRAVERSAL_SOURCE}, 'src', 'dst', NULL, \
-                 '{{\"depth_limit\": 8, \"output_mode\": \"normalized\"}}')"
+                 FROM {CUGRAPH_BFS_FUNCTION}(\
+                 edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), source_vertex => {DBLP_TRAVERSAL_SOURCE}, \
+                 depth_limit => 8, output_mode => 'normalized')"
             ),
             true,
         ),
@@ -255,8 +260,8 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "betweenness_centrality",
             format!(
                 "SELECT COUNT(*) AS vertices, SUM(value) AS total \
-                 FROM {CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', NULL, \
-                 '{{\"k\": 64}}')"
+                 FROM {CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION}(\
+                 edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), k => 64)"
             ),
             true,
         ),
@@ -264,8 +269,8 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
             "betweenness_centrality_wide",
             format!(
                 "SELECT COUNT(*) AS vertices, SUM(value) AS total \
-                 FROM {CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION}('{DBLP_EDGE_TABLE}', 'src', 'dst', NULL, \
-                 '{{\"k\": 512}}')"
+                 FROM {CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION}(\
+                 edges => (SELECT src, dst FROM {DBLP_EDGE_TABLE}), k => 512)"
             ),
             true,
         ),
@@ -427,7 +432,8 @@ mod tests {
     fn basic_bfs_catalog_entry_keeps_the_unbounded_singleflight_shape() {
         let bfs = resolve(0, FixtureKind::Dblp, "bfs").expect("bfs catalog entry");
         assert!(bfs.graph);
-        assert!(bfs.sql.contains("\"output_mode\": \"normalized\""));
+        assert!(bfs.sql.contains("edges => (SELECT src, dst FROM edges_by_src)"));
+        assert!(bfs.sql.contains("output_mode => 'normalized'"));
         assert!(!bfs.sql.contains("depth_limit"));
     }
 

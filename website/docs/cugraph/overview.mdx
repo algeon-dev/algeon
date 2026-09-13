@@ -21,29 +21,33 @@ on GPU. The same page covers backend configuration and host staging limits.
 
 ## Graph input and call shape
 
-Most functions share this positional shape; the ones that need extra inputs
-add them, so treat each function page's signature as authoritative:
+Every cuGraph call uses named arguments. The required `edges` argument is a
+parenthesized relation subquery whose projection supplies canonical `src` and
+`dst` columns. Optional graph and algorithm values use the same named syntax:
 
 ```sql
-cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json]]])
+SELECT *
+FROM cugraph_pagerank(
+  edges => (SELECT src, dst, weight FROM citation_edges),
+  alpha => 0.9,
+  directed => true
+);
 ```
 
-- `table_name`: an edge relation (a registered table or view of edges).
-- `src_col` / `dst_col`: endpoint columns; default to `src` / `dst`.
-- `weight_col`: optional edge weight column. Whether it affects results
-  depends on the function's **Weight column** entry in the cheat sheet below.
-- `options_json`: a JSON string of algorithm and graph options.
+Algorithms that need additional relations name them explicitly, for example
+`personalization => (SELECT vertex, value FROM ppr_seeds)` for personalized
+PageRank or `vertex_pairs => (SELECT first, second FROM candidate_pairs)` for
+similarity functions. BFS source selectors and SSSP's source vertex are named
+value arguments as well. Each function page gives the complete signature and
+the canonical columns required for every relation role.
 
-For example, `cugraph_bfs` and `cugraph_sssp` take a source vertex as their
-second argument, and `cugraph_personalized_pagerank` requires all five
-arguments.
-
-The relation name must resolve to a table or view registered in the session.
-That relation can be backed by the session's configured sources, including
-Parquet and Iceberg. See [Integrating Algeon](../integration/overview.mdx) for
-source and session setup, and
-[Graph Inputs and Construction](./graph-options.mdx) for vertex-ID contracts,
-directedness, vertex renumbering, and edge normalization.
+Relation subqueries can read tables, views, CTEs, joins, and filters. Register
+a derived relation as a temporary view when it must also be checked through
+`gpu_validate_call`, because the metadata envelope resolves registered names
+and does not contain SQL text. See [Integrating Algeon](../integration/overview.mdx)
+for source and session setup, and [Graph Inputs and Construction](./graph-options.mdx)
+for vertex-ID contracts, directedness, vertex renumbering, and edge
+normalization.
 
 ## Functions
 

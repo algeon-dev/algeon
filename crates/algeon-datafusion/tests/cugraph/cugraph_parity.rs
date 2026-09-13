@@ -384,38 +384,59 @@ fn register_similarity_pairs(ctx: &SessionContext) {
 fn parity_sql(spec: &ParitySpec) -> String {
     let mut options = serde_json::from_str::<Map<String, Value>>(spec.params_json)
         .unwrap_or_else(|error| panic!("{} has invalid params JSON: {error}", spec.label));
-    let source = options.remove("source_vertex").and_then(|value| value.as_i64());
+    let source = options.remove("source_vertex");
     options.remove("personalization_vertices");
     options.remove("personalization_values");
     let is_similarity = matches!(
         spec.algorithm,
         CugraphAlgorithm::Jaccard | CugraphAlgorithm::Sorensen | CugraphAlgorithm::Overlap | CugraphAlgorithm::Cosine
     );
-    if is_similarity {
-        options.insert("vertex_pairs_table".to_string(), Value::String("similarity_pairs".to_string()));
-        options.insert("first_vertex_col".to_string(), Value::String("first".to_string()));
-        options.insert("second_vertex_col".to_string(), Value::String("second".to_string()));
-    }
-    let options = serde_json::to_string(&options).expect("parity options must serialize");
     let table = dataset_table_name(spec.dataset);
-    let args = if is_similarity {
-        format!("'{table}', 'src', 'dst', NULL, '{}'", options.replace('\'', "''"))
-    } else if matches!(spec.algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp) {
-        format!(
-            "'{table}', {}, 'src', 'dst', 'weight', '{}'",
-            source.unwrap_or_else(|| panic!("{} is missing source_vertex", spec.label)),
-            options.replace('\'', "''")
-        )
+    let edge_projection = if matches!(
+        spec.algorithm,
+        CugraphAlgorithm::PageRank
+            | CugraphAlgorithm::PersonalizedPageRank
+            | CugraphAlgorithm::Sssp
+            | CugraphAlgorithm::MinimumSpanningTree
+            | CugraphAlgorithm::ForceAtlas2
+    ) {
+        "src, dst, weight"
     } else {
-        format!("'{table}', 'src', 'dst', 'weight', '{}'", options.replace('\'', "''"))
+        "src, dst"
     };
-    let sql = format!("SELECT * FROM {}({args})", spec.algorithm.function_name());
+    let mut arguments = vec![format!("edges => (SELECT {edge_projection} FROM {table})")];
+    if spec.algorithm == CugraphAlgorithm::PersonalizedPageRank {
+        options.remove("personalization_table");
+        options.remove("personalization_vertex_col");
+        options.remove("personalization_value_col");
+        arguments.push("personalization => (SELECT vertex, value FROM ppr_seeds)".to_string());
+    }
+    if is_similarity {
+        arguments.push("vertex_pairs => (SELECT first, second FROM similarity_pairs)".to_string());
+    }
+    if matches!(spec.algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp) {
+        let source = source.unwrap_or_else(|| panic!("{} is missing source_vertex", spec.label));
+        arguments.push(format!("source_vertex => {}", sql_literal(&source)));
+    }
+    arguments.extend(options.into_iter().map(|(name, value)| format!("{name} => {}", sql_literal(&value))));
+    let sql = format!("SELECT * FROM {}({})", spec.algorithm.function_name(), arguments.join(", "));
     if spec.algorithm == CugraphAlgorithm::EdgeBetweennessCentrality
         || matches!(spec.comparator, ParityComparator::EdgeSubgraph | ParityComparator::SimilarityMultiset)
     {
         sql
     } else {
         format!("{sql} ORDER BY vertex")
+    }
+}
+
+fn sql_literal(value: &Value) -> String {
+    match value {
+        Value::Null => "NULL".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => format!("'{}'", value.replace('\'', "''")),
+        Value::Array(values) => format!("[{}]", values.iter().map(sql_literal).collect::<Vec<_>>().join(", ")),
+        Value::Object(_) => panic!("parity SQL values must be scalar or typed arrays"),
     }
 }
 

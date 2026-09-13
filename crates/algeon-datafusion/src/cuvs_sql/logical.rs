@@ -12,7 +12,7 @@ use query_engine::plan::{
 use super::{
     CuvsDenseVectorBinding, CuvsOperation, CuvsOutputContract, CuvsValidatedOptions, CuvsVectorRelationBinding,
     error::{field_not_found, invalid_call, unsupported_type},
-    options::validate_options,
+    options::{options_from_named_values, validate_options},
 };
 
 #[derive(Debug, Clone)]
@@ -115,7 +115,9 @@ impl UserDefinedLogicalNodeCore for CuvsLogicalNode {
                 "cuVS logical nodes do not expose optimizer expressions",
             ));
         }
-        Self::try_new(self.operation, inputs, self.options.canonical_json())
+        let options_json =
+            options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
+        Self::try_new(self.operation, inputs, &options_json)
     }
 
     fn supports_limit_pushdown(&self) -> bool {

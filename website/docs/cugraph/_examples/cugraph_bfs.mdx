@@ -3,18 +3,19 @@
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
 
-### Reverse the traversal by swapping two arguments
+### Reverse the traversal by projecting named edge columns
 
-Following citations forward (`'src', 'dst'`) walks into a paper's reference
-ancestry. Swapping the two column arguments (`'dst', 'src'`) traverses the
-same edges in the opposite direction (from a paper to the papers that cite it,
-and then their citers) without building a new table. Starting from AlexNet
-(2012), each BFS generation is one hop outward in citing papers:
+Following citations forward (`src` → `dst`) walks into a paper's reference
+ancestry. Projecting `dst AS src, src AS dst` into the named `edges` relation
+traverses the same edges in the opposite direction (from a paper to the papers
+that cite it, and then their citers) without building a new table. Starting from
+AlexNet (2012), each BFS generation is one hop outward in citing papers:
 
 ```sql
 SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
-FROM cugraph_bfs('citation_edges_by_dst', 2163605009, 'dst', 'src', NULL,
-                 '{"depth_limit":3, "output_mode":"normalized"}') b
+FROM cugraph_bfs(
+  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),
+  source_vertex => 2163605009, depth_limit => 3, output_mode => 'normalized') b
 JOIN papers p ON p.paper_id = b.vertex
 WHERE b.reachable
 GROUP BY b.distance
@@ -44,10 +45,9 @@ CREATE VIEW lstm_target AS
 SELECT paper_id AS vertex FROM papers WHERE title = 'Long short-term memory';
 
 SELECT b.path_index, b.distance, p.year, p.title
-FROM cugraph_bfs('citation_edges', 2896457183, 'src', 'dst', NULL,
-                 '{"output_mode":"path",
-                   "target_vertices_table":"lstm_target",
-                   "target_vertex_col":"vertex"}') b
+FROM cugraph_bfs(
+  edges => (SELECT src, dst FROM citation_edges), source_vertex => 2896457183,
+  output_mode => 'path', target_vertices => (SELECT vertex FROM lstm_target)) b
 JOIN papers p ON p.paper_id = b.vertex
 ORDER BY b.path_index;
 ```
@@ -62,8 +62,8 @@ Two hops of references separate BERT from LSTM.
 
 ### Multi-source BFS from a seed view
 
-Passing `NULL` as the source and pointing `source_vertices_table` at a view
-starts the traversal from every row of a SQL result. Here the three CNN
+Passing the named `sources` relation starts the traversal from every row of a
+SQL result. Here the three CNN
 classics (AlexNet, VGG, ResNet) form one combined frontier, so `distance`
 measures hops from the nearest of the three founding papers:
 
@@ -73,10 +73,10 @@ SELECT paper_id AS vertex FROM papers
 WHERE paper_id IN (2163605009, 1686810756, 2194775991);
 
 SELECT b.distance, COUNT(*) AS papers
-FROM cugraph_bfs('citation_edges_by_dst', NULL, 'dst', 'src', NULL,
-                 '{"source_vertices_table":"cnn_founders",
-                   "source_vertex_col":"vertex",
-                   "depth_limit":2, "output_mode":"normalized"}') b
+FROM cugraph_bfs(
+  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),
+  sources => (SELECT vertex FROM cnn_founders), depth_limit => 2,
+  output_mode => 'normalized') b
 JOIN papers p ON p.paper_id = b.vertex
 WHERE b.reachable
 GROUP BY b.distance

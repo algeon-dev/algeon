@@ -27,8 +27,8 @@ JOIN ai_nodes a ON a.paper_id = e.src
 JOIN ai_nodes b ON b.paper_id = e.dst;
 
 SELECT p.title, p.year, p.primary_fos, CAST(b.value AS BIGINT) AS paths_through
-FROM cugraph_betweenness_centrality('ai_edges', 'src', 'dst', NULL,
-                                    '{"normalized": false}') b
+FROM cugraph_betweenness_centrality(
+  edges => (SELECT src, dst FROM ai_edges), normalized => false) b
 JOIN papers p ON p.paper_id = b.vertex
 ORDER BY b.value DESC
 LIMIT 6;
@@ -56,6 +56,6 @@ the first `k` distinct graph vertices in stable order and refuses `k` larger
 than the actual vertex count:
 
 ```sql
-SELECT * FROM cugraph_betweenness_centrality('citation_edges', 'src', 'dst', NULL,
-                                             '{"k": 64, "normalized": false}');
+SELECT * FROM cugraph_betweenness_centrality(
+  edges => (SELECT src, dst FROM citation_edges), k => 64, normalized => false);
 ```

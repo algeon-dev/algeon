@@ -8,6 +8,7 @@
 mod catalog;
 mod descriptor;
 mod family;
+mod named_args;
 mod registration;
 mod table_functions;
 mod validation;
@@ -15,9 +16,10 @@ mod validation;
 pub(crate) use catalog::GpuFunctionCatalog;
 pub(crate) use descriptor::{GpuFunctionAvailability, GpuFunctionDescriptor};
 pub(crate) use family::GpuFunctionFamily;
+pub(crate) use named_args::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments};
 pub(crate) use registration::install_gpu_function_family;
 pub(crate) use table_functions::gpu_metadata_table_functions;
 #[cfg(feature = "server")]
 pub(crate) use table_functions::is_builtin_gpu_metadata_table_source;
 pub use table_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION};
-pub(crate) use validation::{GpuCallRequest, GpuCallValidation, parse_table_reference};
+pub(crate) use validation::{GpuCallRequest, GpuCallValidation};

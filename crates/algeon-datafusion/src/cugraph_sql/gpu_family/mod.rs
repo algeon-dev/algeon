@@ -1,29 +1,36 @@
 //! cuGraph adapter for the shared GPU function discovery and validation catalog.
 //!
-//! Execution remains owned by the cuGraph SQL table-function path.  This
-//! module only projects the existing SQL registry and delegates dry-run
-//! validation back to the parser and relation-aware schema checks used by that
-//! path.
+//! SQL planning and dry-run validation project the same named argument
+//! definitions into logical relation children and metadata contracts.
 
 mod descriptions;
-mod json_schema;
-mod validate;
+mod result_schemas;
 
-const ERROR_UNKNOWN_ALGORITHM: &str = "unknown_algorithm";
-const ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
-const ERROR_TABLE_NOT_FOUND: &str = "table_not_found";
-const ERROR_COLUMN_NOT_FOUND: &str = "column_not_found";
-const ERROR_UNSUPPORTED_VERTEX_DTYPE: &str = "unsupported_vertex_dtype";
-const ERROR_VERTEX_DTYPE_MISMATCH: &str = "vertex_dtype_mismatch";
-const ERROR_UNSUPPORTED_WEIGHT_DTYPE: &str = "unsupported_weight_dtype";
-const ERROR_UNSUPPORTED_OPTION: &str = "unsupported_option";
-
-use datafusion::catalog::Session;
+use arrow::datatypes::Schema;
+use datafusion::{
+    catalog::Session,
+    common::{DataFusionError, TableReference},
+    datasource::provider_as_source,
+    execution::SessionState,
+    logical_expr::{LogicalPlan, LogicalPlanBuilder},
+};
+use query_engine::plan::GraphVertexIdTypeSupport;
 use serde_json::{Value, json};
 
-use super::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig};
-use crate::gpu_functions::{
-    GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
+use super::{
+    CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphBfsSource, CugraphBfsSourceVertex, CugraphLogicalNode,
+    CugraphRelationRole, CugraphSqlConfig,
+    definitions::{
+        CugraphAllowedValue, CugraphArgumentKind, CugraphArgumentType, CugraphRelationColumnType,
+        CugraphValueDefinition, CugraphValueRange, arguments_for_algorithm,
+    },
+    relation_planner::relation_role,
+};
+use crate::{
+    error::DataFusionErrorExt,
+    gpu_functions::{
+        GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
+    },
 };
 
 /// cuGraph's family adapter for the common GPU metadata catalog.
@@ -69,17 +76,6 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
         function_name: &str,
         request: &GpuCallRequest,
     ) -> GpuCallValidation {
-        let Some(edges) = request.relations.get("edges") else {
-            // The catalog checks descriptor-declared required roles before it
-            // calls a family. Keep this defensive result structured if a
-            // family is ever called directly.
-            return GpuCallValidation::invalid(
-                "missing_relation",
-                "missing required relation role 'edges'",
-                function_name,
-                request.normalized_json(),
-            );
-        };
         let Some(algorithm) = algorithm_for_canonical_name(function_name) else {
             return GpuCallValidation::invalid(
                 "unknown_function",
@@ -88,52 +84,112 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
                 request.normalized_json(),
             );
         };
-
-        let mut options = request.options.clone();
-        if algorithm == CugraphAlgorithm::ForceAtlas2 {
-            let object = options.as_object_mut().expect("common validation requires an options object");
-            for (role, option) in
-                [("vertex_attributes", "vertex_attributes_table"), ("initial_positions", "initial_positions_table")]
-            {
-                if let Some(relation) = request.relations.get(role) {
-                    object.insert(option.to_string(), Value::String(relation.table.clone()));
-                }
-            }
+        if !self.availability.is_available() {
+            return GpuCallValidation::invalid(
+                self.availability.unavailable_reason().unwrap_or("required_feature_disabled"),
+                "cuGraph execution is unavailable in this build",
+                function_name,
+                request.normalized_json(),
+            );
         }
 
-        let row =
-            validate::validate_graph_call(session, algorithm.function_name(), &edges.table, &options, &self.config)
-                .await;
-        let normalized_options: Value =
-            serde_json::from_str(&row.normalized_options_json).expect("cuGraph validation options JSON is valid");
-        let mut normalized_call = request.normalized_json();
-        normalized_call["options"] = normalized_options;
-        let output_schema: Value =
-            serde_json::from_str(&row.output_schema_json).expect("cuGraph validation schema JSON is valid");
-        let details = json!({
-            "edges": {
-                "table": edges.table,
-                "resolved": row.table_resolved,
-                "src_col_resolved": row.src_col_resolved,
-                "dst_col_resolved": row.dst_col_resolved,
-                "weight_col_resolved": row.weight_col_resolved,
-                "src_dtype": row.src_dtype,
-                "dst_dtype": row.dst_dtype,
-                "weight_dtype": row.weight_dtype,
+        let mut inputs = Vec::new();
+        let mut roles = Vec::new();
+        let mut relation_details = serde_json::Map::new();
+        for argument in arguments_for_algorithm(algorithm) {
+            let CugraphArgumentKind::Relation { .. } = argument.kind else {
+                continue;
+            };
+            let Some(reference) = request.relations.get(argument.name) else {
+                if argument.required {
+                    let mut invalid = GpuCallValidation::invalid(
+                        "missing_relation",
+                        format!("missing required relation role '{}'", argument.name),
+                        function_name,
+                        request.normalized_json(),
+                    );
+                    invalid.details = json!({
+                        "path": format!("relations.{}", argument.name),
+                        "relation_role": argument.name,
+                    });
+                    return invalid;
+                }
+                continue;
+            };
+            match resolve_schema_input(session, reference.reference.clone()).await {
+                Ok(input) => {
+                    let mut detail = json!({
+                        "table": reference.table,
+                        "resolved": true,
+                        "schema": schema_json(input.schema().as_arrow()),
+                    });
+                    if argument.name == "edges" {
+                        for (fact, column) in [
+                            ("src_dtype", "src"),
+                            ("dst_dtype", "dst"),
+                            ("weight_dtype", "weight"),
+                            ("edge_id_dtype", "edge_id"),
+                        ] {
+                            if let Ok(field) = input.schema().field_with_unqualified_name(column) {
+                                detail[fact] = Value::String(format!("{:?}", field.data_type()));
+                            }
+                        }
+                    }
+                    relation_details.insert(argument.name.to_string(), detail);
+                    roles.push(if argument.name == "edges" {
+                        CugraphRelationRole::Edges
+                    } else {
+                        match relation_role(argument.name) {
+                            Ok(role) => role,
+                            Err(error) => {
+                                return invalid_graph_call(algorithm, request, error.to_string(), relation_details);
+                            },
+                        }
+                    });
+                    inputs.push(input);
+                },
+                Err(message) => {
+                    relation_details
+                        .insert(argument.name.to_string(), json!({"table": reference.table, "resolved": false}));
+                    relation_details.insert("path".to_string(), Value::String(format!("relations.{}", argument.name)));
+                    relation_details.insert("relation_role".to_string(), Value::String(argument.name.to_string()));
+                    return GpuCallValidation {
+                        valid: false,
+                        error_code: Some("table_not_found".to_string()),
+                        message,
+                        function_name: function_name.to_string(),
+                        relations_resolved: false,
+                        normalized_call: request.normalized_json(),
+                        output_schema: json!({}),
+                        would_execute_gpu: false,
+                        details: Value::Object(relation_details),
+                    };
+                },
+            }
+        }
+        let mut values = request.options.as_object().cloned().unwrap_or_default();
+        let source = match take_source(algorithm, &mut values) {
+            Ok(source) => source,
+            Err(message) => return invalid_graph_call(algorithm, request, message, relation_details),
+        };
+        match CugraphLogicalNode::try_new(algorithm, inputs, roles, values, source, &self.config) {
+            Ok(node) => {
+                let mut normalized = request.normalized_json();
+                normalized["options"] =
+                    normalized_value_options(algorithm, request.options.as_object().unwrap(), &self.config);
+                GpuCallValidation {
+                    valid: true,
+                    error_code: None,
+                    message: "valid".to_string(),
+                    function_name: function_name.to_string(),
+                    relations_resolved: true,
+                    normalized_call: normalized,
+                    output_schema: schema_json(node.output_schema().as_ref()),
+                    would_execute_gpu: true,
+                    details: Value::Object(relation_details),
+                }
             },
-        });
-
-        let relations_resolved = row.table_resolved;
-        GpuCallValidation {
-            valid: row.valid,
-            error_code: row.error_code,
-            message: row.message,
-            function_name: row.function_name,
-            relations_resolved,
-            normalized_call,
-            output_schema,
-            would_execute_gpu: row.would_execute_gpu,
-            details,
+            Err(error) => invalid_graph_error(algorithm, request, &error, relation_details),
         }
     }
 }
@@ -143,7 +199,7 @@ fn descriptor(
     config: &CugraphSqlConfig,
     availability: GpuFunctionAvailability,
 ) -> GpuFunctionDescriptor {
-    let result_schemas = value(&json_schema::result_schemas_json(algorithm));
+    let result_schemas = value(&result_schemas::result_schemas_json(algorithm));
     let result_schemas = match result_schemas {
         Value::Object(mut object) => {
             object.insert(
@@ -154,39 +210,184 @@ fn descriptor(
         },
         value => value,
     };
-    let mut relation_roles = vec![json!({
-        "name": "edges",
-        "description": "Required edge-list table or view for graph construction.",
-        "vertex_id_contract": json_schema::vertex_id_contract_json(algorithm),
-    })];
-    if algorithm == CugraphAlgorithm::ForceAtlas2 {
-        relation_roles.extend([
-            json!({
-                "name": "vertex_attributes",
-                "required": false,
-                "description": "Optional complete per-vertex radius, mobility, and mass relation."
-            }),
-            json!({
-                "name": "initial_positions",
-                "required": false,
-                "description": "Optional complete per-vertex Float32 x/y warm-start relation."
-            }),
-        ]);
-    }
+    let relation_roles = arguments_for_algorithm(algorithm)
+        .iter()
+        .filter_map(|argument| {
+            let CugraphArgumentKind::Relation { columns } = argument.kind else {
+                return None;
+            };
+            let mut role = json!({
+                "name": argument.name,
+                "required": argument.required,
+                "description": argument.description,
+                "fields": columns.iter().map(|column| json!({
+                    "name": column.name,
+                    "required": column.required,
+                    "type": relation_column_type(column.column_type),
+                    "description": column.description,
+                })).collect::<Vec<_>>(),
+            });
+            if argument.name == "edges" {
+                role["vertex_id_contract"] = vertex_id_contract(algorithm);
+            }
+            Some(role)
+        })
+        .collect::<Vec<_>>();
     GpuFunctionDescriptor {
         function_name: algorithm.function_name().to_string(),
         provider: "cugraph".to_string(),
         signature: signature(algorithm),
         summary: descriptions::summary(algorithm).to_string(),
         relation_roles: Value::Array(relation_roles),
-        argument_descriptions: argument_descriptions(algorithm),
-        options_schema: value(&json_schema::options_schema_json(algorithm, config)),
+        argument_descriptions: argument_descriptions(algorithm, config),
+        options_schema: options_schema(algorithm, config),
         result_schemas,
-        validation_request_schema: validation_request_schema(algorithm),
+        validation_request_schema: validation_request_schema(algorithm, config),
         examples: examples(algorithm),
         limitations: value(&descriptions::limitations_json(algorithm)),
         availability,
     }
+}
+
+async fn resolve_schema_input(session: &dyn Session, reference: TableReference) -> Result<LogicalPlan, String> {
+    let state = session
+        .as_any()
+        .downcast_ref::<SessionState>()
+        .ok_or_else(|| "GPU validation requires a DataFusion SessionState".to_string())?;
+    let catalog_options = &state.config_options().catalog;
+    let resolved = reference.clone().resolve(&catalog_options.default_catalog, &catalog_options.default_schema);
+    let catalog = state
+        .catalog_list()
+        .catalog(&resolved.catalog)
+        .ok_or_else(|| format!("catalog '{}' was not found", resolved.catalog))?;
+    let schema = catalog
+        .schema(&resolved.schema)
+        .ok_or_else(|| format!("schema '{}.{}' was not found", resolved.catalog, resolved.schema))?;
+    let provider = schema
+        .table(&resolved.table)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("table '{}' was not found", reference.to_quoted_string()))?;
+    LogicalPlanBuilder::scan(reference, provider_as_source(provider), None)
+        .and_then(LogicalPlanBuilder::build)
+        .map_err(|error| error.to_string())
+}
+
+fn take_source(
+    algorithm: CugraphAlgorithm,
+    values: &mut serde_json::Map<String, Value>,
+) -> Result<Option<CugraphBfsSource>, String> {
+    let scalar = values.remove("source_vertex");
+    let array = values.remove("source_vertices");
+    if scalar.is_some() && array.is_some() {
+        return Err("source_vertex and source_vertices are mutually exclusive".to_string());
+    }
+    let source = match scalar {
+        Some(value) => Some(CugraphBfsSource::Scalar(vertex_value(&value)?)),
+        None => match array {
+            Some(Value::Array(values)) if !values.is_empty() => {
+                let vertices = values.iter().map(vertex_value).collect::<Result<Vec<_>, _>>()?;
+                let string_domain = vertices[0].is_utf8();
+                if vertices.iter().any(|vertex| vertex.is_utf8() != string_domain) {
+                    return Err("source_vertices must not mix integer and string values".to_string());
+                }
+                Some(CugraphBfsSource::LiteralList(vertices))
+            },
+            Some(_) => return Err("source_vertices must be a non-empty array".to_string()),
+            None => None,
+        },
+    };
+    if algorithm == CugraphAlgorithm::Sssp && source.is_none() {
+        return Err("cugraph_sssp requires source_vertex".to_string());
+    }
+    Ok(source)
+}
+
+fn vertex_value(value: &Value) -> Result<CugraphBfsSourceVertex, String> {
+    match value {
+        Value::Number(value) => {
+            value.as_i64().map(CugraphBfsSourceVertex::Int64).ok_or_else(|| "vertex value must fit Int64".to_string())
+        },
+        Value::String(value) => Ok(CugraphBfsSourceVertex::Utf8(value.clone())),
+        _ => Err("vertex value must be an integer or string".to_string()),
+    }
+}
+
+fn normalized_value_options(
+    algorithm: CugraphAlgorithm,
+    supplied: &serde_json::Map<String, Value>,
+    config: &CugraphSqlConfig,
+) -> Value {
+    Value::Object(
+        arguments_for_algorithm(algorithm)
+            .iter()
+            .filter_map(|argument| {
+                let CugraphArgumentKind::Value(definition) = argument.kind else {
+                    return None;
+                };
+                supplied
+                    .get(argument.name)
+                    .cloned()
+                    .or_else(|| configured_default(algorithm, definition, config))
+                    .map(|value| (argument.name.to_string(), value))
+            })
+            .collect(),
+    )
+}
+
+fn invalid_graph_call(
+    algorithm: CugraphAlgorithm,
+    request: &GpuCallRequest,
+    message: String,
+    mut details: serde_json::Map<String, Value>,
+) -> GpuCallValidation {
+    details.entry("path".to_string()).or_insert_with(|| Value::String("options".to_string()));
+    GpuCallValidation {
+        valid: false,
+        error_code: Some("invalid_argument".to_string()),
+        message,
+        function_name: algorithm.function_name().to_string(),
+        relations_resolved: true,
+        normalized_call: request.normalized_json(),
+        output_schema: json!({}),
+        would_execute_gpu: false,
+        details: Value::Object(details),
+    }
+}
+
+fn invalid_graph_error(
+    algorithm: CugraphAlgorithm,
+    request: &GpuCallRequest,
+    error: &DataFusionError,
+    mut details: serde_json::Map<String, Value>,
+) -> GpuCallValidation {
+    let error_code = error
+        .find_algeon_error()
+        .and_then(|error| error.fact_value("reason"))
+        .unwrap_or("invalid_argument")
+        .to_string();
+    details.entry("path".to_string()).or_insert_with(|| Value::String("relations".to_string()));
+    GpuCallValidation {
+        valid: false,
+        error_code: Some(error_code),
+        message: error.to_string(),
+        function_name: algorithm.function_name().to_string(),
+        relations_resolved: true,
+        normalized_call: request.normalized_json(),
+        output_schema: json!({}),
+        would_execute_gpu: false,
+        details: Value::Object(details),
+    }
+}
+
+fn schema_json(schema: &Schema) -> Value {
+    json!({
+        "fields": schema.fields().iter().map(|field| json!({
+            "name": field.name(),
+            "data_type": format!("{:?}", field.data_type()),
+            "nullable": field.is_nullable(),
+        })).collect::<Vec<_>>()
+    })
 }
 
 fn algorithm_for_canonical_name(name: &str) -> Option<CugraphAlgorithm> {
@@ -197,76 +398,201 @@ fn algorithm_for_canonical_name(name: &str) -> Option<CugraphAlgorithm> {
 }
 
 fn signature(algorithm: CugraphAlgorithm) -> String {
-    let function_name = algorithm.function_name();
-    if algorithm == CugraphAlgorithm::MinimumSpanningTree {
-        format!("{function_name}(table_name, src_col, dst_col, weight_col [, options_json])")
-    } else if algorithm.is_similarity() || algorithm == CugraphAlgorithm::PersonalizedPageRank {
-        format!("{function_name}(table_name, src_col, dst_col, weight_col, options_json)")
-    } else if algorithm == CugraphAlgorithm::Bfs {
-        format!(
-            "{function_name}(table_name, source_vertex_or_vertices [, src_col, dst_col [, weight_col [, options_json]]])"
-        )
-    } else if algorithm.requires_source_vertex() {
-        format!("{function_name}(table_name, source_vertex [, src_col, dst_col [, weight_col [, options_json]]])")
-    } else {
-        format!("{function_name}(table_name [, src_col, dst_col [, weight_col [, options_json]]])")
-    }
+    let arguments = arguments_for_algorithm(algorithm)
+        .iter()
+        .map(|argument| match argument.kind {
+            CugraphArgumentKind::Relation { .. } => format!("{} => (relation subquery)", argument.name),
+            CugraphArgumentKind::Value(_) => format!("{} => value", argument.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({arguments})", algorithm.function_name())
 }
 
-fn argument_descriptions(algorithm: CugraphAlgorithm) -> Value {
-    let mut arguments = value(&descriptions::argument_descriptions_json(algorithm));
-    if let Value::Array(arguments) = &mut arguments {
-        arguments.retain(|argument| {
-            !matches!(argument.get("name").and_then(Value::as_str), Some("table_name" | "options_json"))
-        });
-    }
-    arguments
+fn argument_descriptions(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Value {
+    Value::Array(
+        arguments_for_algorithm(algorithm)
+            .iter()
+            .filter_map(|argument| {
+                let CugraphArgumentKind::Value(definition) = argument.kind else {
+                    return None;
+                };
+                Some(json!({
+                    "name": argument.name,
+                    "required": argument.required,
+                    "description": argument.description,
+                    "schema": value_schema(algorithm, definition, config),
+                }))
+            })
+            .collect(),
+    )
 }
 
-fn validation_request_schema(algorithm: CugraphAlgorithm) -> Value {
-    let mut relation_properties = serde_json::Map::from_iter([(
-        "edges".to_string(),
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["table"],
-            "properties": { "table": { "type": "string" } }
-        }),
-    )]);
-    if algorithm == CugraphAlgorithm::ForceAtlas2 {
-        for role in ["vertex_attributes", "initial_positions"] {
-            relation_properties.insert(
-                role.to_string(),
+fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Value {
+    let relations = arguments_for_algorithm(algorithm)
+        .iter()
+        .filter(|argument| matches!(argument.kind, CugraphArgumentKind::Relation { .. }))
+        .collect::<Vec<_>>();
+    let relation_properties = relations
+        .iter()
+        .map(|argument| {
+            (
+                argument.name.to_string(),
                 json!({
                     "type": "object",
                     "additionalProperties": false,
                     "required": ["table"],
-                    "properties": { "table": { "type": "string" } }
+                    "properties": {"table": {"type": "string"}}
                 }),
-            );
-        }
-    }
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let required_relations =
+        relations.iter().filter(|argument| argument.required).map(|argument| argument.name).collect::<Vec<_>>();
     json!({
         "type": "object",
-        "description": "The common validation envelope supports only version 1. There is no version 0 reader or version negotiation; any other schema_version is rejected before cuGraph family dispatch.",
         "additionalProperties": false,
-        "required": ["schema_version", "relations", "options"],
+        "required": ["relations", "options"],
         "properties": {
-            "schema_version": {
-                "const": 1,
-                "description": "Common-envelope forward-compatibility marker. Only 1 dispatches to cuGraph validation; unknown versions are rejected before family dispatch."
-            },
             "relations": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["edges"],
+                "required": required_relations,
                 "properties": relation_properties
             },
-            "options": {
-                "type": "object",
-                "description": "Flat cuGraph option object (no nested 'options'): src_col, dst_col, weight_col, source_vertex, graph options, and algorithm options. See options_schema_json."
-            }
+            "options": options_schema(algorithm, config)
         }
+    })
+}
+
+fn options_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Value {
+    let values = arguments_for_algorithm(algorithm)
+        .iter()
+        .filter_map(|argument| match argument.kind {
+            CugraphArgumentKind::Value(definition) => Some((argument, definition)),
+            CugraphArgumentKind::Relation { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let properties = values
+        .iter()
+        .map(|(argument, definition)| {
+            let mut schema = value_schema(algorithm, *definition, config);
+            schema["description"] = Value::String(argument.description.to_string());
+            (argument.name.to_string(), schema)
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let required =
+        values.iter().filter(|(argument, _)| argument.required).map(|(argument, _)| argument.name).collect::<Vec<_>>();
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": format!("{} value arguments", algorithm.function_name()),
+        "description": "Named cuGraph value arguments. Relation fields are derived from resolved relation schemas.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": required,
+        "properties": properties,
+    })
+}
+
+fn value_schema(algorithm: CugraphAlgorithm, definition: CugraphValueDefinition, config: &CugraphSqlConfig) -> Value {
+    let mut schema = match definition.value_type {
+        CugraphArgumentType::Boolean => json!({"type": "boolean"}),
+        CugraphArgumentType::Int64 => json!({"type": "integer"}),
+        CugraphArgumentType::UInt32 | CugraphArgumentType::UInt64 => json!({"type": "integer", "minimum": 0}),
+        CugraphArgumentType::Float64 => json!({"type": "number"}),
+        CugraphArgumentType::Utf8 => json!({"type": "string"}),
+        CugraphArgumentType::VertexId => json!({"type": ["integer", "string"]}),
+        CugraphArgumentType::VertexIdArray => json!({
+            "oneOf": [
+                {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+                {"type": "array", "minItems": 1, "items": {"type": "string"}}
+            ]
+        }),
+    };
+    if definition.nullable {
+        let original = schema;
+        schema = json!({"oneOf": [original, {"type": "null"}]});
+    }
+    if !definition.allowed_values.is_empty() {
+        schema["enum"] = Value::Array(
+            definition
+                .allowed_values
+                .iter()
+                .map(|value| match value {
+                    CugraphAllowedValue::Boolean(value) => Value::Bool(*value),
+                    CugraphAllowedValue::Text(value) => Value::String((*value).to_string()),
+                })
+                .collect(),
+        );
+    }
+    if let Some(range) = definition.range {
+        match range {
+            CugraphValueRange::MinInclusiveF64(value) => schema["minimum"] = json!(value),
+            CugraphValueRange::MinExclusiveF64(value) => schema["exclusiveMinimum"] = json!(value),
+            CugraphValueRange::ClosedF64 { min, max } => {
+                schema["minimum"] = json!(min);
+                schema["maximum"] = json!(max);
+            },
+            CugraphValueRange::OpenClosedF64 { min, max } => {
+                schema["exclusiveMinimum"] = json!(min);
+                schema["maximum"] = json!(max);
+            },
+            CugraphValueRange::MinInclusiveI64(value) => schema["minimum"] = json!(value),
+            CugraphValueRange::MinInclusiveU64(value) => schema["minimum"] = json!(value),
+            CugraphValueRange::ClosedU64 { min, max } => {
+                schema["minimum"] = json!(min);
+                schema["maximum"] = json!(max);
+            },
+        }
+    }
+    if let Some(default) = configured_default(algorithm, definition, config) {
+        schema["default"] = default;
+    }
+    schema
+}
+
+fn configured_default(
+    algorithm: CugraphAlgorithm,
+    definition: CugraphValueDefinition,
+    config: &CugraphSqlConfig,
+) -> Option<Value> {
+    use super::definitions::CugraphDefaultValue;
+
+    let graph = algorithm.effective_default_graph_options(&config.default_graph_options);
+    match definition.default {
+        CugraphDefaultValue::GraphDirected => Some(json!(graph.directed)),
+        CugraphDefaultValue::GraphRenumber => Some(json!(graph.renumber)),
+        CugraphDefaultValue::GraphConstructionPolicy => Some(json!(graph.construction_policy.as_str())),
+        default => default.resolve(algorithm),
+    }
+}
+
+fn relation_column_type(column_type: CugraphRelationColumnType) -> &'static str {
+    match column_type {
+        CugraphRelationColumnType::VertexId => "vertex_id",
+        CugraphRelationColumnType::EdgeId => "integer_edge_id",
+        CugraphRelationColumnType::Numeric => "numeric",
+        CugraphRelationColumnType::Float32 => "Float32",
+    }
+}
+
+fn vertex_id_contract(algorithm: CugraphAlgorithm) -> Value {
+    let numeric_endpoint_types = match algorithm.native_algorithm().vertex_id_type_support() {
+        GraphVertexIdTypeSupport::Int32OrInt64 => json!(["Int32", "Int64"]),
+        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => json!(["Int32"]),
+    };
+    let logical_string = algorithm.definition().logical_string_contract();
+    json!({
+        "numeric_endpoint_types": numeric_endpoint_types,
+        "logical_string_endpoint_types": if logical_string.is_some() {
+            json!(["Utf8", "LargeUtf8", "Utf8View"])
+        } else {
+            json!([])
+        },
+        "logical_string_output_type": logical_string.map(|_| "Utf8"),
+        "native_logical_mapping_type": logical_string.map(|contract| format!("{:?}", contract.native_id_type.data_type())),
+        "edge_id_supported_for_logical_string": false,
+        "call_specific_authority": "gpu_validate_call",
     })
 }
 

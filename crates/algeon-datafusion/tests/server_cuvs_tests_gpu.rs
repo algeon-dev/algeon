@@ -28,24 +28,6 @@ use server_gpu_fixture::lock_async;
 use tokio::{task::JoinHandle, time::sleep};
 use tonic::transport::{Channel, Endpoint};
 
-const KNN_OPTIONS: &str = r#"{
-  "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
-  "k":1,
-  "metric":"l2_expanded"
-}"#;
-
-const KMEANS_OPTIONS: &str = r#"{
-  "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "n_clusters":2,
-  "init":"kmeans++"
-}"#;
-
-const PCA_OPTIONS: &str = r#"{
-  "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "n_components":1
-}"#;
-
 fn test_server_config() -> ServerConfig {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("server.toml");
@@ -84,36 +66,34 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
 
     let knn = execute_batches(
         &mut client,
-        &format!(
-            "SELECT query_id, neighbor_id, rank \
-             FROM cuvs_brute_force_knn((SELECT * FROM dataset_vectors), (SELECT * FROM query_vectors), '{}') \
-             ORDER BY query_ordinal, rank",
-            sql_literal(KNN_OPTIONS)
-        ),
+        "SELECT query_id, neighbor_id, rank \
+         FROM cuvs_brute_force_knn(\
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'l2_expanded') \
+         ORDER BY query_ordinal, rank",
     )
     .await;
     assert_nonempty(&knn);
 
     let kmeans = execute_batches(
         &mut client,
-        &format!(
-            "SELECT id, cluster_id \
-             FROM cuvs_kmeans((SELECT * FROM dataset_vectors), '{}') \
-             ORDER BY row_ordinal",
-            sql_literal(KMEANS_OPTIONS)
-        ),
+        "SELECT id, cluster_id \
+         FROM cuvs_kmeans(\
+             input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             n_clusters => 2, init => 'kmeans++') \
+         ORDER BY row_ordinal",
     )
     .await;
     assert_nonempty(&kmeans);
 
     let pca = execute_batches(
         &mut client,
-        &format!(
-            "SELECT id, pc_0 \
-             FROM cuvs_pca((SELECT * FROM dataset_vectors), '{}') \
-             ORDER BY row_ordinal",
-            sql_literal(PCA_OPTIONS)
-        ),
+        "SELECT id, pc_0 \
+         FROM cuvs_pca(\
+             input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             n_components => 1) \
+         ORDER BY row_ordinal",
     )
     .await;
     assert_nonempty(&pca);
@@ -144,24 +124,22 @@ async fn bounded_flight_sql_executes_parquet_cuvs_relations() {
 
     let kmeans = execute_batches(
         &mut client,
-        &format!(
-            "SELECT id, cluster_id \
-             FROM cuvs_kmeans((SELECT item_id, d0, d1 FROM parquet_vector_input), '{}') \
-             ORDER BY row_ordinal",
-            sql_literal(KMEANS_OPTIONS)
-        ),
+        "SELECT id, cluster_id \
+         FROM cuvs_kmeans(\
+             input => (SELECT item_id AS id, d0, d1 FROM parquet_vector_input), \
+             n_clusters => 2, init => 'kmeans++') \
+         ORDER BY row_ordinal",
     )
     .await;
     assert_nonempty(&kmeans);
 
     let pca = execute_batches(
         &mut client,
-        &format!(
-            "SELECT id, pc_0 \
-             FROM cuvs_pca((SELECT item_id, d0, d1 FROM parquet_vector_input), '{}') \
-             ORDER BY row_ordinal",
-            sql_literal(PCA_OPTIONS)
-        ),
+        "SELECT id, pc_0 \
+         FROM cuvs_pca(\
+             input => (SELECT item_id AS id, d0, d1 FROM parquet_vector_input), \
+             n_components => 1) \
+         ORDER BY row_ordinal",
     )
     .await;
     assert_nonempty(&pca);
@@ -180,10 +158,10 @@ async fn default_bounded_flight_sql_executes_cuvs() {
     register_vector_views(&mut client).await;
     let batches = execute_batches(
         &mut client,
-        &format!(
-            "SELECT * FROM cuvs_brute_force_knn((SELECT * FROM dataset_vectors), (SELECT * FROM query_vectors), '{}')",
-            sql_literal(KNN_OPTIONS)
-        ),
+        "SELECT * FROM cuvs_brute_force_knn(\
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'l2_expanded')",
     )
     .await;
     assert_nonempty(&batches);
@@ -294,8 +272,4 @@ fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
 
 fn assert_nonempty(batches: &[RecordBatch]) {
     assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "cuVS execution must return rows");
-}
-
-fn sql_literal(json: &str) -> String {
-    json.replace('\'', "''")
 }

@@ -198,7 +198,6 @@ pub algeon_datafusion::cugraph_sql::CugraphAlgorithm::TriangleCountAll
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithm::WeaklyConnectedComponents
 impl algeon_datafusion::cugraph_sql::CugraphAlgorithm
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgorithm::all() -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = Self> + core::clone::Clone
-pub fn algeon_datafusion::cugraph_sql::CugraphAlgorithm::allowed_arg_counts(self) -> &'static [usize]
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgorithm::code(self) -> &'static str
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgorithm::definition(self) -> &'static algeon_datafusion::cugraph_sql::CugraphOperationDefinition
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgorithm::function_name(self) -> &'static str
@@ -292,24 +291,13 @@ pub fn algeon_datafusion::cugraph_sql::CugraphAlgoExec::metrics(&self) -> core::
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgoExec::name(&self) -> &str
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgoExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
 pub fn algeon_datafusion::cugraph_sql::CugraphAlgoExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub struct algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider
-impl algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider
-pub fn algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider::new(algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec) -> Self
-pub fn algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider::spec(&self) -> &algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec
-impl datafusion_session::table::TableProvider for algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider
-pub fn algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider::scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::session::Session, core::option::Option<&'life2 alloc::vec::Vec<usize>>, &'life3 [datafusion_expr::expr::Expr], core::option::Option<usize>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub fn algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider::schema(&self) -> arrow_schema::schema::SchemaRef
-pub fn algeon_datafusion::cugraph_sql::CugraphAlgoTableProvider::table_type(&self) -> datafusion_expr::table_source::TableType
 pub struct algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::algorithm: algeon_datafusion::cugraph_sql::CugraphAlgorithm
-pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::dst_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::edge_id_col: core::option::Option<alloc::string::String>
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::graph_options: algeon_datafusion::cugraph_sql::CugraphGraphOptions
+pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::has_edge_id: bool
+pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::has_weight: bool
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::output_schema: arrow_schema::schema::SchemaRef
 pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::params: algeon_datafusion::cugraph_sql::CugraphAlgorithmParams
-pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::src_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
-pub algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec::weight_col: core::option::Option<alloc::string::String>
 pub struct algeon_datafusion::cugraph_sql::CugraphBetweennessCentralityParams
 pub algeon_datafusion::cugraph_sql::CugraphBetweennessCentralityParams::exact_vertex_threshold: u64
 pub algeon_datafusion::cugraph_sql::CugraphBetweennessCentralityParams::include_endpoints: bool
@@ -366,10 +354,8 @@ pub algeon_datafusion::cugraph_sql::CugraphEigenvectorCentralityParams::max_iter
 impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphEigenvectorCentralityParams
 pub fn algeon_datafusion::cugraph_sql::CugraphEigenvectorCentralityParams::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable::vertex_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable::x_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable::y_col: alloc::string::String
+impl algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable
+pub const fn algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable::new() -> Self
 impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable
 pub fn algeon_datafusion::cugraph_sql::CugraphForceAtlas2InitialPositionsTable::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphForceAtlas2Params
@@ -392,20 +378,15 @@ pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2Params::vertex_attributes:
 impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphForceAtlas2Params
 pub fn algeon_datafusion::cugraph_sql::CugraphForceAtlas2Params::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::mass_col: core::option::Option<alloc::string::String>
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::mobility_col: core::option::Option<alloc::string::String>
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::radius_col: core::option::Option<alloc::string::String>
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
-pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::vertex_col: alloc::string::String
-impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable
-pub fn algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::default() -> Self
+pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::has_mass: bool
+pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::has_mobility: bool
+pub algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::has_radius: bool
+impl algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable
+pub const fn algeon_datafusion::cugraph_sql::CugraphForceAtlas2VertexAttributesTable::new(bool, bool, bool) -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable
-pub algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::destination_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::edge_id_col: core::option::Option<alloc::string::String>
-pub algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::source_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
+pub algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::has_edge_id: bool
 impl algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable
-pub fn algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::new(algeon_datafusion::cugraph_sql::CugraphTableReference, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> Self
+pub const fn algeon_datafusion::cugraph_sql::CugraphGraphEdgePredicateTable::new(bool) -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphGraphOptions
 pub algeon_datafusion::cugraph_sql::CugraphGraphOptions::construction_policy: algeon_datafusion::cugraph_sql::CugraphGraphConstructionPolicy
 pub algeon_datafusion::cugraph_sql::CugraphGraphOptions::directed: bool
@@ -413,10 +394,8 @@ pub algeon_datafusion::cugraph_sql::CugraphGraphOptions::renumber: bool
 impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphGraphOptions
 pub fn algeon_datafusion::cugraph_sql::CugraphGraphOptions::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphGraphPredicateTable
-pub algeon_datafusion::cugraph_sql::CugraphGraphPredicateTable::column: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphGraphPredicateTable::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
 impl algeon_datafusion::cugraph_sql::CugraphGraphPredicateTable
-pub fn algeon_datafusion::cugraph_sql::CugraphGraphPredicateTable::new(algeon_datafusion::cugraph_sql::CugraphTableReference, impl core::convert::Into<alloc::string::String>) -> Self
+pub const fn algeon_datafusion::cugraph_sql::CugraphGraphPredicateTable::new() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphHitsParams
 pub algeon_datafusion::cugraph_sql::CugraphHitsParams::epsilon: f64
 pub algeon_datafusion::cugraph_sql::CugraphHitsParams::max_iterations: u32
@@ -463,13 +442,8 @@ pub algeon_datafusion::cugraph_sql::CugraphPageRankParams::max_iterations: u32
 impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphPageRankParams
 pub fn algeon_datafusion::cugraph_sql::CugraphPageRankParams::default() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable
-pub algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
-pub algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::value_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::vertex_col: alloc::string::String
 impl algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable
-pub fn algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::new(algeon_datafusion::cugraph_sql::CugraphTableReference, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable
-pub fn algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::default() -> Self
+pub const fn algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable::new() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphPersonalizedPageRankParams
 pub algeon_datafusion::cugraph_sql::CugraphPersonalizedPageRankParams::pagerank: algeon_datafusion::cugraph_sql::CugraphPageRankParams
 pub algeon_datafusion::cugraph_sql::CugraphPersonalizedPageRankParams::personalization: algeon_datafusion::cugraph_sql::CugraphPageRankPersonalizationTable
@@ -491,21 +465,10 @@ pub algeon_datafusion::cugraph_sql::CugraphSqlConfig::default_graph_options: alg
 pub struct algeon_datafusion::cugraph_sql::CugraphSsspParams
 pub algeon_datafusion::cugraph_sql::CugraphSsspParams::cutoff: core::option::Option<f64>
 pub algeon_datafusion::cugraph_sql::CugraphSsspParams::source_vertex: algeon_datafusion::cugraph_sql::CugraphVertexSelector
-pub struct algeon_datafusion::cugraph_sql::CugraphTableReference
-impl algeon_datafusion::cugraph_sql::CugraphTableReference
-pub fn algeon_datafusion::cugraph_sql::CugraphTableReference::parse(&str) -> datafusion_common::error::Result<Self>
-pub fn algeon_datafusion::cugraph_sql::CugraphTableReference::parts(&self) -> &[alloc::string::String]
-impl core::fmt::Display for algeon_datafusion::cugraph_sql::CugraphTableReference
-pub fn algeon_datafusion::cugraph_sql::CugraphTableReference::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct algeon_datafusion::cugraph_sql::CugraphTriangleCountAllParams
 pub struct algeon_datafusion::cugraph_sql::CugraphVertexPairTable
-pub algeon_datafusion::cugraph_sql::CugraphVertexPairTable::first_vertex_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphVertexPairTable::second_vertex_col: alloc::string::String
-pub algeon_datafusion::cugraph_sql::CugraphVertexPairTable::table_name: algeon_datafusion::cugraph_sql::CugraphTableReference
 impl algeon_datafusion::cugraph_sql::CugraphVertexPairTable
-pub fn algeon_datafusion::cugraph_sql::CugraphVertexPairTable::new(algeon_datafusion::cugraph_sql::CugraphTableReference, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-impl core::default::Default for algeon_datafusion::cugraph_sql::CugraphVertexPairTable
-pub fn algeon_datafusion::cugraph_sql::CugraphVertexPairTable::default() -> Self
+pub const fn algeon_datafusion::cugraph_sql::CugraphVertexPairTable::new() -> Self
 pub struct algeon_datafusion::cugraph_sql::CugraphWccParams
 pub struct algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig
 impl algeon_datafusion::cugraph_sql::GpuIslandHostBoundaryConfig
@@ -545,7 +508,6 @@ pub const algeon_datafusion::cugraph_sql::CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_
 pub const algeon_datafusion::cugraph_sql::CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION: &str
 pub const algeon_datafusion::cugraph_sql::CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION: &str
 pub fn algeon_datafusion::cugraph_sql::bfs_result_schema(&algeon_datafusion::cugraph_sql::CugraphBfsParams) -> arrow_schema::schema::SchemaRef
-pub fn algeon_datafusion::cugraph_sql::parse_cugraph_algorithm_spec(algeon_datafusion::cugraph_sql::CugraphAlgorithm, &[datafusion_expr::expr::Expr], &algeon_datafusion::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<algeon_datafusion::cugraph_sql::CugraphAlgorithmSpec>
 pub fn algeon_datafusion::cugraph_sql::result_schema_for_params(algeon_datafusion::cugraph_sql::CugraphAlgorithm, &algeon_datafusion::cugraph_sql::CugraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub fn algeon_datafusion::cugraph_sql::stable_result_schema(algeon_datafusion::cugraph_sql::CugraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub mod algeon_datafusion::cuvs_sql
@@ -565,6 +527,15 @@ pub use algeon_datafusion::cuvs_sql::CuvsOutputContract
 pub use algeon_datafusion::cuvs_sql::CuvsRelationArgumentSyntax
 pub use algeon_datafusion::cuvs_sql::CuvsRelationRole
 pub use algeon_datafusion::cuvs_sql::canonicalize_cuvs_options
+pub struct algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
+impl algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
+pub fn algeon_datafusion::cuvs_sql::AlgeonQueryPlanner::new(alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_session::planner::ExtensionPlanner + core::marker::Send + core::marker::Sync)>>) -> Self
+impl core::default::Default for algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
+pub fn algeon_datafusion::cuvs_sql::AlgeonQueryPlanner::default() -> Self
+impl core::fmt::Debug for algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
+pub fn algeon_datafusion::cuvs_sql::AlgeonQueryPlanner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl datafusion_session::planner::QueryPlanner for algeon_datafusion::cuvs_sql::AlgeonQueryPlanner
+pub fn algeon_datafusion::cuvs_sql::AlgeonQueryPlanner::create_physical_plan<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 datafusion_expr::logical_plan::plan::LogicalPlan, &'life2 dyn datafusion_session::session::Session) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct algeon_datafusion::cuvs_sql::CuvsAlgoExec
 impl algeon_datafusion::cuvs_sql::CuvsAlgoExec
 pub fn algeon_datafusion::cuvs_sql::CuvsAlgoExec::operation(&self) -> query_planning::plan::vector_algorithm::CuvsOperation
@@ -603,15 +574,6 @@ pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::name(&self) -> &str
 pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::schema(&self) -> &datafusion_common::dfschema::DFSchemaRef
 pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::supports_limit_pushdown(&self) -> bool
 pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::with_exprs_and_inputs(&self, alloc::vec::Vec<datafusion_expr::expr::Expr>, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>) -> datafusion_common::error::Result<Self>
-pub struct algeon_datafusion::cuvs_sql::CuvsQueryPlanner
-impl algeon_datafusion::cuvs_sql::CuvsQueryPlanner
-pub fn algeon_datafusion::cuvs_sql::CuvsQueryPlanner::new(alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_session::planner::ExtensionPlanner + core::marker::Send + core::marker::Sync)>>) -> Self
-impl core::default::Default for algeon_datafusion::cuvs_sql::CuvsQueryPlanner
-pub fn algeon_datafusion::cuvs_sql::CuvsQueryPlanner::default() -> Self
-impl core::fmt::Debug for algeon_datafusion::cuvs_sql::CuvsQueryPlanner
-pub fn algeon_datafusion::cuvs_sql::CuvsQueryPlanner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_session::planner::QueryPlanner for algeon_datafusion::cuvs_sql::CuvsQueryPlanner
-pub fn algeon_datafusion::cuvs_sql::CuvsQueryPlanner::create_physical_plan<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 datafusion_expr::logical_plan::plan::LogicalPlan, &'life2 dyn datafusion_session::session::Session) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct algeon_datafusion::cuvs_sql::CuvsRelationPlanner
 impl datafusion_expr::planner::RelationPlanner for algeon_datafusion::cuvs_sql::CuvsRelationPlanner
 pub fn algeon_datafusion::cuvs_sql::CuvsRelationPlanner::plan_relation(&self, sqlparser::ast::query::TableFactor, &mut dyn datafusion_expr::planner::RelationPlannerContext) -> datafusion_common::error::Result<datafusion_expr::planner::RelationPlanning>

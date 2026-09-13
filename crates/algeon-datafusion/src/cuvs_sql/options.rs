@@ -1,9 +1,9 @@
-use datafusion::common::Result;
-use serde_json::{Map, Value};
+use datafusion::{common::Result, logical_expr::LogicalPlan};
+use serde_json::{Map, Value, json};
 
 use super::{
-    CuvsDenseVectorBinding, CuvsOperation, CuvsOutputContract, CuvsRelationRole, canonicalize_cuvs_options,
-    error::invalid_call,
+    CuvsDenseVectorBinding, CuvsOperation, CuvsOptionKind, CuvsOutputContract, CuvsRelationRole,
+    canonicalize_cuvs_options, error::invalid_call,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,6 +56,19 @@ impl CuvsValidatedOptions {
     pub fn pca_components(&self) -> Option<u32> {
         self.pca_components
     }
+
+    pub(super) fn named_values(&self, operation: CuvsOperation) -> Map<String, Value> {
+        let canonical: Value =
+            serde_json::from_str(&self.canonical_json).expect("validated cuVS options contain canonical JSON");
+        let canonical = canonical.as_object().expect("validated cuVS options are an object");
+        operation
+            .descriptor()
+            .options
+            .iter()
+            .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+            .filter_map(|option| canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value)))
+            .collect()
+    }
 }
 
 pub(super) fn validate_options(operation: CuvsOperation, raw: &str) -> Result<CuvsValidatedOptions> {
@@ -72,6 +85,61 @@ pub(super) fn validate_options(operation: CuvsOperation, raw: &str) -> Result<Cu
     let pca_components = (operation.descriptor().output_contract == CuvsOutputContract::PcaComponents)
         .then(|| option_u32("n_components").expect("canonical PCA options contain n_components"));
     Ok(CuvsValidatedOptions { canonical_json: canonical.to_string(), bindings, knn_k, kmeans_clusters, pca_components })
+}
+
+pub(super) fn options_from_named_values(
+    operation: CuvsOperation,
+    inputs: &[LogicalPlan],
+    mut values: Map<String, Value>,
+) -> Result<String> {
+    let roles = operation.descriptor().relation_roles;
+    if inputs.len() != roles.len() {
+        return Err(invalid_call(
+            operation,
+            "invalid_relation_count",
+            format!("{} requires {} relation argument(s)", operation.descriptor().sql_function_name, roles.len()),
+        ));
+    }
+    for (role, input) in roles.iter().copied().zip(inputs) {
+        if values.contains_key(role.as_str()) {
+            return Err(invalid_call(
+                operation,
+                "unknown_argument",
+                format!("cuVS relation role '{}' cannot appear in the value options object", role.as_str()),
+            ));
+        }
+        values.insert(role.as_str().to_string(), relation_binding(operation, role, input)?);
+    }
+    Ok(Value::Object(values).to_string())
+}
+
+fn relation_binding(operation: CuvsOperation, role: CuvsRelationRole, input: &LogicalPlan) -> Result<Value> {
+    let schema = input.schema();
+    schema
+        .field_with_unqualified_name("id")
+        .map_err(|_| super::error::field_not_found(operation, role.as_str(), "id"))?;
+    let feature_names =
+        schema.fields().iter().map(|field| field.name().as_str()).filter(|name| *name != "id").collect::<Vec<_>>();
+    if feature_names.is_empty() {
+        return Err(invalid_call(
+            operation,
+            "missing_vector_features",
+            format!("cuVS {} relation requires at least one feature field after 'id'", role.as_str()),
+        ));
+    }
+    let vector = if feature_names.contains(&"vector") {
+        if feature_names.len() != 1 {
+            return Err(invalid_call(
+                operation,
+                "vector_field_with_additional_features",
+                format!("cuVS {} relation cannot combine 'vector' with other feature fields", role.as_str()),
+            ));
+        }
+        json!({"column": "vector"})
+    } else {
+        json!({"columns": feature_names})
+    };
+    Ok(json!({"id": "id", "vector": vector}))
 }
 
 fn binding(object: &Map<String, Value>, role: CuvsRelationRole) -> CuvsVectorRelationBinding {

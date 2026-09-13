@@ -15,7 +15,7 @@ Exact brute-force nearest-neighbor search over dense vectors.
 ## Signature
 
 ```sql
-cuvs_brute_force_knn((dataset relation subquery), (queries relation subquery), options_json)
+cuvs_brute_force_knn(dataset => (relation subquery), queries => (relation subquery), k => value, metric => value)
 ```
 
 ## Quickstart
@@ -25,9 +25,10 @@ The call below expects the registered relations `dataset_vectors` (the `dataset`
 ```sql
 SELECT *
 FROM cuvs_brute_force_knn(
-  (SELECT item_id, d0, d1 FROM dataset_vectors),
-  (SELECT query_id, d0, d1 FROM query_vectors),
-  '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}'
+  dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT query_id AS id, d0, d1 FROM query_vectors),
+  k => 8,
+  metric => 'l2_expanded'
 );
 ```
 
@@ -46,27 +47,21 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
-| `options_json` | `JSON string literal` | yes | cuVS operation options and relation-column bindings |
+| `k` | `integer` | yes | Number of neighbors returned for each evaluated query row. |
+| `metric` | `enum ("l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product")` | yes | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
 
-### JSON options
+### SQL value argument schemas
 
-| Option | Required | JSON shape | Default | Constraints | Description |
+| Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `dataset` | yes | `object` |  |  | Names the dataset ID column and one dense-vector binding shape. |
 | `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
 | `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
-| `queries` | yes | `object` |  |  | Names the query ID column and one dense-vector binding shape. |
 
 ### Vector binding shapes
 
-`id`: Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows.
+Each relation subquery must project a non-null `id` field followed by either one or more non-null `Float32` feature fields or one non-null list vector field named `vector`.
 
-| Shape | JSON | Contract |
-| --- | --- | --- |
-| Wide Float32 columns | `{"vector":{"columns":["d0","d1"]}}` | Ordered, unique non-null Float32 feature columns; order defines vector dimensions. |
-| List column | `{"vector":{"column":"embedding"}}` | One non-null FixedSizeList&lt;Float32, D&gt;, List&lt;Float32&gt;, or LargeList&lt;Float32&gt; column. |
-
-Choose exactly one dense-vector binding shape.
+For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.
 
 ## Output
 
@@ -96,7 +91,7 @@ Validation checks registered relation metadata, bindings, dtypes, and options wi
 ```sql
 SELECT * FROM gpu_validate_call(
   'cuvs_brute_force_knn',
-  '{"schema_version":1,"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"queries_vectors"}},"options":{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}}'
+  '{"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"queries_vectors"}},"options":{"k":8,"metric":"l2_expanded"}}'
 );
 ```
 

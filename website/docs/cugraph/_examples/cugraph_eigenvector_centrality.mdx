@@ -11,7 +11,7 @@ the graph, matching the 1970s theory and databases canon:
 
 ```sql
 SELECT p.title, p.year, ROUND(e.value, 3) AS eigenvector
-FROM cugraph_eigenvector_centrality('citation_edges', 'src', 'dst') e
+FROM cugraph_eigenvector_centrality(edges => (SELECT src, dst FROM citation_edges)) e
 JOIN papers p ON p.paper_id = e.vertex
 ORDER BY e.value DESC
 LIMIT 6;
@@ -42,10 +42,10 @@ of all PageRank:
 ```sql
 WITH eig AS (
   SELECT value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rn
-  FROM cugraph_eigenvector_centrality('citation_edges', 'src', 'dst')),
+  FROM cugraph_eigenvector_centrality(edges => (SELECT src, dst FROM citation_edges))),
 pr AS (
   SELECT value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rn
-  FROM cugraph_pagerank('citation_edges', 'src', 'dst'))
+  FROM cugraph_pagerank(edges => (SELECT src, dst FROM citation_edges)))
 SELECT
   ROUND(100.0 * (SELECT SUM(value) FROM eig WHERE rn <= 100)
               / (SELECT SUM(value) FROM eig), 1) AS eigenvector_top100_pct,

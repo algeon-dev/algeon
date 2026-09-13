@@ -68,10 +68,13 @@ use query_engine::{
 };
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode,
-    CugraphBfsParams, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
-    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, GpuIslandHostBoundaryConfig, PredicateSourceColumnRole,
-    plan_error, result_schema_for_params, vertex_id_domain_for_call,
+    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
+    CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN, CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN,
+    CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
+    CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsParams, CugraphBfsSourceVertex,
+    CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, CugraphLogicalOutputMultiplicity, CugraphVertexSelector,
+    GpuIslandHostBoundaryConfig, PredicateSourceColumnRole, plan_error, result_schema_for_params,
+    vertex_id_domain_for_call,
 };
 use crate::{
     error::{Error, ErrorCode},

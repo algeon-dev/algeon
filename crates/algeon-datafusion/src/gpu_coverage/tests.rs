@@ -539,7 +539,7 @@ mod cugraph {
     use crate::{
         cugraph_sql::{
             CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
-            CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams,
+            CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTriangleCountAllParams,
             result_schema_for_params,
         },
         error::DataFusionErrorExt,
@@ -565,11 +565,8 @@ mod cugraph {
         let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
         CugraphAlgorithmSpec {
             algorithm: CugraphAlgorithm::TriangleCountAll,
-            table_name: CugraphTableReference::parse("edges").unwrap(),
-            src_col: "src".to_string(),
-            dst_col: "dst".to_string(),
-            weight_col: None,
-            edge_id_col: None,
+            has_weight: false,
+            has_edge_id: false,
             graph_options: CugraphGraphOptions {
                 directed: false,
                 renumber: true,

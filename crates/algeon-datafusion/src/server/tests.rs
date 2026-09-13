@@ -493,9 +493,9 @@ async fn server_base_and_flight_style_clone_retain_cuvs_query_planner() {
     let backend = runtime_backend(1);
     let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
 
-    assert!(format!("{:?}", ctx.state().query_planner()).contains("CuvsQueryPlanner"));
+    assert!(format!("{:?}", ctx.state().query_planner()).contains("AlgeonQueryPlanner"));
     let cloned = SessionStateBuilder::new_from_existing(ctx.state()).build();
-    assert!(format!("{:?}", cloned.query_planner()).contains("CuvsQueryPlanner"));
+    assert!(format!("{:?}", cloned.query_planner()).contains("AlgeonQueryPlanner"));
 }
 
 #[test]

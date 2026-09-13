@@ -320,7 +320,9 @@ async fn assert_ad_hoc_graph(
         client,
         &format!(
             "SELECT COUNT(*) \
-             FROM cugraph_bfs('{view}', {seed}, 'src', 'dst', NULL, '{{\"depth_limit\":1,\"output_mode\":\"normalized\"}}') \
+             FROM cugraph_bfs(\
+                 edges => (SELECT src, dst FROM {view}), source_vertex => {seed}, \
+                 depth_limit => 1, output_mode => 'normalized') \
              WHERE reachable"
         ),
     )

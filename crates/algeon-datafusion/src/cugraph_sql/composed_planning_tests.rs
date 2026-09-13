@@ -28,23 +28,23 @@ use crate::{
 };
 
 const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
-     FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-          '{\"construction_policy\":\"raw_libcugraph\"}') \
+     FROM cugraph_bfs(edges => (SELECT src, dst FROM raw_edges), \
+          source_vertex => 0, construction_policy => 'raw_libcugraph') \
      ORDER BY vertex";
 
 const RAW_BFS_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
-     FROM cugraph_bfs('phase_c_top_k_edges', 0, 'src', 'dst', NULL, \
-          '{\"construction_policy\":\"raw_libcugraph\"}') \
+     FROM cugraph_bfs(edges => (SELECT src, dst FROM phase_c_top_k_edges), \
+          source_vertex => 0, construction_policy => 'raw_libcugraph') \
      ORDER BY distance \
      LIMIT 100";
 
 const PAGERANK_TOP_K_SQL: &str = "SELECT vertex, value \
-     FROM cugraph_pagerank('phase_c_top_k_edges', 'src', 'dst', 'weight') \
+     FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM phase_c_top_k_edges)) \
      ORDER BY value DESC \
      LIMIT 100";
 
 const PAGERANK_FLOAT32_TOP_K_SQL: &str = "SELECT vertex, value \
-     FROM cugraph_pagerank('phase_c_top_k_edges_float32', 'src', 'dst', 'weight') \
+     FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM phase_c_top_k_edges_float32)) \
      ORDER BY value DESC \
      LIMIT 100";
 
@@ -269,10 +269,10 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
     register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let sql = "WITH pagerank AS (\n\
         SELECT vertex, value AS pagerank_value\n\
-        FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight')\n\
+        FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM graph_edges))\n\
     ), layout AS (\n\
         SELECT vertex, x, y\n\
-        FROM cugraph_force_atlas2('graph_edges', 'src', 'dst', 'weight')\n\
+        FROM cugraph_force_atlas2(edges => (SELECT src, dst, weight FROM graph_edges))\n\
     )\n\
     SELECT p.vertex, p.pagerank_value, l.x, l.y\n\
     FROM layout l JOIN pagerank p ON p.vertex = l.vertex\n\
@@ -496,12 +496,12 @@ async fn bare_limit_plans_keep_source_limit_structure_per_algorithm() {
         (
             "PageRank",
             "SELECT vertex, value FROM cugraph_pagerank(\
-             'phase_c_top_k_edges', 'src', 'dst', 'weight') LIMIT 3",
+             edges => (SELECT src, dst, weight FROM phase_c_top_k_edges)) LIMIT 3",
         ),
         (
             "Eigenvector",
             "SELECT vertex, value FROM cugraph_eigenvector_centrality(\
-             'phase_c_top_k_edges', 'src', 'dst', 'weight') LIMIT 3",
+             edges => (SELECT src, dst, weight FROM phase_c_top_k_edges)) LIMIT 3",
         ),
     ] {
         let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
@@ -511,7 +511,7 @@ async fn bare_limit_plans_keep_source_limit_structure_per_algorithm() {
             panic!("{algorithm} bare limit must lower to GpuResidentSource -> Limit");
         };
         assert!(
-            matches!(&source.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.row_count_upper_bound == Some(3)))
+            matches!(&source.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.row_count_upper_bound.is_none()))
         );
         assert!(
             matches!(&limit.kind, PlanNode::Limit(limit) if limit.input == source.id && limit.spec.fetch == Some(3))
@@ -528,8 +528,10 @@ async fn string_vertex_pagerank_limits_stay_single_source_consumers() {
     let (_backend, ctx) = backend_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
 
-    let limited_df =
-        ctx.sql("SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') LIMIT 2").await.unwrap();
+    let limited_df = ctx
+        .sql("SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) LIMIT 2")
+        .await
+        .unwrap();
     let limited_plan = limited_df.create_physical_plan().await.unwrap();
     let limited_consumer =
         find_composed_exec(limited_plan.as_ref()).expect("pushed string PageRank limit stays native");
@@ -538,7 +540,7 @@ async fn string_vertex_pagerank_limits_stay_single_source_consumers() {
 
     let top_k_df = ctx
         .sql(
-            "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+            "SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) \
              ORDER BY value DESC LIMIT 2",
         )
         .await
@@ -557,7 +559,7 @@ async fn large_numeric_pagerank_top_k_keeps_source_sort_limit_structure() {
 
     let numeric_large_sql = format!(
         "SELECT vertex, value \
-         FROM cugraph_pagerank('large_numeric_edges', 'src', 'dst') \
+         FROM cugraph_pagerank(edges => (SELECT src, dst FROM large_numeric_edges)) \
          ORDER BY value DESC \
          LIMIT {large_limit}"
     );
@@ -607,7 +609,7 @@ async fn ranked_metadata_enrichment_shares_one_top_k_occurrence() {
 
     let ranked_metadata_sql = "WITH ranked AS (\
              SELECT vertex, value \
-             FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) \
              ORDER BY value DESC, vertex \
              LIMIT 5\
          ), metadata AS (\
@@ -681,7 +683,7 @@ async fn pagerank_composition_consumer_covers_filter_sort_limit() {
     let df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM graph_edges)) \
              WHERE value > 0 \
              ORDER BY value DESC, vertex ASC \
              LIMIT 3",

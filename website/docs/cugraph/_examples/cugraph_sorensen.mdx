@@ -4,8 +4,11 @@
 Canonical call shape using `target_edges` as the edge table:
 
 ```sql
-SELECT * FROM cugraph_sorensen('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}')
+SELECT * FROM cugraph_sorensen(
+  edges => (SELECT src, dst FROM target_edges),
+  vertex_pairs => (SELECT first, second FROM candidate_pairs))
 ```
 
-Use the same shape with your registered edge table or view; configure
-algorithm and graph options through `options_json` as described above.
+Use the same shape with your registered relations; pass algorithm and graph
+values as additional named arguments, for example
+`directed => false` or `construction_policy => 'raw_libcugraph'`.

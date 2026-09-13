@@ -41,24 +41,6 @@ use parquet::arrow::ArrowWriter;
 #[cfg(feature = "cugraph")]
 use tokio::{task::yield_now, time::timeout};
 
-const KNN_OPTIONS: &str = r#"{
-  "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
-  "k":1,
-  "metric":"l2_sqrt_expanded"
-}"#;
-
-const KMEANS_OPTIONS: &str = r#"{
-  "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "n_clusters":2,
-  "init":"kmeans++"
-}"#;
-
-const PCA_OPTIONS: &str = r#"{
-  "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "n_components":1
-}"#;
-
 #[cfg(feature = "cugraph")]
 #[tokio::test]
 async fn native_required_accepts_a_raw_cugraph_function_root() {
@@ -75,7 +57,7 @@ async fn native_required_accepts_a_raw_cugraph_function_root() {
     register_tables(&ctx);
 
     let graph = ctx
-        .sql("SELECT * FROM cugraph_degrees_all('edges', 'src', 'dst', 'weight')")
+        .sql("SELECT * FROM cugraph_degrees_all(edges => (SELECT src, dst, weight FROM edges))")
         .await
         .unwrap()
         .create_physical_plan()
@@ -137,20 +119,20 @@ async fn functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_ad
     let ctx = SessionContext::new_with_state(state);
 
     register_tables(&ctx);
-    let sql = format!(
+    let sql = String::from(
         "WITH candidates AS (\
              SELECT e.item_id, e.d0, e.d1 \
              FROM cugraph_force_atlas2(\
-                 'edges', 'src', 'dst', 'weight', '{{\"max_iter\":5,\"seed\":42}}'\
+                 edges => (SELECT src, dst, weight FROM edges),\
+                 max_iter => 5, seed => 42\
              ) AS g \
              JOIN dataset_vectors AS e ON e.item_id = g.vertex \
              WHERE g.x IS NOT NULL\
          ) \
          SELECT * FROM cuvs_brute_force_knn(\
-             (SELECT item_id, d0, d1 FROM candidates), \
-             (SELECT * FROM query_vectors), \
-             '{}')",
-        sql_literal(KNN_OPTIONS)
+             dataset => (SELECT item_id AS id, d0, d1 FROM candidates), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'l2_sqrt_expanded')",
     );
 
     let plan = ctx
@@ -196,10 +178,11 @@ async fn assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(mode: AlgeonGpu
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tables(&ctx);
-    let sql = format!(
+    let sql = String::from(
         "WITH graph_result AS (\
              SELECT vertex, x, y FROM cugraph_force_atlas2(\
-                 'edges', 'src', 'dst', 'weight', '{{\"max_iter\":5,\"seed\":42}}'\
+                 edges => (SELECT src, dst, weight FROM edges),\
+                 max_iter => 5, seed => 42\
              )\
          ), left_queries AS (\
              SELECT d.item_id AS query_id, d.d0, d.d1 \
@@ -211,18 +194,18 @@ async fn assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(mode: AlgeonGpu
              WHERE g.y IS NOT NULL\
          ), left_knn AS (\
              SELECT query_id, neighbor_id FROM cuvs_brute_force_knn(\
-                 (SELECT item_id, d0, d1 FROM dataset_vectors), \
-                 (SELECT * FROM left_queries), '{}')\
+                 dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM left_queries), \
+                 k => 1, metric => 'l2_sqrt_expanded')\
          ), right_knn AS (\
              SELECT query_id, neighbor_id FROM cuvs_brute_force_knn(\
-                 (SELECT item_id, d0, d1 FROM dataset_vectors), \
-                 (SELECT * FROM right_queries), '{}')\
+                 dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM right_queries), \
+                 k => 1, metric => 'l2_sqrt_expanded')\
          ) \
          SELECT query_id, neighbor_id FROM left_knn \
          UNION ALL \
          SELECT query_id, neighbor_id FROM right_knn",
-        sql_literal(KNN_OPTIONS),
-        sql_literal(KNN_OPTIONS),
     );
     let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
     let rendered = displayable(plan.as_ref()).indent(false).to_string();
@@ -254,13 +237,13 @@ async fn native_preferred_binds_nested_host_lineage_inside_composed_consumers() 
 async fn functions_only_executes_cuvs_through_cpu_limit_into_cuvs() {
     let (backend, ctx) = cuvs_bounded_context_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
     register_tables(&ctx);
-    let sql = format!(
+    let sql = String::from(
         "WITH first_neighbors AS (\
              SELECT neighbor_id \
              FROM cuvs_brute_force_knn(\
-                 (SELECT item_id, d0, d1 FROM dataset_vectors), \
-                 (SELECT * FROM query_vectors), \
-                 '{}') \
+                 dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+                 k => 1, metric => 'l2_sqrt_expanded') \
              LIMIT 1\
          ), second_queries AS (\
              SELECT d.item_id AS query_id, d.d0, d.d1 \
@@ -268,11 +251,9 @@ async fn functions_only_executes_cuvs_through_cpu_limit_into_cuvs() {
              JOIN dataset_vectors d ON d.item_id = n.neighbor_id\
          ) \
          SELECT * FROM cuvs_brute_force_knn(\
-             (SELECT item_id, d0, d1 FROM dataset_vectors), \
-             (SELECT query_id, d0, d1 FROM second_queries), \
-             '{}')",
-        sql_literal(KNN_OPTIONS),
-        sql_literal(KNN_OPTIONS),
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM second_queries), \
+             k => 1, metric => 'l2_sqrt_expanded')",
     );
     let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
     let rendered = displayable(plan.as_ref()).indent(false).to_string();
@@ -308,10 +289,10 @@ async fn functions_only_executes_two_gpu_branches_through_a_cpu_join_under_one_a
 
     let sql = "WITH left_layout AS (\
                    SELECT vertex, x FROM cugraph_force_atlas2(\
-                       'edges', 'src', 'dst', 'weight', '{\"max_iter\":5,\"seed\":42}')\
+                       edges => (SELECT src, dst, weight FROM edges), max_iter => 5, seed => 42)\
                ), right_layout AS (\
                    SELECT vertex, y FROM cugraph_force_atlas2(\
-                       'edges', 'src', 'dst', 'weight', '{\"max_iter\":5,\"seed\":43}')\
+                       edges => (SELECT src, dst, weight FROM edges), max_iter => 5, seed => 43)\
                ) \
                SELECT l.vertex, l.x, r.y \
                FROM left_layout l JOIN right_layout r ON l.vertex = r.vertex \
@@ -340,12 +321,11 @@ async fn functions_only_stream_drop_releases_admission_and_the_plan_can_run_agai
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tables(&ctx);
-    let sql = format!(
+    let sql = String::from(
         "SELECT * FROM cuvs_brute_force_knn(\
-             (SELECT item_id, d0, d1 FROM dataset_vectors), \
-             (SELECT * FROM query_vectors), \
-             '{}')",
-        sql_literal(KNN_OPTIONS)
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'l2_sqrt_expanded')",
     );
     let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
 
@@ -416,16 +396,12 @@ async fn cuvs_sql_executes_uniform_list_float32_vectors_with_bounded_memory() {
     )
     .expect("register List queries");
 
-    let options = r#"{
-      "dataset":{"id":"item_id","vector":{"column":"embedding"}},
-      "queries":{"id":"query_id","vector":{"column":"embedding"}},
-      "k":1,
-      "metric":"l2_expanded"
-    }"#;
-    let sql = format!(
+    let sql = String::from(
         "SELECT query_id, neighbor_id, rank \
-         FROM cuvs_brute_force_knn((SELECT * FROM list_dataset_vectors), (SELECT * FROM list_query_vectors), '{}')",
-        sql_literal(options)
+         FROM cuvs_brute_force_knn(\
+             dataset => (SELECT item_id AS id, embedding AS vector FROM list_dataset_vectors), \
+             queries => (SELECT query_id AS id, embedding AS vector FROM list_query_vectors), \
+             k => 1, metric => 'l2_expanded')",
     );
     let plan = ctx
         .sql(&sql)
@@ -482,21 +458,18 @@ async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_b
 
     let plan = plan_sql(
         &ctx,
-        &format!(
-            "SELECT knn.query_id, labels.label \
+        "SELECT knn.query_id, labels.label \
              FROM (\
                  SELECT * FROM cuvs_brute_force_knn(\
-                     (SELECT * FROM partitioned_dataset_vectors), \
-                     (SELECT * FROM partitioned_query_vectors), \
-                     '{}')\
+                     dataset => (SELECT item_id AS id, d0, d1 FROM partitioned_dataset_vectors), \
+                     queries => (SELECT query_id AS id, d0, d1 FROM partitioned_query_vectors), \
+                     k => 1, metric => 'l2_sqrt_expanded')\
                  WHERE rank = 0\
              ) AS knn \
              JOIN labels ON knn.neighbor_id = labels.item_id \
              WHERE knn.neighbor_id = 1 \
              ORDER BY knn.query_id \
              LIMIT 1",
-            sql_literal(KNN_OPTIONS)
-        ),
     )
     .await;
     find_cuvs_exec(plan.as_ref()).expect("relational composition must retain CuvsAlgoExec");
@@ -535,14 +508,11 @@ async fn cuvs_sql_executes_parquet_relations_with_bounded_memory() {
 
     let plan = plan_sql(
         &ctx,
-        &format!(
-            "SELECT query_id, neighbor_id \
+        "SELECT query_id, neighbor_id \
              FROM cuvs_brute_force_knn(\
-                 (SELECT item_id, d0, d1 FROM parquet_dataset_vectors), \
-                 (SELECT * FROM parquet_query_vectors), \
-                 '{}')",
-            sql_literal(KNN_OPTIONS)
-        ),
+                 dataset => (SELECT item_id AS id, d0, d1 FROM parquet_dataset_vectors), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM parquet_query_vectors), \
+                 k => 1, metric => 'l2_sqrt_expanded')",
     )
     .await;
     find_cuvs_exec(plan.as_ref()).expect("Parquet relation must plan a CuvsAlgoExec");
@@ -610,22 +580,13 @@ async fn cuvs_sql_executes_fixed_size_list_float32_parquet_relations_with_bounde
     .await
     .expect("register fixed-size query Parquet table");
 
-    let options = r#"{
-      "dataset":{"id":"item_id","vector":{"column":"embedding"}},
-      "queries":{"id":"query_id","vector":{"column":"embedding"}},
-      "k":1,
-      "metric":"l2_expanded"
-    }"#;
     let plan = plan_sql(
         &ctx,
-        &format!(
-            "SELECT query_id, neighbor_id, rank \
+        "SELECT query_id, neighbor_id, rank \
              FROM cuvs_brute_force_knn(\
-                 (SELECT * FROM fixed_parquet_dataset_vectors), \
-                 (SELECT * FROM fixed_parquet_query_vectors), \
-                 '{}')",
-            sql_literal(options)
-        ),
+                 dataset => (SELECT item_id AS id, embedding AS vector FROM fixed_parquet_dataset_vectors), \
+                 queries => (SELECT query_id AS id, embedding AS vector FROM fixed_parquet_query_vectors), \
+                 k => 1, metric => 'l2_expanded')",
     )
     .await;
     find_cuvs_exec(plan.as_ref()).expect("FixedSizeList<Float32> Parquet inputs must plan a CuvsAlgoExec");
@@ -663,12 +624,11 @@ async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
 
     let kmeans = plan_sql(
         &ctx,
-        &format!(
-            "SELECT id, cluster_id \
-             FROM cuvs_kmeans((SELECT item_id, d0, d1 FROM parquet_vector_input), '{}') \
+        "SELECT id, cluster_id \
+             FROM cuvs_kmeans(\
+                 input => (SELECT item_id AS id, d0, d1 FROM parquet_vector_input), \
+                 n_clusters => 2, init => 'kmeans++') \
              ORDER BY row_ordinal",
-            sql_literal(KMEANS_OPTIONS)
-        ),
     )
     .await;
     find_cuvs_exec(kmeans.as_ref()).expect("K-means Parquet input must plan a CuvsAlgoExec");
@@ -678,12 +638,11 @@ async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
 
     let pca = plan_sql(
         &ctx,
-        &format!(
-            "SELECT id, pc_0 \
-             FROM cuvs_pca((SELECT item_id, d0, d1 FROM parquet_vector_input), '{}') \
+        "SELECT id, pc_0 \
+             FROM cuvs_pca(\
+                 input => (SELECT item_id AS id, d0, d1 FROM parquet_vector_input), \
+                 n_components => 1) \
              ORDER BY row_ordinal",
-            sql_literal(PCA_OPTIONS)
-        ),
     )
     .await;
     find_cuvs_exec(pca.as_ref()).expect("PCA Parquet input must plan a CuvsAlgoExec");
@@ -863,8 +822,4 @@ fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> MetricsSet {
     let mut metrics = MetricsSet::new();
     append(&mut metrics, plan);
     metrics
-}
-
-fn sql_literal(json: &str) -> String {
-    json.replace('\'', "''")
 }

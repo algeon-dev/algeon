@@ -269,7 +269,7 @@ With `--features cugraph`, every graph execution function in
 `CUGRAPH_OPERATION_REGISTRY` is available as a `cugraph_*` table function:
 
 ```sql
-SELECT * FROM cugraph_pagerank('edges', 'src', 'dst')
+SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges))
 ORDER BY value DESC;
 ```
 

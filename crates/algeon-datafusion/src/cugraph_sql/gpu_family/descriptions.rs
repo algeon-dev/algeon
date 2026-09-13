@@ -3,75 +3,11 @@ use serde_json::{Value, json};
 
 use crate::cugraph_sql::{CugraphAlgorithm, stable_result_schema};
 
-pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String {
-    let mut args = vec![
-        json!({"name": "table_name", "type": "Utf8", "required": true}),
-        json!({"name": "src_col", "type": "Utf8", "required": false, "default": "src"}),
-        json!({"name": "dst_col", "type": "Utf8", "required": false, "default": "dst"}),
-        json!({
-            "name": "weight_col",
-            "type": "Utf8|null",
-            "required": algorithm.native_algorithm().weight_policy().requires_weight(),
-            "semantic_effect": weight_argument_semantic_effect(algorithm),
-            "note": weight_argument_note(algorithm)
-        }),
-        json!({
-            "name": "options_json",
-            "type": "Utf8",
-            "required": is_similarity(algorithm),
-            "note": if is_similarity(algorithm) {
-                "required: identifies the explicit candidate-pair relation with vertex_pairs_table, first_vertex_col, and second_vertex_col"
-            } else {
-                ""
-            }
-        }),
-    ];
-    if algorithm.requires_source_vertex() {
-        let source = if algorithm == CugraphAlgorithm::Bfs {
-            json!({
-                "name": "source_vertex_or_vertices",
-                "json_key": "source_vertex",
-                "type": "Int64|Utf8|List<Int64>|List<Utf8>|null-with-source_vertices_table",
-                "required": true,
-                "selector_policy": "literal scalar/list source selector, or NULL with source_vertices_table/source_vertex_col options"
-            })
-        } else if algorithm.definition().supports_logical_string_vertices() {
-            json!({"name": "source_vertex", "type": "Int64|Utf8", "required": true})
-        } else {
-            json!({"name": "source_vertex", "type": "Int64", "required": true})
-        };
-        args.insert(1, source);
-    }
-    Value::Array(args).to_string()
-}
-
 fn is_similarity(algorithm: CugraphAlgorithm) -> bool {
     matches!(
         algorithm,
         CugraphAlgorithm::Jaccard | CugraphAlgorithm::Sorensen | CugraphAlgorithm::Overlap | CugraphAlgorithm::Cosine
     )
-}
-
-fn weight_argument_note(algorithm: CugraphAlgorithm) -> &'static str {
-    match algorithm {
-        CugraphAlgorithm::Bfs => "accepted as an edge-column binding but ignored by BFS traversal",
-        CugraphAlgorithm::MinimumSpanningTree => "required edge weight column",
-        _ if !algorithm.native_algorithm().weight_policy().consumes_weight() => {
-            "accepted as an edge-column binding; native algorithm execution does not consume weights"
-        },
-        _ => "optional edge weight column for graph construction when supported by the algorithm",
-    }
-}
-
-fn weight_argument_semantic_effect(algorithm: CugraphAlgorithm) -> &'static str {
-    match algorithm {
-        CugraphAlgorithm::Bfs => "none for traversal; BFS distance is a hop count",
-        CugraphAlgorithm::MinimumSpanningTree => "required edge weights define the spanning-tree objective",
-        _ if algorithm.native_algorithm().weight_policy().consumes_weight() => {
-            "edge weights affect algorithm results when provided"
-        },
-        _ => "none for this algorithm",
-    }
 }
 
 pub(super) fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> String {
@@ -212,10 +148,10 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     ];
     if algorithm == CugraphAlgorithm::Bfs {
         limitations.extend([
-            "source lists and source_vertices_table are multi-source BFS, not one BFS per source",
-            "source lists and source_vertices_table must contain at most one source per connected component",
+            "source_vertices and the sources relation are multi-source BFS, not one BFS per source",
+            "source_vertices and the sources relation must contain at most one source per connected component",
             "raw/normalized output does not expose origin source per vertex",
-            "string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col",
+            "string logical vertex-domain BFS rejects edges.edge_id and edge-id predicate relations",
             "path output requires exactly one target row at execution time",
             "options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker",
         ]);
@@ -231,16 +167,16 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     if is_similarity(algorithm) {
         limitations.extend([
             "similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed",
-            "options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col",
+            "vertex_pairs is a required relation with canonical first and second columns",
             "candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column",
             "null candidate-pair values are rejected at execution and are never dropped",
             "candidate pairs are a multiset: duplicate, reversed, and self pairs remain distinct output rows",
             "result rows have no global ordering; use ORDER BY when order is required",
-            "providing weight_col selects weighted similarity; omitting it selects unit-weight similarity",
+            "providing edges.weight selects weighted similarity; omitting it selects unit-weight similarity",
         ]);
     }
     if algorithm == CugraphAlgorithm::Sssp {
-        limitations.push("omitting weight_col assigns unit cost 1 to every edge");
+        limitations.push("omitting edges.weight assigns unit cost 1 to every edge");
     }
     if matches!(
         algorithm.native_algorithm().vertex_id_type_support(),
@@ -284,7 +220,7 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
             "Measure how often each edge lies on shortest paths between vertex pairs, exactly or from an explicit sample of source vertices."
         },
         CugraphAlgorithm::Sssp => {
-            "Compute minimum path distances and predecessors from one source vertex, using bound edge weights or unit cost 1 when weight_col is omitted."
+            "Compute minimum path distances and predecessors from one source vertex, using edges.weight or unit cost 1 when that field is omitted."
         },
         CugraphAlgorithm::DegreesAll => "Count both incoming and outgoing edges for every vertex in the graph.",
         CugraphAlgorithm::InDegreesAll => "Count incoming edges for every vertex in the graph.",
@@ -338,38 +274,30 @@ pub(super) fn primary_example_sql(algorithm: CugraphAlgorithm) -> String {
     let function_name = algorithm.function_name();
     match algorithm {
         CugraphAlgorithm::Bfs => {
-            "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"depth_limit\":4}')".to_string()
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4)".to_string()
         },
         CugraphAlgorithm::PersonalizedPageRank => {
-            "SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{\"personalization_table\":\"ppr_seeds\",\"personalization_vertex_col\":\"vertex\",\"personalization_value_col\":\"value\"}')".to_string()
+            "SELECT * FROM cugraph_personalized_pagerank(edges => (SELECT src, dst FROM target_edges), personalization => (SELECT vertex, value FROM ppr_seeds))".to_string()
         },
         CugraphAlgorithm::Sssp => {
-            format!("SELECT * FROM {function_name}('target_edges', 123)")
+            format!("SELECT * FROM {function_name}(edges => (SELECT src, dst, weight FROM target_edges), source_vertex => 123)")
         },
         CugraphAlgorithm::MinimumSpanningTree => {
-            format!("SELECT * FROM {function_name}('target_edges', 'src', 'dst', 'weight')")
+            format!("SELECT * FROM {function_name}(edges => (SELECT src, dst, weight FROM target_edges))")
         },
         algorithm if is_similarity(algorithm) => format!(
-            "SELECT * FROM {function_name}('target_edges', 'src', 'dst', NULL, '{{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+            "SELECT * FROM {function_name}(edges => (SELECT src, dst FROM target_edges), vertex_pairs => (SELECT first, second FROM candidate_pairs))"
         ),
-        _ => format!("SELECT * FROM {function_name}('target_edges')"),
+        _ => format!("SELECT * FROM {function_name}(edges => (SELECT src, dst FROM target_edges))"),
     }
 }
 
 pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
     let examples = match algorithm {
         CugraphAlgorithm::Bfs => bfs_examples(algorithm),
-        CugraphAlgorithm::PersonalizedPageRank => vec![common_example(
-            algorithm,
-            "basic_personalized_pagerank",
-            json!({
-                "src_col": "src",
-                "dst_col": "dst",
-                "personalization_table": "ppr_seeds",
-                "personalization_vertex_col": "vertex",
-                "personalization_value_col": "value"
-            }),
-        )],
+        CugraphAlgorithm::PersonalizedPageRank => {
+            vec![common_example(algorithm, "basic_personalized_pagerank", json!({}))]
+        },
         CugraphAlgorithm::Sssp => vec![
             source_vertex_example(algorithm, "basic_sssp"),
             weighted_source_vertex_example(algorithm, "weighted_sssp"),
@@ -382,149 +310,111 @@ pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
 }
 
 fn common_example(algorithm: CugraphAlgorithm, name: impl Into<String>, options: Value) -> Value {
+    let mut relations = serde_json::Map::from_iter([("edges".to_string(), json!({"table": "target_edges"}))]);
+    let options = options.as_object().cloned().expect("cuGraph examples use an object of named values");
+    if algorithm == CugraphAlgorithm::PersonalizedPageRank {
+        relations.insert("personalization".to_string(), json!({"table": "ppr_seeds"}));
+    }
+    if is_similarity(algorithm) {
+        relations.insert("vertex_pairs".to_string(), json!({"table": "candidate_pairs"}));
+    }
     json!({
         "name": name.into(),
         "function_name": algorithm.function_name(),
-        "call_json": {
-            "schema_version": 1,
-            "relations": { "edges": { "table": "target_edges" } },
-            "options": options,
-        },
+        "call_json": { "relations": relations, "options": options },
         "execution_sql": primary_example_sql(algorithm),
     })
 }
 
 fn similarity_example(algorithm: CugraphAlgorithm) -> Value {
-    common_example(
-        algorithm,
-        format!("basic_{}", algorithm.native_algorithm().definition().name),
-        json!({
-            "src_col": "src",
-            "dst_col": "dst",
-            "vertex_pairs_table": "candidate_pairs",
-            "first_vertex_col": "first",
-            "second_vertex_col": "second"
-        }),
-    )
+    common_example(algorithm, format!("basic_{}", algorithm.native_algorithm().definition().name), json!({}))
 }
 
 fn minimal_example(algorithm: CugraphAlgorithm) -> Value {
-    common_example(
-        algorithm,
-        format!("basic_{}", algorithm.native_algorithm().definition().name),
-        json!({
-            "src_col": "src",
-            "dst_col": "dst"
-        }),
-    )
+    common_example(algorithm, format!("basic_{}", algorithm.native_algorithm().definition().name), json!({}))
 }
 
 fn source_vertex_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
-    common_example(
-        algorithm,
-        name,
-        json!({
-            "source_vertex": 123,
-            "src_col": "src",
-            "dst_col": "dst"
-        }),
-    )
+    common_example(algorithm, name, json!({"source_vertex": 123}))
 }
 
 fn weighted_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
-    common_example(
-        algorithm,
-        name,
-        json!({
-            "src_col": "src",
-            "dst_col": "dst",
-            "weight_col": "weight"
-        }),
-    )
+    common_example(algorithm, name, json!({}))
 }
 
 fn weighted_source_vertex_example(algorithm: CugraphAlgorithm, name: &str) -> Value {
-    common_example(
-        algorithm,
-        name,
-        json!({
-            "source_vertex": 123,
-            "src_col": "src",
-            "dst_col": "dst",
-            "weight_col": "weight"
-        }),
-    )
+    common_example(algorithm, name, json!({"source_vertex": 123}))
 }
 
-fn bfs_examples(algorithm: CugraphAlgorithm) -> Vec<Value> {
+fn bfs_examples(_algorithm: CugraphAlgorithm) -> Vec<Value> {
     vec![
-        common_example(
-            algorithm,
+        bfs_example(
             "basic_bfs",
             json!({
                 "source_vertex": 123,
-                "src_col": "src",
-                "dst_col": "dst",
                 "depth_limit": 4
             }),
+            &[],
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4)",
         ),
-        common_example(
-            algorithm,
+        bfs_example(
             "normalized_bfs",
             json!({
                 "source_vertex": 123,
-                "src_col": "src",
-                "dst_col": "dst",
                 "depth_limit": 4,
                 "output_mode": "normalized"
             }),
+            &[],
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4, output_mode => 'normalized')",
         ),
-        common_example(
-            algorithm,
+        bfs_example(
             "multi_source_bfs_list",
             json!({
-                "source_vertex": [123, 456],
-                "src_col": "src",
-                "dst_col": "dst",
+                "source_vertices": [123, 456],
                 "output_mode": "normalized"
             }),
+            &[],
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertices => [123, 456], output_mode => 'normalized')",
         ),
-        common_example(
-            algorithm,
+        bfs_example(
             "multi_source_bfs_table",
             json!({
-                "source_vertex": null,
-                "src_col": "src",
-                "dst_col": "dst",
-                "source_vertices_table": "bfs_sources",
-                "source_vertex_col": "vertex_id",
                 "output_mode": "normalized"
             }),
+            &[("sources", "bfs_sources")],
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'normalized')",
         ),
-        common_example(
-            algorithm,
+        bfs_example(
             "target_metadata",
             json!({
                 "source_vertex": 123,
-                "src_col": "src",
-                "dst_col": "dst",
                 "output_mode": "normalized",
-                "target_vertices_table": "targets",
-                "target_vertex_col": "vertex_id",
                 "return_target_info": true
             }),
+            &[("target_vertices", "targets")],
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, target_vertices => (SELECT vertex_id AS vertex FROM targets), output_mode => 'normalized', return_target_info => true)",
         ),
-        common_example(
-            algorithm,
+        bfs_example(
             "path_output",
             json!({
                 "source_vertex": 123,
-                "src_col": "src",
-                "dst_col": "dst",
-                "output_mode": "path",
-                "target_vertices_table": "targets",
-                "target_vertex_col": "vertex_id"
+                "output_mode": "path"
             }),
+            &[("target_vertices", "targets")],
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, target_vertices => (SELECT vertex_id AS vertex FROM targets), output_mode => 'path')",
         ),
     ]
+}
+
+fn bfs_example(name: &str, options: Value, extra_relations: &[(&str, &str)], execution_sql: &str) -> Value {
+    let mut relations = serde_json::Map::from_iter([("edges".to_string(), json!({"table": "target_edges"}))]);
+    for (role, table) in extra_relations {
+        relations.insert((*role).to_string(), json!({"table": table}));
+    }
+    json!({
+        "name": name,
+        "function_name": CugraphAlgorithm::Bfs.function_name(),
+        "call_json": {"relations": relations, "options": options},
+        "execution_sql": execution_sql,
+    })
 }

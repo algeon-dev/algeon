@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
 use datafusion::{
-    common::Result,
+    common::{DFSchema, DataFusionError, Result, ScalarValue},
     logical_expr::{
-        Extension, LogicalPlan,
+        Expr, Extension, LogicalPlan,
         planner::{PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning},
     },
-    sql::sqlparser::ast::{Expr as SqlExpr, FunctionArg, FunctionArgExpr, TableFactor, Value as SqlValue},
+    sql::sqlparser::ast::{Expr as SqlExpr, TableFactor},
 };
+use serde_json::{Map, Number, Value};
 
-use super::{CuvsLogicalNode, CuvsOperation, error::invalid_call};
+use super::{CuvsLogicalNode, CuvsOperation, CuvsOptionKind, error::invalid_call, options::options_from_named_values};
+use crate::gpu_functions::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments};
 
 #[derive(Debug, Default)]
 pub struct CuvsRelationPlanner;
@@ -43,8 +45,7 @@ impl RelationPlanner for CuvsRelationPlanner {
         else {
             unreachable!("recognized cuVS relation is a table function")
         };
-        if function_args.settings.is_some()
-            || !with_hints.is_empty()
+        if !with_hints.is_empty()
             || version.is_some()
             || with_ordinality
             || !partitions.is_empty()
@@ -55,40 +56,39 @@ impl RelationPlanner for CuvsRelationPlanner {
             return Err(invalid_call(
                 operation,
                 "unsupported_table_function_modifier",
-                "cuVS relation functions accept only positional relation subqueries, options JSON, and a result alias",
+                "cuVS relation functions accept named arguments and a result alias",
             ));
         }
 
-        let descriptor = operation.descriptor();
-        let expected_args = descriptor.relation_roles.len() + 1;
-        if function_args.args.len() != expected_args {
-            return Err(invalid_call(
-                operation,
-                "invalid_argument_count",
-                format!(
-                    "{} requires {} parenthesized relation subquery argument(s) followed by one options JSON literal",
-                    descriptor.sql_function_name,
-                    descriptor.relation_roles.len()
-                ),
-            ));
+        let definitions = argument_definitions(operation);
+        let mut arguments =
+            bind_named_arguments(operation.descriptor().sql_function_name, function_args, &definitions, |ident| {
+                context.normalize_ident(ident)
+            })?;
+        let mut inputs = Vec::with_capacity(operation.descriptor().relation_roles.len());
+        for role in operation.descriptor().relation_roles {
+            let query = arguments
+                .take_relation(role.as_str())
+                .expect("required cuVS relation argument was checked by the named binder");
+            inputs.push(context.plan(TableFactor::Derived {
+                lateral: false,
+                subquery: query,
+                alias: None,
+                sample: None,
+            })?);
         }
 
-        let mut args = function_args.args.into_iter();
-        let mut inputs = Vec::with_capacity(descriptor.relation_roles.len());
-        for role in descriptor.relation_roles {
-            let expr = positional_expression(
-                operation,
-                args.next().expect("argument count was checked"),
-                "relation arguments must be positional subqueries",
-            )?;
-            inputs.push(plan_relation_subquery(operation, expr, role.as_str(), context)?);
+        let mut values = Map::new();
+        for option in operation.descriptor().options {
+            if matches!(option.kind, CuvsOptionKind::RelationBinding) {
+                continue;
+            }
+            if let Some(expression) = arguments.take_value(option.name) {
+                values.insert(option.name.to_string(), value_argument(operation, option.name, expression, context)?);
+            }
         }
-        let options_expr = positional_expression(
-            operation,
-            args.next().expect("argument count was checked"),
-            "options must be a positional JSON string literal",
-        )?;
-        let options_json = options_literal(operation, options_expr)?;
+        debug_assert!(arguments.is_empty());
+        let options_json = options_from_named_values(operation, &inputs, values)?;
         let node = CuvsLogicalNode::try_new(operation, inputs, &options_json)?;
         let plan = LogicalPlan::Extension(Extension { node: Arc::new(node) });
         Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(plan, alias))))
@@ -106,45 +106,104 @@ fn recognized_operation(relation: &TableFactor, context: &dyn RelationPlannerCon
     CuvsOperation::from_sql_function_name(&context.normalize_ident(ident))
 }
 
-fn positional_expression(operation: CuvsOperation, argument: FunctionArg, message: &'static str) -> Result<SqlExpr> {
-    match argument {
-        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Ok(expr),
-        _ => Err(invalid_call(operation, "invalid_argument_shape", message)),
-    }
+fn argument_definitions(operation: CuvsOperation) -> Vec<NamedArgumentDefinition> {
+    let descriptor = operation.descriptor();
+    descriptor
+        .relation_roles
+        .iter()
+        .map(|role| NamedArgumentDefinition { name: role.as_str(), kind: NamedArgumentKind::Relation, required: true })
+        .chain(descriptor.options.iter().filter_map(|option| {
+            (!matches!(option.kind, CuvsOptionKind::RelationBinding)).then_some(NamedArgumentDefinition {
+                name: option.name,
+                kind: NamedArgumentKind::Value,
+                required: option.required,
+            })
+        }))
+        .collect()
 }
 
-fn plan_relation_subquery(
+fn value_argument(
     operation: CuvsOperation,
+    name: &'static str,
     expression: SqlExpr,
-    role: &'static str,
     context: &mut dyn RelationPlannerContext,
-) -> Result<LogicalPlan> {
+) -> Result<Value> {
+    let expression = context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?;
+    scalar_literal(operation, name, expression).and_then(|value| scalar_json(operation, name, value))
+}
+
+fn scalar_literal(operation: CuvsOperation, name: &'static str, expression: Expr) -> Result<ScalarValue> {
     match expression {
-        SqlExpr::Subquery(subquery) => {
-            context.plan(TableFactor::Derived { lateral: false, subquery, alias: None, sample: None })
-        },
-        _ => Err(invalid_call(
-            operation,
-            "relation_argument_not_subquery",
-            format!("cuVS {role} argument must be a parenthesized relation subquery"),
-        )),
+        Expr::Literal(value, _) => Ok(value),
+        Expr::Negative(inner) => negate_scalar(operation, name, scalar_literal(operation, name, *inner)?),
+        Expr::Cast(cast) => scalar_literal(operation, name, *cast.expr)?
+            .cast_to(cast.field.data_type())
+            .map_err(|_| invalid_value(operation, name)),
+        _ => Err(invalid_value(operation, name)),
     }
 }
 
-fn options_literal(operation: CuvsOperation, expression: SqlExpr) -> Result<String> {
-    match expression {
-        SqlExpr::Value(value) => match value.value {
-            SqlValue::SingleQuotedString(value) => Ok(value),
-            _ => Err(invalid_call(
-                operation,
-                "options_not_string_literal",
-                "cuVS options must be a non-null single-quoted JSON string literal",
-            )),
+fn negate_scalar(operation: CuvsOperation, name: &'static str, value: ScalarValue) -> Result<ScalarValue> {
+    let invalid = || invalid_value(operation, name);
+    match value {
+        ScalarValue::Int8(Some(value)) => {
+            value.checked_neg().map(|value| ScalarValue::Int8(Some(value))).ok_or_else(invalid)
         },
-        _ => Err(invalid_call(
-            operation,
-            "options_not_string_literal",
-            "cuVS options must be a non-null single-quoted JSON string literal",
-        )),
+        ScalarValue::Int16(Some(value)) => {
+            value.checked_neg().map(|value| ScalarValue::Int16(Some(value))).ok_or_else(invalid)
+        },
+        ScalarValue::Int32(Some(value)) => {
+            value.checked_neg().map(|value| ScalarValue::Int32(Some(value))).ok_or_else(invalid)
+        },
+        ScalarValue::Int64(Some(value)) => {
+            value.checked_neg().map(|value| ScalarValue::Int64(Some(value))).ok_or_else(invalid)
+        },
+        ScalarValue::Float32(Some(value)) => Ok(ScalarValue::Float32(Some(-value))),
+        ScalarValue::Float64(Some(value)) => Ok(ScalarValue::Float64(Some(-value))),
+        _ => Err(invalid()),
     }
+}
+
+fn scalar_json(operation: CuvsOperation, name: &'static str, value: ScalarValue) -> Result<Value> {
+    let value = match value {
+        ScalarValue::Null
+        | ScalarValue::Boolean(None)
+        | ScalarValue::Int8(None)
+        | ScalarValue::Int16(None)
+        | ScalarValue::Int32(None)
+        | ScalarValue::Int64(None)
+        | ScalarValue::UInt8(None)
+        | ScalarValue::UInt16(None)
+        | ScalarValue::UInt32(None)
+        | ScalarValue::UInt64(None)
+        | ScalarValue::Float32(None)
+        | ScalarValue::Float64(None)
+        | ScalarValue::Utf8(None)
+        | ScalarValue::LargeUtf8(None)
+        | ScalarValue::Utf8View(None) => Value::Null,
+        ScalarValue::Boolean(Some(value)) => Value::Bool(value),
+        ScalarValue::Int8(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::Int16(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::Int32(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::Int64(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::UInt8(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::UInt16(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::UInt32(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::UInt64(Some(value)) => Value::Number(Number::from(value)),
+        ScalarValue::Float32(Some(value)) => {
+            Number::from_f64(f64::from(value)).map(Value::Number).ok_or_else(|| invalid_value(operation, name))?
+        },
+        ScalarValue::Float64(Some(value)) => {
+            Number::from_f64(value).map(Value::Number).ok_or_else(|| invalid_value(operation, name))?
+        },
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
+            Value::String(value)
+        },
+        _ => return Err(invalid_value(operation, name)),
+    };
+    Ok(value)
+}
+
+fn invalid_value(operation: CuvsOperation, name: &'static str) -> DataFusionError {
+    invalid_call(operation, "value_argument_not_literal", format!("cuVS argument '{name}' must be a scalar literal"))
 }

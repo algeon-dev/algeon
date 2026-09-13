@@ -3,7 +3,8 @@ use std::sync::Arc;
 use datafusion::datasource::source::DataSourceExec;
 
 use super::{
-    AlgeonNativeGpuProducerExec, CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec,
+    AlgeonNativeGpuProducerExec, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN,
+    CUGRAPH_EDGE_WEIGHT_COLUMN, CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec,
     GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor,
     GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, Schema, as_algeon_native_composed_exec,
     as_algeon_native_exec, graph_residency_descriptor_for_edge_plan, is_logical_vertex_type, native_algorithm,
@@ -22,11 +23,11 @@ pub(super) fn cugraph_graph_residency_descriptor(
     cugraph_graph_residency_analysis(Arc::clone(&edge_source), &native_spec).descriptor().cloned()
 }
 
-pub(super) fn cugraph_spec_uses_logical_vertex_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
-    let Ok(source_field) = edge_schema.field_with_name(&spec.src_col) else {
+pub(super) fn cugraph_spec_uses_logical_vertex_mapping(_spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
+    let Ok(source_field) = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN) else {
         return true;
     };
-    let Ok(destination_field) = edge_schema.field_with_name(&spec.dst_col) else {
+    let Ok(destination_field) = edge_schema.field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN) else {
         return true;
     };
     is_logical_vertex_type(source_field.data_type()) || is_logical_vertex_type(destination_field.data_type())
@@ -69,10 +70,13 @@ pub(super) fn native_graph_spec_for_residency(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
 ) -> GraphAlgorithmSpec {
-    let mut edge_columns =
-        GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
-    if let Some(edge_id) = &spec.edge_id_col {
-        edge_columns = edge_columns.with_edge_id(edge_id.clone());
+    let mut edge_columns = GraphEdgeColumnBindings::new(
+        CUGRAPH_EDGE_SOURCE_COLUMN.to_string(),
+        CUGRAPH_EDGE_DESTINATION_COLUMN.to_string(),
+        spec.has_weight.then(|| CUGRAPH_EDGE_WEIGHT_COLUMN.to_string()),
+    );
+    if spec.has_edge_id {
+        edge_columns = edge_columns.with_edge_id(CUGRAPH_EDGE_ID_COLUMN.to_string());
     }
     let algorithm = native_algorithm(spec.algorithm);
     GraphAlgorithmSpec::with_stable_schema(
@@ -111,10 +115,10 @@ pub(super) fn graph_residency_matches_edge_schema(
     edge_schema: &Schema,
     spec: &CugraphAlgorithmSpec,
 ) -> bool {
-    let Ok(source_field) = edge_schema.field_with_name(&spec.src_col) else {
+    let Ok(source_field) = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN) else {
         return false;
     };
-    let Ok(destination_field) = edge_schema.field_with_name(&spec.dst_col) else {
+    let Ok(destination_field) = edge_schema.field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN) else {
         return false;
     };
     if source_field.data_type() != &graph_residency.vertex_data_type
@@ -124,11 +128,11 @@ pub(super) fn graph_residency_matches_edge_schema(
     }
     graph_residency_optional_dtype_matches(
         graph_residency.weight_data_type.as_ref(),
-        spec.weight_col.as_deref(),
+        spec.has_weight.then_some(CUGRAPH_EDGE_WEIGHT_COLUMN),
         edge_schema,
     ) && graph_residency_optional_dtype_matches(
         graph_residency.edge_id_data_type.as_ref(),
-        spec.edge_id_col.as_deref(),
+        spec.has_edge_id.then_some(CUGRAPH_EDGE_ID_COLUMN),
         edge_schema,
     )
 }

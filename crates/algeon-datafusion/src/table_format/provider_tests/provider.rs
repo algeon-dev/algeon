@@ -138,20 +138,13 @@ async fn cuvs_sql_executes_a_real_iceberg_relation_with_bounded_memory() {
     ctx.register_table("vector_queries", Arc::new(MemTable::try_new(query_schema, vec![vec![queries]]).unwrap()))
         .unwrap();
 
-    let options = r#"{
-      "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-      "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
-      "k":1,
-      "metric":"l2_expanded"
-    }"#;
     let plan = ctx
         .sql(&format!(
             "SELECT query_id, neighbor_id \
              FROM cuvs_brute_force_knn(\
-                 (SELECT x AS item_id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg), \
-                 (SELECT * FROM vector_queries), \
-                 '{}')",
-            options.replace('\'', "''")
+                 dataset => (SELECT x AS id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg), \
+                 queries => (SELECT query_id AS id, d0, d1 FROM vector_queries), \
+                 k => 1, metric => 'l2_expanded')"
         ))
         .await
         .expect("plan cuVS Iceberg query")
@@ -196,20 +189,13 @@ async fn cuvs_sql_executes_uniform_float32_list_iceberg_vectors_with_bounded_mem
     ctx.register_table("vector_queries", Arc::new(MemTable::try_new(query_schema, vec![vec![queries]]).unwrap()))
         .unwrap();
 
-    let options = r#"{
-      "dataset":{"id":"item_id","vector":{"column":"embedding"}},
-      "queries":{"id":"query_id","vector":{"column":"embedding"}},
-      "k":1,
-      "metric":"l2_expanded"
-    }"#;
     let plan = ctx
         .sql(&format!(
             "SELECT query_id, neighbor_id, rank \
              FROM cuvs_brute_force_knn(\
-                 (SELECT x AS item_id, embedding FROM vector_iceberg), \
-                 (SELECT * FROM vector_queries), \
-                 '{}')",
-            options.replace('\'', "''")
+                 dataset => (SELECT x AS id, embedding AS vector FROM vector_iceberg), \
+                 queries => (SELECT query_id AS id, embedding AS vector FROM vector_queries), \
+                 k => 1, metric => 'l2_expanded')"
         ))
         .await
         .expect("plan cuVS Iceberg List<Float32> query")
@@ -234,16 +220,10 @@ async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_with_bounded_memory() {
     let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
-    let relation = "SELECT x AS item_id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg";
-    let kmeans_options = r#"{
-      "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-      "n_clusters":2,
-      "init":"kmeans++"
-    }"#;
+    let relation = "SELECT x AS id, CAST(y AS REAL) AS d0, CAST(z AS REAL) AS d1 FROM vector_iceberg";
     let kmeans = ctx
         .sql(&format!(
-            "SELECT id, cluster_id FROM cuvs_kmeans(({relation}), '{}') ORDER BY row_ordinal",
-            kmeans_options.replace('\'', "''")
+            "SELECT id, cluster_id FROM cuvs_kmeans(input => ({relation}), n_clusters => 2, init => 'kmeans++') ORDER BY row_ordinal"
         ))
         .await
         .expect("plan cuVS K-means over Iceberg")
@@ -255,14 +235,9 @@ async fn cuvs_kmeans_and_pca_execute_over_real_iceberg_with_bounded_memory() {
     assert_eq!(kmeans.schema().field(1).name(), "cluster_id");
     assert_cuvs_iceberg_results(kmeans, &ctx).await;
 
-    let pca_options = r#"{
-      "input":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-      "n_components":1
-    }"#;
     let pca = ctx
         .sql(&format!(
-            "SELECT id, pc_0 FROM cuvs_pca(({relation}), '{}') ORDER BY row_ordinal",
-            pca_options.replace('\'', "''")
+            "SELECT id, pc_0 FROM cuvs_pca(input => ({relation}), n_components => 1) ORDER BY row_ordinal"
         ))
         .await
         .expect("plan cuVS PCA over Iceberg")

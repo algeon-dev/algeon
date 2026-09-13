@@ -796,8 +796,7 @@ mod tests {
     #[cfg(feature = "cugraph")]
     use crate::cugraph_sql::{
         CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
-        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams,
-        result_schema_for_params,
+        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTriangleCountAllParams, result_schema_for_params,
     };
     use crate::{
         backend::InstalledTestGpuBackend,
@@ -923,11 +922,8 @@ mod tests {
         let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
         let spec = CugraphAlgorithmSpec {
             algorithm: CugraphAlgorithm::TriangleCountAll,
-            table_name: CugraphTableReference::parse("edges").expect("fixture table name is valid"),
-            src_col: "src".to_string(),
-            dst_col: "dst".to_string(),
-            weight_col: Some("weight".to_string()),
-            edge_id_col: None,
+            has_weight: true,
+            has_edge_id: false,
             graph_options: CugraphGraphOptions {
                 directed: false,
                 renumber: true,

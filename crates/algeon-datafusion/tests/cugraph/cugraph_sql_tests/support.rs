@@ -6,10 +6,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use algeon_datafusion::{
-    backend::AlgeonGpuDeviceProfile, cugraph_sql::CugraphAlgorithmSpec, planner::AlgeonGpuExecutionMode,
-};
-use datafusion::{common::Result as DataFusionResult, physical_plan::metrics::MetricsSet};
+use algeon_datafusion::{backend::AlgeonGpuDeviceProfile, planner::AlgeonGpuExecutionMode};
+use datafusion::physical_plan::metrics::MetricsSet;
 use tokio::task::spawn_blocking;
 
 use super::*;
@@ -45,11 +43,6 @@ pub(super) async fn assert_sql_schema_with_vertex_type(
         assert_eq!(actual.data_type(), expected_type);
         assert_eq!(actual.is_nullable(), expected.is_nullable());
     }
-}
-
-pub(super) fn assert_error_contains(result: DataFusionResult<CugraphAlgorithmSpec>, expected: &str) {
-    let error = result.unwrap_err().to_string();
-    assert!(error.contains(expected), "expected error containing {expected:?}, got {error:?}",);
 }
 
 pub(super) fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {

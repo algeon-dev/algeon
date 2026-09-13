@@ -1,13 +1,10 @@
 use datafusion::common::Result;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsOutputOptions,
-    CugraphBfsPredicateInputs, CugraphBfsSource, CugraphForceAtlas2InitialPositionsTable,
-    CugraphForceAtlas2VertexAttributesTable, CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable,
-    CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType, CugraphPageRankParams,
-    CugraphSimilarityParams, CugraphSqlConfig, CugraphTableReference, CugraphVertexPairTable, CugraphVertexSelector,
-    error::unsupported_option as unsupported_option_error, plan_error,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsSource,
+    CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphKCoreDegreeType, CugraphPageRankParams,
+    CugraphSqlConfig, CugraphVertexSelector, error::unsupported_option as unsupported_option_error, plan_error,
 };
 
 pub(super) fn default_options(
@@ -68,17 +65,12 @@ pub(super) fn validate_graph_directedness(
     Err(unsupported_option_error(message))
 }
 
-pub(super) fn parse_options_json(
+pub(super) fn apply_options(
     algorithm: CugraphAlgorithm,
-    options_json: &str,
+    object: &Map<String, Value>,
     graph_options: &mut CugraphGraphOptions,
-    edge_id_col: &mut Option<String>,
     params: &mut CugraphAlgorithmParams,
-) -> Result<Option<CugraphGraphPredicateTable>> {
-    let value = serde_json::from_str::<Value>(options_json)
-        .map_err(|error| plan_error(format!("invalid cuGraph options JSON: {error}")))?;
-    let object = value.as_object().ok_or_else(|| plan_error("cuGraph options JSON must be an object"))?;
-
+) -> Result<()> {
     for (key, value) in object {
         match key.as_str() {
             "directed" => graph_options.directed = json_bool(value, key)?,
@@ -94,24 +86,6 @@ pub(super) fn parse_options_json(
                         )));
                     },
                 };
-            },
-            "vertex_pairs_table" if algorithm.is_similarity() => {
-                let table = CugraphTableReference::parse(&json_string(value, key)?)?;
-                if let CugraphAlgorithmParams::Similarity(params) = params {
-                    params.vertex_pairs.table_name = table;
-                }
-            },
-            "first_vertex_col" if algorithm.is_similarity() => {
-                let column = json_string(value, key)?;
-                if let CugraphAlgorithmParams::Similarity(params) = params {
-                    params.vertex_pairs.first_vertex_col = column;
-                }
-            },
-            "second_vertex_col" if algorithm.is_similarity() => {
-                let column = json_string(value, key)?;
-                if let CugraphAlgorithmParams::Similarity(params) = params {
-                    params.vertex_pairs.second_vertex_col = column;
-                }
             },
             "alpha" if is_pagerank_algorithm(algorithm) => {
                 let alpha = json_f64(value, key)?;
@@ -140,24 +114,6 @@ pub(super) fn parse_options_json(
                     params.max_iterations = max_iterations;
                 }
             },
-            "personalization_table" if algorithm == CugraphAlgorithm::PersonalizedPageRank => {
-                let table = CugraphTableReference::parse(&json_string(value, key)?)?;
-                if let CugraphAlgorithmParams::PersonalizedPageRank(params) = params {
-                    params.personalization.table_name = table;
-                }
-            },
-            "personalization_vertex_col" if algorithm == CugraphAlgorithm::PersonalizedPageRank => {
-                let column = json_string(value, key)?;
-                if let CugraphAlgorithmParams::PersonalizedPageRank(params) = params {
-                    params.personalization.vertex_col = column;
-                }
-            },
-            "personalization_value_col" if algorithm == CugraphAlgorithm::PersonalizedPageRank => {
-                let column = json_string(value, key)?;
-                if let CugraphAlgorithmParams::PersonalizedPageRank(params) = params {
-                    params.personalization.value_col = column;
-                }
-            },
             "depth_limit" if algorithm == CugraphAlgorithm::Bfs => {
                 if let CugraphAlgorithmParams::Bfs(params) = params {
                     params.depth_limit = match value {
@@ -172,7 +128,26 @@ pub(super) fn parse_options_json(
                     };
                 }
             },
-            key if algorithm == CugraphAlgorithm::Bfs && is_bfs_predicate_option(key) => {},
+            "output_mode" if algorithm == CugraphAlgorithm::Bfs => {
+                let mode = match json_string(value, key)?.as_str() {
+                    "raw" => CugraphBfsOutputMode::Raw,
+                    "normalized" => CugraphBfsOutputMode::Normalized,
+                    "path" => CugraphBfsOutputMode::Path,
+                    other => {
+                        return Err(plan_error(format!(
+                            "unsupported BFS output_mode '{other}', expected 'raw', 'normalized', or 'path'"
+                        )));
+                    },
+                };
+                if let CugraphAlgorithmParams::Bfs(params) = params {
+                    params.output.mode = mode;
+                }
+            },
+            "return_target_info" if algorithm == CugraphAlgorithm::Bfs => {
+                if let CugraphAlgorithmParams::Bfs(params) = params {
+                    params.output.return_target_info = json_bool(value, key)?;
+                }
+            },
             "max_level" if algorithm == CugraphAlgorithm::Louvain => {
                 let max_level = json_u32(value, key)?;
                 if max_level < 1 {
@@ -558,7 +533,6 @@ pub(super) fn parse_options_json(
                     params.prevent_overlapping = value;
                 }
             },
-            key if algorithm == CugraphAlgorithm::ForceAtlas2 && is_force_atlas2_side_input_option(key) => {},
             "overlap_scaling_ratio" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
                 let overlap_scaling_ratio = json_f64(value, key)?;
                 if overlap_scaling_ratio <= 0.0 {
@@ -640,24 +614,10 @@ pub(super) fn parse_options_json(
         }
     }
 
-    let mut source_relation = None;
-    if algorithm == CugraphAlgorithm::Bfs {
-        source_relation = parse_bfs_predicate_options(object, edge_id_col, params)?;
-    }
-    if algorithm == CugraphAlgorithm::PersonalizedPageRank {
-        validate_personalized_pagerank_options(object, params)?;
-    }
-    if algorithm.is_similarity() {
-        validate_similarity_options(algorithm, object, params)?;
-    }
     if is_betweenness_algorithm(algorithm) {
         validate_betweenness_options(params)?;
     }
-    if algorithm == CugraphAlgorithm::ForceAtlas2 {
-        parse_force_atlas2_side_input_options(object, params)?;
-    }
-
-    Ok(source_relation)
+    Ok(())
 }
 
 fn is_pagerank_algorithm(algorithm: CugraphAlgorithm) -> bool {
@@ -715,299 +675,6 @@ fn pagerank_params_mut(params: &mut CugraphAlgorithmParams) -> Option<&mut Cugra
         CugraphAlgorithmParams::PageRank(params) => Some(params),
         CugraphAlgorithmParams::PersonalizedPageRank(params) => Some(&mut params.pagerank),
         _ => None,
-    }
-}
-
-fn validate_personalized_pagerank_options(
-    object: &serde_json::Map<String, Value>,
-    params: &CugraphAlgorithmParams,
-) -> Result<()> {
-    let missing = ["personalization_table", "personalization_vertex_col", "personalization_value_col"]
-        .into_iter()
-        .filter(|key| !object.contains_key(*key))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(plan_error(format!("cugraph_personalized_pagerank requires options: {}", missing.join(", "))));
-    }
-    let CugraphAlgorithmParams::PersonalizedPageRank(params) = params else {
-        return Err(plan_error("cugraph_personalized_pagerank carried non-personalized PageRank parameters"));
-    };
-    if params.personalization.vertex_col.is_empty() {
-        return Err(plan_error("personalization_vertex_col must not be empty"));
-    }
-    if params.personalization.value_col.is_empty() {
-        return Err(plan_error("personalization_value_col must not be empty"));
-    }
-    Ok(())
-}
-
-fn validate_similarity_options(
-    algorithm: CugraphAlgorithm,
-    object: &serde_json::Map<String, Value>,
-    params: &CugraphAlgorithmParams,
-) -> Result<()> {
-    let missing = ["vertex_pairs_table", "first_vertex_col", "second_vertex_col"]
-        .into_iter()
-        .filter(|key| !object.contains_key(*key))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(plan_error(format!("{} requires options: {}", algorithm.function_name(), missing.join(", "))));
-    }
-    let CugraphAlgorithmParams::Similarity(CugraphSimilarityParams { vertex_pairs }) = params else {
-        return Err(plan_error(format!("{} carried non-similarity parameters", algorithm.function_name())));
-    };
-    validate_similarity_pair_selector(vertex_pairs)
-}
-
-fn validate_similarity_pair_selector(vertex_pairs: &CugraphVertexPairTable) -> Result<()> {
-    if vertex_pairs.first_vertex_col.is_empty() {
-        return Err(plan_error("first_vertex_col must not be empty"));
-    }
-    if vertex_pairs.second_vertex_col.is_empty() {
-        return Err(plan_error("second_vertex_col must not be empty"));
-    }
-    Ok(())
-}
-
-fn is_bfs_predicate_option(key: &str) -> bool {
-    matches!(
-        key,
-        "edge_id_col"
-            | "source_vertices_table"
-            | "source_vertex_col"
-            | "include_vertices_table"
-            | "include_vertex_col"
-            | "exclude_vertices_table"
-            | "exclude_vertex_col"
-            | "target_vertices_table"
-            | "target_vertex_col"
-            | "include_edge_ids_table"
-            | "include_edge_ids_col"
-            | "include_edges_table"
-            | "include_edge_src_col"
-            | "include_edge_dst_col"
-            | "include_edge_id_col"
-            | "output_mode"
-            | "return_target_info"
-    )
-}
-
-fn is_force_atlas2_side_input_option(key: &str) -> bool {
-    matches!(
-        key,
-        "vertex_attributes_table"
-            | "vertex_attributes_vertex_col"
-            | "vertex_radius_col"
-            | "vertex_mobility_col"
-            | "vertex_mass_col"
-            | "initial_positions_table"
-            | "initial_positions_vertex_col"
-            | "initial_x_col"
-            | "initial_y_col"
-    )
-}
-
-fn parse_force_atlas2_side_input_options(
-    object: &serde_json::Map<String, Value>,
-    params: &mut CugraphAlgorithmParams,
-) -> Result<()> {
-    let CugraphAlgorithmParams::ForceAtlas2(params) = params else {
-        return Err(plan_error("cugraph_force_atlas2 carried non-ForceAtlas2 parameters"));
-    };
-    let attributes_table = optional_table_reference(object, "vertex_attributes_table")?;
-    let attributes_vertex = optional_json_string(object, "vertex_attributes_vertex_col")?;
-    let radius = optional_json_string(object, "vertex_radius_col")?;
-    let mobility = optional_json_string(object, "vertex_mobility_col")?;
-    let mass = optional_json_string(object, "vertex_mass_col")?;
-    let has_attribute_columns = radius.is_some() || mobility.is_some() || mass.is_some();
-    params.vertex_attributes = match (attributes_table, attributes_vertex, has_attribute_columns) {
-        (Some(table_name), Some(vertex_col), true) => Some(CugraphForceAtlas2VertexAttributesTable {
-            table_name,
-            vertex_col,
-            radius_col: radius,
-            mobility_col: mobility,
-            mass_col: mass,
-        }),
-        (Some(_), None, _) => {
-            return Err(plan_error("ForceAtlas2 vertex_attributes_table requires vertex_attributes_vertex_col"));
-        },
-        (Some(_), Some(_), false) => {
-            return Err(plan_error(
-                "ForceAtlas2 vertex attributes require at least one of vertex_radius_col, vertex_mobility_col, or vertex_mass_col",
-            ));
-        },
-        (None, Some(_), _) | (None, None, true) => {
-            return Err(plan_error("ForceAtlas2 vertex attribute columns require vertex_attributes_table"));
-        },
-        (None, None, false) => None,
-    };
-    if params.prevent_overlapping && params.vertex_attributes.as_ref().is_none_or(|input| input.radius_col.is_none()) {
-        return Err(plan_error(
-            "ForceAtlas2 prevent_overlapping=true requires vertex_attributes_table and vertex_radius_col",
-        ));
-    }
-
-    let positions_table = optional_table_reference(object, "initial_positions_table")?;
-    let positions_vertex = optional_json_string(object, "initial_positions_vertex_col")?;
-    let x = optional_json_string(object, "initial_x_col")?;
-    let y = optional_json_string(object, "initial_y_col")?;
-    params.initial_positions = match (positions_table, positions_vertex, x, y) {
-        (Some(table_name), Some(vertex_col), Some(x_col), Some(y_col)) => {
-            Some(CugraphForceAtlas2InitialPositionsTable { table_name, vertex_col, x_col, y_col })
-        },
-        (None, None, None, None) => None,
-        _ => {
-            return Err(plan_error(
-                "ForceAtlas2 initial positions require initial_positions_table, initial_positions_vertex_col, initial_x_col, and initial_y_col",
-            ));
-        },
-    };
-    Ok(())
-}
-
-fn parse_bfs_predicate_options(
-    object: &serde_json::Map<String, Value>,
-    edge_id_col: &mut Option<String>,
-    params: &mut CugraphAlgorithmParams,
-) -> Result<Option<CugraphGraphPredicateTable>> {
-    if let Some(value) = optional_json_string(object, "edge_id_col")? {
-        *edge_id_col = Some(value);
-    }
-    let output_mode = parse_bfs_output_mode(object)?;
-    let return_target_info = object
-        .get("return_target_info")
-        .map(|value| json_bool(value, "return_target_info"))
-        .transpose()?
-        .unwrap_or(false);
-
-    let source_vertices =
-        parse_vertex_predicate_option(object, "source_vertices_table", "source_vertex_col", "source_vertices")?;
-    let include_vertices =
-        parse_vertex_predicate_option(object, "include_vertices_table", "include_vertex_col", "include_vertices")?;
-    let exclude_vertices =
-        parse_vertex_predicate_option(object, "exclude_vertices_table", "exclude_vertex_col", "exclude_vertices")?;
-    let target_vertices =
-        parse_vertex_predicate_option(object, "target_vertices_table", "target_vertex_col", "target_vertices")?;
-    let include_edge_ids = parse_include_edge_ids_option(object, edge_id_col.as_deref())?;
-    let include_edges = parse_include_edges_option(object, edge_id_col.as_deref())?;
-
-    if include_vertices.is_some() && exclude_vertices.is_some() {
-        return Err(plan_error("BFS include_vertices and exclude_vertices predicates are mutually exclusive"));
-    }
-    if return_target_info && target_vertices.is_none() {
-        return Err(plan_error("BFS return_target_info requires target_vertices_table and target_vertex_col options"));
-    }
-    if output_mode == CugraphBfsOutputMode::Path && return_target_info {
-        return Err(plan_error("BFS path output cannot combine with return_target_info=true"));
-    }
-    if output_mode == CugraphBfsOutputMode::Path && target_vertices.is_none() {
-        return Err(plan_error("BFS path output requires target_vertices_table and target_vertex_col options"));
-    }
-
-    if let CugraphAlgorithmParams::Bfs(params) = params {
-        params.predicates = CugraphBfsPredicateInputs {
-            include_vertices,
-            exclude_vertices,
-            target_vertices,
-            include_edge_ids,
-            include_edges,
-        };
-        params.output = CugraphBfsOutputOptions { mode: output_mode, return_target_info };
-    }
-    Ok(source_vertices)
-}
-
-fn parse_bfs_output_mode(object: &serde_json::Map<String, Value>) -> Result<CugraphBfsOutputMode> {
-    let Some(value) = optional_json_string(object, "output_mode")? else {
-        return Ok(CugraphBfsOutputMode::Raw);
-    };
-    match value.as_str() {
-        "raw" => Ok(CugraphBfsOutputMode::Raw),
-        "normalized" => Ok(CugraphBfsOutputMode::Normalized),
-        "path" => Ok(CugraphBfsOutputMode::Path),
-        other => {
-            Err(plan_error(format!("unsupported BFS output_mode '{other}', expected 'raw', 'normalized', or 'path'")))
-        },
-    }
-}
-
-fn parse_vertex_predicate_option(
-    object: &serde_json::Map<String, Value>,
-    table_key: &str,
-    column_key: &str,
-    role: &str,
-) -> Result<Option<CugraphGraphPredicateTable>> {
-    let table = optional_table_reference(object, table_key)?;
-    let column = optional_json_string(object, column_key)?;
-    match (table, column) {
-        (Some(table), Some(column)) => Ok(Some(CugraphGraphPredicateTable::new(table, column))),
-        (Some(_), None) => Err(plan_error(format!("BFS {role} requires option '{column_key}'"))),
-        (None, Some(_)) => Err(plan_error(format!("BFS {role} requires option '{table_key}'"))),
-        (None, None) => Ok(None),
-    }
-}
-
-fn parse_include_edge_ids_option(
-    object: &serde_json::Map<String, Value>,
-    primary_edge_id_col: Option<&str>,
-) -> Result<Option<CugraphGraphPredicateTable>> {
-    let table = optional_table_reference(object, "include_edge_ids_table")?;
-    let column = optional_json_string(object, "include_edge_ids_col")?;
-    match (table, column, primary_edge_id_col) {
-        (Some(table), Some(column), Some(_)) => Ok(Some(CugraphGraphPredicateTable::new(table, column))),
-        (Some(table), None, Some(primary_edge_id_col)) => {
-            Ok(Some(CugraphGraphPredicateTable::new(table, primary_edge_id_col)))
-        },
-        (Some(_), _, None) => Err(plan_error("BFS include_edge_ids requires primary option 'edge_id_col'")),
-        (None, Some(_), _) => Err(plan_error("BFS include_edge_ids requires option 'include_edge_ids_table'")),
-        (None, None, _) => Ok(None),
-    }
-}
-
-fn parse_include_edges_option(
-    object: &serde_json::Map<String, Value>,
-    primary_edge_id_col: Option<&str>,
-) -> Result<Option<CugraphGraphEdgePredicateTable>> {
-    let table = optional_table_reference(object, "include_edges_table")?;
-    let source = optional_json_string(object, "include_edge_src_col")?;
-    let destination = optional_json_string(object, "include_edge_dst_col")?;
-    let edge_id = optional_json_string(object, "include_edge_id_col")?;
-    if edge_id.is_some() && primary_edge_id_col.is_none() {
-        return Err(plan_error("BFS include_edges edge-id alignment requires primary option 'edge_id_col'"));
-    }
-    match (table, source, destination) {
-        (Some(table), Some(source), Some(destination)) => {
-            Ok(Some(CugraphGraphEdgePredicateTable::new(table, source, destination, edge_id)))
-        },
-        (Some(_), source, destination) => {
-            let missing = [("include_edge_src_col", source.is_none()), ("include_edge_dst_col", destination.is_none())]
-                .into_iter()
-                .filter_map(|(key, missing)| missing.then_some(key))
-                .collect::<Vec<_>>()
-                .join(",");
-            Err(plan_error(format!("BFS include_edges requires option(s) '{missing}'")))
-        },
-        (None, Some(_), _) | (None, _, Some(_)) | (None, _, _) if edge_id.is_some() => {
-            Err(plan_error("BFS include_edges column options require option 'include_edges_table'"))
-        },
-        (None, Some(_), _) | (None, _, Some(_)) => {
-            Err(plan_error("BFS include_edges column options require option 'include_edges_table'"))
-        },
-        (None, None, None) => Ok(None),
-    }
-}
-
-fn optional_table_reference(
-    object: &serde_json::Map<String, Value>,
-    key: &str,
-) -> Result<Option<CugraphTableReference>> {
-    optional_json_string(object, key)?.map(|value| CugraphTableReference::parse(&value)).transpose()
-}
-
-fn optional_json_string(object: &serde_json::Map<String, Value>, key: &str) -> Result<Option<String>> {
-    match object.get(key) {
-        Some(Value::Null) | None => Ok(None),
-        Some(value) => json_string(value, key).map(Some),
     }
 }
 

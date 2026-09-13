@@ -171,7 +171,7 @@ They see the same unqualified workspace names as the REST pipelines.
 printf '%s\n' \
   "SELECT count(*) FROM papers" \
   "CREATE VIEW ai_edges AS SELECT e.src, e.dst, e.weight FROM citation_edges e JOIN paper_fos f ON e.src = f.paper_id WHERE f.fos_name = 'Artificial intelligence'" \
-  "SELECT vertex, distance FROM cugraph_bfs('ai_edges', 2963403868, 'src', 'dst', NULL, '{\"depth_limit\":1,\"output_mode\":\"normalized\"}') ORDER BY distance, vertex LIMIT 10" |
+  "SELECT vertex, distance FROM cugraph_bfs(edges => (SELECT src, dst FROM ai_edges), source_vertex => 2963403868, depth_limit => 1, output_mode => 'normalized') ORDER BY distance, vertex LIMIT 10" |
   arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output table
 ```
 

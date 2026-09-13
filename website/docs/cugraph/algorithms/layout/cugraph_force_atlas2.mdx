@@ -17,26 +17,26 @@ Place vertices in two dimensions with a force-directed simulation that attracts 
 ## Signature
 
 ```sql
-cugraph_force_atlas2(table_name [, src_col, dst_col [, weight_col [, options_json]]])
+cugraph_force_atlas2(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, vertex_attributes => (relation subquery), initial_positions => (relation subquery), max_iter => value, outbound_attraction_distribution => value, lin_log_mode => value, prevent_overlapping => value, overlap_scaling_ratio => value, edge_weight_influence => value, jitter_tolerance => value, barnes_hut_optimize => value, barnes_hut_theta => value, scaling_ratio => value, strong_gravity_mode => value, gravity => value, verbose => value, seed => value)
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_force_atlas2('target_edges');
+SELECT * FROM cugraph_force_atlas2(edges => (SELECT src, dst FROM target_edges));
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); optional relations are named by their side-input table options. Parenthesized subqueries are not accepted, and metadata validation resolves the same registered names.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
 
-| Role | Required | Contract |
-| --- | --- | --- |
-| `edges` | yes | Required edge-list table or view for graph construction. |
-| `vertex_attributes` | no | Optional complete per-vertex radius, mobility, and mass relation. |
-| `initial_positions` | no | Optional complete per-vertex Float32 x/y warm-start relation. |
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `vertex_attributes` | no | vertex, radius (optional), mobility (optional), mass (optional) | optional per-vertex ForceAtlas2 attributes; at least one attribute column is required |
+| `initial_positions` | no | vertex, x, y | optional complete ForceAtlas2 initial positions |
 
 Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
@@ -46,45 +46,36 @@ Logical string side-input limitations:
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `vertex_attributes` | no | vertex, radius (optional), mobility (optional), mass (optional) | optional per-vertex ForceAtlas2 attributes; at least one attribute column is required |
+| `initial_positions` | no | vertex, x, y | optional complete ForceAtlas2 initial positions |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
-
-### JSON options
+### Named value arguments
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `barnes_hut_optimize` | `Boolean` | `false` |  | Uses the Barnes-Hut approximation for repulsion instead of the slower exact computation. |
-| `barnes_hut_theta` | `Float64` | `0.5` | min 0; max 1 | Barnes-Hut trade-off in [0, 1]: 1 favors speed, 0 favors accuracy. Used only when barnes_hut_optimize is true. |
-| `edge_weight_influence` | `Float64` | `1` | min 0 | How much edge weights influence attraction: 0 ignores weights, 1 is the normal weighting, and larger values amplify heavy edges. |
-| `gravity` | `Float64` | `1` | min 0 | Strength of the pull toward the center, which keeps disconnected islands from drifting away. |
-| `initial_positions_table` | `Utf8\|null` | `null` | side input (initial_positions, cols: `initial_positions_vertex_col`, `initial_x_col`, `initial_y_col`) | Optional relation with exactly one warm-start x/y position per graph vertex; when omitted, initial positions are random. |
-| `initial_positions_vertex_col` | `Utf8\|null` | `null` | column of `initial_positions_table`; type ref `vertex_domain` | Vertex identifier column in initial_positions_table; must match the edge endpoint domain. |
-| `initial_x_col` | `Utf8\|null` | `null` | column of `initial_positions_table`; type ref `Float32` | Starting x-axis position per vertex. |
-| `initial_y_col` | `Utf8\|null` | `null` | column of `initial_positions_table`; type ref `Float32` | Starting y-axis position per vertex. |
-| `jitter_tolerance` | `Float64` | `1` | min 0 | How much swinging is tolerated when adapting speed; lower values give less speed and more precision, and values above 1 are discouraged. |
-| `lin_log_mode` | `Boolean` | `false` |  | Switches the attraction model from lin-lin to lin-log, which makes clusters tighter; scaling_ratio usually needs readjusting. |
-| `max_iter` | `UInt32` | `500` | min 1; max 2147483647 | Number of layout iterations to run; the layout stops after this many without error. cuGraph suggests 50-100 iterations for quick results and discourages more than 1000. |
-| `outbound_attraction_distribution` | `Boolean` | `false` |  | Distributes attraction along outbound edges so hubs attract less and are pushed toward the borders. |
-| `overlap_scaling_ratio` | `Float64` | `2` | &gt; 0 | Scales the repulsion force between two overlapping vertices when prevent_overlapping is true. |
-| `prevent_overlapping` | `Boolean` | `false` | valid when true requires vertex_attributes_table and vertex_radius_col | Prevents vertices from overlapping, using the per-vertex radius side input. |
-| `scaling_ratio` | `Float64` | `2` | &gt; 0 | Repulsion strength; larger values spread the layout out. Readjust it when switching lin_log_mode. |
-| `seed` | `UInt64` | `0` |  | Seed for the random initial positions used when initial_positions_table is not supplied. It does not make layouts reproducible; reruns may place individual vertices far apart. |
-| `strong_gravity_mode` | `Boolean` | `false` |  | Uses a stronger gravity law that pulls distant vertices toward the center harder; it can dominate the other forces. |
-| `verbose` | `Boolean` | `false` |  | Makes cuGraph print convergence information at each iteration. |
-| `vertex_attributes_table` | `Utf8\|null` | `null` | side input (vertex_attributes, cols: `vertex_attributes_vertex_col`, `vertex_radius_col`, `vertex_mobility_col`, `vertex_mass_col`) | Optional relation with exactly one row per graph vertex carrying radius, mobility, and/or mass attributes. |
-| `vertex_attributes_vertex_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `vertex_domain` | Vertex identifier column in vertex_attributes_table; must match the edge endpoint domain. |
-| `vertex_mass_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `Float32` | Per-vertex mass, which controls attraction to other vertices; when omitted, each vertex's mass is its degree plus one. |
-| `vertex_mobility_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `Float32` | Per-vertex mobility: a scaling factor on the vertex's displacement at each iteration. |
-| `vertex_radius_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `Float32` | Per-vertex radius, used when prevent_overlapping is true. |
+| `barnes_hut_optimize` | `boolean` | `false` |  | use the Barnes-Hut ForceAtlas2 approximation |
+| `barnes_hut_theta` | `number` | `0.5` | min 0; max 1 | Barnes-Hut speed and accuracy trade-off |
+| `edge_weight_influence` | `number` | `1` | min 0 | non-negative edge weight influence |
+| `gravity` | `number` | `1` | min 0 | non-negative ForceAtlas2 gravity strength |
+| `jitter_tolerance` | `number` | `1` | min 0 | non-negative ForceAtlas2 jitter tolerance |
+| `lin_log_mode` | `boolean` | `false` |  | use the ForceAtlas2 lin-log attraction model |
+| `max_iter` | `integer` | `500` | min 1; max 2147483647 | ForceAtlas2 iteration limit |
+| `outbound_attraction_distribution` | `boolean` | `false` |  | distribute ForceAtlas2 attraction along outbound edges |
+| `overlap_scaling_ratio` | `number` | `2` | &gt; 0 | positive overlap repulsion scaling ratio |
+| `prevent_overlapping` | `boolean` | `false` |  | prevent node overlap; requires a radius attribute |
+| `scaling_ratio` | `number` | `2` | &gt; 0 | positive ForceAtlas2 repulsion scaling ratio |
+| `seed` | `integer` | `0` | min 0 | random initialization seed |
+| `strong_gravity_mode` | `boolean` | `false` |  | use stronger gravity for distant nodes |
+| `verbose` | `boolean` | `false` |  | whether ForceAtlas2 emits convergence information |
 
 ### Graph construction options
 
-This function builds an undirected graph by default (`directed=false`); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
+This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output
 
@@ -116,7 +107,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_force_atlas2',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst"}}'
+  '{"relations":{"edges":{"table":"target_edges"}},"options":{}}'
 );
 ```
 

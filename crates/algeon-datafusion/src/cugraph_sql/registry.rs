@@ -88,26 +88,8 @@ impl CugraphAlgorithm {
         self.definition().native_algorithm
     }
 
-    /// SQL argument counts accepted by this algorithm's table function.
-    ///
-    /// This is the single arity contract shared by parser admission and the
-    /// metadata surface. Similarity requires all five arguments because its
-    /// explicit vertex-pair relation is configured through `options_json`.
-    pub fn allowed_arg_counts(self) -> &'static [usize] {
-        match self {
-            Self::MinimumSpanningTree => &[4, 5],
-            Self::PersonalizedPageRank | Self::Jaccard | Self::Sorensen | Self::Overlap | Self::Cosine => &[5],
-            algorithm if algorithm.native_algorithm().requires_source_vertex() => &[2, 4, 5, 6],
-            _ => &[1, 3, 4, 5],
-        }
-    }
-
     pub(crate) const fn is_similarity(self) -> bool {
         matches!(self, Self::Jaccard | Self::Sorensen | Self::Overlap | Self::Cosine)
-    }
-
-    pub(crate) fn requires_source_vertex(self) -> bool {
-        self.native_algorithm().requires_source_vertex()
     }
 
     pub(crate) fn effective_default_graph_options(self, defaults: &CugraphGraphOptions) -> CugraphGraphOptions {

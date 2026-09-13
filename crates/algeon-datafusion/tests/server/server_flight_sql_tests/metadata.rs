@@ -506,7 +506,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
             r#"SELECT valid, relations_resolved
                FROM gpu_validate_call(
                  'cugraph_bfs',
-                 '{"schema_version":1,"relations":{"edges":{"table":"validation_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","depth_limit":2}}'
+                 '{"relations":{"edges":{"table":"validation_edges"}},"options":{"source_vertex":0,"depth_limit":2}}'
                )"#
             .to_string(),
             None,

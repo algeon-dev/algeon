@@ -61,9 +61,8 @@ SELECT *
 FROM gpu_validate_call(
   'cugraph_pagerank',
   '{
-    "schema_version":1,
     "relations":{"edges":{"table":"analytics.edges"}},
-    "options":{"src_col":"src","dst_col":"dst","weight_col":"weight"}
+    "options":{"alpha":0.9,"directed":true}
   }'
 );
 ~~~
@@ -78,10 +77,10 @@ it needs validation.
 
 The catalog workflow is shared, but execution SQL intentionally differs:
 
-- cuGraph passes a registered edge table or view by its positional name, such
-  as cugraph_pagerank('edges', 'src', 'dst').
-- cuVS passes each relation as a parenthesized SELECT subquery, such as
-  cuvs_kmeans((SELECT item_id, d0, d1 FROM embeddings), '&lt;options-json&gt;').
+- cuGraph passes each relation as a named parenthesized SELECT subquery, such
+  as cugraph_pagerank(edges => (SELECT src, dst FROM edges)).
+- cuVS passes each relation and value as named arguments, such as
+  cuvs_kmeans(input => (SELECT item_id AS id, d0, d1 FROM embeddings), n_clusters => 8).
 
 Use the [cuGraph Functions](../cugraph/algorithms/index.mdx) and
 [cuVS Functions](../cuvs/operations/index.mdx) pages for each function's signature,

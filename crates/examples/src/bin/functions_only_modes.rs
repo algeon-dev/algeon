@@ -18,7 +18,7 @@ use datafusion::{datasource::MemTable, execution::SessionStateBuilder, prelude::
 
 const MODE_ENV: &str = "ALGEON_EXAMPLE_EXECUTION_MODE";
 const SQL: &str = "SELECT vertex, value \
-                   FROM cugraph_pagerank('edges', 'src', 'dst', 'weight') \
+                   FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM edges)) \
                    WHERE value > 0 \
                    ORDER BY value DESC, vertex";
 

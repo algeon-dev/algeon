@@ -8,9 +8,6 @@ use datafusion::{
 };
 use serde_json::{Map, Value};
 
-/// Current common validation-envelope version.
-pub(crate) const GPU_CALL_SCHEMA_VERSION: u32 = 1;
-
 /// A named table or view reference supplied for a descriptor-defined role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GpuRelationReference {
@@ -22,8 +19,6 @@ pub(crate) struct GpuRelationReference {
 /// Parsed common `gpu_validate_call` request envelope.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GpuCallRequest {
-    /// Version of the common request envelope.
-    pub(crate) schema_version: u32,
     /// Descriptor-role keyed relation references.
     pub(crate) relations: BTreeMap<String, GpuRelationReference>,
     /// Family-owned options object.
@@ -40,7 +35,7 @@ pub(crate) struct GpuCallRequestError {
 }
 
 impl GpuCallRequest {
-    /// Parse and validate the version-one common envelope.
+    /// Parse and validate the common envelope.
     pub(crate) fn parse(call_json: &str) -> Result<Self, GpuCallRequestError> {
         let value: Value = serde_json::from_str(call_json).map_err(|error| GpuCallRequestError {
             code: "invalid_call_json",
@@ -49,19 +44,7 @@ impl GpuCallRequest {
         let Value::Object(object) = value else {
             return Err(invalid("call_json must be a JSON object"));
         };
-        reject_unknown_keys(&object, &["schema_version", "relations", "options"])?;
-
-        let schema_version = object
-            .get("schema_version")
-            .and_then(Value::as_u64)
-            .and_then(|version| u32::try_from(version).ok())
-            .ok_or_else(|| invalid("call_json.schema_version must be an integer"))?;
-        if schema_version != GPU_CALL_SCHEMA_VERSION {
-            return Err(GpuCallRequestError {
-                code: "unsupported_schema_version",
-                message: format!("call_json.schema_version must be {GPU_CALL_SCHEMA_VERSION}, got {schema_version}"),
-            });
-        }
+        reject_unknown_keys(&object, &["relations", "options"])?;
 
         let relations = object
             .get("relations")
@@ -76,7 +59,7 @@ impl GpuCallRequest {
             .cloned()
             .ok_or_else(|| invalid("call_json.options must be an object"))?;
 
-        Ok(Self { schema_version, relations, options })
+        Ok(Self { relations, options })
     }
 
     /// Canonical JSON representation of this common envelope.
@@ -87,7 +70,6 @@ impl GpuCallRequest {
             .map(|(role, relation)| (role.clone(), serde_json::json!({ "table": relation.table })))
             .collect::<Map<_, _>>();
         serde_json::json!({
-            "schema_version": self.schema_version,
             "relations": relations,
             "options": self.options,
         })
@@ -107,7 +89,7 @@ pub(crate) struct GpuCallValidation {
     pub(crate) function_name: String,
     /// Whether all required relations resolved.
     pub(crate) relations_resolved: bool,
-    /// Versioned request after family defaults/canonicalization.
+    /// Canonical request after family defaults/canonicalization.
     pub(crate) normalized_call: Value,
     /// Concrete output schema when derivable, or an empty JSON object.
     pub(crate) output_schema: Value,
@@ -195,19 +177,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_and_canonicalizes_version_one_envelope() {
-        let request = GpuCallRequest::parse(
-            r#"{"schema_version":1,"relations":{"input":{"table":"catalog.schema.input"}},"options":{"k":3}}"#,
-        )
-        .unwrap();
+    fn parses_and_canonicalizes_envelope() {
+        let request =
+            GpuCallRequest::parse(r#"{"relations":{"input":{"table":"catalog.schema.input"}},"options":{"k":3}}"#)
+                .unwrap();
         assert_eq!(request.relations["input"].table, "catalog.schema.input");
-        assert_eq!(request.normalized_json()["schema_version"], 1);
+        assert_eq!(request.normalized_json()["relations"]["input"]["table"], "catalog.schema.input");
     }
 
     #[test]
     fn parses_quoted_uuid_references_and_rejects_trailing_sql() {
         let request = GpuCallRequest::parse(
-            r#"{"schema_version":1,"relations":{"input":{"table":"datafusion.\"3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60\".input"}},"options":{}}"#,
+            r#"{"relations":{"input":{"table":"datafusion.\"3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60\".input"}},"options":{}}"#,
         )
         .unwrap();
         assert_eq!(
@@ -216,19 +197,15 @@ mod tests {
         );
         assert_eq!(request.relations["input"].table, r#"datafusion."3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60".input"#);
 
-        let error = GpuCallRequest::parse(
-            r#"{"schema_version":1,"relations":{"input":{"table":"input; DROP TABLE target"}},"options":{}}"#,
-        )
-        .unwrap_err();
+        let error =
+            GpuCallRequest::parse(r#"{"relations":{"input":{"table":"input; DROP TABLE target"}},"options":{}}"#)
+                .unwrap_err();
         assert_eq!(error.code, "invalid_table_reference");
     }
 
     #[test]
-    fn rejects_unknown_keys_and_versions() {
-        let unknown =
-            GpuCallRequest::parse(r#"{"schema_version":1,"relations":{},"options":{},"extra":true}"#).unwrap_err();
+    fn rejects_unknown_keys() {
+        let unknown = GpuCallRequest::parse(r#"{"relations":{},"options":{},"extra":true}"#).unwrap_err();
         assert_eq!(unknown.code, "invalid_call_json");
-        let version = GpuCallRequest::parse(r#"{"schema_version":2,"relations":{},"options":{}}"#).unwrap_err();
-        assert_eq!(version.code, "unsupported_schema_version");
     }
 }

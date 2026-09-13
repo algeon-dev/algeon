@@ -493,9 +493,10 @@ pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
         output_fields: KNN_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT *
 FROM cuvs_brute_force_knn(
-  (SELECT item_id, d0, d1 FROM dataset_vectors),
-  (SELECT query_id, d0, d1 FROM query_vectors),
-  '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}'
+  dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT query_id AS id, d0, d1 FROM query_vectors),
+  k => 8,
+  metric => 'l2_expanded'
 );"#,
         limitations: &[
             "Builds an exact query-local index over the evaluated dataset relation; it does not persist an ANN index or replace a vector database.",
@@ -516,8 +517,8 @@ FROM cuvs_brute_force_knn(
         output_fields: KMEANS_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT id, cluster_id
 FROM cuvs_kmeans(
-  (SELECT item_id, d0, d1 FROM input_vectors),
-  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}'
+  input => (SELECT item_id AS id, d0, d1 FROM input_vectors),
+  n_clusters => 8
 )
 ORDER BY row_ordinal;"#,
         limitations: &[
@@ -539,8 +540,8 @@ ORDER BY row_ordinal;"#,
         output_fields: PCA_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT id, pc_0, pc_1
 FROM cuvs_pca(
-  (SELECT item_id, d0, d1 FROM input_vectors),
-  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}'
+  input => (SELECT item_id AS id, d0, d1 FROM input_vectors),
+  n_components => 2
 )
 ORDER BY row_ordinal;"#,
         limitations: &[
