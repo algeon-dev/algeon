@@ -23,7 +23,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
-const ALGORITHMS_DIR = join(DOCS_DIR, 'algorithms');
+const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
 const OFFICIAL_DOCS_ROOT = 'https://docs.rapids.ai/api/cugraph/stable/';
 
 const FAMILIES = {
@@ -666,6 +666,7 @@ function renderPage(spec) {
     generator: 'website/scripts/gen-cugraph-docs.mjs',
     spec: documentationSpec,
     title,
+    slug: `/cugraph/functions/${spec.function_name}`,
     reference: `Official cuGraph reference: [${documentation.officialApi}](${officialDocsUrl})`,
     quickstart: { prerequisite: quickstartPrerequisite(spec, example), sql: `${example.execution_sql.trim().replace(/;$/, '')};` },
     inputs: renderInputs(spec),
@@ -686,7 +687,7 @@ function renderCheatsheet(specs) {
     table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = documentationFor(spec.function_name);
       return [
-        `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
+        `[${cell(displayName(spec))}](./functions/${spec.family}/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
         cell(docsText(spec.summary)),
         `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
@@ -705,7 +706,7 @@ function renderVertexIdSupport(specs) {
       && contract.numeric_endpoint_types[0] === 'Int32'
       && !supportsLogicalStrings;
     return [
-      `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
+      `[${cell(displayName(spec))}](./functions/${spec.family}/${spec.function_name}.mdx)`,
       renderTypeList(contract.numeric_endpoint_types),
       supportsLogicalStrings ? renderTypeList(logicalEndpointTypes) : 'Not supported',
       supportsLogicalStrings ? code(contract.logical_string_output_type) : 'None',
@@ -740,9 +741,9 @@ function main() {
     }
   }
   for (const [slug, family] of Object.entries(FAMILIES)) {
-    write(join(ALGORITHMS_DIR, slug, '_category_.json'), JSON.stringify({ label: family.label, position: family.position }, null, 2));
+    write(join(FUNCTIONS_DIR, slug, '_category_.json'), JSON.stringify({ label: family.label, position: family.position }, null, 2));
   }
-  for (const spec of specs) write(join(ALGORITHMS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
+  for (const spec of specs) write(join(FUNCTIONS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
   write(join(DOCS_DIR, '_vertex-id-support.mdx'), renderVertexIdSupport(specs));
   console.log(`Wrote ${specs.length} generated cuGraph function pages, cheatsheet, and vertex-ID support partial.`);

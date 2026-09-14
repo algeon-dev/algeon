@@ -105,6 +105,7 @@ export function renderFunctionPage({
   generator,
   spec,
   title,
+  slug,
   reference,
   quickstart,
   inputs,
@@ -121,6 +122,11 @@ export function renderFunctionPage({
     `title: ${title}`,
     `sidebar_label: ${title}`,
     `description: ${JSON.stringify(spec.summary)}`,
+  ];
+  if (slug) {
+    parts.push(`slug: ${slug}`);
+  }
+  parts.push(
     '---',
     '',
     `{/* GENERATED FROM the unified GPU function catalog by ${generator}. Do not edit by hand. */}`,
@@ -128,7 +134,7 @@ export function renderFunctionPage({
     `# ${title}`,
     '',
     `SQL function: ${code(spec.function_name)}`,
-  ];
+  );
   if (reference != null) parts.push('', reference);
   parts.push('', prose(spec.summary));
   const headings = ['Quickstart', 'Inputs', 'Arguments and options', 'Output'];

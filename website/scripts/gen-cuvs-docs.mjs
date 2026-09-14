@@ -20,7 +20,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cuvs');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cuvs');
-const OPERATIONS_DIR = join(DOCS_DIR, 'operations');
+const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
+const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cuvs/';
 
 // These presentation families are documentation navigation only. They do not
 // alter SQL names or introduce an execution API family.
@@ -30,6 +31,49 @@ const FAMILIES = {
   clustering: { label: 'Clustering', functions: ['cuvs_kmeans'] },
   dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuvs_pca'] },
 };
+
+const FUNCTIONS = {
+  cuvs_brute_force_knn: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-neighbors-brute-force',
+  },
+  cuvs_cagra: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-neighbors-cagra',
+  },
+  cuvs_ivf_flat: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-neighbors-ivf-flat',
+  },
+  cuvs_ivf_pq: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-neighbors-ivf-pq',
+  },
+  cuvs_pairwise_distance: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-distance-pairwise-distance',
+  },
+  cuvs_top_k: {
+    officialApi: 'C++ API',
+    officialPath: 'api-reference/cpp-api-selection-select-k',
+  },
+  cuvs_kmeans: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-cluster-kmeans',
+  },
+  cuvs_pca: {
+    officialApi: 'C API',
+    officialPath: 'api-reference/c-api-preprocessing-pca',
+  },
+};
+
+function documentationFor(functionName) {
+  const documentation = FUNCTIONS[functionName];
+  if (!documentation) {
+    throw new Error(`missing official documentation metadata for ${functionName}`);
+  }
+  return documentation;
+}
 
 function familyOf(functionName) {
   for (const [slug, family] of Object.entries(FAMILIES)) {
@@ -253,10 +297,14 @@ function quickstartPrerequisite(spec, entry) {
 
 function renderPage(spec) {
   const entry = presentation(spec);
+  const documentation = documentationFor(spec.function_name);
+  const officialDocsUrl = `${OFFICIAL_DOCS_ROOT}${documentation.officialPath}`;
   return renderFunctionPage({
     generator: 'website/scripts/gen-cuvs-docs.mjs',
     spec,
     title: entry.quickstart.display_name,
+    slug: `/cuvs/functions/${spec.function_name}`,
+    reference: `Official cuVS reference: [${documentation.officialApi}](${officialDocsUrl})`,
     quickstart: { prerequisite: quickstartPrerequisite(spec, entry), sql: entry.quickstart.sql },
     inputs: renderInputs(spec),
     argumentsAndOptions: renderArguments(spec),
@@ -268,25 +316,21 @@ function renderPage(spec) {
 }
 
 function renderCheatsheet(specs) {
-  const sections = [];
-  for (const [family, metadata] of Object.entries(FAMILIES)) {
-    const familySpecs = specs.filter(spec => spec.family === family);
-    if (familySpecs.length === 0) throw new Error(`presentation family ${family} has no function descriptor`);
-    sections.push(
-      `## ${metadata.label}`,
-      '',
-      table(['Function', 'Summary'], familySpecs.map(spec => {
-        const entry = presentation(spec);
-        return [`[${cell(entry.quickstart.display_name)}](./operations/${spec.function_name}.mdx)`, cell(spec.summary)];
-      })),
-    );
-  }
   return [
     '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
     `The live catalog contains **${specs.length} SQL-visible cuVS functions**.`,
     '',
-    ...sections,
+    table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
+      const entry = presentation(spec);
+      const documentation = documentationFor(spec.function_name);
+      return [
+        `[${cell(entry.quickstart.display_name)}](./functions/${spec.function_name}.mdx)`,
+        cell(FAMILIES[spec.family].label),
+        cell(spec.summary),
+        `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
+      ];
+    })),
   ].join('\n');
 }
 
@@ -298,7 +342,15 @@ function main() {
       if (!names.has(functionName)) throw new Error(`missing unified descriptor for ${functionName}`);
     }
   }
-  for (const spec of specs) write(join(OPERATIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
+  for (const functionName of Object.keys(FUNCTIONS)) {
+    if (!names.has(functionName)) throw new Error(`missing unified descriptor for ${functionName}`);
+  }
+  for (const spec of specs) {
+    if (!Object.hasOwn(FUNCTIONS, spec.function_name)) {
+      throw new Error(`unclassified unified descriptor ${spec.function_name}`);
+    }
+  }
+  for (const spec of specs) write(join(FUNCTIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
   console.log(`Wrote ${specs.length} generated cuVS function pages and cheatsheet.`);
 }

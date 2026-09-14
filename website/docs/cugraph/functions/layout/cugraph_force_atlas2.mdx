@@ -1,0 +1,94 @@
+---
+title: ForceAtlas2
+sidebar_label: ForceAtlas2
+description: "Place vertices in two dimensions with a force-directed simulation that attracts connected vertices and repels vertices from one another."
+slug: /cugraph/functions/cugraph_force_atlas2
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
+
+# ForceAtlas2
+
+SQL function: `cugraph_force_atlas2`
+
+Official cuGraph reference: [Python API](https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.force_atlas2/)
+
+Place vertices in two dimensions with a force-directed simulation that attracts connected vertices and repels vertices from one another.
+
+## Quickstart
+
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
+
+```sql
+SELECT * FROM cugraph_force_atlas2(edges => (SELECT src, dst FROM target_edges));
+```
+
+## Inputs
+
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
+
+Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+
+## Arguments and options
+
+### Relation arguments
+
+| Argument | Required | Columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `vertex_attributes` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`radius`, `mobility`, `mass` (optional): `Float32`</li></ul> | optional per-vertex ForceAtlas2 attributes; at least one attribute column is required |
+| `initial_positions` | no | <ul><li>`vertex`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`x`, `y`: `Float32`</li></ul> | optional complete ForceAtlas2 initial positions |
+
+Vertex columns of `vertex_attributes`, `initial_positions` must use the same vertex domain as `edges`: the integer type of `src` and `dst`, or any listed string type when the endpoints are strings. Every `edge_id` column must have the integer type of `src` and `dst`; string-keyed graphs accept no edge IDs.
+
+### Named value arguments
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `barnes_hut_optimize` | `boolean` | `false` |  | use the Barnes-Hut ForceAtlas2 approximation |
+| `barnes_hut_theta` | `number` | `0.5` | min 0; max 1 | Barnes-Hut speed and accuracy trade-off |
+| `edge_weight_influence` | `number` | `1` | min 0 | non-negative edge weight influence |
+| `gravity` | `number` | `1` | min 0 | non-negative ForceAtlas2 gravity strength |
+| `jitter_tolerance` | `number` | `1` | min 0 | non-negative ForceAtlas2 jitter tolerance |
+| `lin_log_mode` | `boolean` | `false` |  | use the ForceAtlas2 lin-log attraction model |
+| `max_iter` | `integer` | `500` | min 1; max 2147483647 | ForceAtlas2 iteration limit |
+| `outbound_attraction_distribution` | `boolean` | `false` |  | distribute ForceAtlas2 attraction along outbound edges |
+| `overlap_scaling_ratio` | `number` | `2` | &gt; 0 | positive overlap repulsion scaling ratio |
+| `prevent_overlapping` | `boolean` | `false` |  | prevent node overlap; requires a radius attribute |
+| `scaling_ratio` | `number` | `2` | &gt; 0 | positive ForceAtlas2 repulsion scaling ratio |
+| `seed` | `integer` | `0` | min 0; max 18446744073709552000 | random initialization seed |
+| `strong_gravity_mode` | `boolean` | `false` |  | use stronger gravity for distant nodes |
+| `verbose` | `boolean` | `false` |  | whether ForceAtlas2 emits convergence information |
+
+### Graph construction options
+
+This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64\|Utf8` | no | Vertex receiving ForceAtlas2 layout coordinates. |
+| `x` | `Float32` | no | X coordinate assigned by ForceAtlas2. |
+| `y` | `Float32` | no | Y coordinate assigned by ForceAtlas2. |
+
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
+
+## Examples
+
+import Examples from '../../_examples/cugraph_force_atlas2.mdx';
+
+<Examples />
+
+## Limits
+
+- vertex_attributes and initial_positions must contain exactly one non-null row for every graph vertex
+- duplicate, missing, and extra ForceAtlas2 side-input vertices are rejected at execution
+- radius, mobility, mass, x, and y side-input columns must be Float32
+- prevent_overlapping=true requires a radius binding
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).

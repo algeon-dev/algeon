@@ -152,7 +152,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         .nth(2)
         .expect("adapter manifest must be two levels below the repository root");
     let spec_directory = repository.join("website/gpu-function-specs/cuvs");
-    let page_directory = repository.join("website/docs/cuvs/operations");
+    let page_directory = repository.join("website/docs/cuvs/functions");
     let expected_names =
         CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.sql_function_name).collect::<BTreeSet<_>>();
     let captured_names = fs::read_dir(&spec_directory)

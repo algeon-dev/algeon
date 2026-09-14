@@ -2,27 +2,13 @@
 
 The live catalog contains **8 SQL-visible cuVS functions**.
 
-## Vector Search
-
-| Function | Summary |
-| --- | --- |
-| [Brute-force kNN](./operations/cuvs_brute_force_knn.mdx) | Exact brute-force nearest-neighbor search over dense vectors. |
-| [CAGRA](./operations/cuvs_cagra.mdx) | Query-local graph approximate nearest-neighbor search. |
-| [IVF-Flat](./operations/cuvs_ivf_flat.mdx) | Query-local inverted-file approximate nearest-neighbor search. |
-| [IVF-PQ](./operations/cuvs_ivf_pq.mdx) | Query-local product-quantized inverted-file nearest-neighbor search. |
-## Distances and Selection
-
-| Function | Summary |
-| --- | --- |
-| [Pairwise Distance](./operations/cuvs_pairwise_distance.mdx) | Pairwise distance or similarity for every x and y vector row. |
-| [Vector Top-K](./operations/cuvs_top_k.mdx) | Select the smallest or largest values in every dense vector row. |
-## Clustering
-
-| Function | Summary |
-| --- | --- |
-| [KMeans](./operations/cuvs_kmeans.mdx) | K-means clustering assignments for dense vector rows. |
-## Dimensionality Reduction
-
-| Function | Summary |
-| --- | --- |
-| [PCA](./operations/cuvs_pca.mdx) | Principal-component analysis transform for dense vector rows. |
+| Function | Family | Description | Official API |
+| --- | --- | --- | --- |
+| [Brute-force kNN](./functions/cuvs_brute_force_knn.mdx) | Vector Search | Exact brute-force nearest-neighbor search over dense vectors. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-neighbors-brute-force) |
+| [CAGRA](./functions/cuvs_cagra.mdx) | Vector Search | Query-local graph approximate nearest-neighbor search. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-neighbors-cagra) |
+| [IVF-Flat](./functions/cuvs_ivf_flat.mdx) | Vector Search | Query-local inverted-file approximate nearest-neighbor search. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-neighbors-ivf-flat) |
+| [IVF-PQ](./functions/cuvs_ivf_pq.mdx) | Vector Search | Query-local product-quantized inverted-file nearest-neighbor search. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-neighbors-ivf-pq) |
+| [KMeans](./functions/cuvs_kmeans.mdx) | Clustering | K-means clustering assignments for dense vector rows. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-cluster-kmeans) |
+| [Pairwise Distance](./functions/cuvs_pairwise_distance.mdx) | Distances and Selection | Pairwise distance or similarity for every x and y vector row. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-distance-pairwise-distance) |
+| [PCA](./functions/cuvs_pca.mdx) | Dimensionality Reduction | Principal-component analysis transform for dense vector rows. | [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-preprocessing-pca) |
+| [Vector Top-K](./functions/cuvs_top_k.mdx) | Distances and Selection | Select the smallest or largest values in every dense vector row. | [C++ API](https://docs.nvidia.com/cuvs/api-reference/cpp-api-selection-select-k) |
