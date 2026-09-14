@@ -8,6 +8,7 @@ use crate::{
     },
     metrics::QueryMetrics,
     plan::{FilterNode, NodeId, ProjectionNode},
+    runtime::resident::GpuDataFrame,
 };
 
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
@@ -148,6 +149,14 @@ pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
     fn retained_device_bytes(&self) -> u64 {
         0
     }
+
+    /// Retained state carrying the stream's complete group-key set before any
+    /// per-frame finalization runs. Producers answer only when the retained
+    /// state already names the operator's output group-key columns; the
+    /// aggregate columns of those frames are still merge state.
+    fn complete_group_key_state(&self) -> Option<Vec<GpuDataFrame>> {
+        None
+    }
 }
 
 struct ResidentFrameStreamProducer {
@@ -231,6 +240,17 @@ impl ResidentFrameStreamPayload {
 
     pub(in crate::exec::bounded) fn num_columns(&self) -> usize {
         self.num_columns
+    }
+
+    /// The stream's complete group-key set, readable before any frame is
+    /// pulled. Eager payloads answer with their already finalized frames; lazy
+    /// payloads answer from producer-retained state, so a slow consumer never
+    /// forces the whole output resident just to publish a key snapshot.
+    pub(in crate::exec::bounded) fn complete_group_key_state(&self) -> Option<Vec<GpuDataFrame>> {
+        match &self.producer {
+            Some(producer) => producer.inner.as_ref()?.complete_group_key_state(),
+            None => Some(self.frames.iter().map(|frame| frame.frame.clone()).collect()),
+        }
     }
 
     pub(in crate::exec::bounded) fn frames(&self) -> impl Iterator<Item = &ResidentGpuFrame> {

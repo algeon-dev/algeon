@@ -189,6 +189,30 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     );
     assert_compiled_partial_aggregate_uses_work_reservation_transfer(&metrics);
     assert_compiled_final_merge_uses_partitioned_strategy(&metrics);
+    // The group-key snapshot is taken from the merged partition states, so the
+    // aggregate that feeds a dynamic-filter route still finalizes lazily.
+    assert_eq!(
+        metrics
+            .aggregate_strategy_decisions
+            .iter()
+            .filter_map(|decision| decision.facts.get("partitioned_merge_streamed_finalization"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["true"],
+        "a group-key dynamic-filter producer must not force eager finalization: {:?}",
+        metrics.aggregate_strategy_decisions
+    );
+    let produced = metrics
+        .dynamic_filter_runtime_rows
+        .iter()
+        .filter(|row| row.event == "produced" && row.producer_kind == "aggregate_group_keys")
+        .collect::<Vec<_>>();
+    assert_eq!(produced.len(), 1, "{:?}", metrics.dynamic_filter_runtime_rows);
+    assert_eq!(
+        (produced[0].producer_rows, produced[0].payload_min_i64, produced[0].payload_max_i64),
+        (Some(3), Some(1), Some(3)),
+        "the payload must cover every group key and carry real key values, not unfinalized merge state"
+    );
 }
 
 #[test]

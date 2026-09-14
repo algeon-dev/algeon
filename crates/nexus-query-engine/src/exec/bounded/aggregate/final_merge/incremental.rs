@@ -17,9 +17,12 @@ use super::{
     partition_final_merge_partial, partitioned_aggregate_partition_count, reduce_merge_fan_in,
     release_partials_reverse,
 };
-use crate::exec::bounded::{
-    BoundedPartitionTargetPolicy, ResidentGpuFrame,
-    compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+use crate::{
+    exec::bounded::{
+        BoundedPartitionTargetPolicy, ResidentGpuFrame,
+        compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+    },
+    runtime::resident::GpuDataFrame,
 };
 
 /// Whether a compiled aggregate over a partial stream should merge its partials
@@ -493,6 +496,14 @@ impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
 
     fn retained_device_bytes(&self) -> u64 {
         self.partitions.iter().map(CommittedPartial::device_bytes).sum()
+    }
+
+    /// Every merged partition state, taken before the lazy final projection.
+    /// The final merge groups by the aggregate's output key names, so these
+    /// states already carry the complete distinct group-key set; only the
+    /// aggregate columns still need finalization.
+    fn complete_group_key_state(&self) -> Option<Vec<GpuDataFrame>> {
+        Some(self.partitions.iter().map(|partial| partial.frame.clone()).collect())
     }
 }
 

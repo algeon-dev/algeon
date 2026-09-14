@@ -97,11 +97,16 @@ impl CompiledGpuTaskExecutor<'_> {
         )
     }
 
+    /// `group_key_state` is the aggregate's complete distinct group-key set,
+    /// which route discovery guarantees is what an `AggregateGroupKeys` route
+    /// reads. It may be the finalized output or the merged partition states a
+    /// lazily finalized output stream still retains; `None` means the output
+    /// cannot answer for its whole scope, so every route completes unpublished.
     pub(super) fn produce_aggregate_group_key_dynamic_filters(
         &mut self,
         aggregate_node_id: NodeId,
         aggregate_schema: &ArrowSchemaRef,
-        aggregate_frame: &GpuDataFrame,
+        group_key_state: Option<&[GpuDataFrame]>,
     ) -> Result<()> {
         let routes = self
             .plan
@@ -117,10 +122,23 @@ impl CompiledGpuTaskExecutor<'_> {
             })
             .cloned()
             .collect::<Vec<_>>();
+        if routes.is_empty() {
+            return Ok(());
+        }
+        let Some(group_key_state) = group_key_state else {
+            for route in &routes {
+                self.dynamic_filters.insert_skipped(route.id, "producer_group_key_state_unavailable");
+                self.execution
+                    .metrics_mut()
+                    .record_dynamic_filter_skipped(route, "producer_group_key_state_unavailable");
+            }
+            return Ok(());
+        };
+        let frames = group_key_state.iter().map(GpuDataFrame::frame).collect::<Vec<_>>();
         self.produce_dynamic_filters_from_frames(
             &routes,
             aggregate_schema,
-            &[aggregate_frame.frame()],
+            &frames,
             "producer_key_not_in_aggregate_output",
         )
     }

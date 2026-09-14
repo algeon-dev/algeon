@@ -26,6 +26,29 @@ pub struct NativeShadowEstimate {
 /// Decode, hash, gather, aggregate, and sink-copy costs currently remain unknown.
 /// Literal import uses cuDF's existing aligned allocation model; resident input
 /// handles are borrowed and their unknown size never increases query-owned bytes.
+/// Serializes the plan's frontend advisory volumes for a diagnostic artifact.
+///
+/// A plan without a compiled schedule still reports this group, so the record
+/// shape belongs to the advisory signal rather than to the pipeline estimate.
+pub fn frontend_output_records(plan: &QueryPlan) -> Vec<serde_json::Value> {
+    plan.advisory_outputs()
+        .iter()
+        .map(|binding| {
+            serde_json::json!({
+                "node": binding.node.index(),
+                "schema": format!("{:?}", binding.schema),
+                "scope": format!("{:?}", binding.scope),
+                "frontend": binding.frontend,
+                "frontend_version": binding.frontend_version,
+                "provenance": format!("{:?}", binding.statistics.provenance),
+                "rows": format!("{:?}", binding.statistics.rows),
+                "bytes": format!("{:?}", binding.statistics.bytes),
+                "unknown_reason": binding.unknown_reason.map(|reason| format!("{reason:?}")),
+            })
+        })
+        .collect()
+}
+
 pub fn estimate_compiled_pipeline(
     plan: &QueryPlan,
     pipeline: &CompiledPipeline,
@@ -79,23 +102,7 @@ pub fn estimate_compiled_pipeline(
             }
         })
         .collect();
-    let frontend_outputs = plan
-        .advisory_outputs()
-        .iter()
-        .map(|binding| {
-            serde_json::json!({
-                "node": binding.node.index(),
-                "schema": format!("{:?}", binding.schema),
-                "scope": format!("{:?}", binding.scope),
-                "frontend": binding.frontend,
-                "frontend_version": binding.frontend_version,
-                "provenance": format!("{:?}", binding.statistics.provenance),
-                "rows": format!("{:?}", binding.statistics.rows),
-                "bytes": format!("{:?}", binding.statistics.bytes),
-                "unknown_reason": binding.unknown_reason.map(|reason| format!("{reason:?}")),
-            })
-        })
-        .collect();
+    let frontend_outputs = frontend_output_records(plan);
     let pipeline = pipeline.shadow_memory_estimate(plan, ShadowMemoryModels { task_workspace, resources })?;
     Ok(NativeShadowEstimate {
         pipeline,

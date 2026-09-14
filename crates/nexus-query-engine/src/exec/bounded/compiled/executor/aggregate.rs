@@ -28,7 +28,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
-        let preserve_output_stream = self.aggregate_output_can_preserve_stream(task, output);
+        let preserve_output_stream = self.output_can_preserve_frame_stream(task.id(), output);
         let node = self.plan.node(node_id).ok_or_else(|| {
             invalid("compiled aggregate task references a missing plan node")
                 .with_fact("compiled_task_id", task.id())
@@ -177,23 +177,14 @@ impl CompiledGpuTaskExecutor<'_> {
             }
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        if let CompiledGpuResourcePayload::ResidentFrame { frame: resident, .. } = &frame.payload {
-            self.produce_aggregate_group_key_dynamic_filters(node_id, node.output_schema(), &resident.frame)?;
-        }
+        let group_key_state = match &frame.payload {
+            CompiledGpuResourcePayload::ResidentFrame { frame: resident, .. } => Some(vec![resident.frame.clone()]),
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.complete_group_key_state(),
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => None,
+        };
+        self.produce_aggregate_group_key_dynamic_filters(node_id, node.output_schema(), group_key_state.as_deref())?;
         Ok(CompiledTaskOutput::new(vec![(output, frame)]))
-    }
-
-    fn aggregate_output_can_preserve_stream(&self, task: &PipelineTask, output: ResidentResourceId) -> bool {
-        if self.plan.dynamic_filter_routes().iter().any(|route| {
-            matches!(
-                route.producer,
-                crate::dynamic_filter::DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id }
-                    if Some(aggregate_node_id) == task.plan_node()
-            )
-        }) {
-            return false;
-        }
-        self.output_can_preserve_frame_stream(task.id(), output)
     }
 
     pub(super) fn execute_window_task(

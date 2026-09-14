@@ -144,6 +144,41 @@ fn frozen_resident_transition_moves_budget_to_resident_and_preserves_cap_boundar
     assert_eq!(released.live_grants_bytes, 0);
 }
 
+/// The capacity invariant holds across the whole device, not just pairwise:
+/// frozen resident bytes plus every simultaneously committed query cap stay
+/// within the managed capacity, and the ledger refuses the first byte past it.
+#[test]
+fn frozen_resident_bytes_plus_every_committed_cap_stay_within_managed_capacity() {
+    const MANAGED_CAPACITY_BYTES: u64 = 1_000;
+    let ledger = DeviceLedger::new(profile(MANAGED_CAPACITY_BYTES, 300, 4));
+    let producer = ledger.try_admit(request(1), Some(400)).unwrap().expect("producer admits");
+    producer.freeze_resident(250).unwrap();
+
+    let small = ledger.try_admit(request(2), Some(300)).unwrap().expect("small cap admits into resident headroom");
+    let large = ledger.try_admit(request(3), Some(450)).unwrap().expect("large cap admits into resident headroom");
+    assert_eq!(small.budget_bytes(), 300);
+    assert_eq!(large.budget_bytes(), 450);
+
+    let committed = ledger.snapshot().unwrap();
+    assert_eq!(committed.frozen_resident_bytes, 250);
+    assert_eq!(committed.live_grants_bytes, 750);
+    assert_eq!(committed.frozen_resident_bytes + committed.live_grants_bytes, MANAGED_CAPACITY_BYTES);
+    assert_eq!(committed.active_attempts, 2, "the frozen producer no longer holds an active attempt");
+    assert!(ledger.try_admit(request(4), Some(1)).unwrap().is_none(), "nothing fits once the invariant is tight");
+
+    drop(small);
+    let after_release = ledger.snapshot().unwrap();
+    assert_eq!(after_release.frozen_resident_bytes, 250);
+    assert_eq!(after_release.live_grants_bytes, 450);
+    assert_eq!(after_release.admissible_query_cap_bytes(Some(300)), Some(300));
+
+    drop(large);
+    drop(producer);
+    let released = ledger.snapshot().unwrap();
+    assert_eq!(released.frozen_resident_bytes, 0);
+    assert_eq!(released.live_grants_bytes, 0);
+}
+
 #[test]
 fn frozen_resident_accepts_empty_outputs_but_remains_bounded_and_terminal() {
     let empty_ledger = DeviceLedger::new(profile(1_000, 800, 1));

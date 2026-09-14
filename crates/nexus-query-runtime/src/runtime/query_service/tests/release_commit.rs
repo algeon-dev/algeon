@@ -618,6 +618,204 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("overlapping cap isolation service drains");
 }
 
+/// Cancelling one of two overlapping attempts releases only the cancelled
+/// attempt's grant. Its capacity stays committed for the whole cleaning
+/// window, and the concurrently active attempt's differently sized grant is
+/// never consumed or released on its behalf.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_grant() {
+    const CANCELLED_CAP_BYTES: u64 = 8 * 1024 * 1024;
+    const SURVIVING_CAP_BYTES: u64 = 12 * 1024 * 1024;
+
+    let service = try_guaranteed_runtime_test_service_with_concurrency(2)
+        .expect("runtime-backed service for active cancellation isolation");
+    let backend_lifecycle = BackendLifecycle::new();
+    let begin_attempt = || {
+        AttemptOwner::begin(
+            BeginAttemptRequest {
+                observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+                ..BeginAttemptRequest::default()
+            },
+            backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+            Arc::new(AttemptBackendCounters::default()),
+            None,
+        )
+    };
+    let cancelled_attempt = begin_attempt();
+    let surviving_attempt = begin_attempt();
+    let cancelled_owner = cancelled_attempt.owner;
+    let surviving_owner = surviving_attempt.owner;
+    let cancelled_completion = cancelled_attempt.completion.completion();
+    for owner in [&cancelled_owner, &surviving_owner] {
+        let handle = owner.handle();
+        handle.record_planning_started().expect("planning starts");
+        handle.record_planning_finished().expect("planning finishes");
+        handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+        handle.record_admission_requested().expect("admission requested");
+    }
+
+    let cancelled = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new()
+                .with_query_cap_bytes(CANCELLED_CAP_BYTES)
+                .with_execution_cancellation(cancelled_owner.cancellation().execution_cancellation())
+                .with_attempt_binding(cancelled_owner.admission_binding()),
+        )
+        .expect("cancelled attempt admits");
+    let surviving = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new()
+                .with_query_cap_bytes(SURVIVING_CAP_BYTES)
+                .with_execution_cancellation(surviving_owner.cancellation().execution_cancellation())
+                .with_attempt_binding(surviving_owner.admission_binding()),
+        )
+        .expect("surviving attempt admits");
+    assert_eq!(cancelled.device_budget_bytes(), CANCELLED_CAP_BYTES);
+    assert_eq!(surviving.device_budget_bytes(), SURVIVING_CAP_BYTES);
+    for (owner, admitted) in [(&cancelled_owner, &cancelled), (&surviving_owner, &surviving)] {
+        let handle = owner.handle();
+        handle
+            .record_admitted(AttemptAdmissionFact {
+                admission_sequence: admitted.admission_sequence(),
+                admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+                device_ordinal: admitted.device_ordinal(),
+                grant_bytes: admitted.device_budget_bytes(),
+            })
+            .expect("attempt admission fact");
+        handle.record_physical_execution_started().expect("physical execution starts");
+        handle.record_gpu_execution_started().expect("GPU execution starts");
+    }
+
+    let cancelled_context = cancelled
+        .acquire_context_with_cancellation(cancelled_owner.cancellation().execution_cancellation())
+        .expect("cancelled attempt context");
+    let surviving_context = surviving
+        .acquire_context_with_cancellation(surviving_owner.cancellation().execution_cancellation())
+        .expect("surviving attempt context");
+    let cancelled_executor = cancelled.gpu_executor().expect("cancelled GPU executor");
+    let surviving_executor = surviving.gpu_executor().expect("surviving GPU executor");
+    let entered = Arc::new(tokio::sync::Barrier::new(3));
+    let (cancelled_release_tx, cancelled_release_rx) = tokio::sync::oneshot::channel();
+    let (surviving_release_tx, surviving_release_rx) = tokio::sync::oneshot::channel();
+    let cancelled_job = tokio::spawn(cancelled_executor.run_observed_scoped(
+        GpuExecutionJobKind::QueryExecution,
+        cancelled_context.context().runtime_observation().clone(),
+        {
+            let entered = Arc::clone(&entered);
+            move |_scope| async move {
+                entered.wait().await;
+                cancelled_release_rx.await.expect("cancelled job release signal");
+            }
+        },
+    ));
+    let surviving_job = tokio::spawn(surviving_executor.run_observed_scoped(
+        GpuExecutionJobKind::QueryExecution,
+        surviving_context.context().runtime_observation().clone(),
+        {
+            let entered = Arc::clone(&entered);
+            move |_scope| async move {
+                entered.wait().await;
+                surviving_release_rx.await.expect("surviving job release signal");
+            }
+        },
+    ));
+    tokio::time::timeout(Duration::from_secs(10), entered.wait())
+        .await
+        .expect("both different-cap GPU jobs overlap at the barrier");
+
+    let overlapping = service.device_ledger_reports().expect("overlap ledger report");
+    let [overlapping] = overlapping.as_slice() else {
+        panic!("expected one device ledger during overlap");
+    };
+    assert_eq!(overlapping.active_attempts, 2);
+    assert_eq!(overlapping.live_grants_bytes, CANCELLED_CAP_BYTES + SURVIVING_CAP_BYTES);
+
+    let cancellation = cancelled_owner.cancellation();
+    cancellation.cancel();
+    let cancellation_error = cancellation
+        .check("nexus_query_runtime.tests.active_cancellation")
+        .expect_err("an effective cancellation must produce a terminal error");
+    assert!(
+        cancelled_context.context().check_cancellation("nexus_query_runtime.tests.active_cancellation").is_err(),
+        "the cancelled attempt's own execution context observes the signal",
+    );
+    assert!(
+        surviving_context.context().check_cancellation("nexus_query_runtime.tests.active_cancellation").is_ok(),
+        "cancelling one attempt must not cancel the other",
+    );
+    cancelled_release_tx.send(()).expect("cancelled job remains controllable");
+    cancelled_job.await.expect("cancelled job joins").expect("cancelled GPU job completes");
+    drop(cancelled_executor);
+    drop(cancelled_context);
+    cancelled_owner.commit_query_error(&cancellation_error).expect("cancelled terminal commit");
+
+    // The release gate is after report sealing and before the envelope drops
+    // its lane and grant: the cancelled attempt must still own its capacity.
+    let cancelled_gate = cancelled.lifetime.arm_envelope_release_gate();
+    let cancelled_release = std::thread::spawn(move || {
+        cancelled.finish();
+        drop(cancelled);
+    });
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || cancelled_gate.entered(),
+        "cancelled attempt reaches envelope cleaning gate",
+    );
+    let cleaning = service.device_ledger_reports().expect("cleaning ledger report");
+    let [cleaning] = cleaning.as_slice() else {
+        panic!("expected one device ledger while the cancelled attempt cleans");
+    };
+    assert_eq!(cleaning.active_attempts, 2, "a cleaning cancellation still owns its lane");
+    assert_eq!(cleaning.live_grants_bytes, CANCELLED_CAP_BYTES + SURVIVING_CAP_BYTES);
+    assert!(
+        service
+            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(CANCELLED_CAP_BYTES))
+            .expect("replacement admission probe")
+            .is_none(),
+        "a cleaning cancelled grant is not returned early",
+    );
+
+    cancelled_gate.open();
+    cancelled_release.join().expect("cancelled release completes");
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || {
+            service.device_ledger_reports().ok().is_some_and(|reports| {
+                reports.first().is_some_and(|report| {
+                    report.active_attempts == 1
+                        && report.live_grants_bytes == SURVIVING_CAP_BYTES
+                        && report.grants.len() == 1
+                        && report.grants[0].grant_bytes == SURVIVING_CAP_BYTES
+                })
+            })
+        },
+        "cancelled grant releases without touching the surviving grant",
+    );
+    let cancelled_report = cancelled_completion.try_report().expect("cancelled attempt report is published");
+    assert!(matches!(cancelled_report.outcome, RuntimeTerminalOutcome::Cancelled));
+    assert_eq!(cancelled_report.cleanup_failure_count, 0);
+
+    surviving_release_tx.send(()).expect("surviving job release signal");
+    surviving_job.await.expect("surviving job joins").expect("surviving GPU job completes");
+    drop(surviving_executor);
+    drop(surviving_context);
+    surviving_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("surviving terminal commit");
+    surviving.finish();
+    drop(surviving);
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || {
+            service.device_ledger_reports().ok().is_some_and(|reports| {
+                reports.first().is_some_and(|report| report.active_attempts == 0 && report.grants.is_empty())
+            })
+        },
+        "surviving grant releases after its own job and cleanup finish",
+    );
+    service
+        .close_and_wait_for_quiescence(Duration::from_secs(10))
+        .expect("active cancellation isolation service drains");
+}
+
 /// Residual attempt-domain state closes device admission before report
 /// publication, and the leaking attempt retains its grant until the report is
 /// allowed to seal.

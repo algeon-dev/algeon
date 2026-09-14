@@ -30,6 +30,18 @@ clickbench-stage-probe = [
   "dep:nexus-query-engine",
   "datafusion-nexus/bench-support",
 ]
+shadow-estimate-report = [
+  "dep:cudf",
+  # Direct dep so this crate's build.rs bakes the native rpath; without it the
+  # tool binary cannot find libcudf.so at run time.
+  "dep:cudf-sys",
+  "dep:datafusion",
+  "dep:datafusion-nexus",
+  "dep:nexus-bench",
+  "dep:nexus-workloads",
+  "dep:nexus-query-engine",
+  "datafusion-nexus/bench-support",
+]
 cugraph-oracle = [
   "dep:cudf",
   "dep:datafusion",

@@ -21,9 +21,7 @@ use std::{
 
 use datafusion::{common::DataFusionError, physical_plan::ExecutionPlan, prelude::SessionContext};
 use datafusion_nexus::{
-    backend::NexusGpuBackend,
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig},
-    planner::NexusNativeOptimizerConfig,
+    backend::NexusGpuBackend, native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
 };
 use futures::TryStreamExt;
@@ -36,7 +34,6 @@ use nexus_query_engine::{
         RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
         RuntimeOperatorStageState, RuntimeQueryId, write_runtime_observation_jsonl,
     },
-    plan::QueryPlan,
     runtime::{
         ExecutionCancellation, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
         GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
@@ -48,7 +45,7 @@ use nexus_workloads::clickbench::{
 };
 use serde::Serialize;
 
-use crate::gpu_backend::ToolGpuBackend;
+use crate::{gpu_backend::ToolGpuBackend, native_plan_peel::peel_native_query_plan};
 
 const DEFAULT_QUERY_IDS: &[&str] = &["q28", "q29", "q34", "q35"];
 const DEFAULT_DEADLINE_SECS: u64 = 120;
@@ -464,21 +461,6 @@ fn build_probe_backend(
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     Ok(ToolGpuBackend::build(service_config, device)?)
-}
-
-fn peel_native_query_plan(plan: &dyn ExecutionPlan) -> Option<QueryPlan> {
-    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
-        return Some(native.native_plan_for_internal_consumer().clone());
-    }
-    if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
-        return Some(native.native_plan_for_internal_consumer().clone());
-    }
-    for child in plan.children() {
-        if let Some(found) = peel_native_query_plan(child.as_ref()) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 fn spawn_watchdog(
