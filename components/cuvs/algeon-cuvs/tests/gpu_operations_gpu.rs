@@ -8,7 +8,7 @@ use std::{
 };
 
 use arrow::{
-    array::{FixedSizeListArray, Float32Array, ListArray},
+    array::{FixedSizeListArray, Float32Array, Int8Array, ListArray, UInt8Array},
     buffer::{OffsetBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
@@ -28,10 +28,11 @@ use cudf::{
     runtime::stream::CudaStream,
 };
 use cuvs::{
-    BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchParams, CuvsResources, DeviceBuffer,
-    DistanceMetric, ErrorKind, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams, IvfPqIndex, IvfPqIndexParams,
-    IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams,
-    StreamPoolCoverage, ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
+    BruteForceIndex, CagraBuildAlgo, CagraElement, CagraIndex, CagraIndexParams, CagraSearchParams, CuvsResources,
+    DeviceBuffer, DistanceMetric, ErrorKind, IvfElement, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams,
+    IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout,
+    PcaOutputBuffers, PcaParams, StreamPoolCoverage, ValidatedDeviceTensor, fit_transform_owned,
+    pairwise_distance_into, select_k_into,
 };
 
 #[derive(Debug)]
@@ -253,7 +254,12 @@ fn finite_fixed_size_list_witness_activates_validated_tensor() {
     assert_eq!(validated.rows(), 3);
     assert_eq!(validated.dimension(), 2);
     assert_eq!(validated.binding_id(), resources.binding_id());
-    let lease = resources.activate_validated_fixed_size_list_tensor(&validated).expect("validated tensor lease");
+    let mismatch = resources
+        .activate_validated_fixed_size_list_tensor::<i8>(&validated)
+        .expect_err("requested element must match the list child");
+    assert_eq!(mismatch.kind(), ErrorKind::InvalidInput);
+    assert_eq!(mismatch.context_value("validated_element"), Some("Float32"));
+    let lease = resources.activate_validated_fixed_size_list_tensor::<f32>(&validated).expect("validated tensor lease");
     assert_eq!(lease.tensor().shape(), &[3, 2]);
     assert_eq!(lease.tensor().binding_id(), resources.binding_id());
     let index = BruteForceIndex::build(&resources, lease.tensor(), DistanceMetric::L2Expanded).expect("build index");
@@ -317,9 +323,13 @@ fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
     let second = foreign_runtime.column_from_slice(&[3.0_f32, 4.0]).expect("second");
     let packed =
         foreign_runtime.pack_columns(&[&first, &second], cudf::DenseMatrixLayout::RowMajor).expect("packed matrix");
-    let validated = packed.validate_finite().expect("finite matrix");
+    let validated = packed.validate().expect("finite matrix");
 
-    let error = ValidatedDeviceTensor::from_packed(&resources, &validated)
+    let type_mismatch = ValidatedDeviceTensor::<f64>::from_packed(&resources, &validated)
+        .expect_err("requested element must match the packed element");
+    assert_eq!(type_mismatch.kind(), ErrorKind::InvalidInput);
+    assert_eq!(type_mismatch.context_value("packed_element"), Some("Float32"));
+    let error = ValidatedDeviceTensor::<f32>::from_packed(&resources, &validated)
         .expect_err("custom-memory-resource packed input must be rejected");
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
     assert!(error.message().contains("same exact runtime binding"));
@@ -338,7 +348,7 @@ fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
         LeaseBackend::new(TrackingLeaseBackend { synchronizations: Arc::clone(&synchronizations) }),
     );
 
-    let matrix = resources.pack_prepared_float32_table(&export, MatrixLayout::RowMajor).expect("packed prepared table");
+    let matrix = resources.pack_prepared_table::<f32>(&export, MatrixLayout::RowMajor).expect("packed prepared table");
     assert_eq!(matrix.rows(), 3);
     assert_eq!(matrix.columns(), 2);
     assert_eq!(matrix.layout(), MatrixLayout::RowMajor);
@@ -363,13 +373,13 @@ fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
     let fixed_export = fixed_gpu.try_prepare_fixed_size_list_export(0).expect("fixed validated export");
 
     let fixed_matrix = resources
-        .pack_validated_fixed_size_list_float32(&fixed_export, MatrixLayout::RowMajor)
+        .pack_validated_fixed_size_list::<f32>(&fixed_export, MatrixLayout::RowMajor)
         .expect("direct fixed-list pack");
     assert_eq!(fixed_matrix.rows(), 2);
     assert_eq!(fixed_matrix.columns(), 2);
     assert_eq!(fixed_matrix.layout(), MatrixLayout::RowMajor);
     assert_eq!(fixed_matrix.binding_id(), resources.binding_id());
-    assert!(fixed_matrix.is_finite_validated());
+    assert!(fixed_matrix.is_input_validated());
 
     let element = Arc::new(Field::new("element", ArrowDataType::Float32, false));
     let lists = ListArray::new(
@@ -386,13 +396,69 @@ fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
     let list_export = list_gpu.try_prepare_uniform_list_export(0).expect("uniform validated export");
 
     let list_matrix = resources
-        .pack_validated_uniform_list_float32(&list_export, MatrixLayout::ColumnMajor)
+        .pack_validated_uniform_list::<f32>(&list_export, MatrixLayout::ColumnMajor)
         .expect("direct uniform-list pack");
     assert_eq!(list_matrix.rows(), 2);
     assert_eq!(list_matrix.columns(), 2);
     assert_eq!(list_matrix.layout(), MatrixLayout::ColumnMajor);
     assert_eq!(list_matrix.binding_id(), resources.binding_id());
-    assert!(list_matrix.is_finite_validated());
+    assert!(list_matrix.is_input_validated());
+}
+
+#[test]
+fn float64_prepared_table_packs_and_validates() {
+    let (runtime, resources, _reservation) = resources();
+    let table = Table::from_columns(vec![
+        runtime.column_from_slice(&[1.0_f64, 2.0]).unwrap(),
+        runtime.column_from_slice(&[3.0_f64, 4.0]).unwrap(),
+    ])
+    .unwrap();
+    let export = table.try_prepare_device_table_export().unwrap();
+    let packed = resources.pack_prepared_table::<f64>(&export, MatrixLayout::RowMajor).unwrap();
+    assert_eq!(packed.as_validated_tensor(&resources).unwrap().shape(), &[2, 2]);
+    assert_eq!(packed.layout(), MatrixLayout::RowMajor);
+    let mismatch = resources.pack_prepared_table::<i8>(&export, MatrixLayout::RowMajor).unwrap_err();
+    assert_eq!(mismatch.kind(), ErrorKind::InvalidInput);
+    assert_eq!(mismatch.context_value("packed_element"), Some("Float64"));
+}
+
+#[test]
+fn integer_list_exports_activate_and_pack_with_their_element() {
+    let (runtime, resources, _reservation) = resources();
+    let item = Arc::new(Field::new("item", ArrowDataType::Int8, false));
+    let fixed = FixedSizeListArray::new(Arc::clone(&item), 2, Arc::new(Int8Array::from(vec![-3_i8, 2, 4, -1])), None);
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(fixed)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let batch = GpuRecordBatch::new(frame, schema).unwrap();
+    let validated = batch.try_prepare_fixed_size_list_export(0).unwrap();
+    assert!(validated.finite_observation().is_none());
+    let lease = resources.activate_validated_fixed_size_list_tensor::<i8>(&validated).unwrap();
+    assert_eq!(lease.tensor().shape(), &[2, 2]);
+    lease.complete().unwrap().synchronize().unwrap();
+    let packed = resources.pack_validated_fixed_size_list::<i8>(&validated, MatrixLayout::RowMajor).unwrap();
+    assert!(packed.is_input_validated());
+    assert_eq!(packed.as_validated_tensor(&resources).unwrap().shape(), &[2, 2]);
+
+    let item = Arc::new(Field::new("item", ArrowDataType::UInt8, false));
+    let lists = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0_i32, 2, 4])),
+        Arc::new(UInt8Array::from(vec![3_u8, 2, 4, 1])),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(item), false)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let batch = GpuRecordBatch::new(frame, schema).unwrap();
+    let validated = batch.try_prepare_uniform_list_export(0).unwrap();
+    assert!(validated.finite_observation().is_none());
+    let lease = resources.activate_validated_uniform_list_tensor::<u8>(&validated).unwrap();
+    assert_eq!(lease.tensor().shape(), &[2, 2]);
+    lease.complete().unwrap().synchronize().unwrap();
+    let packed = resources.pack_validated_uniform_list::<u8>(&validated, MatrixLayout::ColumnMajor).unwrap();
+    assert!(packed.is_input_validated());
+    assert_eq!(packed.as_validated_tensor(&resources).unwrap().strides(), Some([1, 2].as_slice()));
 }
 
 #[test]
@@ -467,9 +533,13 @@ fn ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed() {
         let mut distances = DeviceBuffer::<f32>::new(&resources, 9).unwrap();
         index.search_into(&query_matrix, 3, IvfFlatSearchParams { n_probes: 3 }, &mut ids, &mut distances).unwrap();
         assert_eq!(i64_to_host(&runtime, ids), oracle_ids, "metric {metric:?} recall@3");
-        for (actual, expected) in f32_to_host(&runtime, distances).iter().zip(oracle_distances.iter()) {
-            assert!((actual - expected).abs() < 1e-3, "metric {metric:?}: {actual} != {expected}");
-        }
+        let max_error = f32_to_host(&runtime, distances)
+            .iter()
+            .zip(oracle_distances.iter())
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0_f32, f32::max);
+        eprintln!("IVF-Flat Float32 {metric:?}: recall@3 9/9, max distance error {max_error}");
+        assert!(max_error < 1e-3, "metric {metric:?}: max error {max_error}");
         index.close().unwrap();
     }
 }
@@ -569,6 +639,17 @@ fn ivf_pq_metrics_recall_against_brute_force_and_mark_missing_slots() {
             .sum::<usize>();
         assert!(recall >= 28, "{metric:?} recall@{k} = {recall}/{}, threshold 28/40", 8 * k);
         assert!(distances.iter().all(|distance| distance.is_finite()));
+        let max_error = ids
+            .iter()
+            .zip(&distances)
+            .enumerate()
+            .map(|(position, (&id, &distance))| {
+                let query = &query_points[position / k * dimensions..(position / k + 1) * dimensions];
+                let row = &points[id as usize * dimensions..(id as usize + 1) * dimensions];
+                (distance - integer_distance(metric, query, row)).abs()
+            })
+            .fold(0.0_f32, f32::max);
+        eprintln!("IVF-PQ Float32 {metric:?}: recall@{k} {recall}/40, max distance error {max_error}");
         for (((actual_ids, actual_distances), expected_ids), expected_distances) in ids
             .chunks_exact(k)
             .zip(distances.chunks_exact(k))
@@ -769,9 +850,13 @@ fn pairwise_metrics_match_host_oracles_and_reject_foreign_bindings() {
     ] {
         let mut out = DeviceBuffer::<f32>::new(&resources, 4).unwrap();
         pairwise_distance_into(&resources, &x_tensor, &y_tensor, metric, &mut out).unwrap();
-        for (actual, expected) in f32_to_host(&runtime, out).into_iter().zip(expected) {
-            assert!((actual - expected).abs() < 1e-4, "{metric:?}: {actual} != {expected}");
-        }
+        let max_error = f32_to_host(&runtime, out)
+            .into_iter()
+            .zip(expected)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0_f32, f32::max);
+        eprintln!("Pairwise Float32 {metric:?}: 4/4 distances, max error {max_error}");
+        assert!(max_error < 1e-4, "{metric:?}: max error {max_error}");
     }
     let other_stream = CudaStream::new().unwrap();
     let other_runtime =
@@ -869,7 +954,7 @@ fn pca_packs_prepared_table_and_returns_device_dataframe() {
     .expect("table");
     let export = table.try_prepare_device_table_export().expect("prepared table");
     let mut input =
-        resources.pack_prepared_float32_table(&export, MatrixLayout::ColumnMajor).expect("column-major packed input");
+        resources.pack_prepared_table::<f32>(&export, MatrixLayout::ColumnMajor).expect("column-major packed input");
     let params = PcaParams::new(2);
     let mut outputs = PcaOutputBuffers::new(&resources, rows, columns, 2).expect("outputs");
     let fit = fit_transform_owned(&resources, &mut input, &params, &mut outputs).expect("fit transform");
@@ -917,4 +1002,309 @@ fn float32_device_buffers_reject_non_finite_native_inputs() {
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert!(error.message().contains("finite"));
     }
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(DeviceBuffer::from_slice(&resources, &[value]).unwrap_err().kind(), ErrorKind::InvalidInput);
+    }
+}
+
+#[test]
+fn float64_pairwise_metrics_match_host_oracle_and_output_type() {
+    let (_runtime, resources, _reservation) = resources();
+    let x = [1.0_f64, 2.0, -3.0, 4.0, 2.0, 1.0];
+    let y = [2.0_f64, 1.0, 5.0, -2.0];
+    let x_data = DeviceBuffer::from_slice(&resources, &x).unwrap();
+    let y_data = DeviceBuffer::from_slice(&resources, &y).unwrap();
+    let x_tensor = x_data.as_validated_matrix(&resources, 3, 2).unwrap();
+    let y_tensor = y_data.as_validated_matrix(&resources, 2, 2).unwrap();
+    for metric in [
+        DistanceMetric::L2Expanded,
+        DistanceMetric::L2SqrtExpanded,
+        DistanceMetric::CosineExpanded,
+        DistanceMetric::InnerProduct,
+    ] {
+        let mut out = DeviceBuffer::<f64>::new(&resources, 6).unwrap();
+        pairwise_distance_into(&resources, &x_tensor, &y_tensor, metric, &mut out).unwrap();
+        let column = out.into_column().unwrap();
+        assert_eq!(column.data_type().unwrap().id(), TypeId::Float64);
+        let mut max_error = 0.0_f64;
+        for (row, actual) in column.to_vec::<f64>().unwrap().into_iter().enumerate() {
+            let a = &x[row / 2 * 2..row / 2 * 2 + 2];
+            let b = &y[row % 2 * 2..row % 2 * 2 + 2];
+            let dot = a[0] * b[0] + a[1] * b[1];
+            let squared = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2);
+            let expected = match metric {
+                DistanceMetric::L2Expanded => squared,
+                DistanceMetric::L2SqrtExpanded => squared.sqrt(),
+                DistanceMetric::CosineExpanded => {
+                    1.0 - dot / ((a[0].powi(2) + a[1].powi(2)) * (b[0].powi(2) + b[1].powi(2))).sqrt()
+                },
+                DistanceMetric::InnerProduct => dot,
+            };
+            max_error = max_error.max((actual - expected).abs());
+            assert!((actual - expected).abs() < 1e-10, "{metric:?} row {row}: {actual} != {expected}");
+        }
+        eprintln!("Pairwise Float64 {metric:?}: 6/6 distances, max error {max_error}");
+    }
+}
+
+#[test]
+fn float64_kmeans_matches_float32_partition_for_both_metrics() {
+    let (runtime, resources, _reservation) = resources();
+    let values = [0.0_f64, 0.0, 0.0, 1.0, 1.0, 0.0, 20.0, 20.0, 20.0, 21.0, 21.0, 20.0];
+    for metric in [KMeansMetric::L2Expanded, KMeansMetric::L2SqrtExpanded] {
+        let mut params = KMeansParams::new(2);
+        params.init = KMeansInit::Array;
+        params.metric = metric;
+        let float_data = DeviceBuffer::from_slice(&resources, &values.map(|value| value as f32)).unwrap();
+        let float_centroids = DeviceBuffer::from_slice(&resources, &[0.0_f32, 0.0, 20.0, 20.0]).unwrap();
+        let float_tensor = float_data.as_validated_matrix(&resources, 6, 2).unwrap();
+        let float_model = KMeansModel::fit(&resources, &float_tensor, params.clone(), Some(float_centroids)).unwrap();
+        let mut float_labels = DeviceBuffer::<i32>::new(&resources, 6).unwrap();
+        float_model.predict_into(&float_tensor, &mut float_labels).unwrap();
+        let expected = i32_to_host(&runtime, float_labels);
+        eprintln!(
+            "KMeans Float32 {metric:?}: labels 6/6 expected partition, inertia {}",
+            float_model.fit_result().inertia
+        );
+        let double_data = DeviceBuffer::from_slice(&resources, &values).unwrap();
+        let double_centroids = DeviceBuffer::from_slice(&resources, &[0.0_f64, 0.0, 20.0, 20.0]).unwrap();
+        let double_tensor = double_data.as_validated_matrix(&resources, 6, 2).unwrap();
+        let double_model = KMeansModel::fit(&resources, &double_tensor, params, Some(double_centroids)).unwrap();
+        let mut double_labels = DeviceBuffer::<i32>::new(&resources, 6).unwrap();
+        double_model.predict_into(&double_tensor, &mut double_labels).unwrap();
+        let actual = i32_to_host(&runtime, double_labels);
+        assert_eq!(actual, expected, "{metric:?}");
+        assert!(actual[..3].iter().all(|label| *label == actual[0]));
+        assert!(actual[3..].iter().all(|label| *label == actual[3]));
+        assert_ne!(actual[0], actual[3]);
+        eprintln!("KMeans Float64 {metric:?}: labels 6/6 match Float32, inertia {}", double_model.fit_result().inertia);
+    }
+}
+
+fn integer_distance(metric: DistanceMetric, a: &[f32], b: &[f32]) -> f32 {
+    let dot = a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let squared = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>();
+    match metric {
+        DistanceMetric::L2Expanded => squared,
+        DistanceMetric::L2SqrtExpanded => squared.sqrt(),
+        DistanceMetric::InnerProduct => dot,
+        DistanceMetric::CosineExpanded => {
+            let norm_a = a.iter().map(|x| x * x).sum::<f32>();
+            let norm_b = b.iter().map(|x| x * x).sum::<f32>();
+            1.0 - dot / (norm_a * norm_b).sqrt()
+        },
+    }
+}
+
+fn integer_ann_evidence<T>(element: &str, convert: impl Fn(i16) -> T + Copy)
+where T: CagraElement + IvfElement + Into<f32> {
+    let (runtime, resources, _reservation) = resources();
+    let rows = 512;
+    let dimensions = 16;
+    let samples = [2_usize, 68, 134, 200, 266, 332, 398, 464];
+    let points = (0..rows)
+        .flat_map(|row| {
+            (0..dimensions).map(move |dim| {
+                let cluster = row / 64;
+                let mut hash = (row as u32 + 1).wrapping_mul(0x9e37_79b9) ^ (dim as u32 + 1).wrapping_mul(0x85eb_ca6b);
+                hash ^= hash >> 16;
+                hash = hash.wrapping_mul(0x7feb_352d);
+                let noise = (hash % 13) as i16;
+                let value = if dim == cluster || dim == cluster + 8 { 32 + noise } else { 2 + noise };
+                convert(value)
+            })
+        })
+        .collect::<Vec<_>>();
+    let queries = samples
+        .iter()
+        .flat_map(|&row| points[row * dimensions..(row + 1) * dimensions].iter().copied())
+        .collect::<Vec<_>>();
+    let floats = points.iter().copied().map(Into::<f32>::into).collect::<Vec<_>>();
+    let query_floats = queries.iter().copied().map(Into::<f32>::into).collect::<Vec<_>>();
+    let exact_data = DeviceBuffer::from_slice(&resources, &floats).unwrap();
+    let exact_queries = DeviceBuffer::from_slice(&resources, &query_floats).unwrap();
+    let exact_matrix = exact_data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let exact_query_matrix = exact_queries.as_validated_matrix(&resources, samples.len(), dimensions).unwrap();
+    let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
+    let query_data = DeviceBuffer::from_slice(&resources, &queries).unwrap();
+    let matrix = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let query_matrix = query_data.as_validated_matrix(&resources, samples.len(), dimensions).unwrap();
+    let k = 3;
+    let mut failures = Vec::new();
+    for metric in [
+        DistanceMetric::L2Expanded,
+        DistanceMetric::L2SqrtExpanded,
+        DistanceMetric::InnerProduct,
+        DistanceMetric::CosineExpanded,
+    ] {
+        let brute = BruteForceIndex::build(&resources, &exact_matrix, metric).unwrap();
+        let mut oracle_ids = DeviceBuffer::<i64>::new(&resources, samples.len() * k).unwrap();
+        let mut oracle_distances = DeviceBuffer::<f32>::new(&resources, samples.len() * k).unwrap();
+        brute.search_into(&exact_query_matrix, k, &mut oracle_ids, &mut oracle_distances).unwrap();
+        let oracle = i64_to_host(&runtime, oracle_ids);
+        let oracle_distances = f32_to_host(&runtime, oracle_distances);
+        let brute_error = oracle
+            .iter()
+            .zip(&oracle_distances)
+            .enumerate()
+            .map(|(position, (&id, &distance))| {
+                let query = &query_floats[position / k * dimensions..(position / k + 1) * dimensions];
+                let row = &floats[id as usize * dimensions..(id as usize + 1) * dimensions];
+                (distance - integer_distance(metric, query, row)).abs()
+            })
+            .fold(0.0_f32, f32::max);
+        eprintln!("BruteForce Float32 {metric:?}: recall@{k} 24/24, max distance error {brute_error}");
+        assert!(brute_error < 0.02, "{metric:?}: brute-force oracle mismatch {brute_error}");
+        brute.close().unwrap();
+
+        for algorithm in ["IVF-Flat", "IVF-PQ", "CAGRA"] {
+            if algorithm == "CAGRA" && metric == DistanceMetric::L2SqrtExpanded {
+                continue;
+            }
+            let mut ids = DeviceBuffer::<i64>::new(&resources, samples.len() * k).unwrap();
+            let mut distances = DeviceBuffer::<f32>::new(&resources, samples.len() * k).unwrap();
+            let result = match algorithm {
+                "IVF-Flat" => {
+                    IvfFlatIndex::build(&resources, &matrix, IvfFlatIndexParams::new(metric, 8)).and_then(|index| {
+                        let result = index.search_into(
+                            &query_matrix,
+                            k,
+                            IvfFlatSearchParams { n_probes: 8 },
+                            &mut ids,
+                            &mut distances,
+                        );
+                        index.close()?;
+                        result.map(|_| ())
+                    })
+                },
+                "IVF-PQ" => {
+                    let mut params = IvfPqIndexParams::new(metric, 8);
+                    params.pq_dim = 16;
+                    IvfPqIndex::build(&resources, &matrix, params).and_then(|index| {
+                        let result = index.search_into(
+                            &query_matrix,
+                            k,
+                            IvfPqSearchParams { n_probes: 8 },
+                            &mut ids,
+                            &mut distances,
+                        );
+                        index.close()?;
+                        result.map(|_| ())
+                    })
+                },
+                "CAGRA" => {
+                    let mut params = CagraIndexParams::new(metric);
+                    params.graph_degree = 16;
+                    params.intermediate_graph_degree = 32;
+                    CagraIndex::build(&resources, &matrix, params).and_then(|index| {
+                        let result = index.search_into(
+                            &query_matrix,
+                            k,
+                            CagraSearchParams { itopk_size: 128, search_width: 4, ..CagraSearchParams::default() },
+                            &mut ids,
+                            &mut distances,
+                        );
+                        index.close()?;
+                        result.map(|_| ())
+                    })
+                },
+                _ => unreachable!(),
+            };
+            if let Err(error) = result {
+                if algorithm == "IVF-PQ" && metric == DistanceMetric::CosineExpanded {
+                    assert_eq!(error.kind(), ErrorKind::Unsupported);
+                    assert_eq!(error.context_value("metric"), Some("CosineExpanded"));
+                    eprintln!(
+                        "{algorithm} {element} {metric:?}: excluded, native integer cosine scores are not distances"
+                    );
+                    continue;
+                }
+                eprintln!("{algorithm} {element} {metric:?}: native failure: {error}");
+                failures.push(format!("{algorithm} {element} {metric:?}: {error}"));
+                continue;
+            }
+            let ids = i64_to_host(&runtime, ids);
+            let distances = f32_to_host(&runtime, distances);
+            let recall = ids
+                .chunks_exact(k)
+                .zip(oracle.chunks_exact(k))
+                .map(|(actual, expected)| actual.iter().filter(|id| expected.contains(id)).count())
+                .sum::<usize>();
+            let mut max_error = 0.0_f32;
+            for (query_index, (&id, &actual)) in ids.iter().zip(&distances).enumerate() {
+                if id == i64::MAX {
+                    continue;
+                }
+                let row = &floats[id as usize * dimensions..(id as usize + 1) * dimensions];
+                let query = &query_floats[query_index / k * dimensions..(query_index / k + 1) * dimensions];
+                let expected = integer_distance(metric, query, row);
+                max_error = max_error.max((actual - expected).abs());
+            }
+            let first_expected = integer_distance(
+                metric,
+                &query_floats[..dimensions],
+                &floats[ids[0] as usize * dimensions..(ids[0] as usize + 1) * dimensions],
+            );
+            eprintln!(
+                "{algorithm} {element} {metric:?}: recall@{k} {recall}/{}, max distance error {max_error}, first actual {} expected {first_expected}",
+                samples.len() * k,
+                distances[0]
+            );
+            let minimum_recall = match algorithm {
+                "IVF-Flat" => 24,
+                "IVF-PQ" => 12,
+                "CAGRA" => 18,
+                _ => unreachable!(),
+            };
+            let tolerance = if metric == DistanceMetric::CosineExpanded {
+                0.12
+            } else if algorithm == "IVF-PQ" {
+                12.0 + distances.iter().copied().filter(|value| value.is_finite()).map(f32::abs).fold(0.0, f32::max)
+                    * 0.3
+            } else {
+                0.2 + distances.iter().copied().filter(|value| value.is_finite()).map(f32::abs).fold(0.0, f32::max)
+                    * 0.005
+            };
+            if recall < minimum_recall || max_error > tolerance {
+                failures.push(format!("{algorithm} {element} {metric:?}: recall {recall}/24 (minimum {minimum_recall}), max error {max_error} (limit {tolerance})"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn integer_cagra_unaligned<T: CagraElement>(convert: impl Fn(i16) -> T + Copy) {
+    let (runtime, resources, _reservation) = resources();
+    let rows = 512;
+    let dimensions = 15;
+    let points = (0..rows)
+        .flat_map(|row| (0..dimensions).map(move |dim| convert((1 + (row * 7 + dim * 13) % 97) as i16)))
+        .collect::<Vec<_>>();
+    let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
+    let matrix = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let mut build = CagraIndexParams::new(DistanceMetric::L2Expanded);
+    build.graph_degree = 16;
+    build.intermediate_graph_degree = 32;
+    let index = CagraIndex::build(&resources, &matrix, build).unwrap();
+    let mut neighbors = DeviceBuffer::<i64>::new(&resources, 1).unwrap();
+    let mut distances = DeviceBuffer::<f32>::new(&resources, 1).unwrap();
+    let query = DeviceBuffer::from_slice(&resources, &points[..dimensions]).unwrap();
+    let query_matrix = query.as_validated_matrix(&resources, 1, dimensions).unwrap();
+    index.search_into(&query_matrix, 1, CagraSearchParams::default(), &mut neighbors, &mut distances).unwrap();
+    let id = i64_to_host(&runtime, neighbors)[0];
+    assert!(id >= 0 && (id as usize) < rows);
+    assert!(f32_to_host(&runtime, distances)[0] < 1e-4);
+    index.close().unwrap();
+}
+
+#[test]
+fn int8_ann_metric_evidence() {
+    integer_ann_evidence("Int8", |value| value as i8);
+    integer_cagra_unaligned(|value| value as i8);
+}
+
+#[test]
+fn uint8_ann_metric_evidence() {
+    integer_ann_evidence("UInt8", |value| value as u8);
+    integer_cagra_unaligned(|value| value as u8);
 }

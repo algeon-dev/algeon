@@ -137,16 +137,16 @@ impl PackedMatrix {
     }
 
     /// Validate floating values for finiteness, or retain integer shape and binding facts.
-    pub fn validate_finite(&self) -> Result<ValidatedPackedMatrix<'_>> {
+    pub fn validate(&self) -> Result<ValidatedPackedMatrix<'_>> {
         let proof = match self.element {
             TypeId::Float32 => Some(self.values.validate_finite_float32()),
             TypeId::Float64 => Some(validate_finite_float64(
-                &self.values.view().map_err(|error| error.reanchor("packed_matrix::validate_finite"))?,
+                &self.values.view().map_err(|error| error.reanchor("packed_matrix::validate"))?,
             )),
             TypeId::Int8 | TypeId::UInt8 => None,
             _ => unreachable!("packed matrix element is checked at construction"),
         };
-        let proof = proof.transpose().map_err(|error| error.reanchor("packed_matrix::validate_finite"))?;
+        let proof = proof.transpose().map_err(|error| error.reanchor("packed_matrix::validate"))?;
         Ok(ValidatedPackedMatrix { matrix: self, proof })
     }
 }

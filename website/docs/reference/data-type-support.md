@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-description: Arrow, cuDF, and cuGraph data type support boundaries for native Algeon execution.
+description: Arrow, cuDF, cuGraph, and cuVS data type support boundaries for native Algeon execution.
 ---
 
 # Data Type Support
@@ -161,3 +161,13 @@ The unified SQL metadata functions expose the same contract at runtime. Use
 `gpu_validate_call('<function>', '<call_json>')` before running a new graph
 call. The validation envelope names the edge table or view under
 `relations.edges.table` and supplies graph bindings under `options`.
+
+## cuVS vector elements
+
+:::warning[cuVS vector types depend on the function and metric]
+cuVS functions accept dense vectors in wide feature columns or one list column. Every wide feature column and every vector binding in a call must have the same element type. The generated [cuVS element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-function) lists the verified combinations. In particular, integer IVF-PQ does not support cosine. Pairwise `distance` matches its `Float32` or `Float64` input; ANN distance stays `Float32`, and KMeans `cluster_id` stays `Int32`.
+
+Floating elements must be finite. Integer elements have no finite-value scan. No cuVS call implicitly casts vector elements; use `CAST` in the relation subquery. `Float16` is unsupported because cuDF has no Float16 representation.
+:::
+
+Use `gpu_describe_function('<function>')` for the catalog contract and `gpu_validate_call('<function>', '<call_json>')` for static input validation.

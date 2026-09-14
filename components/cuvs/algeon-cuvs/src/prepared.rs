@@ -12,7 +12,7 @@ use cudf::{
 };
 
 use crate::{
-    device::{DeviceElement, DeviceTensor, MatrixLayout, OwnedFloat32Matrix, ValidatedDeviceTensor},
+    device::{DeviceElement, DeviceTensor, MatrixLayout, OwnedMatrix, ValidatedDeviceTensor},
     error::{Result, from_cudf, from_interop, invalid_input},
     resources::CuvsResources,
 };
@@ -56,17 +56,17 @@ impl<T: DeviceElement> std::fmt::Debug for PreparedTensorLease<'_, '_, '_, T> {
     }
 }
 
-/// A proof-bearing prepared finite `FixedSizeList<Float32>` read and tensor view.
+/// A prepared list read with floating finite validation or integer structural validation.
 #[must_use = "prepared tensor reads must be completed explicitly after cuVS work has been enqueued"]
-pub struct PreparedValidatedTensorLease<'export, 'producer, 'consumer> {
-    tensor: ValidatedDeviceTensor<'export>,
+pub struct PreparedValidatedTensorLease<'export, 'producer, 'consumer, T: DeviceElement> {
+    tensor: ValidatedDeviceTensor<'export, T>,
     lease: Option<ActiveColumnReadLease<'export, 'producer, 'consumer>>,
     export: &'export PreparedColumnExport<'producer>,
     _consumer: PhantomData<&'consumer CuvsResources>,
 }
 
-impl<'export> PreparedValidatedTensorLease<'export, '_, '_> {
-    pub fn tensor(&self) -> &ValidatedDeviceTensor<'export> {
+impl<'export, T: DeviceElement> PreparedValidatedTensorLease<'export, '_, '_, T> {
+    pub fn tensor(&self) -> &ValidatedDeviceTensor<'export, T> {
         &self.tensor
     }
 
@@ -83,7 +83,7 @@ impl<'export> PreparedValidatedTensorLease<'export, '_, '_> {
     }
 }
 
-impl std::fmt::Debug for PreparedValidatedTensorLease<'_, '_, '_> {
+impl<T: DeviceElement> std::fmt::Debug for PreparedValidatedTensorLease<'_, '_, '_, T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PreparedValidatedTensorLease")
@@ -256,22 +256,20 @@ impl CuvsResources {
         Ok(PreparedTensorLease { tensor, lease: Some(lease), export, _consumer: PhantomData })
     }
 
-    /// Activate a structurally and finite-validated `FixedSizeList<Float32>`
+    /// Activate a structurally validated numeric `FixedSizeList`
     /// child as a row-major tensor under the retained root export's single
     /// read lease.
     ///
     /// The cudf witness proves every active list-offset delta equals the
     /// dimension; a caller-supplied dimension or equal total child length is
     /// never accepted as a substitute for that structural proof.
-    pub fn activate_validated_fixed_size_list_tensor<'witness, 'producer, 'consumer>(
+    pub fn activate_validated_fixed_size_list_tensor<'witness, 'producer, 'consumer, T: DeviceElement>(
         &'consumer self,
         validated: &'witness ValidatedFixedSizeListExport<'producer>,
-    ) -> Result<PreparedValidatedTensorLease<'witness, 'witness, 'consumer>> {
+    ) -> Result<PreparedValidatedTensorLease<'witness, 'witness, 'consumer, T>> {
         let operation = "CuvsResources::activate_validated_fixed_size_list_tensor";
         self.validate_exact_binding(operation)?;
-        if validated.element() != TypeId::Float32 {
-            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
-        }
+        require_element::<T>(validated.element(), operation)?;
         let export = validated.export();
         require_device_export(export, operation)?;
         if validated.binding_id() != self.binding_id() {
@@ -307,22 +305,20 @@ impl CuvsResources {
         Ok(PreparedValidatedTensorLease { tensor, lease: Some(lease), export, _consumer: PhantomData })
     }
 
-    /// Activate a structurally and finite-validated runtime-uniform
-    /// `List<Float32>` child as a row-major tensor under the retained root
+    /// Activate a structurally validated runtime-uniform
+    /// numeric `List` child as a row-major tensor under the retained root
     /// export's single read lease.
     ///
     /// The cuDF witness derives the positive dimension from device-reduced
     /// active list-offset widths. A caller cannot substitute a declared
     /// dimension or total child length for that proof.
-    pub fn activate_validated_uniform_list_tensor<'witness, 'producer, 'consumer>(
+    pub fn activate_validated_uniform_list_tensor<'witness, 'producer, 'consumer, T: DeviceElement>(
         &'consumer self,
         validated: &'witness ValidatedUniformListExport<'producer>,
-    ) -> Result<PreparedValidatedTensorLease<'witness, 'witness, 'consumer>> {
+    ) -> Result<PreparedValidatedTensorLease<'witness, 'witness, 'consumer, T>> {
         let operation = "CuvsResources::activate_validated_uniform_list_tensor";
         self.validate_exact_binding(operation)?;
-        if validated.element() != TypeId::Float32 {
-            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
-        }
+        require_element::<T>(validated.element(), operation)?;
         let export = validated.export();
         require_device_export(export, operation)?;
         if validated.binding_id() != self.binding_id() {
@@ -358,18 +354,16 @@ impl CuvsResources {
         Ok(PreparedValidatedTensorLease { tensor, lease: Some(lease), export, _consumer: PhantomData })
     }
 
-    /// Copy a proof-validated `FixedSizeList<Float32>` child into a private
+    /// Copy a validated numeric `FixedSizeList` child into a private
     /// matrix in the requested layout on this exact runtime binding.
-    pub fn pack_validated_fixed_size_list_float32(
+    pub fn pack_validated_fixed_size_list<T: DeviceElement>(
         &self,
         validated: &ValidatedFixedSizeListExport<'_>,
         layout: MatrixLayout,
-    ) -> Result<OwnedFloat32Matrix> {
-        let operation = "CuvsResources::pack_validated_fixed_size_list_float32";
+    ) -> Result<OwnedMatrix<T>> {
+        let operation = "CuvsResources::pack_validated_fixed_size_list";
         self.validate_exact_binding(operation)?;
-        if validated.element() != TypeId::Float32 {
-            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
-        }
+        require_element::<T>(validated.element(), operation)?;
         if validated.binding_id() != self.binding_id() {
             return Err(invalid_input(
                 operation,
@@ -381,21 +375,19 @@ impl CuvsResources {
         let packed = validated
             .pack_active_child_into_runtime(self.runtime(), layout.into())
             .map_err(|error| from_cudf(operation, error))?;
-        OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
+        OwnedMatrix::from_packed(self, packed)
     }
 
-    /// Copy a proof-validated runtime-uniform `List<Float32>` child into a
+    /// Copy a validated runtime-uniform numeric `List` child into a
     /// private matrix in the requested layout on this exact runtime binding.
-    pub fn pack_validated_uniform_list_float32(
+    pub fn pack_validated_uniform_list<T: DeviceElement>(
         &self,
         validated: &ValidatedUniformListExport<'_>,
         layout: MatrixLayout,
-    ) -> Result<OwnedFloat32Matrix> {
-        let operation = "CuvsResources::pack_validated_uniform_list_float32";
+    ) -> Result<OwnedMatrix<T>> {
+        let operation = "CuvsResources::pack_validated_uniform_list";
         self.validate_exact_binding(operation)?;
-        if validated.element() != TypeId::Float32 {
-            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
-        }
+        require_element::<T>(validated.element(), operation)?;
         if validated.binding_id() != self.binding_id() {
             return Err(invalid_input(
                 operation,
@@ -407,17 +399,17 @@ impl CuvsResources {
         let packed = validated
             .pack_active_child_into_runtime(self.runtime(), layout.into())
             .map_err(|error| from_cudf(operation, error))?;
-        OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
+        OwnedMatrix::from_packed(self, packed)
     }
 
     /// Atomically import one prepared table root and pack all top-level columns
-    /// into an owned Float32 matrix on this exact runtime binding.
-    pub fn pack_prepared_float32_table(
+    /// into an owned numeric matrix on this exact runtime binding.
+    pub fn pack_prepared_table<T: DeviceElement>(
         &self,
         export: &PreparedTableExport<'_>,
         layout: MatrixLayout,
-    ) -> Result<OwnedFloat32Matrix> {
-        let operation = "CuvsResources::pack_prepared_float32_table";
+    ) -> Result<OwnedMatrix<T>> {
+        let operation = "CuvsResources::pack_prepared_table";
         self.validate_exact_binding(operation)?;
         let table = Table::try_import_from_prepared_table_export_into_runtime(export, self.runtime())
             .map_err(|error| from_interop(operation, error))?;
@@ -425,8 +417,17 @@ impl CuvsResources {
         let column_refs = columns.iter().collect::<Vec<_>>();
         let packed =
             self.runtime().pack_columns(&column_refs, layout.into()).map_err(|error| from_cudf(operation, error))?;
-        OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
+        OwnedMatrix::from_packed(self, packed)
     }
+}
+
+fn require_element<T: DeviceElement>(element: TypeId, operation: &'static str) -> Result<()> {
+    if element != T::TYPE_ID {
+        return Err(invalid_input(operation, "validated element does not match requested cuVS element")
+            .with_context("validated_element", format!("{element:?}"))
+            .with_context("requested_element", format!("{:?}", T::TYPE_ID)));
+    }
+    Ok(())
 }
 
 fn require_device_export(export: &PreparedColumnExport<'_>, operation: &'static str) -> Result<()> {

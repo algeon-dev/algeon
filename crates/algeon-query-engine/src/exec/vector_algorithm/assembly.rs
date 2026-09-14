@@ -183,12 +183,13 @@ pub(in crate::exec) fn assemble_pairwise_distance_output(
     x: &GpuDataFrame,
     y: &GpuDataFrame,
     distances: Series,
+    distance_type: TypeId,
 ) -> Result<GpuDataFrame> {
     let rows = x.num_rows().checked_mul(y.num_rows()).ok_or_else(|| {
         QueryError::new(QueryErrorCode::SizeOverflow, ASSEMBLY_OPERATION, "pairwise output rows overflowed")
     })?;
     require_libcudf_row_count(rows, "pairwise_distance")?;
-    require_series_contract(&distances, TypeId::Float32, rows, "distances")?;
+    require_series_contract(&distances, distance_type, rows, "distances")?;
     let runtime = context.runtime()?;
     let execution =
         ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());

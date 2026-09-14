@@ -194,11 +194,14 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                         "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]
                     },
                     "features": {
-                        "element_types": descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>(),
+                        "element_types": descriptor.vector_element_support.iter().map(|support| support.element.as_str()).collect::<Vec<_>>(),
+                        "element_metric_support": descriptor.vector_element_support.iter().map(|support| json!({
+                            "element": support.element.as_str(), "metrics": support.metrics,
+                        })).collect::<Vec<_>>(),
                         "one_of": [
                             {
                                 "shape": "wide",
-                                "rule": "Every non-id field is a non-null feature of a supported element type; projection order defines vector dimension order."
+                                "rule": "Every non-id field is a non-null feature of the same supported element type; projection order defines vector dimension order."
                             },
                             {
                                 "shape": "list",

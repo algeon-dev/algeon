@@ -44,9 +44,11 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector element types
 
-| Supported element type |
-| --- |
-| `Float32` |
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` |
+| `Int8` | `l2_expanded`, `l2_sqrt_expanded`, `inner_product` |
+| `UInt8` | `l2_expanded`, `l2_sqrt_expanded`, `inner_product` |
 
 ## Arguments and options
 
@@ -72,7 +74,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
 | `kmeans_n_iters` | no | `integer` | `20` | minimum 1; maximum 4294967295 | Iterations for training list centers; native default 20. |
 | `kmeans_trainset_fraction` | no | `number` | `0.5` | greater than 0; maximum 1 | Fraction of the dataset used for training centers; native default 0.5. |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
+| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Int8: l2_expanded, l2_sqrt_expanded, inner_product; UInt8: l2_expanded, l2_sqrt_expanded, inner_product. |
 | `n_lists` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of inverted lists; must not exceed the evaluated dataset row count. |
 | `n_probes` | no | `integer` | `20` | minimum 1; maximum 4294967295 | Lists probed per query; native default 20, and must not exceed n_lists. |
 | `pq_bits` | no | `integer` | `8` | minimum 4; maximum 8 | Bits per PQ code; native default 8. |
@@ -80,7 +82,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector binding shapes
 
-Each relation subquery must project a non-null `id` field followed by either one or more non-null feature fields of a supported element type (`Float32`) or one non-null list vector field named `vector`.
+Each relation subquery must project a non-null `id` field followed by either one or more non-null feature fields of a supported element type (`Float32`, `Int8`, `UInt8`) or one non-null list vector field named `vector`.
 
 For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.
 

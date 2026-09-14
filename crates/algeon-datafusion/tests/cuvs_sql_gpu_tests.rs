@@ -19,7 +19,10 @@ use algeon_datafusion::{
     planner::{FinalPlanDisposition, classify_final_plan},
 };
 use arrow::{
-    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray, UInt32Array},
+    array::{
+        ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int8Array, Int64Array, ListArray, StringArray,
+        UInt8Array, UInt32Array,
+    },
     buffer::OffsetBuffer,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -101,6 +104,81 @@ async fn cagra_sql_executes_with_admitted_pool_coverage() {
         exact[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
     );
     assert!(actual[0].column(1).as_any().downcast_ref::<Float32Array>().unwrap().value(0).abs() < 1e-4);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn int8_fixed_size_list_ivf_flat_matches_self_distance_oracle() {
+    let (backend, ctx) = cuvs_bounded_context();
+    let item = Arc::new(Field::new("item", DataType::Int8, false));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("vector", DataType::FixedSizeList(Arc::clone(&item), 2), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3])) as ArrayRef,
+            Arc::new(FixedSizeListArray::new(
+                item,
+                2,
+                Arc::new(Int8Array::from(vec![0, 0, 2, 0, 10, 10, 12, 10])),
+                None,
+            )) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("int8_vectors", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    let sql = "SELECT neighbor_id, distance FROM cuvs_ivf_flat(\
+        dataset => (SELECT id, vector FROM int8_vectors), \
+        queries => (SELECT id, vector FROM int8_vectors WHERE id = 1), \
+        k => 1, metric => 'l2_expanded', n_lists => 1, n_probes => 1)";
+    let batches = collect(plan_sql(&ctx, sql).await, ctx.task_ctx()).await.expect("Int8 list IVF-Flat");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 1);
+    assert!(batches[0].column(1).as_any().downcast_ref::<Float32Array>().unwrap().value(0).abs() < 1e-4);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn uint8_wide_ivf_flat_and_float64_pairwise_kmeans_execute() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("d0", DataType::UInt8, false),
+        Field::new("d1", DataType::UInt8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3])) as ArrayRef,
+            Arc::new(UInt8Array::from(vec![0, 2, 10, 12])) as ArrayRef,
+            Arc::new(UInt8Array::from(vec![0, 0, 10, 10])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("uint8_vectors", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    let unsigned = "SELECT neighbor_id, distance FROM cuvs_ivf_flat(\
+        dataset => (SELECT id, d0, d1 FROM uint8_vectors), \
+        queries => (SELECT id, d0, d1 FROM uint8_vectors WHERE id = 1), \
+        k => 1, metric => 'l2_expanded', n_lists => 1, n_probes => 1)";
+    let batches = collect(plan_sql(&ctx, unsigned).await, ctx.task_ctx()).await.expect("UInt8 wide IVF-Flat");
+    assert_eq!(batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 1);
+    assert!(batches[0].column(1).as_any().downcast_ref::<Float32Array>().unwrap().value(0).abs() < 1e-4);
+    let pairwise = "SELECT distance FROM cuvs_pairwise_distance(\
+        x => (SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM dataset_vectors WHERE item_id = 1), \
+        y => (SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM dataset_vectors WHERE item_id = 2), \
+        metric => 'l2_expanded')";
+    let batches = collect(plan_sql(&ctx, pairwise).await, ctx.task_ctx()).await.expect("Float64 pairwise");
+    assert_eq!(batches[0].schema().field(0).data_type(), &DataType::Float64);
+    assert!((batches[0].column(0).as_any().downcast_ref::<Float64Array>().unwrap().value(0) - 8.0).abs() < 1e-8);
+    let kmeans = "SELECT id, cluster_id FROM cuvs_kmeans(\
+        input => (SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM dataset_vectors), \
+        n_clusters => 2)";
+    let batches = collect(plan_sql(&ctx, kmeans).await, ctx.task_ctx()).await.expect("Float64 KMeans");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    assert_eq!(batches[0].schema().field(1).data_type(), &DataType::Int32);
     close_cuvs_test_backend(backend, ctx);
 }
 

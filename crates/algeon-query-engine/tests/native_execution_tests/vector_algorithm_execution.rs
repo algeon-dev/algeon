@@ -290,7 +290,7 @@ fn compiled_pairwise_output_allocation_failure_records_task_and_releases_attempt
             y: VectorRelationBinding::new(y, VectorRowIdBinding::column("id"), ["x"]),
             metric: VectorDistanceMetric::L2Expanded,
         }),
-        vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64),
+        vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64, DataType::Float32),
     ));
     let plan = builder.finish_with_host_sink(root);
     let ids = (0..256_i64).collect::<Vec<_>>();

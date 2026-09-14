@@ -1,9 +1,10 @@
-use std::{marker::PhantomData, ptr, ptr::NonNull};
+use std::{marker::PhantomData, mem, ptr, ptr::NonNull};
 
 use crate::{
     brute_force::{DistanceMetric, KnnSearchOutput, matrix_layout, validate_matrix_binding},
     device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
+    elements::CagraElement,
     error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero},
     params_handle::ParamsHandle,
     resources::CuvsResources,
@@ -73,19 +74,19 @@ impl Drop for DatasetHandle {
 /// Query-local CAGRA index with a device-padded dataset. Rows already aligned
 /// to 16 bytes use a borrowed padded view; other rows use an owning padded copy.
 /// Native search requires a device-padded index (components/cuvs/cuvs/c/src/neighbors/cagra.cpp:1843).
-pub struct CagraIndex<'data> {
+pub struct CagraIndex<'data, T: CagraElement> {
     raw: Option<NonNull<cuvs_sys::cuvsCagraIndex>>,
     dataset: DatasetHandle,
     resources: CuvsResources,
     rows: usize,
     columns: usize,
-    _dataset_borrow: PhantomData<&'data f32>,
+    _dataset_borrow: PhantomData<&'data T>,
 }
 
-impl<'data> CagraIndex<'data> {
+impl<'data, T: CagraElement> CagraIndex<'data, T> {
     pub fn build(
         resources: &CuvsResources,
-        dataset: &ValidatedDeviceTensor<'data>,
+        dataset: &ValidatedDeviceTensor<'data, T>,
         params: CagraIndexParams,
     ) -> Result<Self> {
         let operation = "CagraIndex::build";
@@ -138,7 +139,7 @@ impl<'data> CagraIndex<'data> {
             // common.hpp:1068-1078,1157-1165 rejects an owning copy when the
             // device row width already has the required 16-byte alignment.
             unsafe {
-                if columns.is_multiple_of(4) {
+                if columns.is_multiple_of(16 / mem::size_of::<T>()) {
                     check_cuvs(
                         cuvs_sys::cuvsDatasetMakePaddedView(native, tensor.as_mut_ptr(), &mut padded),
                         operation,
@@ -188,7 +189,7 @@ impl<'data> CagraIndex<'data> {
     /// Search outputs are `[queries.rows(), k]`. Missing neighbors have ordinal `i64::MAX`.
     pub fn search_into(
         &self,
-        queries: &ValidatedDeviceTensor<'_>,
+        queries: &ValidatedDeviceTensor<'_, T>,
         k: usize,
         params: CagraSearchParams,
         neighbors: &mut DeviceBuffer<i64>,
@@ -310,13 +311,13 @@ impl<'data> CagraIndex<'data> {
     }
 }
 
-impl Drop for CagraIndex<'_> {
+impl<T: CagraElement> Drop for CagraIndex<'_, T> {
     fn drop(&mut self) {
         let _ = self.close_inner("CagraIndex::drop");
     }
 }
 
-impl std::fmt::Debug for CagraIndex<'_> {
+impl<T: CagraElement> std::fmt::Debug for CagraIndex<'_, T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CagraIndex")

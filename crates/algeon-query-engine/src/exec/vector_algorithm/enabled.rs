@@ -1,13 +1,13 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
-use cudf::{Series, TypeId, frame::dataframe::GpuRecordBatch};
+use cudf::{CudfType, Series, TypeId, frame::dataframe::GpuRecordBatch};
 use cuvs::{
     BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchAlgo, CagraSearchParams, CuvsResources,
     DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams,
-    IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel,
-    KMeansParams, MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor,
-    fit_transform_owned, pairwise_distance_into, select_k_into,
+    IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansElement, KMeansInit, KMeansMetric,
+    KMeansModel, KMeansParams, MatrixLayout, OwnedMatrix, PairwiseElement, PcaOutputBuffers, PcaParams, PcaSolver,
+    ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
 };
 
 use super::assembly::{
@@ -30,6 +30,98 @@ use crate::{
 const EXECUTE_OPERATION: &str = "query_engine.vector_algorithm.execute";
 const PACK_OPERATION: &str = "query_engine.vector_algorithm.pack";
 const NATIVE_OPERATION: &str = "query_engine.vector_algorithm.native";
+
+macro_rules! dispatch_element {
+    ($element:expr, $node_id:expr, $algorithm:expr, [$($id:pat => $ty:ty),+ $(,)?], |$type_name:ident| $body:block) => {
+        match $element {
+            $($id => { type $type_name = $ty; $body },)+
+            actual => Err(unsupported_vector_element($node_id, $algorithm, "input", Some(actual))),
+        }
+    };
+}
+
+fn unsupported_vector_element(
+    node_id: NodeId,
+    algorithm: VectorAlgorithm,
+    role: &'static str,
+    element: Option<TypeId>,
+) -> QueryError {
+    let error = QueryError::new(
+        QueryErrorCode::UnsupportedType,
+        PACK_OPERATION,
+        "vector element type is not supported by this operation",
+    )
+    .with_fact("node_id", node_id)
+    .with_fact("algorithm", algorithm.as_str())
+    .with_fact("relation_role", role)
+    .with_fact("reason", "unsupported_vector_element_type");
+    match element {
+        Some(element) => error.with_fact("element", element.name()),
+        None => error,
+    }
+}
+
+fn relation_element(
+    plan: &QueryPlan,
+    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    binding: &VectorRelationBinding,
+    node_id: NodeId,
+    algorithm: VectorAlgorithm,
+    role: &'static str,
+) -> Result<TypeId> {
+    let schema = plan
+        .node(binding.input)
+        .ok_or_else(|| invalid_node_reference(binding.input, "vector relation references a missing input"))?
+        .output_schema();
+    let column = match &binding.vector {
+        CuvsDenseVectorBinding::Columns(columns) => {
+            let input = relation_input(inputs, binding, node_id, role)?;
+            return input
+                .frame()
+                .series(&columns[0])
+                .and_then(|series| series.dtype())
+                .map(|dtype| dtype.id())
+                .map_err(|error| {
+                    cudf_query_error(PACK_OPERATION, "failed to inspect evaluated vector element type", error)
+                        .with_fact("relation_role", role)
+                });
+        },
+        CuvsDenseVectorBinding::VectorColumn(column) => column,
+    };
+    let field = schema.field_with_name(column).map_err(|_| {
+        vector_input_error(node_id, algorithm, "missing_feature_column", "vector column is absent from input schema")
+    })?;
+    let element = match field.data_type() {
+        DataType::FixedSizeList(element, _) | DataType::List(element) | DataType::LargeList(element) => {
+            element.data_type()
+        },
+        other => other,
+    };
+    match element {
+        DataType::Float32 => Ok(TypeId::Float32),
+        DataType::Float64 => Ok(TypeId::Float64),
+        DataType::Int8 => Ok(TypeId::Int8),
+        DataType::UInt8 => Ok(TypeId::UInt8),
+        _ => {
+            Err(unsupported_vector_element(node_id, algorithm, role, None)
+                .with_fact("arrow_type", format!("{element:?}")))
+        },
+    }
+}
+
+fn require_matching_elements(left: TypeId, right: TypeId, node_id: NodeId, algorithm: VectorAlgorithm) -> Result<()> {
+    if left != right {
+        return Err(vector_input_error(
+            node_id,
+            algorithm,
+            "vector_element_type_mismatch",
+            "vector relation element types must match at execution",
+        )
+        .with_fact("left_element", left.name())
+        .with_fact("right_element", right.name()));
+    }
+    Ok(())
+}
 
 pub(in crate::exec) fn execute_vector_algorithm(
     context: &ExecutionContext,
@@ -90,43 +182,55 @@ pub(in crate::exec) fn execute_vector_algorithm(
     })?;
 
     match &node.spec.params {
-        VectorAlgorithmParams::BruteForceKnn(params) => execute_knn(
-            context,
-            plan,
-            node_id,
-            KnnExecutionOptions {
-                dataset: &params.dataset,
-                queries: &params.queries,
-                k: params.k,
-                metric: params.metric,
-                algorithm: VectorAlgorithm::BruteForceKnn,
-                n_lists: None,
-                missing_neighbor: None,
-                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
-                                   queries: &ValidatedDeviceTensor<'_>,
-                                   output_rows| {
-                    run_knn_native(
-                        context,
-                        node_id,
-                        VectorAlgorithm::BruteForceKnn,
-                        &resources,
-                        native_version,
-                        dataset,
-                        queries,
-                        output_rows,
-                        || BruteForceIndex::build(&resources, dataset, distance_metric(params.metric)),
-                        |index, neighbors, distances| {
-                            index.search_into(queries, params.k, neighbors, distances).map(|_| ())
-                        },
-                        "failed to execute exact kNN search",
-                    )
+        VectorAlgorithmParams::BruteForceKnn(params) => {
+            require_vector_element::<f32>(
+                relation_element(plan, inputs, &params.dataset, node_id, VectorAlgorithm::BruteForceKnn, "dataset")?,
+                node_id,
+                VectorAlgorithm::BruteForceKnn,
+                "dataset",
+            )?;
+            execute_knn(
+                context,
+                plan,
+                node_id,
+                KnnExecutionOptions {
+                    dataset: &params.dataset,
+                    queries: &params.queries,
+                    k: params.k,
+                    metric: params.metric,
+                    algorithm: VectorAlgorithm::BruteForceKnn,
+                    n_lists: None,
+                    missing_neighbor: None,
+                    build_and_search: |dataset: &ValidatedDeviceTensor<'_, f32>,
+                                       queries: &ValidatedDeviceTensor<'_, f32>,
+                                       output_rows| {
+                        run_knn_native(
+                            context,
+                            node_id,
+                            VectorAlgorithm::BruteForceKnn,
+                            &resources,
+                            native_version,
+                            dataset,
+                            queries,
+                            output_rows,
+                            || BruteForceIndex::build(&resources, dataset, distance_metric(params.metric)),
+                            |index, neighbors, distances| {
+                                index.search_into(queries, params.k, neighbors, distances).map(|_| ())
+                            },
+                            "failed to execute exact kNN search",
+                        )
+                    },
                 },
-            },
-            inputs,
-            &resources,
-            native_version,
-        ),
-        VectorAlgorithmParams::IvfFlat(params) => execute_knn(
+                inputs,
+                &resources,
+                native_version,
+            )
+        },
+        VectorAlgorithmParams::IvfFlat(params) => dispatch_element!(
+            relation_element(plan, inputs, &params.dataset, node_id, VectorAlgorithm::IvfFlat, "dataset")?,
+            node_id, VectorAlgorithm::IvfFlat,
+            [TypeId::Float32 => f32, TypeId::Int8 => i8, TypeId::UInt8 => u8], |Element| {
+            execute_knn(
             context,
             plan,
             node_id,
@@ -138,8 +242,8 @@ pub(in crate::exec) fn execute_vector_algorithm(
                 algorithm: VectorAlgorithm::IvfFlat,
                 n_lists: Some(params.n_lists),
                 missing_neighbor: Some(i64::MAX),
-                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
-                                   queries: &ValidatedDeviceTensor<'_>,
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_, Element>,
+                                   queries: &ValidatedDeviceTensor<'_, Element>,
                                    output_rows| {
                     let mut build = IvfFlatIndexParams::new(distance_metric(params.metric), params.n_lists);
                     build.kmeans_n_iters = params.kmeans_n_iters;
@@ -172,8 +276,13 @@ pub(in crate::exec) fn execute_vector_algorithm(
             inputs,
             &resources,
             native_version,
-        ),
-        VectorAlgorithmParams::IvfPq(params) => execute_knn(
+        )
+        }),
+        VectorAlgorithmParams::IvfPq(params) => dispatch_element!(
+            relation_element(plan, inputs, &params.dataset, node_id, VectorAlgorithm::IvfPq, "dataset")?,
+            node_id, VectorAlgorithm::IvfPq,
+            [TypeId::Float32 => f32, TypeId::Int8 => i8, TypeId::UInt8 => u8], |Element| {
+            execute_knn(
             context,
             plan,
             node_id,
@@ -185,8 +294,8 @@ pub(in crate::exec) fn execute_vector_algorithm(
                 algorithm: VectorAlgorithm::IvfPq,
                 n_lists: Some(params.n_lists),
                 missing_neighbor: Some(i64::MAX),
-                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
-                                   queries: &ValidatedDeviceTensor<'_>,
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_, Element>,
+                                   queries: &ValidatedDeviceTensor<'_, Element>,
                                    output_rows| {
                     let mut build = IvfPqIndexParams::new(distance_metric(params.metric), params.n_lists);
                     build.kmeans_n_iters = params.kmeans_n_iters;
@@ -225,8 +334,13 @@ pub(in crate::exec) fn execute_vector_algorithm(
             inputs,
             &resources,
             native_version,
-        ),
-        VectorAlgorithmParams::Cagra(params) => execute_knn(
+        )
+        }),
+        VectorAlgorithmParams::Cagra(params) => dispatch_element!(
+            relation_element(plan, inputs, &params.dataset, node_id, VectorAlgorithm::Cagra, "dataset")?,
+            node_id, VectorAlgorithm::Cagra,
+            [TypeId::Float32 => f32, TypeId::Int8 => i8, TypeId::UInt8 => u8], |Element| {
+            execute_knn(
             context,
             plan,
             node_id,
@@ -238,8 +352,8 @@ pub(in crate::exec) fn execute_vector_algorithm(
                 algorithm: VectorAlgorithm::Cagra,
                 n_lists: None,
                 missing_neighbor: Some(i64::MAX),
-                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
-                                   queries: &ValidatedDeviceTensor<'_>,
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_, Element>,
+                                   queries: &ValidatedDeviceTensor<'_, Element>,
                                    output_rows| {
                     let mut build = CagraIndexParams::new(distance_metric(params.metric));
                     build.graph_degree = params.graph_degree as usize;
@@ -279,17 +393,36 @@ pub(in crate::exec) fn execute_vector_algorithm(
             inputs,
             &resources,
             native_version,
+        )
+        }),
+        VectorAlgorithmParams::PairwiseDistance(params) => dispatch_element!(
+            relation_element(plan, inputs, &params.x, node_id, VectorAlgorithm::PairwiseDistance, "x")?,
+            node_id, VectorAlgorithm::PairwiseDistance, [TypeId::Float32 => f32, TypeId::Float64 => f64], |Element| {
+                execute_pairwise_distance::<Element>(context, plan, node_id, params, inputs, &resources, native_version)
+            }
         ),
-        VectorAlgorithmParams::PairwiseDistance(params) => {
-            execute_pairwise_distance(context, plan, node_id, params, inputs, &resources, native_version)
-        },
         VectorAlgorithmParams::TopK(params) => {
+            require_vector_element::<f32>(
+                relation_element(plan, inputs, &params.input, node_id, VectorAlgorithm::TopK, "input")?,
+                node_id,
+                VectorAlgorithm::TopK,
+                "input",
+            )?;
             execute_top_k(context, plan, node_id, params, inputs, &resources, native_version)
         },
-        VectorAlgorithmParams::KMeans(params) => {
-            execute_kmeans(context, plan, node_id, params, inputs, &resources, native_version)
-        },
+        VectorAlgorithmParams::KMeans(params) => dispatch_element!(
+            relation_element(plan, inputs, &params.input, node_id, VectorAlgorithm::KMeans, "input")?,
+            node_id, VectorAlgorithm::KMeans, [TypeId::Float32 => f32, TypeId::Float64 => f64], |Element| {
+                execute_kmeans::<Element>(context, plan, node_id, params, inputs, &resources, native_version)
+            }
+        ),
         VectorAlgorithmParams::Pca(params) => {
+            require_vector_element::<f32>(
+                relation_element(plan, inputs, &params.input, node_id, VectorAlgorithm::Pca, "input")?,
+                node_id,
+                VectorAlgorithm::Pca,
+                "input",
+            )?;
             execute_pca(context, plan, node_id, params, inputs, &resources, native_version)
         },
     }
@@ -325,14 +458,14 @@ struct KnnExecutionOptions<'a, F> {
     clippy::too_many_arguments,
     reason = "the observer needs the native call's device shapes and execution identity"
 )]
-fn run_knn_native<I>(
+fn run_knn_native<I, T: DeviceElement>(
     context: &ExecutionContext,
     node_id: NodeId,
     algorithm: VectorAlgorithm,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
-    dataset: &ValidatedDeviceTensor<'_>,
-    queries: &ValidatedDeviceTensor<'_>,
+    dataset: &ValidatedDeviceTensor<'_, T>,
+    queries: &ValidatedDeviceTensor<'_, T>,
     output_rows: usize,
     build: impl FnOnce() -> cuvs::Result<I>,
     search: impl FnOnce(&I, &mut DeviceBuffer<i64>, &mut DeviceBuffer<f32>) -> cuvs::Result<()>,
@@ -347,7 +480,7 @@ fn run_knn_native<I>(
     let query_rows = queries.rows().map_err(|error| {
         cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN query shape", error)
     })?;
-    let dataset_bytes = matrix_bytes(dataset_rows, dimension, node_id, "dataset")?;
+    let dataset_bytes = matrix_bytes::<T>(dataset_rows, dimension, node_id, "dataset")?;
     let index = observe_native(
         context,
         node_id,
@@ -372,7 +505,7 @@ fn run_knn_native<I>(
         .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN neighbor output", error))?;
     let mut distances = DeviceBuffer::<f32>::new(resources, output_rows)
         .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN distance output", error))?;
-    let query_bytes = matrix_bytes(query_rows, dimension, node_id, "queries")?;
+    let query_bytes = matrix_bytes::<T>(query_rows, dimension, node_id, "queries")?;
     let native_output_bytes = output_rows
         .checked_mul(std::mem::size_of::<i64>() + std::mem::size_of::<f32>())
         .and_then(|bytes| u64::try_from(bytes).ok())
@@ -399,7 +532,7 @@ fn run_knn_native<I>(
     Ok((neighbors, distances))
 }
 
-fn execute_knn<F>(
+fn execute_knn<T: DeviceElement, F>(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -410,13 +543,19 @@ fn execute_knn<F>(
 ) -> Result<GpuDataFrame>
 where
     F: FnOnce(
-        &ValidatedDeviceTensor<'_>,
-        &ValidatedDeviceTensor<'_>,
+        &ValidatedDeviceTensor<'_, T>,
+        &ValidatedDeviceTensor<'_, T>,
         usize,
     ) -> Result<(DeviceBuffer<i64>, DeviceBuffer<f32>)>,
 {
     let KnnExecutionOptions { dataset, queries, k, metric, algorithm, n_lists, missing_neighbor, build_and_search } =
         knn;
+    require_matching_elements(
+        relation_element(plan, inputs, dataset, node_id, algorithm, "dataset")?,
+        relation_element(plan, inputs, queries, node_id, algorithm, "queries")?,
+        node_id,
+        algorithm,
+    )?;
     let params = KnnAssemblyParams { dataset, queries, k, metric, missing_neighbor };
     let dataset = relation_input(inputs, params.dataset, node_id, "dataset")?;
     let queries = relation_input(inputs, params.queries, node_id, "queries")?;
@@ -454,7 +593,7 @@ where
     }
     let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id, algorithm)?;
 
-    with_relation_tensor(
+    with_relation_tensor::<T, _>(
         context,
         plan,
         node_id,
@@ -525,7 +664,7 @@ where
                 });
             }
 
-            with_relation_tensor(
+            with_relation_tensor::<T, _>(
                 context,
                 plan,
                 node_id,
@@ -607,7 +746,7 @@ where
     )
 }
 
-fn execute_pairwise_distance(
+fn execute_pairwise_distance<E: PairwiseElement>(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -616,13 +755,19 @@ fn execute_pairwise_distance(
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
+    require_matching_elements(
+        relation_element(plan, inputs, &params.x, node_id, VectorAlgorithm::PairwiseDistance, "x")?,
+        relation_element(plan, inputs, &params.y, node_id, VectorAlgorithm::PairwiseDistance, "y")?,
+        node_id,
+        VectorAlgorithm::PairwiseDistance,
+    )?;
     let x = relation_input(inputs, &params.x, node_id, "x")?;
     let y = relation_input(inputs, &params.y, node_id, "y")?;
     let rows = checked_output_rows(x.num_rows(), y.num_rows(), node_id, VectorAlgorithm::PairwiseDistance)?;
     let assemble = |distances| {
         observe_assembly(context, node_id, VectorAlgorithm::PairwiseDistance, resources, native_version, rows, || {
             context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
-            let result = assemble_pairwise_distance_output(context, params, x, y, distances)?;
+            let result = assemble_pairwise_distance_output(context, params, x, y, distances, E::Distance::TYPE_ID)?;
             context.check_cancellation("query_engine.vector_algorithm.after_assembly")?;
             Ok(result)
         })
@@ -630,11 +775,11 @@ fn execute_pairwise_distance(
     if rows == 0 {
         let empty = resources
             .runtime()
-            .series(&[] as &[f32])
+            .series(&[] as &[E::Distance])
             .map_err(|error| cudf_query_error(EXECUTE_OPERATION, "failed to create empty pairwise output", error))?;
         return assemble(empty);
     }
-    with_relation_tensor(
+    with_relation_tensor::<E, _>(
         context,
         plan,
         node_id,
@@ -646,7 +791,7 @@ fn execute_pairwise_distance(
         native_version,
         |x_tensor| {
             let dimension = tensor_dimension(x_tensor, node_id, "x", "pairwise")?;
-            with_relation_tensor(
+            with_relation_tensor::<E, _>(
                 context,
                 plan,
                 node_id,
@@ -665,7 +810,7 @@ fn execute_pairwise_distance(
                             "pairwise dimensions must match",
                         ));
                     }
-                    let mut distances = DeviceBuffer::<f32>::new(resources, rows).map_err(|error| {
+                    let mut distances = DeviceBuffer::<E::Distance>::new(resources, rows).map_err(|error| {
                         cuvs_query_error(NATIVE_OPERATION, "failed to allocate pairwise output", error)
                     })?;
                     observe_native(
@@ -676,9 +821,9 @@ fn execute_pairwise_distance(
                         native_version,
                         "pairwise_distance",
                         x.num_rows(),
-                        matrix_bytes(x.num_rows(), dimension, node_id, "x")?,
+                        matrix_bytes::<E>(x.num_rows(), dimension, node_id, "x")?,
                         Some(rows),
-                        Some(matrix_bytes(x.num_rows(), y.num_rows(), node_id, "pairwise_output")?),
+                        Some(matrix_bytes::<E::Distance>(x.num_rows(), y.num_rows(), node_id, "pairwise_output")?),
                         || {
                             context.check_cancellation("query_engine.vector_algorithm.before_pairwise")?;
                             pairwise_distance_into(
@@ -770,7 +915,7 @@ fn execute_top_k(
                 native_version,
                 "select_k",
                 input.num_rows(),
-                matrix_bytes(input.num_rows(), dimension, node_id, "input")?,
+                matrix_bytes::<f32>(input.num_rows(), dimension, node_id, "input")?,
                 Some(rows),
                 Some(output_bytes),
                 || {
@@ -806,7 +951,7 @@ fn vector_input_error(
         .with_fact("reason", reason)
 }
 
-fn execute_kmeans(
+fn execute_kmeans<E: KMeansElement>(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -846,8 +991,16 @@ fn execute_kmeans(
         .with_fact("input_rows", input_rows));
     }
     let native_params = native_kmeans_params(params, node_id)?;
+    if let Some(centroids) = &params.initial_centroids {
+        require_matching_elements(
+            relation_element(plan, inputs, &params.input, node_id, VectorAlgorithm::KMeans, "input")?,
+            relation_element(plan, inputs, centroids, node_id, VectorAlgorithm::KMeans, "initial_centroids")?,
+            node_id,
+            VectorAlgorithm::KMeans,
+        )?;
+    }
 
-    with_relation_tensor(
+    with_relation_tensor::<E, _>(
         context,
         plan,
         node_id,
@@ -859,7 +1012,7 @@ fn execute_kmeans(
         native_version,
         |input_tensor| {
             let dimension = tensor_dimension(input_tensor, node_id, "input", "K-means")?;
-            let input_bytes = matrix_bytes(input_rows, dimension, node_id, "input")?;
+            let input_bytes = matrix_bytes::<E>(input_rows, dimension, node_id, "input")?;
             let fit_model = |initial_centroids| {
                 observe_native(
                     context,
@@ -890,7 +1043,7 @@ fn execute_kmeans(
             };
 
             let model = match (&params.init, &params.initial_centroids) {
-                (VectorKMeansInit::Relation, Some(centroid_binding)) => with_owned_relation_matrix(
+                (VectorKMeansInit::Relation, Some(centroid_binding)) => with_owned_relation_matrix::<E, _>(
                     context,
                     plan,
                     node_id,
@@ -1026,10 +1179,11 @@ fn execute_pca(
                 .with_fact("n_components", params.n_components)
                 .with_fact("feature_dimension", dimension));
             }
-            let input_bytes = matrix_bytes(input_rows, dimension, node_id, "input")?;
+            let input_bytes = matrix_bytes::<f32>(input_rows, dimension, node_id, "input")?;
             let mut outputs = PcaOutputBuffers::new(resources, input_rows, dimension, params.n_components)
                 .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate PCA device outputs", error))?;
-            let transformed_bytes = matrix_bytes(input_rows, params.n_components, node_id, "pca_transformed_output")?;
+            let transformed_bytes =
+                matrix_bytes::<f32>(input_rows, params.n_components, node_id, "pca_transformed_output")?;
             let fit = observe_native(
                 context,
                 node_id,
@@ -1064,7 +1218,7 @@ fn execute_pca(
     clippy::too_many_arguments,
     reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
 )]
-fn with_relation_tensor<T>(
+fn with_relation_tensor<E: DeviceElement, T>(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -1074,7 +1228,7 @@ fn with_relation_tensor<T>(
     input: &GpuDataFrame,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
-    body: impl FnOnce(&ValidatedDeviceTensor<'_>) -> Result<T>,
+    body: impl FnOnce(&ValidatedDeviceTensor<'_, E>) -> Result<T>,
 ) -> Result<T> {
     let input_schema = plan
         .node(binding.input)
@@ -1104,7 +1258,7 @@ fn with_relation_tensor<T>(
     let dimension = relation_dimension(binding, input_schema, node_id, role)?;
     let input_rows = input.num_rows();
     let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes(input_rows, dimension, node_id, role)?;
+    let packed_bytes = matrix_bytes::<E>(input_rows, dimension, node_id, role)?;
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
@@ -1142,7 +1296,11 @@ fn with_relation_tensor<T>(
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
                 })?;
-                resources.pack_prepared_float32_table(&export, MatrixLayout::RowMajor).map_err(|error| {
+                let element = selected.series(&columns[0]).and_then(|series| series.dtype()).map_err(|error| {
+                    cudf_query_error(PACK_OPERATION, "failed to inspect kNN feature element type", error)
+                })?;
+                require_vector_element::<E>(element.id(), node_id, algorithm, role)?;
+                resources.pack_prepared_table::<E>(&export, MatrixLayout::RowMajor).map_err(|error| {
                     cuvs_query_error(PACK_OPERATION, "failed to pack the prepared kNN feature table", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
@@ -1220,8 +1378,8 @@ fn with_relation_tensor<T>(
                     return Err(error);
                 },
             };
-            require_float32_vector(validated.element(), node_id, algorithm, role)?;
-            let lease = match resources.activate_validated_fixed_size_list_tensor(&validated).map_err(|error| {
+            require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
+            let lease = match resources.activate_validated_fixed_size_list_tensor::<E>(&validated).map_err(|error| {
                 cuvs_query_error(PACK_OPERATION, "failed to activate the validated FixedSizeList tensor", error)
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
@@ -1253,7 +1411,7 @@ fn with_relation_tensor<T>(
     clippy::too_many_arguments,
     reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
 )]
-fn with_owned_relation_matrix<T>(
+fn with_owned_relation_matrix<E: DeviceElement, T>(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
@@ -1264,7 +1422,7 @@ fn with_owned_relation_matrix<T>(
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
     layout: MatrixLayout,
-    body: impl FnOnce(OwnedFloat32Matrix, usize) -> Result<T>,
+    body: impl FnOnce(OwnedMatrix<E>, usize) -> Result<T>,
 ) -> Result<T> {
     let input_schema = plan
         .node(binding.input)
@@ -1295,7 +1453,7 @@ fn with_owned_relation_matrix<T>(
     let dimension = relation_dimension(binding, input_schema, node_id, role)?;
     let input_rows = input.num_rows();
     let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes(input_rows, dimension, node_id, role)?;
+    let packed_bytes = matrix_bytes::<E>(input_rows, dimension, node_id, role)?;
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
@@ -1333,7 +1491,11 @@ fn with_owned_relation_matrix<T>(
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
                 })?;
-                resources.pack_prepared_float32_table(&export, layout).map_err(|error| {
+                let element = selected.series(&columns[0]).and_then(|series| series.dtype()).map_err(|error| {
+                    cudf_query_error(PACK_OPERATION, "failed to inspect vector feature element type", error)
+                })?;
+                require_vector_element::<E>(element.id(), node_id, algorithm, role)?;
+                resources.pack_prepared_table::<E>(&export, layout).map_err(|error| {
                     cuvs_query_error(PACK_OPERATION, "failed to pack the prepared vector feature table", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
@@ -1397,8 +1559,8 @@ fn with_owned_relation_matrix<T>(
                     return Err(error);
                 },
             };
-            require_float32_vector(validated.element(), node_id, algorithm, role)?;
-            match resources.pack_validated_fixed_size_list_float32(&validated, layout).map_err(|error| {
+            require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
+            match resources.pack_validated_fixed_size_list::<E>(&validated, layout).map_err(|error| {
                 cuvs_query_error(
                     PACK_OPERATION,
                     "failed to pack the validated FixedSizeList vector child into an owned matrix",
@@ -1424,7 +1586,7 @@ fn with_owned_relation_matrix<T>(
     clippy::too_many_arguments,
     reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
 )]
-fn with_uniform_list_relation_tensor<T>(
+fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
     context: &ExecutionContext,
     node_id: NodeId,
     algorithm: VectorAlgorithm,
@@ -1434,7 +1596,7 @@ fn with_uniform_list_relation_tensor<T>(
     input_schema: &SchemaRef,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
-    body: impl FnOnce(&ValidatedDeviceTensor<'_>) -> Result<T>,
+    body: impl FnOnce(&ValidatedDeviceTensor<'_, E>) -> Result<T>,
 ) -> Result<T> {
     let column = uniform_list_vector_column(binding, node_id, role)?;
     context.check_cancellation("query_engine.vector_algorithm.before_pack")?;
@@ -1451,11 +1613,11 @@ fn with_uniform_list_relation_tensor<T>(
             .with_fact("relation_role", role)
             .with_fact("column", column)
     })?;
-    require_float32_vector(validated.element(), node_id, algorithm, role)?;
+    require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
     let rows = validated.rows();
     let dimension = validated.dimension();
     let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes(rows, dimension, node_id, role)?;
+    let packed_bytes = matrix_bytes::<E>(rows, dimension, node_id, role)?;
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
@@ -1474,7 +1636,7 @@ fn with_uniform_list_relation_tensor<T>(
         guard.fail(&error);
         return Err(error);
     }
-    let lease = match resources.activate_validated_uniform_list_tensor(&validated).map_err(|error| {
+    let lease = match resources.activate_validated_uniform_list_tensor::<E>(&validated).map_err(|error| {
         cuvs_query_error(PACK_OPERATION, "failed to activate the validated uniform List tensor", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
@@ -1505,7 +1667,7 @@ fn with_uniform_list_relation_tensor<T>(
     clippy::too_many_arguments,
     reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
 )]
-fn with_owned_uniform_list_relation_matrix<T>(
+fn with_owned_uniform_list_relation_matrix<E: DeviceElement, T>(
     context: &ExecutionContext,
     node_id: NodeId,
     algorithm: VectorAlgorithm,
@@ -1516,7 +1678,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
     layout: MatrixLayout,
-    body: impl FnOnce(OwnedFloat32Matrix, usize) -> Result<T>,
+    body: impl FnOnce(OwnedMatrix<E>, usize) -> Result<T>,
 ) -> Result<T> {
     let column = uniform_list_vector_column(binding, node_id, role)?;
     context.check_cancellation("query_engine.vector_algorithm.before_pack")?;
@@ -1533,11 +1695,11 @@ fn with_owned_uniform_list_relation_matrix<T>(
             .with_fact("relation_role", role)
             .with_fact("column", column)
     })?;
-    require_float32_vector(validated.element(), node_id, algorithm, role)?;
+    require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
     let rows = validated.rows();
     let dimension = validated.dimension();
     let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes(rows, dimension, node_id, role)?;
+    let packed_bytes = matrix_bytes::<E>(rows, dimension, node_id, role)?;
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
@@ -1556,7 +1718,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
         guard.fail(&error);
         return Err(error);
     }
-    let packed = match resources.pack_validated_uniform_list_float32(&validated, layout).map_err(|error| {
+    let packed = match resources.pack_validated_uniform_list::<E>(&validated, layout).map_err(|error| {
         cuvs_query_error(
             PACK_OPERATION,
             "failed to pack the validated uniform List vector child into an owned matrix",
@@ -1613,25 +1775,20 @@ fn uniform_list_field_index(
     })
 }
 
-fn require_float32_vector(
+fn require_vector_element<E: DeviceElement>(
     element: TypeId,
     node_id: NodeId,
     algorithm: VectorAlgorithm,
     role: &'static str,
 ) -> Result<()> {
-    if element == TypeId::Float32 {
+    if element == E::TYPE_ID {
         return Ok(());
     }
-    Err(QueryError::new(QueryErrorCode::UnsupportedType, PACK_OPERATION, "cuVS requires Float32 vector elements")
-        .with_fact("node_id", node_id)
-        .with_fact("algorithm", algorithm.as_str())
-        .with_fact("relation_role", role)
-        .with_fact("element", element.name())
-        .with_fact("reason", "unsupported_feature_type"))
+    Err(unsupported_vector_element(node_id, algorithm, role, Some(element)))
 }
 
-fn tensor_dimension(
-    tensor: &ValidatedDeviceTensor<'_>,
+fn tensor_dimension<E: DeviceElement>(
+    tensor: &ValidatedDeviceTensor<'_, E>,
     node_id: NodeId,
     role: &'static str,
     algorithm: &'static str,
@@ -1940,9 +2097,9 @@ fn checked_output_rows(rows: usize, factor: usize, node_id: NodeId, algorithm: V
     Ok(output_rows)
 }
 
-fn matrix_bytes(rows: usize, dimension: usize, node_id: NodeId, role: &'static str) -> Result<u64> {
+fn matrix_bytes<T: DeviceElement>(rows: usize, dimension: usize, node_id: NodeId, role: &'static str) -> Result<u64> {
     rows.checked_mul(dimension)
-        .and_then(|values| values.checked_mul(std::mem::size_of::<f32>()))
+        .and_then(|values| values.checked_mul(std::mem::size_of::<T>()))
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| size_overflow(node_id, role))
 }
@@ -2031,6 +2188,37 @@ mod tests {
         assert_eq!(error.operation(), "query_engine.vector_algorithm.after_index_build");
         assert_eq!(reservation.usage().unwrap().current_bytes, main_before);
         assert_eq!(coverage.usage().unwrap().iter().map(|usage| usage.current_bytes).collect::<Vec<_>>(), pool_before,);
+    }
+
+    #[test]
+    fn dispatch_rejects_an_element_outside_an_operation_sealed_set() {
+        let mut builder = QueryPlanBuilder::new();
+        let node_id = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            "input",
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)])),
+        )));
+        let error = require_vector_element::<f32>(TypeId::Float64, node_id, VectorAlgorithm::Pca, "input")
+            .expect_err("PCA has no Float64 kernel");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(error.fact_value("reason"), Some("unsupported_vector_element_type"));
+        assert_eq!(error.fact_value("element"), Some("float64"));
+        let unsupported_arrow =
+            unsupported_vector_element(node_id, VectorAlgorithm::Pca, "input", None).with_fact("arrow_type", "Float16");
+        assert_eq!(unsupported_arrow.fact_value("element"), None);
+        assert_eq!(unsupported_arrow.fact_value("arrow_type"), Some("Float16"));
+    }
+
+    #[test]
+    fn dispatch_requires_matching_element_types_before_native_execution() {
+        let mut builder = QueryPlanBuilder::new();
+        let node_id = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            "input",
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Float32, false)])),
+        )));
+        let error =
+            require_matching_elements(TypeId::Float32, TypeId::Float64, node_id, VectorAlgorithm::PairwiseDistance)
+                .expect_err("mixed pairwise inputs");
+        assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
     }
 
     #[test]

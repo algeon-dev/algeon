@@ -222,6 +222,13 @@ impl CuvsOptionValidationError {
     }
 }
 
+/// Verified metrics for one vector element type within an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CuvsVectorElementSupport {
+    pub element: CuvsVectorElementType,
+    pub metrics: &'static [&'static str],
+}
+
 /// One operation entry drives SQL names, relation shape, option metadata, and
 /// output-schema selection. Keep operation-specific facts in this registry.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -238,7 +245,7 @@ pub struct CuvsOperationDescriptor {
     /// surface admits no other relation syntax.
     pub relation_roles: &'static [CuvsRelationRole],
     /// Supported dense-vector element types for every relation binding.
-    pub vector_element_support: &'static [CuvsVectorElementType],
+    pub vector_element_support: &'static [CuvsVectorElementSupport],
     pub output_contract: CuvsOutputContract,
     pub options: &'static [CuvsOptionDefinition],
     pub output_fields: &'static [CuvsOutputFieldDefinition],
@@ -250,16 +257,16 @@ pub struct CuvsOperationDescriptor {
     pub limitations: &'static [&'static str],
 }
 
-fn cuvs_vector_relation_binding_schema(element_support: &[CuvsVectorElementType]) -> Value {
-    let elements = element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>().join(", ");
+fn cuvs_vector_relation_binding_schema(element_support: &[CuvsVectorElementSupport]) -> Value {
+    let elements = element_support.iter().map(|element| element.element.as_str()).collect::<Vec<_>>().join(", ");
     let list_types = element_support
         .iter()
         .map(|element| {
             format!(
                 "FixedSizeList<{}, D>, List<{}>, or LargeList<{}>",
-                element.as_str(),
-                element.as_str(),
-                element.as_str()
+                element.element.as_str(),
+                element.element.as_str(),
+                element.element.as_str()
             )
         })
         .collect::<Vec<_>>()
@@ -304,13 +311,40 @@ fn cuvs_vector_relation_binding_schema(element_support: &[CuvsVectorElementType]
     })
 }
 
-const FLOAT32_VECTOR_SUPPORT: &[CuvsVectorElementType] = &[CuvsVectorElementType::Float32];
+const FLOAT32_VECTOR_SUPPORT: &[CuvsVectorElementSupport] =
+    &[CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: &[] }];
 const KNN_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::Dataset, CuvsRelationRole::Queries];
 const INPUT_RELATION: &[CuvsRelationRole] = &[CuvsRelationRole::Input];
 const PAIRWISE_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::X, CuvsRelationRole::Y];
 const TOP_K_SELECTIONS: &[&str] = &["min", "max"];
 const KNN_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product"];
 const KMEANS_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded"];
+const IVF_PQ_INTEGER_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded", "inner_product"];
+const BRUTE_FORCE_SUPPORT: &[CuvsVectorElementSupport] =
+    &[CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS }];
+const IVF_SUPPORT: &[CuvsVectorElementSupport] = &[
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Int8, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::UInt8, metrics: KNN_METRICS },
+];
+const IVF_PQ_SUPPORT: &[CuvsVectorElementSupport] = &[
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Int8, metrics: IVF_PQ_INTEGER_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::UInt8, metrics: IVF_PQ_INTEGER_METRICS },
+];
+const CAGRA_SUPPORT: &[CuvsVectorElementSupport] = &[
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: CAGRA_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Int8, metrics: CAGRA_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::UInt8, metrics: CAGRA_METRICS },
+];
+const PAIRWISE_SUPPORT: &[CuvsVectorElementSupport] = &[
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float64, metrics: KNN_METRICS },
+];
+const KMEANS_SUPPORT: &[CuvsVectorElementSupport] = &[
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KMEANS_METRICS },
+    CuvsVectorElementSupport { element: CuvsVectorElementType::Float64, metrics: KMEANS_METRICS },
+];
 const KMEANS_INIT: &[&str] = &["kmeans++", "random"];
 const PCA_SOLVERS: &[&str] = &["cov_eig_dq", "cov_eig_jacobi"];
 
@@ -666,10 +700,10 @@ const PAIRWISE_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
     },
     CuvsOutputFieldDefinition {
         name: "distance",
-        data_type: "Float32",
+        data_type: "same_as_x.vector_element",
         nullable: false,
         repeats: None,
-        description: "Metric value for this x and y row pair; smaller is closer for distance metrics, while inner_product is a similarity where larger is closer.",
+        description: "Float32 for Float32 input, Float64 for Float64 input. Smaller is closer for distance metrics; inner_product prefers larger values.",
     },
 ];
 const TOP_K_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
@@ -795,7 +829,7 @@ pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
         summary: "Exact brute-force nearest-neighbor search over dense vectors.",
         use_this_when: "Use this when SQL can first filter a candidate relation and you need exact batch reranking, not a persistent ANN index.",
         relation_roles: KNN_RELATIONS,
-        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        vector_element_support: BRUTE_FORCE_SUPPORT,
         output_contract: CuvsOutputContract::KnnNeighbors,
         options: KNN_OPTIONS,
         output_fields: KNN_OUTPUT_FIELDS,
@@ -819,7 +853,7 @@ FROM cuvs_brute_force_knn(
         summary: "Query-local inverted-file approximate nearest-neighbor search.",
         use_this_when: "Use this when a query-local approximate index reduces search work over a large evaluated dataset.",
         relation_roles: KNN_RELATIONS,
-        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        vector_element_support: IVF_SUPPORT,
         output_contract: CuvsOutputContract::KnnNeighbors,
         options: IVF_FLAT_OPTIONS,
         output_fields: KNN_OUTPUT_FIELDS,
@@ -847,7 +881,7 @@ ORDER BY query_ordinal, rank;"#,
         summary: "Query-local product-quantized inverted-file nearest-neighbor search.",
         use_this_when: "Use this when a query-local compressed index can reduce vector search memory, subject to lossy recall.",
         relation_roles: KNN_RELATIONS,
-        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        vector_element_support: IVF_PQ_SUPPORT,
         output_contract: CuvsOutputContract::KnnNeighbors,
         options: IVF_PQ_OPTIONS,
         output_fields: KNN_OUTPUT_FIELDS,
@@ -876,7 +910,7 @@ ORDER BY query_ordinal, rank;"#,
         summary: "Query-local graph approximate nearest-neighbor search.",
         use_this_when: "Use this for graph-based approximate search over an evaluated dataset.",
         relation_roles: KNN_RELATIONS,
-        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        vector_element_support: CAGRA_SUPPORT,
         output_contract: CuvsOutputContract::KnnNeighbors,
         options: CAGRA_OPTIONS,
         output_fields: KNN_OUTPUT_FIELDS,
@@ -895,7 +929,7 @@ ORDER BY query_ordinal, rank;"#,
             "Approximate search may return fewer than k neighbors; missing (query, rank) rows are omitted and valid ranks remain contiguous.",
             "The dataset must be non-empty, k and intermediate_graph_degree must be less than or equal to its row count, and graph_degree must be less than intermediate_graph_degree.",
             "k must not exceed itopk_size. single_cta requires itopk_size no greater than 1024. cosine cannot use nn_descent.",
-            "Dataset and query dimensions and element types must match; only Float32 vectors are supported.",
+            "Dataset and query dimensions and element types must match.",
         ],
     },
     CuvsOperationDescriptor {
@@ -905,7 +939,7 @@ ORDER BY query_ordinal, rank;"#,
         summary: "Pairwise distance or similarity for every x and y vector row.",
         use_this_when: "Use this when every pair between two evaluated relations needs a metric value.",
         relation_roles: PAIRWISE_RELATIONS,
-        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        vector_element_support: PAIRWISE_SUPPORT,
         output_contract: CuvsOutputContract::PairwiseDistances,
         options: PAIRWISE_OPTIONS,
         output_fields: PAIRWISE_OUTPUT_FIELDS,
@@ -952,7 +986,7 @@ ORDER BY row_ordinal, rank;"#,
         summary: "K-means clustering assignments for dense vector rows.",
         use_this_when: "Use this when one statement should fit clusters over its evaluated relation and immediately join or aggregate the assignments.",
         relation_roles: INPUT_RELATION,
-        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        vector_element_support: KMEANS_SUPPORT,
         output_contract: CuvsOutputContract::KMeansAssignments,
         options: KMEANS_OPTIONS,
         output_fields: KMEANS_OUTPUT_FIELDS,
@@ -994,6 +1028,10 @@ ORDER BY row_ordinal;"#,
 ];
 
 impl CuvsOperationDescriptor {
+    pub fn element_support(&self, element: CuvsVectorElementType) -> Option<&CuvsVectorElementSupport> {
+        self.vector_element_support.iter().find(|support| support.element == element)
+    }
+
     pub fn option(&self, name: &str) -> Option<&'static CuvsOptionDefinition> {
         self.options.iter().find(|option| option.name == name)
     }
@@ -1009,6 +1047,18 @@ impl CuvsOperationDescriptor {
                 required.push(Value::String(option.name.to_string()));
             }
         }
+        if let Some(metric) = properties.get_mut("metric") {
+            let combinations = self
+                .vector_element_support
+                .iter()
+                .map(|support| format!("{}: {}", support.element.as_str(), support.metrics.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ");
+            metric["description"] = json!(format!(
+                "{} Supported element/metric combinations: {combinations}.",
+                self.option("metric").expect("metric option").description
+            ));
+        }
         json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": format!("{} options", self.sql_function_name),
@@ -1020,7 +1070,7 @@ impl CuvsOperationDescriptor {
     }
 }
 
-fn option_schema(kind: CuvsOptionKind, element_support: &[CuvsVectorElementType]) -> Value {
+fn option_schema(kind: CuvsOptionKind, element_support: &[CuvsVectorElementSupport]) -> Value {
     match kind {
         CuvsOptionKind::RelationBinding => cuvs_vector_relation_binding_schema(element_support),
         CuvsOptionKind::Integer { minimum, maximum, default } => {
@@ -1907,13 +1957,17 @@ pub fn vector_knn_output_schema(query_id_type: DataType, neighbor_id_type: DataT
 }
 
 /// Stable long-form row-major pairwise metric result.
-pub fn vector_pairwise_distance_output_schema(x_id_type: DataType, y_id_type: DataType) -> SchemaRef {
+pub fn vector_pairwise_distance_output_schema(
+    x_id_type: DataType,
+    y_id_type: DataType,
+    distance_type: DataType,
+) -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("x_ordinal", DataType::UInt64, false),
         Field::new("x_id", x_id_type, false),
         Field::new("y_ordinal", DataType::UInt64, false),
         Field::new("y_id", y_id_type, false),
-        Field::new("distance", DataType::Float32, false),
+        Field::new("distance", distance_type, false),
     ]))
 }
 

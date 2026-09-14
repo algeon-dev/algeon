@@ -31,6 +31,12 @@ cudf_status_t cudf_float32_buffer_non_finite_count_ex(float const* input,
                                                       int32_t* out_non_finite_count,
                                                       cudf_exec_options_t const* options);
 
+/// Count NaN and infinite values in one exact raw FLOAT64 device-buffer range.
+cudf_status_t cudf_float64_buffer_non_finite_count_ex(double const* input,
+                                                      size_t element_count,
+                                                      int32_t* out_non_finite_count,
+                                                      cudf_exec_options_t const* options);
+
 /// Count values outside [min_inclusive, max_exclusive) in one exact raw INT64
 /// device-buffer range on the explicit execution stream.
 cudf_status_t cudf_int64_buffer_out_of_range_count_ex(int64_t const* input,

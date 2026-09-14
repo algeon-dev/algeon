@@ -1,0 +1,16 @@
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
+
+## Vector element and metric support by function
+
+Each cell lists valid `metric` values for that input element. Yes means the element is supported without a `metric` option; No means the element is unsupported.
+
+| Function | Float32 | Float64 | Int8 | UInt8 |
+| --- | --- | --- | --- | --- |
+| `cuvs_brute_force_knn` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` | No | No | No |
+| `cuvs_cagra` | `l2_expanded`, `inner_product`, `cosine` | No | `l2_expanded`, `inner_product`, `cosine` | `l2_expanded`, `inner_product`, `cosine` |
+| `cuvs_ivf_flat` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` | No | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` |
+| `cuvs_ivf_pq` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` | No | `l2_expanded`, `l2_sqrt_expanded`, `inner_product` | `l2_expanded`, `l2_sqrt_expanded`, `inner_product` |
+| `cuvs_kmeans` | `l2_expanded`, `l2_sqrt_expanded` | `l2_expanded`, `l2_sqrt_expanded` | No | No |
+| `cuvs_pairwise_distance` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` | No | No |
+| `cuvs_pca` | Yes | No | No | No |
+| `cuvs_top_k` | Yes | No | No | No |

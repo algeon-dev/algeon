@@ -2,18 +2,19 @@ use crate::{
     brute_force::{DistanceMetric, matrix_layout, validate_matrix_binding},
     device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
+    elements::PairwiseElement,
     error::{Result, check_cuvs, invalid_input},
     resources::CuvsResources,
 };
 
 /// Writes the row-major `[x.rows(), y.rows()]` metric matrix to `out`.
 /// Both inputs must share dimensions, layout, binding, and device.
-pub fn pairwise_distance_into(
+pub fn pairwise_distance_into<T: PairwiseElement>(
     resources: &CuvsResources,
-    x: &ValidatedDeviceTensor<'_>,
-    y: &ValidatedDeviceTensor<'_>,
+    x: &ValidatedDeviceTensor<'_, T>,
+    y: &ValidatedDeviceTensor<'_, T>,
     metric: DistanceMetric,
-    out: &mut DeviceBuffer<f32>,
+    out: &mut DeviceBuffer<T::Distance>,
 ) -> Result<()> {
     let operation = "pairwise_distance_into";
     validate_matrix_binding(resources, x, operation)?;

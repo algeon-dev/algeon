@@ -54,7 +54,7 @@ fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {
         vec!["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"]
     );
     assert_eq!(
-        vector_pairwise_distance_output_schema(DataType::Utf8, DataType::Int32)
+        vector_pairwise_distance_output_schema(DataType::Utf8, DataType::Int32, DataType::Float32)
             .fields()
             .iter()
             .map(|field| field.name())

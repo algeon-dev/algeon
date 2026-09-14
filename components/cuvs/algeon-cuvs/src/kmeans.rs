@@ -2,8 +2,9 @@ use std::ptr;
 
 use crate::{
     brute_force::{matrix_layout, validate_matrix_binding},
-    device::{DeviceBuffer, MatrixLayout, OwnedFloat32Matrix, ValidatedDeviceTensor},
+    device::{DeviceBuffer, MatrixLayout, OwnedMatrix, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
+    elements::KMeansElement,
     error::{Result, check_cuvs, invalid_input, invalid_state, require_nonzero},
     params_handle::ParamsHandle,
     resources::CuvsResources,
@@ -77,10 +78,10 @@ pub struct KMeansPrediction {
 }
 
 #[derive(Debug)]
-pub struct KMeansModel {
+pub struct KMeansModel<T: KMeansElement> {
     resources: CuvsResources,
     params: KMeansParams,
-    centroids: OwnedFloat32Matrix,
+    centroids: OwnedMatrix<T>,
     n_features: usize,
     fit: KMeansFit,
 }
@@ -108,12 +109,12 @@ fn create_params(params: &KMeansParams, operation: &'static str) -> Result<Param
     Ok(handle)
 }
 
-impl KMeansModel {
+impl<T: KMeansElement> KMeansModel<T> {
     pub fn fit(
         resources: &CuvsResources,
-        data: &ValidatedDeviceTensor<'_>,
+        data: &ValidatedDeviceTensor<'_, T>,
         params: KMeansParams,
-        initial_centroids: Option<DeviceBuffer<f32>>,
+        initial_centroids: Option<DeviceBuffer<T>>,
     ) -> Result<Self> {
         let operation = "KMeansModel::fit";
         validate_matrix_binding(resources, data, operation)?;
@@ -121,7 +122,7 @@ impl KMeansModel {
         let n_features = data.columns()?;
         let initial_centroids = initial_centroids
             .map(|centroids| {
-                OwnedFloat32Matrix::from_buffer(
+                OwnedMatrix::from_buffer(
                     resources,
                     centroids,
                     params.n_clusters,
@@ -141,9 +142,9 @@ impl KMeansModel {
     /// a cudf packed table.
     pub fn fit_with_initial_centroids(
         resources: &CuvsResources,
-        data: &ValidatedDeviceTensor<'_>,
+        data: &ValidatedDeviceTensor<'_, T>,
         params: KMeansParams,
-        initial_centroids: Option<OwnedFloat32Matrix>,
+        initial_centroids: Option<OwnedMatrix<T>>,
     ) -> Result<Self> {
         let operation = "KMeansModel::fit_with_initial_centroids";
         validate_matrix_binding(resources, data, operation)?;
@@ -169,7 +170,7 @@ impl KMeansModel {
         }
         let mut centroids = match initial_centroids {
             Some(centroids) => {
-                if !centroids.is_finite_validated() {
+                if !centroids.is_input_validated() {
                     return Err(invalid_input(operation, "initial centroids must carry finite-input validation"));
                 }
                 if centroids.rows() != params.n_clusters || centroids.columns() != n_features {
@@ -196,7 +197,7 @@ impl KMeansModel {
                 }
                 centroids
             },
-            None => OwnedFloat32Matrix::new(resources, params.n_clusters, n_features, MatrixLayout::RowMajor)?,
+            None => OwnedMatrix::new(resources, params.n_clusters, n_features, MatrixLayout::RowMajor)?,
         };
         let mut centroids_view = centroids.as_tensor_mut(resources)?;
         let mut inertia = 0.0;
@@ -230,14 +231,14 @@ impl KMeansModel {
                 format!("native KMeans fit returned invalid iteration count {n_iter}"),
             ));
         }
-        centroids.validate_native_output_finite(resources, operation)?;
+        centroids.validate_native_output(resources, operation)?;
 
         Ok(Self { resources: resources.retain(), params, centroids, n_features, fit: KMeansFit { inertia, n_iter } })
     }
 
     pub fn predict_into(
         &self,
-        data: &ValidatedDeviceTensor<'_>,
+        data: &ValidatedDeviceTensor<'_, T>,
         labels: &mut DeviceBuffer<i32>,
     ) -> Result<KMeansPrediction> {
         let operation = "KMeansModel::predict_into";
@@ -300,7 +301,7 @@ impl KMeansModel {
         self.fit
     }
 
-    pub fn centroids(&self) -> &OwnedFloat32Matrix {
+    pub fn centroids(&self) -> &OwnedMatrix<T> {
         &self.centroids
     }
 

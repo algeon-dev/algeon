@@ -5,6 +5,7 @@ mod brute_force;
 mod cagra;
 mod device;
 mod dlpack;
+mod elements;
 mod error;
 mod ivf_flat;
 mod ivf_pq;
@@ -19,8 +20,9 @@ mod select_k;
 pub use brute_force::{BruteForceIndex, DistanceMetric, KnnSearchOutput};
 pub use cagra::{CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchAlgo, CagraSearchParams};
 pub use device::{
-    DeviceBuffer, DeviceElement, DeviceTensor, DeviceTensorMut, MatrixLayout, OwnedFloat32Matrix, ValidatedDeviceTensor,
+    DeviceBuffer, DeviceElement, DeviceTensor, DeviceTensorMut, MatrixLayout, OwnedMatrix, ValidatedDeviceTensor,
 };
+pub use elements::{CagraElement, IvfElement, KMeansElement, PairwiseElement};
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use ivf_flat::{IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams};
 pub use ivf_pq::{IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams};
