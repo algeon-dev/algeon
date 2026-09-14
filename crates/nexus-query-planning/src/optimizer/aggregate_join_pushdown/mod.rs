@@ -67,7 +67,8 @@ pub fn optimize_aggregate_join_pushdown(
 
     AggregateJoinPushdownResult {
         plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-            .with_keyed_hash_join_strategy_options_from(&plan),
+            .with_keyed_hash_join_strategy_options_from(&plan)
+            .with_advisory_outputs_from(&plan),
         change: crate::optimizer::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

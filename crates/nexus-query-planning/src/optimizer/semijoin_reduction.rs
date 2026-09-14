@@ -288,7 +288,8 @@ pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionO
     }
 
     let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-        .with_keyed_hash_join_strategy_options_from(&plan);
+        .with_keyed_hash_join_strategy_options_from(&plan)
+        .with_advisory_outputs_from(&plan);
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
         reject_applied_candidates(&mut diagnostics, reason, None, None, None);
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };

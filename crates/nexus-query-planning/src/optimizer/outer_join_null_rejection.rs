@@ -243,7 +243,8 @@ pub fn optimize_outer_join_null_rejection(
     let root = plan.root_id();
     OuterJoinNullRejectionResult {
         plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
-            .with_keyed_hash_join_strategy_options_from(&plan),
+            .with_keyed_hash_join_strategy_options_from(&plan)
+            .with_advisory_outputs_from(&plan),
         change,
         diagnostics,
     }

@@ -107,7 +107,8 @@ pub fn optimize_stream_fanout_replay(plan: QueryPlan, options: &StreamFanoutRepl
     let applied_fanouts = rewriter.applied_fanouts;
     let changed = rewriter.changed;
     let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-        .with_keyed_hash_join_strategy_options_from(&plan);
+        .with_keyed_hash_join_strategy_options_from(&plan)
+        .with_advisory_outputs_from(&plan);
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
     let direct_consumers = consumers_by_node(&plan);
