@@ -300,6 +300,13 @@ impl core::fmt::Debug for cudf::core::ValidatedInt64DeviceBufferRange<'_>
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod cudf::core::error
 pub mod cudf::core::error::classification
+pub enum cudf::core::error::classification::CudfAllocationAttribution
+pub cudf::core::error::classification::CudfAllocationAttribution::ConfirmedPhysical
+pub cudf::core::error::classification::CudfAllocationAttribution::ConfirmedQueryLimit
+pub cudf::core::error::classification::CudfAllocationAttribution::NonAllocationFailure
+pub cudf::core::error::classification::CudfAllocationAttribution::UnattributedAllocationFailure
+impl core::fmt::Display for cudf::core::error::classification::CudfAllocationAttribution
+pub fn cudf::core::error::classification::CudfAllocationAttribution::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cudf::core::error::classification::CudfErrorClassification
 pub cudf::core::error::classification::CudfErrorClassification::DependencyFailure
 pub cudf::core::error::classification::CudfErrorClassification::HostMaterializationLimitExceeded
@@ -312,6 +319,7 @@ pub cudf::core::error::classification::CudfErrorClassification::TemporaryFailure
 pub cudf::core::error::classification::CudfErrorClassification::Unsupported
 impl core::fmt::Display for cudf::core::error::classification::CudfErrorClassification
 pub fn cudf::core::error::classification::CudfErrorClassification::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cudf::core::error::classification::allocation_attribution(&cudf::core::error::Error) -> cudf::core::error::classification::CudfAllocationAttribution
 pub fn cudf::core::error::classification::classify_cudf_error(&cudf::core::error::Error) -> cudf::core::error::classification::CudfErrorClassification
 pub mod cudf::core::error::code
 #[non_exhaustive] pub enum cudf::core::error::code::ErrorCode
@@ -415,6 +423,13 @@ pub fn cudf::core::error::facts::Facts::iter(&self) -> impl core::iter::traits::
 pub fn cudf::core::error::facts::Facts::len(&self) -> usize
 impl core::fmt::Display for cudf::core::error::facts::Facts
 pub fn cudf::core::error::facts::Facts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cudf::core::error::CudfAllocationAttribution
+pub cudf::core::error::CudfAllocationAttribution::ConfirmedPhysical
+pub cudf::core::error::CudfAllocationAttribution::ConfirmedQueryLimit
+pub cudf::core::error::CudfAllocationAttribution::NonAllocationFailure
+pub cudf::core::error::CudfAllocationAttribution::UnattributedAllocationFailure
+impl core::fmt::Display for cudf::core::error::classification::CudfAllocationAttribution
+pub fn cudf::core::error::classification::CudfAllocationAttribution::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cudf::core::error::CudfErrorClassification
 pub cudf::core::error::CudfErrorClassification::DependencyFailure
 pub cudf::core::error::CudfErrorClassification::HostMaterializationLimitExceeded
@@ -578,6 +593,7 @@ pub fn cudf::core::error::facts::Facts::iter(&self) -> impl core::iter::traits::
 pub fn cudf::core::error::facts::Facts::len(&self) -> usize
 impl core::fmt::Display for cudf::core::error::facts::Facts
 pub fn cudf::core::error::facts::Facts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn cudf::core::error::allocation_attribution(&cudf::core::error::Error) -> cudf::core::error::classification::CudfAllocationAttribution
 pub fn cudf::core::error::classify_cudf_error(&cudf::core::error::Error) -> cudf::core::error::classification::CudfErrorClassification
 pub fn cudf::core::error::find_cudf_error_in_chain<'a>(&'a (dyn core::error::Error + 'static)) -> core::option::Option<&'a cudf::core::error::Error>
 pub const fn cudf::core::error::kind_for_code(cudf::core::error::code::ErrorCode) -> cudf::core::error::code::ErrorKind
@@ -1077,6 +1093,13 @@ impl cudf::core::types::CudfType for u64
 pub const u64::TYPE_ID: cudf::core::types::TypeId
 impl cudf::core::types::CudfType for u8
 pub const u8::TYPE_ID: cudf::core::types::TypeId
+pub enum cudf::core::CudfAllocationAttribution
+pub cudf::core::CudfAllocationAttribution::ConfirmedPhysical
+pub cudf::core::CudfAllocationAttribution::ConfirmedQueryLimit
+pub cudf::core::CudfAllocationAttribution::NonAllocationFailure
+pub cudf::core::CudfAllocationAttribution::UnattributedAllocationFailure
+impl core::fmt::Display for cudf::core::error::classification::CudfAllocationAttribution
+pub fn cudf::core::error::classification::CudfAllocationAttribution::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cudf::core::CudfErrorClassification
 pub cudf::core::CudfErrorClassification::DependencyFailure
 pub cudf::core::CudfErrorClassification::HostMaterializationLimitExceeded
@@ -1623,6 +1646,7 @@ impl cudf::core::types::CudfType for u64
 pub const u64::TYPE_ID: cudf::core::types::TypeId
 impl cudf::core::types::CudfType for u8
 pub const u8::TYPE_ID: cudf::core::types::TypeId
+pub fn cudf::core::allocation_attribution(&cudf::core::error::Error) -> cudf::core::error::classification::CudfAllocationAttribution
 pub fn cudf::core::classify_cudf_error(&cudf::core::error::Error) -> cudf::core::error::classification::CudfErrorClassification
 pub type cudf::core::Result<T> = core::result::Result<T, cudf::core::error::Error>
 pub mod cudf::device
@@ -5798,6 +5822,23 @@ pub cudf::ops::join::NullEquality::Unequal = 1
 pub enum cudf::ops::join::NullableJoin
 pub cudf::ops::join::NullableJoin::MaybeNull
 pub cudf::ops::join::NullableJoin::NoNulls
+pub struct cudf::ops::join::DataFrameMixedLeftJoinFinalized
+impl cudf::DataFrameMixedLeftJoinFinalized
+pub fn cudf::DataFrameMixedLeftJoinFinalized::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameMixedLeftJoinFinalized::gather_map_reservation_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameMixedLeftJoinFinalized::materialize_indices_in(&self, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
+pub fn cudf::DataFrameMixedLeftJoinFinalized::output_size(&self) -> usize
+pub struct cudf::ops::join::DataFrameMixedLeftJoinState
+impl cudf::DataFrameMixedLeftJoinState
+pub fn cudf::DataFrameMixedLeftJoinState::consume_in(&mut self, &cudf::DataFrame, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<()>
+pub fn cudf::DataFrameMixedLeftJoinState::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameMixedLeftJoinState::new_in(&cudf::DataFrame, cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrameMixedLeftJoinState::seal_in(self, bool, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::DataFrameMixedLeftJoinFinalized>
+impl core::fmt::Debug for cudf::DataFrameMixedLeftJoinState
+pub fn cudf::DataFrameMixedLeftJoinState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cudf::DataFrameMixedLeftJoinState
+impl core::ops::drop::Drop for cudf::DataFrameMixedLeftJoinState
+pub fn cudf::DataFrameMixedLeftJoinState::drop(&mut self)
 pub struct cudf::ops::join::FilteredJoin
 impl cudf::ops::join::FilteredJoin
 pub fn cudf::ops::join::FilteredJoin::begin_left_anti_probe(&self, &cudf::core::table::TableView<'_>) -> cudf::core::error::Result<cudf::ops::join::FilteredJoinProbeState>
@@ -7006,6 +7047,13 @@ pub cudf::BoundaryKind::HostToDevice
 pub cudf::BoundaryKind::InteropLease
 pub cudf::BoundaryKind::OwnedTransfer
 pub cudf::BoundaryKind::QueryStage
+pub enum cudf::CudfAllocationAttribution
+pub cudf::CudfAllocationAttribution::ConfirmedPhysical
+pub cudf::CudfAllocationAttribution::ConfirmedQueryLimit
+pub cudf::CudfAllocationAttribution::NonAllocationFailure
+pub cudf::CudfAllocationAttribution::UnattributedAllocationFailure
+impl core::fmt::Display for cudf::core::error::classification::CudfAllocationAttribution
+pub fn cudf::core::error::classification::CudfAllocationAttribution::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cudf::CudfErrorClassification
 pub cudf::CudfErrorClassification::DependencyFailure
 pub cudf::CudfErrorClassification::HostMaterializationLimitExceeded
@@ -8056,6 +8104,23 @@ pub fn cudf::DataFrameMixedJoinSizeData<'_>::gather_map_reservation_size_bytes(&
 pub fn cudf::DataFrameMixedJoinSizeData<'_>::materialize_indices(self) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrameMixedJoinSizeData<'_>::materialize_indices_in(self, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::DataFrameJoinPairIndices>
 pub fn cudf::DataFrameMixedJoinSizeData<'_>::output_size(&self) -> usize
+pub struct cudf::DataFrameMixedLeftJoinFinalized
+impl cudf::DataFrameMixedLeftJoinFinalized
+pub fn cudf::DataFrameMixedLeftJoinFinalized::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameMixedLeftJoinFinalized::gather_map_reservation_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameMixedLeftJoinFinalized::materialize_indices_in(&self, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
+pub fn cudf::DataFrameMixedLeftJoinFinalized::output_size(&self) -> usize
+pub struct cudf::DataFrameMixedLeftJoinState
+impl cudf::DataFrameMixedLeftJoinState
+pub fn cudf::DataFrameMixedLeftJoinState::consume_in(&mut self, &cudf::DataFrame, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<()>
+pub fn cudf::DataFrameMixedLeftJoinState::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameMixedLeftJoinState::new_in(&cudf::DataFrame, cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrameMixedLeftJoinState::seal_in(self, bool, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::DataFrameMixedLeftJoinFinalized>
+impl core::fmt::Debug for cudf::DataFrameMixedLeftJoinState
+pub fn cudf::DataFrameMixedLeftJoinState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for cudf::DataFrameMixedLeftJoinState
+impl core::ops::drop::Drop for cudf::DataFrameMixedLeftJoinState
+pub fn cudf::DataFrameMixedLeftJoinState::drop(&mut self)
 pub struct cudf::DataFrameMixedSingleSideJoinSizeData<'a>
 impl cudf::DataFrameMixedSingleSideJoinSizeData<'_>
 pub fn cudf::DataFrameMixedSingleSideJoinSizeData<'_>::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -9627,5 +9692,6 @@ impl cudf::IntoSeries for cudf::core::Column
 pub fn cudf::core::Column::into_series(self) -> cudf::core::error::Result<cudf::Series>
 impl cudf::IntoSeries for cudf::frame::factorization::EncodedSeries
 pub fn cudf::frame::factorization::EncodedSeries::into_series(self) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::allocation_attribution(&cudf::core::error::Error) -> cudf::core::error::classification::CudfAllocationAttribution
 pub fn cudf::classify_cudf_error(&cudf::core::error::Error) -> cudf::core::error::classification::CudfErrorClassification
 pub type cudf::Result<T> = core::result::Result<T, cudf::core::error::Error>

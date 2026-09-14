@@ -117,7 +117,6 @@ pub const nexus_bench::report_workload::tpcds::TPCDS_COST_SELECTION_MAX_RESIDUAL
 pub const nexus_bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str
 pub const nexus_bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CUSTOM: &str
 pub const nexus_bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str
-pub const nexus_bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64
 pub const nexus_bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub const nexus_bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64
 pub async fn nexus_bench::report_workload::tpcds::register_tpcds_tables_with_native_metadata(&datafusion::execution::context::SessionContext, &std::path::Path) -> nexus_workloads::error::WorkloadResult<()>
@@ -177,6 +176,7 @@ pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::sql: &'static str
 pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::workload_class: nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass
 pub const nexus_bench::report_workload::tpch::ANALYTICAL_OLAP_QUERIES: &[nexus_bench::report_workload::tpch::AnalyticalOlapQuery]
 pub const nexus_bench::report_workload::tpch::ANALYTICAL_OLAP_QUERY_COUNT: usize
+pub const nexus_bench::report_workload::tpch::TPCH_NATIVE_DEVICE_BUDGET_BYTES: u64
 pub async fn nexus_bench::report_workload::tpch::analytical_olap_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::error::WorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
 pub async fn nexus_bench::report_workload::tpch::analytical_olap_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::error::WorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
 pub async fn nexus_bench::report_workload::tpch::analytical_olap_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::error::WorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeFallbackPressureWorkloadItem>>

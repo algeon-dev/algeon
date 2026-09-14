@@ -105,6 +105,7 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::same_backend(&self, &Self) ->
 impl datafusion_nexus::backend::NexusGpuBackend
 pub fn datafusion_nexus::backend::NexusGpuBackend::attempt_counters_snapshot(&self) -> nexus_query_runtime::attempt::queue::AttemptBackendCountersSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::begin_attempt(&self, datafusion_nexus::attempt::AttemptOptions) -> datafusion_nexus::error::Result<datafusion_nexus::attempt::NexusAttempt>
+pub fn datafusion_nexus::backend::NexusGpuBackend::begin_attempt_with_query_cap_bytes(&self, datafusion_nexus::attempt::AttemptOptions, u64) -> datafusion_nexus::error::Result<datafusion_nexus::attempt::NexusAttempt>
 pub fn datafusion_nexus::backend::NexusGpuBackend::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<nexus_query_runtime::observability::attempt_report::QueryAttemptReport>>
 pub struct datafusion_nexus::backend::NexusGpuBackendBuilder
 impl datafusion_nexus::backend::NexusGpuBackendBuilder
@@ -749,6 +750,7 @@ pub fn datafusion_nexus::error::Facts::insert_log_safe(&mut self, &'static str, 
 pub fn datafusion_nexus::error::Facts::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &str)>
 pub fn datafusion_nexus::error::Facts::log_safe_projection(&self) -> datafusion_nexus::error::LogSafeFactProjection
 pub fn datafusion_nexus::error::Facts::new() -> Self
+pub fn datafusion_nexus::error::Facts::retained_capture_entries(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
 impl core::fmt::Debug for datafusion_nexus::error::Facts
 pub fn datafusion_nexus::error::Facts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::error::LogSafeFactProjection
