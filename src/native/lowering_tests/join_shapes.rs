@@ -37,6 +37,79 @@ async fn physical_cross_join_exec_lowers_to_native_cross_join() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn tpch_q03_join_lowering_attaches_datafusion_output_statistics_as_advisory_signals() {
+    use datafusion::{
+        common::stats::Precision,
+        physical_plan::{StatisticsArgs, StatisticsContext, joins::HashJoinExec},
+    };
+    use nexus_query_engine::plan::{AdvisoryStatistic, AdvisoryStatisticsProvenance};
+
+    fn datafusion_join_row_estimates(plan: &dyn ExecutionPlan, rows: &mut Vec<u64>) {
+        if plan.downcast_ref::<HashJoinExec>().is_some() {
+            let statistics = StatisticsContext::new().compute(plan, &StatisticsArgs::new()).unwrap();
+            let Precision::Inexact(estimate) = statistics.num_rows else {
+                panic!("DataFusion should estimate Q03 join rows inexactly: {:?}", statistics.num_rows);
+            };
+            rows.push(estimate as u64);
+        }
+        for child in plan.children() {
+            datafusion_join_row_estimates(child.as_ref(), rows);
+        }
+    }
+
+    fn native_join_advisory_rows(plan: &nexus_query_engine::plan::QueryPlan) -> Vec<u64> {
+        native_joins(plan)
+            .into_iter()
+            .map(|join| {
+                let advisory =
+                    join.spec.advisory_output_statistics.expect("every lowered Q03 join carries an advisory");
+                assert_eq!(advisory.provenance, AdvisoryStatisticsProvenance::FrontendPlannerEstimate);
+                assert_eq!(advisory.bytes, AdvisoryStatistic::Absent, "DataFusion has no byte estimate for joins");
+                let AdvisoryStatistic::Inexact(rows) = advisory.rows else {
+                    panic!("advisory rows should keep DataFusion's inexact precision: {advisory:?}");
+                };
+                rows
+            })
+            .collect()
+    }
+
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-q03-advisory-statistics");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q3 = items.iter().find(|item| item.query_id == "q03").expect("TPC-H workload should include q03");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q3.input else {
+        panic!("q03 should produce a physical plan");
+    };
+    let mut expected_rows = Vec::new();
+    datafusion_join_row_estimates(plan.as_ref(), &mut expected_rows);
+    assert_eq!(expected_rows.len(), 2);
+    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    assert_eq!(result.selected_count(), 1, "q03 outcomes={:?}", result.report.outcomes());
+    let mut advisory_rows = native_join_advisory_rows(&result.plans[0]);
+    advisory_rows.sort_unstable();
+    expected_rows.sort_unstable();
+    assert_eq!(advisory_rows, expected_rows);
+
+    // Without DataFusion statistics the joins lower without advisories and
+    // remain selected: an absent signal never changes capability acceptance.
+    let mut config = tpch_report_session_config();
+    config.options_mut().execution.collect_statistics = false;
+    let items = tpch_fallback_pressure_workload_items(&dir, config).await.unwrap();
+    let q3 = items.iter().find(|item| item.query_id == "q03").expect("TPC-H workload should include q03");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q3.input else {
+        panic!("q03 should produce a physical plan");
+    };
+    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    assert_eq!(result.selected_count(), 1, "q03 outcomes={:?}", result.report.outcomes());
+    let joins = native_joins(&result.plans[0]);
+    assert_eq!(joins.len(), 2);
+    assert!(joins.iter().all(|join| join.spec.advisory_output_statistics.is_none()), "{joins:?}");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn hash_join_filter_lowers_to_native_residual_predicate() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter");

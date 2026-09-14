@@ -54,8 +54,8 @@ pub use dynamic_filter::{
     DynamicFilterRouteDiscoveryDiagnostics, DynamicFilterRouteDiscoveryOptions, DynamicFilterRouteRejectedReason,
 };
 pub use join_build_side::{
-    JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics,
-    JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason,
+    JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JoinBuildSideSelectionBasis, JoinBuildSideSelectionCandidateDiagnostics,
+    JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason,
 };
 pub use join_filter_reassociation::{
     JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinFilterReassociationCandidateDiagnostics,

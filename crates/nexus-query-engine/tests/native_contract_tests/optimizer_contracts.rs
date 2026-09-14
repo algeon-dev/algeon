@@ -15,8 +15,9 @@ use nexus_query_engine::{
         DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedRowGroupPruningDiagnostics,
         DimensionDerivedRowGroupPruningOptions, DimensionDerivedRowGroupPruningRejectedReason,
         DynamicFilterRouteDiscoveryDiagnostics, DynamicFilterRouteDiscoveryOptions, DynamicFilterRouteRejectedReason,
-        JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionDiagnostics,
-        JoinBuildSideSelectionOptions, JoinFilterReassociationDiagnostics, JoinFilterReassociationRejectedReason,
+        JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionBasis,
+        JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason,
+        JoinFilterReassociationDiagnostics, JoinFilterReassociationRejectedReason,
         LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseCandidateDiagnostics,
         LocalParquetSourceReuseDiagnostics, LocalParquetSourceReuseOptions, LocalParquetSourceReuseRejectedReason,
         NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, OUTER_JOIN_NULL_REJECTION_RULE_NAME,
@@ -31,8 +32,9 @@ use nexus_query_engine::{
         optimize_semijoin_reduction, seed_dimension_derived_reader_predicates,
     },
     plan::{
-        GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams,
-        GraphBfsPredicateInputs, GraphConstructionOptions, GraphEdgeColumnBindings, GraphPredicateInput, NodeId,
+        AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance, GraphAlgorithm,
+        GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
+        GraphConstructionOptions, GraphEdgeColumnBindings, GraphPredicateInput, NodeId,
     },
     source::LocalParquetSource,
 };

@@ -120,6 +120,130 @@ fn join_build_side_selection_prefers_grouped_aggregate_keyset_side_when_size_is_
 }
 
 #[test]
+fn join_build_side_selection_uses_advisory_join_output_rows_when_conservative_size_is_unknown() {
+    let advised = advisory_rows(2_000);
+    let plan = advised_join_over_fact_plan(Some(advised), 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
+    assert!(candidate.applied);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::AdvisoryRows));
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.left_estimated_bytes, None);
+    assert_eq!(candidate.left_advisory_rows, Some(2_000));
+    assert_eq!(candidate.left_advisory_bytes, None);
+    assert_eq!(candidate.right_estimated_rows, Some(100_000_000));
+    assert_eq!(candidate.right_advisory_rows, None);
+    assert_eq!(candidate.rejected_reason, None);
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Left);
+
+    let plan = advised_join_over_fact_plan(None, 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
+    assert!(!candidate.applied);
+    assert_eq!(candidate.after_build_side, None);
+    assert_eq!(candidate.selection_basis, None);
+    assert_eq!(candidate.left_advisory_rows, None);
+    assert_eq!(candidate.rejected_reason, Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide));
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
+}
+
+#[test]
+fn join_build_side_selection_keeps_current_build_side_when_advisory_output_is_larger_than_known_side() {
+    let plan =
+        advised_join_over_fact_plan(Some(advisory_rows(500_000_000)), 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
+    assert!(!candidate.applied);
+    assert_eq!(candidate.after_build_side, None);
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::AdvisoryRows));
+    assert_eq!(candidate.left_advisory_rows, Some(500_000_000));
+    assert_eq!(candidate.rejected_reason, Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide));
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
+}
+
+#[test]
+fn join_build_side_selection_prefers_conservative_evidence_over_advisory_estimates() {
+    // A conservatively small current build side is kept even when the other
+    // side advertises a tinier advisory output.
+    let plan = advised_join_over_fact_plan(Some(advisory_rows(10)), 32 * 1024 * 1024, 500_000, JoinSide::Right);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
+    assert!(!candidate.applied);
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::SmallCurrentSide));
+    assert_eq!(candidate.left_advisory_rows, Some(10));
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
+
+    // A side that carries both a conservative bound and a much smaller
+    // advisory estimate is compared by its bound: the advisory never
+    // shrinks known evidence.
+    let mut builder = QueryPlanBuilder::new();
+    let semi_left = builder.add_source(estimated_local_source("semi_left", "s_key", 1024 * 1024 * 1024, 50_000_000));
+    let semi_right = builder.add_source(estimated_local_source("semi_right", "r_key", 1024, 10));
+    let semi = builder.add_join(
+        semi_left,
+        semi_right,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "s_key", "s_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "s_key", "s_key"), "s_key")])
+        .with_build_side(JoinSide::Right)
+        .with_advisory_output_statistics(AdvisoryOutputStatistics {
+            rows: AdvisoryStatistic::Inexact(100),
+            bytes: AdvisoryStatistic::Inexact(1_024),
+            provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
+        }),
+        schema(&["s_key"]),
+    );
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "fact",
+        &["f_key", "f_val"],
+        512 * 1024 * 1024,
+        20_000_000,
+    ));
+    let outer = builder.add_join(
+        semi,
+        fact,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "s_key", "s_key"), ColumnRef::input(1, "f_key", "f_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "s_key", "s_key"), "s_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "f_val", "f_val"), "f_val"),
+        ])
+        .with_build_side(JoinSide::Left),
+        schema(&["s_key", "f_val"]),
+    );
+    let plan = builder.finish_gpu_resident(outer);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    let candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.left_advisory_bytes.is_some())
+        .expect("semi-fed outer join should be a build-side candidate");
+    assert!(candidate.applied);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Right));
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::ConservativeBytes));
+    assert_eq!(candidate.left_estimated_bytes, Some(1024 * 1024 * 1024));
+    assert_eq!(candidate.left_advisory_bytes, Some(1_024));
+    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
+}
+
+#[test]
 fn join_build_side_selection_keeps_small_current_build_side_over_grouped_aggregate_keyset() {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source_with_fields(
@@ -637,6 +761,82 @@ fn disabled_native_optimizer_keeps_join_build_side_selection_off() {
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert!(result.diagnostics.is_empty());
+}
+
+fn advisory_rows(rows: u64) -> AdvisoryOutputStatistics {
+    AdvisoryOutputStatistics {
+        rows: AdvisoryStatistic::Inexact(rows),
+        bytes: AdvisoryStatistic::Absent,
+        provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
+    }
+}
+
+/// Builds `projection(dim ⋈ mid) ⋈ fact` where only the frontend advisory
+/// describes the inner join output; both sources of the inner join keep
+/// conservative estimates, but the join output itself has none.
+fn advised_join_over_fact_plan(
+    advisory: Option<AdvisoryOutputStatistics>,
+    fact_bytes: u64,
+    fact_rows: u64,
+    build_side: JoinSide,
+) -> nexus_query_engine::plan::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let dim = builder.add_source(estimated_local_source("dim", "d_key", 128 * 1024 * 1024, 15_000_000));
+    let mid = builder.add_source(estimated_local_source_with_fields(
+        "mid",
+        &["m_key", "m_id"],
+        1024 * 1024 * 1024,
+        70_000_000,
+    ));
+    let mut inner_spec = JoinSpec::new(
+        JoinType::Inner,
+        vec![JoinKey::new(ColumnRef::input(0, "d_key", "d_key"), ColumnRef::input(1, "m_key", "m_key"))],
+    )
+    .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "m_id", "m_id"), "m_id")])
+    .with_build_side(JoinSide::Left);
+    if let Some(advisory) = advisory {
+        inner_spec = inner_spec.with_advisory_output_statistics(advisory);
+    }
+    let inner = builder.add_join(dim, mid, inner_spec, schema(&["m_id"]));
+    let projected = builder.add_projection(
+        inner,
+        vec![ProjectionOutput::new(Expr::column("m_id"), Field::new("m_id", DataType::Int32, false))],
+    );
+    let fact = builder.add_source(estimated_local_source_with_fields("fact", &["f_mid", "f_val"], fact_bytes, fact_rows));
+    let outer = builder.add_join(
+        projected,
+        fact,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "m_id", "m_id"), ColumnRef::input(1, "f_mid", "f_mid"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "m_id", "m_id"), "m_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "f_val", "f_val"), "f_val"),
+        ])
+        .with_build_side(build_side),
+        schema(&["m_id", "f_val"]),
+    );
+    builder.finish_gpu_resident(outer)
+}
+
+/// Finds the candidate for the outer join fed by another join. Node ids are
+/// renumbered by earlier passes, so the candidate is identified by the only
+/// evidence shape it can have: no conservative estimate on its left input.
+fn join_fed_build_side_candidate(
+    diagnostics: &JoinBuildSideSelectionDiagnostics,
+) -> &nexus_query_engine::optimizer::JoinBuildSideSelectionCandidateDiagnostics {
+    let mut candidates = diagnostics.candidates.iter().filter(|candidate| candidate.left_estimated_rows.is_none());
+    let candidate = candidates.next().expect("join-fed outer join should be a build-side candidate");
+    assert!(candidates.next().is_none(), "exactly one join-fed candidate expected: {diagnostics:?}");
+    candidate
+}
+
+fn root_join_build_side(plan: &nexus_query_engine::plan::QueryPlan) -> JoinSide {
+    let PlanNode::Join(join) = &plan.root_node().kind else {
+        panic!("optimized root should remain the outer join");
+    };
+    join.spec.build_side
 }
 
 fn estimated_inner_equi_join_plan(left_bytes: u64, right_bytes: u64) -> nexus_query_engine::plan::QueryPlan {

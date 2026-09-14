@@ -12,6 +12,7 @@ use crate::{
     source::SourceNode,
 };
 
+mod advisory;
 mod builder;
 #[doc(hidden)]
 pub mod column_evidence;
@@ -30,11 +31,12 @@ mod vector_algorithm;
 
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
+pub use advisory::{AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance};
 pub use builder::QueryPlanBuilder;
 #[doc(hidden)]
 pub use estimates::{
-    estimated_local_parquet_source_bytes, estimated_output_bytes, estimated_output_rows,
-    estimated_reachable_local_parquet_source_bytes,
+    advisory_output_bytes, advisory_output_rows, estimated_local_parquet_source_bytes, estimated_output_bytes,
+    estimated_output_rows, estimated_reachable_local_parquet_source_bytes,
 };
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use graph_algorithm::{

@@ -241,8 +241,9 @@ fn format_join_build_side_selection_candidate(candidate: &JoinBuildSideSelection
     let after_build_side = candidate.after_build_side.map_or_else(|| "none".to_string(), |side| side.to_string());
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    let selection_basis = candidate.selection_basis.map_or("none", |basis| basis.as_str());
     format!(
-        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},small_build_side_bytes={},small_build_side_rows={},applied={},rejected_reason={}",
+        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},left_advisory_rows={},right_advisory_rows={},left_advisory_bytes={},right_advisory_bytes={},small_build_side_bytes={},small_build_side_rows={},selection_basis={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.candidate_node_id,
         candidate.before_build_side,
@@ -251,8 +252,13 @@ fn format_join_build_side_selection_candidate(candidate: &JoinBuildSideSelection
         option_u64_text(candidate.right_estimated_rows),
         option_u64_text(candidate.left_estimated_bytes),
         option_u64_text(candidate.right_estimated_bytes),
+        option_u64_text(candidate.left_advisory_rows),
+        option_u64_text(candidate.right_advisory_rows),
+        option_u64_text(candidate.left_advisory_bytes),
+        option_u64_text(candidate.right_advisory_bytes),
         candidate.small_build_side_bytes,
         candidate.small_build_side_rows,
+        selection_basis,
         candidate.applied,
         rejected_reason,
     )
