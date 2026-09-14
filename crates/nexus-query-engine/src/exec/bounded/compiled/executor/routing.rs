@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use super::CompiledGpuTaskExecutor;
 use crate::{
     admission::CompiledJoinExecutionStrategy,
+    capability::keyed_hash_join_capable,
     exec::bounded::SourceAdjacentAggregateChunkCapHints,
     pipeline::{PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId},
     plan::{JoinSide, JoinType, NodeId, PlanNode},
@@ -266,6 +267,7 @@ impl CompiledGpuTaskExecutor<'_> {
             match consumer_task.kind() {
                 PipelineTaskKind::Aggregate => return true,
                 PipelineTaskKind::JoinProbe => return self.join_probe_task_can_consume_frame_stream(consumer_task),
+                PipelineTaskKind::JoinBuild => return self.join_build_task_can_consume_frame_stream(consumer_task),
                 PipelineTaskKind::FinalSort => return self.final_sort_task_can_consume_frame_stream(consumer_task),
                 PipelineTaskKind::Unary => {
                     let [next_resource] = consumer_task.output_resources() else {
@@ -283,6 +285,40 @@ impl CompiledGpuTaskExecutor<'_> {
             return false;
         };
         self.downstream_fused_limit(task, *output).ok().flatten().is_some()
+    }
+
+    // A keyed-hash build consumes its input chunk by chunk (partition-wise
+    // once the strategy settles, concatenated otherwise), so its producer may
+    // stay a stream instead of materializing one frame.
+    pub(super) fn join_build_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
+        let Some(node_id) = task.plan_node() else {
+            return false;
+        };
+        let Some(node) = self.plan.node(node_id) else {
+            return false;
+        };
+        let PlanNode::Join(join) = &node.kind else {
+            return false;
+        };
+        keyed_hash_join_capable(join)
+    }
+
+    // The probe may yield outputs lazily only when the materialize task hands
+    // them to a single stream-consuming task; other consumers need one frame.
+    pub(super) fn join_probe_output_consumed_as_stream(&self, node_id: NodeId) -> bool {
+        let Some(materialize) = self
+            .pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.kind() == PipelineTaskKind::JoinMaterialize && task.plan_node() == Some(node_id))
+        else {
+            return false;
+        };
+        let [output] = materialize.output_resources() else {
+            return false;
+        };
+        self.join_materialize_output_can_preserve_stream(materialize.id(), *output)
+            && !self.resource_has_multiple_consumers(*output)
     }
 
     pub(super) fn join_probe_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {

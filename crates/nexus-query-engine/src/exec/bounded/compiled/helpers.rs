@@ -71,16 +71,21 @@ pub(super) fn join_strategy(
 ) -> Result<CompiledJoinStrategySelection> {
     let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
     let strategy_facts = KeyedHashJoinStrategyInputFacts {
-        estimated_build_rows: plan_facts.estimated_build_rows,
         observed_build_rows: Some(observed_build_rows),
         build_side_bytes: Some(build_side_bytes),
-        probe_side_bytes: plan_facts.probe_side_bytes,
-        estimated_output_rows: plan_facts.estimated_output_rows,
-        estimated_output_bytes: plan_facts.estimated_output_bytes,
         build_key_unique,
-        probe_reuse_count: plan_facts.probe_reuse_count,
-        reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
+        ..plan_facts
     };
+    join_strategy_from_facts(plan, node, task, node_id, strategy_facts)
+}
+
+pub(super) fn join_strategy_from_facts(
+    plan: &QueryPlan,
+    node: &JoinNode,
+    task: &PipelineTask,
+    node_id: NodeId,
+    strategy_facts: KeyedHashJoinStrategyInputFacts,
+) -> Result<CompiledJoinStrategySelection> {
     CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(
         node,
         strategy_facts,

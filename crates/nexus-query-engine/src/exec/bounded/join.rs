@@ -29,11 +29,13 @@ mod leaf;
 
 pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
+    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+    PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream,
     execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
     execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
     execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
     execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
-    release_bounded_compiled_join_probe_state,
+    partitioned_join_build_commitment, release_bounded_compiled_join_probe_state, stateless_streaming_probe_supported,
 };
 use hash::{
     BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join_build_from_frame,
@@ -45,7 +47,8 @@ use hash::{
 };
 pub(super) use leaf::{
     BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,
-    execute_bounded_join_leaf_source, materialize_bounded_join_leaf_local_parquet_source_stream,
+    bounded_join_leaf_local_parquet_source_frame_stream, execute_bounded_join_leaf_source,
+    materialize_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream, stream_bounded_join_leaf_local_parquet_source,
     stream_bounded_join_leaf_local_parquet_source_chunks, stream_bounded_join_leaf_local_parquet_source_serial,

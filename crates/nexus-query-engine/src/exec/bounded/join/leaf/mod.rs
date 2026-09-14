@@ -68,6 +68,7 @@ pub(in crate::exec::bounded) use planning::{
 use read_serial::*;
 use scheduler::*;
 use stages::*;
+pub(in crate::exec::bounded) use stream::bounded_join_leaf_local_parquet_source_frame_stream;
 use stream::*;
 
 // Deferred Parquet leaf work that compiled join tasks can materialize in chunks.
@@ -128,6 +129,21 @@ impl BoundedJoinLeafLocalParquetSourceStream {
                     .or(chunk.known_file_bytes)?,
             )
         })
+    }
+
+    pub(in crate::exec::bounded) fn estimated_source_rows(&self) -> Option<u64> {
+        self.chunks.iter().try_fold(0_u64, |total, chunk| total.checked_add(chunk.known_row_count?))
+    }
+
+    fn output_column_count(&self) -> usize {
+        self.stages
+            .iter()
+            .rev()
+            .find_map(|stage| match stage {
+                BoundedJoinLeafSourceStreamStage::Projection { node, .. } => Some(node.output_schema().fields().len()),
+                BoundedJoinLeafSourceStreamStage::Filter { .. } => None,
+            })
+            .unwrap_or_else(|| self.source.schema.fields().len())
     }
 
     pub(in crate::exec::bounded) fn dynamic_filter_source_snapshot(&self) -> DynamicFilterSourceSnapshot {

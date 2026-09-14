@@ -4,17 +4,23 @@ use super::{
         resource::CompiledGpuResourcePayload,
     },
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
+    admission::{JoinBuildStreamEstimate, settle_partitioned_join_build},
 };
 use crate::{
+    capability::keyed_hash_join_capable,
     error::Result,
     exec::bounded::{
-        BoundedCompiledJoinMaterializeOutput, execute_bounded_compiled_join_build_from_frame,
+        BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt,
+        BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+        BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame, compiled::ResidentFrameStreamPayload,
+        consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_frame,
         execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
         execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame,
         execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
-        execute_bounded_compiled_join_probe_from_stream, materialize_bounded_join_leaf_local_parquet_source_stream,
+        execute_bounded_compiled_join_probe_from_stream,
     },
     pipeline::PipelineTask,
+    plan::{JoinNode, NodeId},
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -34,54 +40,30 @@ impl CompiledGpuTaskExecutor<'_> {
         let node = join_node(self.plan, task, node_id)?;
         let build = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-            let input_frame = match input_payload.payload {
+            match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
-                    materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)
+                    self.execute_join_build_from_leaf_stream(task, node_id, node, stream)
                 },
                 CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
-                    prefetch.finish(&mut self.execution)
+                    let frame = prefetch.finish(&mut self.execution)?;
+                    self.execute_join_build_from_resident_frame(task, node_id, node, frame)
                 },
-                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => Ok(*frame),
-                CompiledGpuResourcePayload::ResidentFrameStream(_) => {
-                    Err(invalid("compiled join build task cannot consume a resident frame stream")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id))
+                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
+                    self.execute_join_build_from_resident_frame(task, node_id, node, *frame)
                 },
-            }?;
-            self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
-            let strategy =
-                self.select_join_build_strategy(task, node_id, node, &input_frame.frame, input_frame.device_bytes())?;
-            execute_bounded_compiled_join_build_from_resident_frame(
-                &mut self.execution,
-                node_id,
-                node,
-                strategy.strategy,
-                self.plan.keyed_hash_join_strategy_options(),
-                input_frame,
-            )
+                CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
+                    self.execute_join_build_from_frame_stream(task, node_id, node, stream)
+                },
+            }
         } else {
             let input_payload = state.resource_payload(input)?;
             if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
                 let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
-                let input_frame =
-                    materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)?;
-                self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
-                let strategy = self.select_join_build_strategy(
-                    task,
-                    node_id,
-                    node,
-                    &input_frame.frame,
-                    input_frame.device_bytes(),
-                )?;
-                execute_bounded_compiled_join_build_from_resident_frame(
-                    &mut self.execution,
-                    node_id,
-                    node,
-                    strategy.strategy,
-                    self.plan.keyed_hash_join_strategy_options(),
-                    input_frame,
-                )
+                self.execute_join_build_from_leaf_stream(task, node_id, node, stream)
+            } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
+                let stream = stream.alias_eager(node_id, "compiled_join_build_stream_alias")?;
+                self.execute_join_build_from_frame_stream(task, node_id, node, stream)
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
             {
                 Err(invalid("compiled join build cannot share a pending source read")
@@ -92,7 +74,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                 let input_payload = state.resource_payload(input)?;
                 let input_frame = input_payload.clone_frame();
-                self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame)?;
+                self.produce_hash_join_build_dynamic_filters(node_id, node, &[input_frame.frame()])?;
                 let strategy = self.select_join_build_strategy(
                     task,
                     node_id,
@@ -115,6 +97,103 @@ impl CompiledGpuTaskExecutor<'_> {
         Ok(CompiledTaskOutput::empty())
     }
 
+    fn execute_join_build_from_resident_frame(
+        &mut self,
+        task: &PipelineTask,
+        node_id: NodeId,
+        node: &JoinNode,
+        input_frame: ResidentGpuFrame,
+    ) -> Result<BoundedCompiledJoinBuildState> {
+        self.produce_hash_join_build_dynamic_filters(node_id, node, &[input_frame.frame.frame()])?;
+        let strategy =
+            self.select_join_build_strategy(task, node_id, node, &input_frame.frame, input_frame.device_bytes())?;
+        execute_bounded_compiled_join_build_from_resident_frame(
+            &mut self.execution,
+            node_id,
+            node,
+            strategy.strategy,
+            self.plan.keyed_hash_join_strategy_options(),
+            input_frame,
+        )
+    }
+
+    fn execute_join_build_from_leaf_stream(
+        &mut self,
+        task: &PipelineTask,
+        node_id: NodeId,
+        node: &JoinNode,
+        stream: BoundedJoinLeafLocalParquetSourceStream,
+    ) -> Result<BoundedCompiledJoinBuildState> {
+        let estimate = JoinBuildStreamEstimate {
+            rows: stream.estimated_source_rows(),
+            bytes: stream.estimated_source_read_bytes(),
+        };
+        self.execute_join_build_from_input_stream(
+            task,
+            node_id,
+            node,
+            BoundedJoinBuildInputStream::Leaf(Box::new(stream)),
+            estimate,
+        )
+    }
+
+    fn execute_join_build_from_frame_stream(
+        &mut self,
+        task: &PipelineTask,
+        node_id: NodeId,
+        node: &JoinNode,
+        stream: ResidentFrameStreamPayload,
+    ) -> Result<BoundedCompiledJoinBuildState> {
+        let estimate = JoinBuildStreamEstimate {
+            rows: Some(stream.num_rows()).filter(|rows| *rows > 0),
+            bytes: Some(stream.aggregate_reservation_bytes()).filter(|bytes| *bytes > 0),
+        };
+        self.execute_join_build_from_input_stream(
+            task,
+            node_id,
+            node,
+            BoundedJoinBuildInputStream::Frames(stream),
+            estimate,
+        )
+    }
+
+    // Consumes the build input chunk by chunk. The strategy owner decides while
+    // chunks arrive whether the rest can go straight into partitions; otherwise
+    // the chunks are concatenated and the resident-frame path selects as before.
+    fn execute_join_build_from_input_stream(
+        &mut self,
+        task: &PipelineTask,
+        node_id: NodeId,
+        node: &JoinNode,
+        input: BoundedJoinBuildInputStream,
+        estimate: JoinBuildStreamEstimate,
+    ) -> Result<BoundedCompiledJoinBuildState> {
+        let plan = self.plan;
+        let keyed_hash_inputs = keyed_hash_join_capable(node);
+        let mut settle = |execution: &mut BoundedExecutionAttempt<'_>,
+                          observation: Option<BoundedJoinBuildStreamObservation>| {
+            settle_partitioned_join_build(plan, task, node_id, node, estimate, execution, observation)
+        };
+        let outcome = consume_bounded_join_build_input_stream(
+            &mut self.execution,
+            node_id,
+            node,
+            input,
+            keyed_hash_inputs,
+            &mut settle,
+        )?;
+        match outcome {
+            BoundedJoinBuildStreamOutcome::Materialized(frame) => {
+                self.execute_join_build_from_resident_frame(task, node_id, node, frame)
+            },
+            BoundedJoinBuildStreamOutcome::Partitioned(build) => {
+                let partitions = build.partitions().iter().collect::<Vec<_>>();
+                self.produce_hash_join_build_dynamic_filters(node_id, node, &partitions)?;
+                Ok(BoundedCompiledJoinBuildState::Partitioned(build))
+            },
+        }
+    }
+
     pub(super) fn execute_join_probe_task(
         &mut self,
         task: &PipelineTask,
@@ -135,12 +214,20 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
+        let lazy_output = self.join_probe_output_consumed_as_stream(node_id);
         let probe = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream)?;
-                    execute_bounded_compiled_join_probe_from_stream(&mut self.execution, node_id, node, build, stream)
+                    execute_bounded_compiled_join_probe_from_stream(
+                        &mut self.execution,
+                        node_id,
+                        node,
+                        build,
+                        stream,
+                        lazy_output,
+                    )
                 },
                 CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
                     let frame = prefetch.finish(&mut self.execution)?;
@@ -178,7 +265,14 @@ impl CompiledGpuTaskExecutor<'_> {
             let input_payload = state.resource_payload(input)?;
             if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
                 let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, stream)?;
-                execute_bounded_compiled_join_probe_from_stream(&mut self.execution, node_id, node, build, stream)
+                execute_bounded_compiled_join_probe_from_stream(
+                    &mut self.execution,
+                    node_id,
+                    node,
+                    build,
+                    stream,
+                    lazy_output,
+                )
             } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
                 if !self.join_probe_task_can_consume_frame_stream(task) {
                     return Err(invalid("compiled join probe cannot share this resident frame stream")

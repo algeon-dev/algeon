@@ -1,18 +1,18 @@
 use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
-    BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
-    BoundedJoinSideFrame, BoundedPartitionRowPolicy, CompiledEqualityJoinPreflightIndices,
-    CompiledJoinExecutionStrategy, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide,
-    KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY, PartitionedHashEquiJoinFrameStreamProbeState,
-    PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput, PartitionedJoinSide, ResidentFrameStreamPayload,
-    ResidentFrameStreamSource, ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque,
-    compiled_join_input_columns, concatenate_streamed_hash_join_outputs, execution_overrides, hash_partition_join_side,
-    join_keys_for_side, materialize_compiled_keyed_equality_join_indices_with_preflight,
-    materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partitioned_join_partition_count,
-    partitioned_join_target_bytes_for_context, partitioned_streaming_probe_supported,
-    prepare_bounded_join_side_input_from_resident_frame, probe_side, record_partitioned_join_operator_metrics,
-    record_streamed_partitioned_hash_join_metrics, release_partitioned_join_side,
-    release_streamed_join_outputs_reverse, run_partitioned_join_driver,
+    BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
+    BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
+    CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy, GpuDataFrame, Instant, JoinMaterializationTxn,
+    JoinNode, JoinSide, KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY,
+    PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput,
+    PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result,
+    StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
+    execution_overrides, hash_partition_join_side, join_keys_for_side,
+    materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
+    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
+    partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
+    record_partitioned_join_operator_metrics, record_streamed_partitioned_hash_join_metrics,
+    release_partitioned_join_side, release_streamed_join_outputs_reverse, run_partitioned_join_driver,
     stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
     validate_partitioned_hash_equi_join,
 };
@@ -365,6 +365,70 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         strategy_options: build.strategy_options,
         probe_columns,
         probe_keys,
+    }))
+}
+
+// Probe a build side that was partitioned while its input streamed in. The
+// partition count is fixed by the build; probe chunks are partitioned to match.
+pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: BoundedCompiledPartitionedJoinBuildState,
+    inputs: ResidentFrameStreamPayload,
+) -> Result<BoundedCompiledJoinProbeState> {
+    if let Err(error) = validate_partitioned_hash_equi_join(node) {
+        inputs.release_all(execution);
+        release_partitioned_join_side(build.partitioned);
+        return Err(error);
+    }
+    if !partitioned_streaming_probe_supported(node) {
+        inputs.release_all(execution);
+        release_partitioned_join_side(build.partitioned);
+        return Err(unsupported_bounded_shape(
+            "streamed compiled partitioned hash join probe supports inner joins and left joins with a right build side",
+            "compiled_join_strategy_unsupported",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", node.spec.build_side));
+    }
+    let build_side = build.side;
+    let probe_side = probe_side(build_side);
+    let probe_columns =
+        match compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side) {
+            Ok(columns) => columns,
+            Err(error) => {
+                inputs.release_all(execution);
+                release_partitioned_join_side(build.partitioned);
+                return Err(error);
+            },
+        };
+    let build_partitioned_bytes = build.partitioned.device_bytes();
+    execution.metrics_mut().record_join_strategy_decision(
+        node_id,
+        &BTreeMap::from([
+            ("join_strategy", "partitioned_hash_equi".to_string()),
+            ("partition_count", build.partition_count.to_string()),
+            ("partition_target_bytes", build.partition_target_bytes.to_string()),
+            ("build_partition_batch_count", build.partition_count.to_string()),
+            ("build_input_chunks", build.input_chunks.to_string()),
+            ("observed_build_rows", build.rows.to_string()),
+            ("build_side_bytes", build.bytes.to_string()),
+            ("build_partitioned_bytes", build_partitioned_bytes.to_string()),
+        ]),
+    );
+    Ok(BoundedCompiledJoinProbeState::PartitionedLazyStream(PartitionedHashEquiJoinFrameStreamProbeState {
+        build_side,
+        build_rows: build.rows,
+        build_bytes: build.bytes,
+        build_partitioned: build.partitioned,
+        build_partitioned_bytes,
+        inputs,
+        partition_count: build.partition_count,
+        partition_target_bytes: build.partition_target_bytes,
+        strategy_options: build.strategy_options,
+        probe_columns,
+        probe_keys: join_keys_for_side(node, probe_side),
     }))
 }
 
