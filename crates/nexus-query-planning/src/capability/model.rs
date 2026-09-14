@@ -1118,8 +1118,7 @@ fn root_topk_join_aggregate_rejection_projects_before_root_join(decision: &Capab
     matches!(
         decision.rejection_reason(),
         Some(
-            "root_topk_join_aggregate_requires_source_reduction_evidence"
-                | "root_topk_join_aggregate_requires_fetch_limit"
+            "root_topk_join_aggregate_requires_fetch_limit"
                 | "root_topk_join_aggregate_rejects_distinct_subcontract"
                 | "root_topk_join_aggregate_rejects_rollup_subcontract"
                 | "root_topk_join_aggregate_rejects_window_subcontract"

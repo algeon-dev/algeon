@@ -718,3 +718,117 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
     let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
     builder.finish_with_host_sink(projection)
 }
+
+/// Three group-only dedup aggregates combined by two stacked keyed LeftAnti
+/// joins under an outermost groupless `count(*)`, i.e. `count(*) from ((a
+/// except b) except c)`. Models a CHAIN of EXCEPT DISTINCTs rather than a
+/// single one: the second anti join's probe side is the first anti join
+/// itself, proven dedup transitively instead of being a dedup aggregate
+/// directly.
+pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
+    let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let one_schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
+    let scalar_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let a = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-setop-chained-a.parquet",
+        Arc::clone(&key_schema),
+        vec!["k".into()],
+    )));
+    let b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-setop-chained-b.parquet",
+        Arc::clone(&key_schema),
+        vec!["k".into()],
+    )));
+    let c = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/projection-setop-chained-c.parquet",
+        Arc::clone(&key_schema),
+        vec!["k".into()],
+    )));
+    let dedup_a =
+        builder.add_aggregate(a, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema));
+    let dedup_b =
+        builder.add_aggregate(b, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema));
+    let dedup_c =
+        builder.add_aggregate(c, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema));
+
+    // EXCEPT DISTINCT is NULL-equality: NULL matches NULL. The single-anti-join
+    // fixtures above use the `JoinSpec` default (`NullsDoNotMatch`); this chain
+    // is the first fixture in this file to exercise `NullsMatch` on anti-join keys.
+    let anti_ab = builder.add_join(
+        dedup_a,
+        dedup_b,
+        JoinSpec::new(
+            JoinType::LeftAnti,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_null_equality(nexus_query_engine::plan::JoinNullEquality::NullsMatch)
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&key_schema),
+    );
+    let anti_abc = builder.add_join(
+        anti_ab,
+        dedup_c,
+        JoinSpec::new(
+            JoinType::LeftAnti,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_null_equality(nexus_query_engine::plan::JoinNullEquality::NullsMatch)
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&key_schema),
+    );
+
+    let count_input = builder.add_projection(
+        anti_abc,
+        projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema),
+    );
+    let count = builder.add_aggregate(
+        count_input,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
+        ),
+        Arc::clone(&scalar_schema),
+    );
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
+    builder.finish_with_host_sink(projection)
+}
+
+#[test]
+fn projection_scalar_setop_admits_chained_except_distinct_dedup_scalar() {
+    // Pins change E: `projection_scalar_setop_setop_dedup_scalar_has_contract`'s
+    // recursive probe-side proof (`projection_scalar_setop_anti_probe_input_is_dedup_proven`)
+    // admits a CHAIN of EXCEPT DISTINCTs, not just a single one. Without change E
+    // this rejects with `projection_scalar_setop_contract_not_implemented`,
+    // because the second anti join's probe side is the first anti join itself,
+    // which the old direct-aggregate check did not recognize as dedup-proven.
+    let plan = projection_root_setop_chained_dedup_scalar_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_projection_scalar_setop_pipeline(), "{analysis:#?}");
+    let admission = bounded_pipeline_admission(&plan)
+        .unwrap()
+        .expect("chained EXCEPT DISTINCT dedup-scalar pipeline should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::ProjectionScalarSetop);
+}
+
+#[test]
+fn projection_scalar_setop_rejects_non_dedup_left_anti_probe_input() {
+    // Verifies the pre-existing negative boundary that change E's recursive
+    // probe-side proof must still respect: a left-anti join whose probe side is
+    // a duplicate-preserving (EXCEPT ALL-shaped) subtree, not a dedup aggregate
+    // or another dedup-proven anti join, is rejected.
+    let plan = projection_root_setop_dedup_scalar_non_dedup_left_anti_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    let nexus_query_engine::capability::CapabilityDecision::Rejected { reason, .. } =
+        &analysis.projection_scalar_setop_admission
+    else {
+        panic!("non-dedup left-anti probe input should reject projection scalar/setop admission");
+    };
+    assert_eq!(*reason, "projection_scalar_setop_contract_not_implemented");
+}

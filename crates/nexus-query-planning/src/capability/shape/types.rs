@@ -156,6 +156,7 @@ pub(in crate::capability) struct RootFullSortJoinAggregateShape {
     pub(in crate::capability) shared_producer_ids: Vec<NodeId>,
     pub(in crate::capability) shared_projection_producer_ids: Vec<NodeId>,
     pub(in crate::capability) shared_aggregate_producer_ids: Vec<NodeId>,
+    pub(in crate::capability) shared_join_producer_ids: Vec<NodeId>,
     pub(in crate::capability) unsupported_shared_producer_ids: Vec<NodeId>,
     pub(in crate::capability) shared_aggregate_consumer_join_ids: Vec<NodeId>,
     pub(in crate::capability) aggregate_id: NodeId,
@@ -174,6 +175,10 @@ pub(in crate::capability) enum RootFullSortJoinAggregateSubcontract {
     KeylessOrCrossJoin,
     RepeatedProjectionFanout,
     SharedAggregateFanout,
+    /// A shared keyed-join and/or projection producer feeds multiple keyed
+    /// consumers; each consumer re-derives the identical producer rowset, the
+    /// same cardinality argument a duplicated-subtree plan would rely on.
+    SharedResidentFanout,
     UnsupportedSharedOrFanout,
 }
 
@@ -184,6 +189,7 @@ impl RootFullSortJoinAggregateSubcontract {
             Self::KeylessOrCrossJoin => "keyless_or_cross_join",
             Self::RepeatedProjectionFanout => "repeated_projection_fanout",
             Self::SharedAggregateFanout => "shared_aggregate_fanout",
+            Self::SharedResidentFanout => "shared_resident_fanout",
             Self::UnsupportedSharedOrFanout => "unsupported_shared_or_fanout",
         }
     }

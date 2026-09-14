@@ -1,37 +1,53 @@
 #[test]
-fn bounded_root_topk_join_aggregate_rejects_full_scan_without_source_reduction_evidence() {
-    let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::MissingSourceReduction);
-    let analysis = plan.capability_analysis();
+fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_support_gap() {
+    // Capacity is the allocator's: planning proves executability from node, edge,
+    // join-capability, and subcontract facts, and the admitted grant's allocator
+    // enforces the service-configured cap at runtime, reporting a typed
+    // `query_memory_limit_exceeded` failure at its source. A missing, late, or
+    // skipped dynamic filter must never change admission or results, so these
+    // fixtures, which differ from admitted shapes only in scan-reduction evidence
+    // (full scans or large exact sizes below the grouped aggregate), stay admitted.
+    for variant in [
+        RootTopKJoinAggregateVariant::MissingSourceReduction,
+        RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction,
+        RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregate,
+        RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan,
+        RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan,
+    ] {
+        let plan = root_topk_join_aggregate_variant_plan(variant);
+        let analysis = plan.capability_analysis();
 
-    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
-    let CapabilityDecision::Rejected { reason, facts } = &analysis.root_topk_join_aggregate_admission else {
-        panic!("missing source reduction should reject root TopK join/aggregate admission");
-    };
-    assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence");
-    assert!(facts.contains_key("aggregate_id"));
-    let projection = analysis
-        .first_rejection_projection()
-        .expect("missing source reduction should project a local root TopK rejection");
-    assert_eq!(projection.reason, "root_topk_join_aggregate_requires_source_reduction_evidence");
-    assert!(unsupported_facts(&plan).is_some());
+        assert!(
+            analysis.admits_root_topk_join_aggregate_pipeline(),
+            "{variant:?}: a full scan is a capacity question, not a support gap: {:?}",
+            analysis.root_topk_join_aggregate_admission
+        );
+        let admission = bounded_pipeline_admission(&plan)
+            .expect("bounded admission should not fail")
+            .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
+        assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
+    }
 }
 
 #[test]
-fn bounded_root_topk_join_aggregate_rejects_reduction_on_unrelated_branch() {
+fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_admission() {
+    // Capacity is the allocator's, enforced as a typed cap failure at runtime.
+    // Which branch a dynamic filter happens to reduce (or whether one runs at
+    // all) must never change admission or results.
     let plan =
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput);
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
-    let CapabilityDecision::Rejected { reason, facts } = &analysis.root_topk_join_aggregate_admission else {
-        panic!("wrong-branch source reduction should reject root TopK join/aggregate admission");
-    };
-    assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence");
-    assert!(facts.contains_key("aggregate_input_node_count"));
-    let projection = analysis
-        .first_rejection_projection()
-        .expect("wrong-branch source reduction should project a local root TopK rejection");
-    assert_eq!(projection.reason, "root_topk_join_aggregate_requires_source_reduction_evidence");
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "decision={:?}",
+        analysis.root_topk_join_aggregate_admission
+    );
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("unrelated-branch reduction root TopK pipeline should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -89,30 +105,17 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
 }
 
 #[test]
-fn root_topk_source_reduction_uses_plan_captured_join_strategy_threshold() {
-    let strategy_options = KeyedHashJoinStrategyOptions::default().with_small_one_shot_probe_bytes_threshold(2048);
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
-        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout),
-        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() },
-    );
-    let plan = optimized.plan;
-    let analysis = plan.capability_analysis();
-
-    assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
-    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
-    let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
-        panic!("root TopK admission should reject exact sources above the captured one-shot threshold");
-    };
-    assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence");
-}
-
-#[test]
 fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
     for variant in [
         RootTopKJoinAggregateVariant::DistinctAggregate,
         RootTopKJoinAggregateVariant::DistinctAggregateBuildSideKeyedOuterJoin,
         RootTopKJoinAggregateVariant::DistinctAggregatePreservedSideAggregateOuterJoin,
         RootTopKJoinAggregateVariant::KeylessJoin,
+        // An unrelated scalar-aggregate branch (over an unreduced fact scan) does
+        // not break the keyless subcontract: capacity is the allocator's, enforced
+        // as a typed cap failure at runtime, so a missing, late, or skipped
+        // dynamic filter must never change admission or results.
+        RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate,
         RootTopKJoinAggregateVariant::ProjectedCrossJoin,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
@@ -139,15 +142,23 @@ fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyles
 }
 
 #[test]
-fn bounded_root_topk_join_aggregate_checks_each_direct_grouped_keyless_branch() {
+fn bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_branches() {
+    // Capacity is the allocator's, enforced as a typed cap failure at runtime; a
+    // missing, late, or skipped dynamic filter on any direct grouped branch must
+    // never change admission or results, so a branch scanning its source in full
+    // is not a support gap.
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(true);
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
-    let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
-        panic!("a direct grouped keyless branch without source reduction should reject");
-    };
-    assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence");
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "decision={:?}",
+        analysis.root_topk_join_aggregate_admission
+    );
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("unreduced direct grouped keyless branches should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -171,6 +182,24 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
 }
 
 #[test]
+fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_residual_predicate() {
+    let plan =
+        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput);
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "a keyed left-semi join with a residual predicate emits left-only output and is executable on the \
+         mixed keyed/residual path, so the top-k envelope must admit it: {:?}",
+        analysis.root_topk_join_aggregate_admission
+    );
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("keyed left-semi residual root TopK pipeline should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+}
+
+#[test]
 fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
     let plan = root_topk_grouped_aggregate_input_left_join_plan();
     let analysis = plan.capability_analysis();
@@ -184,6 +213,76 @@ fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
         .expect("bounded admission should not fail")
         .expect("grouped aggregate TopK left join should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+}
+
+#[test]
+fn bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_final_sort() {
+    // Pins change B: a whole-partition aggregate window sitting directly between the
+    // grouped-aggregate fragment and the final top-k sort/limit, with no projection
+    // reinserted before the final sort, is the same composition already admitted
+    // whenever an ORDER BY expression happens to force a projection into that chain
+    // (q47/q57/q89). q53/q63 hit this path because their ORDER BY uses plain columns.
+    let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::AggregateWindowFilterTopK);
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "decision={:?}",
+        analysis.root_topk_join_aggregate_admission
+    );
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("whole-partition window filter root TopK pipeline should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+}
+
+#[test]
+fn bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_final_sort() {
+    // Pins change B: q51's two cumulative-window branches, combined by a FULL OUTER
+    // join and followed by a second cumulative window/filter with no projection
+    // before the final sort, is admitted through the same window candidacy path.
+    let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK);
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "decision={:?}",
+        analysis.root_topk_join_aggregate_admission
+    );
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("cumulative window full-outer root TopK pipeline should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+}
+
+#[test]
+fn bounded_root_topk_join_aggregate_window_missing_input_sort_keeps_local_diagnosis() {
+    // Pins that a window near-miss inside the new candidacy path keeps its own
+    // `requires_ordered_window_input` diagnosis instead of falling back to the
+    // generic root-join rejection: without change B this composition is masked by
+    // `requires_projection_before_sort`, which is not in the admission-owned
+    // projection allowlist, so the projection owner would fall back to a different
+    // admission gate entirely. The fixture's join fragment is keyless conditional
+    // so no generic envelope admits the whole plan and the projection is observable.
+    let plan = root_topk_join_aggregate_variant_plan(
+        RootTopKJoinAggregateVariant::AggregateWindowFilterTopKMissingInputSort,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
+    let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
+        panic!("an ordered window fed directly from the aggregate should reject root TopK join/aggregate admission");
+    };
+    assert_eq!(*reason, "root_topk_join_aggregate_requires_ordered_window_input");
+    let projection = analysis
+        .first_rejection_projection()
+        .expect("missing window input sort should project a local root TopK rejection");
+    assert_eq!(projection.reason, "root_topk_join_aggregate_requires_ordered_window_input");
+    assert_eq!(
+        projection.owner,
+        nexus_query_engine::capability::CapabilityRejectionOwner::Admission("root_topk_join_aggregate_admission"),
+        "the window near-miss must keep its own admission-owned diagnosis, not a generic fallback"
+    );
 }
 
 #[test]
@@ -362,17 +461,12 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
         RootTopKJoinAggregateVariant::FilteredDistinctAggregate,
         RootTopKJoinAggregateVariant::DistinctAggregateUnrelatedKeyedOuterJoin,
         RootTopKJoinAggregateVariant::DistinctAggregateTransitiveKeyedOuterJoin,
-        RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate,
         RootTopKJoinAggregateVariant::KeylessOuterCrossJoin,
-        RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction,
         RootTopKJoinAggregateVariant::KeylessOuterCrossWindowWithDirectJoinConsumer,
         RootTopKJoinAggregateVariant::KeylessOuterCrossUnorderedWindow,
         RootTopKJoinAggregateVariant::WindowFullOuterLeftOnlyProjection,
         RootTopKJoinAggregateVariant::UnsortedRankWindow,
         RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow,
-        RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregate,
-        RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan,
-        RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan,
         RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput,
         RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput,
         RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput,
@@ -397,14 +491,8 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             RootTopKJoinAggregateVariant::DistinctAggregateTransitiveKeyedOuterJoin => {
                 assert_eq!(*reason, "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join")
             },
-            RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate => {
-                assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence")
-            },
             RootTopKJoinAggregateVariant::KeylessOuterCrossJoin => {
                 assert_eq!(*reason, "root_topk_join_aggregate_rejects_keyless_outer_cross_subcontract")
-            },
-            RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction => {
-                assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence")
             },
             RootTopKJoinAggregateVariant::KeylessOuterCrossWindowWithDirectJoinConsumer => {
                 assert_eq!(*reason, "root_topk_join_aggregate_rejects_keyless_outer_cross_subcontract")
@@ -421,15 +509,6 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow => {
                 assert_eq!(*reason, "unsupported_window_node_capability")
             },
-            RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregate => {
-                assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence")
-            },
-            RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan => {
-                assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence")
-            },
-            RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan => {
-                assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_evidence")
-            },
             RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput => {
                 assert_eq!(*reason, "unsupported_join_node_capability")
             },
@@ -442,6 +521,11 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             RootTopKJoinAggregateVariant::Admitted
             | RootTopKJoinAggregateVariant::MissingSourceReduction
             | RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput
+            | RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate
+            | RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction
+            | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregate
+            | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan
+            | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan
             | RootTopKJoinAggregateVariant::SharedSourceFanout
             | RootTopKJoinAggregateVariant::SharedComputedFanout
             | RootTopKJoinAggregateVariant::SharedGroupedAggregateFanout
@@ -458,9 +542,13 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             | RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin
             | RootTopKJoinAggregateVariant::SortedAggregateWindow
             | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection
+            | RootTopKJoinAggregateVariant::AggregateWindowFilterTopK
+            | RootTopKJoinAggregateVariant::AggregateWindowFilterTopKMissingInputSort
+            | RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK
             | RootTopKJoinAggregateVariant::SortFetchHashJoinInput
             | RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput
+            | RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput
             | RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput
             | RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput
             | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSmallExact

@@ -72,11 +72,29 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
         root_full_sort_shared_producers_by_operator(plan, &shared_producer_ids, |node| {
             matches!(node, PlanNode::Aggregate(_))
         });
+    // A shared join output is an ordinary resident frame, so sharing it needs no
+    // payload support beyond what the fanout contract already gives every producer.
+    // The admitted capabilities are exactly the keyed classes this envelope's per-join
+    // check accepts, so a shared join can never be admitted here as a producer while
+    // being rejected as a fragment member.
+    let shared_join_producer_ids =
+        root_full_sort_shared_producers_by_operator(plan, &shared_producer_ids, |node| match node {
+            PlanNode::Join(join) => matches!(
+                join_node_execution_capability(join),
+                Some(
+                    JoinExecutionCapability::KeyedHash
+                        | JoinExecutionCapability::KeyedResidualMixed
+                        | JoinExecutionCapability::KeyedFilteredSemiAnti
+                )
+            ),
+            _ => false,
+        });
     let unsupported_shared_producer_ids = root_full_sort_unsupported_shared_producer_ids(
         plan,
         &shared_producer_ids,
         &shared_projection_producer_ids,
         &shared_aggregate_producer_ids,
+        &shared_join_producer_ids,
     );
     let shared_aggregate_consumer_join_ids =
         root_full_sort_shared_aggregate_consumer_join_ids(plan, &whole_query_consumers, &shared_aggregate_producer_ids);
@@ -99,10 +117,15 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
         RootFullSortJoinAggregateSubcontract::RepeatedProjectionFanout
     } else if !unsupported_shared_producer_ids.is_empty() {
         RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout
-    } else if !shared_aggregate_producer_ids.is_empty() {
-        RootFullSortJoinAggregateSubcontract::SharedAggregateFanout
+    } else if !shared_join_producer_ids.is_empty() || !shared_projection_producer_ids.is_empty() {
+        // unsupported_shared_producer_ids is empty here, so every shared producer is a
+        // projection/filter, aggregate, or now-admitted keyed join; reaching this arm means
+        // at least one is a join or a projection not covered by the exact-match class above.
+        RootFullSortJoinAggregateSubcontract::SharedResidentFanout
     } else {
-        RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout
+        // The only remaining possibility is a shared set made entirely of aggregate
+        // producers (join and projection sets are both empty, and unsupported is empty).
+        RootFullSortJoinAggregateSubcontract::SharedAggregateFanout
     };
     let mut post_root_projection_ids: Vec<NodeId> = post_sort_projection_ids;
     post_root_projection_ids.extend(
@@ -118,6 +141,7 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
         shared_producer_ids,
         shared_projection_producer_ids,
         shared_aggregate_producer_ids,
+        shared_join_producer_ids,
         unsupported_shared_producer_ids,
         shared_aggregate_consumer_join_ids,
         aggregate_id,
@@ -197,6 +221,7 @@ fn root_full_sort_unsupported_shared_producer_ids(
     shared_producer_ids: &[NodeId],
     shared_projection_producer_ids: &[NodeId],
     shared_aggregate_producer_ids: &[NodeId],
+    shared_join_producer_ids: &[NodeId],
 ) -> Vec<NodeId> {
     shared_producer_ids
         .iter()
@@ -205,6 +230,7 @@ fn root_full_sort_unsupported_shared_producer_ids(
             plan.node(*node_id).is_some()
                 && !shared_projection_producer_ids.contains(node_id)
                 && !shared_aggregate_producer_ids.contains(node_id)
+                && !shared_join_producer_ids.contains(node_id)
         })
         .collect()
 }

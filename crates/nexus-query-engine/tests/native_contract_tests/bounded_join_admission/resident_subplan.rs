@@ -150,7 +150,6 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays
     for variant in [
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit,
         AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan,
-        AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide,
         AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression,
     ] {
         let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
@@ -167,6 +166,22 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays
         assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
     }
+
+    // A side too shallow for the multi-join proof stays outside this envelope,
+    // but the shape itself (keyed joins, a grouped aggregate over a join subplan,
+    // projection, sort, fetch) is executable and is admitted by the root TopK
+    // join/aggregate envelope; capacity is the allocator's, enforced as a typed
+    // cap failure at runtime, not an admission gate.
+    let plan = aggregate_over_join_subplan_topk_variant_plan(AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide);
+    assert!(
+        !plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "ShallowMultiJoinSide must not satisfy the aggregate-over-join TopK capability evidence"
+    );
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("ShallowMultiJoinSide should be admitted through the root TopK join/aggregate envelope");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert!(unsupported_facts(&plan).is_none(), "ShallowMultiJoinSide is admitted, not a bounded support gap");
 }
 
 #[test]
@@ -227,4 +242,182 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_admission_stays_narrow() {
             "{variant:?} must not be admitted by the resident grouped-aggregate TopK family"
         );
     }
+}
+
+fn root_full_sort_shared_keyed_join_fanout_plan(
+    shared_join_type: JoinType,
+    interpose_shared_sort: bool,
+) -> nexus_query_engine::plan::QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("d1", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![Field::new("d1", DataType::Int32, false)]));
+    let shared_join_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let branch_dim_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let branch_join_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+    ]));
+    let root_join_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-shared-join-fact.parquet",
+        fact_schema,
+        vec!["k".into(), "d1".into(), "amount".into()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-shared-join-dim.parquet",
+        dim_schema,
+        vec!["d1".into()],
+    )));
+    // The deduplicated join fragment: two downstream keyed joins below consume this
+    // single node, making it the shared producer under test.
+    let shared_join_schema_for_sort = Arc::clone(&shared_join_schema);
+    let shared_join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            shared_join_type,
+            vec![JoinKey::new(ColumnRef::input(0, "d1", "d1"), ColumnRef::input(1, "d1", "d1"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        shared_join_schema,
+    );
+    // With the sort interposed it becomes the two-consumer frontier node, moving the
+    // shared producer out of every admitted class while leaving the joins untouched.
+    let shared_producer = if interpose_shared_sort {
+        builder.add_sort(
+            shared_join,
+            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
+            Arc::clone(&shared_join_schema_for_sort),
+        )
+    } else {
+        shared_join
+    };
+    let dim_a = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-shared-join-dim-a.parquet",
+        Arc::clone(&branch_dim_schema),
+        vec!["k".into()],
+    )));
+    let join_a = builder.add_join(
+        shared_producer,
+        dim_a,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&branch_join_schema),
+    );
+    let dim_b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-full-sort-shared-join-dim-b.parquet",
+        branch_dim_schema,
+        vec!["k".into()],
+    )));
+    let join_b = builder.add_join(
+        shared_producer,
+        dim_b,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        branch_join_schema,
+    );
+    let aggregate_a = builder.add_aggregate(
+        join_a,
+        AggregateSpec::new(
+            vec![Expr::column("k")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
+        ),
+        aggregate_schema,
+    );
+    let root_join = builder.add_join(
+        aggregate_a,
+        join_b,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount_sum", "amount_sum"), "amount_sum"),
+            JoinOutputColumn::right(ColumnRef::input(1, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&root_join_schema),
+    );
+    let sort = builder.add_sort(
+        root_join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
+        root_join_schema,
+    );
+    builder.finish_with_host_sink(sort)
+}
+
+#[test]
+fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_join_fanout() {
+    // Pins that a shared keyed-hash join producer consumed by two downstream
+    // keyed joins is admitted through the SharedResidentFanout subcontract
+    // instead of being rejected as an unsupported shared producer.
+    let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::Inner, false);
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(analysis.root_full_sort_join_aggregate_admission, CapabilityDecision::Satisfied);
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("shared keyed-join fanout should be admitted through the root full-sort envelope");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate);
+}
+
+#[test]
+fn bounded_root_full_sort_join_aggregate_admits_shared_keyed_semi_join_fanout() {
+    // A keyed filtered semi join is a member of the admitted fragment and its output is
+    // an ordinary resident frame, so sharing it is admitted on the same contract as a
+    // keyed-hash producer. TPC-DS q64's shared producer is exactly this shape.
+    let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::LeftSemi, false);
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(analysis.root_full_sort_join_aggregate_admission, CapabilityDecision::Satisfied);
+}
+
+#[test]
+fn bounded_root_full_sort_join_aggregate_rejects_shared_producer_outside_every_admitted_class() {
+    // Pins that widening the shared-producer classes did not blanket-allow fanout: a
+    // shared producer whose node kind has no admitted class (here a Sort) must still be
+    // rejected as an unsupported shared producer.
+    let plan = root_full_sort_shared_keyed_join_fanout_plan(JoinType::Inner, true);
+    let analysis = plan.capability_analysis();
+
+    let CapabilityDecision::Rejected { reason, facts } = &analysis.root_full_sort_join_aggregate_admission else {
+        panic!("a shared sort producer must reject root full-sort join/aggregate admission");
+    };
+    assert_eq!(*reason, "root_full_sort_join_aggregate_rejects_unsupported_subcontract");
+    assert_eq!(facts.get("subcontract").map(String::as_str), Some("unsupported_shared_or_fanout"));
 }

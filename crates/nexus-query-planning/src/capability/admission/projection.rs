@@ -271,7 +271,19 @@ pub(in crate::capability::admission) fn projection_scalar_setop_setop_dedup_scal
                     return false;
                 }
                 let [left, right] = join.inputs;
-                if !grouped_dedup_aggregate_ids.contains(&left) || !grouped_dedup_aggregate_ids.contains(&right) {
+                // A chain of EXCEPTs stays dedup-proven: a left-anti join whose probe
+                // side is a distinct relation emits a subset of that relation, so row
+                // multiplicity stays 0/1 per key without re-deduplicating between
+                // links. The build side must still be a dedup aggregate, which is what
+                // keeps duplicate-preserving `EXCEPT ALL` subtrees rejected.
+                if !grouped_dedup_aggregate_ids.contains(&right)
+                    || !projection_scalar_setop_anti_probe_input_is_dedup_proven(
+                        plan,
+                        left,
+                        &grouped_dedup_aggregate_ids,
+                        &mut BTreeSet::new(),
+                    )
+                {
                     return false;
                 }
                 saw_left_anti_join = true;
@@ -283,6 +295,43 @@ pub(in crate::capability::admission) fn projection_scalar_setop_setop_dedup_scal
     }
 
     saw_grouped_dedup_aggregate && saw_left_anti_join
+}
+
+/// Structural proof that a set-operation probe input is a distinct relation:
+/// either a group-only dedup aggregate, or a keyed filtered left-anti join whose
+/// own probe input is dedup-proven and whose build input is a dedup aggregate.
+/// Consults no row estimates; `visiting` bounds the walk over a shared DAG.
+fn projection_scalar_setop_anti_probe_input_is_dedup_proven(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    grouped_dedup_aggregate_ids: &BTreeSet<NodeId>,
+    visiting: &mut BTreeSet<NodeId>,
+) -> bool {
+    if !visiting.insert(node_id) {
+        return false;
+    }
+    if grouped_dedup_aggregate_ids.contains(&node_id) {
+        return true;
+    }
+    match plan.node(node_id).map(|node| &node.kind) {
+        Some(PlanNode::Join(join))
+            if join.spec.join_type == JoinType::LeftAnti
+                && matches!(
+                    join_node_execution_capability(join),
+                    Some(JoinExecutionCapability::KeyedFilteredSemiAnti)
+                ) =>
+        {
+            let [left, right] = join.inputs;
+            grouped_dedup_aggregate_ids.contains(&right)
+                && projection_scalar_setop_anti_probe_input_is_dedup_proven(
+                    plan,
+                    left,
+                    grouped_dedup_aggregate_ids,
+                    visiting,
+                )
+        },
+        _ => false,
+    }
 }
 
 pub(in crate::capability::admission) fn projection_scalar_setop_scalar_join_aggregate_input_has_contract(
