@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   cell,
   code,
+  defaultCell,
   loadProviderSpecs,
   narrativeExampleImport,
   prose,
@@ -462,7 +463,7 @@ function optionTable(options) {
     .map(([name, option]) => [
       code(name),
       code(option.type),
-      option.default === null ? code('null') : (Object.hasOwn(option, 'default') ? code(JSON.stringify(option.default)) : ''),
+      defaultCell(option),
       optionConstraints(name, option),
       cell(option.description),
     ]));
@@ -594,7 +595,7 @@ function renderArguments(spec) {
     '',
     '### Named value arguments',
     '',
-    Object.keys(valueOptions).length === 0 ? '_This function has no scalar value arguments._' : optionTable(valueOptions),
+    Object.keys(valueOptions).length === 0 ? '_This function has no algorithm-specific value arguments. Its inputs are the relation arguments above and the graph construction options below._' : optionTable(valueOptions),
   ];
   optionSections.push('', '### Graph construction options', '', renderGraphOptionsNote(spec));
   return optionSections.join('\n');

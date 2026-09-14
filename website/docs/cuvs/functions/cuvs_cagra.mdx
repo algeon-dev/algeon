@@ -56,7 +56,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
 | `k` | `integer` | yes | Number of neighbors returned for each evaluated query row. |
-| `metric` | `enum ("l2_expanded", "inner_product", "cosine")` | yes | Distance or score metric; inner_product ranks higher scores first. |
+| `metric` | `enum ("l2_expanded", "inner_product", "cosine")` | no | Distance or score metric; native default l2_expanded. inner_product ranks higher scores first. |
 | `graph_degree` | `integer` | no | Output graph degree; native default 64. Must be less than dataset rows. |
 | `intermediate_graph_degree` | `integer` | no | Build graph degree; native default 128. Must exceed graph_degree and be less than dataset rows. |
 | `build_algo` | `enum ("ivf_pq", "nn_descent")` | no | Graph construction algorithm; native default ivf_pq. nn_descent does not support cosine. |
@@ -73,9 +73,9 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | `graph_degree` | no | `integer` | `64` | minimum 1; maximum 4294967295 | Output graph degree; native default 64. Must be less than dataset rows. |
 | `intermediate_graph_degree` | no | `integer` | `128` | minimum 1; maximum 4294967295 | Build graph degree; native default 128. Must exceed graph_degree and be less than dataset rows. |
 | `itopk_size` | no | `integer` | `64` | minimum 1; maximum 4294967295 | Intermediate search results; native default 64. Must be at least k. |
-| `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
+| `k` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
 | `max_iterations` | no | `integer` | `0` | minimum 0; maximum 4294967295 | Maximum search iterations; native default 0 selects automatically. |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"inner_product"`, `"cosine"` | Distance or score metric; inner_product ranks higher scores first. Supported element/metric combinations: Float32: l2_expanded, inner_product, cosine; Int8: l2_expanded, inner_product, cosine; UInt8: l2_expanded, inner_product, cosine. |
+| `metric` | no | `string` | `"l2_expanded"` | one of `"l2_expanded"`, `"inner_product"`, `"cosine"` | Distance or score metric; native default l2_expanded. inner_product ranks higher scores first. Supported element/metric combinations: Float32: l2_expanded, inner_product, cosine; Int8: l2_expanded, inner_product, cosine; UInt8: l2_expanded, inner_product, cosine. |
 | `search_algo` | no | `string` | `"auto"` | one of `"auto"`, `"single_cta"`, `"multi_cta"`, `"multi_kernel"` | Search kernel; auto is set explicitly (the native zero-initialized default is single_cta). |
 | `search_width` | no | `integer` | `1` | minimum 1; maximum 4294967295 | Starting graph nodes per iteration; native default 1. |
 

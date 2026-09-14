@@ -60,7 +60,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
 | `flip_signs_based_on_u` | no | `boolean` | `false` |  | Whether cuVS applies its U-based component-sign convention. |
-| `n_components` | yes | `integer` |  | minimum 1; maximum 2147483647 | Number of principal-component columns emitted as pc_0 through pc_&lt;n_components - 1&gt;. |
+| `n_components` | yes | `integer` | No default | minimum 1; maximum 2147483647 | Number of principal-component columns emitted as pc_0 through pc_&lt;n_components - 1&gt;. |
 | `n_iterations` | no | `integer` | `15` | minimum 1; maximum 2147483647 | Maximum eigensolver iterations for this invocation. |
 | `solver` | no | `string` | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used for this fit-transform call. |
 | `tol` | no | `number` | `0` | minimum 0 | Non-negative eigensolver tolerance. |

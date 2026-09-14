@@ -63,7 +63,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | `init` | no | `string` | `"kmeans++"` | one of `"kmeans++"`, `"random"` | Centroid initialization strategy for this fitted model. |
 | `max_iter` | no | `integer` | `100` | minimum 1; maximum 2147483647 | Maximum fitting iterations for this invocation. |
 | `metric` | no | `string` | `"l2_expanded"` | one of `"l2_expanded"`, `"l2_sqrt_expanded"` | L2 distance form used while fitting and assigning the current input relation. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded; Float64: l2_expanded, l2_sqrt_expanded. |
-| `n_clusters` | yes | `integer` |  | minimum 1; maximum 2147483647 | Number of clusters fitted for this one statement. |
+| `n_clusters` | yes | `integer` | No default | minimum 1; maximum 2147483647 | Number of clusters fitted for this one statement. |
 | `n_init` | no | `integer` | `1` | minimum 1; maximum 2147483647 | Number of initialization attempts performed within this call. |
 | `tol` | no | `number` | `0.0001` | minimum 0 | Non-negative convergence tolerance used by the fitted model. |
 

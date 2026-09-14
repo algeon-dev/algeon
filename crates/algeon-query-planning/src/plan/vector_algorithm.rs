@@ -383,9 +383,9 @@ const CAGRA_OPTIONS: &[CuvsOptionDefinition] = &[
     KNN_OPTIONS[2],
     CuvsOptionDefinition {
         name: "metric",
-        required: true,
-        kind: CuvsOptionKind::Enum { values: CAGRA_METRICS, default: None },
-        description: "Distance or score metric; inner_product ranks higher scores first.",
+        required: false,
+        kind: CuvsOptionKind::Enum { values: CAGRA_METRICS, default: Some("l2_expanded") },
+        description: "Distance or score metric; native default l2_expanded. inner_product ranks higher scores first.",
     },
     CuvsOptionDefinition {
         name: "graph_degree",
@@ -434,7 +434,12 @@ const IVF_FLAT_OPTIONS: &[CuvsOptionDefinition] = &[
     KNN_OPTIONS[0],
     KNN_OPTIONS[1],
     KNN_OPTIONS[2],
-    KNN_OPTIONS[3],
+    CuvsOptionDefinition {
+        name: "metric",
+        required: false,
+        kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: Some("l2_expanded") },
+        description: "Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first.",
+    },
     CuvsOptionDefinition {
         name: "n_lists",
         required: true,
@@ -460,18 +465,12 @@ const IVF_FLAT_OPTIONS: &[CuvsOptionDefinition] = &[
         description: "Fraction of the dataset used for training centers; native default 0.5.",
     },
 ];
-const IVF_PQ_METRICS: &[&str] = KNN_METRICS;
 const IVF_PQ_CODEBOOK_KINDS: &[&str] = &["per_subspace", "per_cluster"];
 const IVF_PQ_OPTIONS: &[CuvsOptionDefinition] = &[
     IVF_FLAT_OPTIONS[0],
     IVF_FLAT_OPTIONS[1],
     IVF_FLAT_OPTIONS[2],
-    CuvsOptionDefinition {
-        name: "metric",
-        required: true,
-        kind: CuvsOptionKind::Enum { values: IVF_PQ_METRICS, default: None },
-        description: "Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first.",
-    },
+    IVF_FLAT_OPTIONS[3],
     IVF_FLAT_OPTIONS[4],
     IVF_FLAT_OPTIONS[5],
     IVF_FLAT_OPTIONS[6],
