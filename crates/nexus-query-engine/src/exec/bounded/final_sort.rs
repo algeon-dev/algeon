@@ -266,7 +266,9 @@ impl FinalSortExecutor<'_, '_> {
     }
 
     fn attach_final_sort_resource_facts(&self, error: QueryError, attempt: usize) -> QueryError {
-        if error.code() != QueryErrorCode::CudfResourceExhausted {
+        if crate::exec::retry::resource_failure_recovery(&error)
+            == crate::exec::retry::ResourceFailureRecovery::NotResource
+        {
             return error;
         }
 

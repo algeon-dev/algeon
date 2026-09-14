@@ -27,7 +27,9 @@ pub mod scan_limit;
 pub use decimal::object_store_decimal_reader_predicate_requires_footer_contract;
 pub use memory::SourceTaskMemoryModel;
 pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkRowPositionRange};
-pub use planner::{annotate_source_chunk_batching_reasons, plan_source_chunk_batches};
+pub use planner::{
+    annotate_source_chunk_batching_reasons, plan_source_chunk_batches, plan_source_chunk_batches_with_row_cap,
+};
 pub use policy::{
     LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
     SourceChunkPlanningOptions, SourceChunkPlanningPolicy,

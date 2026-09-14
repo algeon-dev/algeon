@@ -18,6 +18,13 @@ pub(in crate::exec::bounded) struct BoundedSourceBatchingPolicy {
     source_adjacent_partitioned_aggregate_max_batch_bytes: u64,
     source_adjacent_partitioned_aggregate_min_batch_bytes: u64,
     source_adjacent_partitioned_aggregate_batch_budget_divisor: u64,
+    source_adjacent_raw_batch_working_set_budget_divisor: u64,
+    source_adjacent_raw_batch_cold_variable_width_row_bytes: u64,
+    source_adjacent_raw_batch_stage_copy_factor: u64,
+    source_adjacent_local_reduction_max_output_rows_ppm: u64,
+    source_adjacent_local_reduction_max_partial_bytes_divisor: u64,
+    source_adjacent_local_reduction_min_partition_count: usize,
+    source_adjacent_local_reduction_max_partition_occupancy_divisor: usize,
     remote_direct_materialized_join_source_batch_max_bytes: u64,
 }
 
@@ -41,6 +48,29 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_BATCH_BUDGET_DIVISOR: u64 = 8;
     pub(in crate::exec::bounded) const DEFAULT_REMOTE_DIRECT_MATERIALIZED_JOIN_SOURCE_BATCH_MAX_BYTES: u64 =
         9 * 1024 * 1024 * 1024;
+    /// One raw source batch's modeled working set (decoded input plus the
+    /// stage, partition, and slice copies) may use this fraction of the cap.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_WORKING_SET_BUDGET_DIVISOR: u64 = 2;
+    /// Before any batch has been observed, a variable-width column is modeled
+    /// as this many device bytes per row beside its encoded payload: the
+    /// per-row offsets or view entries that Parquet's encoded size omits.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_COLD_VARIABLE_WIDTH_ROW_BYTES: u64 = 16;
+    /// Copies of the staged (filtered and projected) batch that can be live at
+    /// once: the stage output, its hash partition, and the partition slices.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_RAW_BATCH_STAGE_COPY_FACTOR: u64 = 3;
+    /// A batch whose partial aggregate keeps at most this many output rows per
+    /// million input rows is reduced locally instead of hash-partitioned.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_OUTPUT_ROWS_PPM: u64 = 1_000;
+    /// Local reduction stays enabled only while one batch's partial output is
+    /// at most the working-set target divided by this value.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTIAL_BYTES_DIVISOR: u64 = 64;
+    /// Partition occupancy is evidence of low key cardinality only with at
+    /// least this many partitions.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MIN_PARTITION_COUNT: usize = 8;
+    /// A hash-partitioned batch that filled at most `partition_count / this`
+    /// partitions held few distinct keys.
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTITION_OCCUPANCY_DIVISOR: usize =
+        4;
 
     pub(in crate::exec::bounded) fn generic_source_batch_target_bytes(
         self,
@@ -134,6 +164,75 @@ impl BoundedSourceBatchingPolicy {
     pub(in crate::exec::bounded) fn remote_direct_materialized_join_source_batch_max_bytes(self) -> u64 {
         self.remote_direct_materialized_join_source_batch_max_bytes
     }
+
+    /// Working-set bytes one raw source batch may occupy under `device_budget_bytes`.
+    pub(in crate::exec::bounded) fn source_adjacent_raw_batch_working_set_target_bytes(
+        self,
+        device_budget_bytes: u64,
+    ) -> u64 {
+        (device_budget_bytes / self.source_adjacent_raw_batch_working_set_budget_divisor).max(1)
+    }
+
+    /// Modeled working-set bytes per row before any batch of this source has
+    /// been observed.
+    ///
+    /// Fixed-width read columns decode to their Arrow width regardless of
+    /// Parquet encoding; each variable-width column adds its per-row entry
+    /// beside the footer's projected uncompressed bytes, which are the only
+    /// payload evidence available before a read.
+    pub(in crate::exec::bounded) fn source_adjacent_raw_batch_cold_working_set_bytes_per_row(
+        self,
+        fixed_width_bytes_per_row: u64,
+        variable_width_columns: u64,
+        projected_uncompressed_bytes_per_row: u64,
+    ) -> u64 {
+        fixed_width_bytes_per_row
+            .saturating_add(
+                variable_width_columns.saturating_mul(self.source_adjacent_raw_batch_cold_variable_width_row_bytes),
+            )
+            .saturating_add(projected_uncompressed_bytes_per_row)
+            .max(1)
+            .saturating_mul(1 + self.source_adjacent_raw_batch_stage_copy_factor)
+    }
+
+    /// Modeled working-set bytes per row from observed decoded and staged bytes.
+    pub(in crate::exec::bounded) fn source_adjacent_raw_batch_observed_working_set_bytes_per_row(
+        self,
+        decoded_bytes_per_row: u64,
+        staged_bytes_per_row: u64,
+    ) -> u64 {
+        decoded_bytes_per_row
+            .saturating_add(staged_bytes_per_row.saturating_mul(self.source_adjacent_raw_batch_stage_copy_factor))
+            .max(1)
+    }
+
+    /// Whether a hash-partitioned batch's occupancy proves few distinct keys.
+    pub(in crate::exec::bounded) fn source_adjacent_local_reduction_from_partition_occupancy(
+        self,
+        non_empty_partitions: usize,
+        partition_count: usize,
+    ) -> bool {
+        partition_count >= self.source_adjacent_local_reduction_min_partition_count
+            && non_empty_partitions
+                <= partition_count / self.source_adjacent_local_reduction_max_partition_occupancy_divisor
+    }
+
+    /// Whether one observed batch reduced strongly enough that the next batch
+    /// can be partially aggregated whole instead of hash-partitioned first.
+    pub(in crate::exec::bounded) fn source_adjacent_local_reduction_effective(
+        self,
+        input_rows: u64,
+        partial_rows: u64,
+        partial_bytes: u64,
+        device_budget_bytes: u64,
+    ) -> bool {
+        let max_partial_bytes = self.source_adjacent_raw_batch_working_set_target_bytes(device_budget_bytes)
+            / self.source_adjacent_local_reduction_max_partial_bytes_divisor;
+        input_rows > 0
+            && u128::from(partial_rows) * 1_000_000
+                <= u128::from(input_rows) * u128::from(self.source_adjacent_local_reduction_max_output_rows_ppm)
+            && partial_bytes <= max_partial_bytes
+    }
 }
 
 impl Default for BoundedSourceBatchingPolicy {
@@ -158,6 +257,19 @@ impl Default for BoundedSourceBatchingPolicy {
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES,
             source_adjacent_partitioned_aggregate_batch_budget_divisor:
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_BATCH_BUDGET_DIVISOR,
+            source_adjacent_raw_batch_working_set_budget_divisor:
+                Self::DEFAULT_SOURCE_ADJACENT_RAW_BATCH_WORKING_SET_BUDGET_DIVISOR,
+            source_adjacent_raw_batch_cold_variable_width_row_bytes:
+                Self::DEFAULT_SOURCE_ADJACENT_RAW_BATCH_COLD_VARIABLE_WIDTH_ROW_BYTES,
+            source_adjacent_raw_batch_stage_copy_factor: Self::DEFAULT_SOURCE_ADJACENT_RAW_BATCH_STAGE_COPY_FACTOR,
+            source_adjacent_local_reduction_max_output_rows_ppm:
+                Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_OUTPUT_ROWS_PPM,
+            source_adjacent_local_reduction_max_partial_bytes_divisor:
+                Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTIAL_BYTES_DIVISOR,
+            source_adjacent_local_reduction_min_partition_count:
+                Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MIN_PARTITION_COUNT,
+            source_adjacent_local_reduction_max_partition_occupancy_divisor:
+                Self::DEFAULT_SOURCE_ADJACENT_LOCAL_REDUCTION_MAX_PARTITION_OCCUPANCY_DIVISOR,
             remote_direct_materialized_join_source_batch_max_bytes:
                 Self::DEFAULT_REMOTE_DIRECT_MATERIALIZED_JOIN_SOURCE_BATCH_MAX_BYTES,
         }

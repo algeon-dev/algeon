@@ -525,3 +525,167 @@ pub(crate) fn write_single_row_group_final_sort_input_parquet(path: &Path, rows:
     writer.close().unwrap();
     schema
 }
+
+/// Uncompressed, non-dictionary row groups whose decoded bytes are known
+/// (12 bytes per row), so a query cap can be chosen around a whole-chunk read.
+/// `key` cycles through four values and `value` is the global row index.
+pub(crate) fn write_uncompressed_row_grouped_input_parquet(
+    path: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let rows = row_groups * rows_per_row_group;
+    let keys = (0..rows).map(|row| (row % 4) as i32).collect::<Vec<_>>();
+    let values = (0..rows).map(|row| row as i64).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(keys)), Arc::new(Int64Array::from(values))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder()
+        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_dictionary_enabled(false)
+        .set_max_row_group_row_count(Some(rows_per_row_group))
+        .build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+/// Closed-form `sum(value) group by key` for [`write_uncompressed_row_grouped_input_parquet`].
+pub(crate) fn uncompressed_row_grouped_expected_sums(rows: usize) -> [i64; 4] {
+    let mut sums = [0i64; 4];
+    for row in 0..rows {
+        sums[row % 4] += row as i64;
+    }
+    sums
+}
+
+/// Uncompressed row groups with a two-value string key that concentrates almost
+/// every row on one key, so group-key hash partitions are maximally skewed and
+/// each batch's partial aggregate keeps at most two rows.
+pub(crate) fn write_skewed_string_key_row_grouped_parquet(
+    path: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("flag", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let rows = row_groups * rows_per_row_group;
+    let flags = (0..rows).map(|row| if row % 97 == 0 { "F" } else { "O" }).collect::<Vec<_>>();
+    let values = (0..rows).map(|row| row as i64).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(flags)), Arc::new(Int64Array::from(values))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder()
+        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_dictionary_enabled(false)
+        .set_max_row_group_row_count(Some(rows_per_row_group))
+        .build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+/// Closed-form `sum(value) group by flag` for [`write_skewed_string_key_row_grouped_parquet`]
+/// as `(sum for "F", sum for "O")`.
+pub(crate) fn skewed_string_key_expected_sums(rows: usize) -> (i64, i64) {
+    (0..rows).fold((0i64, 0i64), |(f, o), row| if row % 97 == 0 { (f + row as i64, o) } else { (f, o + row as i64) })
+}
+
+/// Uncompressed row groups whose `key` is unique across the whole file, so
+/// every partial aggregate keeps all of its input rows and merging never
+/// shrinks the retained state: the shape of a high-cardinality group by.
+/// `d` is a constant join key so a one-row dimension keeps every row.
+pub(crate) fn write_unique_key_row_grouped_parquet(
+    path: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("value", DataType::Int64, false),
+        Field::new("d", DataType::Int64, false),
+    ]));
+    let rows = row_groups * rows_per_row_group;
+    let keys = (0..rows).map(|row| row as i64).collect::<Vec<_>>();
+    let values = (0..rows).map(|row| (row % 7) as i64).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(keys)),
+            Arc::new(Int64Array::from(values)),
+            Arc::new(Int64Array::from(vec![0i64; rows])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder()
+        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_dictionary_enabled(false)
+        .set_max_row_group_row_count(Some(rows_per_row_group))
+        .build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+/// One-row dimension whose `d` matches every row of
+/// [`write_unique_key_row_grouped_parquet`].
+pub(crate) fn write_single_row_dimension_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![0i64]))]).unwrap();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+/// Uncompressed row groups whose string key has two values in the first half
+/// of the file and a distinct value per row in the second half, so an early
+/// low-cardinality observation stops being representative later.
+pub(crate) fn write_cardinality_shift_string_key_parquet(
+    path: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("flag", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let rows = row_groups * rows_per_row_group;
+    let shift = rows / 2;
+    let flags = (0..rows)
+        .map(|row| if row < shift { (if row % 2 == 0 { "A" } else { "B" }).to_string() } else { row.to_string() })
+        .collect::<Vec<_>>();
+    let values = vec![1i64; rows];
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(flags)), Arc::new(Int64Array::from(values))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder()
+        .set_compression(parquet::basic::Compression::UNCOMPRESSED)
+        .set_dictionary_enabled(false)
+        .set_max_row_group_row_count(Some(rows_per_row_group))
+        .build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}

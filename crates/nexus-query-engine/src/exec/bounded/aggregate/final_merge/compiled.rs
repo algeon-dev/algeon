@@ -287,6 +287,58 @@ fn execute_compiled_partitioned_final_merge_group(
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
+/// Merges borrowed partition-aligned partials into one merged partial state.
+///
+/// Inputs stay owned by the caller so a rejected merge leaves them intact for
+/// a smaller retry; the concatenation is the only transient copy.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
+pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    partition_index: usize,
+    partials: &[&CommittedPartial],
+    token: &ExecutionBudgetToken,
+) -> Result<GpuDataFrame> {
+    let partial_count = partials.len();
+    let concatenated = if partial_count == 1 {
+        partials[0].frame.frame().clone()
+    } else {
+        let first_frame = partials[0].frame.frame().clone();
+        let other_frames = partials[1..].iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
+        let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
+        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
+            attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "nexus_query_engine.compiled_final_merge.partitioned_concat_partials",
+                    "failed to concatenate compiled partitioned final aggregate partials",
+                    error,
+                )
+                .with_fact("node_id", node_id)
+                .with_fact("partition", partition_index)
+                .with_fact("partial_aggregate_count", partial_count),
+                token,
+            )
+        })?
+    };
+    let concatenated = GpuDataFrame::new(concatenated);
+    observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    execute_compiled_final_aggregate(
+        execution.context(),
+        aggregate,
+        input_schema,
+        output_schema,
+        concatenated,
+        token,
+        execution.metrics_mut(),
+    )
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
@@ -354,7 +406,7 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     clippy::too_many_arguments,
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
-fn record_compiled_partitioned_final_merge_strategy(
+pub(super) fn record_compiled_partitioned_final_merge_strategy(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
@@ -572,7 +624,7 @@ fn record_compiled_final_merge_retry_error(error: &QueryError, metrics: &mut Que
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
-fn execute_compiled_final_aggregate_projection(
+pub(super) fn execute_compiled_final_aggregate_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,

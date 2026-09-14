@@ -75,7 +75,7 @@ use crate::{
     chunk::{
         SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
         annotate_source_chunk_batching_reasons, plan_local_parquet_source_chunks_with_execution_context,
-        plan_source_chunk_batches,
+        plan_source_chunk_batches, plan_source_chunk_batches_with_row_cap,
     },
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},

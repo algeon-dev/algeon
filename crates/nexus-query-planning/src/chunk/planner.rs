@@ -41,9 +41,24 @@ pub fn plan_source_chunk_batches(
     chunks: &[SourceChunk],
     max_batch_source_read_bytes: Option<u64>,
 ) -> Vec<SourceChunkBatch> {
+    plan_source_chunk_batches_with_row_cap(chunks, max_batch_source_read_bytes, None)
+}
+
+/// Groups compatible adjacent chunks like [`plan_source_chunk_batches`] and
+/// additionally caps each batch's known row count.
+///
+/// Source-read bytes describe encoded input; a row cap lets a consumer bound
+/// the decoded working set it observed on earlier batches. Chunks without a
+/// known row count stay singleton batches while a row cap is in effect.
+pub fn plan_source_chunk_batches_with_row_cap(
+    chunks: &[SourceChunk],
+    max_batch_source_read_bytes: Option<u64>,
+    max_batch_rows: Option<u64>,
+) -> Vec<SourceChunkBatch> {
     let mut batches = Vec::new();
     let mut current = Vec::new();
     let mut current_bytes: Option<u64> = Some(0);
+    let mut current_rows: Option<u64> = Some(0);
     let mut current_reason: Option<&'static str> = None;
 
     for chunk in chunks {
@@ -56,6 +71,7 @@ pub fn plan_source_chunk_batches(
                 chunk_bytes,
                 max_batch_source_read_bytes,
             )
+            .or_else(|| source_chunk_batch_row_extension_rejection(current_rows, chunk, max_batch_rows))
         });
         let can_extend = current.last().is_some() && extension_rejection.is_none();
         if !current.is_empty() && !can_extend {
@@ -64,6 +80,7 @@ pub fn plan_source_chunk_batches(
             }
             push_source_chunk_batch(&mut batches, &mut current, current_bytes, current_reason);
             current_bytes = Some(0);
+            current_rows = Some(0);
             current_reason = None;
         }
 
@@ -73,6 +90,7 @@ pub fn plan_source_chunk_batches(
         } else {
             current_bytes = current_bytes.and_then(|total| chunk_bytes.and_then(|bytes| total.checked_add(bytes)));
         }
+        current_rows = current_rows.and_then(|total| chunk.known_row_count.and_then(|rows| total.checked_add(rows)));
         current.push(chunk.clone());
     }
 
@@ -177,6 +195,21 @@ fn source_chunk_batch_extension_rejection(
         return Some("byte_target_exceeded");
     }
     None
+}
+
+fn source_chunk_batch_row_extension_rejection(
+    current_rows: Option<u64>,
+    right: &SourceChunk,
+    max_batch_rows: Option<u64>,
+) -> Option<&'static str> {
+    let max_rows = max_batch_rows?;
+    let Some(current_rows) = current_rows else {
+        return Some("incompatible_missing_current_rows");
+    };
+    let Some(right_rows) = right.known_row_count else {
+        return Some("incompatible_missing_next_rows");
+    };
+    (current_rows.saturating_add(right_rows) > max_rows).then_some("row_target_exceeded")
 }
 
 fn source_chunks_have_adjacent_row_groups(left: &SourceChunk, right: &SourceChunk) -> bool {
