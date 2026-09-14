@@ -24,6 +24,7 @@ With no options, run the canonical full pre-merge surface with all features and
 cargo-nextest 0.9.140. Partial modes never claim full validation.
 
 Modes:
+  --dev -p PACKAGE [--test TARGET] Focused edit loop for one owning package
   --fast                         Edit loop: policies, fmt, structure, CPU tests
   --lane LANE                    Partial lane: all, cpu, gpu, gpu-shared,
                                  gpu-exclusive, or policy
@@ -36,6 +37,7 @@ Environment compatibility:
 Examples:
   bash scripts/check_all.sh
   bash scripts/check_all.sh --fast
+  bash scripts/check_all.sh --dev -p datafusion-nexus --test native_planning_tests
   bash scripts/check_all.sh --lane gpu-shared
 USAGE
 }
@@ -58,7 +60,12 @@ require_value() {
 seen_help=0
 seen_fast=0
 seen_lane=0
+seen_dev=0
+seen_package=0
+seen_test=0
 cli_lane=""
+dev_package=""
+dev_test=""
 
 original_arg_count=$#
 while [[ $# -gt 0 ]]; do
@@ -72,6 +79,25 @@ while [[ $# -gt 0 ]]; do
       [[ "${seen_fast}" -eq 0 ]] || usage_error "duplicate option: --fast"
       seen_fast=1
       shift
+      ;;
+    --dev)
+      [[ "${seen_dev}" -eq 0 ]] || usage_error "duplicate option: --dev"
+      seen_dev=1
+      shift
+      ;;
+    -p | --package)
+      [[ "${seen_package}" -eq 0 ]] || usage_error "duplicate option: $1"
+      require_value "$1" "$#" "${2-}"
+      seen_package=1
+      dev_package=$2
+      shift 2
+      ;;
+    --test)
+      [[ "${seen_test}" -eq 0 ]] || usage_error "duplicate option: --test"
+      require_value --test "$#" "${2-}"
+      seen_test=1
+      dev_test=$2
+      shift 2
       ;;
     --lane)
       [[ "${seen_lane}" -eq 0 ]] || usage_error "duplicate option: --lane"
@@ -99,10 +125,15 @@ if [[ "${seen_help}" -eq 1 ]]; then
 fi
 
 [[ ! ( "${seen_fast}" -eq 1 && "${seen_lane}" -eq 1 ) ]]   || usage_error "--fast conflicts with --lane."
+[[ ! ( "${seen_dev}" -eq 1 && ( "${seen_fast}" -eq 1 || "${seen_lane}" -eq 1 ) ) ]] || usage_error "--dev conflicts with --fast and --lane."
+[[ "${seen_dev}" -eq 1 || ( "${seen_package}" -eq 0 && "${seen_test}" -eq 0 ) ]] || usage_error "-p/--package and --test require --dev."
+[[ "${seen_dev}" -eq 0 || "${seen_package}" -eq 1 ]] || usage_error "--dev requires -p PACKAGE."
+[[ "${seen_package}" -eq 0 || "${dev_package}" =~ ^[A-Za-z0-9_.-]+$ ]] || usage_error "package must be one literal Cargo package name."
+[[ "${seen_test}" -eq 0 || "${dev_test}" =~ ^[A-Za-z0-9_.-]+$ ]] || usage_error "test must be one literal Cargo test target name."
 
 PHASE_LOG_DIR_OVERRIDE=""
 if [[ -v CHECK_ALL_PHASE_LOG_DIR ]]; then
-  [[ -n "${CHECK_ALL_PHASE_LOG_DIR}" && "${CHECK_ALL_PHASE_LOG_DIR}" != *$'\n'* && "${CHECK_ALL_PHASE_LOG_DIR}" != *'|'* ]]     || usage_error "CHECK_ALL_PHASE_LOG_DIR must be a non-empty single-line path without '|'."
+  [[ -n "${CHECK_ALL_PHASE_LOG_DIR}" && "${CHECK_ALL_PHASE_LOG_DIR}" != *$'\n'* && "${CHECK_ALL_PHASE_LOG_DIR}" != *$'\t'* && "${CHECK_ALL_PHASE_LOG_DIR}" != *'|'* ]]     || usage_error "CHECK_ALL_PHASE_LOG_DIR must be a non-empty single-line path without '|'; tabs are not allowed."
   PHASE_LOG_DIR_OVERRIDE=${CHECK_ALL_PHASE_LOG_DIR}
 fi
 
@@ -114,11 +145,15 @@ if [[ "${seen_fast}" -eq 1 ]]; then
 elif [[ "${seen_lane}" -eq 1 ]]; then
   mode=lane
   lane=${cli_lane}
+elif [[ "${seen_dev}" -eq 1 ]]; then
+  mode=dev
+  lane=scoped
 fi
 case "${lane}" in
-  all | cpu | gpu | gpu-shared | gpu-exclusive | policy) ;;
+  all | cpu | gpu | gpu-shared | gpu-exclusive | policy | scoped) ;;
   *) usage_error "--lane must be all, cpu, gpu, gpu-shared, gpu-exclusive, or policy, got '${lane}'." ;;
 esac
+[[ "${lane}" != scoped || "${mode}" == dev ]] || usage_error "--lane must be all, cpu, gpu, gpu-shared, gpu-exclusive, or policy, got '${lane}'."
 
 gpu_threads=$(nproc 2>/dev/null)
 nproc_status=$?
@@ -252,7 +287,9 @@ gate_source_identity() {
   printf 'root=%s gitlinks=%s'     "$(root_source_fingerprint)"     "${gitlinks}"
 }
 
-echo "CHECK CONFIG: mode=${mode} lane=${lane} runner=nextest(default) features=all(default) gpu_profile=${GPU_NEXTEST_PROFILE} gpu_threads=${gpu_threads}(nproc) strict=always(default)"
+scope_summary=""
+[[ "${mode}" != dev ]] || scope_summary=" package=${dev_package}${dev_test:+ test=${dev_test}}"
+echo "CHECK CONFIG: mode=${mode} lane=${lane}${scope_summary} runner=nextest(default) features=all(default) gpu_profile=${GPU_NEXTEST_PROFILE} gpu_threads=${gpu_threads}(nproc) strict=always(default)"
 echo "PHASE LOG DIRECTORY: ${PHASE_LOG_DIR}"
 gate_source_start=$(gate_source_identity) || usage_error "cannot resolve recursive gitlink source identity."
 echo "CHECK SOURCE START: ${gate_source_start}"
@@ -348,6 +385,18 @@ phase_set_accounting_failure() {
   echo "ERROR: ${id} accounting failed: ${diagnostic}" >&2
 }
 
+write_phase_state() {
+  local state_tmp="${PHASE_LOG_DIR}/phases.tsv.tmp"
+  local id
+  {
+    printf 'phase\tstatus\tduration\texit\tlog\n'
+    for id in "${PHASE_ORDER[@]}"; do
+      printf '%s\t%s\t%s\t%s\t%s\n' "${id}" "${PHASE_STATUS[${id}]}" \
+        "${PHASE_DURATION[${id}]}" "${PHASE_EXIT[${id}]}" "${PHASE_LOG[${id}]}"
+    done
+  } >"${state_tmp}" && mv "${state_tmp}" "${PHASE_LOG_DIR}/phases.tsv"
+}
+
 run_phase() {
   local id=$1
   local count_kind=$2
@@ -371,6 +420,13 @@ run_phase() {
   PHASE_KIND["${id}"]=${count_kind}
   PHASE_GPU_CAP["${id}"]=${gpu_cap}
   PHASE_LOCK["${id}"]=${lock_path}
+  PHASE_STATUS["${id}"]=RUNNING
+  write_phase_state || {
+    echo "ERROR: cannot persist phase state in '${PHASE_LOG_DIR}'." >&2
+    PHASE_STATUS["${id}"]='FAIL(state)'
+    status=1
+    return 1
+  }
   echo
   echo "==> [${id}] ${PHASE_COMMAND[${id}]}"
   start=$(phase_now_ms)
@@ -436,6 +492,12 @@ run_phase() {
 
   end=$(phase_now_ms)
   PHASE_DURATION["${id}"]=$(phase_duration "${start}" "${end}")
+  write_phase_state || {
+    echo "ERROR: cannot persist phase state in '${PHASE_LOG_DIR}'." >&2
+    PHASE_STATUS["${id}"]='FAIL(state)'
+    status=1
+    return 1
+  }
   [[ "${PHASE_STATUS[${id}]}" == PASS ]]
 }
 
@@ -475,6 +537,11 @@ case "${mode}:${lane}" in
     needs_shared_gpu=1
     ;;
   lane:gpu-exclusive) needs_exclusive_gpu=1 ;;
+  dev:scoped)
+    needs_cpu=1
+    needs_shared_gpu=1
+    needs_exclusive_gpu=1
+    ;;
 esac
 
 checked_bindings_command() {
@@ -510,14 +577,51 @@ if [[ "${mode}" == full ]]; then
   PHASE_COMMAND[native-free-check]="DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check"
   run_phase native-free-check none - - env DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check || true
   run_phase msrv-check none - - cargo hack check --workspace --all-features --locked     --rust-version --workspace-behavior=cargo || true
-  run_phase feature-isolation-check none - - cargo hack check --workspace --each-feature     --exclude-features default --locked --keep-going || true
+  PHASE_COMMAND[feature-isolation-check]="CARGO_TARGET_DIR=target/check-all/feature-isolation cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going"
+  run_phase feature-isolation-check none - - env CARGO_TARGET_DIR=target/check-all/feature-isolation \
+    cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going || true
 fi
 
 if [[ "${lane}" != policy ]]; then
+  inventory_args=(--all-features)
+  if [[ "${mode}" == dev ]]; then
+    inventory_args+=(--package "${dev_package}")
+    [[ -z "${dev_test}" ]] || inventory_args+=(--test "${dev_test}")
+
+    PHASE_COMMAND[clippy]="cargo clippy -p ${dev_package} --all-targets --all-features -- -D warnings"
+    if [[ "${lane_safe}" -eq 1 ]] && ! run_phase clippy none - - cargo clippy -p "${dev_package}" --all-targets --all-features -- -D warnings; then
+      lane_safe=0
+      echo "ABORT: focused lint failed; tests were not built or run." >&2
+    fi
+  fi
   if [[ "${mode}" != fast ]]; then
-    if ! run_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh --all-features; then
+    binaries_metadata="${PHASE_LOG_DIR}/binaries-metadata.json"
+    cargo_metadata="${PHASE_LOG_DIR}/cargo-metadata.json"
+    selected_lanes="${PHASE_LOG_DIR}/selected-lanes.txt"
+    inventory_args+=(--inventory-out "${binaries_metadata}" --cargo-metadata-out "${cargo_metadata}" --lanes-out "${selected_lanes}")
+    if [[ "${lane_safe}" -eq 1 ]] && ! run_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh "${inventory_args[@]}"; then
       lane_safe=0
       echo "ABORT: live lane inventory failed; selected nextest lanes will not run." >&2
+    fi
+    if [[ "${mode}" == dev && "${lane_safe}" -eq 1 ]]; then
+      needs_cpu=0
+      needs_shared_gpu=0
+      needs_exclusive_gpu=0
+      selected_lane_count=0
+      while IFS= read -r selected_lane; do
+        case "${selected_lane}" in
+          cpu) needs_cpu=1; selected_lane_count=$((selected_lane_count + 1)) ;;
+          gpu-shared) needs_shared_gpu=1; selected_lane_count=$((selected_lane_count + 1)) ;;
+          gpu-exclusive) needs_exclusive_gpu=1; selected_lane_count=$((selected_lane_count + 1)) ;;
+          '') ;;
+          *) echo "ERROR: invalid selected lane '${selected_lane}'." >&2; lane_safe=0; status=1 ;;
+        esac
+      done <"${selected_lanes}"
+      if [[ "${selected_lane_count}" -eq 0 ]]; then
+        echo "ERROR: focused inventory selected no test lanes." >&2
+        lane_safe=0
+        status=1
+      fi
     fi
   fi
   if [[ "${lane_safe}" -eq 1 && ( "${needs_shared_gpu}" -eq 1 || "${needs_exclusive_gpu}" -eq 1 ) ]]; then
@@ -529,7 +633,8 @@ if [[ "${lane}" != policy ]]; then
     else
       preflight_cap=${GPU_EXCLUSIVE_CAP}
     fi
-    if ! run_phase gpu-preflight none "${preflight_cap}" - cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups --workspace --all-features; then
+    if ! run_phase gpu-preflight none "${preflight_cap}" - cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups \
+      --cargo-metadata "${cargo_metadata}" --binaries-metadata "${binaries_metadata}"; then
       echo "ERROR: GPU scheduling preflight is invalid; refusing to run GPU lanes." >&2
       fatal_status=2
       lane_safe=0
@@ -543,16 +648,39 @@ if [[ "${lane}" != policy ]]; then
     fi
   fi
   if [[ "${lane_safe}" -eq 1 ]]; then
-    PHASE_COMMAND[cpu-tests]="cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
-    [[ "${needs_cpu}" -eq 0 ]]       || run_phase cpu-tests nextest - - cargo nextest run --workspace --all-features         -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail || true
-    PHASE_COMMAND[gpu-shared-tests]="flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --all-features -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
-    [[ "${needs_shared_gpu}" -eq 0 ]]       || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}"         flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}"         --workspace --all-features -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast         --test-threads "${gpu_threads}" --final-status-level fail || true
-    PHASE_COMMAND[gpu-exclusive-tests]="flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
-    [[ "${needs_exclusive_gpu}" -eq 0 ]]       || run_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}"         flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}"         --workspace --all-features -E 'group(gpu-exclusive)' --no-fail-fast         --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail || true
-  else
-    [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]]       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
-    [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]]       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
-    [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]]       || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
+    nextest_failure_mode=(--no-fail-fast)
+    [[ "${mode}" != dev ]] || nextest_failure_mode=(--fail-fast)
+    reuse_args=()
+    if [[ "${mode}" != fast ]]; then
+      reuse_args=(--cargo-metadata "${cargo_metadata}" --binaries-metadata "${binaries_metadata}")
+    else
+      reuse_args=(--workspace --all-features)
+    fi
+    PHASE_COMMAND[cpu-tests]="cargo nextest run ${reuse_args[*]} -E 'not group(gpu) & not group(gpu-exclusive)' ${nextest_failure_mode[*]} --final-status-level fail"
+    [[ "${needs_cpu}" -eq 0 ]] || run_phase cpu-tests nextest - - cargo nextest run "${reuse_args[@]}" \
+      -E 'not group(gpu) & not group(gpu-exclusive)' "${nextest_failure_mode[@]}" --final-status-level fail || true
+    if [[ "${mode}" == dev && "${PHASE_STATUS[cpu-tests]}" == FAIL* ]]; then
+      lane_safe=0
+      echo "ABORT: focused CPU tests failed; GPU lanes were not run." >&2
+    fi
+    PHASE_COMMAND[gpu-shared-tests]="flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${reuse_args[*]} -E group(${GPU_NEXTEST_GROUP}) ${nextest_failure_mode[*]} --test-threads ${gpu_threads} --final-status-level fail"
+    [[ "${needs_shared_gpu}" -eq 0 || "${lane_safe}" -eq 0 ]] || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" \
+      flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" "${reuse_args[@]}" \
+      -E "group(${GPU_NEXTEST_GROUP})" "${nextest_failure_mode[@]}" --test-threads "${gpu_threads}" --final-status-level fail || true
+    if [[ "${mode}" == dev && "${PHASE_STATUS[gpu-shared-tests]}" == FAIL* ]]; then
+      lane_safe=0
+      echo "ABORT: focused shared-GPU tests failed; exclusive GPU tests were not run." >&2
+    fi
+    PHASE_COMMAND[gpu-exclusive-tests]="flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${reuse_args[*]} -E group(gpu-exclusive) ${nextest_failure_mode[*]} --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
+    [[ "${needs_exclusive_gpu}" -eq 0 || "${lane_safe}" -eq 0 ]] || run_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" \
+      flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" "${reuse_args[@]}" \
+      -E 'group(gpu-exclusive)' "${nextest_failure_mode[@]}" --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail || true
+  fi
+  if [[ "${lane_safe}" -eq 0 ]]; then
+    [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]] || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
+    [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
+    [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
+    write_phase_state || status=1
   fi
 fi
 
@@ -660,6 +788,15 @@ final_status=${status}
 if [[ "${fatal_status}" -ne 0 ]]; then
   final_status=${fatal_status}
 fi
+{
+  printf 'mode\t%s\n' "${mode}"
+  printf 'source_start\t%s\n' "${gate_source_start}"
+  printf 'source_end\t%s\n' "${gate_source_end}"
+  printf 'status\t%s\n' "${final_status}"
+} >"${PHASE_LOG_DIR}/run.tsv" || {
+  echo "ERROR: cannot persist final run state in '${PHASE_LOG_DIR}'." >&2
+  final_status=1
+}
 if [[ "${final_status}" -ne 0 ]]; then
   if [[ "${mode}" == full ]]; then
     echo "FAIL: canonical full pre-merge surface reported problems."
@@ -670,6 +807,8 @@ elif [[ "${mode}" == full ]]; then
   echo "OK: canonical full pre-merge surface passed."
 elif [[ "${mode}" == fast ]]; then
   echo "OK: fast edit-loop surface passed. PARTIAL: full pre-merge validation was not run."
+elif [[ "${mode}" == dev ]]; then
+  echo "OK: focused development checks passed for package '${dev_package}'${dev_test:+ test '${dev_test}'}. PARTIAL: full pre-merge validation was not run."
 else
   echo "OK: selected lane '${lane}' passed. PARTIAL: full pre-merge validation was not run."
 fi

@@ -36,6 +36,7 @@ mod config;
 mod dataset;
 mod errors;
 mod execution;
+mod provenance;
 mod reports;
 mod strategy_gate;
 mod validation;
@@ -43,6 +44,7 @@ mod validation;
 use case_runner::*;
 use config::*;
 use errors::*;
+use provenance::*;
 use reports::*;
 
 /// Run the native TPC-H benchmark end to end from environment configuration,

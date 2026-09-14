@@ -97,7 +97,6 @@ pub const TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughpu
 /// Profile name used when explicit knobs do not match a named profile.
 pub const TPCDS_NATIVE_PROFILE_CUSTOM: &str = "custom";
 /// SF100 throughput profile device budget, matching the 95 GiB probe.
-pub const TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64 = 102_005_473_280;
 /// SF100 throughput profile source byte target: 32 GiB.
 pub const TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
 /// SF100 throughput profile row-group batch target.
@@ -141,7 +140,6 @@ struct NativeProfileBase {
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
     source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
-    device_budget_explicit: bool,
 }
 
 /// Session config used by TPC-DS native report surfaces.
@@ -370,7 +368,6 @@ fn tpcds_native_profile_settings_and_device_memory_limit_with_env(
 ) -> (TpcdsNativeProfileSettings, nexus_query_engine::runtime::GpuDeviceMemoryLimit) {
     let requested_profile = get(NEXUS_TPCDS_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
     let base = native_profile_base(requested_profile.as_deref());
-    let device_memory_limit_explicit = base.device_budget_explicit;
     let mut resolved = TpcdsNativeProfileSettings::from_base(base);
     let device_budget_bytes = get(NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV);
     let max_source_chunk_bytes = get(NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
@@ -431,7 +428,7 @@ fn tpcds_native_profile_settings_and_device_memory_limit_with_env(
         resolved.profile_name = TPCDS_NATIVE_PROFILE_CUSTOM;
         resolved.profile_source = "custom_overrides";
     }
-    let device_memory_limit = if device_memory_limit_explicit || device_budget_overridden {
+    let device_memory_limit = if device_budget_overridden {
         nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: resolved.device_budget_bytes }
     } else {
         nexus_query_engine::runtime::GpuDeviceMemoryLimit::default()
@@ -464,18 +461,19 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
-            device_budget_explicit: false,
         },
         TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
             source: "env_profile",
-            device_budget_bytes: TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
+            // The throughput profile tunes source chunking only; capacity
+            // still resolves from the installed device so a same-series card
+            // with slightly less CUDA-visible memory can initialize.
+            device_budget_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
             max_source_chunk_bytes: TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
-            device_budget_explicit: true,
         },
         other => panic!(
             "unsupported {NEXUS_TPCDS_NATIVE_PROFILE_ENV}={other}; expected {TPCDS_NATIVE_PROFILE_CONSERVATIVE} or {TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -897,12 +895,7 @@ mod tests {
         let (_, throughput_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {
             (name == NEXUS_TPCDS_NATIVE_PROFILE_ENV).then(|| TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT.to_string())
         });
-        assert_eq!(
-            throughput_limit,
-            nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit {
-                limit_bytes: TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
-            }
-        );
+        assert_eq!(throughput_limit, nexus_query_engine::runtime::GpuDeviceMemoryLimit::default());
 
         let explicit_budget = 17 * 1024 * 1024 * 1024;
         let (_, overridden_limit) = tpcds_native_profile_settings_and_device_memory_limit_with_env(|name| {

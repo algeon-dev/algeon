@@ -308,16 +308,77 @@ fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode(
     let (cudf_source, cudf_chunks) = cudf_local_parquet_source_chunk_batch(&context, &source, &plan.chunks)
         .expect("multi-chunk remote source lowers through the typed batch builder");
 
-    assert_eq!(cudf_source.files().len(), 2);
+    assert_eq!(cudf_source.files().len(), 1);
     assert_eq!(cudf_chunks.len(), 2);
     assert_eq!(cudf_source.read_columns(), ["payload", "filter_only"]);
     assert_eq!(cudf_chunks[0].row_group_indexes(), [1]);
     assert_eq!(cudf_chunks[1].row_group_indexes(), [3]);
+    assert!(cudf_chunks.iter().all(|chunk| chunk.file_index() == 0));
     for file in cudf_source.files() {
         let remote = file.remote_source().expect("batch file retains its typed remote source");
         assert_eq!(remote.uri(), "s3://bucket/part.parquet");
         assert_eq!(remote.read_mode(), cudf::io::parquet::RemoteReadMode::RequireKvikio);
     }
+}
+
+fn local_test_source(files: Vec<LocalParquetFile>) -> LocalParquetSource {
+    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int32, false),
+        arrow::datatypes::Field::new("payload", arrow::datatypes::DataType::Utf8, true),
+    ]));
+    LocalParquetSource::from_files(files, schema, vec!["id".to_string(), "payload".to_string()])
+}
+
+fn local_test_file(path: &str, stable_id: &str, row_group_count: usize) -> LocalParquetFile {
+    LocalParquetFile::from_resolved_parquet_source(crate::source::ResolvedParquetSource::local_kvikio(path))
+        .expect("valid local source")
+        .with_stable_id(stable_id)
+        .with_file_size_bytes(4096)
+        .with_row_group_bytes(vec![512; row_group_count])
+        .with_row_group_rows(vec![10; row_group_count])
+}
+
+#[test]
+fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    // The same path appears as two source files with distinct identities; the
+    // batch must keep them apart instead of merging by path.
+    let source = local_test_source(vec![
+        local_test_file("/tmp/lineitem-a.parquet", "a", 3),
+        local_test_file("/tmp/lineitem-b.parquet", "b", 2),
+        local_test_file("/tmp/lineitem-a.parquet", "a-again", 1),
+    ]);
+    let plan = crate::chunk::plan_local_parquet_source_chunks(
+        crate::plan::NodeId::from_index_for_internal_use(1),
+        &source,
+        crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
+    )
+    .expect("one row group per chunk splits every file");
+    assert_eq!(plan.chunks.iter().map(|chunk| chunk.file_index).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 2]);
+
+    let (cudf_source, cudf_chunks) = cudf_local_parquet_source_chunk_batch(&context, &source, &plan.chunks)
+        .expect("same-file chunks lower through one cudf file entry");
+
+    assert_eq!(
+        cudf_source.files().iter().map(cudf::io::source::LocalParquetFile::stable_id).collect::<Vec<_>>(),
+        ["a", "b", "a-again"]
+    );
+    assert_eq!(
+        cudf_chunks.iter().map(cudf::io::source::SourceChunk::file_index).collect::<Vec<_>>(),
+        [0, 0, 0, 1, 1, 2]
+    );
+    assert_eq!(
+        cudf_chunks.iter().map(|chunk| chunk.row_group_indexes().to_vec()).collect::<Vec<_>>(),
+        [vec![0], vec![1], vec![2], vec![0], vec![1], vec![0]]
+    );
+    assert_eq!(
+        cudf_chunks.iter().map(cudf::io::source::SourceChunk::chunk_index).collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4, 5]
+    );
+    assert_eq!(
+        cudf_chunks.iter().map(cudf::io::source::SourceChunk::stable_id).collect::<Vec<_>>(),
+        ["a", "a", "a", "b", "b", "a-again"]
+    );
 }
 
 #[test]

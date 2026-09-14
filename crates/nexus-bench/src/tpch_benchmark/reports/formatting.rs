@@ -9,15 +9,19 @@ pub(super) fn write_native_execution_policy_metadata(
     push_line(output, format_args!("# tpch_benchmark_relational_execution={}", relational_execution.as_str()));
 }
 
+/// `device_budget_bytes` keeps its historical meaning of the managed capacity
+/// the run executed under: the resolved device capacity once a backend was
+/// installed, otherwise the configured budget (`automatic` before resolution).
 pub(super) fn write_native_memory_policy_metadata(
     output: &mut String,
     memory_policy: NativeTpchMemoryPolicy,
     max_source_reads_in_flight: usize,
+    resolved_device_capacity_bytes: Option<u64>,
 ) {
     let NativeTpchMemoryPolicy {
         profile_name,
         profile_source,
-        device_budget_bytes,
+        device_budget,
         max_source_chunk_bytes,
         max_row_groups_per_chunk,
         max_retry_attempts,
@@ -26,6 +30,9 @@ pub(super) fn write_native_memory_policy_metadata(
     } = memory_policy;
     push_line(output, format_args!("# tpch_benchmark_native_profile_name={profile_name}"));
     push_line(output, format_args!("# tpch_benchmark_native_profile_source={profile_source}"));
+    push_line(output, format_args!("# tpch_benchmark_native_device_budget_policy={}", device_budget.as_policy_str()));
+    let device_budget_bytes =
+        resolved_device_capacity_bytes.map_or_else(|| device_budget.to_string(), |bytes| bytes.to_string());
     push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes={device_budget_bytes}"));
     push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes={max_source_chunk_bytes}"));
     push_line(output, format_args!("# tpch_benchmark_native_max_row_groups_per_chunk={max_row_groups_per_chunk}"));

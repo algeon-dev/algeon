@@ -34,8 +34,42 @@ exit 97
 SH
 chmod +x "${tmp_dir}/bin/cargo"
 
-# Capture real live inventory as base fixture
-cargo nextest list --workspace --all-features --list-type binaries-only --message-format json >"${tmp_dir}/complete.json"
+# Build a deterministic complete policy fixture. The production full-gate phase
+# remains responsible for comparing the policy with Cargo's live inventory.
+python3 - "${tmp_dir}/complete.json" <<'PY'
+import json
+import sys
+import tomllib
+
+with open(".config/policies/test-lanes.toml", "rb") as source:
+    entries = tomllib.load(source)["exception"]
+binaries = {}
+for entry in entries:
+    binary_id = entry["id"]
+    package, separator, target = binary_id.partition("::")
+    kind = "lib" if not separator else ("bin" if target.startswith("bin/") else "test")
+    binary_name = package if kind == "lib" else target.removeprefix("bin/")
+    binaries[binary_id] = {
+        "binary-id": binary_id,
+        "binary-name": binary_name,
+        "kind": kind,
+        "package-id": f"path+file:///fixture#{package}@0.0.0",
+        "binary-path": f"/tmp/{binary_name}",
+        "build-platform": "target",
+    }
+for suffix in ("cpu", "gpu", "gpu_exclusive"):
+    binary_id = f"fixture-package::fixture_{suffix}"
+    binaries[binary_id] = {
+        "binary-id": binary_id,
+        "binary-name": f"fixture_{suffix}",
+        "kind": "test",
+        "package-id": "path+file:///fixture#fixture-package@0.0.0",
+        "binary-path": f"/tmp/fixture_{suffix}",
+        "build-platform": "target",
+    }
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump({"rust-binaries": binaries}, output)
+PY
 # Derive the expected count from the same inventory the script is fed: a
 # literal here breaks on every added test target while proving nothing the
 # comparison against this fixture does not already prove.
@@ -196,6 +230,23 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
     json.dump(inventory, output)
 PY
 run_shell_case stale_exception 1 "stale exception entry: datafusion-nexus::cpu_contract_tests" "${tmp_dir}/stale-exception.json"
+
+python3 - "${tmp_dir}/scoped.json" "${tmp_dir}/complete.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[2], encoding="utf-8") as source:
+    inventory = json.load(source)
+inventory["rust-binaries"] = {
+    "datafusion-nexus::cpu_contract_tests": inventory["rust-binaries"]["datafusion-nexus::cpu_contract_tests"]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump(inventory, output)
+PY
+run_policy_case scoped_catalog 0 "all 1 live test binaries classified (cpu=1" \
+  validate-inventory --inventory "${tmp_dir}/scoped.json" --allow-catalog-subset --lanes-out "${tmp_dir}/scoped-lanes.txt"
+[[ "$(<"${tmp_dir}/scoped-lanes.txt")" == cpu ]]
+echo "PASS: scoped inventory ignores unrelated catalog entries and reports selected lanes"
 
 # Suffix conflict with exception fails closed
 python3 - "${tmp_dir}/conflicting.json" "${tmp_dir}/complete.json" <<\PY

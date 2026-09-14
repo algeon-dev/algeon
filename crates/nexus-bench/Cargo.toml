@@ -23,7 +23,7 @@ cuvs = [
 ]
 
 [dependencies]
-datafusion-nexus = { workspace = true, features = ["bench-support"] }
+datafusion-nexus = { workspace = true, features = ["bench-support", "nvml"] }
 nexus-workloads = { workspace = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }

@@ -108,6 +108,7 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
             query_ids: vec!["q01".to_string()],
             ..NativeTpchBenchmarkConfig::default()
         },
+        devices: Vec::new(),
         rows: vec![row],
     };
     let text = report.to_tsv();
@@ -182,6 +183,7 @@ fn cpu_runtime_failure_preserves_adapter_error_facts() {
             query_ids: vec!["q01".to_string()],
             ..NativeTpchBenchmarkConfig::default()
         },
+        devices: Vec::new(),
         rows: vec![row],
     };
     let text = report.to_tsv();

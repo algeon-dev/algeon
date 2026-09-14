@@ -276,7 +276,8 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             materialization_time_ms: Some(13.0),
         },
     };
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+    let report =
+        NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, devices: Vec::new(), rows: vec![row] };
 
     let text = report.to_tsv();
     assert!(text.contains("# tpch_benchmark_relational_execution=native_no_datafusion_cpu\n"));
@@ -368,6 +369,7 @@ fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_co
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
         config,
+        devices: Vec::new(),
         rows: vec![NativeTpchBenchmarkRow::accepted(
             "q07",
             accepted_planning_row("q07"),
@@ -397,6 +399,7 @@ fn benchmark_report_accepted_join_rows_emit_compiled_graphs_without_decision_row
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
         config,
+        devices: Vec::new(),
         rows: vec![NativeTpchBenchmarkRow::accepted(
             "q15",
             planning,
