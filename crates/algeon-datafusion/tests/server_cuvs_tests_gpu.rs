@@ -63,6 +63,7 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
         (0..operations.len()).map(|row| operations.value(row)).collect::<Vec<_>>(),
         vec![
             "cuvs_brute_force_knn",
+            "cuvs_cagra",
             "cuvs_ivf_flat",
             "cuvs_ivf_pq",
             "cuvs_kmeans",

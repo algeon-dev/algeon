@@ -3329,6 +3329,15 @@ unsafe extern "C" {
         fill_value: i64,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Replace each Int64 equal to from with to and set its paired Float32 to positive infinity."]
+    pub fn cudf_int64_float32_buffer_replace_value_and_set_paired_infinite_ex(
+        values: *mut i64,
+        paired_values: *mut f32,
+        element_count: usize,
+        from: i64,
+        to: i64,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Count non-finite Float32 values whose paired Int64 value differs from excluded_value."]
     pub fn cudf_float32_buffer_non_finite_unless_int64_equals_count_ex(
         values: *const f32,

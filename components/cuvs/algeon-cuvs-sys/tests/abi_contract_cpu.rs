@@ -6,7 +6,8 @@ use std::{
 use cuvs_sys::{
     DLManagedTensor, EXPECTED_CUVS_VERSION, cuvsError_t, cuvsKMeansFit, cuvsKMeansParams, cuvsKMeansParams_t,
     cuvsKMeansParamsCreate, cuvsKMeansParamsDestroy, cuvsKMeansPredict, cuvsPcaParams, cuvsResources_t,
-    cuvsSelectKBatched, cuvsVersionGet, validate_runtime_version,
+    cuvsResourcesGetStreamPoolSize, cuvsResourcesGetStreamPoolStream, cuvsResourcesSetStreamPool, cuvsSelectKBatched,
+    cuvsVersionGet, validate_runtime_version,
 };
 
 unsafe extern "C" {
@@ -49,5 +50,8 @@ fn generated_bindings_expose_the_pinned_kmeans_function_surface() {
     let _: unsafe extern "C" fn(cuvsResources_t, cuvsKMeansParams_t, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, *mut f64, *mut c_int) -> cuvsError_t = cuvsKMeansFit;
     let _: unsafe extern "C" fn(cuvsResources_t, cuvsKMeansParams_t, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, bool, *mut f64) -> cuvsError_t = cuvsKMeansPredict;
     let _: unsafe extern "C" fn(cuvsResources_t, *mut DLManagedTensor, *mut DLManagedTensor, *mut DLManagedTensor, bool, bool) -> cuvsError_t = cuvsSelectKBatched;
+    let _: unsafe extern "C" fn(cuvsResources_t, usize) -> cuvsError_t = cuvsResourcesSetStreamPool;
+    let _: unsafe extern "C" fn(cuvsResources_t, *mut usize) -> cuvsError_t = cuvsResourcesGetStreamPoolSize;
+    let _: unsafe extern "C" fn(cuvsResources_t, usize, *mut *mut cuvs_sys::CUstream_st) -> cuvsError_t = cuvsResourcesGetStreamPoolStream;
     let _: unsafe extern "C" fn(*mut u16, *mut u16, *mut u16) -> cuvsError_t = cuvsVersionGet;
 }

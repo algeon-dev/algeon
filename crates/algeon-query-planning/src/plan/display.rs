@@ -323,6 +323,20 @@ fn format_vector_algorithm_params(params: &super::VectorAlgorithmParams) -> Stri
             params.pq_bits,
             params.codebook_kind
         ),
+        super::VectorAlgorithmParams::Cagra(params) => format!(
+            "dataset=({}) queries=({}) k={} metric={} graph_degree={} intermediate_graph_degree={} build_algo={:?} itopk_size={} search_width={} max_iterations={} search_algo={:?}",
+            format_vector_relation(&params.dataset),
+            format_vector_relation(&params.queries),
+            params.k,
+            params.metric,
+            params.graph_degree,
+            params.intermediate_graph_degree,
+            params.build_algo,
+            params.itopk_size,
+            params.search_width,
+            params.max_iterations,
+            params.search_algo
+        ),
         super::VectorAlgorithmParams::PairwiseDistance(params) => format!(
             "x=({}) y=({}) metric={}",
             format_vector_relation(&params.x),

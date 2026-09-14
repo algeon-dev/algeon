@@ -413,13 +413,15 @@ impl VectorInputRole {
             (
                 VectorAlgorithmParams::BruteForceKnn(_)
                 | VectorAlgorithmParams::IvfFlat(_)
-                | VectorAlgorithmParams::IvfPq(_),
+                | VectorAlgorithmParams::IvfPq(_)
+                | VectorAlgorithmParams::Cagra(_),
                 0,
             ) => Self::Dataset,
             (
                 VectorAlgorithmParams::BruteForceKnn(_)
                 | VectorAlgorithmParams::IvfFlat(_)
-                | VectorAlgorithmParams::IvfPq(_),
+                | VectorAlgorithmParams::IvfPq(_)
+                | VectorAlgorithmParams::Cagra(_),
                 1,
             ) => Self::Queries,
             (VectorAlgorithmParams::PairwiseDistance(_), 0) => Self::X,

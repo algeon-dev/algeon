@@ -14,6 +14,7 @@ use super::{DataType, Field, NodeId, Schema, SchemaRef};
 pub const CUVS_BRUTE_FORCE_KNN_FUNCTION: &str = "cuvs_brute_force_knn";
 pub const CUVS_IVF_FLAT_FUNCTION: &str = "cuvs_ivf_flat";
 pub const CUVS_IVF_PQ_FUNCTION: &str = "cuvs_ivf_pq";
+pub const CUVS_CAGRA_FUNCTION: &str = "cuvs_cagra";
 pub const CUVS_KMEANS_FUNCTION: &str = "cuvs_kmeans";
 pub const CUVS_PCA_FUNCTION: &str = "cuvs_pca";
 pub const CUVS_PAIRWISE_DISTANCE_FUNCTION: &str = "cuvs_pairwise_distance";
@@ -337,6 +338,62 @@ const KNN_OPTIONS: &[CuvsOptionDefinition] = &[
         required: true,
         kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: None },
         description: "Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first.",
+    },
+];
+const CAGRA_METRICS: &[&str] = &["l2_expanded", "inner_product", "cosine"];
+const CAGRA_BUILD_ALGOS: &[&str] = &["ivf_pq", "nn_descent"];
+const CAGRA_SEARCH_ALGOS: &[&str] = &["auto", "single_cta", "multi_cta", "multi_kernel"];
+const CAGRA_OPTIONS: &[CuvsOptionDefinition] = &[
+    KNN_OPTIONS[0],
+    KNN_OPTIONS[1],
+    KNN_OPTIONS[2],
+    CuvsOptionDefinition {
+        name: "metric",
+        required: true,
+        kind: CuvsOptionKind::Enum { values: CAGRA_METRICS, default: None },
+        description: "Distance or score metric; inner_product ranks higher scores first.",
+    },
+    CuvsOptionDefinition {
+        name: "graph_degree",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(64) },
+        description: "Output graph degree; native default 64. Must be less than dataset rows.",
+    },
+    CuvsOptionDefinition {
+        name: "intermediate_graph_degree",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(128) },
+        description: "Build graph degree; native default 128. Must exceed graph_degree and be less than dataset rows.",
+    },
+    CuvsOptionDefinition {
+        name: "build_algo",
+        required: false,
+        kind: CuvsOptionKind::Enum { values: CAGRA_BUILD_ALGOS, default: Some("ivf_pq") },
+        description: "Graph construction algorithm; native default ivf_pq. nn_descent does not support cosine.",
+    },
+    CuvsOptionDefinition {
+        name: "itopk_size",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(64) },
+        description: "Intermediate search results; native default 64. Must be at least k.",
+    },
+    CuvsOptionDefinition {
+        name: "search_width",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(1) },
+        description: "Starting graph nodes per iteration; native default 1.",
+    },
+    CuvsOptionDefinition {
+        name: "max_iterations",
+        required: false,
+        kind: CuvsOptionKind::Integer { minimum: 0, maximum: u32::MAX as u64, default: Some(0) },
+        description: "Maximum search iterations; native default 0 selects automatically.",
+    },
+    CuvsOptionDefinition {
+        name: "search_algo",
+        required: false,
+        kind: CuvsOptionKind::Enum { values: CAGRA_SEARCH_ALGOS, default: Some("auto") },
+        description: "Search kernel; auto is set explicitly (the native zero-initialized default is single_cta).",
     },
 ];
 const IVF_FLAT_OPTIONS: &[CuvsOptionDefinition] = &[
@@ -706,6 +763,7 @@ pub enum CuvsOperation {
     BruteForceKnn,
     IvfFlat,
     IvfPq,
+    Cagra,
     PairwiseDistance,
     TopK,
     KMeans,
@@ -809,6 +867,35 @@ ORDER BY query_ordinal, rank;"#,
             "Product quantization is lossy even when all lists are probed. Missing neighbors are omitted and valid ranks remain contiguous.",
             "The dataset must be non-empty; k and n_lists must not exceed its row count, and n_probes must not exceed n_lists.",
             "Dataset and query dimensions and element types must match. Cosine requires at least two dimensions. Nonzero pq_dim * pq_bits must be divisible by 8; dimensions are padded when needed.",
+        ],
+    },
+    CuvsOperationDescriptor {
+        operation: CuvsOperation::Cagra,
+        sql_function_name: CUVS_CAGRA_FUNCTION,
+        display_name: "CAGRA",
+        summary: "Query-local graph approximate nearest-neighbor search.",
+        use_this_when: "Use this for graph-based approximate search over an evaluated dataset.",
+        relation_roles: KNN_RELATIONS,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        output_contract: CuvsOutputContract::KnnNeighbors,
+        options: CAGRA_OPTIONS,
+        output_fields: KNN_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT *
+FROM cuvs_cagra(
+  dataset => (SELECT id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT id, d0, d1 FROM query_vectors),
+  k => 8,
+  metric => 'l2_expanded',
+  graph_degree => 32,
+  intermediate_graph_degree => 64
+)
+ORDER BY query_ordinal, rank;"#,
+        limitations: &[
+            "Builds and destroys a query-local graph and padded dataset within the statement; no index persists across statements.",
+            "Approximate search may return fewer than k neighbors; missing (query, rank) rows are omitted and valid ranks remain contiguous.",
+            "The dataset must be non-empty, k and intermediate_graph_degree must be less than or equal to its row count, and graph_degree must be less than intermediate_graph_degree.",
+            "k must not exceed itopk_size. single_cta requires itopk_size no greater than 1024. cosine cannot use nn_descent.",
+            "Dataset and query dimensions and element types must match; only Float32 vectors are supported.",
         ],
     },
     CuvsOperationDescriptor {
@@ -1008,6 +1095,29 @@ pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<
             );
         }
     }
+    if operation == CuvsOperation::Cagra {
+        let integer = |name| object.get(name).and_then(Value::as_u64).expect("validated CAGRA integer");
+        if integer("intermediate_graph_degree") <= integer("graph_degree") {
+            return Err(option_error(
+                "missing_or_invalid_option",
+                "intermediate_graph_degree must exceed graph_degree",
+            )
+            .for_argument("intermediate_graph_degree"));
+        }
+        if integer("k") > integer("itopk_size") {
+            return Err(
+                option_error("missing_or_invalid_option", "k must not exceed itopk_size").for_argument("itopk_size")
+            );
+        }
+        if object["search_algo"] == "single_cta" && integer("itopk_size") > 1024 {
+            return Err(option_error("missing_or_invalid_option", "single_cta requires itopk_size <= 1024")
+                .for_argument("itopk_size"));
+        }
+        if object["metric"] == "cosine" && object["build_algo"] == "nn_descent" {
+            return Err(option_error("missing_or_invalid_option", "nn_descent cannot build a cosine graph")
+                .for_argument("build_algo"));
+        }
+    }
     if operation == CuvsOperation::IvfPq {
         let pq_dim = object.get("pq_dim").and_then(Value::as_u64).expect("validated pq_dim");
         let pq_bits = object.get("pq_bits").and_then(Value::as_u64).expect("validated pq_bits");
@@ -1134,6 +1244,8 @@ pub enum VectorAlgorithm {
     IvfFlat,
     /// Query-local IVF-PQ compressed nearest-neighbor search.
     IvfPq,
+    /// Query-local graph approximate nearest-neighbor search.
+    Cagra,
     /// Pairwise metric values between two relations.
     PairwiseDistance,
     /// Ranked values selected within each input vector.
@@ -1151,6 +1263,7 @@ impl VectorAlgorithm {
             Self::BruteForceKnn => "brute_force_knn",
             Self::IvfFlat => "ivf_flat",
             Self::IvfPq => "ivf_pq",
+            Self::Cagra => "cagra",
             Self::PairwiseDistance => "pairwise_distance",
             Self::TopK => "top_k",
             Self::KMeans => "kmeans",
@@ -1398,6 +1511,65 @@ impl VectorIvfPqParams {
     }
 }
 
+/// CAGRA graph construction algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorCagraBuildAlgo {
+    IvfPq,
+    NnDescent,
+}
+
+/// CAGRA search kernel selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorCagraSearchAlgo {
+    Auto,
+    SingleCta,
+    MultiCta,
+    MultiKernel,
+}
+
+/// Query-local CAGRA graph and search parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorCagraParams {
+    pub dataset: VectorRelationBinding,
+    pub queries: VectorRelationBinding,
+    pub k: usize,
+    pub metric: VectorDistanceMetric,
+    pub graph_degree: u32,
+    pub intermediate_graph_degree: u32,
+    pub build_algo: VectorCagraBuildAlgo,
+    pub itopk_size: u32,
+    pub search_width: u32,
+    pub max_iterations: u32,
+    pub search_algo: VectorCagraSearchAlgo,
+}
+
+impl VectorCagraParams {
+    pub fn new(
+        dataset: VectorRelationBinding,
+        queries: VectorRelationBinding,
+        k: usize,
+        metric: VectorDistanceMetric,
+    ) -> Self {
+        let descriptor = CuvsOperation::Cagra.descriptor();
+        let integer = |name| {
+            descriptor.option(name).and_then(|option| option.kind.default_u64()).expect("CAGRA integer default") as u32
+        };
+        Self {
+            dataset,
+            queries,
+            k,
+            metric,
+            graph_degree: integer("graph_degree"),
+            intermediate_graph_degree: integer("intermediate_graph_degree"),
+            build_algo: VectorCagraBuildAlgo::IvfPq,
+            itopk_size: integer("itopk_size"),
+            search_width: integer("search_width"),
+            max_iterations: integer("max_iterations"),
+            search_algo: VectorCagraSearchAlgo::Auto,
+        }
+    }
+}
+
 /// Pairwise distance parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorPairwiseDistanceParams {
@@ -1609,6 +1781,8 @@ pub enum VectorAlgorithmParams {
     IvfFlat(VectorIvfFlatParams),
     /// Query-local IVF-PQ search parameters.
     IvfPq(VectorIvfPqParams),
+    /// Query-local graph search parameters.
+    Cagra(VectorCagraParams),
     /// Pairwise metric values between two relations.
     PairwiseDistance(VectorPairwiseDistanceParams),
     /// Ranked values selected within each input vector.
@@ -1627,6 +1801,7 @@ impl VectorAlgorithmParams {
             (Self::BruteForceKnn(_), VectorAlgorithm::BruteForceKnn)
                 | (Self::IvfFlat(_), VectorAlgorithm::IvfFlat)
                 | (Self::IvfPq(_), VectorAlgorithm::IvfPq)
+                | (Self::Cagra(_), VectorAlgorithm::Cagra)
                 | (Self::PairwiseDistance(_), VectorAlgorithm::PairwiseDistance)
                 | (Self::TopK(_), VectorAlgorithm::TopK)
                 | (Self::KMeans(_), VectorAlgorithm::KMeans)
@@ -1640,6 +1815,7 @@ impl VectorAlgorithmParams {
             Self::BruteForceKnn(params) => Box::new([&params.dataset, &params.queries].into_iter()),
             Self::IvfFlat(params) => Box::new([&params.dataset, &params.queries].into_iter()),
             Self::IvfPq(params) => Box::new([&params.dataset, &params.queries].into_iter()),
+            Self::Cagra(params) => Box::new([&params.dataset, &params.queries].into_iter()),
             Self::PairwiseDistance(params) => Box::new([&params.x, &params.y].into_iter()),
             Self::TopK(params) => Box::new(std::iter::once(&params.input)),
             Self::KMeans(params) => Box::new(std::iter::once(&params.input).chain(params.initial_centroids.iter())),
@@ -1659,6 +1835,10 @@ impl VectorAlgorithmParams {
                 params.queries.input = remap(params.queries.input);
             },
             Self::IvfPq(params) => {
+                params.dataset.input = remap(params.dataset.input);
+                params.queries.input = remap(params.queries.input);
+            },
+            Self::Cagra(params) => {
                 params.dataset.input = remap(params.dataset.input);
                 params.queries.input = remap(params.queries.input);
             },
@@ -1817,6 +1997,36 @@ mod tests {
             canonicalize_cuvs_options(CuvsOperation::IvfPq, &raw.to_string()).unwrap_err().argument(),
             Some("pq_bits")
         );
+    }
+
+    #[test]
+    fn cagra_rejects_incompatible_graph_and_search_parameters() {
+        let mut raw = json!({
+            "dataset": {"id": "id", "vector": {"columns": ["d0", "d1"]}},
+            "queries": {"id": "id", "vector": {"columns": ["d0", "d1"]}},
+            "k": 8, "metric": "l2_expanded", "graph_degree": 32,
+            "intermediate_graph_degree": 16
+        });
+        assert_eq!(
+            canonicalize_cuvs_options(CuvsOperation::Cagra, &raw.to_string()).unwrap_err().argument(),
+            Some("intermediate_graph_degree")
+        );
+        raw["intermediate_graph_degree"] = json!(64);
+        raw["itopk_size"] = json!(7);
+        assert_eq!(
+            canonicalize_cuvs_options(CuvsOperation::Cagra, &raw.to_string()).unwrap_err().argument(),
+            Some("itopk_size")
+        );
+        raw["itopk_size"] = json!(8);
+        raw["metric"] = json!("cosine");
+        raw["build_algo"] = json!("nn_descent");
+        assert_eq!(
+            canonicalize_cuvs_options(CuvsOperation::Cagra, &raw.to_string()).unwrap_err().argument(),
+            Some("build_algo")
+        );
+        raw["metric"] = json!("inner_product");
+        let normalized = canonicalize_cuvs_options(CuvsOperation::Cagra, &raw.to_string()).unwrap();
+        assert_eq!(normalized["search_algo"], "auto");
     }
 
     #[test]

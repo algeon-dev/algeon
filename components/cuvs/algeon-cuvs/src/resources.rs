@@ -1,20 +1,22 @@
 use std::{
     fmt,
     marker::PhantomData,
+    ptr,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 use cudf::{
-    Runtime,
+    RawCurrentResourceRouteLease, RawStreamReservationLease, Runtime, StreamReservationLease,
     runtime::{BindingExtensionInitError, BindingExtensionLease, DeviceEntryGuard, ExecutionBindingId},
 };
 
 use crate::error::{Result, check_cuvs, from_cudf, from_interop, invalid_state, unsupported};
 
 const CREATE_OPERATION: &str = "CuvsResources::for_runtime";
+static NEXT_POOL_MEMBER_ID: AtomicU64 = AtomicU64::new(1);
 
 struct NativeResources {
     raw: AtomicUsize,
@@ -36,7 +38,9 @@ impl NativeResources {
         }
         let set_stream =
             unsafe { cuvs_sys::cuvsStreamSet(raw, (stream as *mut std::ffi::c_void).cast::<cuvs_sys::CUstream_st>()) };
-        if let Err(error) = check_cuvs(set_stream, CREATE_OPERATION) {
+        let set_pool = check_cuvs(set_stream, CREATE_OPERATION)
+            .and_then(|()| unsafe { check_cuvs(cuvs_sys::cuvsResourcesSetStreamPool(raw, 1), CREATE_OPERATION) });
+        if let Err(error) = set_pool {
             unsafe {
                 let _ = cuvs_sys::cuvsResourcesDestroy(raw);
             }
@@ -82,6 +86,25 @@ pub struct CuvsResources {
     _not_send_sync: PhantomData<*mut ()>,
 }
 
+/// Retains query-domain members or backend routes until native work on the RAFT pool is finished.
+/// Drop this guard before the resources handle destroys or replaces its pool.
+#[must_use = "dropping pool coverage removes its allocation routes"]
+pub struct StreamPoolCoverage {
+    members: Vec<RawStreamReservationLease>,
+    routes: Vec<RawCurrentResourceRouteLease>,
+    _resources: CuvsResources,
+}
+
+impl StreamPoolCoverage {
+    /// Per-stream reservation usage, empty for standalone backend routes.
+    pub fn usage(&self) -> Result<Vec<cudf::ReservationUsage>> {
+        self.members
+            .iter()
+            .map(|member| member.usage().map_err(|error| from_cudf("StreamPoolCoverage::usage", error)))
+            .collect()
+    }
+}
+
 impl CuvsResources {
     pub fn for_runtime(runtime: Arc<Runtime>) -> Result<Self> {
         let binding = runtime.execution_binding().map_err(|error| from_interop(CREATE_OPERATION, error))?;
@@ -118,6 +141,67 @@ impl CuvsResources {
         let resources = Self { runtime, native, _not_send_sync: PhantomData };
         resources.validate_exact_binding(CREATE_OPERATION)?;
         Ok(resources)
+    }
+
+    /// Cover every RAFT pool stream with siblings of the runtime stream's reservation.
+    ///
+    /// Pass `None` only when no query-domain reservation applies to this runtime;
+    /// allocations then route to the device manager's backend resource.
+    pub fn stream_pool_coverage(&self, reservation: Option<&StreamReservationLease>) -> Result<StreamPoolCoverage> {
+        let operation = "CuvsResources::stream_pool_coverage";
+        self.validate_exact_binding(operation)?;
+        if reservation.is_some_and(|lease| {
+            lease.stream().identity() != self.runtime.stream().identity() || lease.manager().device() != self.device()
+        }) {
+            return Err(invalid_state(operation, "reservation must cover the runtime stream on the same device"));
+        }
+        let manager = self.runtime.device_memory_manager().map_err(|error| from_cudf(operation, error))?;
+        let limit = reservation
+            .map(|lease| {
+                usize::try_from(lease.usage().map_err(|error| from_cudf(operation, error))?.allocation_limit_bytes)
+                    .map_err(|_| invalid_state(operation, "reservation limit exceeds usize"))
+            })
+            .transpose()?;
+        let count = self.with_native(operation, |native| {
+            let mut count = 0;
+            unsafe {
+                check_cuvs(cuvs_sys::cuvsResourcesGetStreamPoolSize(native, &mut count), operation)?;
+            }
+            Ok(count)
+        })?;
+        if count == 0 {
+            return Err(invalid_state(operation, "cuVS resource has no RAFT stream pool"));
+        }
+        let mut coverage = StreamPoolCoverage {
+            members: Vec::with_capacity(count),
+            routes: Vec::with_capacity(count),
+            _resources: self.retain(),
+        };
+        for index in 0..count {
+            let raw = self.with_native(operation, |native| {
+                let mut raw = ptr::null_mut();
+                unsafe {
+                    check_cuvs(cuvs_sys::cuvsResourcesGetStreamPoolStream(native, index, &mut raw), operation)?;
+                }
+                if raw.is_null() {
+                    return Err(invalid_state(operation, "cuVS returned a null RAFT pool stream"));
+                }
+                Ok(raw)
+            })?;
+            if let Some(reservation) = reservation {
+                let id = NEXT_POOL_MEMBER_ID.fetch_add(1, Ordering::Relaxed);
+                // SAFETY: coverage retains the resources handle and its pool until the member is detached.
+                let member = unsafe { reservation.attach_sibling_raw_stream(raw.cast(), id, limit.expect("limit")) }
+                    .map_err(|error| from_cudf(operation, error))?;
+                coverage.members.push(member);
+            } else {
+                // SAFETY: coverage retains the resources handle and its pool until the route is detached.
+                let route = unsafe { manager.route_current_resource_raw(raw.cast(), manager.resource()) }
+                    .map_err(|error| from_cudf(operation, error))?;
+                coverage.routes.push(route);
+            }
+        }
+        Ok(coverage)
     }
 
     pub fn runtime(&self) -> &Arc<Runtime> {

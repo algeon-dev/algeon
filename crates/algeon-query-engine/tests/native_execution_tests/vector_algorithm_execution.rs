@@ -12,7 +12,7 @@ use query_engine::{
     expr::Expr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansParams,
+        VectorBruteForceKnnParams, VectorCagraParams, VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansParams,
         VectorPairwiseDistanceParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding,
         vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
         vector_pca_output_schema,
@@ -325,6 +325,71 @@ fn compiled_pairwise_output_allocation_failure_records_task_and_releases_attempt
         Ok(_) => panic!("pairwise N*M allocation must exceed query cap"),
     };
     assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed, "{error:?}");
+    assert!(
+        metrics.plan_task_mappings().iter().any(|mapping| mapping.operator_kind.as_deref() == Some("vector_algorithm"))
+    );
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    drop(gpu_inputs);
+    drop(runtime);
+    assert_attempt_domain_released(&admitted);
+    admitted.finish();
+}
+
+#[test]
+fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
+    let schema = vector_schema("id", VectorFixtureShape::Columns);
+    let mut builder = QueryPlanBuilder::new();
+    let dataset = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&schema))));
+    let queries = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&schema))));
+    let mut params = VectorCagraParams::new(
+        VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
+        VectorRelationBinding::new(queries, VectorRowIdBinding::column("id"), ["x"]),
+        1,
+        VectorDistanceMetric::L2Expanded,
+    );
+    params.graph_degree = 16;
+    params.intermediate_graph_degree = 32;
+    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::Cagra,
+        VectorAlgorithmParams::Cagra(params),
+        vector_knn_output_schema(DataType::Int64, DataType::Int64),
+    ));
+    let plan = builder.finish_with_host_sink(root);
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from((0..128_i64).collect::<Vec<_>>())),
+            Arc::new(Float32Array::from((0..128).map(|value| value as f32).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    let context = backend_context_with_grant(64 * 1024_u64);
+    let admitted = context.admit_plan(&plan).expect("CAGRA plan admission");
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    for name in ["dataset", "queries"] {
+        gpu_inputs.insert(
+            name.into(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+                Arc::clone(&schema),
+            )
+            .unwrap(),
+        );
+    }
+    let (result, metrics, _observation) = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+    )
+    .into_parts();
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("CAGRA build must exceed the query cap"),
+    };
+    assert_eq!(error.code(), QueryErrorCode::CudfDependencyFailure, "{error:?}");
+    assert_eq!(error.fact_value("cuvs_operation"), Some("CagraIndex::build"));
+    assert!(error.fact_value("cuvs_message").unwrap().contains("out_of_memory"));
     assert!(
         metrics.plan_task_mappings().iter().any(|mapping| mapping.operator_kind.as_deref() == Some("vector_algorithm"))
     );

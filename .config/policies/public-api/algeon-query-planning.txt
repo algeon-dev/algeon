@@ -2096,6 +2096,7 @@ pub const fn query_planning::plan::CuvsIdType::as_str(self) -> &'static str
 pub fn query_planning::plan::CuvsIdType::from_data_type(&arrow_schema::datatype::DataType) -> core::option::Option<Self>
 pub enum query_planning::plan::CuvsOperation
 pub query_planning::plan::CuvsOperation::BruteForceKnn
+pub query_planning::plan::CuvsOperation::Cagra
 pub query_planning::plan::CuvsOperation::IvfFlat
 pub query_planning::plan::CuvsOperation::IvfPq
 pub query_planning::plan::CuvsOperation::KMeans
@@ -2427,6 +2428,7 @@ pub query_planning::plan::ShiftDirection::Lag
 pub query_planning::plan::ShiftDirection::Lead
 pub enum query_planning::plan::VectorAlgorithm
 pub query_planning::plan::VectorAlgorithm::BruteForceKnn
+pub query_planning::plan::VectorAlgorithm::Cagra
 pub query_planning::plan::VectorAlgorithm::IvfFlat
 pub query_planning::plan::VectorAlgorithm::IvfPq
 pub query_planning::plan::VectorAlgorithm::KMeans
@@ -2439,6 +2441,7 @@ impl core::fmt::Display for query_planning::plan::VectorAlgorithm
 pub fn query_planning::plan::VectorAlgorithm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::VectorAlgorithmParams
 pub query_planning::plan::VectorAlgorithmParams::BruteForceKnn(query_planning::plan::VectorBruteForceKnnParams)
+pub query_planning::plan::VectorAlgorithmParams::Cagra(query_planning::plan::VectorCagraParams)
 pub query_planning::plan::VectorAlgorithmParams::IvfFlat(query_planning::plan::VectorIvfFlatParams)
 pub query_planning::plan::VectorAlgorithmParams::IvfPq(query_planning::plan::VectorIvfPqParams)
 pub query_planning::plan::VectorAlgorithmParams::KMeans(query_planning::plan::VectorKMeansParams)
@@ -2448,6 +2451,14 @@ pub query_planning::plan::VectorAlgorithmParams::TopK(query_planning::plan::Vect
 impl query_planning::plan::VectorAlgorithmParams
 pub fn query_planning::plan::VectorAlgorithmParams::relation_bindings(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = &query_planning::plan::VectorRelationBinding> + '_)>
 pub const fn query_planning::plan::VectorAlgorithmParams::supports_algorithm(&self, query_planning::plan::VectorAlgorithm) -> bool
+pub enum query_planning::plan::VectorCagraBuildAlgo
+pub query_planning::plan::VectorCagraBuildAlgo::IvfPq
+pub query_planning::plan::VectorCagraBuildAlgo::NnDescent
+pub enum query_planning::plan::VectorCagraSearchAlgo
+pub query_planning::plan::VectorCagraSearchAlgo::Auto
+pub query_planning::plan::VectorCagraSearchAlgo::MultiCta
+pub query_planning::plan::VectorCagraSearchAlgo::MultiKernel
+pub query_planning::plan::VectorCagraSearchAlgo::SingleCta
 pub enum query_planning::plan::VectorDistanceMetric
 pub query_planning::plan::VectorDistanceMetric::CosineExpanded
 pub query_planning::plan::VectorDistanceMetric::InnerProduct
@@ -3037,6 +3048,20 @@ pub query_planning::plan::VectorBruteForceKnnParams::metric: query_planning::pla
 pub query_planning::plan::VectorBruteForceKnnParams::queries: query_planning::plan::VectorRelationBinding
 impl query_planning::plan::VectorBruteForceKnnParams
 pub fn query_planning::plan::VectorBruteForceKnnParams::new(query_planning::plan::VectorRelationBinding, query_planning::plan::VectorRelationBinding, usize, query_planning::plan::VectorDistanceMetric) -> Self
+pub struct query_planning::plan::VectorCagraParams
+pub query_planning::plan::VectorCagraParams::build_algo: query_planning::plan::VectorCagraBuildAlgo
+pub query_planning::plan::VectorCagraParams::dataset: query_planning::plan::VectorRelationBinding
+pub query_planning::plan::VectorCagraParams::graph_degree: u32
+pub query_planning::plan::VectorCagraParams::intermediate_graph_degree: u32
+pub query_planning::plan::VectorCagraParams::itopk_size: u32
+pub query_planning::plan::VectorCagraParams::k: usize
+pub query_planning::plan::VectorCagraParams::max_iterations: u32
+pub query_planning::plan::VectorCagraParams::metric: query_planning::plan::VectorDistanceMetric
+pub query_planning::plan::VectorCagraParams::queries: query_planning::plan::VectorRelationBinding
+pub query_planning::plan::VectorCagraParams::search_algo: query_planning::plan::VectorCagraSearchAlgo
+pub query_planning::plan::VectorCagraParams::search_width: u32
+impl query_planning::plan::VectorCagraParams
+pub fn query_planning::plan::VectorCagraParams::new(query_planning::plan::VectorRelationBinding, query_planning::plan::VectorRelationBinding, usize, query_planning::plan::VectorDistanceMetric) -> Self
 pub struct query_planning::plan::VectorIvfFlatParams
 pub query_planning::plan::VectorIvfFlatParams::dataset: query_planning::plan::VectorRelationBinding
 pub query_planning::plan::VectorIvfFlatParams::k: usize
@@ -3109,6 +3134,7 @@ pub query_planning::plan::WindowSpec::partition_by: alloc::vec::Vec<query_planni
 impl query_planning::plan::WindowSpec
 pub fn query_planning::plan::WindowSpec::new(alloc::vec::Vec<query_planning::expr::Expr>, alloc::vec::Vec<query_planning::expr::SortExpr>, alloc::vec::Vec<query_planning::plan::WindowFunction>) -> Self
 pub const query_planning::plan::CUVS_BRUTE_FORCE_KNN_FUNCTION: &str
+pub const query_planning::plan::CUVS_CAGRA_FUNCTION: &str
 pub const query_planning::plan::CUVS_ID_TYPES: &[query_planning::plan::CuvsIdType]
 pub const query_planning::plan::CUVS_IVF_FLAT_FUNCTION: &str
 pub const query_planning::plan::CUVS_IVF_PQ_FUNCTION: &str

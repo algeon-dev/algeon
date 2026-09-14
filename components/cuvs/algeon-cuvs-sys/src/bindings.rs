@@ -222,6 +222,25 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
+    #[doc = " @brief Install a RAFT CUDA stream pool on a resources handle, replacing any existing pool.\n\n The pool owns its streams for the lifetime of res or until the pool is replaced. RAFT\n algorithms may issue work and device allocations on these streams. Synchronize work and\n retire any external stream attachments before replacing the pool or destroying res.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] pool_size Number of streams to create; must be at least 1\n @return cuvsError_t"]
+    pub fn cuvsResourcesSetStreamPool(res: cuvsResources_t, pool_size: usize) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Get the number of streams in a resources handle's RAFT CUDA stream pool.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[out] pool_size Pool size, or 0 if no pool is installed\n @return cuvsError_t"]
+    pub fn cuvsResourcesGetStreamPoolSize(res: cuvsResources_t, pool_size: *mut usize) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Borrow a CUDA stream from a resources handle's RAFT CUDA stream pool.\n\n The pool owns the returned stream for the lifetime of res or until the pool is replaced.\n RAFT algorithms may issue work and device allocations on it. Index must be less than the\n pool size reported by ::cuvsResourcesGetStreamPoolSize.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] index Zero-based pool stream index\n @param[out] stream Borrowed CUDA stream\n @return cuvsError_t"]
+    pub fn cuvsResourcesGetStreamPoolStream(
+        res: cuvsResources_t,
+        index: usize,
+        stream: *mut cudaStream_t,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
     #[doc = " @brief Create an Initialized opaque C handle for C++ type `raft::device_resources_snmg`\n        for multi-GPU operations\n\n @param[in] res cuvsResources_t opaque C handle\n @return cuvsError_t"]
     pub fn cuvsMultiGpuResourcesCreate(res: *mut cuvsResources_t) -> cuvsError_t;
 }

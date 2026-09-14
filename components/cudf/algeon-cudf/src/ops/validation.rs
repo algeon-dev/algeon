@@ -362,6 +362,43 @@ pub(crate) fn fill_int64_where_float32_infinite(
     )
 }
 
+pub(crate) fn replace_int64_value_and_set_paired_float32_infinite(
+    values: &mut DeviceBuffer,
+    paired_values: &mut DeviceBuffer,
+    from: i64,
+    to: i64,
+) -> Result<()> {
+    let operation = "device_buffer::replace_int64_value_and_set_paired_float32_infinite";
+    let count = exact_buffer_element_count(values, mem::size_of::<i64>(), operation)?;
+    if exact_buffer_element_count(paired_values, mem::size_of::<f32>(), operation)? != count
+        || values.binding_id() != paired_values.binding_id()
+        || values.device() != paired_values.device()
+    {
+        return Err(Error::new_with(
+            ErrorCode::RuntimeBindingMismatch,
+            operation,
+            "paired buffers must share element count and exact execution binding",
+        ));
+    }
+    let value_ptr = values.as_mut_ptr().map_err(|error| error.reanchor(operation))? as *mut i64;
+    let paired_ptr = paired_values.as_mut_ptr().map_err(|error| error.reanchor(operation))? as *mut f32;
+    let execution = values.execution_domain().enter_execution()?;
+    error::check_status_in_with_details(
+        unsafe {
+            cudf_sys::cudf_int64_float32_buffer_replace_value_and_set_paired_infinite_ex(
+                value_ptr,
+                paired_ptr,
+                count,
+                from,
+                to,
+                execution.options(),
+            )
+        },
+        operation,
+        [("element_count", count.to_string())],
+    )
+}
+
 pub(crate) fn validate_finite_float32_unless_int64_equals(
     values: &DeviceBuffer,
     paired_values: &DeviceBuffer,

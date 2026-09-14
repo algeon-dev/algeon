@@ -10,7 +10,7 @@ behavior explicit enough for service-side integration.
 
 ## Focus
 
-- Safe, idiomatic Rust wrappers around `libcuvs` for brute-force k-NN, query-local IVF-Flat search, pairwise distance, vector Top-K, k-means, and PCA.
+- Safe, idiomatic Rust wrappers around `libcuvs` for brute-force k-NN, query-local IVF-Flat, IVF-PQ, and CAGRA search, pairwise distance, vector Top-K, k-means, and PCA.
 - Backend-service and query-engine integration, rather than just direct API bindings.
 - Exact binding to a `cudf::Runtime` device, stream, and memory resource.
 - Device-resident cuDF interop with explicit ownership and synchronization.
