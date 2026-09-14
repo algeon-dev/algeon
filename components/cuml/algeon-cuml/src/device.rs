@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, mem, sync::Arc};
 
 use cudf::{
-    DenseMatrixLayout, Runtime, Series, ValidatedPackedFloat32Matrix,
+    DenseMatrixLayout, Runtime, Series, TypeId, ValidatedPackedMatrix,
     core::{Column, DeviceBuffer as CudfDeviceBuffer},
     runtime::ExecutionBindingId,
 };
@@ -143,7 +143,10 @@ pub struct DeviceMatrix<'a> {
 }
 
 impl<'a> DeviceMatrix<'a> {
-    pub fn from_validated(matrix: &'a ValidatedPackedFloat32Matrix<'_>) -> Result<Self> {
+    pub fn from_validated(matrix: &'a ValidatedPackedMatrix<'_>) -> Result<Self> {
+        if matrix.element() != TypeId::Float32 {
+            return Err(invalid_input("DeviceMatrix::from_validated", "cuML requires Float32 matrix values"));
+        }
         Ok(Self {
             ptr: matrix.as_ptr().map_err(|e| from_cudf("DeviceMatrix::from_validated", e))?,
             rows: matrix.rows(),

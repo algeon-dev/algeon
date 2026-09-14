@@ -22,13 +22,14 @@
 #include <memory>
 
 namespace {
+template <typename T>
 struct column_non_finite_count_transform {
   cudf::column_device_view input;
 
   __device__ int32_t operator()(cudf::size_type index) const
   {
     if (input.is_null(index)) { return 1; }
-    return cuda::std::isfinite(input.element<float>(index)) ? 0 : 1;
+    return cuda::std::isfinite(input.element<T>(index)) ? 0 : 1;
   }
 };
 
@@ -159,7 +160,34 @@ cudf_status_t cudf_float32_non_finite_count_ex(cudf_column_view_handle input,
     auto device_view = cudf::column_device_view::create_with_mr(*view, exec->stream, *exec->mr);
     // The factory's owning pointer is host-resident; copy the device view into
     // the kernel transform instead of passing that pointer to device code.
-    auto const transform = column_non_finite_count_transform{*device_view};
+    auto const transform = column_non_finite_count_transform<float>{*device_view};
+    *out_non_finite_count = count_invalid_values(view->size(), transform, *exec);
+    cudf_record_synchronized_stream(exec->stream);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_float64_non_finite_count_ex(cudf_column_view_handle input,
+                                               int32_t* out_non_finite_count,
+                                               cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_non_finite_count, "out_non_finite_count is null");
+  *out_non_finite_count = 0;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_TRY
+  {
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto const* view = reinterpret_cast<cudf::column_view const*>(input);
+    if (view->type().id() != cudf::type_id::FLOAT64) {
+      set_error("finite validation requires FLOAT64 input");
+      return CUDF_ERROR_TYPE;
+    }
+    auto device_view = cudf::column_device_view::create_with_mr(*view, exec->stream, *exec->mr);
+    auto const transform = column_non_finite_count_transform<double>{*device_view};
     *out_non_finite_count = count_invalid_values(view->size(), transform, *exec);
     cudf_record_synchronized_stream(exec->stream);
     return CUDF_SUCCESS;

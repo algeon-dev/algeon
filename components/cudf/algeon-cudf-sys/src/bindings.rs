@@ -3042,8 +3042,8 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Copy a flat, non-null Float32 column into a contiguous dense matrix order.\n\n The input holds exactly `rows * columns` row-major values. `column_major`\n selects whether the returned flat column keeps that row-major order (`0`)\n or rearranges it into contiguous column-major order (`1`). All work uses\n the explicit stream and memory resource carried by `options`."]
-    pub fn cudf_pack_flat_float32_matrix_ex(
+    #[doc = " Copy a flat, non-null FLOAT32, FLOAT64, INT8, or UINT8 column into a dense matrix order.\n\n The input holds exactly `rows * columns` row-major values. `column_major`\n selects whether the returned flat column keeps that row-major order (`0`)\n or rearranges it into contiguous column-major order (`1`). All work uses\n the explicit stream and memory resource carried by `options`."]
+    pub fn cudf_pack_flat_matrix_ex(
         input: cudf_column_view_handle,
         rows: i32,
         columns: i32,
@@ -3051,9 +3051,10 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Copy a borrowed device-resident Float32 span into a dense matrix order.\n\n `input` points at exactly `rows * columns` row-major Float32 values on the\n CUDA device selected by `options`. The caller retains the source allocation\n and must keep it alive until work enqueued on `options->stream` completes.\n The returned column performs exactly one output allocation and one payload\n copy/reorder on the explicit stream and memory resource."]
-    pub fn cudf_pack_borrowed_float32_matrix_ex(
+    #[doc = " Copy a borrowed device-resident numeric span into a dense matrix order.\n\n `input` points at exactly `rows * columns` row-major values of `element` on the\n CUDA device selected by `options`. The caller retains the source allocation\n and must keep it alive until work enqueued on `options->stream` completes.\n The returned column performs exactly one output allocation and one payload\n copy/reorder on the explicit stream and memory resource."]
+    pub fn cudf_pack_borrowed_matrix_ex(
         input: *const core::ffi::c_void,
+        element: i32,
         rows: i32,
         columns: i32,
         column_major: i32,
@@ -3294,6 +3295,12 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Count null, NaN, and infinite values in a FLOAT32 column on the explicit\n execution stream and return only the bounded host-visible count scalar."]
     pub fn cudf_float32_non_finite_count_ex(
+        input: cudf_column_view_handle,
+        out_non_finite_count: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Count null, NaN, and infinite values in a FLOAT64 column on the explicit\n execution stream and return only the bounded host-visible count scalar."]
+    pub fn cudf_float64_non_finite_count_ex(
         input: cudf_column_view_handle,
         out_non_finite_count: *mut i32,
         options: *const cudf_exec_options_t,

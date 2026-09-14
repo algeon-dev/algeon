@@ -18,6 +18,12 @@ cudf_status_t cudf_float32_non_finite_count_ex(cudf_column_view_handle input,
                                                int32_t* out_non_finite_count,
                                                cudf_exec_options_t const* options);
 
+/// Count null, NaN, and infinite values in a FLOAT64 column on the explicit
+/// execution stream and return only the bounded host-visible count scalar.
+cudf_status_t cudf_float64_non_finite_count_ex(cudf_column_view_handle input,
+                                               int32_t* out_non_finite_count,
+                                               cudf_exec_options_t const* options);
+
 /// Count NaN and infinite values in one exact raw FLOAT32 device-buffer range
 /// on the explicit execution stream.
 cudf_status_t cudf_float32_buffer_non_finite_count_ex(float const* input,

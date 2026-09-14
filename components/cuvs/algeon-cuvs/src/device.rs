@@ -1,7 +1,7 @@
 use std::{ffi::c_void, fmt, marker::PhantomData, mem, ptr::NonNull, sync::Arc};
 
 use cudf::{
-    CudfType, DenseMatrixLayout, PackedFloat32Matrix, Runtime, ValidatedPackedFloat32Matrix,
+    CudfType, DenseMatrixLayout, PackedMatrix, Runtime, TypeId, ValidatedPackedMatrix,
     core::{Column, DeviceBuffer as CudfDeviceBuffer},
     interop::contract::TypeId as InteropTypeId,
     runtime::ExecutionBindingId,
@@ -339,7 +339,7 @@ impl<T: DeviceElement> fmt::Debug for DeviceBuffer<T> {
 
 enum Float32MatrixStorage {
     Buffer(DeviceBuffer<f32>),
-    Packed(PackedFloat32Matrix),
+    Packed(PackedMatrix),
 }
 
 /// An owned contiguous Float32 matrix on one exact cudf execution binding.
@@ -373,9 +373,12 @@ impl OwnedFloat32Matrix {
         })
     }
 
-    pub(crate) fn from_finite_checked_packed(resources: &CuvsResources, matrix: PackedFloat32Matrix) -> Result<Self> {
+    pub(crate) fn from_finite_checked_packed(resources: &CuvsResources, matrix: PackedMatrix) -> Result<Self> {
         let operation = "OwnedFloat32Matrix::from_finite_checked_packed";
         resources.validate_exact_binding(operation)?;
+        if matrix.element() != TypeId::Float32 {
+            return Err(invalid_input(operation, "cuVS owned Float32 matrix requires Float32 packed values"));
+        }
         let (rows, columns, layout) = {
             let validated = matrix.validate_finite().map_err(|error| from_cudf(operation, error))?;
             require_nonzero(validated.rows(), operation, "rows")?;
@@ -695,9 +698,12 @@ pub struct ValidatedDeviceTensor<'a> {
 }
 
 impl<'a> ValidatedDeviceTensor<'a> {
-    pub fn from_packed(resources: &CuvsResources, matrix: &'a ValidatedPackedFloat32Matrix<'_>) -> Result<Self> {
+    pub fn from_packed(resources: &CuvsResources, matrix: &'a ValidatedPackedMatrix<'_>) -> Result<Self> {
         let operation = "ValidatedDeviceTensor::from_packed";
         resources.validate_exact_binding(operation)?;
+        if matrix.element() != TypeId::Float32 {
+            return Err(invalid_input(operation, "cuVS validated tensor requires Float32 packed values"));
+        }
         if matrix.binding_id() != resources.binding_id() {
             return Err(invalid_input(
                 operation,

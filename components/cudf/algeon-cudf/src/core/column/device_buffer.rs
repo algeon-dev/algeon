@@ -18,7 +18,7 @@ use crate::{
         native_teardown::drop_device_owned_handle,
         types::CudfType,
     },
-    ops::validation::{self, FiniteFloat32ValidationProof, Int64RangeValidationProof},
+    ops::validation::{self, FiniteValidationProof, Int64RangeValidationProof},
     runtime::{
         BoundaryObservation, DeviceId, ExecutionBindingId, ExecutionPlacement, Runtime,
         execution_domain::ExecutionDomain,
@@ -65,7 +65,7 @@ pub struct DeviceBuffer {
 /// binding and covers every byte in the buffer.
 pub struct ValidatedFloat32DeviceBuffer<'a> {
     buffer: &'a DeviceBuffer,
-    proof: FiniteFloat32ValidationProof,
+    proof: FiniteValidationProof,
 }
 
 impl ValidatedFloat32DeviceBuffer<'_> {

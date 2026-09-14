@@ -41,11 +41,11 @@ fn runtime_matrix_pack_rejects_cross_device_input() {
     let input = input_runtime.column_from_slice(&[1.0f32, 2.0]).unwrap();
 
     let error = output_runtime
-        .pack_float32_columns(&[&input], DenseMatrixLayout::RowMajor)
+        .pack_columns(&[&input], DenseMatrixLayout::RowMajor)
         .expect_err("cross-device matrix packing must be rejected");
 
     assert_eq!(error.code(), ErrorCode::CrossDeviceInputs);
-    assert_eq!(error.operation(), "runtime::pack_float32_columns");
+    assert_eq!(error.operation(), "runtime::pack_columns");
     assert!(matches!(error.fact_value(FactKeyName::LeftDevice), Some(FactValue::DeviceId(_))));
     assert!(matches!(error.fact_value(FactKeyName::RightDevice), Some(FactValue::DeviceId(_))));
 }

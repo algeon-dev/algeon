@@ -1,8 +1,9 @@
 use std::{any::Any, marker::PhantomData, mem, sync::Arc};
 
 use cudf::{
+    TypeId,
     core::Table,
-    frame::dataframe::{ValidatedFixedSizeListFloat32Export, ValidatedUniformListFloat32Export},
+    frame::dataframe::{ValidatedFixedSizeListExport, ValidatedUniformListExport},
     interop::contract::{
         ActiveColumnReadLease, BufferBinding, ColumnLayout, CompletionAuthority, CompletionWitness,
         IncompleteDropBehavior, LeaseCompletionResult, PhysicalValidity, Placement, PreparedColumnExport,
@@ -264,10 +265,13 @@ impl CuvsResources {
     /// never accepted as a substitute for that structural proof.
     pub fn activate_validated_fixed_size_list_tensor<'witness, 'producer, 'consumer>(
         &'consumer self,
-        validated: &'witness ValidatedFixedSizeListFloat32Export<'producer>,
+        validated: &'witness ValidatedFixedSizeListExport<'producer>,
     ) -> Result<PreparedValidatedTensorLease<'witness, 'witness, 'consumer>> {
         let operation = "CuvsResources::activate_validated_fixed_size_list_tensor";
         self.validate_exact_binding(operation)?;
+        if validated.element() != TypeId::Float32 {
+            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
+        }
         let export = validated.export();
         require_device_export(export, operation)?;
         if validated.binding_id() != self.binding_id() {
@@ -312,10 +316,13 @@ impl CuvsResources {
     /// dimension or total child length for that proof.
     pub fn activate_validated_uniform_list_tensor<'witness, 'producer, 'consumer>(
         &'consumer self,
-        validated: &'witness ValidatedUniformListFloat32Export<'producer>,
+        validated: &'witness ValidatedUniformListExport<'producer>,
     ) -> Result<PreparedValidatedTensorLease<'witness, 'witness, 'consumer>> {
         let operation = "CuvsResources::activate_validated_uniform_list_tensor";
         self.validate_exact_binding(operation)?;
+        if validated.element() != TypeId::Float32 {
+            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
+        }
         let export = validated.export();
         require_device_export(export, operation)?;
         if validated.binding_id() != self.binding_id() {
@@ -355,11 +362,14 @@ impl CuvsResources {
     /// matrix in the requested layout on this exact runtime binding.
     pub fn pack_validated_fixed_size_list_float32(
         &self,
-        validated: &ValidatedFixedSizeListFloat32Export<'_>,
+        validated: &ValidatedFixedSizeListExport<'_>,
         layout: MatrixLayout,
     ) -> Result<OwnedFloat32Matrix> {
         let operation = "CuvsResources::pack_validated_fixed_size_list_float32";
         self.validate_exact_binding(operation)?;
+        if validated.element() != TypeId::Float32 {
+            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
+        }
         if validated.binding_id() != self.binding_id() {
             return Err(invalid_input(
                 operation,
@@ -378,11 +388,14 @@ impl CuvsResources {
     /// private matrix in the requested layout on this exact runtime binding.
     pub fn pack_validated_uniform_list_float32(
         &self,
-        validated: &ValidatedUniformListFloat32Export<'_>,
+        validated: &ValidatedUniformListExport<'_>,
         layout: MatrixLayout,
     ) -> Result<OwnedFloat32Matrix> {
         let operation = "CuvsResources::pack_validated_uniform_list_float32";
         self.validate_exact_binding(operation)?;
+        if validated.element() != TypeId::Float32 {
+            return Err(invalid_input(operation, "cuVS requires Float32 list child values"));
+        }
         if validated.binding_id() != self.binding_id() {
             return Err(invalid_input(
                 operation,
@@ -410,10 +423,8 @@ impl CuvsResources {
             .map_err(|error| from_interop(operation, error))?;
         let columns = table.into_columns().map_err(|error| from_cudf(operation, error))?;
         let column_refs = columns.iter().collect::<Vec<_>>();
-        let packed = self
-            .runtime()
-            .pack_float32_columns(&column_refs, layout.into())
-            .map_err(|error| from_cudf(operation, error))?;
+        let packed =
+            self.runtime().pack_columns(&column_refs, layout.into()).map_err(|error| from_cudf(operation, error))?;
         OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
     }
 }

@@ -248,7 +248,7 @@ fn finite_fixed_size_list_witness_activates_validated_tensor() {
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).expect("record batch");
     let frame = cudf::DataFrame::from_record_batch(&runtime, &batch).expect("device dataframe");
     let gpu_batch = GpuRecordBatch::new(frame, schema).expect("GPU record batch");
-    let validated = gpu_batch.try_prepare_fixed_size_list_float32_export(0).expect("finite vector export");
+    let validated = gpu_batch.try_prepare_fixed_size_list_export(0).expect("finite vector export");
 
     assert_eq!(validated.rows(), 3);
     assert_eq!(validated.dimension(), 2);
@@ -273,7 +273,7 @@ fn fixed_size_list_witness_rejects_non_finite_child_values() {
     let gpu_batch = GpuRecordBatch::new(frame, schema).expect("GPU record batch");
 
     let error = gpu_batch
-        .try_prepare_fixed_size_list_float32_export(0)
+        .try_prepare_fixed_size_list_export(0)
         .expect_err("non-finite FixedSizeList child values must not produce a cuVS witness");
     assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
     assert!(error.message().contains("not finite"));
@@ -315,9 +315,8 @@ fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
         .expect("foreign runtime");
     let first = foreign_runtime.column_from_slice(&[1.0_f32, 2.0]).expect("first");
     let second = foreign_runtime.column_from_slice(&[3.0_f32, 4.0]).expect("second");
-    let packed = foreign_runtime
-        .pack_float32_columns(&[&first, &second], cudf::DenseMatrixLayout::RowMajor)
-        .expect("packed matrix");
+    let packed =
+        foreign_runtime.pack_columns(&[&first, &second], cudf::DenseMatrixLayout::RowMajor).expect("packed matrix");
     let validated = packed.validate_finite().expect("finite matrix");
 
     let error = ValidatedDeviceTensor::from_packed(&resources, &validated)
@@ -361,7 +360,7 @@ fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
         fixed_schema,
     )
     .expect("fixed GPU batch");
-    let fixed_export = fixed_gpu.try_prepare_fixed_size_list_float32_export(0).expect("fixed validated export");
+    let fixed_export = fixed_gpu.try_prepare_fixed_size_list_export(0).expect("fixed validated export");
 
     let fixed_matrix = resources
         .pack_validated_fixed_size_list_float32(&fixed_export, MatrixLayout::RowMajor)
@@ -384,7 +383,7 @@ fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
     let list_gpu =
         GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &list_host).expect("list GPU frame"), list_schema)
             .expect("list GPU batch");
-    let list_export = list_gpu.try_prepare_uniform_list_float32_export(0).expect("uniform validated export");
+    let list_export = list_gpu.try_prepare_uniform_list_export(0).expect("uniform validated export");
 
     let list_matrix = resources
         .pack_validated_uniform_list_float32(&list_export, MatrixLayout::ColumnMajor)
