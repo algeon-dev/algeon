@@ -172,7 +172,7 @@ fn float32_device_buffer_add_scalar_preserves_infinite_slots() {
     assert_eq!(invalid.add_scalar_to_float32(f32::NAN).unwrap_err().code(), ErrorCode::ValueOutOfRange);
 }
 
-fn missing_neighbor_normalization_rejects_invalid_indices_and_non_finite_valid_distances() {
+fn buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32() {
     let rt = Runtime::new().unwrap();
     let mut neighbors = rt.device_buffer_from_host_data(&[0_i64, 0, 2]).unwrap();
     let distances = rt.device_buffer_from_host_data(&[0.0_f32, f32::INFINITY, 1.0]).unwrap();
@@ -536,8 +536,8 @@ fn device_buffer_tests_cases() {
             float32_device_buffer_add_scalar_preserves_infinite_slots,
         ),
         (
-            "missing_neighbor_normalization_rejects_invalid_indices_and_non_finite_valid_distances",
-            missing_neighbor_normalization_rejects_invalid_indices_and_non_finite_valid_distances,
+            "buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32",
+            buffer_sentinel_operations_reject_out_of_range_int64_and_non_finite_float32,
         ),
         ("from_host_data_creates_correct_size", from_host_data_creates_correct_size),
         ("from_host_data_empty_slice", from_host_data_empty_slice),

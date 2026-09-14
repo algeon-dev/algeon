@@ -4,10 +4,10 @@ use std::{
 };
 
 use cuvs_sys::{
-    DLManagedTensor, EXPECTED_CUVS_VERSION, cuvsError_t, cuvsKMeansFit, cuvsKMeansParams, cuvsKMeansParams_t,
-    cuvsKMeansParamsCreate, cuvsKMeansParamsDestroy, cuvsKMeansPredict, cuvsPcaParams, cuvsResources_t,
-    cuvsResourcesGetStreamPoolSize, cuvsResourcesGetStreamPoolStream, cuvsResourcesSetStreamPool, cuvsSelectKBatched,
-    cuvsVersionGet, validate_runtime_version,
+    DLManagedTensor, EXPECTED_CUVS_VERSION, cuvsError_t, cuvsErrorKind_t, cuvsGetLastErrorKind, cuvsKMeansFit,
+    cuvsKMeansParams, cuvsKMeansParams_t, cuvsKMeansParamsCreate, cuvsKMeansParamsDestroy, cuvsKMeansPredict,
+    cuvsPcaParams, cuvsResources_t, cuvsResourcesGetStreamPoolSize, cuvsResourcesGetStreamPoolStream,
+    cuvsResourcesSetStreamPool, cuvsSelectKBatched, cuvsVersionGet, validate_runtime_version,
 };
 
 unsafe extern "C" {
@@ -40,6 +40,15 @@ fn generated_rust_layout_matches_the_pinned_c_headers() {
 #[test]
 fn loaded_runtime_matches_the_exact_binding_version() {
     assert_eq!(validate_runtime_version().expect("cuvsVersionGet must succeed"), EXPECTED_CUVS_VERSION);
+}
+
+#[test]
+fn generated_bindings_expose_typed_native_error_kinds() {
+    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_NONE as u32, 0);
+    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_UNKNOWN as u32, 1);
+    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_DEVICE_OUT_OF_MEMORY as u32, 2);
+    assert_eq!(cuvsErrorKind_t::CUVS_ERROR_KIND_HOST_OUT_OF_MEMORY as u32, 3);
+    let _: unsafe extern "C" fn() -> cuvsErrorKind_t = cuvsGetLastErrorKind;
 }
 
 #[rustfmt::skip]
