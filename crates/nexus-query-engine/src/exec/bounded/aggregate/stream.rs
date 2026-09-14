@@ -16,10 +16,13 @@ use super::{
     statistical_partial_aggregate_work_reservation_upper_bound_bytes,
     stream_bounded_join_leaf_local_parquet_source_chunks, unsupported_bounded_shape,
 };
-use crate::exec::operators::{
-    execute_gpu_native_statistical_final_merge_with_budget,
-    execute_gpu_native_statistical_partial_aggregate_with_budget,
-    should_execute_gpu_native_statistical_partial_aggregate,
+use crate::exec::{
+    bounded::compiled::CompiledGpuResource,
+    operators::{
+        execute_gpu_native_statistical_final_merge_with_budget,
+        execute_gpu_native_statistical_partial_aggregate_with_budget,
+        should_execute_gpu_native_statistical_partial_aggregate,
+    },
 };
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
@@ -29,8 +32,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     mut inputs: ResidentFrameStreamPayload,
-) -> Result<ResidentGpuFrame> {
-    let result = (|| -> Result<ResidentGpuFrame> {
+    preserve_output_stream: bool,
+) -> Result<CompiledGpuResource> {
+    let result = (|| -> Result<CompiledGpuResource> {
         if inputs.is_empty() {
             return execute_compiled_bounded_aggregate_from_empty_input(
                 execution,
@@ -38,7 +42,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 aggregate,
                 input_schema,
                 output_schema,
-            );
+            )
+            .map(CompiledGpuResource::new);
         }
         if should_execute_gpu_native_statistical_partial_aggregate(execution.context(), &aggregate.spec) {
             return execute_compiled_bounded_statistical_aggregate_from_stream(
@@ -48,7 +53,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 input_schema,
                 output_schema,
                 &mut inputs,
-            );
+            )
+            .map(CompiledGpuResource::new);
         }
         if aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec)
             || aggregate_spec_has_median(&aggregate.spec)
@@ -61,7 +67,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                     aggregate,
                     input_schema,
                     output_schema,
-                );
+                )
+                .map(CompiledGpuResource::new);
             }
             let input = execute_bounded_generic_union(execution, node_id, frames)?;
             return execute_compiled_bounded_aggregate_consuming_frame(
@@ -71,7 +78,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 input_schema,
                 output_schema,
                 input,
-            );
+            )
+            .map(CompiledGpuResource::new);
         }
         if aggregate_spec_has_distinct(&aggregate.spec) {
             let frames = inputs.collect_remaining_frames_owned(execution)?;
@@ -82,7 +90,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                     aggregate,
                     input_schema,
                     output_schema,
-                );
+                )
+                .map(CompiledGpuResource::new);
             }
             return execute_compiled_bounded_distinct_aggregate_from_stream(
                 execution,
@@ -91,7 +100,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 input_schema,
                 output_schema,
                 frames,
-            );
+            )
+            .map(CompiledGpuResource::new);
         }
 
         let mut partials = CompiledStreamPartials::new(
@@ -131,7 +141,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             }
         }
 
-        partials.finish(execution)
+        partials.finish(execution, preserve_output_stream)
     })();
     inputs.release_producer(execution);
     result
@@ -144,7 +154,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-) -> Result<ResidentGpuFrame> {
+    preserve_output_stream: bool,
+) -> Result<CompiledGpuResource> {
     if aggregate_spec_requires_whole_input(&aggregate.spec) {
         let input = materialize_bounded_join_leaf_local_parquet_source_stream(execution, stream)?;
         return execute_compiled_bounded_aggregate_consuming_frame(
@@ -154,7 +165,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
             input_schema,
             output_schema,
             input,
-        );
+        )
+        .map(CompiledGpuResource::new);
     }
     if should_execute_gpu_native_statistical_partial_aggregate(execution.context(), &aggregate.spec) {
         return execute_compiled_bounded_statistical_aggregate_from_source_stream(
@@ -164,7 +176,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
             input_schema,
             output_schema,
             stream,
-        );
+        )
+        .map(CompiledGpuResource::new);
     }
 
     let mut partials = CompiledStreamPartials::new(
@@ -187,7 +200,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         )?;
         partials.extend(execution, chunk_partials)
     })?;
-    partials.finish(execution)
+    partials.finish(execution, preserve_output_stream)
 }
 
 /// Partial-aggregate accumulator for one compiled aggregate stream.
@@ -260,7 +273,11 @@ impl<'a> CompiledStreamPartials<'a> {
         }
     }
 
-    fn finish(self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<ResidentGpuFrame> {
+    fn finish(
+        self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        preserve_output_stream: bool,
+    ) -> Result<CompiledGpuResource> {
         match self {
             Self::Retained { node_id, aggregate, input_schema, output_schema, partials } => {
                 if partials.is_empty() {
@@ -270,7 +287,8 @@ impl<'a> CompiledStreamPartials<'a> {
                         aggregate,
                         input_schema,
                         output_schema,
-                    );
+                    )
+                    .map(CompiledGpuResource::new);
                 }
                 execute_compiled_bounded_final_aggregate_merge(
                     execution,
@@ -280,8 +298,12 @@ impl<'a> CompiledStreamPartials<'a> {
                     output_schema,
                     partials,
                 )
+                .map(CompiledGpuResource::new)
             },
-            Self::Incremental(merge) => merge.finish(execution),
+            Self::Incremental(merge) if preserve_output_stream => {
+                merge.finish_stream(execution).map(CompiledGpuResource::frame_stream_payload)
+            },
+            Self::Incremental(merge) => merge.finish(execution).map(CompiledGpuResource::new),
         }
     }
 }

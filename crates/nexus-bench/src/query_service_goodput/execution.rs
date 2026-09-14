@@ -43,11 +43,14 @@ pub(super) async fn run_attempt(
     ctx: &SessionContext,
     config: &GoodputConfig,
     item: &WorkloadItem,
+    requested_query_cap_bytes: u64,
     query_id: String,
 ) -> AttemptOutcome {
     let started = Instant::now();
-    let attempt = match backend.begin_attempt(AttemptOptions { query_id: Some(query_id), ..AttemptOptions::default() })
-    {
+    let attempt = match backend.begin_attempt_with_query_cap_bytes(
+        AttemptOptions { query_id: Some(query_id), ..AttemptOptions::default() },
+        requested_query_cap_bytes,
+    ) {
         Ok(attempt) => attempt,
         Err(error) => {
             return AttemptOutcome {

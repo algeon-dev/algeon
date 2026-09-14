@@ -87,6 +87,41 @@ fn with_domain(domain_id: u64, member_id: u64, test: impl FnOnce(&Runtime, &Quer
 
 #[test]
 fn join_groupby_sort_and_string_allocation_failures_are_typed_and_leave_no_live_output() {
+    with_domain(80_005, 81_005, |runtime, domain, member_id| {
+        let left = DataFrame::from_series([
+            ("key", runtime.series(&[1i32, 1, 2]).unwrap()),
+            ("value", runtime.series(&[3i32, 3, 8]).unwrap()),
+        ])
+        .unwrap();
+        let right = DataFrame::from_series([
+            ("key", runtime.series(&[1i32, 2]).unwrap()),
+            ("value", runtime.series(&[5i32, 6]).unwrap()),
+        ])
+        .unwrap();
+        sweep_operation(
+            "mixed_left_state",
+            runtime,
+            domain,
+            member_id,
+            || {
+                let ctx = cudf::ExecutionOverrides::new();
+                let predicate = cudf::ops::ast::AstExpression::less(
+                    cudf::ops::ast::AstExpression::left_column(0)?,
+                    cudf::ops::ast::AstExpression::right_column(0)?,
+                )?;
+                let options = cudf::DataFrameMixedJoinOptions::new()
+                    .on(["key"])
+                    .left_predicate_columns(["value"])
+                    .right_predicate_columns(["value"]);
+                let mut state = cudf::DataFrameMixedLeftJoinState::new_in(&left, predicate, options, &ctx)?;
+                state.consume_in(&right, &ctx)?;
+                let finalized = state.seal_in(false, &ctx)?;
+                finalized.materialize_indices_in(&ctx)
+            },
+            |output| assert_eq!(output.indices().to_vec_strict::<i32>().unwrap(), vec![0, 1]),
+        );
+    });
+
     with_domain(80_001, 81_001, |runtime, domain, member_id| {
         let left = DataFrame::from_series([
             ("id", runtime.series(&[1i32, 2, 3]).unwrap()),

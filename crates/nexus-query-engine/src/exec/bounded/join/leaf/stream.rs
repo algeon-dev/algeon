@@ -34,39 +34,78 @@ pub(in crate::exec::bounded) fn bounded_join_leaf_local_parquet_source_frame_str
         aggregate_reservation_bytes,
         aggregate_num_rows,
         num_columns,
-        Box::new(JoinLeafSourceFrameStreamSource { stream, batches: batches.into(), pending: VecDeque::new() }),
+        Box::new(JoinLeafSourceFrameStreamSource {
+            stream,
+            batches: batches.into_iter().map(|batch| (batch, 1)).collect(),
+        }),
     )
 }
 
 struct JoinLeafSourceFrameStreamSource {
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    batches: VecDeque<SourceChunkBatch>,
-    pending: VecDeque<ResidentGpuFrame>,
+    batches: VecDeque<(SourceChunkBatch, usize)>,
 }
 
 impl ResidentFrameStreamSource for JoinLeafSourceFrameStreamSource {
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         loop {
-            if let Some(frame) = self.pending.pop_front() {
-                return Some(Ok(frame));
-            }
-            let batch = self.batches.pop_front()?;
-            let pending = &mut self.pending;
-            if let Err(error) =
-                stream_join_leaf_source_batch_or_split_with_consumer(execution, &self.stream, batch, &mut |frame, _| {
-                    pending.push_back(frame);
-                    Ok(())
-                })
-            {
-                self.batches.clear();
-                return Some(Err(error));
+            let (batch, attempt) = self.batches.pop_front()?;
+            let output = if batch.is_singleton() {
+                read_join_leaf_source_chunk_with_stages(execution, &self.stream, &batch.chunks[0], attempt)
+            } else {
+                read_join_leaf_source_batch_with_stages(execution, &self.stream, &batch)
+            };
+            match output {
+                Ok(frame) => return Some(Ok(frame)),
+                Err(error) if is_retryable_chunk_error(&error) => {
+                    let (left, right, next_attempt) = if batch.is_singleton() {
+                        let chunk = &batch.chunks[0];
+                        record_chunk_retry_error(&error, execution.metrics_mut());
+                        let children = if attempt < self.stream.max_attempts {
+                            split_retryable_chunk(chunk, self.stream.min_retry_chunk_row_groups)
+                        } else {
+                            None
+                        };
+                        let Some((left, right)) = children else {
+                            self.batches.clear();
+                            return Some(Err(chunk_retry_facts(chunk, execution.metrics_mut()).attach_to_error(error)));
+                        };
+                        (singleton_retry_batch(left), singleton_retry_batch(right), attempt + 1)
+                    } else {
+                        let (left, right) = batch.split_for_retry().expect("non-singleton source batch splits in two");
+                        (left, right, 1)
+                    };
+                    execution.metrics_mut().record_source_chunk_retry();
+                    if let Err(error) = crate::exec::retry::backoff_before_retry(
+                        execution.context(),
+                        "nexus_query_engine.exec.bounded.join_leaf_stream_source_split_retry",
+                    ) {
+                        self.batches.clear();
+                        return Some(Err(error));
+                    }
+                    // Retry children are work, not retained outputs: yield one before allocating its sibling.
+                    self.batches.push_front((right, next_attempt));
+                    self.batches.push_front((left, next_attempt));
+                },
+                Err(error) => {
+                    self.batches.clear();
+                    return Some(Err(error));
+                },
             }
         }
     }
 
     fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {
-        self.pending.clear();
         self.batches.clear();
+    }
+}
+
+fn singleton_retry_batch(chunk: SourceChunk) -> SourceChunkBatch {
+    SourceChunkBatch {
+        batch_index: chunk.chunk_index,
+        estimated_source_read_bytes: chunk.estimated_source_read_bytes,
+        source_batching_reason: "retry_split".to_string(),
+        chunks: vec![chunk],
     }
 }
 
@@ -151,11 +190,19 @@ pub(super) fn stream_join_leaf_source_batch_with_consumer<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
+    let output = read_join_leaf_source_batch_with_stages(execution, stream, batch)?;
+    consume(output, execution)
+}
+
+fn read_join_leaf_source_batch_with_stages(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    batch: &SourceChunkBatch,
+) -> Result<ResidentGpuFrame> {
     let (frame, reservation) =
         read_join_leaf_source_batch_attempt(execution, &stream.source, batch, &stream.reader_dynamic_filters)?;
     let input = ResidentGpuFrame::with_device_bytes(frame, reservation);
-    let output = apply_join_leaf_source_stream_stages(execution, stream, input)?;
-    consume(output, execution)
+    apply_join_leaf_source_stream_stages(execution, stream, input)
 }
 
 pub(super) fn stream_join_leaf_source_chunk_with_consumer_retry<F>(
@@ -168,24 +215,7 @@ pub(super) fn stream_join_leaf_source_chunk_with_consumer_retry<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
-    let (frame, reservation) = match read_join_leaf_source_chunk_attempt(
-        execution,
-        &stream.source,
-        stream.node_id,
-        &chunk,
-        &stream.reader_dynamic_filters,
-        attempt,
-        stream.max_attempts,
-    ) {
-        Ok(output) => output,
-        Err(error) if is_retryable_chunk_error(&error) => {
-            return retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume);
-        },
-        Err(error) => return Err(error),
-    };
-    let input = ResidentGpuFrame::with_device_bytes(frame, reservation);
-    let output = match apply_join_leaf_source_stream_stages(execution, stream, input) {
+    let output = match read_join_leaf_source_chunk_with_stages(execution, stream, &chunk, attempt) {
         Ok(output) => output,
         Err(error) if is_retryable_chunk_error(&error) => {
             return retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume);
@@ -199,6 +229,25 @@ where
         },
         Err(error) => Err(error),
     }
+}
+
+fn read_join_leaf_source_chunk_with_stages(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunk: &SourceChunk,
+    attempt: usize,
+) -> Result<ResidentGpuFrame> {
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
+    let (frame, reservation) = read_join_leaf_source_chunk_attempt(
+        execution,
+        &stream.source,
+        stream.node_id,
+        chunk,
+        &stream.reader_dynamic_filters,
+        attempt,
+        stream.max_attempts,
+    )?;
+    apply_join_leaf_source_stream_stages(execution, stream, ResidentGpuFrame::with_device_bytes(frame, reservation))
 }
 
 pub(super) fn retry_join_leaf_source_stream_chunk_after_error<F>(

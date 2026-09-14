@@ -48,6 +48,23 @@ const ATTEMPT_COLUMNS: &[&str] = &[
     "error_message",
 ];
 
+/// Assignment-side manifest for the paired arrival trace. This is separate
+/// from the public attempts TSV: it joins each scheduled request to the
+/// explicit cap supplied at admission and the actual grant projected from its
+/// sealed attempt report.
+pub(super) const REQUEST_MANIFEST_COLUMNS: &[&str] = &[
+    "sequence",
+    "phase",
+    "query_id",
+    "item_id",
+    "family",
+    "scheduled_offset_ms",
+    "configured_cap_bytes",
+    "actual_grant_bytes",
+    "grant_matches_configured_cap",
+    "outcome_class",
+];
+
 const SAMPLE_COLUMNS: &[&str] = &[
     "offset_ms",
     "device_ordinal",
@@ -200,6 +217,7 @@ impl RunReport<'_> {
         let run_dir = self.config.run_dir();
         fs::create_dir_all(&run_dir)?;
         write_file(&run_dir.join("attempts.tsv"), &self.attempts_tsv())?;
+        write_file(&run_dir.join("request_manifest.tsv"), &self.request_manifest_tsv())?;
         write_file(&run_dir.join("device_samples.tsv"), &self.samples_tsv())?;
         write_file(&run_dir.join("summary.tsv"), &self.summary_tsv())?;
         write_file(&run_dir.join("slo_sensitivity.tsv"), &self.sensitivity_tsv())?;
@@ -284,6 +302,10 @@ impl RunReport<'_> {
             output.push('\n');
         }
         output
+    }
+
+    fn request_manifest_tsv(&self) -> String {
+        request_manifest_tsv(self.config, self.records)
     }
 
     pub(super) fn summary_fields(&self) -> Vec<String> {
@@ -405,6 +427,35 @@ impl RunReport<'_> {
         }
         output
     }
+}
+
+/// Renders the assignment and observation join for one measured run.
+pub(super) fn request_manifest_tsv(config: &GoodputConfig, records: &[AttemptRecord]) -> String {
+    let mut output = String::new();
+    output.push_str(&REQUEST_MANIFEST_COLUMNS.join("\t"));
+    output.push('\n');
+    for record in records {
+        let grant_matches = record
+            .grant_bytes
+            .map(|grant| (grant == record.requested_query_cap_bytes).to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
+        let fields = [
+            record.sequence.to_string(),
+            record.phase.as_str().to_string(),
+            format!("goodput-{}-{}", config.group, record.sequence),
+            record.item_id.clone(),
+            record.family.as_str().to_string(),
+            format_ms(record.scheduled_offset_ms),
+            record.requested_query_cap_bytes.to_string(),
+            optional(record.grant_bytes),
+            grant_matches,
+            record.outcome.as_str().to_string(),
+        ];
+        debug_assert_eq!(fields.len(), REQUEST_MANIFEST_COLUMNS.len());
+        output.push_str(&fields.join("\t"));
+        output.push('\n');
+    }
+    output
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<(), Box<dyn Error>> {

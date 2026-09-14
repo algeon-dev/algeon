@@ -57,3 +57,5 @@ pub(crate) use nexus_query_planning::{materialization_sizing, prepared, util, va
 pub use nexus_query_planning::{mode, optimizer, pipeline, source, triage};
 pub(crate) use nexus_query_runtime::parquet_metadata;
 pub use nexus_query_runtime::{metrics, observability, runtime};
+
+pub mod shadow;

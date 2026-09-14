@@ -1,7 +1,9 @@
 use super::QueryPlan;
 
 fn canonical_execution_scope(plan: &QueryPlan) -> QueryPlan {
-    plan.clone_with_deferred_host_materialization_sink()
+    let mut plan = plan.clone_with_deferred_host_materialization_sink();
+    plan.advisory_outputs.clear();
+    plan
 }
 
 #[doc(hidden)]

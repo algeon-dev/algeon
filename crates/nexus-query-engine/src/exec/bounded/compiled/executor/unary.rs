@@ -67,13 +67,12 @@ impl CompiledGpuTaskExecutor<'_> {
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                             let stream = self.apply_dynamic_filters_to_filter_stream(node_id, filter, stream)?;
                             let stream = map_filter_resident_frame_stream(node_id, stream, filter.clone());
-                            if self.resource_has_multiple_consumers(output) {
-                                Ok(CompiledGpuResource::frame_stream(
-                                    stream.into_remaining_frames_owned(&mut self.execution)?,
-                                ))
+                            let stream = if self.resource_has_multiple_consumers(output) {
+                                stream.into_shared(&mut self.execution)?
                             } else {
-                                Ok(CompiledGpuResource::frame_stream_payload(stream))
-                            }
+                                stream
+                            };
+                            Ok(CompiledGpuResource::frame_stream_payload(stream))
                         },
                         CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
                             Err(invalid("compiled filter task cannot consume a pending source read")
@@ -95,6 +94,16 @@ impl CompiledGpuTaskExecutor<'_> {
                             .with_fact("compiled_task_id", task.id())
                             .with_fact("plan_node_id", node_id)
                             .with_fact("resident_resource_id", input))
+                    } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
+                        let stream = stream.alias(node_id, "compiled_filter_stream_alias")?;
+                        let stream = self.apply_dynamic_filters_to_filter_stream(node_id, filter, stream)?;
+                        let stream = map_filter_resident_frame_stream(node_id, stream, filter.clone());
+                        let stream = if self.resource_has_multiple_consumers(output) {
+                            stream.into_shared(&mut self.execution)?
+                        } else {
+                            stream
+                        };
+                        Ok(CompiledGpuResource::frame_stream_payload(stream))
                     } else {
                         self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                         let input_payload = state.resource_payload(input)?;
@@ -161,13 +170,12 @@ impl CompiledGpuTaskExecutor<'_> {
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                             let stream = map_projection_resident_frame_stream(node_id, stream, projection.clone());
-                            if self.resource_has_multiple_consumers(output) {
-                                Ok(CompiledGpuResource::frame_stream(
-                                    stream.into_remaining_frames_owned(&mut self.execution)?,
-                                ))
+                            let stream = if self.resource_has_multiple_consumers(output) {
+                                stream.into_shared(&mut self.execution)?
                             } else {
-                                Ok(CompiledGpuResource::frame_stream_payload(stream))
-                            }
+                                stream
+                            };
+                            Ok(CompiledGpuResource::frame_stream_payload(stream))
                         },
                         CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
                             Err(invalid("compiled projection task cannot consume a pending source read")
@@ -189,6 +197,15 @@ impl CompiledGpuTaskExecutor<'_> {
                             .with_fact("compiled_task_id", task.id())
                             .with_fact("plan_node_id", node_id)
                             .with_fact("resident_resource_id", input))
+                    } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
+                        let stream = stream.alias(node_id, "compiled_projection_stream_alias")?;
+                        let stream = map_projection_resident_frame_stream(node_id, stream, projection.clone());
+                        let stream = if self.resource_has_multiple_consumers(output) {
+                            stream.into_shared(&mut self.execution)?
+                        } else {
+                            stream
+                        };
+                        Ok(CompiledGpuResource::frame_stream_payload(stream))
                     } else {
                         self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                         let input_payload = state.resource_payload(input)?;

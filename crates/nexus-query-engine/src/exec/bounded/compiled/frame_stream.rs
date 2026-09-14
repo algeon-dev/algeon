@@ -15,14 +15,15 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// device. Consumed by `resource_admission_estimate_bytes` (the
     /// scheduler's admission input sizing).
     max_per_frame_reservation_bytes: u64,
-    /// Sum of per-frame reservation bytes across the whole stream.
-    /// Consumed by `aggregate_reservation_bytes()` and start-of-stream
-    /// contract accounting for producer-backed payloads.
+    /// Aggregate byte hint for the whole stream. Lazy transformations retain
+    /// their input's hint until output frames are observed; this is not an
+    /// exact final-output allocation measurement.
     aggregate_reservation_bytes: u64,
-    /// Currently-live frame reservation bytes. Read by
+    /// Currently-live yielded frame reservation bytes. Read by
     /// `reclaimable_input_bytes` (`tasks.rs:reclaimable_input_bytes`).
     /// For Vec-backed payloads this equals `aggregate_reservation_bytes`
-    /// because all frames are immediately live.
+    /// because all frames are immediately live. Producer-owned partial state
+    /// is added separately by `live_reservation_bytes()`.
     live_reservation_bytes: Rc<Cell<u64>>,
     aggregate_num_rows: u64,
     num_columns: usize,
@@ -136,6 +137,17 @@ pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>>;
 
     fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {}
+
+    /// Creates an independent cursor sharing retained input storage. Output
+    /// transformations may be replayed instead of retaining finalized frames.
+    fn alias(&self) -> Option<Box<dyn ResidentFrameStreamSource>> {
+        None
+    }
+
+    /// Device storage still owned by the producer, excluding frames already yielded.
+    fn retained_device_bytes(&self) -> u64 {
+        0
+    }
 }
 
 struct ResidentFrameStreamProducer {
@@ -205,7 +217,12 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn live_reservation_bytes(&self) -> u64 {
-        self.live_reservation_bytes.get()
+        self.live_reservation_bytes.get().saturating_add(
+            self.producer
+                .as_ref()
+                .and_then(|producer| producer.inner.as_ref())
+                .map_or(0, |source| source.retained_device_bytes()),
+        )
     }
 
     pub(in crate::exec::bounded) fn num_rows(&self) -> u64 {
@@ -221,26 +238,41 @@ impl ResidentFrameStreamPayload {
         self.frames.iter()
     }
 
-    pub(in crate::exec::bounded) fn is_eager(&self) -> bool {
-        self.producer.is_none()
-    }
-
-    pub(in crate::exec::bounded) fn alias_eager(&self, node_id: NodeId, memory_boundary: &'static str) -> Result<Self> {
-        if !self.is_eager() {
-            return Err(QueryError::new(
+    pub(in crate::exec::bounded) fn alias(&self, node_id: NodeId, memory_boundary: &'static str) -> Result<Self> {
+        self.try_alias().ok_or_else(|| {
+            QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.exec.bounded.compiled.frame_stream",
-                "lazy resident frame streams cannot be shared by alias",
+                "resident frame stream producer cannot create an independent consumer",
             )
             .with_fact("node_id", node_id)
-            .with_fact("memory_boundary", memory_boundary));
+            .with_fact("memory_boundary", memory_boundary)
+        })
+    }
+
+    fn try_alias(&self) -> Option<Self> {
+        if let Some(producer) = &self.producer {
+            return Some(Self::from_producer(
+                self.max_per_frame_reservation_bytes,
+                self.aggregate_reservation_bytes,
+                self.aggregate_num_rows,
+                self.num_columns,
+                producer.inner.as_ref()?.alias()?,
+            ));
         }
         let frames = self
             .frames
             .iter()
             .map(|frame| ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() })
             .collect::<Vec<_>>();
-        Ok(Self::new(frames))
+        Some(Self::new(frames))
+    }
+
+    pub(in crate::exec::bounded) fn into_shared(self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<Self> {
+        if let Some(alias) = self.try_alias() {
+            return Ok(alias);
+        }
+        self.into_remaining_frames_owned(execution).map(Self::new)
     }
 
     pub(in crate::exec::bounded) fn is_empty(&self) -> bool {
@@ -304,6 +336,7 @@ impl ResidentFrameStreamPayload {
     }
 }
 
+#[derive(Clone)]
 enum UnaryMappedResidentFrameStreamOperator {
     Filter(FilterNode),
     DynamicFilter { filter: FilterNode, route: DynamicFilterRoute, dynamic_filter: DynamicFilter },
@@ -381,6 +414,18 @@ impl UnaryMappedResidentFrameStreamSource {
 }
 
 impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
+    fn alias(&self) -> Option<Box<dyn ResidentFrameStreamSource>> {
+        Some(Box::new(Self {
+            node_id: self.node_id,
+            input: Some(self.input.as_ref()?.try_alias()?),
+            operator: self.operator.clone(),
+        }))
+    }
+
+    fn retained_device_bytes(&self) -> u64 {
+        self.input.as_ref().map_or(0, ResidentFrameStreamPayload::live_reservation_bytes)
+    }
+
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         let input = self.input.as_mut()?;
         match input.next_yielded_frame(execution) {

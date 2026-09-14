@@ -243,6 +243,127 @@ fn keyed_inner_residual_or_selects_mixed_join_strategy() {
 }
 
 #[test]
+fn left_build_keyed_residual_semi_anti_stays_on_stateful_mixed_strategy() {
+    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        let plan = keyed_residual_semi_anti_join_strategy_plan(
+            join_type,
+            JoinSide::Left,
+            16 * 1024 * 1024,
+            100_000,
+            9 * 1024 * 1024 * 1024,
+            100_000_000,
+        );
+        let node_id = plan.root_id();
+        let PlanNode::Join(join) = &plan.root_node().kind else {
+            panic!("strategy fixture root should remain the join");
+        };
+
+        assert!(nexus_query_engine::capability::keyed_residual_left_match_join_capable(join), "{join_type}");
+        assert!(nexus_query_engine::capability::keyed_residual_mixed_join_capable(join), "{join_type}");
+        assert!(
+            !nexus_query_engine::capability::partitioned_keyed_residual_join_supported(join),
+            "left-build {join_type} must stay out of partitioned mixed execution"
+        );
+        assert_eq!(
+            nexus_query_engine::capability::join_node_execution_capability(join),
+            Some(nexus_query_engine::capability::JoinExecutionCapability::KeyedResidualMixed),
+            "{join_type} should expose the stateful mixed capability"
+        );
+        assert!(matches!(
+            nexus_query_engine::admission::CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
+            Ok(Some(nexus_query_engine::admission::CompiledJoinExecutionStrategy::MixedKeyedResidual))
+        ));
+    }
+}
+
+#[test]
+fn right_build_keyed_residual_semi_anti_remains_partitioned_mixed_when_large() {
+    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        let plan = keyed_residual_semi_anti_join_strategy_plan(
+            join_type,
+            JoinSide::Right,
+            16 * 1024 * 1024,
+            100_000,
+            9 * 1024 * 1024 * 1024,
+            100_000_000,
+        );
+        let node_id = plan.root_id();
+        let PlanNode::Join(join) = &plan.root_node().kind else {
+            panic!("strategy fixture root should remain the join");
+        };
+
+        assert!(!nexus_query_engine::capability::keyed_residual_left_match_join_capable(join), "{join_type}");
+        assert!(nexus_query_engine::capability::keyed_residual_mixed_join_capable(join), "{join_type}");
+        assert!(nexus_query_engine::capability::partitioned_keyed_residual_join_supported(join), "{join_type}");
+        assert!(matches!(
+            nexus_query_engine::admission::CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
+            Ok(Some(nexus_query_engine::admission::CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual))
+        ));
+    }
+}
+
+fn keyed_residual_semi_anti_join_strategy_plan(
+    join_type: JoinType,
+    build_side: JoinSide,
+    left_bytes: u64,
+    left_rows: u64,
+    right_bytes: u64,
+    right_rows: u64,
+) -> nexus_query_engine::plan::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_key", DataType::Int32, false),
+        Field::new("left_payload", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_key", DataType::Int32, false),
+        Field::new("right_payload", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::clone(&left_schema);
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/keyed-residual-semi-anti-left.parquet")
+                .with_row_group_rows(vec![left_rows])
+                .with_row_group_bytes(vec![left_bytes]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["left_key".to_string(), "left_payload".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/keyed-residual-semi-anti-right.parquet")
+                .with_row_group_rows(vec![right_rows])
+                .with_row_group_bytes(vec![right_bytes]),
+        ],
+        Arc::clone(&right_schema),
+        vec!["right_key".to_string(), "right_payload".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            join_type,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "left_key", "left_key"),
+                ColumnRef::input(1, "right_key", "right_key"),
+            )],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_payload", "left_payload"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_payload", "right_payload"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+        ])
+        .with_build_side(build_side),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+#[test]
 fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
     let plan = decimal_division_residual_join_strategy_plan();
     let analysis = plan.capability_analysis();

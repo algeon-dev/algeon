@@ -751,7 +751,7 @@ pub fn partitioned_equi_join_supported(join: &JoinNode) -> bool {
 
 #[doc(hidden)]
 pub fn partitioned_keyed_residual_join_supported(join: &JoinNode) -> bool {
-    keyed_residual_mixed_join_capable(join)
+    !keyed_residual_left_match_join_capable(join) && keyed_residual_mixed_join_capable(join)
 }
 
 #[doc(hidden)]
@@ -953,27 +953,28 @@ pub fn keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
         JoinType::Inner | JoinType::Full => true,
         JoinType::Left => join.spec.build_side == JoinSide::Right,
         JoinType::LeftSemi | JoinType::LeftAnti => {
-            join.spec.build_side == JoinSide::Right
-                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+            keyed_residual_left_match_join_capable(join)
+                || (join.spec.build_side == JoinSide::Right
+                    && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left))
         },
         JoinType::Cross | JoinType::LeftMark => false,
     }
 }
 
 #[doc(hidden)]
-pub fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
-    if join.spec.keys.is_empty() || join.spec.residual_predicate.is_none() || join.spec.output_projection.is_empty() {
-        return false;
-    }
+pub fn keyed_residual_left_match_join_capable(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_some()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        && join.spec.build_side == JoinSide::Left
+        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+}
 
-    match join.spec.join_type {
-        JoinType::Inner => true,
-        JoinType::LeftSemi | JoinType::LeftAnti => {
-            join.spec.build_side == JoinSide::Right
-                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
-        },
-        JoinType::Left | JoinType::Full | JoinType::Cross | JoinType::LeftMark => false,
-    }
+#[doc(hidden)]
+pub fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
+    matches!(join.spec.join_type, JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti)
+        && keyed_residual_mixed_join_capable(join)
 }
 
 #[cfg(test)]

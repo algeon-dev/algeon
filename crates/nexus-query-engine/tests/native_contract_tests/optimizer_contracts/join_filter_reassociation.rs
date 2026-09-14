@@ -1,4 +1,66 @@
 #[test]
+fn join_filter_reassociation_preserves_output_advisory_for_residual_build_selection() {
+    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        for (parent_rows, right_bytes, right_rows, expected_side) in [
+            (Some(2_000), 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Left),
+            (Some(2_000), 32 * 1024, 1_000, JoinSide::Right),
+            (None, 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right),
+        ] {
+            let parent_advisory = parent_rows.map(|rows| AdvisoryOutputStatistics {
+                bytes: AdvisoryStatistic::Inexact(64_000),
+                ..advisory_rows(rows)
+            });
+            let (mut builder, left) = inner_join_filter_over_projected_inner_join_builder(
+                parent_advisory,
+                Some(advisory_rows(500_000_000)),
+            );
+            let right = builder.add_source(estimated_local_source_with_fields(
+                "probe",
+                &["probe_key", "probe_value"],
+                right_bytes,
+                right_rows,
+            ));
+            let root = builder.add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    join_type,
+                    vec![JoinKey::new(
+                        ColumnRef::input(0, "customer", "customer"),
+                        ColumnRef::input(1, "probe_key", "probe_key"),
+                    )],
+                )
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "net_amount", "net_amount"),
+                    BinaryOp::NotEq,
+                    Expr::input_column(1, "probe_value", "probe_value"),
+                ))
+                .with_output_projection(vec![JoinOutputColumn::left(
+                    ColumnRef::input(0, "customer", "customer"),
+                    "customer",
+                )])
+                .with_build_side(JoinSide::Right),
+                schema(&["customer"]),
+            );
+            let result = optimize_query_plan(builder.finish_gpu_resident(root), &NativeOptimizerOptions::default());
+            assert!(result.diagnostics.join_filter_reassociation.applied_count > 0);
+            let candidate = result
+                .diagnostics
+                .join_build_side_selection
+                .candidates
+                .iter()
+                .find(|candidate| candidate.right_estimated_rows == Some(right_rows))
+                .expect("residual join should retain its known probe row count");
+            assert_eq!(candidate.left_estimated_rows, None);
+            assert_eq!(candidate.left_estimated_bytes, None);
+            assert_eq!(candidate.left_advisory_rows, parent_rows);
+            assert_eq!(candidate.left_advisory_bytes, None, "reassociation changes the intermediate output columns");
+            assert_eq!(root_join_build_side(&result.plan), expected_side);
+        }
+    }
+}
+
+#[test]
 fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_losing_multiplicity() {
     let plan = inner_join_filter_over_projected_inner_join_plan();
 
@@ -261,6 +323,14 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
 }
 
 fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::plan::QueryPlan {
+    let (builder, filtered) = inner_join_filter_over_projected_inner_join_builder(None, None);
+    builder.finish_gpu_resident(filtered)
+}
+
+fn inner_join_filter_over_projected_inner_join_builder(
+    parent_advisory: Option<AdvisoryOutputStatistics>,
+    crossed_advisory: Option<AdvisoryOutputStatistics>,
+) -> (QueryPlanBuilder, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(gpu_source("sales", &["s_item", "s_ticket", "customer", "amount"]));
     let returns = builder.add_source(gpu_source("returns", &["r_item", "r_ticket", "reason_key", "returned"]));
@@ -270,7 +340,9 @@ fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::pla
     let sales_returns = builder.add_join(
         sales,
         returns,
-        JoinSpec::new(
+        JoinSpec {
+            advisory_output_statistics: crossed_advisory,
+            ..JoinSpec::new(
             JoinType::Inner,
             vec![
                 JoinKey::new(ColumnRef::input(0, "s_item", "s_item"), ColumnRef::input(1, "r_item", "r_item")),
@@ -286,7 +358,8 @@ fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::pla
             JoinOutputColumn::right(ColumnRef::input(1, "r_ticket", "r_ticket"), "r_ticket"),
             JoinOutputColumn::right(ColumnRef::input(1, "reason_key", "reason_key"), "reason_key"),
             JoinOutputColumn::right(ColumnRef::input(1, "returned", "returned"), "returned"),
-        ]),
+        ])
+        },
         sales_returns_schema,
     );
     let projected_schema = schema(&["customer", "net_amount", "reason_key"]);
@@ -304,7 +377,9 @@ fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::pla
     let filtered = builder.add_join(
         projected,
         reason,
-        JoinSpec::new(
+        JoinSpec {
+            advisory_output_statistics: parent_advisory,
+            ..JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
                 ColumnRef::input(0, "reason_key", "reason_key"),
@@ -314,11 +389,12 @@ fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::pla
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "customer", "customer"), "customer"),
             JoinOutputColumn::left(ColumnRef::input(0, "net_amount", "net_amount"), "net_amount"),
-        ]),
+        ])
+        },
         schema(&["customer", "net_amount"]),
     );
     assert_eq!(projected_schema.fields().len(), 3);
-    builder.finish_gpu_resident(filtered)
+    (builder, filtered)
 }
 
 fn nested_inner_join_filter_plan() -> nexus_query_engine::plan::QueryPlan {

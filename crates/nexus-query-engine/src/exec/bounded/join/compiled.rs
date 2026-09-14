@@ -87,6 +87,7 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
         outputs: Vec<ResidentGpuFrame>,
     },
     Prepared(BoundedCompiledPreparedJoinProbeState),
+    MixedLeftMatched(BoundedCompiledMixedLeftJoinProbeState),
     MixedStreamed {
         build: BoundedCompiledPreparedJoinBuildState,
         outputs: Vec<ResidentGpuFrame>,
@@ -119,6 +120,15 @@ pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinProbeState {
     strategy_options: KeyedHashJoinStrategyOptions,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
+}
+
+pub(in crate::exec::bounded) struct BoundedCompiledMixedLeftJoinProbeState {
+    left: BoundedJoinSideFrame,
+    finalized: cudf::DataFrameMixedLeftJoinFinalized,
+    probe_rows: u64,
+    probe_bytes: u64,
+    state_bytes: u64,
+    operator_time: std::time::Duration,
 }
 
 pub(in crate::exec::bounded) struct RootHashJoinFrameStreamProbeState {
@@ -481,6 +491,15 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
+            if mixed_left_match_probe_supported(node, build.strategy) {
+                let bytes = observe_device_memory_bytes(&input, execution.metrics_mut())?;
+                return execute_compiled_mixed_left_join_probe_from_frame_stream(
+                    execution,
+                    node,
+                    build,
+                    ResidentFrameStreamPayload::new(vec![ResidentGpuFrame::with_device_bytes(input, bytes)]),
+                );
+            }
             let side = probe_side(build.side);
             let columns = compiled_join_input_columns(node, build.strategy, side)?;
             let probe = prepare_bounded_join_side_input_from_shared_frame(execution, input, &columns, side)?;
@@ -528,6 +547,14 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
+            if mixed_left_match_probe_supported(node, build.strategy) {
+                return execute_compiled_mixed_left_join_probe_from_frame_stream(
+                    execution,
+                    node,
+                    build,
+                    ResidentFrameStreamPayload::new(vec![input]),
+                );
+            }
             let side = probe_side(build.side);
             let columns = compiled_join_input_columns(node, build.strategy, side)?;
             let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, &columns, side)?;
@@ -572,13 +599,14 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     let lazy_probe_supported = match &build {
         BoundedCompiledJoinBuildState::Hash(_) => lazy_output && stateless_streaming_probe_supported(node),
         BoundedCompiledJoinBuildState::Prepared(build) => {
-            lazy_output
-                && stateless_streaming_probe_supported(node)
-                && matches!(
-                    build.strategy,
-                    CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui
-                )
-                && node.spec.residual_predicate.is_none()
+            mixed_left_match_probe_supported(node, build.strategy)
+                || (lazy_output
+                    && stateless_streaming_probe_supported(node)
+                    && matches!(
+                        build.strategy,
+                        CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui
+                    )
+                    && node.spec.residual_predicate.is_none())
         },
         BoundedCompiledJoinBuildState::Partitioned(_) => true,
         BoundedCompiledJoinBuildState::Filtered(_) => false,
@@ -674,6 +702,9 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     mut inputs: ResidentFrameStreamPayload,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
+        BoundedCompiledJoinBuildState::Prepared(build) if mixed_left_match_probe_supported(node, build.strategy) => {
+            execute_compiled_mixed_left_join_probe_from_frame_stream(execution, node, build, inputs)
+        },
         BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
             Ok(BoundedCompiledJoinProbeState::HashLazyStream(RootHashJoinFrameStreamProbeState { build, inputs }))
         },
@@ -771,6 +802,9 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
         },
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             execute_compiled_prepared_join_materialize(execution, node_id, node, probe)
+        },
+        BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
+            execute_compiled_mixed_left_join_materialize(execution, node_id, node, probe)
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
             release_bounded_join_side_frame(build.input);
@@ -954,6 +988,9 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
             let BoundedCompiledPreparedJoinProbeState { left, right, .. } = probe;
             release_bounded_join_side_frame(left);
             release_bounded_join_side_frame(right);
+        },
+        BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
+            release_compiled_mixed_left_join_probe_state(probe);
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
             release_streamed_join_outputs_reverse(outputs);

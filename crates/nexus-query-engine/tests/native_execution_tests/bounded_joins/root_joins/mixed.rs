@@ -6,3 +6,5 @@ mod hash_outer;
 mod keyed_residual;
 #[path = "mixed/keyless_left_only.rs"]
 mod keyless_left_only;
+#[path = "mixed/left_build.rs"]
+mod left_build;

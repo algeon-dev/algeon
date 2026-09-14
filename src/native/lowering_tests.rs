@@ -75,6 +75,8 @@ use crate::{
     report::CandidateOutcome,
 };
 
+mod advisory;
+
 #[path = "../../tests/support/analytical_olap_workload.rs"]
 mod analytical_olap_workload;
 #[path = "../../tests/support/tpch_fallback_workload.rs"]

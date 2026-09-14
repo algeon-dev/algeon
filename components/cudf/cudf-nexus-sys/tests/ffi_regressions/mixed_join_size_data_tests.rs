@@ -10,6 +10,89 @@ use crate::{
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
+#[test]
+fn mixed_left_state_requires_eof_and_retains_predicate_owner() {
+    let _lock = lock_shim_state();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_test_stats();
+    let target_stream = stream.borrowed();
+    let target_mr = mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_mr);
+    let inputs = MixedJoinInputs::new();
+    let predicate = make_left_less_than_right_predicate();
+    let mut state = ptr::null_mut();
+    unsafe {
+        assert_eq!(
+            cudf_sys::cudf_mixed_left_join_state_create_ex(
+                inputs.left_equality,
+                inputs.left_conditional,
+                predicate,
+                cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
+                &mut state,
+                &exec,
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_eq!(cudf_sys::cudf_ast_expression_destroy(predicate), cudf_sys::CUDF_SUCCESS);
+        let mut rows = usize::MAX;
+        assert_ne!(cudf_sys::cudf_mixed_left_join_state_output_size(state, &mut rows), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(rows, 0);
+        let mut output = ptr::null_mut();
+        assert_ne!(
+            cudf_sys::cudf_mixed_left_join_state_materialize_indices_ex(state, &mut output, &exec),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert!(output.is_null());
+        let other_stream = OwnedStream::new();
+        let other_borrowed = other_stream.borrowed();
+        let other_exec = required_exec_options(&other_borrowed, &target_mr);
+        assert_ne!(
+            cudf_sys::cudf_mixed_left_join_state_consume_ex(
+                state,
+                inputs.right_equality,
+                inputs.right_conditional,
+                &other_exec,
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_eq!(
+            cudf_sys::cudf_mixed_left_join_state_consume_ex(
+                state,
+                inputs.right_equality,
+                inputs.right_conditional,
+                &exec,
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_eq!(
+            cudf_sys::cudf_mixed_left_join_state_seal_ex(state, cudf_sys::CUDF_JOIN_KIND_LEFT_ANTI_JOIN, &exec,),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_ne!(
+            cudf_sys::cudf_mixed_left_join_state_consume_ex(
+                state,
+                inputs.right_equality,
+                inputs.right_conditional,
+                &exec,
+            ),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_ne!(
+            cudf_sys::cudf_mixed_left_join_state_seal_ex(state, cudf_sys::CUDF_JOIN_KIND_LEFT_SEMI_JOIN, &exec,),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_eq!(cudf_sys::cudf_mixed_left_join_state_output_size(state, &mut rows), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(rows, 2);
+        assert_eq!(
+            cudf_sys::cudf_mixed_left_join_state_materialize_indices_ex(state, &mut output, &exec),
+            cudf_sys::CUDF_SUCCESS
+        );
+        assert_eq!(cudf_sys::cudf_mixed_left_join_state_destroy(state), cudf_sys::CUDF_SUCCESS);
+        assert_eq!(read_all_i32(output, &exec), vec![1, 2]);
+        assert_eq!(cudf_sys::cudf_column_destroy(output), cudf_sys::CUDF_SUCCESS);
+    }
+}
+
 type BeginSizeDataExRaw = unsafe extern "C" fn(
     cudf_sys::cudf_table_view_handle,
     cudf_sys::cudf_table_view_handle,

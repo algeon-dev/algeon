@@ -26,6 +26,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryPlan {
     pub(super) nodes: Vec<QueryNode>,
+    pub(super) advisory_outputs: Vec<super::AdvisoryOutputBinding>,
     pub(super) root: NodeId,
     pub(super) sink: ResultSink,
     /// Caller-visible host boundary retained when an embedding frontend takes
@@ -53,6 +54,7 @@ impl QueryPlan {
         assert_eq!(sink.input(), root, "query plan sink must consume the root node");
         Self {
             nodes,
+            advisory_outputs: Vec::new(),
             root,
             sink,
             deferred_host_sink_schema: None,
@@ -133,6 +135,24 @@ impl QueryPlan {
             .with_dynamic_filter_state_from(source)
             .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options);
         rewritten.deferred_host_sink_schema = source.deferred_host_sink_schema.clone();
+        let mut unchanged = vec![false; rewritten.node_count()];
+        for node in rewritten.nodes() {
+            unchanged[node.id.index()] =
+                source.node(node.id) == Some(node) && node.input_ids().iter().all(|input| unchanged[input.index()]);
+        }
+        rewritten.advisory_outputs = source
+            .advisory_outputs
+            .iter()
+            .filter_map(|binding| {
+                let node = rewritten.node(binding.node)?;
+                let mut binding = binding.clone();
+                if !unchanged[node.id.index()] {
+                    binding.invalidate(super::AdvisoryUnknownReason::RewrittenSubtree);
+                    binding.schema = Arc::clone(node.output_schema());
+                }
+                Some(binding)
+            })
+            .collect();
         rewritten
     }
 
@@ -151,6 +171,7 @@ impl QueryPlan {
     pub fn clone_with_gpu_resident_sink(&self) -> Self {
         Self {
             nodes: self.nodes.clone(),
+            advisory_outputs: self.advisory_outputs.clone(),
             root: self.root,
             sink: ResultSink::GpuResident { input: self.root },
             deferred_host_sink_schema: None,
@@ -175,6 +196,7 @@ impl QueryPlan {
         };
         Self {
             nodes: self.nodes.clone(),
+            advisory_outputs: self.advisory_outputs.clone(),
             root: self.root,
             sink: ResultSink::GpuResident { input: self.root },
             deferred_host_sink_schema,
@@ -247,6 +269,11 @@ impl QueryPlan {
             ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input: root, schema },
         };
         self
+    }
+
+    /// Frontend volume signals scoped to this plan's native output occurrences.
+    pub fn advisory_outputs(&self) -> &[super::AdvisoryOutputBinding] {
+        &self.advisory_outputs
     }
 
     /// Returns all nodes in append order.

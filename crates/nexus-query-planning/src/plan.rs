@@ -31,7 +31,10 @@ mod vector_algorithm;
 
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
-pub use advisory::{AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance};
+pub use advisory::{
+    AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance,
+    AdvisoryStatisticsScope, AdvisoryUnknownReason,
+};
 pub use builder::QueryPlanBuilder;
 #[doc(hidden)]
 pub use estimates::{

@@ -3963,6 +3963,7 @@ dependencies = [
  "nexus-query-runtime",
  "object_store",
  "parquet",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -1,4 +1,63 @@
 #[test]
+fn aggregate_join_pushdown_reuses_physical_group_identity_and_preserves_output_aliases() {
+    for group_aliases in [vec!["group_key"], vec!["group_key", "second_group_key"]] {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(estimated_local_source_with_fields(
+            "aliased_fact", &["physical_key", "value"], 1024 * 1024, 10_000,
+        ));
+        let right = builder.add_source(estimated_local_source_with_fields(
+            "aliased_dimension", &["physical_key"], 1024, 100,
+        ));
+        let mut output_names = group_aliases.clone();
+        output_names.push("value");
+        let mut outputs = group_aliases.iter().map(|alias| {
+            JoinOutputColumn::left(ColumnRef::input(0, "physical_key", *alias), *alias)
+        }).collect::<Vec<_>>();
+        outputs.push(JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"));
+        let join = builder.add_join(left, right, JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "physical_key", "display_key"),
+                ColumnRef::input(1, "physical_key", "display_key"),
+            )],
+        ).with_output_projection(outputs).with_build_side(JoinSide::Right), schema(&output_names));
+        let mut projected_names = group_aliases.clone();
+        projected_names.push("measure");
+        let mut expressions = group_aliases.iter().map(|alias| Expr::column(*alias)).collect::<Vec<_>>();
+        expressions.push(Expr::binary(
+            Expr::column("value"), BinaryOp::Add, Expr::column("value"),
+        ).alias("measure"));
+        let projection = builder.add_projection(join, projection_outputs(expressions, schema(&projected_names)));
+        let mut final_names = group_aliases.clone();
+        final_names.push("sum_value");
+        let aggregate = builder.add_aggregate(projection, AggregateSpec::new(
+            group_aliases.iter().map(|alias| Expr::column(*alias)).collect(),
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("measure"), "sum_value")],
+        ), schema(&final_names));
+        let plan = builder.finish_with_host_sink(aggregate);
+        let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options());
+        assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+        assert_eq!(optimized.plan.root_node().output_schema(), &schema(&final_names));
+        let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else { panic!("final aggregate") };
+        let PlanNode::Join(reduced_join) = &optimized.plan.node(final_aggregate.input).unwrap().kind else { panic!("reduced join") };
+        let preaggregate_node = optimized.plan.node(reduced_join.inputs[0]).unwrap();
+        let PlanNode::Aggregate(preaggregate) = &preaggregate_node.kind else { panic!("preaggregate") };
+        assert_eq!(preaggregate.spec.group_exprs.len(), group_aliases.len(),
+            "the equality key must reuse an existing physical group rather than append its display alias");
+        assert_eq!(reduced_join.spec.keys[0].left.name(), "group_key");
+        assert_eq!(reduced_join.spec.keys[0].left.display_name(), "display_key");
+        assert_eq!(reduced_join.spec.keys[0].right.name(), "physical_key");
+        for alias in &group_aliases {
+            assert!(preaggregate_node.output_schema().field_with_name(alias).is_ok());
+            assert!(reduced_join.spec.output_projection.iter().any(|output| output.column.name() == *alias));
+        }
+        let PlanNode::Projection(measure_input) = &optimized.plan.node(preaggregate.input).unwrap().kind else { panic!("computed measure projection") };
+        assert_eq!(measure_input.outputs.iter().filter(|output| output.field.name() == "physical_key").count(), 1,
+            "materializing multiple observable aliases must read each physical group column only once");
+    }
+}
+
+#[test]
 fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_duplicates() {
     let source_schema = schema(&["zip_prefix", "s_store_name", "ss_net_profit"]);
     let right_schema = schema(&["zip_prefix"]);

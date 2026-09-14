@@ -5,9 +5,9 @@ use super::{
     CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy, GpuDataFrame, Instant, JoinMaterializationTxn,
     JoinNode, JoinSide, KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput,
-    PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result,
-    StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
-    execution_overrides, hash_partition_join_side, join_keys_for_side,
+    PartitionedJoinProbeChunk, PartitionedJoinSide, ResidentFrameStreamPayload, ResidentFrameStreamSource,
+    ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns,
+    concatenate_streamed_hash_join_outputs, execution_overrides, hash_partition_join_side, join_keys_for_side,
     materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
     observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
     partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
@@ -455,6 +455,7 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
         probe_columns: probe.probe_columns,
         probe_keys: probe.probe_keys,
         active_probe_partitioned: None,
+        pending_probe_chunk: None,
         pending_outputs: VecDeque::new(),
         next_partition: 0,
         summary: StreamedPartitionedJoinSummary::new(
@@ -487,6 +488,7 @@ struct PartitionedHashEquiJoinProbeStreamSource {
     probe_columns: Vec<String>,
     probe_keys: Vec<String>,
     active_probe_partitioned: Option<PartitionedJoinSide>,
+    pending_probe_chunk: Option<PartitionedJoinProbeChunk>,
     pending_outputs: VecDeque<ResidentGpuFrame>,
     next_partition: usize,
     summary: StreamedPartitionedJoinSummary,
@@ -512,41 +514,42 @@ impl PartitionedHashEquiJoinProbeStreamSource {
     }
 
     fn load_next_probe_chunk(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<bool>> {
-        let inputs = self.inputs.as_mut()?;
-        let mut input = match inputs.next_yielded_frame(execution) {
-            Some(Ok(input)) => input,
-            Some(Err(error)) => return Some(Err(error)),
-            None => return None,
+        if self.pending_probe_chunk.is_none() {
+            let inputs = self.inputs.as_mut()?;
+            let mut input = match inputs.next_yielded_frame(execution) {
+                Some(Ok(input)) => input,
+                Some(Err(error)) => return Some(Err(error)),
+                None => return None,
+            };
+            let probe = match prepare_bounded_join_side_input_from_resident_frame(
+                execution,
+                input.take_for_release(),
+                &self.probe_columns,
+                probe_side(self.build_side),
+            ) {
+                Ok(probe) => probe,
+                Err(error) => return Some(Err(error)),
+            };
+            self.pending_probe_chunk = Some(PartitionedJoinProbeChunk::new(probe));
+        }
+        let pending = self.pending_probe_chunk.as_mut().expect("probe retry input should be present");
+        let plan = PartitionedJoinDriverPlan {
+            node_id: self.node_id,
+            node: &self.node,
+            strategy: PARTITIONED_HASH_EQUI_STRATEGY,
+            strategy_options: self.strategy_options,
+            partition_count: self.partition_count,
+            partition_target_bytes: self.partition_target_bytes,
         };
-        let input = input.take_for_release();
-        let probe_side = probe_side(self.build_side);
-        let probe = match prepare_bounded_join_side_input_from_resident_frame(
-            execution,
-            input,
-            &self.probe_columns,
-            probe_side,
-        ) {
-            Ok(probe) => probe,
-            Err(error) => return Some(Err(error)),
-        };
-        let probe_rows = probe.rows;
-        let probe_bytes = probe.bytes;
-        let overrides_lease = match execution_overrides(execution.context()) {
-            Ok(overrides) => overrides,
-            Err(error) => return Some(Err(error)),
-        };
-        let overrides = overrides_lease.overrides();
-        let probe_partitioned = match hash_partition_join_side(
-            execution,
-            probe_side,
-            probe,
-            &self.probe_keys,
-            self.partition_count,
-            &overrides,
-        ) {
-            Ok(partitioned) => partitioned,
-            Err(error) => return Some(Err(error)),
-        };
+        let (probe_partitioned, probe_rows, probe_bytes) =
+            match pending.next_partitioned(execution, plan, &self.probe_keys) {
+                Ok(Some(output)) => output,
+                Ok(None) => unreachable!("a drained probe chunk is released after its final partitioning result"),
+                Err(error) => return Some(Err(error)),
+            };
+        if pending.is_drained() {
+            self.pending_probe_chunk = None;
+        }
         let probe_partitioned_bytes = probe_partitioned.device_bytes();
         self.summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
         self.active_probe_partitioned = Some(probe_partitioned);
@@ -604,6 +607,12 @@ impl PartitionedHashEquiJoinProbeStreamSource {
 impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         loop {
+            if let Err(error) =
+                execution.context().check_cancellation("nexus_query_engine.exec.bounded.partitioned_join_probe_stream")
+            {
+                self.release(execution);
+                return Some(Err(error));
+            }
             if let Some(output) = self.pending_outputs.pop_front() {
                 return Some(Ok(output));
             }
@@ -639,6 +648,7 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
     fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         release_streamed_join_outputs_reverse(self.pending_outputs.drain(..).collect());
         self.release_active_probe_partitioned();
+        self.pending_probe_chunk = None;
         if let Some(input) = self.inputs.take() {
             input.release_all(execution);
         }

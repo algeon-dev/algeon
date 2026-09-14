@@ -463,11 +463,10 @@ fn native_node_allows_declared_output_ordering_sort_append(
         NativePlanNode::Projection(projection) => {
             native_node_allows_declared_output_ordering_sort_append(plan, projection.input, stack)
         },
-        NativePlanNode::Aggregate(_) => true,
+        NativePlanNode::Aggregate(_) | NativePlanNode::Join(_) => true,
         NativePlanNode::Sort(_) => true,
         NativePlanNode::Limit(_)
         | NativePlanNode::Window(_)
-        | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
         | NativePlanNode::EdgeNormalize(_)
         | NativePlanNode::GraphAlgorithm(_)
@@ -567,7 +566,10 @@ mod tests {
         source::{GpuResidentSource, LiteralBatchSource, LocalParquetSource, SourceNode},
     };
 
-    use super::{declared_output_ordering_sort_spec, native_plan_reproduces_declared_output_ordering};
+    use super::{
+        declared_output_ordering_sort_spec, native_plan_reproduces_declared_output_ordering,
+        reestablish_declared_output_ordering_if_needed,
+    };
     use crate::capability::CapabilityReason;
 
     #[test]
@@ -617,6 +619,22 @@ mod tests {
         );
         let plan = builder.finish_with_host_sink(sort);
 
+        assert!(native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn declared_output_ordering_can_be_reestablished_after_a_join() {
+        let plan = join_plan();
+        let schema = plan.output_schema();
+        let ordering =
+            LexOrdering::new([PhysicalSortExpr::new(col("key", schema).unwrap(), ArrowSortOptions::new(false, false))])
+                .expect("test ordering should be non-empty");
+
+        let (plan, appended) = reestablish_declared_output_ordering_if_needed(plan, Some(&ordering))
+            .expect("a complete join output can be sorted before the host sink");
+
+        assert!(appended);
+        assert!(matches!(plan.root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
     }
 

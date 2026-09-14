@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::CompiledGpuTaskExecutor;
 use crate::{
     admission::CompiledJoinExecutionStrategy,
-    capability::keyed_hash_join_capable,
+    capability::{keyed_hash_join_capable, keyed_residual_left_match_join_capable},
     exec::bounded::SourceAdjacentAggregateChunkCapHints,
     pipeline::{PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId},
     plan::{JoinSide, JoinType, NodeId, PlanNode},
@@ -217,67 +217,43 @@ impl CompiledGpuTaskExecutor<'_> {
         })
     }
 
-    pub(super) fn join_materialize_output_can_preserve_stream(
-        &self,
-        task: PipelineTaskId,
-        resource: ResidentResourceId,
-    ) -> bool {
+    pub(super) fn output_can_preserve_frame_stream(&self, task: PipelineTaskId, resource: ResidentResourceId) -> bool {
         let Some(first_resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == resource) else {
             return false;
         };
         if first_resource.producer() != task {
             return false;
         }
-        if first_resource.consumers().len() > 1 {
-            return first_resource.consumers().iter().all(|consumer| {
-                self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer).is_some_and(
-                    |consumer_task| {
-                        consumer_task.kind() == PipelineTaskKind::JoinProbe
-                            && self.join_probe_task_can_consume_frame_stream(consumer_task)
-                    },
-                )
-            });
-        }
-        let mut current_resource = resource;
+        let mut pending = vec![resource];
         let mut visited = BTreeSet::new();
-        loop {
-            if !visited.insert(current_resource) {
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
                 return false;
             }
-            let Some(resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == current_resource)
-            else {
+            let Some(resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == current) else {
                 return false;
             };
-            if resource.consumers().len() > 1 {
-                return resource.consumers().iter().all(|consumer| {
-                    self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer).is_some_and(
-                        |consumer_task| {
-                            consumer_task.kind() == PipelineTaskKind::JoinProbe
-                                && self.join_probe_task_can_consume_frame_stream(consumer_task)
-                        },
-                    )
-                });
+            if resource.consumers().is_empty() {
+                return false;
             }
-            let [consumer] = resource.consumers() else {
-                return false;
-            };
-            let Some(consumer_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer) else {
-                return false;
-            };
-            match consumer_task.kind() {
-                PipelineTaskKind::Aggregate => return true,
-                PipelineTaskKind::JoinProbe => return self.join_probe_task_can_consume_frame_stream(consumer_task),
-                PipelineTaskKind::JoinBuild => return self.join_build_task_can_consume_frame_stream(consumer_task),
-                PipelineTaskKind::FinalSort => return self.final_sort_task_can_consume_frame_stream(consumer_task),
-                PipelineTaskKind::Unary => {
-                    let [next_resource] = consumer_task.output_resources() else {
-                        return false;
-                    };
-                    current_resource = *next_resource;
-                },
-                _ => return false,
+            for consumer in resource.consumers() {
+                let Some(consumer) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer) else {
+                    return false;
+                };
+                match consumer.kind() {
+                    PipelineTaskKind::Aggregate => {},
+                    PipelineTaskKind::JoinProbe if self.join_probe_task_can_consume_frame_stream(consumer) => {},
+                    PipelineTaskKind::JoinBuild if self.join_build_task_can_consume_frame_stream(consumer) => {},
+                    PipelineTaskKind::FinalSort if self.final_sort_task_can_consume_frame_stream(consumer) => {},
+                    PipelineTaskKind::Unary => {
+                        let [next] = consumer.output_resources() else { return false };
+                        pending.push(*next);
+                    },
+                    _ => return false,
+                }
             }
         }
+        true
     }
 
     pub(super) fn final_sort_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
@@ -303,8 +279,8 @@ impl CompiledGpuTaskExecutor<'_> {
         keyed_hash_join_capable(join)
     }
 
-    // The probe may yield outputs lazily only when the materialize task hands
-    // them to a single stream-consuming task; other consumers need one frame.
+    // The materialize task preserves chunks only when every downstream
+    // consumer can process a stream; other consumers require one frame.
     pub(super) fn join_probe_output_consumed_as_stream(&self, node_id: NodeId) -> bool {
         let Some(materialize) = self
             .pipeline
@@ -317,7 +293,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let [output] = materialize.output_resources() else {
             return false;
         };
-        self.join_materialize_output_can_preserve_stream(materialize.id(), *output)
+        self.output_can_preserve_frame_stream(materialize.id(), *output)
             && !self.resource_has_multiple_consumers(*output)
     }
 
@@ -332,6 +308,14 @@ impl CompiledGpuTaskExecutor<'_> {
             return false;
         };
         if join.spec.residual_predicate.is_some() {
+            if keyed_residual_left_match_join_capable(join)
+                && matches!(
+                    CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
+                    Ok(Some(CompiledJoinExecutionStrategy::MixedKeyedResidual))
+                )
+            {
+                return true;
+            }
             return matches!(
                 CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
                 Ok(Some(CompiledJoinExecutionStrategy::OneShotEqui))

@@ -1,3 +1,4 @@
+mod advisory;
 mod aggregate;
 mod bindings;
 mod expr;
@@ -119,7 +120,7 @@ fn lower_native_input_with_scan_limit(
     required_output_fields: &RequiredFields,
     source_scan_limit: Option<usize>,
 ) -> Result<LoweredNativeInput, CapabilityReason> {
-    match input {
+    let output = match input {
         NormalizedNativeInput::Source(source) => {
             source::lower_source_input(source, builder, required_output_fields, source_scan_limit)
         },
@@ -151,7 +152,9 @@ fn lower_native_input_with_scan_limit(
             join::lower_nested_loop_join_input(join, builder, required_output_fields)
         },
         NormalizedNativeInput::Union(union) => union::lower_union_input(union, builder, required_output_fields),
-    }
+    }?;
+    advisory::attach_input(builder, input, &output);
+    Ok(output)
 }
 
 pub(super) fn source_scan_limit_from_limit_spec(limit: Option<NativeLimitSpec>) -> Option<usize> {

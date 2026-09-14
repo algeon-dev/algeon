@@ -54,6 +54,7 @@ use std::{
 };
 
 mod dataframe;
+pub use dataframe::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState};
 mod options;
 pub(crate) mod testing_hooks;
 

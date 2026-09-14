@@ -271,6 +271,7 @@ pub(super) fn lower_slice1_plan(
             aggregate_output_bindings,
         )
     };
+    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
     finish_with_post_projection_sort_limit(
         builder,
         aggregate_output,
@@ -331,6 +332,7 @@ pub(super) fn lower_table_format_zero_column_count_plan(
             aggregate_output_schema,
             aggregate_output_bindings,
         );
+        super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
         return finish_with_post_projection_sort_limit(
             builder,
             aggregate_output,
@@ -345,6 +347,7 @@ pub(super) fn lower_table_format_zero_column_count_plan(
         aggregate_output_schema,
         aggregate_output_bindings,
     );
+    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
     finish_with_post_projection_sort_limit(
         builder,
         aggregate_output,
@@ -414,6 +417,7 @@ pub(super) fn lower_joined_aggregate_plan(
             aggregate_output_bindings,
         )
     };
+    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
     finish_with_post_projection_sort_limit(
         builder,
         aggregate_output,

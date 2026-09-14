@@ -109,6 +109,9 @@ pub(super) fn partition_final_merge_partial(
             return Err(error);
         },
     };
+    // Hash partition owns its output; release the consumed concatenation
+    // before partition slices allocate their independently owned storage.
+    drop(frame);
     let (partitioned_frame, offsets) = partitioned.into_parts();
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
     let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {

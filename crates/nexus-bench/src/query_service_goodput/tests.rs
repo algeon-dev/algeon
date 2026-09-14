@@ -3,8 +3,10 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use super::{
     arrival::{Phase, build_trace},
     calibration::{CalibrationIdentity, CalibrationRow, CalibrationStore},
+    cap::CapAssignment,
     config::{ArrivalProcess, GoodputConfig, Mode, PoolState},
     record::{AttemptRecord, OutcomeClass, WindowSummary, classify, percentile},
+    report::{REQUEST_MANIFEST_COLUMNS, request_manifest_tsv},
     workload::{MixEntry, WorkloadFamily, parse_mix},
 };
 
@@ -31,6 +33,8 @@ fn test_config() -> GoodputConfig {
         device_ordinals: vec![0],
         device_capacity_bytes: 1024,
         query_cap_bytes: 512,
+        request_cap_manifest: None,
+        cap_assignment: CapAssignment::default(),
         max_active_attempts: 2,
         max_queued_attempts: 32,
         max_queue_wait: Duration::from_secs(10),
@@ -59,6 +63,7 @@ fn record(outcome: OutcomeClass, slo_met: bool, work_units: u64, phase: Phase) -
         item_id: "tpch.q06".to_string(),
         family: WorkloadFamily::Tpch,
         work_units,
+        requested_query_cap_bytes: 512,
         scheduled_offset_ms: 0.0,
         submit_offset_ms: 0.0,
         submit_delay_ms: 0.0,
@@ -201,6 +206,7 @@ fn the_arrival_trace_is_reproducible_and_splits_warmup_from_the_window() {
         assert_eq!(left.offset, right.offset);
         assert_eq!(left.item_index, right.item_index);
         assert_eq!(left.phase, right.phase);
+        assert_eq!(left.requested_query_cap_bytes, right.requested_query_cap_bytes);
     }
     assert!(
         first.iter().any(|arrival| arrival.phase == Phase::Warmup)
@@ -213,6 +219,10 @@ fn the_arrival_trace_is_reproducible_and_splits_warmup_from_the_window() {
             .all(|arrival| (arrival.phase == Phase::Warmup) == (arrival.offset.as_secs_f64() < config.warmup_seconds)),
         "phase must follow the warmup boundary"
     );
+    assert!(
+        first.iter().all(|arrival| arrival.requested_query_cap_bytes == config.query_cap_bytes),
+        "every paired arrival must carry its explicit query cap"
+    );
     let mut different_seed = test_config();
     different_seed.seed = 43;
     let other = build_trace(&different_seed, &weights, 4.0);
@@ -220,6 +230,77 @@ fn the_arrival_trace_is_reproducible_and_splits_warmup_from_the_window() {
         other.len() != first.len() || other.iter().zip(&first).any(|(left, right)| left.offset != right.offset),
         "a different seed must produce a different trace"
     );
+}
+
+#[test]
+fn request_cap_assignments_are_reproducible_and_use_specificity_order() {
+    let assignment = CapAssignment::parse(
+        "# schema=nexus-goodput-cap-assignment-v1\nkind\tkey\tcap_bytes\ndefault\t\t128\nfamily\ttpch\t256\nitem\ttpch.q06\t512\nsequence\t9\t1024\n",
+    )
+    .unwrap();
+
+    assert_eq!(assignment.cap_for(9, "tpch.q06", 64), 1024, "sequence overrides item and family");
+    assert_eq!(assignment.cap_for(8, "tpch.q06", 64), 512, "item overrides family");
+    assert_eq!(assignment.cap_for(8, "tpch.q18", 64), 256, "family overrides default");
+    assert_eq!(assignment.cap_for(8, "tpcds.q01", 64), 128, "default covers an unassigned family");
+    assert_eq!(assignment.cap_for(8, "unknown.item", 64), 128, "default covers an unqualified item");
+    assert_eq!(assignment.descriptor(), "default:128,family=tpch:256,item=tpch.q06:512,sequence=9:1024");
+}
+
+#[test]
+fn one_arrival_trace_can_carry_multiple_explicit_caps() {
+    let mut config = test_config();
+    config.cap_assignment = CapAssignment::parse(
+        "# schema=nexus-goodput-cap-assignment-v1\nkind\tkey\tcap_bytes\ndefault\t\t768\nsequence\t0\t256\n",
+    )
+    .unwrap();
+
+    let first = build_trace(&config, &[3, 1], 4.0);
+    let second = build_trace(&config, &[3, 1], 4.0);
+    assert!(first.len() > 1);
+    assert_eq!(first[0].requested_query_cap_bytes, 256);
+    assert!(first.iter().any(|arrival| arrival.requested_query_cap_bytes == 768));
+    assert_eq!(
+        first.iter().map(|arrival| arrival.requested_query_cap_bytes).collect::<Vec<_>>(),
+        second.iter().map(|arrival| arrival.requested_query_cap_bytes).collect::<Vec<_>>(),
+        "the same seed and assignment must reproduce request caps"
+    );
+}
+
+#[test]
+fn sequence_only_assignments_cannot_silently_choose_a_calibration_cap() {
+    let assignment =
+        CapAssignment::parse("# schema=nexus-goodput-cap-assignment-v1\nkind\tkey\tcap_bytes\nsequence\t0\t256\n")
+            .unwrap();
+    let item = super::workload::resolve_item("tpch.q06", 0).unwrap();
+    assert!(assignment.calibration_caps(&[item], 512).is_err());
+}
+
+#[test]
+fn request_manifest_joins_configured_cap_to_the_observed_grant() {
+    let config = test_config();
+    let mut admitted = record(OutcomeClass::Succeeded, true, 1, Phase::Window);
+    admitted.sequence = 7;
+    admitted.scheduled_offset_ms = 125.0;
+    let mut rejected = record(OutcomeClass::RejectedQueueFull, false, 1, Phase::Window);
+    rejected.sequence = 8;
+    rejected.grant_bytes = None;
+
+    let manifest = request_manifest_tsv(&config, &[admitted, rejected]);
+    let mut lines = manifest.lines();
+    let header = REQUEST_MANIFEST_COLUMNS.join("\t");
+    assert_eq!(lines.next(), Some(header.as_str()));
+    assert_eq!(lines.next(), Some("7\twindow\tgoodput-test-7\ttpch.q06\ttpch\t125.000\t512\t512\ttrue\tsucceeded"));
+    assert_eq!(
+        lines.next(),
+        Some("8\twindow\tgoodput-test-8\ttpch.q06\ttpch\t0.000\t512\tunavailable\tunavailable\trejected_queue_full")
+    );
+    assert!(lines.next().is_none());
+
+    let mut mismatched = record(OutcomeClass::Succeeded, true, 1, Phase::Window);
+    mismatched.requested_query_cap_bytes = 256;
+    let mismatch = request_manifest_tsv(&config, &[mismatched]);
+    assert!(mismatch.lines().nth(1).is_some_and(|line| line.ends_with("\tfalse\tsucceeded")));
 }
 
 #[test]
@@ -242,6 +323,7 @@ fn calibration_store() -> CalibrationStore {
     header.insert("tpch_fingerprint".to_string(), "tpch-abc".to_string());
     header.insert("tpcds_fingerprint".to_string(), "tpcds-def".to_string());
     header.insert("graph_fingerprint".to_string(), String::new());
+    header.insert("calibration_caps".to_string(), "tpch.q06=512".to_string());
     CalibrationStore {
         identity: CalibrationIdentity {
             gpu_model: "TEST GPU".to_string(),
@@ -277,6 +359,7 @@ fn the_calibration_store_round_trips_through_its_tsv() {
     assert_eq!(row.attempt_peak_aligned_bytes_p50, Some(4096));
     assert_eq!(row.attempt_peak_aligned_bytes_max, None, "an unavailable peak must not become zero");
     assert_eq!(row.output_fingerprint, "output-fnv1a64:00000000deadbeef");
+    assert_eq!(parsed.header.get("calibration_caps").map(String::as_str), Some("tpch.q06=512"));
 }
 
 #[test]

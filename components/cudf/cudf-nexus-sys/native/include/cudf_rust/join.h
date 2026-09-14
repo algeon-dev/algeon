@@ -53,6 +53,38 @@ typedef struct cudf_conditional_full_join_size_data_handle_state*
 /// Opaque handle to retained libcudf mixed-join output-size data.
 typedef struct cudf_mixed_join_size_data_handle_state* cudf_mixed_join_size_data_handle;
 
+/// Owning cumulative mixed left semi/anti membership state.
+typedef struct cudf_mixed_left_join_state_handle_state* cudf_mixed_left_join_state_handle;
+
+/// Retain logical-left equality and conditional views and build the equality index.
+/// Left device storage must outlive the state. The predicate owner is retained.
+/// All subsequent execution calls must use the same device, stream, and MR.
+/// Partial construction is cleaned on failure and `out` remains NULL.
+cudf_status_t cudf_mixed_left_join_state_create_ex(
+  cudf_table_view_handle left_equality, cudf_table_view_handle left_conditional,
+  cudf_ast_expression_handle predicate, cudf_null_equality_t null_equality,
+  cudf_mixed_left_join_state_handle* out, cudf_exec_options_t const* options);
+
+/// Add matches from one right batch. Right storage is borrowed until stream completion.
+/// Rejects calls after seal. No output rows are produced during consume.
+cudf_status_t cudf_mixed_left_join_state_consume_ex(
+  cudf_mixed_left_join_state_handle state, cudf_table_view_handle right_equality,
+  cudf_table_view_handle right_conditional, cudf_exec_options_t const* options);
+
+/// Declare right EOF and select LEFT_SEMI or LEFT_ANTI output. Rejects repeated sealing.
+cudf_status_t cudf_mixed_left_join_state_seal_ex(
+  cudf_mixed_left_join_state_handle state, cudf_join_kind_t kind,
+  cudf_exec_options_t const* options);
+/// Exact selected left rows; valid only after seal.
+cudf_status_t cudf_mixed_left_join_state_output_size(cudf_mixed_left_join_state_handle state, size_t* out);
+/// Retained state bytes, excluding borrowed inputs and output gather maps.
+cudf_status_t cudf_mixed_left_join_state_device_allocated_size(cudf_mixed_left_join_state_handle state, size_t* out);
+/// Exact-size INT32 left indices, valid only after seal. Caller owns output on success.
+cudf_status_t cudf_mixed_left_join_state_materialize_indices_ex(
+  cudf_mixed_left_join_state_handle state, cudf_column_handle* out, cudf_exec_options_t const* options);
+/// Consume ownership. Failure quarantines the handle and must not be retried.
+cudf_status_t cudf_mixed_left_join_state_destroy(cudf_mixed_left_join_state_handle state);
+
 /// Inner join with explicit execution context.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.

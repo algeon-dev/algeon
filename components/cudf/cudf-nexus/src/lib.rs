@@ -268,7 +268,7 @@ pub use ops::{
         AggSpec, GroupBy, GroupByAgg, GroupByOptions, PreparedDataFrameGroupBy, PreparedGroupBy, PreparedGroupByFacts,
         ShiftSpec,
     },
-    join::{JoinType, MergeOptions},
+    join::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState, JoinType, MergeOptions},
     reduction::ReduceAgg,
     replace::FillPolicy,
     sorting::SortOptions,

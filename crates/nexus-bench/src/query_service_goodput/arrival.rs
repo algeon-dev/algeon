@@ -28,6 +28,10 @@ pub(super) struct Arrival {
     pub(super) offset: Duration,
     pub(super) item_index: usize,
     pub(super) phase: Phase,
+    /// Explicit cap carried by this arrival into query-service admission.
+    /// Keeping it on the trace makes the assignment part of the paired input
+    /// rather than an observation reconstructed after execution.
+    pub(super) requested_query_cap_bytes: u64,
 }
 
 /// Deterministic open-loop arrival trace.
@@ -42,7 +46,17 @@ pub(super) fn build_trace(config: &GoodputConfig, weights: &[u32], rate_qps: f64
     let mut elapsed = 0.0_f64;
     let push = |arrivals: &mut Vec<Arrival>, sequence: &mut u64, elapsed: f64, item_index: usize| {
         let phase = if elapsed < config.warmup_seconds { Phase::Warmup } else { Phase::Window };
-        arrivals.push(Arrival { sequence: *sequence, offset: Duration::from_secs_f64(elapsed), item_index, phase });
+        arrivals.push(Arrival {
+            sequence: *sequence,
+            offset: Duration::from_secs_f64(elapsed),
+            item_index,
+            phase,
+            requested_query_cap_bytes: config.cap_assignment.cap_for(
+                *sequence,
+                &config.mix[item_index].item_id,
+                config.query_cap_bytes,
+            ),
+        });
         *sequence += 1;
     };
     match config.arrival {

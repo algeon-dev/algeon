@@ -1,5 +1,8 @@
 use std::time::Instant;
 
+mod left_state;
+pub(super) use left_state::*;
+
 use super::{
     BoundedCompiledJoinProbeState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, CompiledJoinMaterializationRequest,
