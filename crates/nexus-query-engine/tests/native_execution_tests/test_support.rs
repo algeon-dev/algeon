@@ -198,3 +198,26 @@ pub(super) fn execute_admitted_with_peak(
     admitted.finish();
     (result, metrics, usage.peak_bytes)
 }
+
+pub(super) fn assert_attempt_domain_released(context: &ExecutionContext) {
+    let usage = context
+        .attempt_allocation_domain_usage()
+        .expect("allocation-domain usage samples")
+        .expect("admitted context owns one allocation domain");
+    assert_eq!(usage.current_bytes, 0, "failed work must be released inside the attempt domain: {usage:?}");
+    assert_eq!(usage.current_allocations, 0, "no allocation may outlive the failed work: {usage:?}");
+}
+
+pub(super) fn wait_for_ledger_release(policy: BackendTestPolicy) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let reports =
+            suite_backend_with_policy(policy).session_capability().device_ledger_reports().expect("ledger reports");
+        let report = reports.iter().find(|report| report.device_ordinal == 0).expect("device 0 ledger");
+        if report.active_attempts == 0 && report.grants.is_empty() && report.live_grants_bytes == 0 {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "finished attempt must release its grant: {report:?}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
