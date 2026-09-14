@@ -88,6 +88,11 @@ pub enum AggregateJoinPushdownRejectedReason {
     ConflictingPreAggregateOutputName,
     /// A simple inner-join pre-aggregate matched the large fixed-width detail-risk guard.
     DetailKeyPreAggregateReductionNotEvidenced,
+    /// Every left-semi key is a final group key of a plain grouped aggregate,
+    /// so the semi join already discards whole groups; a pre-aggregate below it
+    /// would carry the final grouping unchanged and only retain every
+    /// unfiltered group before the filter runs.
+    LeftSemiAlreadyFiltersFinalGroups,
 }
 
 #[doc(hidden)]

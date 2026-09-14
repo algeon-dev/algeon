@@ -178,3 +178,23 @@ pub(super) fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     fs::create_dir_all(&path).unwrap();
     path
 }
+
+// Runs the plan on an admitted context so the query domain's real peak is
+// observable after the attempt.
+pub(super) fn execute_admitted_with_peak(
+    context: &BackendQueryContext,
+    plan: &QueryPlan,
+) -> (nexus_query_engine::error::Result<QueryOutput>, QueryMetrics, u64) {
+    let admitted = context.admit_plan(plan).unwrap();
+    let outcome = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::new(plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+    );
+    let (result, metrics, _observation) = outcome.into_parts();
+    let usage = admitted
+        .attempt_allocation_domain_usage()
+        .expect("allocation-domain usage samples")
+        .expect("admitted context owns one allocation domain");
+    admitted.finish();
+    (result, metrics, usage.peak_bytes)
+}

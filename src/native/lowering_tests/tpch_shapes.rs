@@ -200,6 +200,61 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
 }
 
 #[tokio::test]
+async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q18-late-semi-before-aggregate");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q18 = items.into_iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q18.input else {
+        panic!("q18 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    // On SF100 the bounded admission gate refuses the orders-side semijoin
+    // rewrite (`root_topk_join_aggregate_requires_source_reduction_evidence`),
+    // so the late left-semi survives into aggregate-join pushdown; the tiny
+    // dataset admits the rewrite, so disable the pass to reach the same shape.
+    let options = nexus_query_engine::optimizer::NativeOptimizerOptions {
+        semijoin_reduction: nexus_query_engine::optimizer::SemijoinReductionOptions::disabled(),
+        ..Default::default()
+    };
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &options);
+
+    let pushdown = &optimized.diagnostics.aggregate_join_pushdown;
+    assert!(
+        pushdown.candidates.iter().any(|candidate| candidate.rejected_reason
+            == Some(
+                nexus_query_engine::optimizer::AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups
+            )),
+        "the o_orderkey semi filter already discards whole groups: {pushdown:?}"
+    );
+
+    let left_semi_joins = native_join_ids(&optimized.plan, NativeJoinType::LeftSemi);
+    assert_eq!(left_semi_joins.len(), 1);
+    let (semi_id, semi_join) = left_semi_joins[0];
+    assert_eq!(
+        aggregate_count_below(&optimized.plan, semi_join.inputs[0]),
+        0,
+        "no pre-aggregate may run over the unfiltered customer/orders/lineitem rows below the semi filter"
+    );
+    assert_eq!(join_type_count_below(&optimized.plan, semi_join.inputs[0], NativeJoinType::Inner), 2);
+    let final_aggregates = optimized
+        .plan
+        .nodes()
+        .iter()
+        .filter(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.len() == 5))
+        .collect::<Vec<_>>();
+    assert_eq!(final_aggregates.len(), 1, "exactly one five-key grouped aggregate should remain");
+    assert!(
+        node_reachable_below(&optimized.plan, final_aggregates[0].id, semi_id),
+        "the five-key aggregate must consume the semi-filtered join output"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q21");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -313,6 +368,26 @@ fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, 
             _ => None,
         })
         .collect()
+}
+
+fn aggregate_count_below(plan: &QueryPlan, root: NodeId) -> usize {
+    plan.nodes()
+        .iter()
+        .filter(|node| matches!(node.kind, PlanNode::Aggregate(_)) && node_reachable_below(plan, root, node.id))
+        .count()
+}
+
+fn node_reachable_below(plan: &QueryPlan, root: NodeId, target: NodeId) -> bool {
+    let mut stack = vec![root];
+    while let Some(node_id) = stack.pop() {
+        if node_id == target {
+            return true;
+        }
+        if let Some(node) = plan.node(node_id) {
+            stack.extend(node.input_ids().iter().copied());
+        }
+    }
+    false
 }
 
 fn join_type_count_below(plan: &QueryPlan, root: NodeId, join_type: NativeJoinType) -> usize {

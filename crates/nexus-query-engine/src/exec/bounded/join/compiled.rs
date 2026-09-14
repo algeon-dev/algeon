@@ -607,6 +607,27 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
                 },
             }
         },
+        // Semi/anti/mark membership is decided per probe row, so leaf chunks
+        // stream through the filtered build exactly like a frame stream does
+        // instead of materializing the whole leaf first.
+        BoundedCompiledJoinBuildState::Filtered(build) => {
+            let mut outputs = Vec::new();
+            let stream_result = stream_bounded_join_leaf_local_parquet_source(execution, stream, |input, execution| {
+                let output = execute_compiled_filtered_join_probe_chunk_from_resident_frame(
+                    execution, node_id, node, &build, input,
+                )?;
+                outputs.push(output);
+                Ok(())
+            });
+            match stream_result {
+                Ok(()) => Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs }),
+                Err(error) => {
+                    release_streamed_join_outputs_reverse(outputs);
+                    release_compiled_filtered_join_build_state(build);
+                    Err(error)
+                },
+            }
+        },
         BoundedCompiledJoinBuildState::Prepared(build)
             if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
                 && stateless_streaming_probe_supported(node) =>
