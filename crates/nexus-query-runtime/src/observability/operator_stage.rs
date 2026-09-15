@@ -321,6 +321,15 @@ where
 /// observation-to-runtime edge out of the layering graph while preserving the
 /// established [`stage_context_from_execution`] call surface.
 pub trait RuntimeExecutionStageContext {
+    /// Returns the observation handle, plan execution id, and parent span id
+    /// that scope one operator stage.
+    ///
+    /// The observation handle is always present, so a stage is still recorded
+    /// when either id is `None`. A `None` plan execution id records the stage
+    /// without associating it with a plan execution; a `None` parent span id
+    /// records the stage span without a parent span. `ExecutionContext`
+    /// returns both ids when it carries a runtime execution scope and neither
+    /// when it does not.
     fn runtime_operator_stage_context(
         &self,
     ) -> (RuntimeObservationHandle, Option<PlanExecutionId>, Option<RuntimeSpanId>);

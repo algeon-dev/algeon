@@ -67,7 +67,6 @@ mod lease;
 mod owned;
 mod partitioned;
 mod prepared;
-mod traits;
 mod types;
 mod validation;
 
@@ -77,5 +76,4 @@ pub use lease::*;
 pub use owned::*;
 pub use partitioned::*;
 pub use prepared::*;
-pub use traits::*;
 pub use types::*;

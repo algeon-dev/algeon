@@ -24,28 +24,72 @@ const OPERATION: &str = "nexus_query_engine.exec.bounded.compiled.scheduler";
 /// own the operator-specific work and return the resident resources produced by
 /// each task. Scheduler unit tests use mock payloads; production tasks use GPU
 /// frames.
+///
+/// # Resource ownership
+///
+/// `Resource` is the payload of one resident resource declared by the compiled
+/// pipeline, and [`CompiledPipelineState`] owns every live payload. A task
+/// reads its inputs through the state; a payload the executor takes out of the
+/// state, for example with `consume_task_input_resource`, is the executor's to
+/// release, including when the task then fails. Payloads returned in
+/// [`CompiledTaskOutput`] move into the state when the task completes. The
+/// scheduler passes each payload still in the state to exactly one of
+/// [`release_resource`](Self::release_resource) or
+/// [`cleanup_resource`](Self::cleanup_resource), or leaves a resource that
+/// outlives the run, such as the sink output, in the state returned by a
+/// successful run. It never passes the same payload to a hook twice, whether
+/// or not the hook succeeded.
+///
+/// # Error cleanup
+///
+/// When a scheduling cycle, task selection, task preparation, task execution,
+/// task completion, completed-resource release, or final validation fails, or
+/// a task panics, the scheduler passes every still-live payload to
+/// `cleanup_resource` and then calls
+/// [`cleanup_after_error`](Self::cleanup_after_error) once. A cleanup error
+/// does not stop the remaining cleanup. The primary error is returned, or the
+/// panic resumes unwinding, and observed runs record every cleanup error as a
+/// secondary cleanup failure.
 #[doc(hidden)]
 pub trait CompiledTaskExecutor {
+    /// Payload stored for each resident resource.
     type Resource;
 
+    /// Runs one prepared task.
+    ///
+    /// The returned output carries the payloads of the task's declared output
+    /// resources; completing the task rejects duplicate, undeclared, or
+    /// already-produced resources. `Err` or a panic starts error cleanup.
     fn execute_task(
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>>;
 
+    /// Releases a payload whose resource lifetime ended when a task completed.
+    ///
+    /// The payload is consumed even when this returns `Err`. The first error
+    /// fails the run after every other payload released by the same task
+    /// completion has also been passed to this hook. The default drops the
+    /// payload.
     fn release_resource(&mut self, _resource: ResidentResourceId, _payload: Self::Resource) -> Result<()> {
         Ok(())
     }
 
+    /// Releases a payload that was still live when the run failed. The default
+    /// delegates to [`release_resource`](Self::release_resource).
     fn cleanup_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         self.release_resource(resource, payload)
     }
 
+    /// Cleans up executor-owned state once per failed run, after every live
+    /// payload has been passed to [`cleanup_resource`](Self::cleanup_resource).
     fn cleanup_after_error(&mut self) -> Result<()> {
         Ok(())
     }
 
+    /// Runs before each runnable-task selection; `Err` fails the run and starts
+    /// error cleanup.
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
         Ok(CompiledSchedulingCycle)
     }

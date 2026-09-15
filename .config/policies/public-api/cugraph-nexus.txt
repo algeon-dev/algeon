@@ -7,38 +7,16 @@ pub fn cugraph::array::DeviceArray<T>::new(&cugraph::handle::EnteredContext<'_>,
 pub fn cugraph::array::DeviceArray<T>::view(&self) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'_, T>>
 impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArray<T>
 pub fn cugraph::array::DeviceArray<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
-pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
 pub struct cugraph::array::DeviceArrayView<'a, T: cugraph::types::CugraphElement>
 impl<'a, T: cugraph::types::CugraphElement> cugraph::array::DeviceArrayView<'a, T>
 pub fn cugraph::array::DeviceArrayView<'a, T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArrayView<'a, T>::from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
 pub fn cugraph::array::DeviceArrayView<'a, T>::is_empty(&self) -> bool
 pub fn cugraph::array::DeviceArrayView<'a, T>::len(&self) -> usize
 pub fn cugraph::array::DeviceArrayView<'a, T>::to_vec(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<T>>
-pub fn cugraph::array::DeviceArrayView<'a, T>::try_from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
 impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a cugraph::array::DeviceArrayView<'a, V>> for cugraph::VertexSelection<'a, V>
 pub fn cugraph::VertexSelection<'a, V>::from(&'a cugraph::array::DeviceArrayView<'a, V>) -> Self
 impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArrayView<'_, T>
 pub fn cugraph::array::DeviceArrayView<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
-pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
-pub unsafe trait cugraph::array::DeviceBuffer<T: cugraph::types::CugraphElement>
-pub fn cugraph::array::DeviceBuffer::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceBuffer::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceBuffer::len(&self) -> usize
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
-pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
-pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
 pub mod cugraph::centrality
 pub mod cugraph::centrality::betweenness
 pub struct cugraph::centrality::betweenness::BetweennessCentralityParams
@@ -447,18 +425,6 @@ pub cugraph::cudf_interop::TableVertexPairOptions::first_col: usize
 pub cugraph::cudf_interop::TableVertexPairOptions::second_col: usize
 impl cugraph::cudf_interop::TableVertexPairOptions
 pub const fn cugraph::cudf_interop::TableVertexPairOptions::new(usize, usize) -> Self
-pub trait cugraph::cudf_interop::IntoSeries
-pub fn cugraph::cudf_interop::IntoSeries::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::degrees::DegreeValues<'_>
-pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Distances<'_>
-pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::IntegerValues<'_>
-pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::ScoreValues<'_>
-pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
-pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub fn cugraph::cudf_interop::cudf_type_to_cugraph(cudf::core::types::TypeId) -> core::option::Option<cugraph::types::DataType>
 pub fn cugraph::cudf_interop::cugraph_type_to_cudf(cugraph::types::DataType) -> core::option::Option<cudf::core::types::TypeId>
 pub fn cugraph::cudf_interop::device_array_view_from_slice<'a, T: cugraph::types::CugraphElement>(&'a cudf::core::column::device_slice::DeviceSlice<'a>) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'a, T>>
@@ -1048,13 +1014,13 @@ pub mod cugraph::structure::degrees
 pub enum cugraph::structure::degrees::DegreeValues<'a>
 pub cugraph::structure::degrees::DegreeValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::degrees::DegreeValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::degrees::DegreeValues<'_>
+pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::degrees::DegreeValues<'a>
 pub fn cugraph::structure::degrees::DegreeValues<'a>::is_empty(&self) -> bool
 pub fn cugraph::structure::degrees::DegreeValues<'a>::len(&self) -> usize
 pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::degrees::DegreeValues<'_>
-pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub struct cugraph::structure::degrees::DegreesResult(_)
 impl cugraph::structure::degrees::DegreesResult
 pub fn cugraph::structure::degrees::DegreesResult::in_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
@@ -1083,6 +1049,8 @@ pub cugraph::structure::typed_results::Distances::F32(cugraph::array::DeviceArra
 pub cugraph::structure::typed_results::Distances::F64(cugraph::array::DeviceArrayView<'a, f64>)
 pub cugraph::structure::typed_results::Distances::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::typed_results::Distances::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::typed_results::Distances<'_>
+pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::Distances<'a>
 pub fn cugraph::structure::typed_results::Distances<'a>::is_empty(&self) -> bool
 pub fn cugraph::structure::typed_results::Distances<'a>::len(&self) -> usize
@@ -1090,11 +1058,11 @@ pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f32(&self, &cugr
 pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
 pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Distances<'_>
-pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::typed_results::IntegerValues<'a>
 pub cugraph::structure::typed_results::IntegerValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::typed_results::IntegerValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::typed_results::IntegerValues<'_>
+pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::IntegerValues<'a>
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
@@ -1102,11 +1070,11 @@ pub fn cugraph::structure::typed_results::IntegerValues<'a>::is_empty(&self) -> 
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::len(&self) -> usize
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::IntegerValues<'_>
-pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::typed_results::ScoreValues<'a>
 pub cugraph::structure::typed_results::ScoreValues::F32(cugraph::array::DeviceArrayView<'a, f32>)
 pub cugraph::structure::typed_results::ScoreValues::F64(cugraph::array::DeviceArrayView<'a, f64>)
+impl cugraph::structure::typed_results::ScoreValues<'_>
+pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::ScoreValues<'a>
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f32>>
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f64>>
@@ -1114,11 +1082,11 @@ pub fn cugraph::structure::typed_results::ScoreValues<'a>::is_empty(&self) -> bo
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::len(&self) -> usize
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f32>>
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::ScoreValues<'_>
-pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::typed_results::VertexIds<'a>
 pub cugraph::structure::typed_results::VertexIds::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::typed_results::VertexIds::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::typed_results::VertexIds<'_>
+pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::VertexIds<'a>
 pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
 pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
@@ -1126,8 +1094,6 @@ pub fn cugraph::structure::typed_results::VertexIds<'a>::is_empty(&self) -> bool
 pub fn cugraph::structure::typed_results::VertexIds<'a>::len(&self) -> usize
 pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
-pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub struct cugraph::structure::typed_results::SizeValues<'a>(_)
 impl<'a> cugraph::structure::typed_results::SizeValues<'a>
 pub fn cugraph::structure::typed_results::SizeValues<'a>::as_usize(&self) -> &cugraph::array::DeviceArrayView<'a, usize>
@@ -1137,18 +1103,20 @@ pub fn cugraph::structure::typed_results::SizeValues<'a>::to_vec_usize(&self, &c
 pub enum cugraph::structure::DegreeValues<'a>
 pub cugraph::structure::DegreeValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::DegreeValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::degrees::DegreeValues<'_>
+pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::degrees::DegreeValues<'a>
 pub fn cugraph::structure::degrees::DegreeValues<'a>::is_empty(&self) -> bool
 pub fn cugraph::structure::degrees::DegreeValues<'a>::len(&self) -> usize
 pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::degrees::DegreeValues<'_>
-pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::Distances<'a>
 pub cugraph::structure::Distances::F32(cugraph::array::DeviceArrayView<'a, f32>)
 pub cugraph::structure::Distances::F64(cugraph::array::DeviceArrayView<'a, f64>)
 pub cugraph::structure::Distances::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::Distances::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::typed_results::Distances<'_>
+pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::Distances<'a>
 pub fn cugraph::structure::typed_results::Distances<'a>::is_empty(&self) -> bool
 pub fn cugraph::structure::typed_results::Distances<'a>::len(&self) -> usize
@@ -1156,11 +1124,11 @@ pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f32(&self, &cugr
 pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
 pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Distances<'_>
-pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::IntegerValues<'a>
 pub cugraph::structure::IntegerValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::IntegerValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::typed_results::IntegerValues<'_>
+pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::IntegerValues<'a>
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
@@ -1168,8 +1136,6 @@ pub fn cugraph::structure::typed_results::IntegerValues<'a>::is_empty(&self) -> 
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::len(&self) -> usize
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::IntegerValues<'_>
-pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::KCoreDegreeType
 pub cugraph::structure::KCoreDegreeType::In
 pub cugraph::structure::KCoreDegreeType::InOut
@@ -1179,6 +1145,8 @@ pub fn cugraph_sys::cugraph_k_core_degree_type_t::from(cugraph::structure::core:
 pub enum cugraph::structure::ScoreValues<'a>
 pub cugraph::structure::ScoreValues::F32(cugraph::array::DeviceArrayView<'a, f32>)
 pub cugraph::structure::ScoreValues::F64(cugraph::array::DeviceArrayView<'a, f64>)
+impl cugraph::structure::typed_results::ScoreValues<'_>
+pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::ScoreValues<'a>
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f32>>
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f64>>
@@ -1186,11 +1154,11 @@ pub fn cugraph::structure::typed_results::ScoreValues<'a>::is_empty(&self) -> bo
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::len(&self) -> usize
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f32>>
 pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::ScoreValues<'_>
-pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::VertexIds<'a>
 pub cugraph::structure::VertexIds::I32(cugraph::array::DeviceArrayView<'a, i32>)
 pub cugraph::structure::VertexIds::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl cugraph::structure::typed_results::VertexIds<'_>
+pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 impl<'a> cugraph::structure::typed_results::VertexIds<'a>
 pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
 pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
@@ -1198,8 +1166,6 @@ pub fn cugraph::structure::typed_results::VertexIds<'a>::is_empty(&self) -> bool
 pub fn cugraph::structure::typed_results::VertexIds<'a>::len(&self) -> usize
 pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
 pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
-impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
-pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
 pub enum cugraph::structure::VertexSelection<'a, V: cugraph::types::CugraphElement>
 pub cugraph::structure::VertexSelection::All
 pub cugraph::structure::VertexSelection::Device(&'a cugraph::array::DeviceArrayView<'a, V>)
@@ -1521,26 +1487,16 @@ pub fn cugraph::array::DeviceArray<T>::new(&cugraph::handle::EnteredContext<'_>,
 pub fn cugraph::array::DeviceArray<T>::view(&self) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'_, T>>
 impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArray<T>
 pub fn cugraph::array::DeviceArray<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
-pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
 pub struct cugraph::DeviceArrayView<'a, T: cugraph::types::CugraphElement>
 impl<'a, T: cugraph::types::CugraphElement> cugraph::array::DeviceArrayView<'a, T>
 pub fn cugraph::array::DeviceArrayView<'a, T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArrayView<'a, T>::from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
 pub fn cugraph::array::DeviceArrayView<'a, T>::is_empty(&self) -> bool
 pub fn cugraph::array::DeviceArrayView<'a, T>::len(&self) -> usize
 pub fn cugraph::array::DeviceArrayView<'a, T>::to_vec(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<T>>
-pub fn cugraph::array::DeviceArrayView<'a, T>::try_from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
 impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a cugraph::array::DeviceArrayView<'a, V>> for cugraph::VertexSelection<'a, V>
 pub fn cugraph::VertexSelection<'a, V>::from(&'a cugraph::array::DeviceArrayView<'a, V>) -> Self
 impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArrayView<'_, T>
 pub fn cugraph::array::DeviceArrayView<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
-pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
 pub struct cugraph::EnteredContext<'a>
 impl cugraph::handle::EnteredContext<'_>
 pub fn cugraph::handle::EnteredContext<'_>::device(&self) -> i32
@@ -1706,18 +1662,6 @@ impl core::ops::drop::Drop for cugraph::handle::ResourceHandle
 pub fn cugraph::handle::ResourceHandle::drop(&mut self)
 pub struct cugraph::Transposed
 impl cugraph::graph::Transposition for cugraph::graph::Transposed
-pub unsafe trait cugraph::DeviceBuffer<T: cugraph::types::CugraphElement>
-pub fn cugraph::DeviceBuffer::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::DeviceBuffer::is_empty(&self) -> bool
-pub fn cugraph::DeviceBuffer::len(&self) -> usize
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
-pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
-impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
-pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
-pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
-pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
 pub trait cugraph::Transposition: cugraph::graph::sealed::Sealed
 impl cugraph::graph::Transposition for cugraph::graph::Forward
 impl cugraph::graph::Transposition for cugraph::graph::Transposed

@@ -23,15 +23,11 @@ use rapids_interop::{
     DataType as InteropDataType, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedColumnTransfer,
     OwnedTableTransfer, OwnedTableTransferParts, PhysicalValidity, Placement, ProducerReadiness, ReleaseContract,
     ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule,
-    TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDeviceTableTransfer, TypeId as InteropTypeId,
+    TypeId as InteropTypeId,
 };
-use static_assertions::assert_impl_all;
 use tempfile::TempDir;
 
 use crate::common::{column_from_slice, interop_error_context_value, lock_event_observation};
-
-assert_impl_all!(Series: TryIntoOwnedDeviceColumnTransfer);
-assert_impl_all!(DataFrame: TryIntoOwnedDeviceTableTransfer);
 
 fn binding_ptr_eq(transfer: &OwnedColumnTransfer, expected_ptr: *const std::ffi::c_void) -> bool {
     transfer.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptr)

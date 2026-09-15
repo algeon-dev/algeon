@@ -11,12 +11,11 @@ use std::{
 };
 
 use super::{
-    CleanupFailureSummary, LogicalRetainedBytes, ObservationSequence, PlanExecutionId, QueryAttemptReport,
-    QueryBoundaryKind, RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationFooter,
-    RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest, RuntimeObservationPayload,
-    RuntimeObservationReasonLoss, RuntimeObservationRecordClass, RuntimeQueryId, RuntimeSourceLocationId,
-    RuntimeSpanId, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
-    SystemRuntimeObservationClock,
+    CleanupFailureSummary, ObservationSequence, PlanExecutionId, QueryAttemptReport, QueryBoundaryKind,
+    RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationFooter, RuntimeObservationLimits,
+    RuntimeObservationLossReason, RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss,
+    RuntimeObservationRecordClass, RuntimeQueryId, RuntimeSourceLocationId, RuntimeSpanId, RuntimeTerminalOutcome,
+    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, SystemRuntimeObservationClock,
 };
 use crate::observability::{RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeClockDomain};
 

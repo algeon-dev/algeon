@@ -134,9 +134,30 @@ impl YieldedFrameCounterTestGuard {
     }
 }
 
+/// Lazy producer behind a resident frame stream payload.
+///
+/// A yielded frame belongs to the caller. Storage the source still retains,
+/// such as unread inputs, build state, or pending outputs, belongs to the
+/// source until [`release`](Self::release) runs.
 pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
+    /// Produces the next frame.
+    ///
+    /// `Some(Ok(frame))` transfers the frame and its device bytes to the
+    /// caller. `Some(Err(_))` reports a failure while the source may still
+    /// retain storage. `None` reports exhaustion; some sources release their
+    /// retained state before returning `None`, but `None` alone does not mean
+    /// the source has released it.
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>>;
 
+    /// Releases storage the source still retains, within the execution attempt
+    /// that owns it.
+    ///
+    /// The owning payload calls this after draining the stream, when a
+    /// consumer stops early, and on error paths, so it must be idempotent,
+    /// including after the source released itself at exhaustion. Dropping a
+    /// source without this call runs only ordinary `Drop` for its fields;
+    /// release work that needs the execution attempt does not happen. The
+    /// default retains nothing.
     fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {}
 
     /// Creates an independent cursor sharing retained input storage. Output

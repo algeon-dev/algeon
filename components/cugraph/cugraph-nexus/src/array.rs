@@ -426,31 +426,6 @@ impl<T: CugraphElement> DeviceArray<T> {
     }
 }
 
-/// Contract for a type that safely exposes a contiguous device-memory region
-/// of elements of type `T`.
-///
-/// This trait is intended for interop crates (for example GPU DataFrame wrappers)
-/// to provide a safe bridge into [`DeviceArrayView::from_device_buffer`].
-///
-/// # Safety
-///
-/// Implementors must guarantee that:
-/// - `device_ptr()` returns a pointer to valid device memory
-/// - the allocation contains at least `len()` elements of type `T`
-/// - the returned pointer remains valid for as long as `self` is alive
-pub unsafe trait DeviceBuffer<T: CugraphElement> {
-    /// Raw device pointer to the first element.
-    fn device_ptr(&self) -> *mut std::ffi::c_void;
-
-    /// Number of logical elements.
-    fn len(&self) -> usize;
-
-    /// Returns `true` if the buffer contains no elements.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 /// A non-owning view into device (GPU) memory with compile-time element type `T`.
 ///
 /// The lifetime parameter `'a` ties this view to whatever owns the underlying
@@ -494,33 +469,6 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     /// after a runtime dtype check.
     pub(crate) fn from_raw_unchecked(raw: RawDeviceArrayView<'a>) -> Self {
         DeviceArrayView { inner: raw, _element: PhantomData }
-    }
-
-    /// Create a view from a safe [`DeviceBuffer`] implementor.
-    ///
-    /// This is the ergonomic constructor for zero-copy interop. The lifetime
-    /// of the returned view is tied to `buffer`, preventing accidental use
-    /// after the external allocation is dropped.
-    pub fn from_device_buffer<B>(buffer: &'a B) -> Result<Self>
-    where B: DeviceBuffer<T> + ?Sized {
-        Self::try_from_device_buffer(buffer)
-    }
-
-    /// Fallible variant of [`from_device_buffer`](Self::from_device_buffer).
-    pub fn try_from_device_buffer<B>(buffer: &'a B) -> Result<Self>
-    where B: DeviceBuffer<T> + ?Sized {
-        // SAFETY: `DeviceBuffer` implementors guarantee that the returned
-        // device pointer and length describe a valid contiguous buffer of `T`
-        // that lives for `'a`.
-        let inner = unsafe {
-            RawDeviceArrayView::try_from_raw(
-                buffer.device_ptr(),
-                buffer.len(),
-                T::data_type(),
-                "DeviceArrayView::try_from_device_buffer",
-            )?
-        };
-        Ok(DeviceArrayView { inner, _element: PhantomData })
     }
 
     /// Device pointer to the first element of this view.
@@ -577,36 +525,6 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
         }
 
         Ok(result)
-    }
-}
-
-// SAFETY: `DeviceArray<T>` owns a contiguous GPU allocation of `T` elements
-// for its full lifetime and exposes the same pointer/length pair that backs
-// its typed view APIs.
-unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArray<T> {
-    fn device_ptr(&self) -> *mut std::ffi::c_void {
-        // SAFETY: `self.inner.raw_view` is created during `RawDeviceArray::new`
-        // and remains owned by the array until drop.
-        unsafe { cugraph_type_erased_device_array_view_pointer(self.inner.raw_view) as *mut std::ffi::c_void }
-    }
-
-    fn len(&self) -> usize {
-        // SAFETY: `self.inner.raw_view` is created during `RawDeviceArray::new`
-        // and remains owned by the array until drop.
-        unsafe { cugraph_type_erased_device_array_view_size(self.inner.raw_view) }
-    }
-}
-
-// SAFETY: `DeviceArrayView<'a, T>` is a borrowed view over a contiguous GPU
-// allocation of `T` elements, and its lifetime ensures the underlying memory
-// outlives the trait accessors.
-unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArrayView<'_, T> {
-    fn device_ptr(&self) -> *mut std::ffi::c_void {
-        self.inner.device_ptr()
-    }
-
-    fn len(&self) -> usize {
-        self.inner.len()
     }
 }
 
@@ -745,68 +663,6 @@ mod tests {
 
         let result: Vec<i32> = raw_view.to_vec(&entered).expect("to_vec");
         assert_eq!(result, vec![100, 200, 300]);
-    }
-
-    #[test]
-    fn test_from_device_buffer_roundtrip() {
-        struct ExternalBuffer<'a, T: CugraphElement> {
-            arr: &'a DeviceArray<T>,
-        }
-
-        // SAFETY: `ExternalBuffer` forwards the pointer and length from a live `DeviceArray`
-        // borrow, so the reported device region remains valid for the lifetime of `self`.
-        unsafe impl<T: CugraphElement> DeviceBuffer<T> for ExternalBuffer<'_, T> {
-            fn device_ptr(&self) -> *mut std::ffi::c_void {
-                self.arr.view().expect("view").device_ptr()
-            }
-
-            fn len(&self) -> usize {
-                self.arr.view().expect("view").len()
-            }
-        }
-
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_from_device_buffer_roundtrip").expect("entered");
-        let arr = DeviceArray::from_slice(&entered, &[7i32, 8, 9, 10]).expect("create");
-
-        let ext = ExternalBuffer { arr: &arr };
-
-        let view = DeviceArrayView::<i32>::from_device_buffer(&ext).expect("device view");
-        assert_eq!(view.len(), 4);
-
-        let result: Vec<i32> = view.to_vec(&entered).expect("to_vec");
-        assert_eq!(result, vec![7, 8, 9, 10]);
-    }
-
-    #[test]
-    fn test_try_from_device_buffer_roundtrip() {
-        struct ExternalBuffer<'a, T: CugraphElement> {
-            arr: &'a DeviceArray<T>,
-        }
-
-        // SAFETY: `ExternalBuffer` forwards the pointer and length from a live `DeviceArray`
-        // borrow, so the reported device region remains valid for the lifetime of `self`.
-        unsafe impl<T: CugraphElement> DeviceBuffer<T> for ExternalBuffer<'_, T> {
-            fn device_ptr(&self) -> *mut std::ffi::c_void {
-                self.arr.view().expect("view").device_ptr()
-            }
-
-            fn len(&self) -> usize {
-                self.arr.view().expect("view").len()
-            }
-        }
-
-        let handle = ResourceHandle::new().expect("handle");
-        let entered = handle.enter("test_try_from_device_buffer_roundtrip").expect("entered");
-        let arr = DeviceArray::from_slice(&entered, &[11i32, 12, 13]).expect("create");
-
-        let ext = ExternalBuffer { arr: &arr };
-
-        let view = DeviceArrayView::<i32>::try_from_device_buffer(&ext).expect("device view");
-        assert_eq!(view.len(), 3);
-
-        let result: Vec<i32> = view.to_vec(&entered).expect("to_vec");
-        assert_eq!(result, vec![11, 12, 13]);
     }
 
     #[test]

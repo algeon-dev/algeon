@@ -82,7 +82,7 @@ impl<V: CugraphElement> ResolvedVertexSelection<'_, V> {
     pub(crate) fn view(&self) -> Result<Option<DeviceArrayView<'_, V>>> {
         match self {
             Self::All => Ok(None),
-            Self::Borrowed(view) => DeviceArrayView::from_device_buffer(*view).map(Some),
+            Self::Borrowed(view) => Ok(Some(DeviceArrayView::from_raw_unchecked(view.raw_view()))),
             Self::Owned(array) => array.view().map(Some),
         }
     }

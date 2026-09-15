@@ -62,7 +62,7 @@ impl LitValue {
 /// [`Series`]. Evaluation does not intentionally synchronize the host before
 /// returning; later host-visible reads may synchronize.
 pub fn lit<L: IntoLit>(value: L) -> Expr {
-    value.into_expr()
+    value.into_lit()
 }
 
 /// Create a typed null literal expression that broadcasts to all rows.
@@ -162,12 +162,12 @@ pub fn lit_duration_raw(raw: i64, resolution: TimestampResolution) -> Expr {
 /// Trait for types that can be converted to a literal [`Expr`].
 pub trait IntoLit {
     /// Convert this value into a literal `Expr`.
-    fn into_expr(self) -> Expr;
+    fn into_lit(self) -> Expr;
 }
 
 // Blanket impl for all CudfType (numeric) types.
 impl<T: CudfType + Send + Sync> IntoLit for T {
-    fn into_expr(self) -> Expr {
+    fn into_lit(self) -> Expr {
         let val = self;
         Expr::Literal(LitValue::numeric(DataType::new(T::TYPE_ID), move |domain| {
             Scalar::from_value_in_domain(val, domain)
@@ -176,13 +176,13 @@ impl<T: CudfType + Send + Sync> IntoLit for T {
 }
 
 impl IntoLit for &str {
-    fn into_expr(self) -> Expr {
+    fn into_lit(self) -> Expr {
         Expr::Literal(LitValue::string(self.to_string()))
     }
 }
 
 impl IntoLit for String {
-    fn into_expr(self) -> Expr {
+    fn into_lit(self) -> Expr {
         Expr::Literal(LitValue::string(self))
     }
 }

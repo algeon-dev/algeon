@@ -229,7 +229,7 @@ pub(crate) use staging::{
 };
 pub use tsv::stable_tsv_field;
 pub(crate) use tsv::{
-    CapabilityReasonExt, empty_as_none, list_or_none, optional_duration_ms_text, optional_env_u64_get,
-    optional_env_usize_get, optional_u64, optional_u128, optional_usize, parse_optional_bool,
-    parse_optional_timeout_secs, smoke_error,
+    empty_as_none, list_or_none, optional_duration_ms_text, optional_env_u64_get, optional_env_usize_get, optional_u64,
+    optional_u128, optional_usize, parse_optional_bool, parse_optional_timeout_secs, smoke_error,
+    table_format_capability_reason_code,
 };

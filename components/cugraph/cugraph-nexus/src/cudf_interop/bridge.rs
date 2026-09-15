@@ -98,34 +98,27 @@ pub fn device_array_view_from_slice<'a, T: CugraphElement>(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Internal extension traits (pub(crate))
+// RawDeviceArrayView → cudf Column
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Extension trait for converting a cugraph [`RawDeviceArrayView`] into a cudf [`Column`].
-///
-/// [`Column`]: cudf::Column
-pub(super) trait RawDeviceArrayViewExt {
+impl RawDeviceArrayView<'_> {
     /// Convert this cugraph device array into a cudf [`Column`].
     ///
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     ///
     /// [`Column`]: cudf::Column
-    fn to_cudf_column(&self, runtime: &Runtime) -> Result<Column>;
-}
-
-impl RawDeviceArrayViewExt for RawDeviceArrayView<'_> {
-    fn to_cudf_column(&self, runtime: &Runtime) -> Result<Column> {
+    pub(super) fn to_cudf_column(&self, runtime: &Runtime) -> Result<Column> {
         let dtype = self.dtype()?;
         let cudf_type = cugraph_type_to_cudf(dtype).ok_or_else(|| {
-            Error::new(ErrorKind::UnsupportedType, "RawDeviceArrayViewExt::to_cudf_column")
+            Error::new(ErrorKind::UnsupportedType, "RawDeviceArrayView::to_cudf_column")
                 .with_message(format!("cugraph DataType {:?} has no cudf TypeId equivalent", dtype))
         })?;
 
         validate_runtime_result_device(
             runtime,
             self.device(),
-            "RawDeviceArrayViewExt::to_cudf_column",
+            "RawDeviceArrayView::to_cudf_column",
             "runtime device must match the cugraph result device",
         )?;
 
@@ -137,7 +130,7 @@ impl RawDeviceArrayViewExt for RawDeviceArrayView<'_> {
             .map_err(|error| {
                 map_cudf_error_with(
                     error,
-                    "RawDeviceArrayViewExt::to_cudf_column",
+                    "RawDeviceArrayView::to_cudf_column",
                     "failed to materialize cudf Column from cugraph device array",
                     [("len", self.len().to_string()), ("dtype", format!("{:?}", dtype))],
                 )

@@ -12,7 +12,7 @@ use common::{
 use cugraph::{
     VertexSelection,
     array::DeviceArray,
-    cudf_interop::{IntoSeries, device_array_view_from_slice},
+    cudf_interop::device_array_view_from_slice,
     graph::{Forward, GraphBuilder},
     handle::ResourceHandle,
     layout::{ForceAtlas2Params, LayoutResult},

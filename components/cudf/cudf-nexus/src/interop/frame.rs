@@ -145,17 +145,36 @@ impl PartitionedDataFrameExport {
 
     /// Project this heterogeneous producer into the shared RAPIDS partitioned
     /// prepared device export profile.
+    ///
+    /// The partitioned export borrows `self` and describes each partition's
+    /// device buffers without taking ownership, so it cannot outlive that
+    /// borrow. Columns are grouped into one partition per distinct CUDA
+    /// execution-domain provenance, so mixed-provenance input produces multiple
+    /// partition roots rather than being rejected. Returns an [`InteropError`]
+    /// when a column's layout falls outside the prepared device profile, its
+    /// buffers are not on a CUDA device, or the execution binding or producer
+    /// readiness of any partition's runtime domain is unavailable.
     pub fn try_prepare_device_partitioned_table_export(
         &self,
     ) -> Result<PartitionedPreparedTableExport<'_>, InteropError> {
-        <Self as TryPrepareDevicePartitionedTableExport>::try_prepare_device_partitioned_table_export(self)
+        prepare_partitioned_device_table_export_from_columns(
+            self,
+            "interop::PartitionedDataFrameExport::try_prepare_device_partitioned_table_export",
+        )
     }
 
     /// Project this heterogeneous producer into one host-visible prepared
     /// table export root by materializing supported top-level columns to owned
     /// host bytes.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        <Self as TryPrepareHostTableExport>::try_prepare_host_table_export(self)
+        prepare_partitioned_host_table_export_from_columns(
+            self,
+            "interop::PartitionedDataFrameExport::try_prepare_host_table_export",
+        )
     }
 
     /// Move this heterogeneous producer into the shared RAPIDS partitioned
@@ -165,8 +184,19 @@ impl PartitionedDataFrameExport {
     /// partition. Each partition still follows the conservative default
     /// release contract unless you opt into the runtime-backed signal-release
     /// variant below.
+    ///
+    /// Consumes `self`: on success each partition's transfer root owns that
+    /// partition's device buffers under the default owned-transfer release
+    /// contract, and on error `self` has already been consumed. Returns an
+    /// [`InteropError`] when a column's layout falls outside the owned device
+    /// transfer profile, its buffers are not on a CUDA device, or the execution
+    /// binding or producer readiness of any partition's runtime domain is
+    /// unavailable.
     pub fn try_into_owned_transfer(self) -> Result<PartitionedOwnedTableTransfer, InteropError> {
-        <Self as TryIntoOwnedDevicePartitionedTableTransfer>::try_into_owned_device_partitioned_table_transfer(self)
+        transfer_partitioned_owned_table_from_columns(
+            self,
+            "interop::PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer",
+        )
     }
 
     /// Move this heterogeneous producer into the shared RAPIDS partitioned
@@ -261,8 +291,13 @@ impl Series {
     /// descriptor remains borrowed-only, does not transfer ownership, and is
     /// limited to the current borrowed compatibility profile's fixed-width,
     /// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` support.
+    ///
+    /// The descriptor borrows `self` and must not outlive that borrow. Returns an
+    /// [`InteropError`] when the execution binding of `self`'s runtime domain is
+    /// unavailable or when a column's type or layout falls outside the borrowed
+    /// compatibility profile.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
-        <Self as TryBorrowColumnView>::try_borrow_column_view(self)
+        borrow_from_owned_column(self.as_column(), "interop::Series::try_borrow_column_view")
     }
 
     /// Convenience producer that projects this high-level `Series` into the
@@ -270,8 +305,15 @@ impl Series {
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedColumnExport::try_activate_read_lease`].
+    ///
+    /// The export describes `self`'s device buffers without taking ownership, so
+    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
+    /// layout falls outside the prepared device profile, its buffers are not on a
+    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// runtime domain is unavailable.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
-        <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
+        prepare_from_owned_column(self.as_column(), "interop::Series::try_prepare_device_column_export")
+            .map(|export| export.with_retained_owner_arc(self.arc()))
     }
 
     /// Convenience producer that projects this high-level `Series` into the
@@ -279,8 +321,12 @@ impl Series {
     ///
     /// This materializes the active logical range to owned host-visible bytes
     /// and therefore is not zero-copy.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>, InteropError> {
-        <Self as TryPrepareHostColumnExport>::try_prepare_host_column_export(self)
+        prepare_host_from_owned_column(self.as_column(), "interop::Series::try_prepare_host_column_export")
     }
 
     /// Convenience producer that moves this high-level `Series` into the
@@ -293,8 +339,17 @@ impl Series {
     ///
     /// Shared owned-transfer roots do not carry a schema-name fact, so the
     /// `Series` name is not exported.
+    ///
+    /// Consumes `self`: on success the transfer root owns the device buffers
+    /// under the default owned-transfer release contract, and on error `self`
+    /// has already been consumed. Returns an [`InteropError`] when a column's
+    /// layout falls outside the owned device transfer profile, its buffers are
+    /// not on a CUDA device, or the execution binding or producer readiness of
+    /// `self`'s runtime domain is unavailable.
     pub fn try_into_owned_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
-        <Self as TryIntoOwnedDeviceColumnTransfer>::try_into_owned_device_column_transfer(self)
+        let operation = "interop::Series::try_into_owned_device_column_transfer";
+        let column = into_owned_column_for_transfer(self, operation)?;
+        transfer_from_owned_column(column, operation)
     }
 
     /// Convenience producer that moves this high-level `Series` into the
@@ -335,33 +390,6 @@ impl Series {
         self.as_column()
             .try_prepare_device_column_export_with_event(event)
             .map(|export| export.with_retained_owner_arc(self.arc()))
-    }
-}
-
-impl TryBorrowColumnView for Series {
-    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
-        borrow_from_owned_column(self.as_column(), "interop::Series::try_borrow_column_view")
-    }
-}
-
-impl TryPrepareDeviceColumnExport for Series {
-    fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
-        prepare_from_owned_column(self.as_column(), "interop::Series::try_prepare_device_column_export")
-            .map(|export| export.with_retained_owner_arc(self.arc()))
-    }
-}
-
-impl TryPrepareHostColumnExport for Series {
-    fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>, InteropError> {
-        prepare_host_from_owned_column(self.as_column(), "interop::Series::try_prepare_host_column_export")
-    }
-}
-
-impl TryIntoOwnedDeviceColumnTransfer for Series {
-    fn try_into_owned_device_column_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
-        let operation = "interop::Series::try_into_owned_device_column_transfer";
-        let column = into_owned_column_for_transfer(self, operation)?;
-        transfer_from_owned_column(column, operation)
     }
 }
 
@@ -418,8 +446,20 @@ impl DataFrame {
     /// `DataFrame` is a convenience adapter, not the ABI itself. The returned
     /// descriptor remains borrowed-only, does not transfer ownership, and does
     /// not promise zero-copy output for downstream consumer algorithms.
+    ///
+    /// The descriptor borrows `self` and must not outlive that borrow. Returns an
+    /// [`InteropError`] when the execution binding of `self`'s runtime domain is
+    /// unavailable or when a column's type or layout falls outside the borrowed
+    /// compatibility profile.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
-        <Self as TryBorrowTableView>::try_borrow_table_view(self)
+        let execution = execution_binding("interop::DataFrame::try_borrow_table_view", self.execution_domain())?;
+        let columns = self
+            .columns_map()
+            .values()
+            .map(|column| borrow_from_owned_column(column.as_ref(), "interop::DataFrame::try_borrow_table_view"))
+            .collect::<Result<Vec<_>, _>>()?;
+        BorrowedTableView::try_new(self.num_rows(), columns, execution)
+            .map_err(|error| error.with_context("operation", "interop::DataFrame::try_borrow_table_view"))
     }
 
     /// Convenience producer that projects this high-level `DataFrame` into the
@@ -427,8 +467,21 @@ impl DataFrame {
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedTableExport::try_activate_read_lease`].
+    ///
+    /// The export describes `self`'s device buffers without taking ownership, so
+    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
+    /// layout falls outside the prepared device profile, its buffers are not on a
+    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// runtime domain is unavailable.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
+        prepare_device_table_export_from_columns(
+            self.columns_map().values().map(AsRef::as_ref),
+            self.num_rows(),
+            Some(self.column_names_owned()),
+            self.execution_domain(),
+            "interop::DataFrame::try_prepare_device_table_export",
+        )
+        .map(|export| export.with_retained_owner_arc(Arc::new(self.clone())))
     }
 
     /// Convenience producer that projects this high-level `DataFrame` into the
@@ -436,8 +489,17 @@ impl DataFrame {
     ///
     /// This materializes each supported top-level column to owned host-visible
     /// bytes and therefore is not zero-copy.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        <Self as TryPrepareHostTableExport>::try_prepare_host_table_export(self)
+        prepare_host_table_export_from_columns(
+            self.columns_map().values().map(AsRef::as_ref),
+            self.num_rows(),
+            Some(self.column_names_owned()),
+            "interop::DataFrame::try_prepare_host_table_export",
+        )
     }
 
     /// Convenience producer that moves this high-level `DataFrame` into the
@@ -450,8 +512,17 @@ impl DataFrame {
     ///
     /// Unlike low-level `Table` owned transfer, this high-level producer
     /// preserves the `DataFrame` schema names on the shared root.
+    ///
+    /// Consumes `self`: on success the transfer root owns the device buffers
+    /// under the default owned-transfer release contract, and on error `self`
+    /// has already been consumed. Returns an [`InteropError`] when a column's
+    /// layout falls outside the owned device transfer profile, its buffers are
+    /// not on a CUDA device, or the execution binding or producer readiness of
+    /// `self`'s runtime domain is unavailable.
     pub fn try_into_owned_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
-        <Self as TryIntoOwnedDeviceTableTransfer>::try_into_owned_device_table_transfer(self)
+        let operation = "interop::DataFrame::try_into_owned_device_table_transfer";
+        let (table, names) = into_owned_table_for_transfer(self, operation)?;
+        transfer_from_owned_table_with_names(table, Some(names), operation)
     }
 
     /// Convenience producer that moves this high-level `DataFrame` into the
@@ -504,77 +575,5 @@ impl DataFrame {
             context,
         )
         .map(|export| export.with_retained_owner_arc(Arc::new(self.clone())))
-    }
-}
-
-impl TryBorrowTableView for DataFrame {
-    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
-        let execution = execution_binding("interop::DataFrame::try_borrow_table_view", self.execution_domain())?;
-        let columns = self
-            .columns_map()
-            .values()
-            .map(|column| borrow_from_owned_column(column.as_ref(), "interop::DataFrame::try_borrow_table_view"))
-            .collect::<Result<Vec<_>, _>>()?;
-        BorrowedTableView::try_new(self.num_rows(), columns, execution)
-            .map_err(|error| error.with_context("operation", "interop::DataFrame::try_borrow_table_view"))
-    }
-}
-
-impl TryPrepareDeviceTableExport for DataFrame {
-    fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        prepare_device_table_export_from_columns(
-            self.columns_map().values().map(AsRef::as_ref),
-            self.num_rows(),
-            Some(self.column_names_owned()),
-            self.execution_domain(),
-            "interop::DataFrame::try_prepare_device_table_export",
-        )
-        .map(|export| export.with_retained_owner_arc(Arc::new(self.clone())))
-    }
-}
-
-impl TryPrepareHostTableExport for DataFrame {
-    fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        prepare_host_table_export_from_columns(
-            self.columns_map().values().map(AsRef::as_ref),
-            self.num_rows(),
-            Some(self.column_names_owned()),
-            "interop::DataFrame::try_prepare_host_table_export",
-        )
-    }
-}
-
-impl TryIntoOwnedDeviceTableTransfer for DataFrame {
-    fn try_into_owned_device_table_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
-        let operation = "interop::DataFrame::try_into_owned_device_table_transfer";
-        let (table, names) = into_owned_table_for_transfer(self, operation)?;
-        transfer_from_owned_table_with_names(table, Some(names), operation)
-    }
-}
-
-impl TryPrepareDevicePartitionedTableExport for PartitionedDataFrameExport {
-    fn try_prepare_device_partitioned_table_export(&self) -> Result<PartitionedPreparedTableExport<'_>, InteropError> {
-        prepare_partitioned_device_table_export_from_columns(
-            self,
-            "interop::PartitionedDataFrameExport::try_prepare_device_partitioned_table_export",
-        )
-    }
-}
-
-impl TryPrepareHostTableExport for PartitionedDataFrameExport {
-    fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        prepare_partitioned_host_table_export_from_columns(
-            self,
-            "interop::PartitionedDataFrameExport::try_prepare_host_table_export",
-        )
-    }
-}
-
-impl TryIntoOwnedDevicePartitionedTableTransfer for PartitionedDataFrameExport {
-    fn try_into_owned_device_partitioned_table_transfer(self) -> Result<PartitionedOwnedTableTransfer, InteropError> {
-        transfer_partitioned_owned_table_from_columns(
-            self,
-            "interop::PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer",
-        )
     }
 }

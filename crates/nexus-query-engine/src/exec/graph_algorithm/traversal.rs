@@ -1,5 +1,3 @@
-use cugraph::cudf_interop::IntoSeries;
-
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
     QueryError, QueryErrorCode, Result, bfs_params, col, empty_graph_result_frame, execution_overrides,

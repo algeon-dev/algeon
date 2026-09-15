@@ -16,7 +16,6 @@ mod prepared_support;
 mod types;
 
 pub use bridge::device_array_view_from_slice;
-pub use egress::IntoSeries;
 pub(crate) use egress::{
     betweenness_result_to_dataframe, bfs_result_to_dataframe, core_number_result_to_dataframe,
     cosine_similarity_result_to_dataframe, degrees_result_to_dataframe, ecg_result_to_dataframe,

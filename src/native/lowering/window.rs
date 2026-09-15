@@ -218,7 +218,8 @@ struct LagLeadArgs {
 /// SQL's default `1`; `default` must be a scalar literal.
 ///
 /// Use `WindowUDFExpr::args()` because
-/// [`StandardWindowFunctionExpr::expressions`] hides `offset` and `default`.
+/// [`StandardWindowFunctionExpr::expressions`](datafusion::physical_expr::window::StandardWindowFunctionExpr::expressions)
+/// hides `offset` and `default`.
 fn parse_lag_lead_args(
     standard: &StandardWindowExpr,
     input_schema: &SchemaRef,

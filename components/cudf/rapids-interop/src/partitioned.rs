@@ -100,6 +100,7 @@ impl<'a> PartitionedPreparedTableExport<'a> {
             |partition| partition.export().diagnostics().profile(),
             |partition| partition.export().table().num_rows(),
             |partition| partition.export().table().columns().len(),
+            |partition| partition.top_level_column_indices(),
         )?;
 
         Ok(Self { schema_names, num_rows, partitions })
@@ -167,6 +168,7 @@ impl PartitionedOwnedTableTransfer {
             |partition| partition.transfer().diagnostics().profile(),
             |partition| partition.transfer().table().num_rows(),
             |partition| partition.transfer().table().columns().len(),
+            |partition| partition.top_level_column_indices(),
         )?;
 
         Ok(Self { schema_names, num_rows, partitions })
@@ -198,10 +200,8 @@ fn validate_partitioned_table_partitions<P>(
     profile_of: impl Fn(&P) -> ExportProfile,
     num_rows_of: impl Fn(&P) -> usize,
     top_level_column_count_of: impl Fn(&P) -> usize,
-) -> Result<()>
-where
-    P: PartitionTopLevelCoverage,
-{
+    top_level_column_indices_of: impl Fn(&P) -> &[usize],
+) -> Result<()> {
     if partitions.is_empty() {
         return Err(InteropError::new(
             InteropErrorKind::InvalidView,
@@ -246,7 +246,7 @@ where
             .with_context("num_rows", num_rows.to_string()));
         }
 
-        let top_level_column_indices = partition.top_level_column_indices();
+        let top_level_column_indices = top_level_column_indices_of(partition);
         if top_level_column_indices.is_empty() {
             return Err(InteropError::new(
                 InteropErrorKind::InvalidView,
@@ -299,20 +299,4 @@ where
     }
 
     Ok(())
-}
-
-trait PartitionTopLevelCoverage {
-    fn top_level_column_indices(&self) -> &[usize];
-}
-
-impl PartitionTopLevelCoverage for PartitionedPreparedTablePartition<'_> {
-    fn top_level_column_indices(&self) -> &[usize] {
-        self.top_level_column_indices()
-    }
-}
-
-impl PartitionTopLevelCoverage for PartitionedOwnedTableTransferPartition {
-    fn top_level_column_indices(&self) -> &[usize] {
-        self.top_level_column_indices()
-    }
 }

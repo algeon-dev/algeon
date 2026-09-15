@@ -48,9 +48,28 @@ pub enum CompletionWitnessKind {
 }
 
 /// Backend operations supported by a producer-owned completion witness.
+///
+/// A witness records the device-queue point after which the consumer's reads
+/// of producer storage are complete. Backends are `Send + Sync` and must
+/// support shared calls from any thread, so each call binds the device context
+/// its native handle requires instead of relying on the caller's current
+/// device. This does not make an active lease or a consumer wrapper that holds
+/// a witness usable across threads.
 pub trait CompletionWitnessBackend: Send + Sync {
+    /// Queries, without waiting, whether the recorded completion point has
+    /// been reached.
+    ///
+    /// `Ok(false)` means consumer work may still be pending. `Err` means the
+    /// query itself failed and must not be treated as ready.
     fn is_ready(&self) -> Result<bool>;
+
+    /// Blocks the calling thread until the recorded completion point has been
+    /// reached.
+    ///
+    /// `Ok(())` establishes completion. `Err` means completion was not
+    /// established, so it does not authorize releasing producer storage.
     fn synchronize(&self) -> Result<()>;
+
     #[doc(hidden)]
     fn as_any(&self) -> &dyn Any;
 }
@@ -134,6 +153,12 @@ pub enum IncompleteDropBehavior {
 
 /// Backend-owned activation state retained for the lifetime of one active
 /// lease.
+///
+/// The lease never inspects this state. It keeps the state alive until the
+/// lease itself is dropped: after a successful `complete` returns, or after
+/// the incomplete-drop fallback of a lease that was not completed. A backend
+/// uses it for state that must outlive activation, such as a readiness barrier
+/// that orders consumer reads after the producer.
 pub trait ActiveLeaseActivation: Send + Sync {}
 
 /// Backend activation result retained by an active lease.
@@ -159,7 +184,36 @@ impl fmt::Debug for LeaseActivation {
 }
 
 /// Backend implementation for shared active read leases.
+///
+/// One backend is shared by every lease of a prepared export and its clones,
+/// and it is called from whichever thread activates, completes, or drops a
+/// lease.
+///
+/// # Lease lifecycle
+///
+/// 1. [`activate`](Self::activate) runs while an export creates a lease. The
+///    lease exists only if it returns `Ok`. After `Err` no lease exists, so
+///    neither [`complete`](Self::complete) nor
+///    [`drop_incomplete`](Self::drop_incomplete) runs for that attempt; the
+///    backend must clean up any partial activation before returning.
+/// 2. [`complete`](Self::complete) runs when the consumer completes the lease.
+///    The lease is marked completed only when it returns `Ok`.
+/// 3. A lease dropped without being marked completed, including one whose
+///    `complete` returned `Err`, calls
+///    [`drop_incomplete`](Self::drop_incomplete) from `Drop` when
+///    [`incomplete_drop_behavior`](Self::incomplete_drop_behavior) is
+///    [`IncompleteDropBehavior::GuaranteedFallback`], and calls nothing for
+///    [`IncompleteDropBehavior::ExplicitCompletionRequired`]. A
+///    `GuaranteedFallback` backend must therefore handle a fallback after
+///    `complete` has done part of its work and failed.
 pub trait ActiveLeaseBackend: Send + Sync {
+    /// Starts consumer access for one lease.
+    ///
+    /// `read_start` orders consumer reads after producer readiness, and
+    /// `completion` is the binding later passed to `complete` or
+    /// `drop_incomplete` for the same lease. The returned [`LeaseActivation`]
+    /// is retained until the lease is dropped. The default performs no backend
+    /// work and retains no state.
     fn activate(
         &self,
         _export: &LeaseExportContext,
@@ -169,8 +223,29 @@ pub trait ActiveLeaseBackend: Send + Sync {
         Ok(LeaseActivation::noop())
     }
 
+    /// How a lease using this backend behaves when dropped without successful
+    /// completion. The lease reads it at drop time, so it must not change over
+    /// the backend's lifetime.
     fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior;
+
+    /// Establishes completion for one lease.
+    ///
+    /// [`LeaseCompletionResult::Completed`] means a completion witness was
+    /// recorded, not that consumer device work has finished; the caller still
+    /// releases producer storage according to the witness and the producer
+    /// owner's release contract. [`LeaseCompletionResult::FallbackSynchronized`]
+    /// means completion was established before returning. `Err` leaves the
+    /// lease incomplete.
     fn complete(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<LeaseCompletionResult>;
+
+    /// Drop-time fallback for a lease that was not completed.
+    ///
+    /// Called only for [`IncompleteDropBehavior::GuaranteedFallback`], from the
+    /// lease's `Drop`, which may run during unwinding; it must not panic. The
+    /// lease discards the returned `Result`. The fallback guarantee holds only
+    /// when this returns `Ok`: after `Err`, consumer completion is not
+    /// established even though the lease, and with it the borrow of the
+    /// prepared export, has ended.
     fn drop_incomplete(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<()>;
 }
 

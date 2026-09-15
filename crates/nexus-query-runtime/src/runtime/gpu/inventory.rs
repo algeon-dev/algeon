@@ -47,7 +47,16 @@ pub struct DeviceTelemetrySnapshot {
 }
 
 /// Fakeable provider for live device telemetry.
+///
+/// Telemetry is diagnostics only; it is not a substitute data source for the
+/// admission ledger.
 pub trait GpuTelemetry: Send + Sync {
+    /// Samples live telemetry for one device.
+    ///
+    /// Sampling does not fail. An unavailable substrate, a disabled telemetry
+    /// feature, or an unresolvable ordinal is reported through the snapshot's
+    /// status fields with the affected values left `None`, and the CUDA and
+    /// NVML substrates can be unavailable independently.
     fn snapshot(&self, device_ordinal: usize) -> DeviceTelemetrySnapshot;
 }
 
@@ -119,10 +128,18 @@ pub struct DeviceFacts {
 
 /// Query GPU facts behind a fakeable interface.
 pub trait GpuInventory: Send + Sync {
+    /// Number of CUDA devices visible to this process.
     fn device_count(&self) -> Result<usize>;
 
+    /// Facts for one device ordinal.
+    ///
+    /// `Err` means the required CUDA facts for the ordinal are unavailable.
+    /// Optional fields are `None` when their diagnostics substrate is
+    /// unavailable rather than failing the query.
     fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts>;
 
+    /// Facts for ordinals `0..device_count()`, queried one ordinal at a time
+    /// in order. The default returns the first error and no facts.
     fn all_facts(&self) -> Result<Vec<DeviceFacts>> {
         let device_count = self.device_count()?;
         let mut facts = Vec::with_capacity(device_count);

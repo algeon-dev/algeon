@@ -205,8 +205,13 @@ impl ColumnView<'_> {
     /// profile accepts fixed-width columns plus the current `STRING`, `LIST`,
     /// `STRUCT`, and `DICTIONARY32` slice, and preserves the column's
     /// execution binding.
+    ///
+    /// The descriptor borrows `self` and must not outlive that borrow. Returns an
+    /// [`InteropError`] when the execution binding of `self`'s runtime domain is
+    /// unavailable or when a column's type or layout falls outside the borrowed
+    /// compatibility profile.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
-        <Self as TryBorrowColumnView>::try_borrow_column_view(self)
+        borrow_from_column_view(self, "interop::ColumnView::try_borrow_column_view")
     }
 
     /// Project this low-level borrowed column view into the shared RAPIDS
@@ -214,8 +219,14 @@ impl ColumnView<'_> {
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedColumnExport::try_activate_read_lease`].
+    ///
+    /// The export describes `self`'s device buffers without taking ownership, so
+    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
+    /// layout falls outside the prepared device profile, its buffers are not on a
+    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// runtime domain is unavailable.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
-        <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
+        prepare_from_column_view(self, "interop::ColumnView::try_prepare_device_column_export")
     }
 
     /// Project this low-level borrowed column view into the shared RAPIDS
@@ -223,8 +234,12 @@ impl ColumnView<'_> {
     ///
     /// This materializes the active logical range to owned host-visible bytes
     /// and therefore is not zero-copy.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>, InteropError> {
-        <Self as TryPrepareHostColumnExport>::try_prepare_host_column_export(self)
+        prepare_host_from_column_view(self, "interop::ColumnView::try_prepare_host_column_export")
     }
 
     /// Project this low-level borrowed column view into the shared RAPIDS
@@ -240,24 +255,6 @@ impl ColumnView<'_> {
         let operation = "interop::ColumnView::try_prepare_device_column_export_with_event";
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
         prepare_from_column_view_with_readiness(self, operation, default_device, readiness)
-    }
-}
-
-impl TryBorrowColumnView for ColumnView<'_> {
-    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
-        borrow_from_column_view(self, "interop::ColumnView::try_borrow_column_view")
-    }
-}
-
-impl TryPrepareDeviceColumnExport for ColumnView<'_> {
-    fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
-        prepare_from_column_view(self, "interop::ColumnView::try_prepare_device_column_export")
-    }
-}
-
-impl TryPrepareHostColumnExport for ColumnView<'_> {
-    fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>, InteropError> {
-        prepare_host_from_column_view(self, "interop::ColumnView::try_prepare_host_column_export")
     }
 }
 
@@ -323,8 +320,13 @@ impl Column {
     /// descriptor remains borrowed-only, does not transfer ownership, and is
     /// limited to the current borrowed compatibility profile's fixed-width,
     /// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` support.
+    ///
+    /// The descriptor borrows `self` and must not outlive that borrow. Returns an
+    /// [`InteropError`] when the execution binding of `self`'s runtime domain is
+    /// unavailable or when a column's type or layout falls outside the borrowed
+    /// compatibility profile.
     pub fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
-        <Self as TryBorrowColumnView>::try_borrow_column_view(self)
+        borrow_from_owned_column(self, "interop::Column::try_borrow_column_view")
     }
 
     /// Project this owned low-level column into the shared RAPIDS prepared
@@ -337,8 +339,14 @@ impl Column {
     /// [`crate::core::Column`] via
     /// [`crate::core::Column::try_borrow_column_view`] when you need the
     /// borrowed compatibility descriptor instead of a prepared export.
+    ///
+    /// The export describes `self`'s device buffers without taking ownership, so
+    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
+    /// layout falls outside the prepared device profile, its buffers are not on a
+    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// runtime domain is unavailable.
     pub fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
-        <Self as TryPrepareDeviceColumnExport>::try_prepare_device_column_export(self)
+        prepare_from_owned_column(self, "interop::Column::try_prepare_device_column_export")
     }
 
     /// Move this owned low-level column into a producer-rooted shared prepared
@@ -358,14 +366,25 @@ impl Column {
     ///
     /// This materializes the active logical range to owned host-visible bytes
     /// and therefore is not zero-copy.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>, InteropError> {
-        <Self as TryPrepareHostColumnExport>::try_prepare_host_column_export(self)
+        prepare_host_from_owned_column(self, "interop::Column::try_prepare_host_column_export")
     }
 
     /// Move this owned column into the shared RAPIDS owned device transfer
     /// profile.
+    ///
+    /// Consumes `self`: on success the transfer root owns the device buffers
+    /// under the default owned-transfer release contract, and on error `self`
+    /// has already been consumed. Returns an [`InteropError`] when a column's
+    /// layout falls outside the owned device transfer profile, its buffers are
+    /// not on a CUDA device, or the execution binding or producer readiness of
+    /// `self`'s runtime domain is unavailable.
     pub fn try_into_owned_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
-        <Self as TryIntoOwnedDeviceColumnTransfer>::try_into_owned_device_column_transfer(self)
+        transfer_from_owned_column(self, "interop::Column::try_into_owned_device_column_transfer")
     }
 
     /// Move this owned column into the shared RAPIDS owned device transfer
@@ -442,29 +461,5 @@ impl Column {
         let operation = "interop::Column::try_into_prepared_device_column_export_with_event";
         let readiness = prepared_device_event_readiness(operation, self.execution_domain(), event)?.1;
         prepare_from_owned_column_root_with_readiness(self, operation, readiness, Some(event.clone()))
-    }
-}
-
-impl TryBorrowColumnView for Column {
-    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
-        borrow_from_owned_column(self, "interop::Column::try_borrow_column_view")
-    }
-}
-
-impl TryPrepareDeviceColumnExport for Column {
-    fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>, InteropError> {
-        prepare_from_owned_column(self, "interop::Column::try_prepare_device_column_export")
-    }
-}
-
-impl TryPrepareHostColumnExport for Column {
-    fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>, InteropError> {
-        prepare_host_from_owned_column(self, "interop::Column::try_prepare_host_column_export")
-    }
-}
-
-impl TryIntoOwnedDeviceColumnTransfer for Column {
-    fn try_into_owned_device_column_transfer(self) -> Result<OwnedColumnTransfer, InteropError> {
-        transfer_from_owned_column(self, "interop::Column::try_into_owned_device_column_transfer")
     }
 }

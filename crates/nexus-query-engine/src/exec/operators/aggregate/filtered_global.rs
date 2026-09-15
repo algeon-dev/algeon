@@ -9,9 +9,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     filter_inputs::{aggregate_expr_input_type, filtered_aggregate_input_type, filtered_aggregate_value_expr},
     filtered_common::{
-        FilteredSegmentRuntimeStats, add_segmented_budgeted_execution_stats, estimate_column_bytes,
-        filtered_fixed_width_dtype_size, filtered_inputs_per_segment_for_budget, null_mask_bytes,
-        unsupported_stateful_filtered_merge,
+        add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
+        filtered_inputs_per_segment_for_budget, null_mask_bytes, unsupported_stateful_filtered_merge,
     },
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
     *,
@@ -34,16 +33,6 @@ pub(super) struct FilteredGlobalSegmentRuntimeStats {
     pub(super) state_rows_merged: u64,
     pub(super) observed_temporary_peak_bytes: u64,
     pub(super) observed_retained_peak_bytes: u64,
-}
-
-impl FilteredSegmentRuntimeStats for FilteredGlobalSegmentRuntimeStats {
-    fn observed_temporary_peak_bytes_mut(&mut self) -> &mut u64 {
-        &mut self.observed_temporary_peak_bytes
-    }
-
-    fn observed_retained_peak_bytes_mut(&mut self) -> &mut u64 {
-        &mut self.observed_retained_peak_bytes
-    }
 }
 
 struct FilteredGlobalPreparedChunk {
@@ -197,7 +186,12 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
         let output_rows = output.num_rows() as u64;
         Ok((output, output_rows, partial_rows))
     })();
-    add_segmented_budgeted_execution_stats(&mut stats, metrics, budget_event_start);
+    add_segmented_budgeted_execution_stats(
+        &mut stats.observed_temporary_peak_bytes,
+        &mut stats.observed_retained_peak_bytes,
+        metrics,
+        budget_event_start,
+    );
     match result {
         Ok((output, output_rows, partial_rows)) => {
             record_segmented_filtered_global_aggregate_strategy(
@@ -277,7 +271,12 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
         let output_rows = output.num_rows() as u64;
         Ok((output, output_rows, partial_rows))
     })();
-    add_segmented_budgeted_execution_stats(&mut stats, metrics, budget_event_start);
+    add_segmented_budgeted_execution_stats(
+        &mut stats.observed_temporary_peak_bytes,
+        &mut stats.observed_retained_peak_bytes,
+        metrics,
+        budget_event_start,
+    );
     match result {
         Ok((output, output_rows, partial_rows)) => {
             record_segmented_filtered_global_partial_strategy(

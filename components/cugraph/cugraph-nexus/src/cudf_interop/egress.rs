@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cudf::{AggSpec, GroupByAgg, Runtime, core::Column};
 
-use super::{bridge::RawDeviceArrayViewExt, errors::map_cudf_error_with};
+use super::errors::map_cudf_error_with;
 use crate::{
     centrality::{
         BetweennessCentralityResult, EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult,
@@ -60,24 +60,16 @@ where
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// IntoSeries — public extension trait for result → cudf Series conversion
+// to_series — result → cudf Series conversion
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Extension trait for converting cugraph GPU arrays to cudf [`Series`].
-///
-/// Device-to-device copy: unavoidable because the cugraph C API owns result
-/// memory and frees it on drop. Matches Python cudf/cugraph behavior.
-///
-/// [`Series`]: cudf::Series
-pub trait IntoSeries {
-    /// Convert this GPU array to an unnamed cudf [`Series`].
+impl VertexIds<'_> {
+    /// Copies this GPU array into an unnamed cudf [`Series`](cudf::Series)
+    /// bound to `runtime`.
     ///
-    /// [`Series`]: cudf::Series
-    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series>;
-}
-
-impl IntoSeries for VertexIds<'_> {
-    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
+    pub fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
         series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),
@@ -88,8 +80,13 @@ impl IntoSeries for VertexIds<'_> {
     }
 }
 
-impl IntoSeries for ScoreValues<'_> {
-    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+impl ScoreValues<'_> {
+    /// Copies this GPU array into an unnamed cudf [`Series`](cudf::Series)
+    /// bound to `runtime`.
+    ///
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
+    pub fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
         series_from_column_result(
             match self {
                 Self::F32(v) => v.raw_view().to_cudf_column(runtime),
@@ -100,8 +97,13 @@ impl IntoSeries for ScoreValues<'_> {
     }
 }
 
-impl IntoSeries for Distances<'_> {
-    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+impl Distances<'_> {
+    /// Copies this GPU array into an unnamed cudf [`Series`](cudf::Series)
+    /// bound to `runtime`.
+    ///
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
+    pub fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
         series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),
@@ -114,8 +116,13 @@ impl IntoSeries for Distances<'_> {
     }
 }
 
-impl IntoSeries for DegreeValues<'_> {
-    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+impl DegreeValues<'_> {
+    /// Copies this GPU array into an unnamed cudf [`Series`](cudf::Series)
+    /// bound to `runtime`.
+    ///
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
+    pub fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
         series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),
@@ -126,8 +133,13 @@ impl IntoSeries for DegreeValues<'_> {
     }
 }
 
-impl IntoSeries for IntegerValues<'_> {
-    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+impl IntegerValues<'_> {
+    /// Copies this GPU array into an unnamed cudf [`Series`](cudf::Series)
+    /// bound to `runtime`.
+    ///
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
+    pub fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
         series_from_column_result(
             match self {
                 Self::I32(v) => v.raw_view().to_cudf_column(runtime),

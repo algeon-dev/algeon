@@ -202,6 +202,18 @@ fn lit_i32_broadcasts() {
 }
 
 #[test]
+fn into_lit_and_into_expr_resolve_unambiguously_after_glob_import() {
+    // `cudf::ops::expr` glob-exports both `IntoLit` and `IntoExpr`; a numeric
+    // literal's `into_expr` must still resolve to a single method.
+    use cudf::ops::expr::*;
+
+    let df = xy_df();
+    let result = eval(5i32.into_expr().alias("c"), &df);
+    assert_eq!(result.len(), 3);
+    assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![5, 5, 5]);
+}
+
+#[test]
 fn lit_f64_broadcasts() {
     let df = xy_df();
     let result = eval(lit(3.25f64).alias("pi"), &df);

@@ -9,18 +9,12 @@ use rapids_interop::{
     PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PhysicalValidity, Placement,
     PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
     ReleaseContract, ReleaseSynchronization, Result, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-    TransferCompletionRule, TryBorrowColumnView, TryBorrowTableView, TryIntoOwnedDeviceColumnTransfer,
-    TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer, TryPrepareDeviceColumnExport,
-    TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport, TryPrepareHostColumnExport,
-    TryPrepareHostTableExport, TypeId,
+    TransferCompletionRule, TypeId,
 };
 
 #[test]
 fn crate_root_reexports_public_interop_surface() {
     fn assert_type<T>() {}
-    fn assert_impl_try_into_owned_column<T: TryIntoOwnedDeviceColumnTransfer>() {}
-    fn assert_impl_try_into_owned_table<T: TryIntoOwnedDeviceTableTransfer>() {}
-    fn assert_impl_try_into_owned_partitioned_table<T: TryIntoOwnedDevicePartitionedTableTransfer>() {}
 
     assert_type::<Result<()>>();
     assert_type::<TypeId>();
@@ -78,14 +72,4 @@ fn crate_root_reexports_public_interop_surface() {
     assert_type::<&'static dyn ActiveLeaseActivation>();
     assert_type::<&'static dyn ActiveLeaseBackend>();
     assert_type::<&'static dyn CompletionWitnessBackend>();
-    assert_type::<&'static dyn TryBorrowColumnView>();
-    assert_type::<&'static dyn TryBorrowTableView>();
-    assert_type::<&'static dyn TryPrepareDeviceColumnExport>();
-    assert_type::<&'static dyn TryPrepareDeviceTableExport>();
-    assert_type::<&'static dyn TryPrepareDevicePartitionedTableExport>();
-    assert_type::<&'static dyn TryPrepareHostColumnExport>();
-    assert_type::<&'static dyn TryPrepareHostTableExport>();
-    assert_impl_try_into_owned_column::<OwnedColumnTransfer>();
-    assert_impl_try_into_owned_table::<OwnedTableTransfer>();
-    assert_impl_try_into_owned_partitioned_table::<PartitionedOwnedTableTransfer>();
 }

@@ -1056,11 +1056,6 @@ pub enum RuntimeObservationRecord {
     Footer(RuntimeObservationFooter),
 }
 
-#[doc(hidden)]
-pub trait LogicalRetainedBytes {
-    fn logical_retained_bytes(&self) -> u64;
-}
-
 fn string_bytes(value: &str) -> u64 {
     value.len() as u64
 }
@@ -1080,10 +1075,8 @@ impl RuntimeTopologyRecord {
             Self::Resource(_) => RuntimeObservationRecordClass::Resource,
         }
     }
-}
 
-impl LogicalRetainedBytes for RuntimeTopologyRecord {
-    fn logical_retained_bytes(&self) -> u64 {
+    pub(super) fn logical_retained_bytes(&self) -> u64 {
         const ENVELOPE: u64 = 24;
         ENVELOPE
             + match self {
@@ -1154,8 +1147,8 @@ impl LogicalRetainedBytes for RuntimeTopologyRecord {
     }
 }
 
-impl LogicalRetainedBytes for RuntimeTimelineEvent {
-    fn logical_retained_bytes(&self) -> u64 {
+impl RuntimeTimelineEvent {
+    pub(super) fn logical_retained_bytes(&self) -> u64 {
         const ENVELOPE: u64 = 42;
         let plan_execution_bytes = self.plan_execution_id.as_ref().map_or(0, |id| string_bytes(id.as_str()));
         let payload_bytes = match &self.payload {

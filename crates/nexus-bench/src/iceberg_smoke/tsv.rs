@@ -103,26 +103,23 @@ impl fmt::Display for SmokeError {
 
 impl StdError for SmokeError {}
 
-pub(crate) trait CapabilityReasonExt {
-    fn from_code(code: &str) -> Option<CapabilityReason>;
-}
-
-impl CapabilityReasonExt for CapabilityReason {
-    fn from_code(code: &str) -> Option<CapabilityReason> {
-        [
-            CapabilityReason::TableFormatUnsupported,
-            CapabilityReason::TableFormatPlanningFailed,
-            CapabilityReason::IcebergNonParquetDataFile,
-            CapabilityReason::IcebergDeleteFilesUnsupported,
-            CapabilityReason::IcebergFieldIdMappingUnsupported,
-            CapabilityReason::IcebergNameMappingUnsupported,
-            CapabilityReason::IcebergNestedProjectionUnsupported,
-            CapabilityReason::IcebergPartitionTransformUnsupported,
-            CapabilityReason::IcebergResidualPredicateUnsupported,
-            CapabilityReason::IcebergRowSelectionUnsupported,
-            CapabilityReason::IcebergObjectStoreReadUnsupported,
-        ]
-        .into_iter()
-        .find(|reason| reason.code() == code)
-    }
+/// Returns the canonical code when `code` names a table-format capability
+/// reason; the smoke report records every other planner reason as `none`.
+pub(crate) fn table_format_capability_reason_code(code: &str) -> Option<&'static str> {
+    [
+        CapabilityReason::TableFormatUnsupported,
+        CapabilityReason::TableFormatPlanningFailed,
+        CapabilityReason::IcebergNonParquetDataFile,
+        CapabilityReason::IcebergDeleteFilesUnsupported,
+        CapabilityReason::IcebergFieldIdMappingUnsupported,
+        CapabilityReason::IcebergNameMappingUnsupported,
+        CapabilityReason::IcebergNestedProjectionUnsupported,
+        CapabilityReason::IcebergPartitionTransformUnsupported,
+        CapabilityReason::IcebergResidualPredicateUnsupported,
+        CapabilityReason::IcebergRowSelectionUnsupported,
+        CapabilityReason::IcebergObjectStoreReadUnsupported,
+    ]
+    .into_iter()
+    .map(CapabilityReason::code)
+    .find(|reason_code| *reason_code == code)
 }
