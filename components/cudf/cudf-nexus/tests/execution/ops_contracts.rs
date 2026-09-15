@@ -65,7 +65,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(reservation_size, hash_join.device_allocated_size_bytes().unwrap());
     }
 
-    #[test]
     fn one_shot_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 2, 3], 958)]).unwrap();
         let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 959)]).unwrap();
@@ -89,7 +88,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
     }
 
-    #[test]
     fn join_indices_in_uses_borrowed_stream_and_memory_resource() {
         let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 1017)]).unwrap();
         let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 3, 4], 1018)]).unwrap();
@@ -149,7 +147,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&full), vec![(JOIN_NO_MATCH, 2), (0, JOIN_NO_MATCH), (1, 0), (2, 1)]);
     }
 
-    #[test]
     fn one_shot_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 2, 3], 962)]).unwrap();
         let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 963)]).unwrap();
@@ -171,7 +168,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&indices), vec![1, 2]);
     }
 
-    #[test]
     fn one_shot_left_anti_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3, 4], 964)]).unwrap();
         let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 4], 965)]).unwrap();
@@ -193,7 +189,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&indices), vec![0, 2]);
     }
 
-    #[test]
     fn single_side_join_indices_in_uses_borrowed_stream_and_memory_resource() {
         let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3, 4], 1022)]).unwrap();
         let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1023)]).unwrap();
@@ -233,7 +228,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&anti), vec![0, 2]);
     }
 
-    #[test]
     fn cross_join_supports_mixed_same_device_domains_and_uses_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 2], 966)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[10, 20], 967)]).unwrap();
@@ -251,7 +245,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(result.testing_view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 10, 20]);
     }
 
-    #[test]
     fn cross_join_in_uses_borrowed_stream_and_memory_resource() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 2], 1024)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[10, 20], 1025)]).unwrap();
@@ -273,7 +266,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(result.testing_view().unwrap().column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 10, 20]);
     }
 
-    #[test]
     fn hash_join_indices_support_mixed_same_device_domains_and_use_probe_provenance() {
         let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 960)]).unwrap();
         let probe_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 4], 961)]).unwrap();
@@ -294,7 +286,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 2)]);
     }
 
-    #[test]
     fn hash_join_new_in_uses_borrowed_stream_and_memory_resource() {
         let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 1019)]).unwrap();
         let retained_build_stream = build_keys.testing_execution_domain_stream_value();
@@ -314,7 +305,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(last_exec_mr_value(), expected_mr);
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_contract_matches_retained_build_artifact_bytes() {
         let runtime = Runtime::new().unwrap();
         let build_keys = Table::from_columns(vec![
@@ -331,7 +321,6 @@ mod join_hash_join_execution_tests {
         }
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_accepts_empty_rows_with_non_empty_schema() {
         let runtime = Runtime::new().unwrap();
         let build_keys = Table::from_columns(vec![
@@ -346,7 +335,6 @@ mod join_hash_join_execution_tests {
         );
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_matches_larger_build_table() {
         let runtime = Runtime::new().unwrap();
         let key0 = (0..4096).map(|row| row % 257).collect::<Vec<i32>>();
@@ -363,7 +351,6 @@ mod join_hash_join_execution_tests {
         );
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_matches_non_nullable_string_build_artifact() {
         let runtime = Runtime::new().unwrap();
         let build_keys =
@@ -375,7 +362,6 @@ mod join_hash_join_execution_tests {
         );
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_rejects_empty_build_table() {
         let runtime = Runtime::new().unwrap();
         let build_keys = runtime.empty_table().unwrap();
@@ -386,7 +372,6 @@ mod join_hash_join_execution_tests {
         );
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_rejects_invalid_load_factors() {
         let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4, 8], 12023)]).unwrap();
 
@@ -407,7 +392,6 @@ mod join_hash_join_execution_tests {
         }
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_rejects_nested_and_struct_build_keys() {
         let frame = read_json_dataframe(
             "hash_join_pre_build_nested.jsonl",
@@ -425,7 +409,6 @@ mod join_hash_join_execution_tests {
         }
     }
 
-    #[test]
     fn hash_join_pre_build_reservation_matches_nullable_string_build_key_with_null_payload() {
         let build_keys = Table::from_columns(vec![
             column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
@@ -438,7 +421,6 @@ mod join_hash_join_execution_tests {
         );
     }
 
-    #[test]
     fn hash_join_new_accepts_nullable_string_build_key_with_null_payload() {
         let build_keys = Table::from_columns(vec![
             column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
@@ -448,7 +430,6 @@ mod join_hash_join_execution_tests {
         HashJoin::new(build_keys, HashJoinOptions::new().null_equality(NullEquality::Equal)).unwrap();
     }
 
-    #[test]
     fn hash_join_probe_indices_in_uses_borrowed_stream_and_memory_resource() {
         let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 1020)]).unwrap();
         let probe_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 4], 1021)]).unwrap();
@@ -491,7 +472,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&full), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1), (2, 2)]);
     }
 
-    #[test]
     fn conditional_inner_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 971)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 972)]).unwrap();
@@ -516,7 +496,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (1, 1)]);
     }
 
-    #[test]
     fn conditional_left_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 983)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 984)]).unwrap();
@@ -541,7 +520,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (1, 1), (2, JOIN_NO_MATCH)]);
     }
 
-    #[test]
     fn conditional_full_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 985)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4, 6], 986)]).unwrap();
@@ -566,7 +544,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)]);
     }
 
-    #[test]
     fn conditional_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 973)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 974)]).unwrap();
@@ -589,7 +566,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&indices), vec![0, 1]);
     }
 
-    #[test]
     fn conditional_left_anti_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 987)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 988)]).unwrap();
@@ -612,7 +588,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&indices), vec![2]);
     }
 
-    #[test]
     fn conditional_join_indices_in_uses_borrowed_stream_and_memory_resource() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 989)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 990)]).unwrap();
@@ -640,7 +615,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&indices), vec![2]);
     }
 
-    #[test]
     fn conditional_join_indices_orders_literal_scalar_domain_before_left_exec() {
         let _event_guard = lock_event_observation();
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 5], 1003)]).unwrap();
@@ -670,7 +644,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1)]);
     }
 
-    #[test]
     fn mixed_inner_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2], 975)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 976)]).unwrap();
@@ -700,7 +673,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (2, 1)]);
     }
 
-    #[test]
     fn mixed_inner_join_indices_in_uses_borrowed_stream_and_memory_resource() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2], 1005)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 1006)]).unwrap();
@@ -735,7 +707,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (2, 1)]);
     }
 
-    #[test]
     fn mixed_full_semi_anti_join_indices_in_use_borrowed_stream_and_memory_resource() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 3], 1026)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2, 4], 1027)]).unwrap();
@@ -806,7 +777,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&anti), vec![1, 3]);
     }
 
-    #[test]
     fn filter_join_indices_support_mixed_same_device_domains_and_use_left_index_provenance() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 1009)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1010)]).unwrap();
@@ -836,7 +806,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0)]);
     }
 
-    #[test]
     fn filter_join_indices_in_uses_borrowed_stream_and_memory_resource() {
         let left = Table::from_columns(vec![explicit_i32_column(&[1, 3, 5], 1013)]).unwrap();
         let right = Table::from_columns(vec![explicit_i32_column(&[2, 4], 1014)]).unwrap();
@@ -871,7 +840,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0)]);
     }
 
-    #[test]
     fn mixed_left_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 3], 991)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 992)]).unwrap();
@@ -901,7 +869,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (1, JOIN_NO_MATCH), (2, 1), (3, JOIN_NO_MATCH)]);
     }
 
-    #[test]
     fn mixed_full_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 3], 995)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2, 4], 996)]).unwrap();
@@ -934,7 +901,6 @@ mod join_hash_join_execution_tests {
         );
     }
 
-    #[test]
     fn mixed_left_semi_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2], 979)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 980)]).unwrap();
@@ -962,7 +928,6 @@ mod join_hash_join_execution_tests {
         assert_eq!(sorted_single_side_indices(&indices), vec![0, 2]);
     }
 
-    #[test]
     fn mixed_left_anti_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance() {
         let left_equality = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 3], 999)]).unwrap();
         let right_equality = Table::from_columns(vec![explicit_i32_column(&[1, 2], 1000)]).unwrap();
@@ -989,13 +954,158 @@ mod join_hash_join_execution_tests {
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(sorted_single_side_indices(&indices), vec![1, 3]);
     }
+
+    #[test]
+    fn join_hash_join_execution_tests_cases() {
+        crate::common::run_named_cases(&[
+            (
+                "one_shot_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                one_shot_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "join_indices_in_uses_borrowed_stream_and_memory_resource",
+                join_indices_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "one_shot_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                one_shot_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "one_shot_left_anti_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                one_shot_left_anti_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "single_side_join_indices_in_uses_borrowed_stream_and_memory_resource",
+                single_side_join_indices_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "cross_join_supports_mixed_same_device_domains_and_uses_left_provenance",
+                cross_join_supports_mixed_same_device_domains_and_uses_left_provenance,
+            ),
+            (
+                "cross_join_in_uses_borrowed_stream_and_memory_resource",
+                cross_join_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "hash_join_indices_support_mixed_same_device_domains_and_use_probe_provenance",
+                hash_join_indices_support_mixed_same_device_domains_and_use_probe_provenance,
+            ),
+            (
+                "hash_join_new_in_uses_borrowed_stream_and_memory_resource",
+                hash_join_new_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "hash_join_pre_build_reservation_contract_matches_retained_build_artifact_bytes",
+                hash_join_pre_build_reservation_contract_matches_retained_build_artifact_bytes,
+            ),
+            (
+                "hash_join_pre_build_reservation_accepts_empty_rows_with_non_empty_schema",
+                hash_join_pre_build_reservation_accepts_empty_rows_with_non_empty_schema,
+            ),
+            (
+                "hash_join_pre_build_reservation_matches_larger_build_table",
+                hash_join_pre_build_reservation_matches_larger_build_table,
+            ),
+            (
+                "hash_join_pre_build_reservation_matches_non_nullable_string_build_artifact",
+                hash_join_pre_build_reservation_matches_non_nullable_string_build_artifact,
+            ),
+            (
+                "hash_join_pre_build_reservation_rejects_empty_build_table",
+                hash_join_pre_build_reservation_rejects_empty_build_table,
+            ),
+            (
+                "hash_join_pre_build_reservation_rejects_invalid_load_factors",
+                hash_join_pre_build_reservation_rejects_invalid_load_factors,
+            ),
+            (
+                "hash_join_pre_build_reservation_rejects_nested_and_struct_build_keys",
+                hash_join_pre_build_reservation_rejects_nested_and_struct_build_keys,
+            ),
+            (
+                "hash_join_pre_build_reservation_matches_nullable_string_build_key_with_null_payload",
+                hash_join_pre_build_reservation_matches_nullable_string_build_key_with_null_payload,
+            ),
+            (
+                "hash_join_new_accepts_nullable_string_build_key_with_null_payload",
+                hash_join_new_accepts_nullable_string_build_key_with_null_payload,
+            ),
+            (
+                "hash_join_probe_indices_in_uses_borrowed_stream_and_memory_resource",
+                hash_join_probe_indices_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "conditional_inner_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                conditional_inner_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "conditional_left_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                conditional_left_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "conditional_full_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                conditional_full_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "conditional_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                conditional_left_semi_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "conditional_left_anti_join_indices_support_mixed_same_device_domains_and_use_left_provenance",
+                conditional_left_anti_join_indices_support_mixed_same_device_domains_and_use_left_provenance,
+            ),
+            (
+                "conditional_join_indices_in_uses_borrowed_stream_and_memory_resource",
+                conditional_join_indices_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "conditional_join_indices_orders_literal_scalar_domain_before_left_exec",
+                conditional_join_indices_orders_literal_scalar_domain_before_left_exec,
+            ),
+            (
+                "mixed_inner_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance",
+                mixed_inner_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance,
+            ),
+            (
+                "mixed_inner_join_indices_in_uses_borrowed_stream_and_memory_resource",
+                mixed_inner_join_indices_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "mixed_full_semi_anti_join_indices_in_use_borrowed_stream_and_memory_resource",
+                mixed_full_semi_anti_join_indices_in_use_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "filter_join_indices_support_mixed_same_device_domains_and_use_left_index_provenance",
+                filter_join_indices_support_mixed_same_device_domains_and_use_left_index_provenance,
+            ),
+            (
+                "filter_join_indices_in_uses_borrowed_stream_and_memory_resource",
+                filter_join_indices_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "mixed_left_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance",
+                mixed_left_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance,
+            ),
+            (
+                "mixed_full_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance",
+                mixed_full_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance,
+            ),
+            (
+                "mixed_left_semi_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance",
+                mixed_left_semi_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance,
+            ),
+            (
+                "mixed_left_anti_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance",
+                mixed_left_anti_join_indices_support_mixed_same_device_domains_and_use_primary_left_provenance,
+            ),
+        ]);
+    }
 }
 mod copying_execution_tests {
     use cudf::{ExecutionOverrides, Runtime, core::Table, ops::copying, testing::prelude::*};
 
     use crate::common::{explicit_i32_column, last_exec_mr_value, last_exec_stream_value, reset_exec_observation};
 
-    #[test]
     fn scatter_supports_mixed_same_device_domains_and_uses_target_provenance() {
         let source = Table::from_columns(vec![explicit_i32_column(&[100, 200], 968)]).unwrap();
         let scatter_map = explicit_i32_column(&[1, -1], 969);
@@ -1018,7 +1128,6 @@ mod copying_execution_tests {
         assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
     }
 
-    #[test]
     fn scatter_in_uses_borrowed_stream_and_memory_resource() {
         let source = Table::from_columns(vec![explicit_i32_column(&[100, 200], 1026)]).unwrap();
         let scatter_map = explicit_i32_column(&[1, -1], 1027);
@@ -1046,7 +1155,6 @@ mod copying_execution_tests {
         assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
     }
 
-    #[test]
     fn scatter_unchecked_in_uses_borrowed_stream_and_memory_resource() {
         let source = Table::from_columns(vec![explicit_i32_column(&[100, 200], 1029)]).unwrap();
         let scatter_map = explicit_i32_column(&[0, 2], 1030);
@@ -1074,6 +1182,24 @@ mod copying_execution_tests {
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
         assert_eq!(result.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![100, 20, 200]);
+    }
+
+    #[test]
+    fn copying_execution_tests_cases() {
+        crate::common::run_named_cases(&[
+            (
+                "scatter_supports_mixed_same_device_domains_and_uses_target_provenance",
+                scatter_supports_mixed_same_device_domains_and_uses_target_provenance,
+            ),
+            (
+                "scatter_in_uses_borrowed_stream_and_memory_resource",
+                scatter_in_uses_borrowed_stream_and_memory_resource,
+            ),
+            (
+                "scatter_unchecked_in_uses_borrowed_stream_and_memory_resource",
+                scatter_unchecked_in_uses_borrowed_stream_and_memory_resource,
+            ),
+        ]);
     }
 }
 #[path = "../ops/strings/strings_tests.rs"]

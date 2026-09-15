@@ -57,14 +57,10 @@ cat >"$envrc" <<EOF
 CARGO_TARGET_DIR="$target_dir"
 export CARGO_TARGET_DIR
 
-CUDF_INSTALL_DIR="\$CARGO_TARGET_DIR/native/cudf-install"
-CUVS_INSTALL_DIR="\$CARGO_TARGET_DIR/native/cuvs-install"
-CUGRAPH_CMAKE_BUILD_DIR="\$CARGO_TARGET_DIR/native/cugraph-build"
-export CUDF_INSTALL_DIR CUVS_INSTALL_DIR CUGRAPH_CMAKE_BUILD_DIR
-
-_NEXUS_NATIVE_LIBS="\$CUGRAPH_CMAKE_BUILD_DIR:\$CUDF_INSTALL_DIR/lib:\$CUVS_INSTALL_DIR/lib"
-LD_LIBRARY_PATH="\$_NEXUS_NATIVE_LIBS\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-export LD_LIBRARY_PATH
+# Native selectors default to this worktree's target/native/ prefixes; clearing
+# them keeps the main checkout's libraries out and the build fingerprint stable.
+unset NEXUS_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \\
+  CUVS_INSTALL_DIR CUVS_ROOT CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
 
 # Tag the shell so you can see which worktree you're in.
 PS1_WT_TAG="(wt:$name) "

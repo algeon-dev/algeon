@@ -44,6 +44,33 @@ which RAPIDS-compatible host compiler you will substitute in that block:
 ls /usr/bin/gcc-14 /usr/bin/g++-14
 ```
 
+### Pin the toolchain in Cargo `[env]`
+
+The build shell exports these machine-specific toolchain variables into the
+current shell only. Write them once into a Cargo `[env]` table outside the
+checkout so every shell, and `scripts/check_all.sh`, build with the same
+toolchain whether or not the build shell block was run: use
+`<parent-of-checkout>/.cargo/config.toml` to cover every checkout and worktree
+that [`scripts/dev/new_worktree.sh`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/scripts/dev/new_worktree.sh)
+creates as siblings, or `~/.cargo/config.toml` to apply it to all of this
+user's Cargo projects:
+
+```toml
+[env]
+CC = "/usr/bin/gcc-14"
+CXX = "/usr/bin/g++-14"
+CUDACXX = "/usr/local/cuda/bin/nvcc"
+CUDAHOSTCXX = "/usr/bin/g++-14"
+CUDA_HOME = "/usr/local/cuda"
+CUDA_PATH = "/usr/local/cuda"
+CUDAToolkit_ROOT = "/usr/local/cuda"
+CMAKE_CUDA_ARCHITECTURES = "NATIVE"
+```
+
+Match these values to the build shell block; do not set `force`, since a shell
+that legitimately overrides one of these (for example, to select a different
+CUDA architecture list) must still win.
+
 Native binaries target the build GPU by default. When they must run on a
 different GPU, choose the architecture list before the first native build as
 described in [Building from Source](./from-source.md#choosing-cuda-architectures).
@@ -58,9 +85,24 @@ they differ:
 
 ```bash
 rustup toolchain install nightly
-cargo install --locked --version 0.9.140 cargo-nextest
+cargo install --locked --version 0.9.144 cargo-nextest
 cargo install --locked --version 0.6.45 cargo-hack
 ```
+
+Enable nextest's run store once per machine, in its own user config (not this
+repository's), so `-R latest` reruns and `cargo nextest replay` have runs to
+work from:
+
+```toml
+# ~/.config/nextest/config.toml
+[experimental]
+record = true
+
+[record]
+enabled = true
+```
+
+Retention defaults to 30 days, 100 runs, or 1 GB, whichever comes first.
 
 ## Optional fixture dependency
 

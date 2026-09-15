@@ -14,7 +14,6 @@ use crate::common::{
     reset_exec_observation,
 };
 
-#[test]
 fn test_create_table_from_columns() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
@@ -25,7 +24,6 @@ fn test_create_table_from_columns() {
     assert_eq!(view.num_rows().unwrap(), 3);
 }
 
-#[test]
 fn test_table_column_access() {
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
     let c2 = column_from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
@@ -41,7 +39,6 @@ fn test_table_column_access() {
     assert_eq!(col1.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
 
-#[test]
 fn test_table_deep_copy() {
     let c1 = column_from_slice(&[1i64, 2]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -55,7 +52,6 @@ fn test_table_deep_copy() {
     assert_eq!(col.to_vec::<i64>().unwrap(), vec![1, 2]);
 }
 
-#[test]
 fn test_table_from_columns_into_columns_preserves_input_order() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -70,7 +66,6 @@ fn test_table_from_columns_into_columns_preserves_input_order() {
     assert_eq!(columns[2].testing_view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
 }
 
-#[test]
 fn test_empty_table() {
     let rt = Runtime::new().unwrap();
     let table = rt.empty_table().unwrap();
@@ -81,7 +76,6 @@ fn test_empty_table() {
     assert_eq!(table.testing_execution_domain_id(), rt.testing_execution_domain_id());
 }
 
-#[test]
 fn test_table_from_columns_empty_requires_runtime() {
     let err = Table::from_columns(vec![]).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::ExecutionContext);
@@ -91,7 +85,6 @@ fn test_table_from_columns_empty_requires_runtime() {
     assert!(err.message().contains("requires an explicit runtime"), "unexpected error: {err}");
 }
 
-#[test]
 fn test_table_with_nullable_columns() {
     let c1 = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
@@ -107,7 +100,6 @@ fn test_table_with_nullable_columns() {
     assert_eq!(null_count, 1);
 }
 
-#[test]
 fn test_table_from_columns_mismatched_rows_rejected() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10i32, 20]).unwrap();
@@ -120,7 +112,6 @@ fn test_table_from_columns_mismatched_rows_rejected() {
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
-#[test]
 fn test_testing_hook_locks_table_column_count_limit_contract() {
     let err = cudf::testing::core::trigger_table_column_count_limit_error_for_test().unwrap_err();
 
@@ -138,7 +129,6 @@ fn test_testing_hook_locks_table_column_count_limit_contract() {
     assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
-#[test]
 fn test_table_view_column_rejects_out_of_bounds_index() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -155,7 +145,6 @@ fn test_table_view_column_rejects_out_of_bounds_index() {
     assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
-#[test]
 fn test_table_view_column_rejects_usize_indices_outside_i32_range() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -173,7 +162,6 @@ fn test_table_view_column_rejects_usize_indices_outside_i32_range() {
     assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
-#[test]
 fn test_table_view_from_column_views() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
@@ -194,7 +182,6 @@ fn test_table_view_from_column_views() {
     assert_eq!(col1.to_vec::<f64>().unwrap(), vec![4.0, 5.0, 6.0]);
 }
 
-#[test]
 fn test_table_view_from_column_views_single_column() {
     let c1 = column_from_slice(&[10i64, 20, 30, 40]).unwrap().testing_rebind_execution_domain_explicit(607).unwrap();
     let expected_stream = c1.testing_execution_domain_stream_value();
@@ -214,7 +201,6 @@ fn test_table_view_from_column_views_single_column() {
     assert_eq!(col0.to_vec::<i64>().unwrap(), vec![10, 20, 30, 40]);
 }
 
-#[test]
 fn test_table_view_from_column_views_retains_backing_after_source_views_drop() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[4i32, 5, 6]).unwrap();
@@ -231,7 +217,6 @@ fn test_table_view_from_column_views_retains_backing_after_source_views_drop() {
     assert_eq!(table_view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![4, 5, 6]);
 }
 
-#[test]
 fn test_table_view_from_column_views_empty() {
     let err = TableView::from_column_views(&[]).unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::Unsupported);
@@ -248,7 +233,6 @@ fn test_table_view_from_column_views_empty() {
     assert!(err.message().contains("requires an authoritative source"), "unexpected error: {err}");
 }
 
-#[test]
 fn test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[4i32, 5]).unwrap();
@@ -268,7 +252,6 @@ fn test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contrac
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
-#[test]
 fn test_testing_hook_locks_table_view_column_count_limit_contract() {
     let err = cudf::testing::core::trigger_table_view_column_count_limit_error_for_test().unwrap_err();
 
@@ -286,7 +269,6 @@ fn test_testing_hook_locks_table_view_column_count_limit_contract() {
     assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
-#[test]
 fn test_table_view_select_columns() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -301,7 +283,6 @@ fn test_table_view_select_columns() {
     assert_eq!(projected.column(1).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_table_view_select_columns_rejects_out_of_bounds_index() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -360,4 +341,50 @@ fn test_table_view_num_rows_rejects_negative_foreign_count_with_stable_contract(
         Some("ensure the foreign table view reports a non-negative row count"),
     );
     assert_eq!(error_context_value(&err, "num_rows").as_deref(), None);
+}
+
+#[test]
+fn table_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_create_table_from_columns", test_create_table_from_columns),
+        ("test_table_column_access", test_table_column_access),
+        ("test_table_deep_copy", test_table_deep_copy),
+        (
+            "test_table_from_columns_into_columns_preserves_input_order",
+            test_table_from_columns_into_columns_preserves_input_order,
+        ),
+        ("test_empty_table", test_empty_table),
+        ("test_table_from_columns_empty_requires_runtime", test_table_from_columns_empty_requires_runtime),
+        ("test_table_with_nullable_columns", test_table_with_nullable_columns),
+        ("test_table_from_columns_mismatched_rows_rejected", test_table_from_columns_mismatched_rows_rejected),
+        (
+            "test_testing_hook_locks_table_column_count_limit_contract",
+            test_testing_hook_locks_table_column_count_limit_contract,
+        ),
+        ("test_table_view_column_rejects_out_of_bounds_index", test_table_view_column_rejects_out_of_bounds_index),
+        (
+            "test_table_view_column_rejects_usize_indices_outside_i32_range",
+            test_table_view_column_rejects_usize_indices_outside_i32_range,
+        ),
+        ("test_table_view_from_column_views", test_table_view_from_column_views),
+        ("test_table_view_from_column_views_single_column", test_table_view_from_column_views_single_column),
+        (
+            "test_table_view_from_column_views_retains_backing_after_source_views_drop",
+            test_table_view_from_column_views_retains_backing_after_source_views_drop,
+        ),
+        ("test_table_view_from_column_views_empty", test_table_view_from_column_views_empty),
+        (
+            "test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract",
+            test_table_view_from_column_views_rejects_mismatched_rows_with_stable_contract,
+        ),
+        (
+            "test_testing_hook_locks_table_view_column_count_limit_contract",
+            test_testing_hook_locks_table_view_column_count_limit_contract,
+        ),
+        ("test_table_view_select_columns", test_table_view_select_columns),
+        (
+            "test_table_view_select_columns_rejects_out_of_bounds_index",
+            test_table_view_select_columns_rejects_out_of_bounds_index,
+        ),
+    ]);
 }

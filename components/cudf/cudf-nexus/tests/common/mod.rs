@@ -504,3 +504,21 @@ pub fn assert_duplicate_name_error(err: &cudf::Error, expected_name: &str) {
     assert!(error_context_value(err, "reason").is_some(), "duplicate-name contract should expose a reason");
     assert!(error_context_value(err, "remedy").is_some(), "duplicate-name contract should expose a remedy");
 }
+
+/// Runs named cases in order on the current thread, then fails once listing
+/// every case that panicked. Cases share the thread's test runtime, so a table
+/// pays for one CUDA context instead of one per test process.
+pub fn run_named_cases(cases: &[(&str, fn())]) {
+    let failed = cases
+        .iter()
+        .filter(|(name, case)| {
+            let panicked = std::panic::catch_unwind(*case).is_err();
+            if panicked {
+                eprintln!("case `{name}` failed; its panic message is above");
+            }
+            panicked
+        })
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>();
+    assert!(failed.is_empty(), "{} of {} cases failed: {}", failed.len(), cases.len(), failed.join(", "));
+}

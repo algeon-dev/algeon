@@ -47,7 +47,6 @@ fn sample_df_with_dupes() -> DataFrame {
 // dropna — default (any, all columns)
 // ===========================================================================
 
-#[test]
 fn test_dropna_default_drops_any_null_row() {
     let df = sample_df_with_nulls();
     // Default: how=any, subset=all columns.
@@ -67,7 +66,6 @@ fn test_dropna_default_drops_any_null_row() {
 // dropna — how = all
 // ===========================================================================
 
-#[test]
 fn test_dropna_all_mode_keeps_partial_nulls() {
     let df = sample_df_with_nulls();
     let opts = DropNaOptions::builder().how(DropNaHow::All).build();
@@ -82,7 +80,6 @@ fn test_dropna_all_mode_keeps_partial_nulls() {
 // dropna — subset
 // ===========================================================================
 
-#[test]
 fn test_dropna_subset_single_column() {
     let df = sample_df_with_nulls();
     let opts = DropNaOptions::builder().subset(&["score"]).build();
@@ -93,7 +90,6 @@ fn test_dropna_subset_single_column() {
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 5]);
 }
 
-#[test]
 fn test_dropna_subset_multiple_columns() {
     let df = sample_df_with_nulls();
     let opts = DropNaOptions::builder().subset(&["score", "tag"]).build();
@@ -107,7 +103,6 @@ fn test_dropna_subset_multiple_columns() {
 // dropna — threshold
 // ===========================================================================
 
-#[test]
 fn test_dropna_threshold() {
     let df = sample_df_with_nulls();
     // thresh=2 on subset ["score","tag"] means: keep row if at least 2 of the
@@ -124,7 +119,6 @@ fn test_dropna_threshold() {
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
 }
 
-#[test]
 fn test_dropna_threshold_one_keeps_most_rows() {
     let df = sample_df_with_nulls();
     // thresh=1 on subset ["score","tag"] means: keep row if at least 1 is non-null.
@@ -139,7 +133,6 @@ fn test_dropna_threshold_one_keeps_most_rows() {
 // dropna — error cases
 // ===========================================================================
 
-#[test]
 fn test_dropna_invalid_column_name() {
     let df = sample_df_with_nulls();
     let opts = DropNaOptions::builder().subset(&["nonexistent"]).build();
@@ -147,7 +140,6 @@ fn test_dropna_invalid_column_name() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_dropna_negative_thresh_uses_stable_validation_contract() {
     let df = sample_df_with_nulls();
     let opts = DropNaOptions::builder().subset(&["score", "tag"]).thresh(-1).build();
@@ -169,7 +161,6 @@ fn test_dropna_negative_thresh_uses_stable_validation_contract() {
     );
 }
 
-#[test]
 fn test_dropna_subset_count_limit_uses_canonical_contract() {
     let err = cudf::testing::dataframe::trigger_dataframe_dropna_subset_count_limit_error_for_test().unwrap_err();
     let expected = usize::MAX.to_string();
@@ -188,7 +179,6 @@ fn test_dropna_subset_count_limit_uses_canonical_contract() {
 // dropna — empty result preserves schema
 // ===========================================================================
 
-#[test]
 fn test_dropna_empty_result_preserves_schema() {
     // All rows have nulls in some column.
     let a = crate::common::nullable_series::<i32>("a", &[0, 0], &[false, false]).unwrap();
@@ -204,7 +194,6 @@ fn test_dropna_empty_result_preserves_schema() {
 // drop_duplicates — basic (all columns)
 // ===========================================================================
 
-#[test]
 fn test_drop_duplicates_default() {
     let df = sample_df_with_dupes();
     let result = df.drop_duplicates(Default::default()).unwrap();
@@ -217,7 +206,6 @@ fn test_drop_duplicates_default() {
 // drop_duplicates — subset
 // ===========================================================================
 
-#[test]
 fn test_drop_duplicates_subset() {
     let df = sample_df_with_dupes();
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).build();
@@ -231,7 +219,6 @@ fn test_drop_duplicates_subset() {
 // drop_duplicates — keep options
 // ===========================================================================
 
-#[test]
 fn test_drop_duplicates_keep_first() {
     let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
@@ -254,7 +241,6 @@ fn test_drop_duplicates_keep_first() {
     assert_eq!(rows, vec![(1, 10), (2, 30)]);
 }
 
-#[test]
 fn test_drop_duplicates_keep_last() {
     let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
@@ -276,7 +262,6 @@ fn test_drop_duplicates_keep_last() {
     assert_eq!(rows, vec![(1, 20), (2, 30)]);
 }
 
-#[test]
 fn test_drop_duplicates_keep_none() {
     let a = crate::common::series::<i32>("a", &[1, 1, 2]).unwrap();
     let b = crate::common::series::<i32>("b", &[10, 20, 30]).unwrap();
@@ -294,7 +279,6 @@ fn test_drop_duplicates_keep_none() {
 // drop_duplicates — error on invalid column
 // ===========================================================================
 
-#[test]
 fn test_drop_duplicates_invalid_column() {
     let df = sample_df_with_dupes();
     let opts = DropDuplicatesOptions::builder().subset(&["nonexistent"]).build();
@@ -306,7 +290,6 @@ fn test_drop_duplicates_invalid_column() {
 // drop_duplicates — preserves all columns
 // ===========================================================================
 
-#[test]
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df_with_dupes();
     let opts = DropDuplicatesOptions::builder().subset(&["a"]).build();
@@ -319,7 +302,6 @@ fn test_drop_duplicates_preserves_schema() {
 // fillna — scalar, single column
 // ===========================================================================
 
-#[test]
 fn test_fillna_scalar_single_column() {
     let df = sample_df_with_nulls();
     let fill = scalar(999.0f64).unwrap();
@@ -337,7 +319,6 @@ fn test_fillna_scalar_single_column() {
 // fillna — with Series
 // ===========================================================================
 
-#[test]
 fn test_fillna_with_series_single_column() {
     let df = sample_df_with_nulls();
     let fill_series = crate::common::series::<f64>("fill", &[0.0, 20.0, 0.0, 40.0, 0.0]).unwrap();
@@ -351,7 +332,6 @@ fn test_fillna_with_series_single_column() {
 // fillna — error cases
 // ===========================================================================
 
-#[test]
 fn test_fillna_invalid_column() {
     let df = sample_df_with_nulls();
     let fill = scalar(0i32).unwrap();
@@ -359,7 +339,6 @@ fn test_fillna_invalid_column() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_fillna_with_series_invalid_column() {
     let df = sample_df_with_nulls();
     let fill_series = crate::common::series::<f64>("fill", &[0.0; 5]).unwrap();
@@ -371,7 +350,6 @@ fn test_fillna_with_series_invalid_column() {
 // fillna — preserves schema and other columns
 // ===========================================================================
 
-#[test]
 fn test_fillna_preserves_schema() {
     let df = sample_df_with_nulls();
     let fill = scalar(0.0f64).unwrap();
@@ -385,7 +363,6 @@ fn test_fillna_preserves_schema() {
 // DropNaOptions builder API
 // ===========================================================================
 
-#[test]
 fn test_dropna_options_builder_chaining() {
     // Verify that builder methods can be chained.
     let _opts = DropNaOptions::builder().subset(&["a", "b"]).how(DropNaHow::All).thresh(2).build();
@@ -403,7 +380,6 @@ fn test_dropna_options_builder_chaining() {
 // DropDuplicatesOptions builder API
 // ===========================================================================
 
-#[test]
 fn test_drop_duplicates_options_default_is_keep_any() {
     let df = sample_df_with_dupes();
     let opts = DropDuplicatesOptions::new();
@@ -416,9 +392,48 @@ fn test_drop_duplicates_options_default_is_keep_any() {
 // High-level DataFrame option types
 // ===========================================================================
 
-#[test]
 fn test_high_level_option_types_importable_from_dataframe_module() {
     let _: DropNaOptions = Default::default();
     let _: DropNaHow = Default::default();
     let _: DropDuplicatesOptions = Default::default();
+}
+
+#[test]
+fn high_level_d3_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_dropna_default_drops_any_null_row", test_dropna_default_drops_any_null_row),
+        ("test_dropna_all_mode_keeps_partial_nulls", test_dropna_all_mode_keeps_partial_nulls),
+        ("test_dropna_subset_single_column", test_dropna_subset_single_column),
+        ("test_dropna_subset_multiple_columns", test_dropna_subset_multiple_columns),
+        ("test_dropna_threshold", test_dropna_threshold),
+        ("test_dropna_threshold_one_keeps_most_rows", test_dropna_threshold_one_keeps_most_rows),
+        ("test_dropna_invalid_column_name", test_dropna_invalid_column_name),
+        (
+            "test_dropna_negative_thresh_uses_stable_validation_contract",
+            test_dropna_negative_thresh_uses_stable_validation_contract,
+        ),
+        (
+            "test_dropna_subset_count_limit_uses_canonical_contract",
+            test_dropna_subset_count_limit_uses_canonical_contract,
+        ),
+        ("test_dropna_empty_result_preserves_schema", test_dropna_empty_result_preserves_schema),
+        ("test_drop_duplicates_default", test_drop_duplicates_default),
+        ("test_drop_duplicates_subset", test_drop_duplicates_subset),
+        ("test_drop_duplicates_keep_first", test_drop_duplicates_keep_first),
+        ("test_drop_duplicates_keep_last", test_drop_duplicates_keep_last),
+        ("test_drop_duplicates_keep_none", test_drop_duplicates_keep_none),
+        ("test_drop_duplicates_invalid_column", test_drop_duplicates_invalid_column),
+        ("test_drop_duplicates_preserves_schema", test_drop_duplicates_preserves_schema),
+        ("test_fillna_scalar_single_column", test_fillna_scalar_single_column),
+        ("test_fillna_with_series_single_column", test_fillna_with_series_single_column),
+        ("test_fillna_invalid_column", test_fillna_invalid_column),
+        ("test_fillna_with_series_invalid_column", test_fillna_with_series_invalid_column),
+        ("test_fillna_preserves_schema", test_fillna_preserves_schema),
+        ("test_dropna_options_builder_chaining", test_dropna_options_builder_chaining),
+        ("test_drop_duplicates_options_default_is_keep_any", test_drop_duplicates_options_default_is_keep_any),
+        (
+            "test_high_level_option_types_importable_from_dataframe_module",
+            test_high_level_option_types_importable_from_dataframe_module,
+        ),
+    ]);
 }

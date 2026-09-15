@@ -12,7 +12,6 @@
 // sum with nulls
 // ===========================================================================
 
-#[test]
 fn test_sum_partial_nulls_skips_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.sum().unwrap();
@@ -20,7 +19,6 @@ fn test_sum_partial_nulls_skips_nulls() {
     assert_eq!(result.value::<i64>().unwrap(), 40); // 10 + 30, skip null
 }
 
-#[test]
 fn test_sum_all_null_returns_valid_zero_or_null() {
     // cuDF Python: Series([None, None, None]).sum() returns 0 (not null).
     // libcudf reduce with EXCLUDE nulls on all-null column returns 0 for sum.
@@ -30,7 +28,6 @@ fn test_sum_all_null_returns_valid_zero_or_null() {
     assert_eq!(result.value::<i64>().unwrap(), 0);
 }
 
-#[test]
 fn test_sum_empty_series() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.sum().unwrap();
@@ -38,7 +35,6 @@ fn test_sum_empty_series() {
     assert_eq!(result.value::<i64>().unwrap(), 0);
 }
 
-#[test]
 fn test_sum_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     let result = s.sum().unwrap();
@@ -49,7 +45,6 @@ fn test_sum_single_element() {
 // min / max with nulls
 // ===========================================================================
 
-#[test]
 fn test_min_partial_nulls_skips_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.min().unwrap();
@@ -57,7 +52,6 @@ fn test_min_partial_nulls_skips_nulls() {
     assert_eq!(result.value::<i32>().unwrap(), 10);
 }
 
-#[test]
 fn test_max_partial_nulls_skips_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.max().unwrap();
@@ -65,7 +59,6 @@ fn test_max_partial_nulls_skips_nulls() {
     assert_eq!(result.value::<i32>().unwrap(), 30);
 }
 
-#[test]
 fn test_min_all_null_returns_null_scalar() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let result = s.min().unwrap();
@@ -73,20 +66,17 @@ fn test_min_all_null_returns_null_scalar() {
     assert!(!result.is_valid().unwrap());
 }
 
-#[test]
 fn test_max_all_null_returns_null_scalar() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let result = s.max().unwrap();
     assert!(!result.is_valid().unwrap());
 }
 
-#[test]
 fn test_min_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     assert_eq!(s.min().unwrap().value::<i32>().unwrap(), 42);
 }
 
-#[test]
 fn test_max_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     assert_eq!(s.max().unwrap().value::<i32>().unwrap(), 42);
@@ -96,7 +86,6 @@ fn test_max_single_element() {
 // mean with nulls
 // ===========================================================================
 
-#[test]
 fn test_mean_partial_nulls_skips_nulls() {
     // [10, null, 30] -> mean = (10+30)/2 = 20.0
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -106,7 +95,6 @@ fn test_mean_partial_nulls_skips_nulls() {
     assert!((v - 20.0).abs() < 1e-10);
 }
 
-#[test]
 fn test_mean_all_null() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let result = s.mean().unwrap();
@@ -114,7 +102,6 @@ fn test_mean_all_null() {
     assert!(!result.is_valid().unwrap());
 }
 
-#[test]
 fn test_mean_single_element() {
     let s = crate::common::series::<f64>("x", &[3.5]).unwrap();
     let v = s.mean().unwrap().value::<f64>().unwrap();
@@ -125,7 +112,6 @@ fn test_mean_single_element() {
 // median with nulls
 // ===========================================================================
 
-#[test]
 fn test_median_partial_nulls() {
     // [10, null, 30, 20] -> valid values [10, 20, 30] -> median = 20.0
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30, 20], &[true, false, true, true]).unwrap();
@@ -135,14 +121,12 @@ fn test_median_partial_nulls() {
     assert!((v - 20.0).abs() < 1e-10);
 }
 
-#[test]
 fn test_median_all_null() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let result = s.median().unwrap();
     assert!(!result.is_valid().unwrap());
 }
 
-#[test]
 fn test_median_single_element() {
     let s = crate::common::series::<i32>("x", &[7]).unwrap();
     let v = s.median().unwrap().value::<f64>().unwrap();
@@ -153,7 +137,6 @@ fn test_median_single_element() {
 // std / var with nulls
 // ===========================================================================
 
-#[test]
 fn test_std_partial_nulls() {
     // [10, null, 30] -> valid values [10, 30], sample std (ddof=1)
     // mean = 20, var = ((10-20)^2 + (30-20)^2) / (2-1) = 200
@@ -165,7 +148,6 @@ fn test_std_partial_nulls() {
     assert!((v - 200.0f64.sqrt()).abs() < 1e-6);
 }
 
-#[test]
 fn test_var_partial_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.var(1).unwrap();
@@ -174,7 +156,6 @@ fn test_var_partial_nulls() {
     assert!((v - 200.0).abs() < 1e-6);
 }
 
-#[test]
 fn test_std_single_element_ddof1() {
     // std of single element with ddof=1: division by (1-1)=0 -> NaN or null
     let s = crate::common::series::<i32>("x", &[5]).unwrap();
@@ -184,7 +165,6 @@ fn test_std_single_element_ddof1() {
     let _v = result.value::<f64>().unwrap();
 }
 
-#[test]
 fn test_std_all_null() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let result = s.std(1).unwrap();
@@ -195,7 +175,6 @@ fn test_std_all_null() {
 // any / all with nulls
 // ===========================================================================
 
-#[test]
 fn test_any_with_true_and_null() {
     // [true, null, false] -> any should be true (at least one true exists)
     let s = crate::common::nullable_series::<bool>("x", &[true, false, false], &[true, false, true]).unwrap();
@@ -204,7 +183,6 @@ fn test_any_with_true_and_null() {
     assert!(result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_any_with_false_and_null() {
     // [false, null, false] -> cuDF excludes nulls, so any([false, false]) = false
     let s = crate::common::nullable_series::<bool>("x", &[false, false, false], &[true, false, true]).unwrap();
@@ -213,7 +191,6 @@ fn test_any_with_false_and_null() {
     assert!(!result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_all_with_true_and_null() {
     // [true, null, true] -> cuDF excludes nulls, so all([true, true]) = true
     let s = crate::common::nullable_series::<bool>("x", &[true, false, true], &[true, false, true]).unwrap();
@@ -222,7 +199,6 @@ fn test_all_with_true_and_null() {
     assert!(result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_all_with_false_and_null() {
     // [true, null, false] -> cuDF excludes nulls, so all([true, false]) = false
     let s = crate::common::nullable_series::<bool>("x", &[true, false, false], &[true, false, true]).unwrap();
@@ -231,7 +207,6 @@ fn test_all_with_false_and_null() {
     assert!(!result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_any_all_null() {
     let s = crate::common::nullable_series::<bool>("x", &[false, false], &[false, false]).unwrap();
     let result = s.any().unwrap();
@@ -244,7 +219,6 @@ fn test_any_all_null() {
 // product with nulls
 // ===========================================================================
 
-#[test]
 fn test_product_partial_nulls() {
     // [2, null, 5] -> product of valid = 10
     let s = crate::common::nullable_series::<i32>("x", &[2, 0, 5], &[true, false, true]).unwrap();
@@ -253,7 +227,6 @@ fn test_product_partial_nulls() {
     assert_eq!(result.value::<i32>().unwrap(), 10);
 }
 
-#[test]
 fn test_product_single_element() {
     let s = crate::common::series::<i32>("x", &[7]).unwrap();
     assert_eq!(s.product().unwrap().value::<i32>().unwrap(), 7);
@@ -263,7 +236,6 @@ fn test_product_single_element() {
 // minmax with nulls
 // ===========================================================================
 
-#[test]
 fn test_minmax_partial_nulls() {
     // [10, null, 30, 5] -> min=5, max=30
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30, 5], &[true, false, true, true]).unwrap();
@@ -272,7 +244,6 @@ fn test_minmax_partial_nulls() {
     assert_eq!(max_s.value::<i32>().unwrap(), 30);
 }
 
-#[test]
 fn test_minmax_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     let (min_s, max_s) = s.minmax().unwrap();
@@ -284,7 +255,6 @@ fn test_minmax_single_element() {
 // Cumulative scans with nulls
 // ===========================================================================
 
-#[test]
 fn test_cumsum_with_nulls() {
     // [1, null, 3, 4] -> cumsum should skip nulls in the running total
     // Expected: [1, null, 4, 8] (null positions stay null)
@@ -297,7 +267,6 @@ fn test_cumsum_with_nulls() {
     assert_eq!(vals[3], Some(8)); // 1 + 3 + 4
 }
 
-#[test]
 fn test_cummin_with_nulls() {
     // [5, null, 3, 7] -> cummin skipping nulls
     // Expected: [5, null, 3, 3]
@@ -310,7 +279,6 @@ fn test_cummin_with_nulls() {
     assert_eq!(vals[3], Some(3));
 }
 
-#[test]
 fn test_cummax_with_nulls() {
     // [5, null, 3, 7] -> cummax skipping nulls
     // Expected: [5, null, 5, 7]
@@ -323,7 +291,6 @@ fn test_cummax_with_nulls() {
     assert_eq!(vals[3], Some(7));
 }
 
-#[test]
 fn test_cumprod_with_nulls() {
     // [2, null, 3, 4] -> cumprod skipping nulls
     // Expected: [2, null, 6, 24]
@@ -340,16 +307,55 @@ fn test_cumprod_with_nulls() {
 // Cumulative scans on empty series
 // ===========================================================================
 
-#[test]
 fn test_cumsum_empty() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.cumsum().unwrap();
     assert!(result.is_empty());
 }
 
-#[test]
 fn test_cumsum_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     let result = s.cumsum().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
+}
+
+#[test]
+fn null_reduction_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_sum_partial_nulls_skips_nulls", test_sum_partial_nulls_skips_nulls),
+        ("test_sum_all_null_returns_valid_zero_or_null", test_sum_all_null_returns_valid_zero_or_null),
+        ("test_sum_empty_series", test_sum_empty_series),
+        ("test_sum_single_element", test_sum_single_element),
+        ("test_min_partial_nulls_skips_nulls", test_min_partial_nulls_skips_nulls),
+        ("test_max_partial_nulls_skips_nulls", test_max_partial_nulls_skips_nulls),
+        ("test_min_all_null_returns_null_scalar", test_min_all_null_returns_null_scalar),
+        ("test_max_all_null_returns_null_scalar", test_max_all_null_returns_null_scalar),
+        ("test_min_single_element", test_min_single_element),
+        ("test_max_single_element", test_max_single_element),
+        ("test_mean_partial_nulls_skips_nulls", test_mean_partial_nulls_skips_nulls),
+        ("test_mean_all_null", test_mean_all_null),
+        ("test_mean_single_element", test_mean_single_element),
+        ("test_median_partial_nulls", test_median_partial_nulls),
+        ("test_median_all_null", test_median_all_null),
+        ("test_median_single_element", test_median_single_element),
+        ("test_std_partial_nulls", test_std_partial_nulls),
+        ("test_var_partial_nulls", test_var_partial_nulls),
+        ("test_std_single_element_ddof1", test_std_single_element_ddof1),
+        ("test_std_all_null", test_std_all_null),
+        ("test_any_with_true_and_null", test_any_with_true_and_null),
+        ("test_any_with_false_and_null", test_any_with_false_and_null),
+        ("test_all_with_true_and_null", test_all_with_true_and_null),
+        ("test_all_with_false_and_null", test_all_with_false_and_null),
+        ("test_any_all_null", test_any_all_null),
+        ("test_product_partial_nulls", test_product_partial_nulls),
+        ("test_product_single_element", test_product_single_element),
+        ("test_minmax_partial_nulls", test_minmax_partial_nulls),
+        ("test_minmax_single_element", test_minmax_single_element),
+        ("test_cumsum_with_nulls", test_cumsum_with_nulls),
+        ("test_cummin_with_nulls", test_cummin_with_nulls),
+        ("test_cummax_with_nulls", test_cummax_with_nulls),
+        ("test_cumprod_with_nulls", test_cumprod_with_nulls),
+        ("test_cumsum_empty", test_cumsum_empty),
+        ("test_cumsum_single_element", test_cumsum_single_element),
+    ]);
 }

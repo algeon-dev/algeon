@@ -10,6 +10,10 @@ use cudf::{
 
 const STATIC_PARTITION_BYTES: usize = 64 * 1024 * 1024;
 
+/// Guards against these two tests racing the process-global device memory
+/// manager installation if they ever shared a process; nextest already runs
+/// each test in its own process, so this lock only matters under a
+/// shared-process harness such as `cargo test`.
 fn static_partition_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))

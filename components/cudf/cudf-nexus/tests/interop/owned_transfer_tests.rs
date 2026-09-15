@@ -707,7 +707,6 @@ fn assert_foreign_column_snapshot_round_trip(
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
-#[test]
 fn column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
     for mode in owned_transfer_modes() {
         let runtime = Runtime::builder().build().unwrap();
@@ -724,7 +723,6 @@ fn column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes
     }
 }
 
-#[test]
 fn table_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
     for mode in owned_transfer_modes() {
         let runtime = Runtime::builder().build().unwrap();
@@ -739,7 +737,6 @@ fn table_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes(
     }
 }
 
-#[test]
 fn series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
     for mode in owned_transfer_modes() {
         let runtime = Runtime::builder().build().unwrap();
@@ -756,7 +753,6 @@ fn series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes
     }
 }
 
-#[test]
 fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared() {
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime.series(&[7i32, 8, 9]).unwrap();
@@ -776,7 +772,6 @@ fn series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared(
     assert_eq!(shared.testing_view().unwrap().device_data_ptr().unwrap(), original_ptr);
 }
 
-#[test]
 fn dataframe_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes() {
     for mode in owned_transfer_modes() {
         let runtime = Runtime::builder().build().unwrap();
@@ -859,7 +854,6 @@ fn runtime_release_owned_column_transfer_release_waits_on_consumer_event() {
     release_thread.join().unwrap();
 }
 
-#[test]
 fn runtime_release_owned_column_transfer_rejects_synchronous_by_return_completion() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -910,7 +904,6 @@ fn runtime_release_owned_column_transfer_with_may_synchronize_internally_blocks_
     release_thread.join().unwrap();
 }
 
-#[test]
 fn runtime_release_owned_column_transfer_synchronization_selection_rejects_requires_caller_synchronization() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -945,7 +938,6 @@ fn runtime_release_owned_column_transfer_rejects_wrong_device_stream_synchronous
     assert_eq!(interop_error_context_value(&err, "stream_device"), None);
 }
 
-#[test]
 fn runtime_release_owned_column_transfer_import_claims_native_ownership_and_invalidates_releaser() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
@@ -967,7 +959,6 @@ fn runtime_release_owned_column_transfer_import_claims_native_ownership_and_inva
     assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
 }
 
-#[test]
 fn runtime_release_owned_column_transfer_wait_failure_keeps_transfer_importable() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -994,7 +985,6 @@ fn runtime_release_owned_column_transfer_wait_failure_keeps_transfer_importable(
     assert_eq!(imported.testing_view().unwrap().device_data_ptr().unwrap(), expected_ptr);
 }
 
-#[test]
 fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_are_shared() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -1021,7 +1011,6 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
     assert_eq!(shared.series("value").unwrap().testing_view().unwrap().device_data_ptr().unwrap(), original_value_ptr);
 }
 
-#[test]
 fn owned_column_transfer_import_round_trips_original_column_without_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
@@ -1037,7 +1026,6 @@ fn owned_column_transfer_import_round_trips_original_column_without_copy() {
     assert_eq!(imported.testing_execution_domain_id(), destination_runtime.testing_execution_domain_id());
 }
 
-#[test]
 fn owned_table_transfer_import_round_trips_original_table_without_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -1059,7 +1047,6 @@ fn owned_table_transfer_import_round_trips_original_table_without_copy() {
     assert_eq!(imported.testing_execution_domain_id(), destination_runtime.testing_execution_domain_id());
 }
 
-#[test]
 fn owned_column_transfer_import_accepts_foreign_owner_state_zero_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let device = runtime.device().ordinal() as i32;
@@ -1083,7 +1070,6 @@ fn owned_column_transfer_import_accepts_foreign_owner_state_zero_copy() {
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
-#[test]
 fn owned_column_transfer_import_retains_foreign_owner_until_drop() {
     let runtime = Runtime::builder().build().unwrap();
     let device = runtime.device().ordinal() as i32;
@@ -1104,7 +1090,6 @@ fn owned_column_transfer_import_retains_foreign_owner_until_drop() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn owned_table_transfer_import_accepts_foreign_owner_state_and_round_trips_columns_zero_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let device = runtime.device().ordinal() as i32;
@@ -1147,7 +1132,6 @@ fn owned_table_transfer_import_accepts_foreign_owner_state_and_round_trips_colum
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
-#[test]
 fn owned_table_transfer_into_columns_preserves_foreign_owner_liveness() {
     let runtime = Runtime::builder().build().unwrap();
     let device = runtime.device().ordinal() as i32;
@@ -1172,7 +1156,6 @@ fn owned_table_transfer_into_columns_preserves_foreign_owner_liveness() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn owned_column_transfer_import_accepts_foreign_string_owner_state_zero_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let source = runtime.column_from_strs(&["alpha", "beta", "gamma"]).unwrap();
@@ -1185,7 +1168,6 @@ fn owned_column_transfer_import_accepts_foreign_string_owner_state_zero_copy() {
     });
 }
 
-#[test]
 fn owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy() {
     let frame = read_json_dataframe(
         "owned_transfer_list.jsonl",
@@ -1205,7 +1187,6 @@ fn owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy() {
     });
 }
 
-#[test]
 fn owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy() {
     let frame = read_json_dataframe(
         "owned_transfer_struct.jsonl",
@@ -1226,7 +1207,6 @@ fn owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy() {
     });
 }
 
-#[test]
 fn owned_column_transfer_import_accepts_foreign_dictionary_owner_state_zero_copy() {
     let runtime = Runtime::builder().build().unwrap();
     let source = runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
@@ -1242,7 +1222,6 @@ fn owned_column_transfer_import_accepts_foreign_dictionary_owner_state_zero_copy
     });
 }
 
-#[test]
 fn owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy() {
     let frame = read_json_dataframe(
         "owned_transfer_nested_table.jsonl",
@@ -1277,7 +1256,6 @@ fn owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy() {
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 }
 
-#[test]
 fn owned_table_transfer_import_rejects_excessively_nested_wrappers() {
     let runtime = Runtime::builder().build().unwrap();
     let table = Table::from_columns(vec![runtime.column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
@@ -1297,7 +1275,6 @@ fn owned_table_transfer_import_rejects_excessively_nested_wrappers() {
     assert!(err.to_string().contains("nesting"), "unexpected error: {err}");
 }
 
-#[test]
 fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe() {
     crate::common::with_test_runtime(|runtime| {
         let expected_device = runtime.device().ordinal() as i32;
@@ -1354,7 +1331,6 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
 // Abandoned transfer cleanup (Drop safety)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_cleans_up_without_panicking() {
     // When both the transfer root and the releaser are dropped without either
     // importing or releasing, the RuntimeOwnedTransferState Drop impl must
@@ -1369,7 +1345,6 @@ fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_cle
     drop(releaser);
 }
 
-#[test]
 fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_cleans_up_without_panicking() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -1382,7 +1357,6 @@ fn runtime_release_owned_table_transfer_abandoned_without_import_or_release_clea
     drop(releaser);
 }
 
-#[test]
 fn runtime_release_owned_column_transfer_abandoned_releaser_only_preserves_import_path() {
     // The releaser is dropped first, then the transfer is imported normally.
     // This verifies the releaser drop alone does not corrupt state.
@@ -1396,4 +1370,114 @@ fn runtime_release_owned_column_transfer_abandoned_releaser_only_preserves_impor
     let imported =
         Column::try_import_from_owned_device_column_transfer_into_runtime(transfer, &destination_runtime).unwrap();
     assert_eq!(imported.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+#[test]
+fn owned_transfer_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes",
+            column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes,
+        ),
+        (
+            "table_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes",
+            table_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes,
+        ),
+        (
+            "series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes",
+            series_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes,
+        ),
+        (
+            "series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared",
+            series_try_into_owned_device_transfer_deep_copies_when_series_data_is_shared,
+        ),
+        (
+            "dataframe_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes",
+            dataframe_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes,
+        ),
+        (
+            "runtime_release_owned_column_transfer_rejects_synchronous_by_return_completion",
+            runtime_release_owned_column_transfer_rejects_synchronous_by_return_completion,
+        ),
+        (
+            "runtime_release_owned_column_transfer_synchronization_selection_rejects_requires_caller_synchronization",
+            runtime_release_owned_column_transfer_synchronization_selection_rejects_requires_caller_synchronization,
+        ),
+        (
+            "runtime_release_owned_column_transfer_import_claims_native_ownership_and_invalidates_releaser",
+            runtime_release_owned_column_transfer_import_claims_native_ownership_and_invalidates_releaser,
+        ),
+        (
+            "runtime_release_owned_column_transfer_wait_failure_keeps_transfer_importable",
+            runtime_release_owned_column_transfer_wait_failure_keeps_transfer_importable,
+        ),
+        (
+            "dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_are_shared",
+            dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_are_shared,
+        ),
+        (
+            "owned_column_transfer_import_round_trips_original_column_without_copy",
+            owned_column_transfer_import_round_trips_original_column_without_copy,
+        ),
+        (
+            "owned_table_transfer_import_round_trips_original_table_without_copy",
+            owned_table_transfer_import_round_trips_original_table_without_copy,
+        ),
+        (
+            "owned_column_transfer_import_accepts_foreign_owner_state_zero_copy",
+            owned_column_transfer_import_accepts_foreign_owner_state_zero_copy,
+        ),
+        (
+            "owned_column_transfer_import_retains_foreign_owner_until_drop",
+            owned_column_transfer_import_retains_foreign_owner_until_drop,
+        ),
+        (
+            "owned_table_transfer_import_accepts_foreign_owner_state_and_round_trips_columns_zero_copy",
+            owned_table_transfer_import_accepts_foreign_owner_state_and_round_trips_columns_zero_copy,
+        ),
+        (
+            "owned_table_transfer_into_columns_preserves_foreign_owner_liveness",
+            owned_table_transfer_into_columns_preserves_foreign_owner_liveness,
+        ),
+        (
+            "owned_column_transfer_import_accepts_foreign_string_owner_state_zero_copy",
+            owned_column_transfer_import_accepts_foreign_string_owner_state_zero_copy,
+        ),
+        (
+            "owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy",
+            owned_column_transfer_import_accepts_foreign_list_owner_state_zero_copy,
+        ),
+        (
+            "owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy",
+            owned_column_transfer_import_accepts_foreign_struct_owner_state_zero_copy,
+        ),
+        (
+            "owned_column_transfer_import_accepts_foreign_dictionary_owner_state_zero_copy",
+            owned_column_transfer_import_accepts_foreign_dictionary_owner_state_zero_copy,
+        ),
+        (
+            "owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy",
+            owned_table_transfer_import_accepts_foreign_nested_columns_zero_copy,
+        ),
+        (
+            "owned_table_transfer_import_rejects_excessively_nested_wrappers",
+            owned_table_transfer_import_rejects_excessively_nested_wrappers,
+        ),
+        (
+            "helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe",
+            helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe,
+        ),
+        (
+            "runtime_release_owned_column_transfer_abandoned_without_import_or_release_cleans_up_without_panicking",
+            runtime_release_owned_column_transfer_abandoned_without_import_or_release_cleans_up_without_panicking,
+        ),
+        (
+            "runtime_release_owned_table_transfer_abandoned_without_import_or_release_cleans_up_without_panicking",
+            runtime_release_owned_table_transfer_abandoned_without_import_or_release_cleans_up_without_panicking,
+        ),
+        (
+            "runtime_release_owned_column_transfer_abandoned_releaser_only_preserves_import_path",
+            runtime_release_owned_column_transfer_abandoned_releaser_only_preserves_import_path,
+        ),
+    ]);
 }

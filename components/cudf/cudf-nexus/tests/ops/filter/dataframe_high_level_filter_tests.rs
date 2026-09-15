@@ -10,7 +10,6 @@ use crate::common::{
 // filter(&Series) — happy path
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_series_mask_basic() {
     let df = sample_df();
     // Build a boolean mask via Series comparison: id > 2
@@ -24,7 +23,6 @@ fn test_filter_series_mask_basic() {
     assert_eq!(filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
-#[test]
 fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
@@ -52,7 +50,6 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-#[test]
 fn test_filter_series_mask_all_true() {
     let df = sample_df();
     let mask = crate::common::series::<bool>("mask", &[true, true, true, true, true]).unwrap();
@@ -61,7 +58,6 @@ fn test_filter_series_mask_all_true() {
     assert_eq!(filtered.num_rows(), 5);
 }
 
-#[test]
 fn test_filter_series_mask_all_false() {
     let df = sample_df();
     let mask = crate::common::series::<bool>("mask", &[false, false, false, false, false]).unwrap();
@@ -76,7 +72,6 @@ fn test_filter_series_mask_all_false() {
 // filter(&Series) — preserves output column names
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_series_preserves_column_names() {
     let df = sample_df();
     let mask = crate::common::series::<bool>("m", &[true, false, true, false, true]).unwrap();
@@ -91,7 +86,6 @@ fn test_filter_series_preserves_column_names() {
 // filter(&Series) — rejects wrong-length mask
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_series_rejects_wrong_length_mask() {
     let df = sample_df(); // 5 rows
     let mask = crate::common::series::<bool>("short", &[true, false]).unwrap();
@@ -110,7 +104,6 @@ fn test_filter_series_rejects_wrong_length_mask() {
 // filter(&Series) — rejects non-BOOL8 mask
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_series_rejects_non_bool_mask() {
     let df = sample_df();
     // Pass an i32 series as mask — should be rejected.
@@ -130,7 +123,6 @@ fn test_filter_series_rejects_non_bool_mask() {
 // filter(&Series) — works with comparison-produced masks
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_series_with_eq_scalar_mask() {
     let df = sample_df();
     let id_series = df.series("id").unwrap();
@@ -142,7 +134,6 @@ fn test_filter_series_with_eq_scalar_mask() {
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1]);
 }
 
-#[test]
 fn test_filter_series_with_le_scalar_mask() {
     let df = sample_df();
     let score_series = df.series("score").unwrap();
@@ -159,7 +150,6 @@ fn test_filter_series_with_le_scalar_mask() {
 // Advanced low-level path uses view() + cudf::ops::filter
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_advanced_low_level_filter_still_works_via_view() {
     let df = sample_df();
     let mask_col = column_from_slice(&[true, false, true, false, true]).unwrap();
@@ -173,7 +163,6 @@ fn test_advanced_low_level_filter_still_works_via_view() {
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);
 }
 
-#[test]
 fn test_advanced_low_level_filter_rejects_non_bool_mask() {
     let df = sample_df();
     let mask_col = column_from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
@@ -191,7 +180,6 @@ fn test_advanced_low_level_filter_rejects_non_bool_mask() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
-#[test]
 fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
     let df = sample_df();
     let mask_col = column_from_slice(&[true, false]).unwrap();
@@ -207,4 +195,28 @@ fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
     assert_eq!(err.operation(), "filter::apply_boolean_mask");
     assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("5"));
+}
+
+#[test]
+fn dataframe_high_level_filter_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_filter_series_mask_basic", test_filter_series_mask_basic),
+        (
+            "test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
+            test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
+        ),
+        ("test_filter_series_mask_all_true", test_filter_series_mask_all_true),
+        ("test_filter_series_mask_all_false", test_filter_series_mask_all_false),
+        ("test_filter_series_preserves_column_names", test_filter_series_preserves_column_names),
+        ("test_filter_series_rejects_wrong_length_mask", test_filter_series_rejects_wrong_length_mask),
+        ("test_filter_series_rejects_non_bool_mask", test_filter_series_rejects_non_bool_mask),
+        ("test_filter_series_with_eq_scalar_mask", test_filter_series_with_eq_scalar_mask),
+        ("test_filter_series_with_le_scalar_mask", test_filter_series_with_le_scalar_mask),
+        ("test_advanced_low_level_filter_still_works_via_view", test_advanced_low_level_filter_still_works_via_view),
+        ("test_advanced_low_level_filter_rejects_non_bool_mask", test_advanced_low_level_filter_rejects_non_bool_mask),
+        (
+            "test_advanced_low_level_filter_rejects_wrong_length_mask",
+            test_advanced_low_level_filter_rejects_wrong_length_mask,
+        ),
+    ]);
 }

@@ -8,7 +8,6 @@ fn sample_frame() -> DataFrame {
     DataFrame::from_series([("id", ids), ("value", values)]).unwrap()
 }
 
-#[test]
 fn hash_partition_by_preserves_rows_and_reports_offsets() {
     let df = sample_frame();
 
@@ -44,7 +43,6 @@ fn hash_partition_by_preserves_rows_and_reports_offsets() {
     assert_eq!(partitioned_rows, original);
 }
 
-#[test]
 fn hash_partition_by_rejects_empty_key_list() {
     let df = sample_frame();
 
@@ -52,4 +50,12 @@ fn hash_partition_by_rejects_empty_key_list() {
     assert_eq!(err.code(), ErrorCode::EmptyInput);
     assert_eq!(err.operation(), "dataframe::hash_partition_by");
     assert_eq!(err.detail_value("reason"), Some("empty_partition_keys"));
+}
+
+#[test]
+fn partitioning_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("hash_partition_by_preserves_rows_and_reports_offsets", hash_partition_by_preserves_rows_and_reports_offsets),
+        ("hash_partition_by_rejects_empty_key_list", hash_partition_by_rejects_empty_key_list),
+    ]);
 }

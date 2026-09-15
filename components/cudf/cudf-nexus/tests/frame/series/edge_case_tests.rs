@@ -14,7 +14,6 @@ use cudf::{DataType, TypeId, frame::dataframe::DropNaOptions};
 // Empty Series through arithmetic
 // ===========================================================================
 
-#[test]
 fn test_add_empty_series() {
     let a = crate::common::series::<i32>("a", &[]).unwrap();
     let b = crate::common::series::<i32>("b", &[]).unwrap();
@@ -22,7 +21,6 @@ fn test_add_empty_series() {
     assert!(result.is_empty());
 }
 
-#[test]
 fn test_eq_empty_series() {
     let a = crate::common::series::<i32>("a", &[]).unwrap();
     let b = crate::common::series::<i32>("b", &[]).unwrap();
@@ -30,14 +28,12 @@ fn test_eq_empty_series() {
     assert!(result.is_empty());
 }
 
-#[test]
 fn test_add_scalar_empty_series() {
     let a = crate::common::series::<i32>("a", &[]).unwrap();
     let result = a.add_scalar(5i32).unwrap();
     assert!(result.is_empty());
 }
 
-#[test]
 fn test_neg_empty_series() {
     let a = crate::common::series::<i32>("a", &[]).unwrap();
     let result = (-&a).unwrap();
@@ -48,7 +44,6 @@ fn test_neg_empty_series() {
 // Empty Series through reductions
 // ===========================================================================
 
-#[test]
 fn test_min_empty_series() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.min().unwrap();
@@ -56,14 +51,12 @@ fn test_min_empty_series() {
     assert!(!result.is_valid().unwrap());
 }
 
-#[test]
 fn test_max_empty_series() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.max().unwrap();
     assert!(!result.is_valid().unwrap());
 }
 
-#[test]
 fn test_mean_empty_series() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.mean().unwrap();
@@ -75,7 +68,6 @@ fn test_mean_empty_series() {
 // Single-element edge cases
 // ===========================================================================
 
-#[test]
 fn test_sort_single_element() {
     use cudf::SortOptions;
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
@@ -83,7 +75,6 @@ fn test_sort_single_element() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
-#[test]
 fn test_unique_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     let result = s.unique().unwrap();
@@ -91,13 +82,11 @@ fn test_unique_single_element() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
-#[test]
 fn test_nunique_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     assert_eq!(s.nunique().unwrap(), 1);
 }
 
-#[test]
 fn test_factorize_single_element() {
     let s = crate::common::series::<i32>("x", &[42]).unwrap();
     let factorized = s.factorize().unwrap();
@@ -109,7 +98,6 @@ fn test_factorize_single_element() {
 // Type coercion edge cases in astype
 // ===========================================================================
 
-#[test]
 fn test_astype_bool_to_int() {
     // true -> 1, false -> 0
     let s = crate::common::series::<bool>("flags", &[true, false, true]).unwrap();
@@ -118,7 +106,6 @@ fn test_astype_bool_to_int() {
     assert_eq!(vals, vec![1, 0, 1]);
 }
 
-#[test]
 fn test_astype_int_to_bool() {
     // nonzero -> true, zero -> false
     let s = crate::common::series::<i32>("x", &[0, 1, 42, -1]).unwrap();
@@ -127,7 +114,6 @@ fn test_astype_int_to_bool() {
     assert_eq!(vals, vec![false, true, true, true]);
 }
 
-#[test]
 fn test_astype_i32_to_i64_widening() {
     let s = crate::common::series::<i32>("x", &[i32::MAX, i32::MIN, 0]).unwrap();
     let result = s.astype(TypeId::Int64).unwrap();
@@ -135,7 +121,6 @@ fn test_astype_i32_to_i64_widening() {
     assert_eq!(vals, vec![i32::MAX as i64, i32::MIN as i64, 0]);
 }
 
-#[test]
 fn test_astype_f64_to_i32_truncates() {
     let s = crate::common::series::<f64>("x", &[1.9, -2.7, 0.1]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
@@ -144,7 +129,6 @@ fn test_astype_f64_to_i32_truncates() {
     assert_eq!(vals, vec![1, -2, 0]);
 }
 
-#[test]
 fn test_astype_preserves_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
@@ -152,7 +136,6 @@ fn test_astype_preserves_nulls() {
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
 }
 
-#[test]
 fn test_astype_empty_series() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.astype(TypeId::Float64).unwrap();
@@ -160,14 +143,12 @@ fn test_astype_empty_series() {
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
 }
 
-#[test]
 fn test_astype_same_type_noop() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_astype_unsigned_to_signed() {
     let s = crate::common::series::<u32>("x", &[0, 100, 255]).unwrap();
     let result = s.astype(TypeId::Int32).unwrap();
@@ -175,7 +156,6 @@ fn test_astype_unsigned_to_signed() {
     assert_eq!(vals, vec![0, 100, 255]);
 }
 
-#[test]
 fn test_astype_i8_to_i64() {
     let s = crate::common::series::<i8>("x", &[i8::MAX, i8::MIN, 0]).unwrap();
     let result = s.astype(TypeId::Int64).unwrap();
@@ -187,7 +167,6 @@ fn test_astype_i8_to_i64() {
 // Null-aware convenience operations
 // ===========================================================================
 
-#[test]
 fn test_unique_with_nulls() {
     // [1, null, 2, null, 1] -> unique should keep {1, 2, null}
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
@@ -198,14 +177,12 @@ fn test_unique_with_nulls() {
     assert_eq!(result.null_count(), 1); // one null among the uniques
 }
 
-#[test]
 fn test_nunique_with_nulls() {
     // [1, null, 2, null, 1] -> nunique excludes nulls -> 2 (just 1 and 2)
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
     assert_eq!(s.nunique().unwrap(), 2);
 }
 
-#[test]
 fn test_isin_with_null_in_source() {
     // source: [10, null, 30], values: [10, 30]
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -218,7 +195,6 @@ fn test_isin_with_null_in_source() {
     assert_eq!(rv[2], Some(true));
 }
 
-#[test]
 fn test_fillna_with_series_both_have_nulls() {
     // source: [10, null, null], fill: [0, 20, null]
     // Expected: [10, 20, null]  (null in fill at position 2 means it stays null)
@@ -229,14 +205,12 @@ fn test_fillna_with_series_both_have_nulls() {
     assert_eq!(vals, vec![Some(10), Some(20), None]);
 }
 
-#[test]
 fn test_fillna_empty_series() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let result = s.fillna(0i32).unwrap();
     assert!(result.is_empty());
 }
 
-#[test]
 fn test_factorize_with_nulls() {
     // [1, null, 2, null, 1] -> codes should map nulls consistently
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 2, 0, 1], &[true, false, true, false, true]).unwrap();
@@ -260,7 +234,6 @@ fn test_factorize_with_nulls() {
 // Sort with all nulls
 // ===========================================================================
 
-#[test]
 fn test_sort_all_null() {
     use cudf::SortOptions;
     let s = crate::common::nullable_series::<i32>("x", &[0, 0, 0], &[false, false, false]).unwrap();
@@ -273,7 +246,6 @@ fn test_sort_all_null() {
 // DataFrame empty edge cases
 // ===========================================================================
 
-#[test]
 fn test_dataframe_filter_empty_result() {
     use cudf::DataFrame;
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -285,7 +257,6 @@ fn test_dataframe_filter_empty_result() {
     assert_eq!(result.num_columns(), 1);
 }
 
-#[test]
 fn test_dataframe_head_zero() {
     use cudf::DataFrame;
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -294,7 +265,6 @@ fn test_dataframe_head_zero() {
     assert_eq!(result.num_rows(), 0);
 }
 
-#[test]
 fn test_dataframe_slice_empty() {
     use cudf::DataFrame;
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -307,7 +277,6 @@ fn test_dataframe_slice_empty() {
 // Null-aware DataFrame operations
 // ===========================================================================
 
-#[test]
 fn test_dataframe_dropna_with_mixed_nulls() {
     use cudf::DataFrame;
     // col a: [1, null, 3], col b: [null, 5, 6]
@@ -321,7 +290,6 @@ fn test_dataframe_dropna_with_mixed_nulls() {
     assert_eq!(col_a.to_optional_vec::<i32>().unwrap(), vec![Some(3)]);
 }
 
-#[test]
 fn test_dataframe_cast_column_preserves_nulls() {
     use cudf::DataFrame;
     let a = crate::common::nullable_series::<i32>("a", &[10, 0, 30], &[true, false, true]).unwrap();
@@ -330,4 +298,42 @@ fn test_dataframe_cast_column_preserves_nulls() {
     let col = result.series("a").unwrap();
     let vals = col.to_optional_vec::<f64>().unwrap();
     assert_eq!(vals, vec![Some(10.0), None, Some(30.0)]);
+}
+
+#[test]
+fn edge_case_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_add_empty_series", test_add_empty_series),
+        ("test_eq_empty_series", test_eq_empty_series),
+        ("test_add_scalar_empty_series", test_add_scalar_empty_series),
+        ("test_neg_empty_series", test_neg_empty_series),
+        ("test_min_empty_series", test_min_empty_series),
+        ("test_max_empty_series", test_max_empty_series),
+        ("test_mean_empty_series", test_mean_empty_series),
+        ("test_sort_single_element", test_sort_single_element),
+        ("test_unique_single_element", test_unique_single_element),
+        ("test_nunique_single_element", test_nunique_single_element),
+        ("test_factorize_single_element", test_factorize_single_element),
+        ("test_astype_bool_to_int", test_astype_bool_to_int),
+        ("test_astype_int_to_bool", test_astype_int_to_bool),
+        ("test_astype_i32_to_i64_widening", test_astype_i32_to_i64_widening),
+        ("test_astype_f64_to_i32_truncates", test_astype_f64_to_i32_truncates),
+        ("test_astype_preserves_nulls", test_astype_preserves_nulls),
+        ("test_astype_empty_series", test_astype_empty_series),
+        ("test_astype_same_type_noop", test_astype_same_type_noop),
+        ("test_astype_unsigned_to_signed", test_astype_unsigned_to_signed),
+        ("test_astype_i8_to_i64", test_astype_i8_to_i64),
+        ("test_unique_with_nulls", test_unique_with_nulls),
+        ("test_nunique_with_nulls", test_nunique_with_nulls),
+        ("test_isin_with_null_in_source", test_isin_with_null_in_source),
+        ("test_fillna_with_series_both_have_nulls", test_fillna_with_series_both_have_nulls),
+        ("test_fillna_empty_series", test_fillna_empty_series),
+        ("test_factorize_with_nulls", test_factorize_with_nulls),
+        ("test_sort_all_null", test_sort_all_null),
+        ("test_dataframe_filter_empty_result", test_dataframe_filter_empty_result),
+        ("test_dataframe_head_zero", test_dataframe_head_zero),
+        ("test_dataframe_slice_empty", test_dataframe_slice_empty),
+        ("test_dataframe_dropna_with_mixed_nulls", test_dataframe_dropna_with_mixed_nulls),
+        ("test_dataframe_cast_column_preserves_nulls", test_dataframe_cast_column_preserves_nulls),
+    ]);
 }

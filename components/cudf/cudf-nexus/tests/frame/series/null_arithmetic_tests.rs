@@ -34,7 +34,6 @@ fn series_with_null_last() -> Series {
 // Null propagation in Series-vs-Series arithmetic
 // ===========================================================================
 
-#[test]
 fn test_add_null_plus_value_propagates_null() {
     let a = series_with_null_middle(); // [10, null, 30]
     let b = series_non_null(); // [1, 2, 3]
@@ -43,7 +42,6 @@ fn test_add_null_plus_value_propagates_null() {
     assert_eq!(vals, vec![Some(11), None, Some(33)]);
 }
 
-#[test]
 fn test_add_value_plus_null_propagates_null() {
     let a = series_non_null(); // [1, 2, 3]
     let b = series_with_null_middle(); // [10, null, 30]
@@ -52,7 +50,6 @@ fn test_add_value_plus_null_propagates_null() {
     assert_eq!(vals, vec![Some(11), None, Some(33)]);
 }
 
-#[test]
 fn test_add_both_null_at_same_position() {
     let a = series_with_null_middle(); // [10, null, 30]
     let b = crate::common::nullable_series::<i32>("d", &[1, 0, 3], &[true, false, true]).unwrap();
@@ -61,7 +58,6 @@ fn test_add_both_null_at_same_position() {
     assert_eq!(vals, vec![Some(11), None, Some(33)]);
 }
 
-#[test]
 fn test_add_nulls_at_different_positions_merge() {
     let a = series_with_null_middle(); // [10, null, 30]
     let b = series_with_null_last(); // [100, 200, null]
@@ -73,7 +69,6 @@ fn test_add_nulls_at_different_positions_merge() {
     assert_eq!(vals, vec![Some(110), None, None]);
 }
 
-#[test]
 fn test_sub_with_nulls() {
     let a = series_with_null_middle();
     let b = series_non_null();
@@ -82,7 +77,6 @@ fn test_sub_with_nulls() {
     assert_eq!(vals, vec![Some(9), None, Some(27)]);
 }
 
-#[test]
 fn test_mul_with_nulls() {
     let a = series_with_null_middle();
     let b = series_non_null();
@@ -91,7 +85,6 @@ fn test_mul_with_nulls() {
     assert_eq!(vals, vec![Some(10), None, Some(90)]);
 }
 
-#[test]
 fn test_div_with_nulls() {
     let a = crate::common::nullable_series::<f64>("a", &[10.0, 0.0, 30.0], &[true, false, true]).unwrap();
     let b = crate::common::series::<f64>("b", &[2.0, 5.0, 3.0]).unwrap();
@@ -100,7 +93,6 @@ fn test_div_with_nulls() {
     assert_eq!(vals, vec![Some(5.0), None, Some(10.0)]);
 }
 
-#[test]
 fn test_rem_with_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
     let b = crate::common::series::<i32>("b", &[3, 3, 7]).unwrap();
@@ -113,7 +105,6 @@ fn test_rem_with_nulls() {
 // Null propagation in scalar arithmetic
 // ===========================================================================
 
-#[test]
 fn test_add_scalar_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
     let result = a.add_scalar(5i32).unwrap();
@@ -121,7 +112,6 @@ fn test_add_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(15), None, Some(35)]);
 }
 
-#[test]
 fn test_sub_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.sub_scalar(3i32).unwrap();
@@ -129,7 +119,6 @@ fn test_sub_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(7), None, Some(27)]);
 }
 
-#[test]
 fn test_mul_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.mul_scalar(2i32).unwrap();
@@ -137,7 +126,6 @@ fn test_mul_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(20), None, Some(60)]);
 }
 
-#[test]
 fn test_div_scalar_preserves_nulls() {
     let a = crate::common::nullable_series::<f64>("a", &[10.0, 0.0, 30.0], &[true, false, true]).unwrap();
     let result = a.div_scalar(2.0f64).unwrap();
@@ -145,7 +133,6 @@ fn test_div_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(5.0), None, Some(15.0)]);
 }
 
-#[test]
 fn test_rem_scalar_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
     let result = a.rem_scalar(7i32).unwrap();
@@ -157,7 +144,6 @@ fn test_rem_scalar_preserves_nulls() {
 // Operator overloads with nullable series
 // ===========================================================================
 
-#[test]
 fn test_operator_add_with_nulls() {
     let a = series_with_null_middle();
     let b = series_non_null();
@@ -166,7 +152,6 @@ fn test_operator_add_with_nulls() {
     assert_eq!(vals, vec![Some(11), None, Some(33)]);
 }
 
-#[test]
 fn test_operator_sub_with_nulls() {
     let a = series_with_null_middle();
     let b = series_non_null();
@@ -175,7 +160,6 @@ fn test_operator_sub_with_nulls() {
     assert_eq!(vals, vec![Some(9), None, Some(27)]);
 }
 
-#[test]
 fn test_operator_mul_with_nulls() {
     let a = series_with_null_middle();
     let b = series_non_null();
@@ -188,7 +172,6 @@ fn test_operator_mul_with_nulls() {
 // Null propagation in Series-vs-Series comparisons
 // ===========================================================================
 
-#[test]
 fn test_eq_null_propagates() {
     let a = series_with_null_middle(); // [10, null, 30]
     let b = crate::common::series::<i32>("b", &[10, 2, 99]).unwrap();
@@ -200,7 +183,6 @@ fn test_eq_null_propagates() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_ne_null_propagates() {
     let a = series_with_null_middle();
     let b = crate::common::series::<i32>("b", &[10, 2, 99]).unwrap();
@@ -209,7 +191,6 @@ fn test_ne_null_propagates() {
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
 
-#[test]
 fn test_gt_null_propagates() {
     let a = series_with_null_middle(); // [10, null, 30]
     let b = crate::common::series::<i32>("b", &[5, 2, 50]).unwrap();
@@ -218,7 +199,6 @@ fn test_gt_null_propagates() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_lt_null_propagates() {
     let a = series_with_null_middle();
     let b = crate::common::series::<i32>("b", &[5, 2, 50]).unwrap();
@@ -227,7 +207,6 @@ fn test_lt_null_propagates() {
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
 
-#[test]
 fn test_ge_null_propagates() {
     let a = series_with_null_middle();
     let b = crate::common::series::<i32>("b", &[10, 2, 30]).unwrap();
@@ -236,7 +215,6 @@ fn test_ge_null_propagates() {
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
-#[test]
 fn test_le_null_propagates() {
     let a = series_with_null_middle();
     let b = crate::common::series::<i32>("b", &[10, 2, 30]).unwrap();
@@ -245,7 +223,6 @@ fn test_le_null_propagates() {
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
-#[test]
 fn test_eq_null_vs_null_is_null_not_true() {
     // Two nulls compared: null == null should be null, not true.
     let a = series_with_null_middle(); // [10, null, 30]
@@ -259,7 +236,6 @@ fn test_eq_null_vs_null_is_null_not_true() {
 // Null propagation in scalar comparisons
 // ===========================================================================
 
-#[test]
 fn test_gt_scalar_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
     let result = a.gt_scalar(15i32).unwrap();
@@ -267,7 +243,6 @@ fn test_gt_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
 
-#[test]
 fn test_lt_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.lt_scalar(15i32).unwrap();
@@ -275,7 +250,6 @@ fn test_lt_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_eq_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.eq_scalar(10i32).unwrap();
@@ -283,7 +257,6 @@ fn test_eq_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_ne_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.ne_scalar(10i32).unwrap();
@@ -291,7 +264,6 @@ fn test_ne_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(false), None, Some(true)]);
 }
 
-#[test]
 fn test_ge_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.ge_scalar(10i32).unwrap();
@@ -299,7 +271,6 @@ fn test_ge_scalar_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
-#[test]
 fn test_le_scalar_preserves_nulls() {
     let a = series_with_null_middle();
     let result = a.le_scalar(30i32).unwrap();
@@ -311,7 +282,6 @@ fn test_le_scalar_preserves_nulls() {
 // Null propagation in string comparisons
 // ===========================================================================
 
-#[test]
 fn test_eq_scalar_string_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.eq_scalar("hello").unwrap();
@@ -319,7 +289,6 @@ fn test_eq_scalar_string_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_gt_scalar_string_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["banana", "x", "apple"], &[true, false, true]).unwrap();
     let result = s.gt_scalar("avocado").unwrap();
@@ -331,7 +300,6 @@ fn test_gt_scalar_string_preserves_nulls() {
 // Unary ops on nullable series
 // ===========================================================================
 
-#[test]
 fn test_neg_preserves_nulls() {
     let a = series_with_null_middle(); // [10, null, 30]
     let result = (-&a).unwrap();
@@ -339,7 +307,6 @@ fn test_neg_preserves_nulls() {
     assert_eq!(vals, vec![Some(-10), None, Some(-30)]);
 }
 
-#[test]
 fn test_logical_not_preserves_nulls() {
     let a = crate::common::nullable_series::<bool>("f", &[true, false, true], &[true, false, true]).unwrap();
     let result = (!&a).unwrap();
@@ -347,7 +314,6 @@ fn test_logical_not_preserves_nulls() {
     assert_eq!(vals, vec![Some(false), None, Some(false)]);
 }
 
-#[test]
 fn test_logical_and_preserves_nulls() {
     let a = crate::common::nullable_series::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
     let b = crate::common::series::<bool>("rhs", &[true, true, false]).unwrap();
@@ -357,7 +323,6 @@ fn test_logical_and_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_logical_or_preserves_nulls() {
     let a = crate::common::nullable_series::<bool>("lhs", &[true, false, true], &[true, false, true]).unwrap();
     let b = crate::common::series::<bool>("rhs", &[false, true, false]).unwrap();
@@ -367,7 +332,6 @@ fn test_logical_or_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(true)]);
 }
 
-#[test]
 fn test_abs_preserves_nulls() {
     let a = crate::common::nullable_series::<i32>("a", &[-10, 0, 30], &[true, false, true]).unwrap();
     let result = a.abs().unwrap();
@@ -375,7 +339,6 @@ fn test_abs_preserves_nulls() {
     assert_eq!(vals, vec![Some(10), None, Some(30)]);
 }
 
-#[test]
 fn test_is_null_on_nullable() {
     let a = series_with_null_middle(); // [10, null, 30]
     let result = a.is_null().unwrap();
@@ -383,7 +346,6 @@ fn test_is_null_on_nullable() {
     assert_eq!(vals, vec![false, true, false]);
 }
 
-#[test]
 fn test_is_not_null_on_nullable() {
     let a = series_with_null_middle();
     let result = a.is_not_null().unwrap();
@@ -395,7 +357,6 @@ fn test_is_not_null_on_nullable() {
 // All-null series in arithmetic
 // ===========================================================================
 
-#[test]
 fn test_add_all_null_series() {
     let a = crate::common::nullable_series::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
     let b = series_non_null();
@@ -404,7 +365,6 @@ fn test_add_all_null_series() {
     assert_eq!(vals, vec![None, None, None]);
 }
 
-#[test]
 fn test_eq_all_null_series() {
     let a = crate::common::nullable_series::<i32>("a", &[0, 0, 0], &[false, false, false]).unwrap();
     let b = series_non_null();
@@ -417,7 +377,6 @@ fn test_eq_all_null_series() {
 // NaN vs null distinction in float operations
 // ===========================================================================
 
-#[test]
 fn test_is_nan_does_not_flag_null_as_nan() {
     let a = crate::common::nullable_series::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();
     let result = a.is_nan().unwrap();
@@ -428,7 +387,6 @@ fn test_is_nan_does_not_flag_null_as_nan() {
     assert!(!vals[2]); // null → false (not flagged as NaN)
 }
 
-#[test]
 fn test_is_not_nan_does_not_flag_null_as_not_nan() {
     let a = crate::common::nullable_series::<f64>("a", &[1.0, f64::NAN, 0.0], &[true, true, false]).unwrap();
     let result = a.is_not_nan().unwrap();
@@ -437,4 +395,52 @@ fn test_is_not_nan_does_not_flag_null_as_not_nan() {
     assert!(vals[0]); // 1.0 is not NaN
     assert!(!vals[1]); // NaN is NaN
     assert!(vals[2]); // null → true (null is not NaN)
+}
+
+#[test]
+fn null_arithmetic_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_add_null_plus_value_propagates_null", test_add_null_plus_value_propagates_null),
+        ("test_add_value_plus_null_propagates_null", test_add_value_plus_null_propagates_null),
+        ("test_add_both_null_at_same_position", test_add_both_null_at_same_position),
+        ("test_add_nulls_at_different_positions_merge", test_add_nulls_at_different_positions_merge),
+        ("test_sub_with_nulls", test_sub_with_nulls),
+        ("test_mul_with_nulls", test_mul_with_nulls),
+        ("test_div_with_nulls", test_div_with_nulls),
+        ("test_rem_with_nulls", test_rem_with_nulls),
+        ("test_add_scalar_preserves_nulls", test_add_scalar_preserves_nulls),
+        ("test_sub_scalar_preserves_nulls", test_sub_scalar_preserves_nulls),
+        ("test_mul_scalar_preserves_nulls", test_mul_scalar_preserves_nulls),
+        ("test_div_scalar_preserves_nulls", test_div_scalar_preserves_nulls),
+        ("test_rem_scalar_preserves_nulls", test_rem_scalar_preserves_nulls),
+        ("test_operator_add_with_nulls", test_operator_add_with_nulls),
+        ("test_operator_sub_with_nulls", test_operator_sub_with_nulls),
+        ("test_operator_mul_with_nulls", test_operator_mul_with_nulls),
+        ("test_eq_null_propagates", test_eq_null_propagates),
+        ("test_ne_null_propagates", test_ne_null_propagates),
+        ("test_gt_null_propagates", test_gt_null_propagates),
+        ("test_lt_null_propagates", test_lt_null_propagates),
+        ("test_ge_null_propagates", test_ge_null_propagates),
+        ("test_le_null_propagates", test_le_null_propagates),
+        ("test_eq_null_vs_null_is_null_not_true", test_eq_null_vs_null_is_null_not_true),
+        ("test_gt_scalar_preserves_nulls", test_gt_scalar_preserves_nulls),
+        ("test_lt_scalar_preserves_nulls", test_lt_scalar_preserves_nulls),
+        ("test_eq_scalar_preserves_nulls", test_eq_scalar_preserves_nulls),
+        ("test_ne_scalar_preserves_nulls", test_ne_scalar_preserves_nulls),
+        ("test_ge_scalar_preserves_nulls", test_ge_scalar_preserves_nulls),
+        ("test_le_scalar_preserves_nulls", test_le_scalar_preserves_nulls),
+        ("test_eq_scalar_string_preserves_nulls", test_eq_scalar_string_preserves_nulls),
+        ("test_gt_scalar_string_preserves_nulls", test_gt_scalar_string_preserves_nulls),
+        ("test_neg_preserves_nulls", test_neg_preserves_nulls),
+        ("test_logical_not_preserves_nulls", test_logical_not_preserves_nulls),
+        ("test_logical_and_preserves_nulls", test_logical_and_preserves_nulls),
+        ("test_logical_or_preserves_nulls", test_logical_or_preserves_nulls),
+        ("test_abs_preserves_nulls", test_abs_preserves_nulls),
+        ("test_is_null_on_nullable", test_is_null_on_nullable),
+        ("test_is_not_null_on_nullable", test_is_not_null_on_nullable),
+        ("test_add_all_null_series", test_add_all_null_series),
+        ("test_eq_all_null_series", test_eq_all_null_series),
+        ("test_is_nan_does_not_flag_null_as_nan", test_is_nan_does_not_flag_null_as_nan),
+        ("test_is_not_nan_does_not_flag_null_as_not_nan", test_is_not_nan_does_not_flag_null_as_not_nan),
+    ]);
 }

@@ -70,8 +70,12 @@ name = "gpu_backend_shared_tests_gpu"
 path = "tests/gpu_backend_shared_tests_gpu.rs"
 
 [[test]]
-name = "gpu_allocator_exclusive_tests_gpu_exclusive"
-path = "tests/gpu_allocator_exclusive_tests_gpu_exclusive.rs"
+name = "gpu_allocator_event_correlation_gpu_exclusive"
+path = "tests/gpu_allocator_event_correlation_gpu_exclusive.rs"
+
+[[test]]
+name = "query_service_allocator_lifecycle_gpu"
+path = "tests/query_service_allocator_lifecycle_gpu.rs"
 
 [[test]]
 name = "native_contract_tests"

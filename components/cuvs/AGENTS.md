@@ -52,8 +52,7 @@ execution follow the root `datafusion-nexus` ownership map.
 cargo clippy -p cuvs-nexus -p cuvs-nexus-sys \
   --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-flock /tmp/cudf-gpu.lock cargo nextest run \
-  -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast
+cargo nt -E 'package(cuvs-nexus) | package(cuvs-nexus-sys)'
 
 # Native-free workspace and checked-binding contracts
 DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked \

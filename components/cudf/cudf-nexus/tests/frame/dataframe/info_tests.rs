@@ -40,7 +40,6 @@ fn sample_info_frame() -> DataFrame {
     DataFrame::from_series([("ids", ids), ("maybe", maybe), ("names", names)]).unwrap()
 }
 
-#[test]
 fn backing_allocations_preserve_shared_column_identity() {
     let frame = sample_info_frame();
     let selected = frame.select(["names", "ids"]).unwrap();
@@ -51,7 +50,6 @@ fn backing_allocations_preserve_shared_column_identity() {
     assert!(output.is_subset(&source));
 }
 
-#[test]
 fn backing_allocations_identify_fresh_sliced_output() {
     let frame = sample_info_frame();
     let sliced = frame.slice(1, 1).unwrap();
@@ -62,7 +60,6 @@ fn backing_allocations_identify_fresh_sliced_output() {
     assert!(output.is_disjoint(&source));
 }
 
-#[test]
 fn backing_allocations_include_nested_children_once() {
     let item = Arc::new(Field::new("item", ArrowDataType::Int32, false));
     let values = Arc::new(Int32Array::from(vec![1, 2, 3]));
@@ -76,14 +73,12 @@ fn backing_allocations_include_nested_children_once() {
     assert_eq!(pointers.iter().copied().collect::<BTreeSet<_>>().len(), pointers.len());
 }
 
-#[test]
 fn backing_allocations_are_empty_for_allocation_free_output() {
     let frame = sample_runtime().empty_dataframe();
 
     assert!(frame.backing_allocation_pointers().unwrap().is_empty());
 }
 
-#[test]
 fn test_info_default_returns_only_summary_metadata() {
     let df = sample_info_frame();
 
@@ -102,7 +97,6 @@ fn test_info_default_returns_only_summary_metadata() {
     assert_eq!(info.memory_accounting, None);
 }
 
-#[test]
 fn test_info_with_columns_and_null_counts_reports_schema_order_and_counts() {
     let df = sample_info_frame();
 
@@ -138,7 +132,6 @@ fn test_info_with_columns_and_null_counts_reports_schema_order_and_counts() {
     assert_eq!(info.memory_accounting, None);
 }
 
-#[test]
 fn test_info_with_payload_memory_accounting_reports_expected_bytes() {
     let df = sample_info_frame();
 
@@ -167,7 +160,6 @@ fn test_info_with_payload_memory_accounting_reports_expected_bytes() {
     );
 }
 
-#[test]
 fn test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes() {
     let df = sample_info_frame();
 
@@ -203,7 +195,6 @@ fn test_info_with_device_allocated_memory_accounting_reports_only_device_allocat
     );
 }
 
-#[test]
 fn test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns() {
     let df = sample_info_frame();
 
@@ -223,7 +214,6 @@ fn test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_
     assert!(device_allocated >= payload, "device-allocated bytes should be at least payload bytes");
 }
 
-#[test]
 fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
     let plain = crate::common::series("plain", &["beta", "alpha", "beta", "gamma"]).unwrap();
     let dict = dictionary::encode(&plain.testing_view().unwrap(), TypeId::Int32).unwrap();
@@ -252,7 +242,6 @@ fn test_info_payload_and_device_allocated_memory_for_dictionary_column() {
     assert_eq!(top_level.device_allocated_bytes, Some(device_allocated));
 }
 
-#[test]
 fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
     let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
 
@@ -273,7 +262,6 @@ fn test_info_empty_dataframe_returns_valid_empty_snapshot() {
     );
 }
 
-#[test]
 fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().testing_raw_handle_value();
@@ -285,4 +273,46 @@ fn test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_
     assert_eq!(obs_last_stream(), expected_stream);
     assert_eq!(info.columns.as_ref().unwrap()[0].memory_accounting.as_ref().unwrap().payload_bytes, Some((4 * 4) + 5));
     assert_eq!(info.memory_accounting.unwrap().payload_bytes, Some((4 * 4) + 5));
+}
+
+#[test]
+fn info_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("backing_allocations_preserve_shared_column_identity", backing_allocations_preserve_shared_column_identity),
+        ("backing_allocations_identify_fresh_sliced_output", backing_allocations_identify_fresh_sliced_output),
+        ("backing_allocations_include_nested_children_once", backing_allocations_include_nested_children_once),
+        (
+            "backing_allocations_are_empty_for_allocation_free_output",
+            backing_allocations_are_empty_for_allocation_free_output,
+        ),
+        ("test_info_default_returns_only_summary_metadata", test_info_default_returns_only_summary_metadata),
+        (
+            "test_info_with_columns_and_null_counts_reports_schema_order_and_counts",
+            test_info_with_columns_and_null_counts_reports_schema_order_and_counts,
+        ),
+        (
+            "test_info_with_payload_memory_accounting_reports_expected_bytes",
+            test_info_with_payload_memory_accounting_reports_expected_bytes,
+        ),
+        (
+            "test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes",
+            test_info_with_device_allocated_memory_accounting_reports_only_device_allocated_bytes,
+        ),
+        (
+            "test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns",
+            test_info_with_both_memory_accounting_modes_reports_top_level_totals_without_columns,
+        ),
+        (
+            "test_info_payload_and_device_allocated_memory_for_dictionary_column",
+            test_info_payload_and_device_allocated_memory_for_dictionary_column,
+        ),
+        (
+            "test_info_empty_dataframe_returns_valid_empty_snapshot",
+            test_info_empty_dataframe_returns_valid_empty_snapshot,
+        ),
+        (
+            "test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream",
+            test_info_payload_accounting_for_explicit_runtime_string_column_uses_runtime_stream,
+        ),
+    ]);
 }

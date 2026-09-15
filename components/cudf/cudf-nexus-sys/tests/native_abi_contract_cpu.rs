@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
 };
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
@@ -25,6 +25,19 @@ fn production_shim_library() -> PathBuf {
         library.display()
     );
     library
+}
+
+/// Resolves `library` with the libcudf and RMM directories that Cargo-built
+/// consumers get as rpaths as the only loader search path.
+fn ldd(library: &Path) -> Output {
+    let Some(search_path) = option_env!("CUDF_RUST_RUNTIME_LIBRARY_PATH") else {
+        panic!("CUDF_RUST_RUNTIME_LIBRARY_PATH must be set when the native ABI contract runs");
+    };
+    Command::new("ldd")
+        .arg(library)
+        .env("LD_LIBRARY_PATH", search_path)
+        .output()
+        .expect("ldd must be available for the native ABI contract")
 }
 
 fn defined_dynamic_symbols(library: &Path) -> BTreeSet<String> {
@@ -70,7 +83,7 @@ fn dynamic_dependencies(library: &Path) -> BTreeSet<String> {
 }
 
 fn resolved_dynamic_dependency(library: &Path, dependency: &str) -> PathBuf {
-    let output = Command::new("ldd").arg(library).output().expect("ldd must be available for the native ABI contract");
+    let output = ldd(library);
     assert!(
         output.status.success(),
         "ldd failed for {}: {}",
@@ -243,7 +256,7 @@ fn rmm_singleton_bridge_is_private_and_resolved_by_the_shim() {
     );
     assert!(bridge.is_file(), "the private RMM singleton bridge must ship beside the shim");
 
-    let ldd = Command::new("ldd").arg(&library).output().expect("ldd must be available for the native ABI contract");
+    let ldd = ldd(&library);
     assert!(ldd.status.success(), "ldd failed for {}: {}", library.display(), String::from_utf8_lossy(&ldd.stderr));
     assert!(
         String::from_utf8_lossy(&ldd.stdout)

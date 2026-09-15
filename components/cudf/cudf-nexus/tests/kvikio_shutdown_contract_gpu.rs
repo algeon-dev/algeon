@@ -18,8 +18,9 @@ struct ActiveIoGuard {
 
 impl ActiveIoGuard {
     fn begin() -> Self {
-        // SAFETY: the dedicated test binary serializes this process-global
-        // hook and the guard balances the increment on every exit path.
+        // SAFETY: nextest runs this test alone in its own process, so nothing
+        // else races this process-global hook; the guard balances the
+        // increment on every exit path.
         let status = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_begin() };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         Self { active: true }

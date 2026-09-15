@@ -256,7 +256,6 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_type_size", "metadata-only type descriptor query"),
 ];
 
-#[test]
 fn concatenate_helpers_require_explicit_execution_options() {
     for (function, end_marker) in [
         ("concatenate_columns_with_exec", "/// Concatenate multiple tables"),
@@ -276,7 +275,6 @@ fn concatenate_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn reshape_helper_requires_explicit_execution_options() {
     let body =
         function_region(RESHAPE_RS, "pub(crate) fn interleave_columns_with_exec", "// SAFETY: a successful FFI call");
@@ -299,7 +297,6 @@ fn reshape_helper_requires_explicit_execution_options() {
     );
 }
 
-#[test]
 fn fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence() {
     let body = function_region(
         GPU_RECORD_BATCH_RS,
@@ -321,7 +318,6 @@ fn fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence() {
     );
 }
 
-#[test]
 fn finite_float32_validation_publishes_only_bounded_control_scalar_evidence() {
     for required in [
         "cudf_sys::cudf_float32_non_finite_count_ex",
@@ -337,7 +333,6 @@ fn finite_float32_validation_publishes_only_bounded_control_scalar_evidence() {
     }
 }
 
-#[test]
 fn packed_float32_consumer_pointer_requires_finite_validation_gate() {
     let raw_matrix =
         function_region(MATRIX_RS, "impl PackedFloat32Matrix", "/// A packed Float32 matrix whose complete payload");
@@ -358,7 +353,6 @@ fn packed_float32_consumer_pointer_requires_finite_validation_gate() {
     );
 }
 
-#[test]
 fn binary_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -381,7 +375,6 @@ fn binary_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_resource() {
     for required in [
         "DeviceMemoryManager::for_device(runtime.device())",
@@ -405,7 +398,6 @@ fn execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_res
     }
 }
 
-#[test]
 fn copying_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -431,7 +423,6 @@ fn copying_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn unary_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -462,7 +453,6 @@ fn unary_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn strings_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -505,7 +495,6 @@ fn strings_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn groupby_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -551,7 +540,6 @@ fn groupby_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn hash_join_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -614,7 +602,6 @@ fn hash_join_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn conditional_mixed_and_filter_join_helpers_require_explicit_execution_options() {
     for (name, body, required) in [
         (
@@ -739,7 +726,6 @@ fn conditional_mixed_and_filter_join_helpers_require_explicit_execution_options(
     }
 }
 
-#[test]
 fn sorting_helpers_require_explicit_execution_options() {
     let body = function_region(SORTING_RS, "pub(crate) struct SortExecution", "/// Sort the rows of a table");
 
@@ -764,7 +750,6 @@ fn sorting_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn safe_layer_helpers_do_not_reintroduce_optional_exec_options() {
     for (name, source) in [
         ("dataframe row ops", DATAFRAME_ROW_OPS_RS),
@@ -786,7 +771,6 @@ fn safe_layer_helpers_do_not_reintroduce_optional_exec_options() {
     }
 }
 
-#[test]
 fn safe_layer_diagnostics_do_not_use_ambiguous_execution_context_provided_label() {
     for (name, source) in [
         ("binary", BINARY_RS),
@@ -819,7 +803,6 @@ fn safe_layer_diagnostics_do_not_use_ambiguous_execution_context_provided_label(
     }
 }
 
-#[test]
 fn stream_compaction_helpers_require_explicit_execution_options() {
     let body = function_region(STREAM_COMPACTION_RS, "pub(crate) struct StreamCompactionExecution", "/// Drop rows");
 
@@ -843,7 +826,6 @@ fn stream_compaction_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn filter_helpers_require_explicit_execution_options() {
     let body = FILTER_RS;
 
@@ -866,7 +848,6 @@ fn filter_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn hashing_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -887,7 +868,6 @@ fn hashing_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn search_helpers_require_explicit_execution_options() {
     for required in ["exec_options: &cudf_sys::cudf_exec_options_t", "cudf_sys::cudf_contains_ex"] {
         assert!(SEARCH_RS.contains(required), "search helpers must retain `{required}`");
@@ -903,7 +883,6 @@ fn search_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn replace_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -926,7 +905,6 @@ fn replace_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn partitioning_helpers_require_explicit_execution_options() {
     for required in ["exec_options: &cudf_sys::cudf_exec_options_t", "cudf_sys::cudf_hash_partition_ex"] {
         assert!(PARTITIONING_RS.contains(required), "partitioning helpers must retain `{required}`");
@@ -945,7 +923,6 @@ fn partitioning_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn datetime_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -968,7 +945,6 @@ fn datetime_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn reduction_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -991,7 +967,6 @@ fn reduction_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn dictionary_helpers_require_explicit_execution_options() {
     for required in [
         "exec_options: &cudf_sys::cudf_exec_options_t",
@@ -1019,7 +994,6 @@ fn dictionary_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn sorting_is_sorted_uses_explicit_retained_execution_options() {
     let body = function_region(SORTING_RS, "pub fn is_sorted", "\n}\n");
 
@@ -1034,7 +1008,6 @@ fn sorting_is_sorted_uses_explicit_retained_execution_options() {
     );
 }
 
-#[test]
 fn io_write_helpers_require_explicit_execution_options() {
     for (source, function, ex_call, ambient_call) in [
         (IO_JSON_RS, "write_json_with_exec", "cudf_sys::cudf_io_write_json_ex", "cudf_sys::cudf_io_write_json("),
@@ -1057,7 +1030,6 @@ fn io_write_helpers_require_explicit_execution_options() {
     }
 }
 
-#[test]
 fn safe_io_layer_contains_no_process_global_libcudf_lock() {
     let mut violations = Vec::new();
     let scanned_sources = [
@@ -1118,7 +1090,6 @@ fn safe_io_layer_contains_no_process_global_libcudf_lock() {
     );
 }
 
-#[test]
 fn safe_layer_non_ex_ffi_calls_stay_classified() {
     let explicit_without_suffix =
         classified_names(SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX, "SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX");
@@ -1227,4 +1198,78 @@ fn cudf_sys_call_names(line: &str) -> Vec<String> {
         rest = &after_prefix[name_len..];
     }
     out
+}
+
+#[test]
+fn source_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "concatenate_helpers_require_explicit_execution_options",
+            concatenate_helpers_require_explicit_execution_options,
+        ),
+        ("reshape_helper_requires_explicit_execution_options", reshape_helper_requires_explicit_execution_options),
+        (
+            "fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence",
+            fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence,
+        ),
+        (
+            "finite_float32_validation_publishes_only_bounded_control_scalar_evidence",
+            finite_float32_validation_publishes_only_bounded_control_scalar_evidence,
+        ),
+        (
+            "packed_float32_consumer_pointer_requires_finite_validation_gate",
+            packed_float32_consumer_pointer_requires_finite_validation_gate,
+        ),
+        ("binary_helpers_require_explicit_execution_options", binary_helpers_require_explicit_execution_options),
+        (
+            "execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_resource",
+            execution_budget_token_uses_stream_bound_reservation_not_per_token_memory_resource,
+        ),
+        ("copying_helpers_require_explicit_execution_options", copying_helpers_require_explicit_execution_options),
+        ("unary_helpers_require_explicit_execution_options", unary_helpers_require_explicit_execution_options),
+        ("strings_helpers_require_explicit_execution_options", strings_helpers_require_explicit_execution_options),
+        ("groupby_helpers_require_explicit_execution_options", groupby_helpers_require_explicit_execution_options),
+        ("hash_join_helpers_require_explicit_execution_options", hash_join_helpers_require_explicit_execution_options),
+        (
+            "conditional_mixed_and_filter_join_helpers_require_explicit_execution_options",
+            conditional_mixed_and_filter_join_helpers_require_explicit_execution_options,
+        ),
+        ("sorting_helpers_require_explicit_execution_options", sorting_helpers_require_explicit_execution_options),
+        (
+            "safe_layer_helpers_do_not_reintroduce_optional_exec_options",
+            safe_layer_helpers_do_not_reintroduce_optional_exec_options,
+        ),
+        (
+            "safe_layer_diagnostics_do_not_use_ambiguous_execution_context_provided_label",
+            safe_layer_diagnostics_do_not_use_ambiguous_execution_context_provided_label,
+        ),
+        (
+            "stream_compaction_helpers_require_explicit_execution_options",
+            stream_compaction_helpers_require_explicit_execution_options,
+        ),
+        ("filter_helpers_require_explicit_execution_options", filter_helpers_require_explicit_execution_options),
+        ("hashing_helpers_require_explicit_execution_options", hashing_helpers_require_explicit_execution_options),
+        ("search_helpers_require_explicit_execution_options", search_helpers_require_explicit_execution_options),
+        ("replace_helpers_require_explicit_execution_options", replace_helpers_require_explicit_execution_options),
+        (
+            "partitioning_helpers_require_explicit_execution_options",
+            partitioning_helpers_require_explicit_execution_options,
+        ),
+        ("datetime_helpers_require_explicit_execution_options", datetime_helpers_require_explicit_execution_options),
+        ("reduction_helpers_require_explicit_execution_options", reduction_helpers_require_explicit_execution_options),
+        (
+            "dictionary_helpers_require_explicit_execution_options",
+            dictionary_helpers_require_explicit_execution_options,
+        ),
+        (
+            "sorting_is_sorted_uses_explicit_retained_execution_options",
+            sorting_is_sorted_uses_explicit_retained_execution_options,
+        ),
+        ("io_write_helpers_require_explicit_execution_options", io_write_helpers_require_explicit_execution_options),
+        (
+            "safe_io_layer_contains_no_process_global_libcudf_lock",
+            safe_io_layer_contains_no_process_global_libcudf_lock,
+        ),
+        ("safe_layer_non_ex_ffi_calls_stay_classified", safe_layer_non_ex_ffi_calls_stay_classified),
+    ]);
 }

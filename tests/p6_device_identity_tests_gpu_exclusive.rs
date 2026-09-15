@@ -1,3 +1,5 @@
+//! Constructs a backend across four GPUs, so it runs alone.
+
 use std::time::Duration;
 
 use datafusion_nexus::{

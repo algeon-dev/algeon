@@ -23,7 +23,6 @@ fn dictionary_indices_to_i64(dict_view: &ColumnView<'_>) -> Vec<i64> {
     }
 }
 
-#[test]
 fn test_dictionary_encode_i32() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
     let col = column_from_slice(&data).unwrap();
@@ -61,7 +60,6 @@ fn test_dictionary_encode_i32() {
     }
 }
 
-#[test]
 fn test_dictionary_decode_roundtrip() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
     let col = column_from_slice(&data).unwrap();
@@ -79,7 +77,6 @@ fn test_dictionary_decode_roundtrip() {
     assert_eq!(result, data);
 }
 
-#[test]
 fn test_dictionary_encode_f64() {
     let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
     let col = column_from_slice(&data).unwrap();
@@ -114,7 +111,6 @@ fn test_dictionary_encode_f64() {
     }
 }
 
-#[test]
 fn test_dictionary_encode_empty() {
     let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.testing_view().unwrap();
@@ -124,7 +120,6 @@ fn test_dictionary_encode_empty() {
     assert_eq!(dict_view.len().unwrap(), 0);
 }
 
-#[test]
 fn test_dictionary_indices_device_ptr() {
     // Verify that the indices column's device pointer is non-null,
     // enabling zero-copy handoff to cugraph.
@@ -140,7 +135,6 @@ fn test_dictionary_indices_device_ptr() {
     assert!(!ptr.is_null(), "indices device pointer must be non-null");
 }
 
-#[test]
 fn test_dictionary_set_keys_reindexes_and_drops_missing() {
     let data = vec![3i32, 1, 3, 2];
     let col = column_from_slice(&data).unwrap();
@@ -168,7 +162,6 @@ fn test_dictionary_set_keys_reindexes_and_drops_missing() {
     assert_eq!(non_null_values, vec![3, 3, 2]);
 }
 
-#[test]
 fn test_dictionary_set_keys_adds_new_keys_without_changing_values() {
     let data = vec![1i32, 2, 1, 2];
     let col = column_from_slice(&data).unwrap();
@@ -190,7 +183,6 @@ fn test_dictionary_set_keys_adds_new_keys_without_changing_values() {
     assert_eq!(decoded_view.to_vec::<i32>().unwrap(), data);
 }
 
-#[test]
 fn test_dictionary_set_keys_type_mismatch_errors() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -214,7 +206,6 @@ fn test_dictionary_set_keys_type_mismatch_errors() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
-#[test]
 fn test_dictionary_set_keys_rejects_null_keys() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -234,7 +225,6 @@ fn test_dictionary_set_keys_rejects_null_keys() {
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("keys"));
 }
 
-#[test]
 fn test_dictionary_set_keys_rejects_non_dictionary_input() {
     let plain = column_from_slice(&[1i32, 2, 3]).unwrap();
     let new_keys = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -249,7 +239,6 @@ fn test_dictionary_set_keys_rejects_non_dictionary_input() {
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
-#[test]
 fn test_match_dictionaries_requires_at_least_one_input() {
     let err = dictionary::match_dictionaries(&[]).unwrap_err();
 
@@ -260,7 +249,6 @@ fn test_match_dictionaries_requires_at_least_one_input() {
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide at least one input dictionary column"));
 }
 
-#[test]
 fn test_match_dictionaries_rejects_non_dictionary_input() {
     let plain = column_from_slice(&[1i32, 2, 3]).unwrap();
     let dict =
@@ -278,7 +266,6 @@ fn test_match_dictionaries_rejects_non_dictionary_input() {
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
-#[test]
 fn test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract() {
     let err = cudf::testing::dictionary::trigger_match_dictionaries_result_count_mismatch_for_test().unwrap_err();
 
@@ -332,7 +319,6 @@ fn fatal_malformed_result_cleanup_preserves_primary_error_and_closes_device_admi
     assert_eq!(scope.health_snapshot(device).rejected_operation_count(), 1);
 }
 
-#[test]
 fn test_match_dictionaries_testing_hook_locks_null_result_array_contract() {
     let err = cudf::testing::dictionary::trigger_match_dictionaries_null_result_array_for_test().unwrap_err();
 
@@ -354,7 +340,6 @@ fn test_match_dictionaries_testing_hook_locks_null_result_array_contract() {
     assert_eq!(err.detail_value("actual_count"), None);
 }
 
-#[test]
 fn test_match_dictionaries_testing_hook_locks_input_column_count_limit_contract() {
     let err = cudf::testing::dictionary::trigger_match_dictionaries_column_count_limit_error_for_test().unwrap_err();
 
@@ -372,7 +357,6 @@ fn test_match_dictionaries_testing_hook_locks_input_column_count_limit_contract(
     assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
-#[test]
 fn test_match_dictionaries_shared_key_space() {
     // src has keys {10, 20, 30}, dst has keys {20, 30, 40}.
     // After matching, both should share {10, 20, 30, 40} (4 unique keys).
@@ -420,7 +404,6 @@ fn test_match_dictionaries_shared_key_space() {
     assert_eq!(src_indices[2], dst_indices[1]);
 }
 
-#[test]
 fn test_match_dictionaries_no_overlap() {
     // Completely disjoint key sets.
     let a = column_from_slice(&[1i32, 2]).unwrap();
@@ -446,7 +429,6 @@ fn test_match_dictionaries_no_overlap() {
     assert_eq!(decoded_b.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![3, 4]);
 }
 
-#[test]
 fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_input_before_authoritative_exec() {
     let _event_observation = crate::common::lock_event_observation();
     let dict = dictionary::encode(&column_from_slice(&[3i32, 1, 3, 2]).unwrap().testing_view().unwrap(), TypeId::Int32)
@@ -473,7 +455,6 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_inp
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-#[test]
 fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inputs_before_first_input_exec() {
     let _event_observation = crate::common::lock_event_observation();
     let first =
@@ -508,4 +489,50 @@ fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inpu
     assert_eq!(first_keys, second_keys);
     assert_eq!(first_keys, vec![10, 20, 30, 40]);
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
+}
+
+#[test]
+fn dictionary_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_dictionary_encode_i32", test_dictionary_encode_i32),
+        ("test_dictionary_decode_roundtrip", test_dictionary_decode_roundtrip),
+        ("test_dictionary_encode_f64", test_dictionary_encode_f64),
+        ("test_dictionary_encode_empty", test_dictionary_encode_empty),
+        ("test_dictionary_indices_device_ptr", test_dictionary_indices_device_ptr),
+        ("test_dictionary_set_keys_reindexes_and_drops_missing", test_dictionary_set_keys_reindexes_and_drops_missing),
+        (
+            "test_dictionary_set_keys_adds_new_keys_without_changing_values",
+            test_dictionary_set_keys_adds_new_keys_without_changing_values,
+        ),
+        ("test_dictionary_set_keys_type_mismatch_errors", test_dictionary_set_keys_type_mismatch_errors),
+        ("test_dictionary_set_keys_rejects_null_keys", test_dictionary_set_keys_rejects_null_keys),
+        (
+            "test_dictionary_set_keys_rejects_non_dictionary_input",
+            test_dictionary_set_keys_rejects_non_dictionary_input,
+        ),
+        ("test_match_dictionaries_requires_at_least_one_input", test_match_dictionaries_requires_at_least_one_input),
+        ("test_match_dictionaries_rejects_non_dictionary_input", test_match_dictionaries_rejects_non_dictionary_input),
+        (
+            "test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract",
+            test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract,
+        ),
+        (
+            "test_match_dictionaries_testing_hook_locks_null_result_array_contract",
+            test_match_dictionaries_testing_hook_locks_null_result_array_contract,
+        ),
+        (
+            "test_match_dictionaries_testing_hook_locks_input_column_count_limit_contract",
+            test_match_dictionaries_testing_hook_locks_input_column_count_limit_contract,
+        ),
+        ("test_match_dictionaries_shared_key_space", test_match_dictionaries_shared_key_space),
+        ("test_match_dictionaries_no_overlap", test_match_dictionaries_no_overlap),
+        (
+            "test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_input_before_authoritative_exec",
+            test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_input_before_authoritative_exec,
+        ),
+        (
+            "test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inputs_before_first_input_exec",
+            test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inputs_before_first_input_exec,
+        ),
+    ]);
 }

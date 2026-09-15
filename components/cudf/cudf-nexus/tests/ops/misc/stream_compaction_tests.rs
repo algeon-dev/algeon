@@ -14,7 +14,6 @@ use crate::common::{column_from_slice, column_from_slice_nullable, error_context
 
 // ===== CU-3: drop_nulls =====================================================
 
-#[test]
 fn test_drop_nulls_basic() {
     // Table with scattered nulls in key column 0.
     let c0 = column_from_slice_nullable(&[1i32, 0, 3, 0], &[true, false, true, false]).unwrap();
@@ -31,7 +30,6 @@ fn test_drop_nulls_basic() {
     assert_eq!(rv.column(1).unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0]);
 }
 
-#[test]
 fn test_drop_nulls_no_nulls() {
     let c0 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c0]).unwrap();
@@ -42,7 +40,6 @@ fn test_drop_nulls_no_nulls() {
     assert_eq!(rv.num_rows().unwrap(), 3);
 }
 
-#[test]
 fn test_drop_nulls_all_null() {
     let c0 = column_from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let table = Table::from_columns(vec![c0]).unwrap();
@@ -53,7 +50,6 @@ fn test_drop_nulls_all_null() {
     assert_eq!(rv.num_rows().unwrap(), 0);
 }
 
-#[test]
 fn test_drop_nulls_empty_keys_returns_unchanged_table() {
     let c0 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -68,7 +64,6 @@ fn test_drop_nulls_empty_keys_returns_unchanged_table() {
     assert_eq!(rv.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_drop_nulls_multi_key() {
     // Drop rows where ANY key column has null (threshold = 2 means both keys must be valid).
     let c0 = column_from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
@@ -88,7 +83,6 @@ fn test_drop_nulls_multi_key() {
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
 }
 
-#[test]
 fn test_drop_nulls_rejects_out_of_bounds_key_index() {
     let c0 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c0]).unwrap();
@@ -107,7 +101,6 @@ fn test_drop_nulls_rejects_out_of_bounds_key_index() {
     assert_eq!(error_context_value(&err, "key_index").as_deref(), None);
 }
 
-#[test]
 fn test_drop_nulls_ffi_validation_uses_canonical_keys_count_context() {
     let c0 = column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
     let table = Table::from_columns(vec![c0]).unwrap();
@@ -128,7 +121,6 @@ fn test_drop_nulls_ffi_validation_uses_canonical_keys_count_context() {
 
 // ===== CU-1: unique (single-column dedup) ====================================
 
-#[test]
 fn test_unique_basic_i32() {
     let col = column_from_slice(&[3i32, 1, 2, 1, 3, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -151,7 +143,6 @@ fn test_unique_basic_i32() {
     assert_eq!(vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_adjacent_unique_preserves_separated_equal_groups_and_keep_policy() {
     let key = column_from_slice(&[1i32, 1, 2, 1]).unwrap();
     let value = column_from_slice(&[10i32, 11, 20, 12]).unwrap();
@@ -181,7 +172,6 @@ fn test_adjacent_unique_preserves_separated_equal_groups_and_keep_policy() {
     assert_eq!(last.column(1).unwrap().to_vec::<i32>().unwrap(), vec![11, 20, 12]);
 }
 
-#[test]
 fn test_unique_no_duplicates() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -199,7 +189,6 @@ fn test_unique_no_duplicates() {
     assert_eq!(rv.num_rows().unwrap(), 3);
 }
 
-#[test]
 fn test_unique_all_same() {
     let col = column_from_slice(&[5i32, 5, 5, 5]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -218,7 +207,6 @@ fn test_unique_all_same() {
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![5]);
 }
 
-#[test]
 fn test_unique_empty() {
     let col = column_from_slice(&[] as &[i32]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -238,7 +226,6 @@ fn test_unique_empty() {
 
 // ===== CU-8: drop_duplicates (distinct on multi-key table) ===================
 
-#[test]
 fn test_distinct_multi_column_dedup() {
     // Table: (id, name_code) with duplicate id=1.
     let ids = column_from_slice(&[1i32, 2, 1, 3, 2]).unwrap();
@@ -261,7 +248,6 @@ fn test_distinct_multi_column_dedup() {
     assert_eq!(ids_out, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_distinct_empty_keys_returns_empty_table() {
     let col = column_from_slice(&[1i32, 2, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -280,7 +266,6 @@ fn test_distinct_empty_keys_returns_empty_table() {
     assert_eq!(rv.num_columns().unwrap(), 1);
 }
 
-#[test]
 fn test_distinct_keep_none() {
     let col = column_from_slice(&[1i32, 2, 1, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -303,7 +288,6 @@ fn test_distinct_keep_none() {
     assert_eq!(vals, vec![2, 3]);
 }
 
-#[test]
 fn test_distinct_rejects_out_of_bounds_key_index_with_canonical_context() {
     let c0 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![c0]).unwrap();
@@ -326,4 +310,35 @@ fn test_distinct_rejects_out_of_bounds_key_index_with_canonical_context() {
     assert_eq!(err.detail_value("column_index"), None);
     assert_eq!(err.detail_value("table_column_count"), None);
     assert_eq!(error_context_value(&err, "key_index").as_deref(), None);
+}
+
+#[test]
+fn stream_compaction_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_drop_nulls_basic", test_drop_nulls_basic),
+        ("test_drop_nulls_no_nulls", test_drop_nulls_no_nulls),
+        ("test_drop_nulls_all_null", test_drop_nulls_all_null),
+        ("test_drop_nulls_empty_keys_returns_unchanged_table", test_drop_nulls_empty_keys_returns_unchanged_table),
+        ("test_drop_nulls_multi_key", test_drop_nulls_multi_key),
+        ("test_drop_nulls_rejects_out_of_bounds_key_index", test_drop_nulls_rejects_out_of_bounds_key_index),
+        (
+            "test_drop_nulls_ffi_validation_uses_canonical_keys_count_context",
+            test_drop_nulls_ffi_validation_uses_canonical_keys_count_context,
+        ),
+        ("test_unique_basic_i32", test_unique_basic_i32),
+        (
+            "test_adjacent_unique_preserves_separated_equal_groups_and_keep_policy",
+            test_adjacent_unique_preserves_separated_equal_groups_and_keep_policy,
+        ),
+        ("test_unique_no_duplicates", test_unique_no_duplicates),
+        ("test_unique_all_same", test_unique_all_same),
+        ("test_unique_empty", test_unique_empty),
+        ("test_distinct_multi_column_dedup", test_distinct_multi_column_dedup),
+        ("test_distinct_empty_keys_returns_empty_table", test_distinct_empty_keys_returns_empty_table),
+        ("test_distinct_keep_none", test_distinct_keep_none),
+        (
+            "test_distinct_rejects_out_of_bounds_key_index_with_canonical_context",
+            test_distinct_rejects_out_of_bounds_key_index_with_canonical_context,
+        ),
+    ]);
 }

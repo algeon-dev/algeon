@@ -348,7 +348,6 @@ fn owned_table_transfer_with_root_names(transfer: OwnedTableTransfer, names: Vec
 mod column_import_contracts {
     use super::*;
 
-    #[test]
     fn borrowed_column_view_import_copies_data_and_uses_destination_runtime() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -364,7 +363,6 @@ mod column_import_contracts {
         assert_column_imported_into_runtime(&imported, &destination_runtime);
     }
 
-    #[test]
     fn series_import_from_borrowed_column_view_returns_unnamed_series() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -379,7 +377,6 @@ mod column_import_contracts {
         assert_column_imported_into_runtime(imported.as_column(), &destination_runtime);
     }
 
-    #[test]
     fn prepared_device_column_export_import_copies_data_and_uses_destination_runtime() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -395,7 +392,6 @@ mod column_import_contracts {
         assert_column_imported_into_runtime(&imported, &destination_runtime);
     }
 
-    #[test]
     fn series_import_from_prepared_column_export_returns_unnamed_series() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_strs(&["one", "two", "three"]).unwrap();
@@ -410,7 +406,6 @@ mod column_import_contracts {
         assert_column_imported_into_runtime(imported.as_column(), &destination_runtime);
     }
 
-    #[test]
     fn prepared_host_column_export_import_copies_data_and_uses_destination_runtime() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source =
@@ -428,7 +423,6 @@ mod column_import_contracts {
         assert_host_column_exports_equivalent(&normalized, &imported);
     }
 
-    #[test]
     fn series_import_from_owned_device_column_transfer_returns_unnamed_series() {
         let runtime = Runtime::builder().build().unwrap();
         let column = runtime.column_from_slice(&[7i32, 8, 9]).unwrap();
@@ -443,7 +437,6 @@ mod column_import_contracts {
         assert_column_bound_to_runtime(imported.as_column(), &destination_runtime);
     }
 
-    #[test]
     fn borrowed_sliced_nullable_column_import_preserves_active_range() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source =
@@ -458,7 +451,6 @@ mod column_import_contracts {
         assert_nullable_i32_materialized(&imported, vec![None, Some(30)]);
     }
 
-    #[test]
     fn borrowed_sliced_string_column_import_preserves_active_range() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime
@@ -477,7 +469,6 @@ mod column_import_contracts {
         assert_host_column_exports_equivalent(&normalized, &imported);
     }
 
-    #[test]
     fn borrowed_dictionary_column_import_round_trips_string_keys() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
@@ -494,7 +485,6 @@ mod column_import_contracts {
         assert_host_column_exports_equivalent(&dictionary, &imported);
     }
 
-    #[test]
     fn borrowed_list_column_import_round_trips_recursive_nested_children() {
         let frame = read_json_dataframe(
             "borrowed_import_lists.jsonl",
@@ -519,7 +509,6 @@ mod column_import_contracts {
         assert_host_column_exports_equivalent(source, &imported);
     }
 
-    #[test]
     fn prepared_sliced_string_column_export_import_preserves_active_range() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime
@@ -539,7 +528,6 @@ mod column_import_contracts {
         assert_host_column_exports_equivalent(&normalized, &imported);
     }
 
-    #[test]
     fn prepared_host_sliced_string_column_export_import_preserves_active_range() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = source_runtime
@@ -557,12 +545,65 @@ mod column_import_contracts {
         assert_column_bound_to_runtime(&imported, &destination_runtime);
         assert_host_column_exports_equivalent(&normalized, &imported);
     }
+
+    #[test]
+    fn import_tests_cases_column_import_contracts() {
+        crate::common::run_named_cases(&[
+            (
+                "borrowed_column_view_import_copies_data_and_uses_destination_runtime",
+                borrowed_column_view_import_copies_data_and_uses_destination_runtime,
+            ),
+            (
+                "series_import_from_borrowed_column_view_returns_unnamed_series",
+                series_import_from_borrowed_column_view_returns_unnamed_series,
+            ),
+            (
+                "prepared_device_column_export_import_copies_data_and_uses_destination_runtime",
+                prepared_device_column_export_import_copies_data_and_uses_destination_runtime,
+            ),
+            (
+                "series_import_from_prepared_column_export_returns_unnamed_series",
+                series_import_from_prepared_column_export_returns_unnamed_series,
+            ),
+            (
+                "prepared_host_column_export_import_copies_data_and_uses_destination_runtime",
+                prepared_host_column_export_import_copies_data_and_uses_destination_runtime,
+            ),
+            (
+                "series_import_from_owned_device_column_transfer_returns_unnamed_series",
+                series_import_from_owned_device_column_transfer_returns_unnamed_series,
+            ),
+            (
+                "borrowed_sliced_nullable_column_import_preserves_active_range",
+                borrowed_sliced_nullable_column_import_preserves_active_range,
+            ),
+            (
+                "borrowed_sliced_string_column_import_preserves_active_range",
+                borrowed_sliced_string_column_import_preserves_active_range,
+            ),
+            (
+                "borrowed_dictionary_column_import_round_trips_string_keys",
+                borrowed_dictionary_column_import_round_trips_string_keys,
+            ),
+            (
+                "borrowed_list_column_import_round_trips_recursive_nested_children",
+                borrowed_list_column_import_round_trips_recursive_nested_children,
+            ),
+            (
+                "prepared_sliced_string_column_export_import_preserves_active_range",
+                prepared_sliced_string_column_export_import_preserves_active_range,
+            ),
+            (
+                "prepared_host_sliced_string_column_export_import_preserves_active_range",
+                prepared_host_sliced_string_column_export_import_preserves_active_range,
+            ),
+        ]);
+    }
 }
 
 mod table_import_contracts {
     use super::*;
 
-    #[test]
     fn borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = two_numeric_columns_table(&source_runtime);
@@ -578,7 +619,6 @@ mod table_import_contracts {
         assert_table_imported_into_runtime(&imported, &destination_runtime);
     }
 
-    #[test]
     fn borrowed_table_view_import_supports_string_and_dictionary_columns() {
         let source_runtime = Runtime::builder().build().unwrap();
         let strings = source_runtime.column_from_strs(&["beta", "alpha", "beta"]).unwrap();
@@ -596,7 +636,6 @@ mod table_import_contracts {
         assert_host_table_exports_equivalent(&source, &imported);
     }
 
-    #[test]
     fn borrowed_table_view_import_supports_recursive_list_and_struct_columns() {
         let source = read_json_dataframe(
             "borrowed_import_nested_table.jsonl",
@@ -620,7 +659,6 @@ mod table_import_contracts {
         assert_host_table_exports_equivalent(&source, &imported);
     }
 
-    #[test]
     fn borrowed_table_view_import_round_trips_zero_column_non_empty_shape() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = zero_column_table(&source_runtime);
@@ -638,7 +676,6 @@ mod table_import_contracts {
         assert_table_bound_to_runtime(&imported, &destination_runtime);
     }
 
-    #[test]
     fn prepared_device_table_export_import_round_trips_zero_column_non_empty_shape() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = zero_column_table(&source_runtime);
@@ -656,7 +693,6 @@ mod table_import_contracts {
         assert_table_bound_to_runtime(&imported, &destination_runtime);
     }
 
-    #[test]
     fn prepared_host_table_export_import_round_trips_zero_column_non_empty_shape() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = zero_column_table(&source_runtime);
@@ -673,7 +709,6 @@ mod table_import_contracts {
         assert_table_bound_to_runtime(&imported, &destination_runtime);
     }
 
-    #[test]
     fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
         let frame = dictionary_backed_nested_frame(
             "prepared_import_nested.jsonl",
@@ -697,7 +732,6 @@ mod table_import_contracts {
         assert_host_table_exports_equivalent(&source, &imported);
     }
 
-    #[test]
     fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
         let frame = dictionary_backed_nested_frame(
             "prepared_host_import_nested.jsonl",
@@ -720,7 +754,6 @@ mod table_import_contracts {
         assert_host_table_exports_equivalent(&source, &imported);
     }
 
-    #[test]
     fn prepared_and_owned_table_import_paths_preserve_same_nested_table_semantics() {
         let frame = read_json_dataframe(
             "prepared_and_owned_import_nested.jsonl",
@@ -769,12 +802,53 @@ mod table_import_contracts {
         assert_host_table_exports_equivalent(&expected_table, &owned_table);
         assert_host_table_exports_equivalent(&prepared_table, &owned_table);
     }
+
+    #[test]
+    fn import_tests_cases_table_import_contracts() {
+        crate::common::run_named_cases(&[
+            (
+                "borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime",
+                borrowed_table_view_import_copies_all_columns_and_uses_destination_runtime,
+            ),
+            (
+                "borrowed_table_view_import_supports_string_and_dictionary_columns",
+                borrowed_table_view_import_supports_string_and_dictionary_columns,
+            ),
+            (
+                "borrowed_table_view_import_supports_recursive_list_and_struct_columns",
+                borrowed_table_view_import_supports_recursive_list_and_struct_columns,
+            ),
+            (
+                "borrowed_table_view_import_round_trips_zero_column_non_empty_shape",
+                borrowed_table_view_import_round_trips_zero_column_non_empty_shape,
+            ),
+            (
+                "prepared_device_table_export_import_round_trips_zero_column_non_empty_shape",
+                prepared_device_table_export_import_round_trips_zero_column_non_empty_shape,
+            ),
+            (
+                "prepared_host_table_export_import_round_trips_zero_column_non_empty_shape",
+                prepared_host_table_export_import_round_trips_zero_column_non_empty_shape,
+            ),
+            (
+                "prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime",
+                prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime,
+            ),
+            (
+                "prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime",
+                prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime,
+            ),
+            (
+                "prepared_and_owned_table_import_paths_preserve_same_nested_table_semantics",
+                prepared_and_owned_table_import_paths_preserve_same_nested_table_semantics,
+            ),
+        ]);
+    }
 }
 
 mod dataframe_import_contracts {
     use super::*;
 
-    #[test]
     fn dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names() {
         let source_runtime = Runtime::builder().build().unwrap();
         let source = two_numeric_columns_table(&source_runtime);
@@ -794,7 +868,6 @@ mod dataframe_import_contracts {
         assert_named_numeric_dataframe(&imported, "left", "right");
     }
 
-    #[test]
     fn dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts() {
         let frame = read_json_dataframe(
             "prepared_dataframe_import_nested.jsonl",
@@ -821,7 +894,6 @@ mod dataframe_import_contracts {
         assert_host_table_exports_equivalent(&source_table, &imported_table);
     }
 
-    #[test]
     fn dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_names_even_when_root_has_names() {
         let runtime = Runtime::builder().build().unwrap();
         let frame = named_numeric_frame(&runtime);
@@ -839,7 +911,6 @@ mod dataframe_import_contracts {
         assert_named_numeric_dataframe(&imported, "left", "right");
     }
 
-    #[test]
     fn dataframe_import_from_prepared_table_export_without_root_names_fails() {
         let runtime = Runtime::builder().build().unwrap();
         let table = two_numeric_columns_table(&runtime);
@@ -862,7 +933,6 @@ mod dataframe_import_contracts {
         );
     }
 
-    #[test]
     fn dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_caller_names() {
         let runtime = Runtime::builder().build().unwrap();
         let table = two_numeric_columns_table(&runtime);
@@ -879,7 +949,6 @@ mod dataframe_import_contracts {
         assert_named_numeric_dataframe(&imported, "left", "right");
     }
 
-    #[test]
     fn dataframe_import_from_owned_device_table_transfer_uses_root_names_when_present() {
         let runtime = Runtime::builder().build().unwrap();
         let frame = named_numeric_frame(&runtime);
@@ -902,7 +971,6 @@ mod dataframe_import_contracts {
         assert_host_table_exports_equivalent(&expected_table, &imported_table);
     }
 
-    #[test]
     fn dataframe_import_from_owned_device_table_transfer_without_root_names_fails() {
         let runtime = Runtime::builder().build().unwrap();
         let table = two_numeric_columns_table(&runtime);
@@ -925,12 +993,24 @@ mod dataframe_import_contracts {
             Some("pass Some(names) when the root does not carry schema names"),
         );
     }
+
+    #[test]
+    fn import_tests_cases_dataframe_import_contracts() {
+        crate::common::run_named_cases(&[
+            ("dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names", dataframe_import_from_borrowed_table_view_with_explicit_names_uses_caller_names),
+            ("dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts", dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts),
+            ("dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_names_even_when_root_has_names", dataframe_import_from_prepared_table_export_with_explicit_names_uses_caller_names_even_when_root_has_names),
+            ("dataframe_import_from_prepared_table_export_without_root_names_fails", dataframe_import_from_prepared_table_export_without_root_names_fails),
+            ("dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_caller_names", dataframe_import_from_owned_device_table_transfer_with_explicit_names_uses_caller_names),
+            ("dataframe_import_from_owned_device_table_transfer_uses_root_names_when_present", dataframe_import_from_owned_device_table_transfer_uses_root_names_when_present),
+            ("dataframe_import_from_owned_device_table_transfer_without_root_names_fails", dataframe_import_from_owned_device_table_transfer_without_root_names_fails),
+        ]);
+    }
 }
 
 mod error_mapping_contracts {
     use super::*;
 
-    #[test]
     fn prepared_column_export_constructor_rejects_non_prepared_profiles() {
         let runtime = Runtime::builder().build().unwrap();
         let source = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -954,7 +1034,6 @@ mod error_mapping_contracts {
         }
     }
 
-    #[test]
     fn prepared_table_export_constructor_rejects_non_prepared_profiles() {
         let runtime = Runtime::builder().build().unwrap();
         let frame = named_numeric_frame(&runtime);
@@ -979,7 +1058,6 @@ mod error_mapping_contracts {
         }
     }
 
-    #[test]
     fn prepared_host_column_export_constructor_rejects_device_bindings() {
         let runtime = Runtime::builder().build().unwrap();
         let source = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -997,7 +1075,6 @@ mod error_mapping_contracts {
         assert_eq!(err.kind(), InteropErrorKind::PlacementUnsupported);
     }
 
-    #[test]
     fn prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable() {
         use std::{any::Any, sync::Arc};
 
@@ -1071,5 +1148,27 @@ mod error_mapping_contracts {
             Some("interop::Column::try_import_from_prepared_column_export_into_runtime")
         );
         assert_eq!(interop_error_context_value(&err, "phase"), Some("synchronize"));
+    }
+
+    #[test]
+    fn import_tests_cases_error_mapping_contracts() {
+        crate::common::run_named_cases(&[
+            (
+                "prepared_column_export_constructor_rejects_non_prepared_profiles",
+                prepared_column_export_constructor_rejects_non_prepared_profiles,
+            ),
+            (
+                "prepared_table_export_constructor_rejects_non_prepared_profiles",
+                prepared_table_export_constructor_rejects_non_prepared_profiles,
+            ),
+            (
+                "prepared_host_column_export_constructor_rejects_device_bindings",
+                prepared_host_column_export_constructor_rejects_device_bindings,
+            ),
+            (
+                "prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable",
+                prepared_host_column_import_maps_shared_completion_sync_failures_to_readiness_unavailable,
+            ),
+        ]);
     }
 }

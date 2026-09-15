@@ -7,8 +7,13 @@ async fn flight_sql_client_can_run_select_one() {
     let backend = build_injected_test_backend(&mut config);
     let replacement_config = config.clone();
     let cleanup_backend = backend.clone();
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-abort-holder-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
 
     let server = FlightSqlServer::builder().config(config).backend(backend).listener(listener).build().await.unwrap();
+    let ctx = Arc::clone(server.session_context());
+    ctx.register_parquet("holder_edges", parquet_path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let server = tokio::spawn(async move { server.serve().await });
     let mut client = connect_with_retry(addr).await;
 
@@ -18,8 +23,18 @@ async fn flight_sql_client_can_run_select_one() {
     assert_eq!(schema.field(0).name(), "one");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
-    let delayed_cleanup =
-        cleanup_backend.begin_attempt(AttemptOptions::default()).expect("test cleanup owner must hold capacity before shutdown");
+    // Only an admitted GPU query retains the resource generation, and with it
+    // the device-owner lease, past the close; a bare attempt holds just the
+    // observation lifecycle, which close may outlive. The stream is polled once
+    // to admit and then left suspended so its permit stays held.
+    let holder_attempt =
+        cleanup_backend.begin_attempt(AttemptOptions::default()).expect("holder attempt should begin");
+    let mut holder_stream = holder_attempt
+        .sql(&ctx, "select src from holder_edges order by src limit 1")
+        .await
+        .expect("holder should plan");
+    holder_stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
+    let delayed_cleanup = (holder_attempt, holder_stream);
 
     drop(client);
     server.abort();

@@ -4,7 +4,6 @@ use cudf::testing::prelude::*;
 
 use crate::common::{column_from_slice, column_from_strs};
 
-#[test]
 fn test_gather_sequential_indices() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
@@ -18,7 +17,6 @@ fn test_gather_sequential_indices() {
     assert_eq!(vals, vec![Some(10), Some(20), Some(30)]);
 }
 
-#[test]
 fn test_gather_reversed() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
@@ -32,7 +30,6 @@ fn test_gather_reversed() {
     assert_eq!(vals, vec![Some(30), Some(20), Some(10)]);
 }
 
-#[test]
 fn test_gather_out_of_bounds_nullify() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
@@ -48,7 +45,6 @@ fn test_gather_out_of_bounds_nullify() {
     assert!(validity[2]);
 }
 
-#[test]
 fn test_gather_duplicate_indices() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
@@ -62,7 +58,6 @@ fn test_gather_duplicate_indices() {
     assert_eq!(vals, vec![Some(20), Some(20), Some(20)]);
 }
 
-#[test]
 fn test_gather_preserves_schema() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
@@ -78,7 +73,6 @@ fn test_gather_preserves_schema() {
     assert_eq!(result.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(30.0), Some(10.0)]);
 }
 
-#[test]
 fn test_gather_empty_indices() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
@@ -90,7 +84,6 @@ fn test_gather_empty_indices() {
     assert_eq!(result.column_names(), &["x"]);
 }
 
-#[test]
 fn test_gather_multi_type() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[1.5f64, 2.5, 3.5]).unwrap();
@@ -112,4 +105,17 @@ fn test_gather_multi_type() {
         result.series("strs").unwrap().to_optional_strings().unwrap(),
         vec![Some("c".to_string()), Some("a".to_string())]
     );
+}
+
+#[test]
+fn gather_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_gather_sequential_indices", test_gather_sequential_indices),
+        ("test_gather_reversed", test_gather_reversed),
+        ("test_gather_out_of_bounds_nullify", test_gather_out_of_bounds_nullify),
+        ("test_gather_duplicate_indices", test_gather_duplicate_indices),
+        ("test_gather_preserves_schema", test_gather_preserves_schema),
+        ("test_gather_empty_indices", test_gather_empty_indices),
+        ("test_gather_multi_type", test_gather_multi_type),
+    ]);
 }

@@ -70,57 +70,41 @@ compatibility belong in `crates/nexus-query-engine`.
 
 ## Build and test
 
-Use `--all-features` in every Cargo build, check, lint, and test command except
-this one repository-owned cargo-hack feature-isolation command:
+Use `--workspace --all-features` in every Cargo build, check, lint, and test
+command and select tests with nextest filtersets, never `-p`: one build
+configuration keeps every command warm. The only exception is the
+feature-isolation command
+`cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going`,
+which `scripts/check_all.sh` runs as package shards and fail-closes unless their
+union matches that command's `--print-command-list` output.
+
+`cargo nt` is `cargo nextest run --workspace --all-features`.
 
 ```bash
-cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
-```
-
-That exact compile-only matrix is the sole exception; it proves package-local
-no-feature and non-default feature compilation. `scripts/check_all.sh` executes
-it as six package shards (`FEATURE_ISOLATION_SHARDS`, one isolated target
-directory per shard) and fail-closes the phase unless the union of executed
-checks matches the exact command's `--print-command-list` output. Do not generalize the
-exception to tests, Clippy, or ad-hoc feature combinations.
-The harness may replay nextest binaries previously built with `--all-features`
-using `--cargo-metadata` and `--binaries-metadata`; nextest rejects feature and
-package selection flags during that replay.
-
-```bash
-# Build and lint, any package
-cargo build --all-features
-cargo clippy --workspace --all-targets --all-features
 cargo +nightly fmt --all
-
-# Targeted edit loops
-bash scripts/check_all.sh --dev -p datafusion-nexus --test cpu_contract_tests
-bash scripts/check_all.sh --dev -p datafusion-nexus --test native_planning_tests
-bash scripts/check_all.sh --dev -p nexus-query-engine --test native_contract_tests
-cargo nextest run -p datafusion-nexus --all-features --test cpu_contract_tests
-cargo nextest run -p datafusion-nexus --all-features --test native_planning_tests
-cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
-
-# Non-default bench package, when touched
-cargo clippy -p nexus-bench --all-targets --all-features
-cargo nextest run -p nexus-bench --all-features
-
-# Only full pre-merge surface
-bash scripts/check_all.sh
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo nt -E 'package(<package>)'           # what you changed
+cargo nt -E 'rdeps(<package>)'             # everything downstream
+cargo nt -E '<same filterset>' -R latest   # rerun only failures
+bash scripts/check_all.sh --fast           # policy, fmt, CPU tests (partial)
+bash scripts/check_all.sh                  # full pre-merge gate
 ```
 
-Select commands above by the change's blast radius; they are not a checklist
-for every task. Run focused checks first and broaden when the affected
-contracts or failures warrant it. Finish when the requested work and relevant
-checks are complete, with no unresolved task-related failures. For ordinary
-implementation work, passing the relevant focused lint and behavior tests is
-the stopping condition. Run the full gate only for pre-merge validation or
-when the task explicitly requests it. Report a focused or lane run as partial;
-do not automatically expand it into the full gate. Read-only
-reviews and prose-only edits do not require Cargo or GPU checks unless requested.
-Full pre-merge validation still requires `bash scripts/check_all.sh`.
-`bash scripts/check_all.sh --fast` and every explicit `--lane` are partial and
-must not be reported as full validation.
+Select commands by the change's blast radius; they are not a checklist for
+every task. The full gate outlives a single tool call: start it with `nohup`
+and poll `target/check-all/latest/summary.tsv`. Full validation is one
+complete gate run on the final source state; `--fast`, focused runs, and
+`-R latest` reruns are partial.
+
+Run focused checks first and broaden when the affected contracts or failures
+warrant it. Finish when the requested work and relevant checks are complete,
+with no unresolved task-related failures. For ordinary implementation work,
+passing the relevant focused lint and behavior tests is the stopping
+condition. Run the full gate only for pre-merge validation or when the task
+explicitly requests it. Report a focused run as partial; do not automatically
+expand it into the full gate. Read-only reviews and prose-only edits do not
+require Cargo or GPU checks unless requested. The non-default bench package
+uses the same commands: `cargo nt -E 'package(nexus-bench)'`.
 
 ## Writing tests
 
@@ -139,14 +123,13 @@ must not be reported as full validation.
 
 ## Testing and repository policy
 
-- Serialize direct GPU commands with `flock /tmp/cudf-gpu.lock`. Never wrap
-  `scripts/check_all.sh` in that flock: it acquires the same lock per GPU
-  phase internally, so an outer hold self-deadlocks the gate. Run the gate bare.
-- After a full gate begins, a late repair may re-run only phases whose
-  source-state hash changed, plus every GPU-locked phase unconditionally;
-  rerunning only the changed subset never establishes full validation.
-- `.config/policies/test-lanes.toml` is the only lane-admission exception source. Validate it with
-  `python3 scripts/ci/test_lane_policy.py check-catalog`.
+- GPU tests take `/tmp/cudf-gpu.lock` through nextest's run-wrapper: shared for
+  the `gpu` group, exclusive for `gpu-exclusive`. Do not wrap nextest or
+  `scripts/check_all.sh` in `flock`; non-test GPU commands (benchmarks, servers,
+  tools) still take the lock themselves.
+- `.config/nextest.toml` is the only test-lane source: CPU tests are opt-in by a
+  `_cpu` target suffix or a listed binary, `_gpu_exclusive` targets run alone,
+  and every other test runs in the `gpu` group.
 - Do not add external-service E2E tests to Cargo test targets; invoke them
   explicitly through `cargo run -p nexus-tools --all-features`.
 - Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build

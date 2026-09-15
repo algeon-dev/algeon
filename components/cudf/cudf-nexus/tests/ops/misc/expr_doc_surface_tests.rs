@@ -26,7 +26,6 @@ fn normalized(source: &str) -> String {
         .join(" ")
 }
 
-#[test]
 fn expr_module_docs_center_dsl_entry_points() {
     let expr_source = expr_surface_source();
     let expr_rs = normalized(&expr_source);
@@ -36,7 +35,6 @@ fn expr_module_docs_center_dsl_entry_points() {
     assert!(!expr_source.contains("Free functions: col(), lit(), when()"));
 }
 
-#[test]
 fn expr_method_family_docs_avoid_namespace_jargon() {
     let expr_source = expr_surface_source();
     let expr_rs = normalized(&expr_source);
@@ -47,7 +45,6 @@ fn expr_method_family_docs_avoid_namespace_jargon() {
     assert!(!expr_source.contains("Enter the string namespace"));
 }
 
-#[test]
 fn when_chain_docs_describe_staged_construction() {
     let expr_source = expr_surface_source();
     let expr_rs = normalized(&expr_source);
@@ -57,11 +54,20 @@ fn when_chain_docs_describe_staged_construction() {
     assert!(!expr_source.contains("Intermediate builder: holds the condition"));
 }
 
-#[test]
 fn ops_module_docs_align_with_expression_dsl_surface() {
     let ops_mod_rs = normalized(OPS_MOD_RS);
 
     assert!(ops_mod_rs.contains("expression DSL surface"));
     assert!(ops_mod_rs.contains("broadcast aggregate expressions for row-aligned use"));
     assert!(ops_mod_rs.contains("string-specific expression methods"));
+}
+
+#[test]
+fn expr_doc_surface_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("expr_module_docs_center_dsl_entry_points", expr_module_docs_center_dsl_entry_points),
+        ("expr_method_family_docs_avoid_namespace_jargon", expr_method_family_docs_avoid_namespace_jargon),
+        ("when_chain_docs_describe_staged_construction", when_chain_docs_describe_staged_construction),
+        ("ops_module_docs_align_with_expression_dsl_surface", ops_module_docs_align_with_expression_dsl_surface),
+    ]);
 }

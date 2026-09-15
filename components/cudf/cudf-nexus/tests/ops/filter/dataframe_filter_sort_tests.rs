@@ -15,7 +15,6 @@ use crate::common::{
 // filter
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_basic() {
     let df = sample_df();
     // Keep rows where id > 2: rows 0 (3), 2 (4), 4 (5)
@@ -27,7 +26,6 @@ fn test_filter_basic() {
     assert_eq!(filtered.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
-#[test]
 fn test_filter_preserves_schema() {
     let df = sample_df();
     let mask = crate::common::series::<bool>("mask", &[true, true, true, true, true]).unwrap();
@@ -38,7 +36,6 @@ fn test_filter_preserves_schema() {
     assert_eq!(filtered.column_index("score"), Some(1));
 }
 
-#[test]
 fn test_filter_all_false() {
     let df = sample_df();
     let mask = crate::common::series::<bool>("mask", &[false, false, false, false, false]).unwrap();
@@ -52,7 +49,6 @@ fn test_filter_all_false() {
 // filter_isin
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_filter_isin_basic() {
     let df = sample_df(); // ids: 3,1,4,1,5
     let values = crate::common::series::<i32>("values", &[1, 5]).unwrap();
@@ -64,7 +60,6 @@ fn test_filter_isin_basic() {
     assert_eq!(ids, vec![1, 1, 5]);
 }
 
-#[test]
 fn test_filter_isin_no_matches() {
     let df = sample_df(); // ids: 3,1,4,1,5
     let values = crate::common::series::<i32>("values", &[99, 100]).unwrap();
@@ -73,7 +68,6 @@ fn test_filter_isin_no_matches() {
     assert_eq!(filtered.num_rows(), 0);
 }
 
-#[test]
 fn test_filter_isin_all_match() {
     let df = sample_df(); // ids: 3,1,4,1,5
     let values = crate::common::series::<i32>("values", &[1, 3, 4, 5]).unwrap();
@@ -82,7 +76,6 @@ fn test_filter_isin_all_match() {
     assert_eq!(filtered.num_rows(), 5);
 }
 
-#[test]
 fn test_filter_isin_preserves_schema() {
     let df = sample_df();
     let values = crate::common::series::<i32>("values", &[1]).unwrap();
@@ -93,7 +86,6 @@ fn test_filter_isin_preserves_schema() {
     assert_eq!(filtered.column_index("score"), Some(1));
 }
 
-#[test]
 fn test_filter_isin_nonexistent_column() {
     let df = sample_df();
     let values = crate::common::series::<i32>("values", &[1]).unwrap();
@@ -101,7 +93,6 @@ fn test_filter_isin_nonexistent_column() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_filter_isin_float64() {
     let df = sample_df(); // scores: 30.0, 10.0, 40.0, 15.0, 50.0
     let values = crate::common::series::<f64>("values", &[10.0, 50.0]).unwrap();
@@ -113,7 +104,6 @@ fn test_filter_isin_float64() {
     assert_eq!(scores, vec![10.0, 50.0]);
 }
 
-#[test]
 fn test_filter_isin_empty_values() {
     let df = sample_df();
     let values = crate::common::series::<i32>("values", &[]).unwrap();
@@ -122,7 +112,6 @@ fn test_filter_isin_empty_values() {
     assert_eq!(filtered.num_rows(), 0);
 }
 
-#[test]
 fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec() {
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
@@ -155,7 +144,6 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary
 // sort
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_single_column_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -164,7 +152,6 @@ fn test_sort_single_column_ascending() {
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
 }
 
-#[test]
 fn test_sort_single_column_descending() {
     let df = sample_df();
     let sorted = df.sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
@@ -172,7 +159,6 @@ fn test_sort_single_column_descending() {
     assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
 
-#[test]
 fn test_sort_by_subset_of_columns() {
     // Sort by id ascending, then score descending within each id group.
     let ids = column_from_slice(&[2i32, 1, 2, 1]).unwrap();
@@ -186,14 +172,12 @@ fn test_sort_by_subset_of_columns() {
     assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
-#[test]
 fn test_sort_nonexistent_column_returns_error() {
     let df = sample_df();
     let err = df.sort_values(["nonexistent"], SortOptions::new()).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_sort_mismatched_descending_count() {
     let df = sample_df();
     // 2 column names but only 1 descending flag → error
@@ -203,7 +187,6 @@ fn test_sort_mismatched_descending_count() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
 }
 
-#[test]
 fn test_sort_preserves_schema() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -216,7 +199,6 @@ fn test_sort_preserves_schema() {
 // nlargest / nsmallest
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_nlargest() {
     let df = sample_df(); // ids: 3,1,4,1,5  scores: 30,10,40,15,50
     let top2 = df.nlargest(2, "score").unwrap();
@@ -225,7 +207,6 @@ fn test_nlargest() {
     assert_eq!(top2.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![50.0, 40.0]);
 }
 
-#[test]
 fn test_nsmallest() {
     let df = sample_df();
     let bot2 = df.nsmallest(2, "id").unwrap();
@@ -234,7 +215,6 @@ fn test_nsmallest() {
     assert_eq!(bot2.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1]);
 }
 
-#[test]
 fn test_nlargest_nonexistent_column() {
     let df = sample_df();
     let err = df.nlargest(2, "missing").unwrap_err();
@@ -245,7 +225,6 @@ fn test_nlargest_nonexistent_column() {
 // drop_duplicates
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_drop_duplicates_by_single_column() {
     // Duplicate ids: 3,1,4,1,5 → distinct ids should be {1,3,4,5}
     let df = sample_df();
@@ -257,7 +236,6 @@ fn test_drop_duplicates_by_single_column() {
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
 }
 
-#[test]
 fn test_drop_duplicates_preserves_schema() {
     let df = sample_df();
     let deduped = df
@@ -268,7 +246,6 @@ fn test_drop_duplicates_preserves_schema() {
     assert_eq!(deduped.column_index("score"), Some(1));
 }
 
-#[test]
 fn test_drop_duplicates_nonexistent_column() {
     let df = sample_df();
     let err = df
@@ -281,7 +258,6 @@ fn test_drop_duplicates_nonexistent_column() {
 // dropna
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_dropna_basic() {
     let ids = column_from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
@@ -297,7 +273,6 @@ fn test_dropna_basic() {
     );
 }
 
-#[test]
 fn test_dropna_preserves_schema_simple() {
     let ids = column_from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0]).unwrap();
@@ -307,7 +282,6 @@ fn test_dropna_preserves_schema_simple() {
     assert_eq!(cleaned.column_names(), vec!["id", "val"]);
 }
 
-#[test]
 fn test_dropna_any_equivalent_to_thresh() {
     let ids = column_from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
@@ -327,7 +301,6 @@ fn test_dropna_any_equivalent_to_thresh() {
     );
 }
 
-#[test]
 fn test_dropna_any_mixed_null_patterns() {
     // Two subset columns with nulls in different positions.
     let a = column_from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
@@ -350,7 +323,6 @@ fn test_dropna_any_mixed_null_patterns() {
     assert_eq!(cleaned.series("c").unwrap().to_optional_vec::<f64>().unwrap(), vec![Some(100.0), Some(400.0)]);
 }
 
-#[test]
 fn test_dropna_default_all_columns() {
     let ids = column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![ids]).unwrap();
@@ -360,7 +332,6 @@ fn test_dropna_default_all_columns() {
     assert_eq!(result.num_rows(), 2);
 }
 
-#[test]
 fn test_dropna_no_nulls() {
     let c = column_from_slice(&[1i32, 2, 3]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
@@ -369,7 +340,6 @@ fn test_dropna_no_nulls() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_dropna_all_null() {
     let c = column_from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
@@ -378,7 +348,6 @@ fn test_dropna_all_null() {
     assert_eq!(result.num_rows(), 0);
 }
 
-#[test]
 fn test_dropna_preserves_schema() {
     let a = column_from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
     let b = column_from_slice(&[10.0f64, 20.0]).unwrap();
@@ -390,11 +359,51 @@ fn test_dropna_preserves_schema() {
     assert_eq!(cleaned.column_index("b"), Some(1));
 }
 
-#[test]
 fn test_dropna_nonexistent_column_returns_error() {
     let c = column_from_slice(&[1i32]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![c]).unwrap();
 
     let err = df.dropna(DropNaOptions::builder().subset(&["missing"]).build()).unwrap_err();
     assert_missing_column_error(&err, "missing");
+}
+
+#[test]
+fn dataframe_filter_sort_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_filter_basic", test_filter_basic),
+        ("test_filter_preserves_schema", test_filter_preserves_schema),
+        ("test_filter_all_false", test_filter_all_false),
+        ("test_filter_isin_basic", test_filter_isin_basic),
+        ("test_filter_isin_no_matches", test_filter_isin_no_matches),
+        ("test_filter_isin_all_match", test_filter_isin_all_match),
+        ("test_filter_isin_preserves_schema", test_filter_isin_preserves_schema),
+        ("test_filter_isin_nonexistent_column", test_filter_isin_nonexistent_column),
+        ("test_filter_isin_float64", test_filter_isin_float64),
+        ("test_filter_isin_empty_values", test_filter_isin_empty_values),
+        (
+            "test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec",
+            test_filter_isin_with_series_succeeds_with_mixed_domains_and_orders_secondary_input_before_dataframe_exec,
+        ),
+        ("test_sort_single_column_ascending", test_sort_single_column_ascending),
+        ("test_sort_single_column_descending", test_sort_single_column_descending),
+        ("test_sort_by_subset_of_columns", test_sort_by_subset_of_columns),
+        ("test_sort_nonexistent_column_returns_error", test_sort_nonexistent_column_returns_error),
+        ("test_sort_mismatched_descending_count", test_sort_mismatched_descending_count),
+        ("test_sort_preserves_schema", test_sort_preserves_schema),
+        ("test_nlargest", test_nlargest),
+        ("test_nsmallest", test_nsmallest),
+        ("test_nlargest_nonexistent_column", test_nlargest_nonexistent_column),
+        ("test_drop_duplicates_by_single_column", test_drop_duplicates_by_single_column),
+        ("test_drop_duplicates_preserves_schema", test_drop_duplicates_preserves_schema),
+        ("test_drop_duplicates_nonexistent_column", test_drop_duplicates_nonexistent_column),
+        ("test_dropna_basic", test_dropna_basic),
+        ("test_dropna_preserves_schema_simple", test_dropna_preserves_schema_simple),
+        ("test_dropna_any_equivalent_to_thresh", test_dropna_any_equivalent_to_thresh),
+        ("test_dropna_any_mixed_null_patterns", test_dropna_any_mixed_null_patterns),
+        ("test_dropna_default_all_columns", test_dropna_default_all_columns),
+        ("test_dropna_no_nulls", test_dropna_no_nulls),
+        ("test_dropna_all_null", test_dropna_all_null),
+        ("test_dropna_preserves_schema", test_dropna_preserves_schema),
+        ("test_dropna_nonexistent_column_returns_error", test_dropna_nonexistent_column_returns_error),
+    ]);
 }

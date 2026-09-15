@@ -10,7 +10,6 @@ use crate::common::{
     last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
-#[test]
 fn test_concat_matching_schemas() {
     let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -37,7 +36,6 @@ fn test_concat_matching_schemas() {
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0, 40.0]);
 }
 
-#[test]
 fn test_concat_mismatched_column_names_returns_error() {
     let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -59,7 +57,6 @@ fn test_concat_mismatched_column_names_returns_error() {
     assert_eq!(error_context_value(&err, "right_column").as_deref(), Some("c"));
 }
 
-#[test]
 fn test_concat_mismatched_column_count_returns_error() {
     let df1 =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
@@ -79,7 +76,6 @@ fn test_concat_mismatched_column_count_returns_error() {
     assert_eq!(error_context_value(&err, "right_columns").as_deref(), Some("2"));
 }
 
-#[test]
 fn test_concat_mismatched_column_types_returns_error() {
     let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -104,7 +100,6 @@ fn test_concat_mismatched_column_types_returns_error() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
-#[test]
 fn test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder() {
     let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -127,7 +122,6 @@ fn test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder(
     assert_eq!(result.series("b").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
 }
 
-#[test]
 fn test_concat_by_name_null_fill_aligns_one_sided_missing_column() {
     let left =
         crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
@@ -149,7 +143,6 @@ fn test_concat_by_name_null_fill_aligns_one_sided_missing_column() {
     );
 }
 
-#[test]
 fn test_concat_many_by_name_handles_multi_input_union() {
     let left = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
         .unwrap();
@@ -173,7 +166,6 @@ fn test_concat_many_by_name_handles_multi_input_union() {
     assert_eq!(result.series("score").unwrap().to_optional_vec::<f64>().unwrap(), vec![None, None, Some(99.0)]);
 }
 
-#[test]
 fn test_concat_by_name_honors_left_column_order() {
     let left = crate::common::dataframe_from_columns(
         vec!["b".to_string(), "a".to_string()],
@@ -191,7 +183,6 @@ fn test_concat_by_name_honors_left_column_order() {
     assert_eq!(result.column_names(), vec!["b", "a", "c"]);
 }
 
-#[test]
 fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
     let left = crate::common::dataframe_from_columns(
         vec!["b".to_string(), "a".to_string()],
@@ -216,7 +207,6 @@ fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
     assert_eq!(result.column_names(), vec!["b", "a", "x", "y"]);
 }
 
-#[test]
 fn test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract() {
     let err = cudf::testing::dataframe::trigger_concat_by_name_missing_planned_dtype_for_test().unwrap_err();
 
@@ -232,7 +222,6 @@ fn test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract() {
     );
 }
 
-#[test]
 fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
     let left =
         crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
@@ -250,7 +239,6 @@ fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
-#[test]
 fn test_concat_by_name_exact_rejects_missing_columns() {
     let left = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
@@ -268,7 +256,6 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
     assert_eq!(error_context_value(&err, "schema_alignment").as_deref(), Some("exact"));
 }
 
-#[test]
 fn test_concat_by_name_decimal_null_fill_preserves_scale() {
     let decimal = crate::common::series("amount", &[12345i64, 67890])
         .unwrap()
@@ -287,7 +274,6 @@ fn test_concat_by_name_decimal_null_fill_preserves_scale() {
     assert_eq!(raw.to_optional_vec::<i64>().unwrap(), vec![None, None, Some(12345), Some(67890)]);
 }
 
-#[test]
 fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
@@ -312,7 +298,6 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-#[test]
 fn test_concat_many_three_dataframes() {
     let df1 = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -345,7 +330,6 @@ fn test_concat_many_three_dataframes() {
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
 }
 
-#[test]
 fn test_concat_many_empty_slice_returns_self() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -359,7 +343,6 @@ fn test_concat_many_empty_slice_returns_self() {
     assert_eq!(a_vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_concat_many_single_other() {
     let df1 =
         crate::common::dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
@@ -376,7 +359,6 @@ fn test_concat_many_single_other() {
     assert_eq!(vals, vec![1, 2, 3, 4]);
 }
 
-#[test]
 fn test_concat_many_mismatched_schema_returns_error() {
     let df1 =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
@@ -398,7 +380,6 @@ fn test_concat_many_mismatched_schema_returns_error() {
     assert_eq!(error_context_value(&err, "right_column").as_deref(), Some("b"));
 }
 
-#[test]
 fn test_concat_many_mismatched_types_returns_error() {
     let df1 =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
@@ -418,7 +399,6 @@ fn test_concat_many_mismatched_types_returns_error() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
-#[test]
 fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
     let rt1 = sample_runtime();
     let rt2 = sample_runtime();
@@ -435,7 +415,6 @@ fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
     assert_eq!(vals, vec![1, 2, 3, 4, 5, 6]);
 }
 
-#[test]
 fn test_copy_preserves_schema_and_data() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string()],
@@ -456,7 +435,6 @@ fn test_copy_preserves_schema_and_data() {
     assert_eq!(y_vals, vec![4.0, 5.0, 6.0]);
 }
 
-#[test]
 fn test_rename_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["old_name".to_string(), "other".to_string()],
@@ -479,7 +457,6 @@ fn test_rename_column() {
     assert_eq!(other_vals, vec![10, 20]);
 }
 
-#[test]
 fn test_rename_nonexistent_column_returns_error() {
     let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
         .unwrap();
@@ -488,7 +465,6 @@ fn test_rename_nonexistent_column_returns_error() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_rename_to_existing_name_returns_error() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -503,7 +479,6 @@ fn test_rename_to_existing_name_returns_error() {
     assert_eq!(error_context_value(&err, "duplicate_name").as_deref(), Some("b"));
 }
 
-#[test]
 fn test_select_subset_of_columns() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
@@ -528,7 +503,6 @@ fn test_select_subset_of_columns() {
     assert_eq!(a_vals, vec![1, 2]);
 }
 
-#[test]
 fn test_select_nonexistent_column_returns_error() {
     let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
         .unwrap();
@@ -537,7 +511,6 @@ fn test_select_nonexistent_column_returns_error() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_select_duplicate_column_names_returns_error() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -553,7 +526,6 @@ fn test_select_duplicate_column_names_returns_error() {
     assert_eq!(error_context_value(&err, "selected_column_count").as_deref(), None);
 }
 
-#[test]
 fn test_select_preserves_data() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string()],
@@ -571,7 +543,6 @@ fn test_select_preserves_data() {
     assert_eq!(y_vals, vec![4.0, 5.0, 6.0]);
 }
 
-#[test]
 fn test_select_accepts_string_vec() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -585,7 +556,6 @@ fn test_select_accepts_string_vec() {
     assert_eq!(selected.column_names(), vec!["b", "a"]);
 }
 
-#[test]
 fn test_rename_preserves_column_order() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
@@ -601,7 +571,6 @@ fn test_rename_preserves_column_order() {
     assert_eq!(renamed.column_names(), vec!["a", "beta", "c"]);
 }
 
-#[test]
 fn test_rename_same_name_is_schema_only_and_preserves_data() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -619,7 +588,6 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
     assert_eq!(renamed.series("b").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_select_all_columns_returns_full_copy() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -634,4 +602,69 @@ fn test_select_all_columns_returns_full_copy() {
 
     let a_vals: Vec<i32> = selected.series("a").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(a_vals, vec![1, 2]);
+}
+
+#[test]
+fn concat_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_concat_matching_schemas", test_concat_matching_schemas),
+        ("test_concat_mismatched_column_names_returns_error", test_concat_mismatched_column_names_returns_error),
+        ("test_concat_mismatched_column_count_returns_error", test_concat_mismatched_column_count_returns_error),
+        ("test_concat_mismatched_column_types_returns_error", test_concat_mismatched_column_types_returns_error),
+        (
+            "test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder",
+            test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder,
+        ),
+        (
+            "test_concat_by_name_null_fill_aligns_one_sided_missing_column",
+            test_concat_by_name_null_fill_aligns_one_sided_missing_column,
+        ),
+        ("test_concat_many_by_name_handles_multi_input_union", test_concat_many_by_name_handles_multi_input_union),
+        ("test_concat_by_name_honors_left_column_order", test_concat_by_name_honors_left_column_order),
+        (
+            "test_concat_by_name_appends_union_only_columns_in_first_appearance_order",
+            test_concat_by_name_appends_union_only_columns_in_first_appearance_order,
+        ),
+        (
+            "test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract",
+            test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract,
+        ),
+        (
+            "test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill",
+            test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill,
+        ),
+        ("test_concat_by_name_exact_rejects_missing_columns", test_concat_by_name_exact_rejects_missing_columns),
+        (
+            "test_concat_by_name_decimal_null_fill_preserves_scale",
+            test_concat_by_name_decimal_null_fill_preserves_scale,
+        ),
+        (
+            "test_concat_succeeds_with_mixed_domains_and_uses_left_provenance",
+            test_concat_succeeds_with_mixed_domains_and_uses_left_provenance,
+        ),
+        ("test_concat_many_three_dataframes", test_concat_many_three_dataframes),
+        ("test_concat_many_empty_slice_returns_self", test_concat_many_empty_slice_returns_self),
+        ("test_concat_many_single_other", test_concat_many_single_other),
+        ("test_concat_many_mismatched_schema_returns_error", test_concat_many_mismatched_schema_returns_error),
+        ("test_concat_many_mismatched_types_returns_error", test_concat_many_mismatched_types_returns_error),
+        (
+            "test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance",
+            test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance,
+        ),
+        ("test_copy_preserves_schema_and_data", test_copy_preserves_schema_and_data),
+        ("test_rename_column", test_rename_column),
+        ("test_rename_nonexistent_column_returns_error", test_rename_nonexistent_column_returns_error),
+        ("test_rename_to_existing_name_returns_error", test_rename_to_existing_name_returns_error),
+        ("test_select_subset_of_columns", test_select_subset_of_columns),
+        ("test_select_nonexistent_column_returns_error", test_select_nonexistent_column_returns_error),
+        ("test_select_duplicate_column_names_returns_error", test_select_duplicate_column_names_returns_error),
+        ("test_select_preserves_data", test_select_preserves_data),
+        ("test_select_accepts_string_vec", test_select_accepts_string_vec),
+        ("test_rename_preserves_column_order", test_rename_preserves_column_order),
+        (
+            "test_rename_same_name_is_schema_only_and_preserves_data",
+            test_rename_same_name_is_schema_only_and_preserves_data,
+        ),
+        ("test_select_all_columns_returns_full_copy", test_select_all_columns_returns_full_copy),
+    ]);
 }

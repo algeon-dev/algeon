@@ -14,7 +14,6 @@ use cudf::TypeId;
 // Primitive path: numeric `CudfType` values still work through the generic API
 // ===========================================================================
 
-#[test]
 fn eq_scalar_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 2, 3]).unwrap();
     let mask = s.eq_scalar(2i32).unwrap();
@@ -23,35 +22,30 @@ fn eq_scalar_accepts_primitive() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
 }
 
-#[test]
 fn ne_scalar_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 2, 3]).unwrap();
     let mask = s.ne_scalar(2i32).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false, true]);
 }
 
-#[test]
 fn gt_scalar_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 3, 4]).unwrap();
     let mask = s.gt_scalar(2i32).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true, true]);
 }
 
-#[test]
 fn lt_scalar_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 3, 4]).unwrap();
     let mask = s.lt_scalar(3i32).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, false, false]);
 }
 
-#[test]
 fn ge_scalar_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 3, 4]).unwrap();
     let mask = s.ge_scalar(3i32).unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true, true]);
 }
 
-#[test]
 fn le_scalar_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 3, 4]).unwrap();
     let mask = s.le_scalar(2i32).unwrap();
@@ -62,7 +56,6 @@ fn le_scalar_accepts_primitive() {
 // String path: `&str` literals now work through the generic API
 // ===========================================================================
 
-#[test]
 fn eq_scalar_accepts_str_literal() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
     let mask = s.eq_scalar("active").unwrap();
@@ -71,35 +64,30 @@ fn eq_scalar_accepts_str_literal() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn ne_scalar_accepts_str_literal() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
     let mask = s.ne_scalar("active").unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn gt_scalar_accepts_str_literal() {
     let s = crate::common::series("name", &["alpha", "beta", "gamma"]).unwrap();
     let mask = s.gt_scalar("beta").unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
-#[test]
 fn lt_scalar_accepts_str_literal() {
     let s = crate::common::series("name", &["alpha", "beta", "gamma"]).unwrap();
     let mask = s.lt_scalar("beta").unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn ge_scalar_accepts_str_literal() {
     let s = crate::common::series("name", &["alpha", "beta", "gamma"]).unwrap();
     let mask = s.ge_scalar("beta").unwrap();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
-#[test]
 fn le_scalar_accepts_str_literal() {
     let s = crate::common::series("name", &["alpha", "beta", "gamma"]).unwrap();
     let mask = s.le_scalar("beta").unwrap();
@@ -110,7 +98,6 @@ fn le_scalar_accepts_str_literal() {
 // Owned `String` and `&String` work too
 // ===========================================================================
 
-#[test]
 fn eq_scalar_accepts_owned_string() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
     let needle = String::from("active");
@@ -126,7 +113,6 @@ fn eq_scalar_accepts_owned_string() {
 // Explicit execution-context path stays in sync with the owned API
 // ===========================================================================
 
-#[test]
 fn eq_scalar_in_accepts_str_literal() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
     let ctx = cudf::ExecutionOverrides::new();
@@ -136,7 +122,6 @@ fn eq_scalar_in_accepts_str_literal() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn eq_scalar_in_accepts_owned_string() {
     let s = crate::common::series("status", &["active", "inactive", "active"]).unwrap();
     let ctx = cudf::ExecutionOverrides::new();
@@ -146,7 +131,6 @@ fn eq_scalar_in_accepts_owned_string() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn gt_scalar_in_accepts_str_literal() {
     let s = crate::common::series("name", &["alpha", "beta", "gamma"]).unwrap();
     let ctx = cudf::ExecutionOverrides::new();
@@ -155,11 +139,33 @@ fn gt_scalar_in_accepts_str_literal() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, true]);
 }
 
-#[test]
 fn eq_scalar_in_accepts_primitive() {
     let s = crate::common::series::<i32>("z", &[1, 2, 2, 3]).unwrap();
     let ctx = cudf::ExecutionOverrides::new();
     let mask = s.eq_scalar_in(2i32, &ctx).unwrap();
 
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
+}
+
+#[test]
+fn scalar_compare_unified_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("eq_scalar_accepts_primitive", eq_scalar_accepts_primitive),
+        ("ne_scalar_accepts_primitive", ne_scalar_accepts_primitive),
+        ("gt_scalar_accepts_primitive", gt_scalar_accepts_primitive),
+        ("lt_scalar_accepts_primitive", lt_scalar_accepts_primitive),
+        ("ge_scalar_accepts_primitive", ge_scalar_accepts_primitive),
+        ("le_scalar_accepts_primitive", le_scalar_accepts_primitive),
+        ("eq_scalar_accepts_str_literal", eq_scalar_accepts_str_literal),
+        ("ne_scalar_accepts_str_literal", ne_scalar_accepts_str_literal),
+        ("gt_scalar_accepts_str_literal", gt_scalar_accepts_str_literal),
+        ("lt_scalar_accepts_str_literal", lt_scalar_accepts_str_literal),
+        ("ge_scalar_accepts_str_literal", ge_scalar_accepts_str_literal),
+        ("le_scalar_accepts_str_literal", le_scalar_accepts_str_literal),
+        ("eq_scalar_accepts_owned_string", eq_scalar_accepts_owned_string),
+        ("eq_scalar_in_accepts_str_literal", eq_scalar_in_accepts_str_literal),
+        ("eq_scalar_in_accepts_owned_string", eq_scalar_in_accepts_owned_string),
+        ("gt_scalar_in_accepts_str_literal", gt_scalar_in_accepts_str_literal),
+        ("eq_scalar_in_accepts_primitive", eq_scalar_in_accepts_primitive),
+    ]);
 }

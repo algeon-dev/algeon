@@ -1,7 +1,6 @@
 use cudf::TypeId;
 use cudf_sys::*;
 
-#[test]
 fn public_type_id_discriminants_match_ffi_contract() {
     let pairs = [
         (TypeId::Empty as i32, CUDF_TYPE_EMPTY as i32),
@@ -40,7 +39,14 @@ fn public_type_id_discriminants_match_ffi_contract() {
     }
 }
 
-#[test]
 fn public_type_id_layout_matches_ffi_layout() {
     assert_eq!(std::mem::size_of::<TypeId>(), std::mem::size_of::<cudf_sys::cudf_type_id_t>());
+}
+
+#[test]
+fn type_id_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("public_type_id_discriminants_match_ffi_contract", public_type_id_discriminants_match_ffi_contract),
+        ("public_type_id_layout_matches_ffi_layout", public_type_id_layout_matches_ffi_layout),
+    ]);
 }

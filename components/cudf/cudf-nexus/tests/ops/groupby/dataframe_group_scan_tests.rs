@@ -4,7 +4,6 @@ use cudf::{DataFrame, SortOptions, ops::reduction::ScanAgg};
 
 use crate::common::sample_runtime;
 
-#[test]
 fn group_scan_sorted_returns_row_aligned_cumulative_sum_per_group() {
     let runtime = sample_runtime();
     let df = DataFrame::from_series([
@@ -24,7 +23,6 @@ fn group_scan_sorted_returns_row_aligned_cumulative_sum_per_group() {
     assert_eq!(scanned.to_optional_vec::<i64>().unwrap(), vec![Some(10), None, Some(15), Some(7), None, Some(10)]);
 }
 
-#[test]
 fn row_positions_are_aligned_to_current_frame_order() {
     let runtime = sample_runtime();
     let df = DataFrame::from_series([
@@ -38,4 +36,15 @@ fn row_positions_are_aligned_to_current_frame_order() {
 
     assert_eq!(sorted.series("key").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(positions.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
+}
+
+#[test]
+fn dataframe_group_scan_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "group_scan_sorted_returns_row_aligned_cumulative_sum_per_group",
+            group_scan_sorted_returns_row_aligned_cumulative_sum_per_group,
+        ),
+        ("row_positions_are_aligned_to_current_frame_order", row_positions_are_aligned_to_current_frame_order),
+    ]);
 }

@@ -1,4 +1,3 @@
-#[test]
 fn host_nullable_mask_bytes_are_padded_to_cudf_allocation_size() {
     let mask = cudf::testing::core::validity_to_host_null_mask_bytes(&[true, false, true]);
 
@@ -7,8 +6,21 @@ fn host_nullable_mask_bytes_are_padded_to_cudf_allocation_size() {
     assert!(mask[1..].iter().all(|&byte| byte == 0), "padding bytes should be zeroed");
 }
 
-#[test]
 fn host_nullable_mask_bytes_for_empty_validity_are_empty() {
     let mask = cudf::testing::core::validity_to_host_null_mask_bytes(&[]);
     assert!(mask.is_empty());
+}
+
+#[test]
+fn null_mask_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "host_nullable_mask_bytes_are_padded_to_cudf_allocation_size",
+            host_nullable_mask_bytes_are_padded_to_cudf_allocation_size,
+        ),
+        (
+            "host_nullable_mask_bytes_for_empty_validity_are_empty",
+            host_nullable_mask_bytes_for_empty_validity_are_empty,
+        ),
+    ]);
 }

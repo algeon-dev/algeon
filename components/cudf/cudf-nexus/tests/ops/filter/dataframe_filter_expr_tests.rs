@@ -81,7 +81,6 @@ fn wide_string_edge_df() -> cudf::DataFrame {
     .unwrap()
 }
 
-#[test]
 fn test_filter_expr_matches_rfc_style_multi_condition_filtering() {
     let df = edge_df();
 
@@ -109,7 +108,6 @@ fn test_filter_expr_matches_rfc_style_multi_condition_filtering() {
     assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 6]);
 }
 
-#[test]
 fn test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dataframe() {
     let df = wide_string_edge_df();
 
@@ -157,7 +155,6 @@ fn test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dat
     assert_eq!(fused_expr.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), expected_weight);
 }
 
-#[test]
 fn test_filter_all_empty_returns_clone_without_materializing_new_table() {
     let df = edge_df();
     let original_ptr = dataframe_device_ptr(&df, "weight");
@@ -170,7 +167,6 @@ fn test_filter_all_empty_returns_clone_without_materializing_new_table() {
     assert_eq!(dataframe_device_ptr(&filtered, "weight"), original_ptr);
 }
 
-#[test]
 fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
     let df = edge_df();
 
@@ -182,7 +178,6 @@ fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
     assert_eq!(filtered.column_index("weight"), Some(3));
 }
 
-#[test]
 fn test_filter_any_empty_preserves_full_dtype_metadata() {
     let amount = series("amount", &[100i64, 250, 999])
         .unwrap()
@@ -197,7 +192,6 @@ fn test_filter_any_empty_preserves_full_dtype_metadata() {
     assert_eq!(filtered.series("amount").unwrap().dtype().unwrap(), amount.dtype().unwrap());
 }
 
-#[test]
 fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
     let discount = series("discount", &[4i64, 5, 6, 7, 8])
         .unwrap()
@@ -217,7 +211,6 @@ fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
     let discount = series("discount", &[4i64, 5, 6, 7, 8])
         .unwrap()
@@ -237,7 +230,6 @@ fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
     let amount =
         series("amount", &[1i32, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal32, -2).unwrap()).unwrap();
@@ -255,7 +247,6 @@ fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
     let amount =
         series("amount", &[1i64, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -3).unwrap()).unwrap();
@@ -273,7 +264,6 @@ fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error() {
     let amount = series("amount", &[100i64, 250, 300])
         .unwrap()
@@ -296,7 +286,6 @@ fn test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape() {
     let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
@@ -321,7 +310,6 @@ fn test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape(
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_any_keeps_rows_matching_any_predicate() {
     let df = edge_df();
 
@@ -336,7 +324,6 @@ fn test_filter_any_keeps_rows_matching_any_predicate() {
     assert_eq!(filtered.series("weight").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 5, 6]);
 }
 
-#[test]
 fn test_filter_expr_drops_null_predicate_rows() {
     let name = column_from_strs_nullable(&["alpha", "ignored", ""], &[true, false, true]).unwrap();
     let value = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -349,7 +336,6 @@ fn test_filter_expr_drops_null_predicate_rows() {
     assert_eq!(filtered.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![10]);
 }
 
-#[test]
 fn test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape() {
     let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
@@ -372,7 +358,6 @@ fn test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape() {
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
 }
 
-#[test]
 fn test_filter_expr_string_like_uses_boolean_mask_fallback() {
     let df = edge_df();
 
@@ -390,7 +375,6 @@ fn test_filter_expr_string_like_uses_boolean_mask_fallback() {
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independent() {
     let df = edge_df();
 
@@ -415,7 +399,6 @@ fn test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independe
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_string_slice_comparison_uses_boolean_mask_fallback() {
     let df = edge_df();
 
@@ -430,7 +413,6 @@ fn test_filter_expr_string_slice_comparison_uses_boolean_mask_fallback() {
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independent() {
     let df = edge_df();
 
@@ -465,7 +447,6 @@ fn test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independ
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs() {
     let df = edge_df();
 
@@ -483,7 +464,6 @@ fn test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs(
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
 }
 
-#[test]
 fn test_filter_expr_rejects_non_boolean_predicate_output() {
     let df = edge_df();
 
@@ -495,7 +475,6 @@ fn test_filter_expr_rejects_non_boolean_predicate_output() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
-#[test]
 fn test_filter_expr_rejects_logical_not_on_non_boolean_operand() {
     let df = edge_df();
 
@@ -507,7 +486,6 @@ fn test_filter_expr_rejects_logical_not_on_non_boolean_operand() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
-#[test]
 fn test_filter_expr_uses_fused_row_predicate_path_once() {
     let df = edge_df();
 
@@ -526,4 +504,86 @@ fn test_filter_expr_uses_fused_row_predicate_path_once() {
     assert_eq!(last_row_predicate_compute_mask_calls(), 1);
     assert_eq!(last_row_predicate_final_filter_calls(), 1);
     assert_eq!(last_row_predicate_mask_api_calls(), 0);
+}
+
+#[test]
+fn dataframe_filter_expr_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "test_filter_expr_matches_rfc_style_multi_condition_filtering",
+            test_filter_expr_matches_rfc_style_multi_condition_filtering,
+        ),
+        (
+            "test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dataframe",
+            test_filter_expr_and_filter_all_match_chained_filter_on_wide_string_heavy_dataframe,
+        ),
+        (
+            "test_filter_all_empty_returns_clone_without_materializing_new_table",
+            test_filter_all_empty_returns_clone_without_materializing_new_table,
+        ),
+        (
+            "test_filter_any_empty_returns_empty_dataframe_with_same_schema",
+            test_filter_any_empty_returns_empty_dataframe_with_same_schema,
+        ),
+        ("test_filter_any_empty_preserves_full_dtype_metadata", test_filter_any_empty_preserves_full_dtype_metadata),
+        (
+            "test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape",
+            test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape,
+        ),
+        (
+            "test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path",
+            test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path,
+        ),
+        (
+            "test_filter_expr_decimal32_literal_predicate_uses_fused_path",
+            test_filter_expr_decimal32_literal_predicate_uses_fused_path,
+        ),
+        (
+            "test_filter_expr_decimal64_literal_predicate_uses_fused_path",
+            test_filter_expr_decimal64_literal_predicate_uses_fused_path,
+        ),
+        (
+            "test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error",
+            test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error,
+        ),
+        (
+            "test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape",
+            test_filter_expr_timestamp_days_literal_predicate_matches_tpch_q6_date_shape,
+        ),
+        ("test_filter_any_keeps_rows_matching_any_predicate", test_filter_any_keeps_rows_matching_any_predicate),
+        ("test_filter_expr_drops_null_predicate_rows", test_filter_expr_drops_null_predicate_rows),
+        (
+            "test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape",
+            test_filter_expr_timestamp_days_column_predicate_matches_tpch_date_shape,
+        ),
+        (
+            "test_filter_expr_string_like_uses_boolean_mask_fallback",
+            test_filter_expr_string_like_uses_boolean_mask_fallback,
+        ),
+        (
+            "test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independent",
+            test_filter_expr_string_like_boolean_mask_fallback_is_operand_order_independent,
+        ),
+        (
+            "test_filter_expr_string_slice_comparison_uses_boolean_mask_fallback",
+            test_filter_expr_string_slice_comparison_uses_boolean_mask_fallback,
+        ),
+        (
+            "test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independent",
+            test_filter_expr_string_slice_boolean_mask_fallback_is_operand_order_independent,
+        ),
+        (
+            "test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs",
+            test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs,
+        ),
+        (
+            "test_filter_expr_rejects_non_boolean_predicate_output",
+            test_filter_expr_rejects_non_boolean_predicate_output,
+        ),
+        (
+            "test_filter_expr_rejects_logical_not_on_non_boolean_operand",
+            test_filter_expr_rejects_logical_not_on_non_boolean_operand,
+        ),
+        ("test_filter_expr_uses_fused_row_predicate_path_once", test_filter_expr_uses_fused_row_predicate_path_once),
+    ]);
 }

@@ -221,45 +221,6 @@ fn prepared_replace_execute_cleanup_failure_is_quarantined_without_crossing_abi(
 }
 
 #[test]
-fn prepared_replace_execute_rejects_device_mismatch_before_libcudf() {
-    let _lock = lock_shim_state();
-    if visible_device_count() < 2 {
-        eprintln!("skipping prepared replace device-mismatch test; fewer than two CUDA devices are visible");
-        return;
-    }
-    let _restore = CurrentDeviceRestore::new();
-    set_current_device(0);
-    let col = make_string_column(&["abc-123", "def-456"]);
-    let view = make_column_view(col);
-    let prepare_stream = OwnedStream::new();
-    let prepare_mr = OwnedMemoryResource::new_test_stats();
-    let prepare_exec = required_exec_options(&prepare_stream.borrowed(), &prepare_mr.borrowed());
-    let baseline = prepare_mr.active_allocation_count();
-    let prepared = prepare_replace_with_backrefs(view, &prepare_exec);
-
-    set_current_device(1);
-    {
-        let execute_stream = OwnedStream::new();
-        let execute_mr = OwnedMemoryResource::new_cuda();
-        let execute_exec = required_exec_options(&execute_stream.borrowed(), &execute_mr.borrowed());
-        let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let status =
-            unsafe { cudf_sys::cudf_strings_execute_replace_with_backrefs_ex(view, prepared, &mut out, &execute_exec) };
-        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
-        assert!(out.is_null());
-        assert!(last_error_message().contains("device must match prepared replace-with-backrefs provenance"));
-        assert_eq!(current_device(), 1, "provenance cleanup must restore the caller's active device");
-    }
-
-    set_current_device(0);
-    assert_eq!(prepare_mr.active_allocation_count(), baseline);
-    unsafe {
-        cudf_sys::cudf_column_view_destroy(view);
-        cudf_sys::cudf_column_destroy(col);
-    }
-}
-
-#[test]
 fn test_strings_like_matches_and_synchronizes_explicit_stream() {
     let _shim_state = lock_shim_state();
     let col = make_string_column(&["abc", "adc", "ab", "axc"]);

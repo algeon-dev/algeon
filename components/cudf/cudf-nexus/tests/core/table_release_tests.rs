@@ -4,7 +4,6 @@ use cudf::{ErrorCode, Runtime, TypeId, core::Table, testing::prelude::*};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
 
-#[test]
 fn test_into_columns_single_column() {
     let c1 = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -17,7 +16,6 @@ fn test_into_columns_single_column() {
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_into_columns_multiple_columns() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
@@ -40,14 +38,12 @@ fn test_into_columns_multiple_columns() {
     assert_eq!(v2.to_vec::<i64>().unwrap(), vec![7, 8, 9]);
 }
 
-#[test]
 fn test_into_columns_empty_table() {
     let table = Runtime::new().unwrap().empty_table().unwrap();
     let columns = table.into_columns().unwrap();
     assert_eq!(columns.len(), 0);
 }
 
-#[test]
 fn test_into_columns_preserves_column_order() {
     let c1 = column_from_slice(&[100i32]).unwrap();
     let c2 = column_from_slice(&[200i64]).unwrap();
@@ -62,7 +58,6 @@ fn test_into_columns_preserves_column_order() {
     assert_eq!(columns[2].testing_view().unwrap().data_type().unwrap().id(), TypeId::Float32);
 }
 
-#[test]
 fn test_into_columns_nullable_column() {
     let c1 = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -80,7 +75,6 @@ fn test_into_columns_nullable_column() {
     assert_eq!(validity, vec![true, false, true]);
 }
 
-#[test]
 fn test_into_columns_roundtrip() {
     // Create table, decompose into columns, re-create table, verify data.
     let c1 = column_from_slice(&[10i32, 20]).unwrap();
@@ -103,7 +97,6 @@ fn test_into_columns_roundtrip() {
     assert_eq!(col1.to_vec::<f64>().unwrap(), vec![1.5, 2.5]);
 }
 
-#[test]
 fn test_into_columns_with_string_column() {
     let c1 = column_from_strs(&["hello", "world"]).unwrap();
     let table = Table::from_columns(vec![c1]).unwrap();
@@ -116,7 +109,6 @@ fn test_into_columns_with_string_column() {
     assert_eq!(view.to_strings_lossy().unwrap(), vec!["hello", "world"]);
 }
 
-#[test]
 fn test_into_columns_with_empty_rows() {
     // Table with columns that have zero rows.
     let c1 = crate::common::empty_column(TypeId::Int32).unwrap();
@@ -147,4 +139,18 @@ fn into_columns_copies_typed_failure_before_cleanup_clears_native_error_state() 
     let detail = error.ffi_detail().expect("table release failure must preserve the native record before cleanup");
     assert_eq!(detail.status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(detail.message.contains("failed to allocate column handle array"));
+}
+
+#[test]
+fn table_release_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_into_columns_single_column", test_into_columns_single_column),
+        ("test_into_columns_multiple_columns", test_into_columns_multiple_columns),
+        ("test_into_columns_empty_table", test_into_columns_empty_table),
+        ("test_into_columns_preserves_column_order", test_into_columns_preserves_column_order),
+        ("test_into_columns_nullable_column", test_into_columns_nullable_column),
+        ("test_into_columns_roundtrip", test_into_columns_roundtrip),
+        ("test_into_columns_with_string_column", test_into_columns_with_string_column),
+        ("test_into_columns_with_empty_rows", test_into_columns_with_empty_rows),
+    ]);
 }

@@ -28,3 +28,7 @@
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "target-cpu=x86-64-v4", "-C", "link-arg=-fuse-ld=mold"]
+
+[alias]
+# One build configuration for every test command; select tests with -E filtersets.
+nt = ["nextest", "run", "--workspace", "--all-features"]

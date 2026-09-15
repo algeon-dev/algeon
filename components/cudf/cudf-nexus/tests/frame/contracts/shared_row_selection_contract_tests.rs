@@ -20,7 +20,6 @@ fn assert_same_row_range_contract(lhs: &Error, rhs: &Error) {
     assert_eq!(lhs.detail_value("length"), rhs.detail_value("length"));
 }
 
-#[test]
 fn dataframe_and_series_filter_dtype_validation_use_same_canonical_contract() {
     let df = sample_df();
     let values = df.series("id").unwrap();
@@ -40,7 +39,6 @@ fn dataframe_and_series_filter_dtype_validation_use_same_canonical_contract() {
     assert_eq!(series_err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Bool8)));
 }
 
-#[test]
 fn dataframe_and_series_filter_length_validation_use_same_canonical_facts() {
     let df = sample_df();
     let values = df.series("id").unwrap();
@@ -59,7 +57,6 @@ fn dataframe_and_series_filter_length_validation_use_same_canonical_facts() {
     assert_eq!(series_err.fact_value(FactKeyName::ExpectedRows), Some(&FactValue::Usize(5)));
 }
 
-#[test]
 fn dataframe_and_series_row_range_testing_hooks_share_same_error_shape() {
     let dataframe_start =
         cudf::testing::dataframe::trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
@@ -74,4 +71,22 @@ fn dataframe_and_series_row_range_testing_hooks_share_same_error_shape() {
         cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
     let series_overflow = cudf::testing::series::trigger_series_row_range_overflow_error_for_test().unwrap_err();
     assert_same_row_range_contract(&dataframe_overflow, &series_overflow);
+}
+
+#[test]
+fn shared_row_selection_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "dataframe_and_series_filter_dtype_validation_use_same_canonical_contract",
+            dataframe_and_series_filter_dtype_validation_use_same_canonical_contract,
+        ),
+        (
+            "dataframe_and_series_filter_length_validation_use_same_canonical_facts",
+            dataframe_and_series_filter_length_validation_use_same_canonical_facts,
+        ),
+        (
+            "dataframe_and_series_row_range_testing_hooks_share_same_error_shape",
+            dataframe_and_series_row_range_testing_hooks_share_same_error_shape,
+        ),
+    ]);
 }

@@ -27,7 +27,6 @@ fn expect_cudf_err<T>(result: cudf::Result<T>, message: &str) -> cudf::Error {
 // sum
 // ===========================================================================
 
-#[test]
 fn test_sum_i32() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let total = s.sum().unwrap();
@@ -36,7 +35,6 @@ fn test_sum_i32() {
     assert_eq!(total.value::<i64>().unwrap(), 60);
 }
 
-#[test]
 fn test_sum_f64() {
     let s = crate::common::series::<f64>("x", &[1.5, 2.5, 3.0]).unwrap();
     let total = s.sum().unwrap();
@@ -45,7 +43,6 @@ fn test_sum_f64() {
     assert_eq!(total.value::<f64>().unwrap(), 7.0);
 }
 
-#[test]
 fn test_sum_bool8() {
     let s = crate::common::series::<bool>("x", &[true, false, true, true]).unwrap();
     let total = s.sum().unwrap();
@@ -54,7 +51,6 @@ fn test_sum_bool8() {
     assert_eq!(total.value::<i64>().unwrap(), 3);
 }
 
-#[test]
 fn test_sum_with_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let total = s.sum().unwrap();
@@ -62,7 +58,6 @@ fn test_sum_with_nulls() {
     assert_eq!(total.value::<i64>().unwrap(), 40);
 }
 
-#[test]
 fn test_sum_string_reports_series_operation_on_type_error() {
     let s = crate::common::series("x", &["a", "b"]).unwrap();
     let err = s.sum().unwrap_err();
@@ -78,7 +73,6 @@ fn test_sum_string_reports_series_operation_on_type_error() {
 // min / max
 // ===========================================================================
 
-#[test]
 fn test_min_i32() {
     let s = crate::common::series::<i32>("x", &[30, 10, 20]).unwrap();
     let m = s.min().unwrap();
@@ -87,7 +81,6 @@ fn test_min_i32() {
     assert_eq!(m.value::<i32>().unwrap(), 10);
 }
 
-#[test]
 fn test_max_i32() {
     let s = crate::common::series::<i32>("x", &[30, 10, 20]).unwrap();
     let m = s.max().unwrap();
@@ -96,7 +89,6 @@ fn test_max_i32() {
     assert_eq!(m.value::<i32>().unwrap(), 30);
 }
 
-#[test]
 fn test_min_f64() {
     let s = crate::common::series::<f64>("x", &[3.0, 1.0, 2.0]).unwrap();
     let m = s.min().unwrap();
@@ -104,7 +96,6 @@ fn test_min_f64() {
     assert_eq!(m.value::<f64>().unwrap(), 1.0);
 }
 
-#[test]
 fn test_max_f64() {
     let s = crate::common::series::<f64>("x", &[3.0, 1.0, 2.0]).unwrap();
     let m = s.max().unwrap();
@@ -112,7 +103,6 @@ fn test_max_f64() {
     assert_eq!(m.value::<f64>().unwrap(), 3.0);
 }
 
-#[test]
 fn test_prepared_scalar_max_reports_shape_and_returns_scalar() {
     let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
@@ -130,7 +120,6 @@ fn test_prepared_scalar_max_reports_shape_and_returns_scalar() {
     assert_eq!(output.into_scalar().value::<i32>().unwrap(), 40);
 }
 
-#[test]
 fn test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Sum).unwrap();
@@ -145,7 +134,6 @@ fn test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar() {
     assert_eq!(output.scalar().value::<i64>().unwrap(), 60);
 }
 
-#[test]
 fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator() {
     let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
@@ -176,7 +164,6 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
     );
 }
 
-#[test]
 fn test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics() {
     let s = crate::common::series::<f64>("l_extendedprice", &[1000.0, 1250.5, 749.5]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Sum).unwrap();
@@ -198,7 +185,6 @@ fn test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagno
     assert_eq!(report.output_bytes(), None);
 }
 
-#[test]
 fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
     let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
@@ -219,7 +205,6 @@ fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
-#[test]
 fn test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
@@ -232,7 +217,6 @@ fn test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar() {
     assert!(!scalar.is_valid().unwrap());
 }
 
-#[test]
 fn test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details() {
     let s = crate::common::series("x", &["a", "b"]).unwrap();
     let err = expect_cudf_err(s.prepare_scalar_reduction(ReduceAgg::Sum), "expected unsupported dtype error");
@@ -244,7 +228,6 @@ fn test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details() {
     assert_no_budget_error_details(&err);
 }
 
-#[test]
 fn test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details() {
     let s = crate::common::series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Std { ddof: u32::MAX }).unwrap();
@@ -267,7 +250,6 @@ fn test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details(
 // mean / median
 // ===========================================================================
 
-#[test]
 fn test_mean_i32() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let m = s.mean().unwrap();
@@ -276,7 +258,6 @@ fn test_mean_i32() {
     assert_eq!(m.value::<f64>().unwrap(), 20.0);
 }
 
-#[test]
 fn test_mean_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
     let m = s.mean().unwrap();
@@ -284,7 +265,6 @@ fn test_mean_f64() {
     assert_eq!(m.value::<f64>().unwrap(), 2.0);
 }
 
-#[test]
 fn test_median_i32() {
     let s = crate::common::series::<i32>("x", &[30, 10, 20]).unwrap();
     let m = s.median().unwrap();
@@ -297,7 +277,6 @@ fn test_median_i32() {
 // std / var
 // ===========================================================================
 
-#[test]
 fn test_std_f64() {
     let s = crate::common::series::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
     let ddof: u32 = 0;
@@ -308,7 +287,6 @@ fn test_std_f64() {
     assert!((v - 2.0).abs() < 1e-10, "expected std ≈ 2.0, got {v}");
 }
 
-#[test]
 fn test_var_f64() {
     let s = crate::common::series::<f64>("x", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]).unwrap();
     let ddof: u32 = 0;
@@ -319,7 +297,6 @@ fn test_var_f64() {
     assert!((v - 4.0).abs() < 1e-10, "expected var ≈ 4.0, got {v}");
 }
 
-#[test]
 fn test_std_ddof_above_i32_max_uses_series_operation_contract() {
     let s = crate::common::series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
 
@@ -337,7 +314,6 @@ fn test_std_ddof_above_i32_max_uses_series_operation_contract() {
     );
 }
 
-#[test]
 fn test_var_ddof_above_i32_max_uses_series_operation_contract() {
     let s = crate::common::series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
 
@@ -359,7 +335,6 @@ fn test_var_ddof_above_i32_max_uses_series_operation_contract() {
 // any / all
 // ===========================================================================
 
-#[test]
 fn test_any_true() {
     let s = crate::common::series::<bool>("x", &[false, true, false]).unwrap();
     let result = s.any().unwrap();
@@ -368,7 +343,6 @@ fn test_any_true() {
     assert!(result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_any_false() {
     let s = crate::common::series::<bool>("x", &[false, false, false]).unwrap();
     let result = s.any().unwrap();
@@ -376,7 +350,6 @@ fn test_any_false() {
     assert!(!result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_all_true() {
     let s = crate::common::series::<bool>("x", &[true, true, true]).unwrap();
     let result = s.all().unwrap();
@@ -384,7 +357,6 @@ fn test_all_true() {
     assert!(result.value::<bool>().unwrap());
 }
 
-#[test]
 fn test_all_false() {
     let s = crate::common::series::<bool>("x", &[true, false, true]).unwrap();
     let result = s.all().unwrap();
@@ -396,7 +368,6 @@ fn test_all_false() {
 // product
 // ===========================================================================
 
-#[test]
 fn test_product_i32() {
     let s = crate::common::series::<i32>("x", &[2, 3, 4]).unwrap();
     let result = s.product().unwrap();
@@ -405,7 +376,6 @@ fn test_product_i32() {
     assert_eq!(result.value::<i32>().unwrap(), 24);
 }
 
-#[test]
 fn test_product_f64() {
     let s = crate::common::series::<f64>("x", &[2.0, 3.0, 4.0]).unwrap();
     let result = s.product().unwrap();
@@ -418,7 +388,6 @@ fn test_product_f64() {
 // minmax
 // ===========================================================================
 
-#[test]
 fn test_minmax_i32() {
     let s = crate::common::series::<i32>("x", &[30, 10, 20]).unwrap();
     let (min, max) = s.minmax().unwrap();
@@ -427,7 +396,6 @@ fn test_minmax_i32() {
     assert_eq!(max.value::<i32>().unwrap(), 30);
 }
 
-#[test]
 fn test_minmax_f64() {
     let s = crate::common::series::<f64>("x", &[3.0, 1.0, 2.0]).unwrap();
     let (min, max) = s.minmax().unwrap();
@@ -440,14 +408,12 @@ fn test_minmax_f64() {
 // cumsum / cummin / cummax / cumprod
 // ===========================================================================
 
-#[test]
 fn test_cumsum_i32() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let cs = s.cumsum().unwrap();
     assert_eq!(cs.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 }
 
-#[test]
 fn test_cumsum_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
     let cs = s.cumsum().unwrap();
@@ -455,21 +421,18 @@ fn test_cumsum_f64() {
     assert_eq!(cs.to_vec_strict::<f64>().unwrap(), vec![1.0, 3.0, 6.0]);
 }
 
-#[test]
 fn test_cummin_i32() {
     let s = crate::common::series::<i32>("x", &[3, 1, 2]).unwrap();
     let cm = s.cummin().unwrap();
     assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![3, 1, 1]);
 }
 
-#[test]
 fn test_cummax_i32() {
     let s = crate::common::series::<i32>("x", &[1, 3, 2]).unwrap();
     let cm = s.cummax().unwrap();
     assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![1, 3, 3]);
 }
 
-#[test]
 fn test_cumprod_i32() {
     let s = crate::common::series::<i32>("x", &[2, 3, 4]).unwrap();
     let cp = s.cumprod().unwrap();
@@ -480,7 +443,6 @@ fn test_cumprod_i32() {
 // is_nan / is_not_nan
 // ===========================================================================
 
-#[test]
 fn test_is_nan_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
     let mask = s.is_nan().unwrap();
@@ -488,7 +450,6 @@ fn test_is_nan_f64() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_is_not_nan_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
     let mask = s.is_not_nan().unwrap();
@@ -499,14 +460,12 @@ fn test_is_not_nan_f64() {
 // abs
 // ===========================================================================
 
-#[test]
 fn test_abs_i32() {
     let s = crate::common::series::<i32>("x", &[-3, -1, 0, 2]).unwrap();
     let result = s.abs().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![3, 1, 0, 2]);
 }
 
-#[test]
 fn test_abs_f64() {
     let s = crate::common::series::<f64>("x", &[-3.0, -1.5, 0.0, 2.5]).unwrap();
     let result = s.abs().unwrap();
@@ -518,14 +477,12 @@ fn test_abs_f64() {
 // neg
 // ===========================================================================
 
-#[test]
 fn test_neg_i32() {
     let s = crate::common::series::<i32>("x", &[1, -2, 3]).unwrap();
     let result = s.neg().unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![-1, 2, -3]);
 }
 
-#[test]
 fn test_neg_f64() {
     let s = crate::common::series::<f64>("x", &[1.5, -2.5]).unwrap();
     let result = s.neg().unwrap();
@@ -537,10 +494,92 @@ fn test_neg_f64() {
 // logical_not
 // ===========================================================================
 
-#[test]
 fn test_logical_not_bool() {
     let s = crate::common::series::<bool>("x", &[true, false, true]).unwrap();
     let result = s.logical_not().unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn series_reduction_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_sum_i32", test_sum_i32),
+        ("test_sum_f64", test_sum_f64),
+        ("test_sum_bool8", test_sum_bool8),
+        ("test_sum_with_nulls", test_sum_with_nulls),
+        (
+            "test_sum_string_reports_series_operation_on_type_error",
+            test_sum_string_reports_series_operation_on_type_error,
+        ),
+        ("test_min_i32", test_min_i32),
+        ("test_max_i32", test_max_i32),
+        ("test_min_f64", test_min_f64),
+        ("test_max_f64", test_max_f64),
+        (
+            "test_prepared_scalar_max_reports_shape_and_returns_scalar",
+            test_prepared_scalar_max_reports_shape_and_returns_scalar,
+        ),
+        (
+            "test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar",
+            test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar,
+        ),
+        (
+            "test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator",
+            test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator,
+        ),
+        (
+            "test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics",
+            test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics,
+        ),
+        (
+            "test_prepared_scalar_max_one_byte_budget_preserves_budget_details",
+            test_prepared_scalar_max_one_byte_budget_preserves_budget_details,
+        ),
+        (
+            "test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar",
+            test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar,
+        ),
+        (
+            "test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details",
+            test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details,
+        ),
+        (
+            "test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details",
+            test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details,
+        ),
+        ("test_mean_i32", test_mean_i32),
+        ("test_mean_f64", test_mean_f64),
+        ("test_median_i32", test_median_i32),
+        ("test_std_f64", test_std_f64),
+        ("test_var_f64", test_var_f64),
+        (
+            "test_std_ddof_above_i32_max_uses_series_operation_contract",
+            test_std_ddof_above_i32_max_uses_series_operation_contract,
+        ),
+        (
+            "test_var_ddof_above_i32_max_uses_series_operation_contract",
+            test_var_ddof_above_i32_max_uses_series_operation_contract,
+        ),
+        ("test_any_true", test_any_true),
+        ("test_any_false", test_any_false),
+        ("test_all_true", test_all_true),
+        ("test_all_false", test_all_false),
+        ("test_product_i32", test_product_i32),
+        ("test_product_f64", test_product_f64),
+        ("test_minmax_i32", test_minmax_i32),
+        ("test_minmax_f64", test_minmax_f64),
+        ("test_cumsum_i32", test_cumsum_i32),
+        ("test_cumsum_f64", test_cumsum_f64),
+        ("test_cummin_i32", test_cummin_i32),
+        ("test_cummax_i32", test_cummax_i32),
+        ("test_cumprod_i32", test_cumprod_i32),
+        ("test_is_nan_f64", test_is_nan_f64),
+        ("test_is_not_nan_f64", test_is_not_nan_f64),
+        ("test_abs_i32", test_abs_i32),
+        ("test_abs_f64", test_abs_f64),
+        ("test_neg_i32", test_neg_i32),
+        ("test_neg_f64", test_neg_f64),
+        ("test_logical_not_bool", test_logical_not_bool),
+    ]);
 }

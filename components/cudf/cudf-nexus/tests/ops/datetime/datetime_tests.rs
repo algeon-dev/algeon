@@ -27,7 +27,6 @@ fn timestamp_us_series_in_runtime(runtime: &Runtime, values: &[i64]) -> cudf::Re
     runtime.series(values)?.astype(TypeId::DurationMicroseconds)?.astype(TypeId::TimestampMicroseconds)
 }
 
-#[test]
 fn test_datetime_extract_year_month_day_from_timestamp_days() {
     let ts = timestamp_days_series(&[0, 10_561, 18_321]).unwrap();
 
@@ -43,7 +42,6 @@ fn test_datetime_extract_year_month_day_from_timestamp_days() {
     assert_eq!(day.to_vec_strict::<i16>().unwrap(), vec![1, 1, 29]);
 }
 
-#[test]
 fn test_datetime_extract_year_month_day_from_timestamp_microseconds() {
     let ts = timestamp_us_series(&[0, 912_518_055_123_456, 1_583_020_799_999_999]).unwrap();
 
@@ -52,7 +50,6 @@ fn test_datetime_extract_year_month_day_from_timestamp_microseconds() {
     assert_eq!(ts.dt().day().unwrap().to_vec_strict::<i16>().unwrap(), vec![1, 1, 29]);
 }
 
-#[test]
 fn test_datetime_extract_preserves_nulls() {
     let ts = nullable_timestamp_days_series(&[0, 10_561, 18_321], &[true, false, true]).unwrap();
 
@@ -63,7 +60,6 @@ fn test_datetime_extract_preserves_nulls() {
     assert_eq!(result.to_optional_vec::<i16>().unwrap(), vec![Some(1970), None, Some(2020)]);
 }
 
-#[test]
 fn test_datetime_extract_rejects_non_timestamp_with_stable_error() {
     let ints = series("x", &[1i32, 2, 3]).unwrap();
 
@@ -77,7 +73,6 @@ fn test_datetime_extract_rejects_non_timestamp_with_stable_error() {
     assert_eq!(error_context_value(&err, "component").as_deref(), Some("year"));
 }
 
-#[test]
 fn test_datetime_add_calendrical_months_rejects_non_timestamp_without_component_context() {
     let ints = series("x", &[1i32, 2, 3]).unwrap();
     let view = ints.as_column().testing_view().unwrap();
@@ -93,7 +88,6 @@ fn test_datetime_add_calendrical_months_rejects_non_timestamp_without_component_
     assert_eq!(error_context_value(&err, "component").as_deref(), None);
 }
 
-#[test]
 fn test_datetime_low_level_extract_component_matches_series_namespace() {
     let ts = timestamp_days_series(&[9_204, 10_561]).unwrap();
     let view = ts.as_column().testing_view().unwrap();
@@ -106,7 +100,6 @@ fn test_datetime_low_level_extract_component_matches_series_namespace() {
     assert_eq!(day.testing_view().unwrap().to_vec::<i16>().unwrap(), vec![15, 1]);
 }
 
-#[test]
 fn test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance() {
     let input_runtime = Runtime::builder().build().unwrap();
     let override_runtime = Runtime::builder().build().unwrap();
@@ -130,4 +123,35 @@ fn test_datetime_extract_in_uses_explicit_execution_context_and_output_provenanc
     reset_sync_observation();
     assert_eq!(result.to_vec_strict::<i16>().unwrap(), vec![1970, 1998]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn datetime_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "test_datetime_extract_year_month_day_from_timestamp_days",
+            test_datetime_extract_year_month_day_from_timestamp_days,
+        ),
+        (
+            "test_datetime_extract_year_month_day_from_timestamp_microseconds",
+            test_datetime_extract_year_month_day_from_timestamp_microseconds,
+        ),
+        ("test_datetime_extract_preserves_nulls", test_datetime_extract_preserves_nulls),
+        (
+            "test_datetime_extract_rejects_non_timestamp_with_stable_error",
+            test_datetime_extract_rejects_non_timestamp_with_stable_error,
+        ),
+        (
+            "test_datetime_add_calendrical_months_rejects_non_timestamp_without_component_context",
+            test_datetime_add_calendrical_months_rejects_non_timestamp_without_component_context,
+        ),
+        (
+            "test_datetime_low_level_extract_component_matches_series_namespace",
+            test_datetime_low_level_extract_component_matches_series_namespace,
+        ),
+        (
+            "test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance",
+            test_datetime_extract_in_uses_explicit_execution_context_and_output_provenance,
+        ),
+    ]);
 }

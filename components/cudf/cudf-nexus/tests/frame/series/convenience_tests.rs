@@ -21,7 +21,6 @@ use crate::common::{
 // is_null / is_not_null
 // ===========================================================================
 
-#[test]
 fn test_is_null_all_valid() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let mask = s.is_null().unwrap();
@@ -31,7 +30,6 @@ fn test_is_null_all_valid() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, false]);
 }
 
-#[test]
 fn test_is_null_with_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let mask = s.is_null().unwrap();
@@ -40,7 +38,6 @@ fn test_is_null_with_nulls() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_is_null_empty() {
     let s = crate::common::series::<i32>("e", &[]).unwrap();
     let mask = s.is_null().unwrap();
@@ -49,7 +46,6 @@ fn test_is_null_empty() {
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
 }
 
-#[test]
 fn test_is_not_null_all_valid() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let mask = s.is_not_null().unwrap();
@@ -59,7 +55,6 @@ fn test_is_not_null_all_valid() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
-#[test]
 fn test_is_not_null_with_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let mask = s.is_not_null().unwrap();
@@ -68,7 +63,6 @@ fn test_is_not_null_with_nulls() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_is_null_and_is_not_null_are_complementary() {
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 3, 0], &[true, false, true, false]).unwrap();
     let nulls = s.is_null().unwrap().to_vec_strict::<bool>().unwrap();
@@ -83,7 +77,6 @@ fn test_is_null_and_is_not_null_are_complementary() {
 // astype (cast)
 // ===========================================================================
 
-#[test]
 fn test_astype_i32_to_f64() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let casted = s.astype(TypeId::Float64).unwrap();
@@ -93,7 +86,6 @@ fn test_astype_i32_to_f64() {
     assert_eq!(casted.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
 }
 
-#[test]
 fn test_astype_f64_to_i32_truncates() {
     let s = crate::common::series::<f64>("x", &[1.9, 2.1, 3.7]).unwrap();
     let casted = s.astype(TypeId::Int32).unwrap();
@@ -102,7 +94,6 @@ fn test_astype_f64_to_i32_truncates() {
     assert_eq!(casted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_astype_preserves_length() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30, 40, 50]).unwrap();
     let casted = s.astype(TypeId::Int64).unwrap();
@@ -111,7 +102,6 @@ fn test_astype_preserves_length() {
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Int64);
 }
 
-#[test]
 fn test_astype_preserves_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 3], &[true, false, true]).unwrap();
     let casted = s.astype(TypeId::Float64).unwrap();
@@ -120,7 +110,6 @@ fn test_astype_preserves_nulls() {
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
 }
 
-#[test]
 fn test_astype_same_type_is_no_op_copy() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let casted = s.astype(TypeId::Int32).unwrap();
@@ -129,7 +118,6 @@ fn test_astype_same_type_is_no_op_copy() {
     assert_eq!(casted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_log_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, std::f64::consts::E, std::f64::consts::E.powi(2)]).unwrap();
     let logged = s.log().unwrap();
@@ -145,7 +133,6 @@ fn test_log_f64() {
 // fillna (scalar)
 // ===========================================================================
 
-#[test]
 fn test_fillna_replaces_nulls_with_scalar() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let filled = s.fillna(99i32).unwrap();
@@ -155,7 +142,6 @@ fn test_fillna_replaces_nulls_with_scalar() {
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-#[test]
 fn test_fillna_no_nulls_returns_same_values() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let filled = s.fillna(0i32).unwrap();
@@ -164,7 +150,6 @@ fn test_fillna_no_nulls_returns_same_values() {
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_fillna_all_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[0, 0, 0], &[false, false, false]).unwrap();
     let filled = s.fillna(42i32).unwrap();
@@ -173,7 +158,6 @@ fn test_fillna_all_nulls() {
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
 }
 
-#[test]
 fn test_fillna_f64() {
     let s = crate::common::nullable_series::<f64>("x", &[1.0, 0.0, 3.0], &[true, false, true]).unwrap();
     let filled = s.fillna(999.0f64).unwrap();
@@ -185,7 +169,6 @@ fn test_fillna_f64() {
 // fillna_with_series (column fill)
 // ===========================================================================
 
-#[test]
 fn test_fillna_with_series_replaces_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[10, 0, 30], &[true, false, true]).unwrap();
     let fill = crate::common::series::<i32>("fill", &[100, 200, 300]).unwrap();
@@ -196,7 +179,6 @@ fn test_fillna_with_series_replaces_nulls() {
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![10, 200, 30]);
 }
 
-#[test]
 fn test_fillna_with_series_no_nulls() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let fill = crate::common::series::<i32>("fill", &[100, 200, 300]).unwrap();
@@ -209,7 +191,6 @@ fn test_fillna_with_series_no_nulls() {
 // isin
 // ===========================================================================
 
-#[test]
 fn test_isin_basic() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3, 4, 5]).unwrap();
     let values = crate::common::series::<i32>("vals", &[2, 4]).unwrap();
@@ -220,7 +201,6 @@ fn test_isin_basic() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false, true, false]);
 }
 
-#[test]
 fn test_isin_no_matches() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let values = crate::common::series::<i32>("vals", &[10, 20]).unwrap();
@@ -229,7 +209,6 @@ fn test_isin_no_matches() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, false]);
 }
 
-#[test]
 fn test_isin_all_match() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let values = crate::common::series::<i32>("vals", &[3, 1, 2]).unwrap();
@@ -238,7 +217,6 @@ fn test_isin_all_match() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
-#[test]
 fn test_isin_strings() {
     let s = crate::common::series("x", &["apple", "banana", "cherry"]).unwrap();
     let values = crate::common::series("vals", &["banana", "date"]).unwrap();
@@ -248,7 +226,6 @@ fn test_isin_strings() {
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_isin_type_mismatch_uses_canonical_error_contract() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let values = crate::common::series::<f64>("vals", &[1.0, 2.0]).unwrap();
@@ -261,7 +238,6 @@ fn test_isin_type_mismatch_uses_canonical_error_contract() {
     assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Float64)));
 }
 
-#[test]
 fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let source_rt = sample_runtime();
@@ -289,7 +265,6 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
 // unique
 // ===========================================================================
 
-#[test]
 fn test_unique_removes_duplicates() {
     let s = crate::common::series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
     let uniq = s.unique().unwrap();
@@ -300,7 +275,6 @@ fn test_unique_removes_duplicates() {
     assert_eq!(vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_unique_already_unique() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let uniq = s.unique().unwrap();
@@ -310,7 +284,6 @@ fn test_unique_already_unique() {
     assert_eq!(vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_unique_empty() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let uniq = s.unique().unwrap();
@@ -318,7 +291,6 @@ fn test_unique_empty() {
     assert_eq!(uniq.len(), 0);
 }
 
-#[test]
 fn test_unique_strings() {
     let s = crate::common::series("x", &["a", "b", "a", "c", "b"]).unwrap();
     let uniq = s.unique().unwrap();
@@ -334,31 +306,26 @@ fn test_unique_strings() {
 // nunique
 // ===========================================================================
 
-#[test]
 fn test_nunique_basic() {
     let s = crate::common::series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
     assert_eq!(s.nunique().unwrap(), 3);
 }
 
-#[test]
 fn test_nunique_all_same() {
     let s = crate::common::series::<i32>("x", &[5, 5, 5]).unwrap();
     assert_eq!(s.nunique().unwrap(), 1);
 }
 
-#[test]
 fn test_nunique_empty() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     assert_eq!(s.nunique().unwrap(), 0);
 }
 
-#[test]
 fn test_nunique_all_unique() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30, 40]).unwrap();
     assert_eq!(s.nunique().unwrap(), 4);
 }
 
-#[test]
 fn test_nunique_negative_distinct_count_uses_stable_foreign_contract() {
     let err = cudf::testing::series::trigger_nunique_negative_distinct_count_for_test().unwrap_err();
 
@@ -374,13 +341,11 @@ fn test_nunique_negative_distinct_count_uses_stable_foreign_contract() {
     );
 }
 
-#[test]
 fn test_nunique_counts_nan_as_distinct_non_null_value() {
     let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 1.0, f64::NAN, 2.0]).unwrap();
     assert_eq!(s.nunique().unwrap(), 3);
 }
 
-#[test]
 fn test_nunique_excludes_null_but_keeps_nan_distinctness() {
     let s = crate::common::nullable_series::<f64>(
         "x",
@@ -395,7 +360,6 @@ fn test_nunique_excludes_null_but_keeps_nan_distinctness() {
 // factorize
 // ===========================================================================
 
-#[test]
 fn test_factorize_basic() {
     let s = crate::common::series::<i32>("x", &[10, 20, 10, 30, 20]).unwrap();
     let factorized = s.factorize().unwrap();
@@ -425,7 +389,6 @@ fn test_factorize_basic() {
     assert_eq!(decoded.to_vec_strict::<i32>().unwrap(), vec![10, 20, 10, 30, 20]);
 }
 
-#[test]
 fn test_factorize_strings() {
     let s = crate::common::series("x", &["a", "b", "a", "c"]).unwrap();
     let factorized = s.factorize().unwrap();
@@ -444,7 +407,6 @@ fn test_factorize_strings() {
     assert_eq!(uniq_vals, vec!["a", "b", "c"]);
 }
 
-#[test]
 fn test_factorize_unnamed_input_keeps_outputs_unnamed() {
     let column = column_from_slice(&[10i32, 20, 10, 30]).unwrap();
     let s = Series::from_column(column).unwrap();
@@ -466,7 +428,6 @@ fn test_factorize_unnamed_input_keeps_outputs_unnamed() {
     );
 }
 
-#[test]
 fn test_codebook_can_encode_and_decode_new_queries() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -479,7 +440,6 @@ fn test_codebook_can_encode_and_decode_new_queries() {
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
 }
 
-#[test]
 fn test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -498,7 +458,6 @@ fn test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation() {
     assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Int32)));
 }
 
-#[test]
 fn test_codebook_encode_returns_codes() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -508,7 +467,6 @@ fn test_codebook_encode_returns_codes() {
     assert_eq!(encoded.to_vec_strict::<i32>().unwrap().len(), 2);
 }
 
-#[test]
 fn test_codebook_decode_returns_decoded_values() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -519,7 +477,6 @@ fn test_codebook_decode_returns_decoded_values() {
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
 }
 
-#[test]
 fn test_codebook_decode_preserves_null_codes_as_null_values() {
     let keys = crate::common::series("key", &["alpha", "beta"]).unwrap();
     let codebook = Codebook::from_keys(keys).unwrap();
@@ -533,7 +490,6 @@ fn test_codebook_decode_preserves_null_codes_as_null_values() {
     );
 }
 
-#[test]
 fn test_codebook_encode_and_decode_in_use_borrowed_context_domain() {
     let _event_observation = crate::common::lock_event_observation();
     let key_runtime = sample_runtime();
@@ -573,7 +529,6 @@ fn test_codebook_encode_and_decode_in_use_borrowed_context_domain() {
     assert_eq!(last_exec_mr_value(), expected_mr);
 }
 
-#[test]
 fn test_codebook_can_decode_plain_series_from_external_code_columns() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -584,7 +539,6 @@ fn test_codebook_can_decode_plain_series_from_external_code_columns() {
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
 }
 
-#[test]
 fn test_codebook_decode_series_works_from_plain_series() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
@@ -595,7 +549,6 @@ fn test_codebook_decode_series_works_from_plain_series() {
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
 }
 
-#[test]
 fn test_codebook_first_seen_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
 
@@ -604,7 +557,6 @@ fn test_codebook_first_seen_ordering() {
     assert_eq!(codebook.keys().to_strings_strict().unwrap(), vec!["b", "a", "c"]);
 }
 
-#[test]
 fn test_zero_argument_codebook_preserves_sorted_default_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
 
@@ -613,7 +565,6 @@ fn test_zero_argument_codebook_preserves_sorted_default_ordering() {
     assert_eq!(codebook.keys().to_strings_strict().unwrap(), vec!["a", "b", "c"]);
 }
 
-#[test]
 fn test_empty_decimal_codebook_preserves_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -3).unwrap();
     let s = sample_runtime().empty_series(dtype).unwrap();
@@ -624,7 +575,6 @@ fn test_empty_decimal_codebook_preserves_scale() {
     assert_eq!(codebook.keys().len(), 0);
 }
 
-#[test]
 fn test_factorize_with_first_seen_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
 
@@ -635,7 +585,6 @@ fn test_factorize_with_first_seen_ordering() {
     assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
 }
 
-#[test]
 fn test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook() {
     let s = crate::common::nullable_series("x", &["b", "", "a", "b", ""], &[true, false, true, true, false]).unwrap();
 
@@ -650,7 +599,6 @@ fn test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null
     );
 }
 
-#[test]
 fn test_codebook_from_keys_rejects_duplicate_keys() {
     let keys = crate::common::series("lookup_keys", &["b", "a", "b"]).unwrap();
 
@@ -671,7 +619,6 @@ fn test_codebook_from_keys_rejects_duplicate_keys() {
     assert!(err.message().contains("unique") || err.message().contains("duplicate"), "unexpected error: {err}");
 }
 
-#[test]
 fn test_factorize_with_first_seen_ordering_avoids_temp_name_collisions() {
     let s = crate::common::series("__cudf_first_seen_row_idx__", &["b", "a", "c", "a", "b"]).unwrap();
 
@@ -682,7 +629,6 @@ fn test_factorize_with_first_seen_ordering_avoids_temp_name_collisions() {
     assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
 }
 
-#[test]
 fn test_factorize_with_in_first_seen_ordering_uses_the_same_contract() {
     let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
     let ctx = ExecutionOverrides::new();
@@ -694,7 +640,6 @@ fn test_factorize_with_in_first_seen_ordering_uses_the_same_contract() {
     assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 1, 0]);
 }
 
-#[test]
 fn test_zero_argument_factorize_preserves_sorted_default_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
 
@@ -704,7 +649,6 @@ fn test_zero_argument_factorize_preserves_sorted_default_ordering() {
     assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![1, 0, 2, 0]);
 }
 
-#[test]
 fn test_empty_decimal_factorize_preserves_codebook_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal128, -6).unwrap();
     let s = sample_runtime().empty_series(dtype).unwrap();
@@ -721,7 +665,6 @@ fn test_empty_decimal_factorize_preserves_codebook_scale() {
 // sort_values
 // ===========================================================================
 
-#[test]
 fn test_sort_values_ascending() {
     let s = crate::common::series::<i32>("x", &[30, 10, 20]).unwrap();
     let sorted = s.sort_values(SortOptions::new()).unwrap();
@@ -731,7 +674,6 @@ fn test_sort_values_ascending() {
     assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_sort_values_descending() {
     let s = crate::common::series::<i32>("x", &[30, 10, 20]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_descending(vec![true])).unwrap();
@@ -739,7 +681,6 @@ fn test_sort_values_descending() {
     assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![30, 20, 10]);
 }
 
-#[test]
 fn test_sort_values_stable() {
     let s = crate::common::series::<i32>("x", &[3, 1, 2]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_stable(true)).unwrap();
@@ -747,7 +688,6 @@ fn test_sort_values_stable() {
     assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_sort_values_f64() {
     let s = crate::common::series::<f64>("x", &[3.3, 1.1, 2.2]).unwrap();
     let sorted = s.sort_values(SortOptions::new()).unwrap();
@@ -755,7 +695,6 @@ fn test_sort_values_f64() {
     assert_eq!(sorted.to_vec_strict::<f64>().unwrap(), vec![1.1, 2.2, 3.3]);
 }
 
-#[test]
 fn test_sort_values_empty() {
     let s = crate::common::series::<i32>("x", &[]).unwrap();
     let sorted = s.sort_values(SortOptions::new()).unwrap();
@@ -763,7 +702,6 @@ fn test_sort_values_empty() {
     assert_eq!(sorted.len(), 0);
 }
 
-#[test]
 fn test_sort_values_with_nulls() {
     let s = crate::common::nullable_series::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     // Default: ascending, nulls last
@@ -779,7 +717,6 @@ fn test_sort_values_with_nulls() {
     assert_eq!(sorted.null_count(), 1);
 }
 
-#[test]
 fn test_sort_values_nulls_first() {
     let s = crate::common::nullable_series::<i32>("x", &[30, 0, 10], &[true, false, true]).unwrap();
     let sorted = s.sort_values(SortOptions::new().with_nulls_first(vec![true])).unwrap();
@@ -794,7 +731,6 @@ fn test_sort_values_nulls_first() {
     assert_eq!(vals[2], 30);
 }
 
-#[test]
 fn test_sort_values_rejects_wrong_descending_len() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     // Single column but 2 descending flags — should fail
@@ -822,7 +758,6 @@ fn test_sort_values_rejects_wrong_descending_len() {
 // input preservation
 // ===========================================================================
 
-#[test]
 fn test_convenience_ops_preserve_input() {
     let s = crate::common::nullable_series::<i32>("x", &[3, 0, 1], &[true, false, true]).unwrap();
 
@@ -834,4 +769,117 @@ fn test_convenience_ops_preserve_input() {
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
+}
+
+#[test]
+fn convenience_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_is_null_all_valid", test_is_null_all_valid),
+        ("test_is_null_with_nulls", test_is_null_with_nulls),
+        ("test_is_null_empty", test_is_null_empty),
+        ("test_is_not_null_all_valid", test_is_not_null_all_valid),
+        ("test_is_not_null_with_nulls", test_is_not_null_with_nulls),
+        ("test_is_null_and_is_not_null_are_complementary", test_is_null_and_is_not_null_are_complementary),
+        ("test_astype_i32_to_f64", test_astype_i32_to_f64),
+        ("test_astype_f64_to_i32_truncates", test_astype_f64_to_i32_truncates),
+        ("test_astype_preserves_length", test_astype_preserves_length),
+        ("test_astype_preserves_nulls", test_astype_preserves_nulls),
+        ("test_astype_same_type_is_no_op_copy", test_astype_same_type_is_no_op_copy),
+        ("test_log_f64", test_log_f64),
+        ("test_fillna_replaces_nulls_with_scalar", test_fillna_replaces_nulls_with_scalar),
+        ("test_fillna_no_nulls_returns_same_values", test_fillna_no_nulls_returns_same_values),
+        ("test_fillna_all_nulls", test_fillna_all_nulls),
+        ("test_fillna_f64", test_fillna_f64),
+        ("test_fillna_with_series_replaces_nulls", test_fillna_with_series_replaces_nulls),
+        ("test_fillna_with_series_no_nulls", test_fillna_with_series_no_nulls),
+        ("test_isin_basic", test_isin_basic),
+        ("test_isin_no_matches", test_isin_no_matches),
+        ("test_isin_all_match", test_isin_all_match),
+        ("test_isin_strings", test_isin_strings),
+        (
+            "test_isin_type_mismatch_uses_canonical_error_contract",
+            test_isin_type_mismatch_uses_canonical_error_contract,
+        ),
+        (
+            "test_isin_succeeds_with_mixed_domains_and_uses_source_provenance",
+            test_isin_succeeds_with_mixed_domains_and_uses_source_provenance,
+        ),
+        ("test_unique_removes_duplicates", test_unique_removes_duplicates),
+        ("test_unique_already_unique", test_unique_already_unique),
+        ("test_unique_empty", test_unique_empty),
+        ("test_unique_strings", test_unique_strings),
+        ("test_nunique_basic", test_nunique_basic),
+        ("test_nunique_all_same", test_nunique_all_same),
+        ("test_nunique_empty", test_nunique_empty),
+        ("test_nunique_all_unique", test_nunique_all_unique),
+        (
+            "test_nunique_negative_distinct_count_uses_stable_foreign_contract",
+            test_nunique_negative_distinct_count_uses_stable_foreign_contract,
+        ),
+        ("test_nunique_counts_nan_as_distinct_non_null_value", test_nunique_counts_nan_as_distinct_non_null_value),
+        (
+            "test_nunique_excludes_null_but_keeps_nan_distinctness",
+            test_nunique_excludes_null_but_keeps_nan_distinctness,
+        ),
+        ("test_factorize_basic", test_factorize_basic),
+        ("test_factorize_strings", test_factorize_strings),
+        ("test_factorize_unnamed_input_keeps_outputs_unnamed", test_factorize_unnamed_input_keeps_outputs_unnamed),
+        ("test_codebook_can_encode_and_decode_new_queries", test_codebook_can_encode_and_decode_new_queries),
+        (
+            "test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation",
+            test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation,
+        ),
+        ("test_codebook_encode_returns_codes", test_codebook_encode_returns_codes),
+        ("test_codebook_decode_returns_decoded_values", test_codebook_decode_returns_decoded_values),
+        (
+            "test_codebook_decode_preserves_null_codes_as_null_values",
+            test_codebook_decode_preserves_null_codes_as_null_values,
+        ),
+        (
+            "test_codebook_encode_and_decode_in_use_borrowed_context_domain",
+            test_codebook_encode_and_decode_in_use_borrowed_context_domain,
+        ),
+        (
+            "test_codebook_can_decode_plain_series_from_external_code_columns",
+            test_codebook_can_decode_plain_series_from_external_code_columns,
+        ),
+        ("test_codebook_decode_series_works_from_plain_series", test_codebook_decode_series_works_from_plain_series),
+        ("test_codebook_first_seen_ordering", test_codebook_first_seen_ordering),
+        (
+            "test_zero_argument_codebook_preserves_sorted_default_ordering",
+            test_zero_argument_codebook_preserves_sorted_default_ordering,
+        ),
+        ("test_empty_decimal_codebook_preserves_scale", test_empty_decimal_codebook_preserves_scale),
+        ("test_factorize_with_first_seen_ordering", test_factorize_with_first_seen_ordering),
+        (
+            "test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook",
+            test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null_from_codebook,
+        ),
+        ("test_codebook_from_keys_rejects_duplicate_keys", test_codebook_from_keys_rejects_duplicate_keys),
+        (
+            "test_factorize_with_first_seen_ordering_avoids_temp_name_collisions",
+            test_factorize_with_first_seen_ordering_avoids_temp_name_collisions,
+        ),
+        (
+            "test_factorize_with_in_first_seen_ordering_uses_the_same_contract",
+            test_factorize_with_in_first_seen_ordering_uses_the_same_contract,
+        ),
+        (
+            "test_zero_argument_factorize_preserves_sorted_default_ordering",
+            test_zero_argument_factorize_preserves_sorted_default_ordering,
+        ),
+        (
+            "test_empty_decimal_factorize_preserves_codebook_scale",
+            test_empty_decimal_factorize_preserves_codebook_scale,
+        ),
+        ("test_sort_values_ascending", test_sort_values_ascending),
+        ("test_sort_values_descending", test_sort_values_descending),
+        ("test_sort_values_stable", test_sort_values_stable),
+        ("test_sort_values_f64", test_sort_values_f64),
+        ("test_sort_values_empty", test_sort_values_empty),
+        ("test_sort_values_with_nulls", test_sort_values_with_nulls),
+        ("test_sort_values_nulls_first", test_sort_values_nulls_first),
+        ("test_sort_values_rejects_wrong_descending_len", test_sort_values_rejects_wrong_descending_len),
+        ("test_convenience_ops_preserve_input", test_convenience_ops_preserve_input),
+    ]);
 }

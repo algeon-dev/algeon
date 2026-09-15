@@ -36,10 +36,10 @@ process. Do not use broad `cargo test -p nexus-query-engine --all-features`,
 package-level validation.
 
 ```bash
-cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
-cargo nextest run -p nexus-query-engine --all-features --test public_api_boundary
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --lib
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test gpu_allocator_exclusive_tests_gpu_exclusive
+cargo nt -E 'binary_id(nexus-query-engine::native_contract_tests)'
+cargo nt -E 'binary_id(nexus-query-engine::public_api_boundary)'
+cargo nt -E 'package(nexus-query-engine) & kind(lib)'
+cargo nt -E 'binary_id(nexus-query-engine::gpu_allocator_event_correlation_gpu_exclusive)'
 bash scripts/check_all.sh
 ```
 

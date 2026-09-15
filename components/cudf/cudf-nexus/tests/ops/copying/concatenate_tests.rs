@@ -6,7 +6,6 @@ use crate::common::{
     reset_sync_observation, sample_runtime,
 };
 
-#[test]
 fn test_concatenate_columns() {
     let rt = sample_runtime();
     let a = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -21,7 +20,6 @@ fn test_concatenate_columns() {
     assert_eq!(values, vec![1, 2, 3, 4, 5]);
 }
 
-#[test]
 fn test_concatenate_columns_rejects_empty_input() {
     let err = concatenate::concatenate_columns(&[]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -32,7 +30,6 @@ fn test_concatenate_columns_rejects_empty_input() {
     assert!(err.message().contains("at least one input column"), "unexpected error: {err}");
 }
 
-#[test]
 fn test_concatenate_tables() {
     let rt = sample_runtime();
     let c0a = rt.column_from_slice(&[1i32, 2]).unwrap();
@@ -57,7 +54,6 @@ fn test_concatenate_tables() {
     assert_eq!(col1, vec![10.0, 20.0, 30.0, 40.0]);
 }
 
-#[test]
 fn test_concatenate_tables_rejects_empty_input() {
     let err = concatenate::concatenate_tables(&[]).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -68,7 +64,6 @@ fn test_concatenate_tables_rejects_empty_input() {
     assert!(err.message().contains("at least one input table"), "unexpected error: {err}");
 }
 
-#[test]
 fn test_concatenate_columns_rejects_type_mismatch_with_stable_contract() {
     let rt = sample_runtime();
     let a = rt.column_from_slice(&[1i32, 2]).unwrap();
@@ -84,7 +79,6 @@ fn test_concatenate_columns_rejects_type_mismatch_with_stable_contract() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
 }
 
-#[test]
 fn test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract() {
     let rt = sample_runtime();
     let left = Table::from_columns(vec![
@@ -109,7 +103,6 @@ fn test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
-#[test]
 fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
     let err = cudf::testing::concatenate::trigger_concatenate_column_count_limit_error_for_test().unwrap_err();
 
@@ -124,7 +117,6 @@ fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
     assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
-#[test]
 fn test_testing_hook_locks_concatenate_table_count_limit_contract() {
     let err = cudf::testing::concatenate::trigger_concatenate_table_count_limit_error_for_test().unwrap_err();
 
@@ -139,7 +131,6 @@ fn test_testing_hook_locks_concatenate_table_count_limit_contract() {
     assert_eq!(error_context_value(&err, "num_tables").as_deref(), None);
 }
 
-#[test]
 fn test_concatenate_nullable_columns() {
     let rt = sample_runtime();
     let a = rt.column_from_slice_nullable(&[1i32, 2], &[true, false]).unwrap();
@@ -159,7 +150,6 @@ fn test_concatenate_nullable_columns() {
     assert_eq!(validity, vec![true, false, false, true]);
 }
 
-#[test]
 fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenance() {
     let first_rt = sample_runtime();
     let second_rt = sample_runtime();
@@ -182,7 +172,6 @@ fn test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenanc
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance() {
     let first_rt = sample_runtime();
     let second_rt = sample_runtime();
@@ -213,4 +202,39 @@ fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance
     assert_eq!(view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 40]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn concatenate_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_concatenate_columns", test_concatenate_columns),
+        ("test_concatenate_columns_rejects_empty_input", test_concatenate_columns_rejects_empty_input),
+        ("test_concatenate_tables", test_concatenate_tables),
+        ("test_concatenate_tables_rejects_empty_input", test_concatenate_tables_rejects_empty_input),
+        (
+            "test_concatenate_columns_rejects_type_mismatch_with_stable_contract",
+            test_concatenate_columns_rejects_type_mismatch_with_stable_contract,
+        ),
+        (
+            "test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract",
+            test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract,
+        ),
+        (
+            "test_testing_hook_locks_concatenate_column_count_limit_contract",
+            test_testing_hook_locks_concatenate_column_count_limit_contract,
+        ),
+        (
+            "test_testing_hook_locks_concatenate_table_count_limit_contract",
+            test_testing_hook_locks_concatenate_table_count_limit_contract,
+        ),
+        ("test_concatenate_nullable_columns", test_concatenate_nullable_columns),
+        (
+            "test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenance",
+            test_concatenate_columns_succeeds_with_mixed_domains_and_uses_first_provenance,
+        ),
+        (
+            "test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance",
+            test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance,
+        ),
+    ]);
 }

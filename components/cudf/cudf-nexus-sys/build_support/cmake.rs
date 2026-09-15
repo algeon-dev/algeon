@@ -318,6 +318,12 @@ pub(crate) fn emit_runtime_dep_library_metadata() {
         discovery_env_present,
     );
     let consumers = [libcudf, rmm].into_iter().flatten().collect::<Vec<_>>();
+    // Downstream binaries resolve libcudf and RMM through rpaths built from
+    // these directories; tests inspecting the shim's loader resolution use the
+    // same directories instead of the caller's LD_LIBRARY_PATH.
+    let loader_path = env::join_paths(consumers.iter().filter_map(|library| library.parent()))
+        .unwrap_or_else(|error| panic!("runtime library directories cannot form a loader search path: {error}"));
+    println!("cargo:rustc-env=CUDF_RUST_RUNTIME_LIBRARY_PATH={}", loader_path.to_string_lossy());
     emit_optional_runtime_dep_library_metadata(
         "rapids-logger-runtime-lib",
         "librapids_logger.so",

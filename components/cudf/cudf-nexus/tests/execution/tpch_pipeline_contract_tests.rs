@@ -100,7 +100,6 @@ fn key_table(frame: &DataFrame, column: &str) -> Table {
     Table::from_columns(vec![frame.series(column).unwrap().as_column().deep_copy().unwrap()]).unwrap()
 }
 
-#[test]
 fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export() {
     let dir = TempDir::new().unwrap();
     let lineitem_path = dir.path().join("lineitem.parquet");
@@ -185,4 +184,12 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
         host.column(2).as_any().downcast_ref::<Decimal128Array>().unwrap().values().as_ref(),
         &[950_000, 3_000_000, 3_000_000, 3_000_000]
     );
+}
+
+#[test]
+fn tpch_pipeline_contract_tests_cases() {
+    crate::common::run_named_cases(&[(
+        "mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export",
+        mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and_arrow_export,
+    )]);
 }

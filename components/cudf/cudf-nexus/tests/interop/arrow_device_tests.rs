@@ -460,7 +460,6 @@ unsafe fn install_release_observers(schema: *mut c_void, array: *mut c_void) -> 
     (schema_releases, array_releases)
 }
 
-#[test]
 fn numeric_column_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -478,7 +477,6 @@ fn numeric_column_device_arrow_export_reports_producer_retained_view() {
     assert_export_exec_observation_matches_runtime(&runtime);
 }
 
-#[test]
 fn numeric_column_device_arrow_export_with_deep_copy_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -512,7 +510,6 @@ fn numeric_column_device_arrow_export_with_deep_copy_reports_bridge_owned_device
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
 }
 
-#[test]
 fn numeric_column_device_arrow_raw_parts_round_trip_preserves_pointer() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -540,7 +537,6 @@ fn numeric_column_device_arrow_raw_parts_round_trip_preserves_pointer() {
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn bool_column_device_arrow_export_and_import_report_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -562,7 +558,6 @@ fn bool_column_device_arrow_export_and_import_report_bridge_owned_device_copy() 
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn bool_column_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -614,7 +609,6 @@ fn bool_column_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_sta
     );
 }
 
-#[test]
 fn numeric_series_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -632,7 +626,6 @@ fn numeric_series_device_arrow_export_reports_producer_retained_view() {
     assert_export_exec_observation_matches_runtime(&runtime);
 }
 
-#[test]
 fn numeric_series_device_arrow_export_records_sync_event_on_runtime_stream() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -651,7 +644,6 @@ fn numeric_series_device_arrow_export_records_sync_event_on_runtime_stream() {
     );
 }
 
-#[test]
 fn bool_series_device_arrow_export_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -665,7 +657,6 @@ fn bool_series_device_arrow_export_reports_bridge_owned_device_copy() {
     assert!(export.sync_event_present());
 }
 
-#[test]
 fn series_device_arrow_export_exposes_stable_sync_event_metadata_across_handoffs() {
     let _observation_lock = lock_event_observation();
 
@@ -683,7 +674,6 @@ fn series_device_arrow_export_exposes_stable_sync_event_metadata_across_handoffs
     assert_eq!(foreign.sync_event_raw_ptr(), export_sync_event);
 }
 
-#[test]
 fn numeric_series_device_arrow_raw_parts_round_trip_preserves_pointer() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -711,7 +701,6 @@ fn numeric_series_device_arrow_raw_parts_round_trip_preserves_pointer() {
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn numeric_series_device_arrow_owned_abi_handoff_survives_export_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -742,7 +731,6 @@ fn numeric_series_device_arrow_owned_abi_handoff_survives_export_drop() {
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![41, 42, 43]);
 }
 
-#[test]
 fn series_device_arrow_import_retains_owned_abi_release_until_imported_column_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -766,7 +754,6 @@ fn series_device_arrow_import_retains_owned_abi_release_until_imported_column_dr
     assert_eq!(array_releases.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn owned_abi_release_callbacks_support_spec_compliant_struct_moves() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -800,7 +787,6 @@ fn owned_abi_release_callbacks_support_spec_compliant_struct_moves() {
     }
 }
 
-#[test]
 fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array() {
     let err = match unsafe {
         cudf::interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts(
@@ -820,7 +806,6 @@ fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array(
     assert!(err.message().contains("schema pointer"));
 }
 
-#[test]
 fn numeric_device_arrow_import_reports_foreign_retained_view_and_preserves_pointer() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -842,7 +827,6 @@ fn numeric_device_arrow_import_reports_foreign_retained_view_and_preserves_point
     assert_eq!(values, vec![10, 20, 30]);
 }
 
-#[test]
 fn series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing_in_this_layer() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
@@ -865,7 +849,6 @@ fn series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing
     assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn series_device_arrow_import_round_trip_returns_unnamed_series() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -879,7 +862,6 @@ fn series_device_arrow_import_round_trip_returns_unnamed_series() {
     assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -896,7 +878,6 @@ fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn bool_device_arrow_import_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -914,7 +895,6 @@ fn bool_device_arrow_import_reports_bridge_owned_device_copy() {
     assert_eq!(values, vec![true, false, true, true]);
 }
 
-#[test]
 fn decimal64_series_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -932,7 +912,6 @@ fn decimal64_series_device_arrow_export_reports_producer_retained_view() {
     assert_export_exec_observation_matches_runtime(&runtime);
 }
 
-#[test]
 fn decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preserves_scale_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -953,7 +932,6 @@ fn decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preser
     assert_eq!(imported.eq(&series).unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
-#[test]
 fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -971,7 +949,6 @@ fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn string_series_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -987,7 +964,6 @@ fn string_series_device_arrow_export_reports_producer_retained_view() {
     assert_export_exec_observation_matches_runtime(&runtime);
 }
 
-#[test]
 fn string_series_device_arrow_import_reports_foreign_retained_view_and_preserves_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1008,7 +984,6 @@ fn string_series_device_arrow_import_reports_foreign_retained_view_and_preserves
     );
 }
 
-#[test]
 fn list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1035,7 +1010,6 @@ fn list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn struct_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1062,7 +1036,6 @@ fn struct_series_device_arrow_round_trip_preserves_recursive_children_and_report
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1087,7 +1060,6 @@ fn dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1114,7 +1086,6 @@ fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy(
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_is_foreign_retained() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1134,7 +1105,6 @@ fn empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_
     assert_eq!(imported.to_optional_strings().unwrap(), Vec::<Option<String>>::new());
 }
 
-#[test]
 fn string_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1149,7 +1119,6 @@ fn string_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     );
 }
 
-#[test]
 fn nested_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     let _observation_lock = lock_event_observation();
 
@@ -1194,7 +1163,6 @@ fn nested_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     );
 }
 
-#[test]
 fn numeric_table_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -1216,7 +1184,6 @@ fn numeric_table_device_arrow_export_reports_producer_retained_view() {
     assert_export_exec_observation_matches_runtime(&runtime);
 }
 
-#[test]
 fn numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -1256,7 +1223,6 @@ fn numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_
     assert_eq!(imported_columns[1].to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn numeric_table_device_arrow_fixed_width_values_ptr_rejects_indices_outside_i64_range_with_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1277,7 +1243,6 @@ fn numeric_table_device_arrow_fixed_width_values_ptr_rejects_indices_outside_i64
     assert_eq!(err.detail_value("remedy"), Some("reduce column_index to fit within i64::MAX"));
 }
 
-#[test]
 fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_column() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1296,7 +1261,6 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_colum
     assert_eq!(export.fixed_width_values_ptr(1).unwrap(), ids_ptr);
 }
 
-#[test]
 fn mixed_table_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1361,7 +1325,6 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_sta
     );
 }
 
-#[test]
 fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_dictionary_columns() {
     let _observation_lock = lock_event_observation();
 
@@ -1432,7 +1395,6 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_
     assert_eq!(dictionary_export.fixed_width_values_ptr(1).unwrap(), dictionary_ids_ptr);
 }
 
-#[test]
 fn numeric_table_device_arrow_export_records_sync_event_on_runtime_stream() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1453,7 +1415,6 @@ fn numeric_table_device_arrow_export_records_sync_event_on_runtime_stream() {
     );
 }
 
-#[test]
 fn dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1483,7 +1444,6 @@ fn dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values(
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1506,7 +1466,6 @@ fn dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_
     assert_eq!(err.detail_value("column_index"), None);
 }
 
-#[test]
 fn dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_count_with_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1529,7 +1488,6 @@ fn dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_c
     assert_eq!(err.detail_value("reported_table_column_count"), Some("-1"));
 }
 
-#[test]
 fn dataframe_device_arrow_owned_abi_handoff_survives_export_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1560,7 +1518,6 @@ fn dataframe_device_arrow_owned_abi_handoff_survives_export_drop() {
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn dataframe_device_arrow_import_retains_owned_abi_release_until_imported_dataframe_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1586,7 +1543,6 @@ fn dataframe_device_arrow_import_retains_owned_abi_release_until_imported_datafr
     assert_eq!(array_releases.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array() {
     let err = match unsafe {
         cudf::interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts(
@@ -1606,7 +1562,6 @@ fn foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array()
     assert!(err.message().contains("schema pointer"));
 }
 
-#[test]
 fn bool_table_device_arrow_export_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1622,7 +1577,6 @@ fn bool_table_device_arrow_export_reports_bridge_owned_device_copy() {
     assert!(export.sync_event_present());
 }
 
-#[test]
 fn numeric_table_device_arrow_import_reports_foreign_retained_view_and_preserves_pointers() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1654,7 +1608,6 @@ fn numeric_table_device_arrow_import_reports_foreign_retained_view_and_preserves
     );
 }
 
-#[test]
 fn bool_table_device_arrow_import_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1681,7 +1634,6 @@ fn bool_table_device_arrow_import_reports_bridge_owned_device_copy() {
     );
 }
 
-#[test]
 fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1712,7 +1664,6 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1736,7 +1687,6 @@ fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
     );
 }
 
-#[test]
 fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1759,7 +1709,6 @@ fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_retained_views() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1788,7 +1737,6 @@ fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1813,7 +1761,6 @@ fn string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_va
     );
 }
 
-#[test]
 fn dataframe_device_arrow_round_trip_preserves_names_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1830,7 +1777,6 @@ fn dataframe_device_arrow_round_trip_preserves_names_and_values() {
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn dataframe_device_arrow_export_uses_producer_execution_domain() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
@@ -1847,7 +1793,6 @@ fn dataframe_device_arrow_export_uses_producer_execution_domain() {
     assert_export_exec_observation_matches_runtime(&runtime);
 }
 
-#[test]
 fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -1868,7 +1813,6 @@ fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without_host_fencing() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
@@ -1895,7 +1839,6 @@ fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_first_slice_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -1990,7 +1933,6 @@ fn owner_unknown_device_array_drop_quarantines_without_destructor_ffi() {
     assert_eq!(scope.remaining_call_count(), 0);
 }
 
-#[test]
 fn device_arrow_import_rejects_non_cuda_device_type() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -2022,7 +1964,6 @@ fn device_arrow_import_rejects_non_cuda_device_type() {
     assert!(err.message().contains("ARROW_DEVICE_CUDA"));
 }
 
-#[test]
 fn device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_contract() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -2045,7 +1986,6 @@ fn device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_c
     assert_eq!(err.detail_value("device_id"), Some("2147483648"));
 }
 
-#[test]
 fn device_arrow_import_accepts_cuda_host_device_type() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -2075,7 +2015,6 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
-#[test]
 fn table_device_arrow_import_accepts_cuda_managed_device_type() {
     let _observation_lock = lock_event_observation();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -2144,7 +2083,6 @@ fn series_device_arrow_import_rejects_different_runtime_device() {
     assert!(err.message().contains("same CUDA device"));
 }
 
-#[test]
 fn table_device_arrow_import_rejects_non_cuda_device_type() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -2176,4 +2114,252 @@ fn table_device_arrow_import_rejects_non_cuda_device_type() {
     assert_eq!(err.detail_value("resource"), Some("device_type"));
     assert_eq!(err.detail_value("device_type"), Some(raw_device_type.as_str()));
     assert!(err.message().contains("ARROW_DEVICE_CUDA"));
+}
+
+#[test]
+fn arrow_device_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "numeric_column_device_arrow_export_reports_producer_retained_view",
+            numeric_column_device_arrow_export_reports_producer_retained_view,
+        ),
+        (
+            "numeric_column_device_arrow_export_with_deep_copy_reports_bridge_owned_device_copy",
+            numeric_column_device_arrow_export_with_deep_copy_reports_bridge_owned_device_copy,
+        ),
+        (
+            "numeric_column_device_arrow_raw_parts_round_trip_preserves_pointer",
+            numeric_column_device_arrow_raw_parts_round_trip_preserves_pointer,
+        ),
+        (
+            "bool_column_device_arrow_export_and_import_report_bridge_owned_device_copy",
+            bool_column_device_arrow_export_and_import_report_bridge_owned_device_copy,
+        ),
+        (
+            "bool_column_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract",
+            bool_column_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract,
+        ),
+        (
+            "numeric_series_device_arrow_export_reports_producer_retained_view",
+            numeric_series_device_arrow_export_reports_producer_retained_view,
+        ),
+        (
+            "numeric_series_device_arrow_export_records_sync_event_on_runtime_stream",
+            numeric_series_device_arrow_export_records_sync_event_on_runtime_stream,
+        ),
+        (
+            "bool_series_device_arrow_export_reports_bridge_owned_device_copy",
+            bool_series_device_arrow_export_reports_bridge_owned_device_copy,
+        ),
+        (
+            "series_device_arrow_export_exposes_stable_sync_event_metadata_across_handoffs",
+            series_device_arrow_export_exposes_stable_sync_event_metadata_across_handoffs,
+        ),
+        (
+            "numeric_series_device_arrow_raw_parts_round_trip_preserves_pointer",
+            numeric_series_device_arrow_raw_parts_round_trip_preserves_pointer,
+        ),
+        (
+            "numeric_series_device_arrow_owned_abi_handoff_survives_export_drop",
+            numeric_series_device_arrow_owned_abi_handoff_survives_export_drop,
+        ),
+        (
+            "series_device_arrow_import_retains_owned_abi_release_until_imported_column_drop",
+            series_device_arrow_import_retains_owned_abi_release_until_imported_column_drop,
+        ),
+        (
+            "owned_abi_release_callbacks_support_spec_compliant_struct_moves",
+            owned_abi_release_callbacks_support_spec_compliant_struct_moves,
+        ),
+        (
+            "foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array",
+            foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array,
+        ),
+        (
+            "numeric_device_arrow_import_reports_foreign_retained_view_and_preserves_pointer",
+            numeric_device_arrow_import_reports_foreign_retained_view_and_preserves_pointer,
+        ),
+        (
+            "series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing_in_this_layer",
+            series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing_in_this_layer,
+        ),
+        (
+            "series_device_arrow_import_round_trip_returns_unnamed_series",
+            series_device_arrow_import_round_trip_returns_unnamed_series,
+        ),
+        (
+            "series_device_arrow_round_trip_does_not_call_host_arrow_path",
+            series_device_arrow_round_trip_does_not_call_host_arrow_path,
+        ),
+        (
+            "bool_device_arrow_import_reports_bridge_owned_device_copy",
+            bool_device_arrow_import_reports_bridge_owned_device_copy,
+        ),
+        (
+            "decimal64_series_device_arrow_export_reports_producer_retained_view",
+            decimal64_series_device_arrow_export_reports_producer_retained_view,
+        ),
+        (
+            "decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preserves_scale_and_values",
+            decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preserves_scale_and_values,
+        ),
+        (
+            "decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path",
+            decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path,
+        ),
+        (
+            "string_series_device_arrow_export_reports_producer_retained_view",
+            string_series_device_arrow_export_reports_producer_retained_view,
+        ),
+        (
+            "string_series_device_arrow_import_reports_foreign_retained_view_and_preserves_values",
+            string_series_device_arrow_import_reports_foreign_retained_view_and_preserves_values,
+        ),
+        (
+            "list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views",
+            list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views,
+        ),
+        (
+            "struct_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views",
+            struct_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views,
+        ),
+        (
+            "dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained_views",
+            dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained_views,
+        ),
+        (
+            "list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy",
+            list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy,
+        ),
+        (
+            "empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_is_foreign_retained",
+            empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_is_foreign_retained,
+        ),
+        (
+            "string_series_device_arrow_fixed_width_values_ptr_is_rejected",
+            string_series_device_arrow_fixed_width_values_ptr_is_rejected,
+        ),
+        (
+            "nested_series_device_arrow_fixed_width_values_ptr_is_rejected",
+            nested_series_device_arrow_fixed_width_values_ptr_is_rejected,
+        ),
+        (
+            "numeric_table_device_arrow_export_reports_producer_retained_view",
+            numeric_table_device_arrow_export_reports_producer_retained_view,
+        ),
+        (
+            "numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_copy",
+            numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_copy,
+        ),
+        (
+            "numeric_table_device_arrow_fixed_width_values_ptr_rejects_indices_outside_i64_range_with_stable_contract",
+            numeric_table_device_arrow_fixed_width_values_ptr_rejects_indices_outside_i64_range_with_stable_contract,
+        ),
+        (
+            "mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_column",
+            mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_column,
+        ),
+        (
+            "mixed_table_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract",
+            mixed_table_device_arrow_fixed_width_values_ptr_rejection_surfaces_report_stable_contract,
+        ),
+        (
+            "mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_dictionary_columns",
+            mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_dictionary_columns,
+        ),
+        (
+            "numeric_table_device_arrow_export_records_sync_event_on_runtime_stream",
+            numeric_table_device_arrow_export_records_sync_event_on_runtime_stream,
+        ),
+        (
+            "dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values",
+            dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values,
+        ),
+        (
+            "dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_contract",
+            dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_contract,
+        ),
+        (
+            "dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_count_with_stable_contract",
+            dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_count_with_stable_contract,
+        ),
+        (
+            "dataframe_device_arrow_owned_abi_handoff_survives_export_drop",
+            dataframe_device_arrow_owned_abi_handoff_survives_export_drop,
+        ),
+        (
+            "dataframe_device_arrow_import_retains_owned_abi_release_until_imported_dataframe_drop",
+            dataframe_device_arrow_import_retains_owned_abi_release_until_imported_dataframe_drop,
+        ),
+        (
+            "foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array",
+            foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array,
+        ),
+        (
+            "bool_table_device_arrow_export_reports_bridge_owned_device_copy",
+            bool_table_device_arrow_export_reports_bridge_owned_device_copy,
+        ),
+        (
+            "numeric_table_device_arrow_import_reports_foreign_retained_view_and_preserves_pointers",
+            numeric_table_device_arrow_import_reports_foreign_retained_view_and_preserves_pointers,
+        ),
+        (
+            "bool_table_device_arrow_import_reports_bridge_owned_device_copy",
+            bool_table_device_arrow_import_reports_bridge_owned_device_copy,
+        ),
+        (
+            "decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values",
+            decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values,
+        ),
+        (
+            "string_dataframe_device_arrow_round_trip_preserves_names_and_values",
+            string_dataframe_device_arrow_round_trip_preserves_names_and_values,
+        ),
+        (
+            "string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path",
+            string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path,
+        ),
+        (
+            "mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_retained_views",
+            mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_retained_views,
+        ),
+        (
+            "string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_values",
+            string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_values,
+        ),
+        (
+            "dataframe_device_arrow_round_trip_preserves_names_and_values",
+            dataframe_device_arrow_round_trip_preserves_names_and_values,
+        ),
+        (
+            "dataframe_device_arrow_export_uses_producer_execution_domain",
+            dataframe_device_arrow_export_uses_producer_execution_domain,
+        ),
+        (
+            "dataframe_device_arrow_round_trip_does_not_call_host_arrow_path",
+            dataframe_device_arrow_round_trip_does_not_call_host_arrow_path,
+        ),
+        (
+            "dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without_host_fencing",
+            dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without_host_fencing,
+        ),
+        (
+            "dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_first_slice_values",
+            dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_first_slice_values,
+        ),
+        ("device_arrow_import_rejects_non_cuda_device_type", device_arrow_import_rejects_non_cuda_device_type),
+        (
+            "device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_contract",
+            device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_contract,
+        ),
+        ("device_arrow_import_accepts_cuda_host_device_type", device_arrow_import_accepts_cuda_host_device_type),
+        (
+            "table_device_arrow_import_accepts_cuda_managed_device_type",
+            table_device_arrow_import_accepts_cuda_managed_device_type,
+        ),
+        (
+            "table_device_arrow_import_rejects_non_cuda_device_type",
+            table_device_arrow_import_rejects_non_cuda_device_type,
+        ),
+    ]);
 }

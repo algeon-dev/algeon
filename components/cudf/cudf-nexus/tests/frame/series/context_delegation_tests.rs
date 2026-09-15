@@ -24,7 +24,6 @@ fn assert_bool_series_eq(lhs: &Series, rhs: &Series) {
     assert_eq!(lhs.to_optional_vec::<bool>().unwrap(), rhs.to_optional_vec::<bool>().unwrap());
 }
 
-#[test]
 fn default_series_transform_ops_match_empty_execution_context() {
     let rt = sample_runtime();
     let values = rt.series(&[3i32, 1, 2, 1]).unwrap();
@@ -64,7 +63,6 @@ fn default_series_transform_ops_match_empty_execution_context() {
     assert_eq!(unique_default, unique_scoped);
 }
 
-#[test]
 fn default_series_numeric_boolean_and_reduction_ops_match_empty_execution_context() {
     let rt = sample_runtime();
     let ints = rt.series(&[3i32, 1, 2, 1]).unwrap();
@@ -86,7 +84,6 @@ fn default_series_numeric_boolean_and_reduction_ops_match_empty_execution_contex
     assert_bool_series_eq(&bools.logical_not().unwrap(), &bools.logical_not_in(&ctx).unwrap());
 }
 
-#[test]
 fn default_series_string_namespace_and_factorization_ops_match_empty_execution_context() {
     let rt = sample_runtime();
     let strings = rt.series(&["Beta", "alpha", "Beta", "gamma"]).unwrap();
@@ -128,7 +125,6 @@ fn default_series_string_namespace_and_factorization_ops_match_empty_execution_c
     );
 }
 
-#[test]
 fn default_and_explicit_context_numeric_cast_validation_errors_match() {
     let rt = sample_runtime();
     let ints = rt.series(&[3i32, 1, 2, 1]).unwrap();
@@ -146,4 +142,26 @@ fn default_and_explicit_context_numeric_cast_validation_errors_match() {
     assert_eq!(scoped_err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(scoped_err.operation(), "series::to_numeric_in");
     assert_eq!(scoped_err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+}
+
+#[test]
+fn context_delegation_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "default_series_transform_ops_match_empty_execution_context",
+            default_series_transform_ops_match_empty_execution_context,
+        ),
+        (
+            "default_series_numeric_boolean_and_reduction_ops_match_empty_execution_context",
+            default_series_numeric_boolean_and_reduction_ops_match_empty_execution_context,
+        ),
+        (
+            "default_series_string_namespace_and_factorization_ops_match_empty_execution_context",
+            default_series_string_namespace_and_factorization_ops_match_empty_execution_context,
+        ),
+        (
+            "default_and_explicit_context_numeric_cast_validation_errors_match",
+            default_and_explicit_context_numeric_cast_validation_errors_match,
+        ),
+    ]);
 }

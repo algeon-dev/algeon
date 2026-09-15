@@ -31,7 +31,6 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
     assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
 }
 
-#[test]
 fn test_testing_hook_locks_groupby_request_count_limit_contract() {
     let err = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test().unwrap_err();
 
@@ -46,7 +45,6 @@ fn test_testing_hook_locks_groupby_request_count_limit_contract() {
     assert_eq!(error_context_value(&err, "num_requests").as_deref(), None);
 }
 
-#[test]
 fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
     let err = cudf::testing::groupby::trigger_groupby_request_agg_count_limit_error_for_test().unwrap_err();
 
@@ -64,7 +62,6 @@ fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
     assert_eq!(error_context_value(&err, "agg_count").as_deref(), None);
 }
 
-#[test]
 fn test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract() {
     let err = cudf::testing::groupby::trigger_groupby_total_agg_handle_count_limit_error_for_test().unwrap_err();
 
@@ -81,7 +78,6 @@ fn test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract() {
     assert_eq!(error_context_value(&err, "total_agg_handles").as_deref(), None);
 }
 
-#[test]
 fn test_groupby_sum() {
     // keys: [1, 2, 1, 2], values: [10, 20, 30, 40]
     // Expected groups: key=1 -> sum=40, key=2 -> sum=60
@@ -114,7 +110,6 @@ fn test_groupby_sum() {
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
 }
 
-#[test]
 fn test_groupby_aggregate_sorted_uses_sorted_key_contract() {
     // Keys are ascending with duplicate groups contiguous, matching cuDF's
     // sorted-key groupby aggregate contract.
@@ -137,7 +132,6 @@ fn test_groupby_aggregate_sorted_uses_sorted_key_contract() {
     assert_eq!(pairs, vec![(1, 40), (2, 60), (3, 5)]);
 }
 
-#[test]
 fn test_prepared_groupby_reuses_key_state_for_multiple_aggregations() {
     let keys_col = column_from_slice(&[1i32, 2, 1, 3, 2, 3]).unwrap();
     let left_vals = column_from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
@@ -175,7 +169,6 @@ fn test_prepared_groupby_reuses_key_state_for_multiple_aggregations() {
     assert_eq!(triples, vec![(1, 1, 3), (2, 2, 5), (3, 4, 6)]);
 }
 
-#[test]
 fn test_prepared_groupby_preserves_include_null_key_contract() {
     let keys_col = column_from_slice_nullable(&[1i32, 0, 1, 0, 2], &[true, false, true, false, true]).unwrap();
     let vals_col = column_from_slice(&[10i64, 20, 30, 40, 5]).unwrap();
@@ -199,7 +192,6 @@ fn test_prepared_groupby_preserves_include_null_key_contract() {
     assert_eq!(pairs, vec![(None, 60), (Some(1), 40), (Some(2), 5)]);
 }
 
-#[test]
 fn test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality() {
     let keys = column_from_slice_nullable(&[1i32, 0, 1, 0, 2], &[true, false, true, false, true]).unwrap();
     let values = column_from_slice(&[10i64, 20, 30, 40, 5]).unwrap();
@@ -220,7 +212,6 @@ fn test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality() {
     assert_eq!(include_facts.max_group_size, 2);
 }
 
-#[test]
 fn test_groupby_multiple_aggregations() {
     let keys_col = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals_col = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
@@ -252,7 +243,6 @@ fn test_groupby_multiple_aggregations() {
     assert_eq!(triples, vec![(1, 10.0, 30.0), (2, 20.0, 40.0)]);
 }
 
-#[test]
 fn test_groupby_multiple_requests_preserve_request_grouping_and_agg_order() {
     let keys_col = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let left_vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -289,7 +279,6 @@ fn test_groupby_multiple_requests_preserve_request_grouping_and_agg_order() {
     assert_eq!(rows, vec![(1, 40, 10, 3), (2, 60, 20, 4)]);
 }
 
-#[test]
 fn test_groupby_count() {
     let keys_col = column_from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals_col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
@@ -313,7 +302,6 @@ fn test_groupby_count() {
     assert_eq!(pairs, vec![(1, 2), (2, 3)]);
 }
 
-#[test]
 fn test_groupby_rejects_empty_aggregations_in_request() {
     let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals_col = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -336,7 +324,6 @@ fn test_groupby_rejects_empty_aggregations_in_request() {
     );
 }
 
-#[test]
 fn test_groupby_std_accepts_shared_non_negative_ddof_type_boundary() {
     let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals_col = column_from_slice(&[10f64, 20.0, 30.0]).unwrap();
@@ -352,7 +339,6 @@ fn test_groupby_std_accepts_shared_non_negative_ddof_type_boundary() {
     assert_eq!(result.results[0].len(), 1);
 }
 
-#[test]
 fn test_groupby_rejects_ddof_above_i32_max_with_stable_contract() {
     let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals_col = column_from_slice(&[10f64, 20.0, 30.0]).unwrap();
@@ -372,7 +358,6 @@ fn test_groupby_rejects_ddof_above_i32_max_with_stable_contract() {
     assert_ddof_range_validation_error(&err, "groupby::groupby_aggregate", "0", u32::MAX);
 }
 
-#[test]
 fn test_groupby_error_contains_operation_context() {
     let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals_col = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -428,7 +413,6 @@ fn test_groupby_rejects_negative_foreign_result_column_count_with_stable_contrac
     assert_eq!(error_context_value(&err, "out_total_columns").as_deref(), None);
 }
 
-#[test]
 fn test_groupby_multi_column_keys() {
     // Two key columns.
     let k0 = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
@@ -449,7 +433,6 @@ fn test_groupby_multi_column_keys() {
     assert_eq!(result_kv.num_rows().unwrap(), 4);
 }
 
-#[test]
 fn test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance() {
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 1, 2, 2], 970)]).unwrap();
     let values = explicit_i32_column(&[10, 20, 30, 40], 971);
@@ -474,4 +457,60 @@ fn test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance() {
     assert_eq!(key_host, vec![1, 2]);
     assert_eq!(sum_host, vec![30, 70]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn groupby_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "test_testing_hook_locks_groupby_request_count_limit_contract",
+            test_testing_hook_locks_groupby_request_count_limit_contract,
+        ),
+        (
+            "test_testing_hook_locks_groupby_request_agg_count_limit_contract",
+            test_testing_hook_locks_groupby_request_agg_count_limit_contract,
+        ),
+        (
+            "test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract",
+            test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract,
+        ),
+        ("test_groupby_sum", test_groupby_sum),
+        (
+            "test_groupby_aggregate_sorted_uses_sorted_key_contract",
+            test_groupby_aggregate_sorted_uses_sorted_key_contract,
+        ),
+        (
+            "test_prepared_groupby_reuses_key_state_for_multiple_aggregations",
+            test_prepared_groupby_reuses_key_state_for_multiple_aggregations,
+        ),
+        (
+            "test_prepared_groupby_preserves_include_null_key_contract",
+            test_prepared_groupby_preserves_include_null_key_contract,
+        ),
+        (
+            "test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality",
+            test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality,
+        ),
+        ("test_groupby_multiple_aggregations", test_groupby_multiple_aggregations),
+        (
+            "test_groupby_multiple_requests_preserve_request_grouping_and_agg_order",
+            test_groupby_multiple_requests_preserve_request_grouping_and_agg_order,
+        ),
+        ("test_groupby_count", test_groupby_count),
+        ("test_groupby_rejects_empty_aggregations_in_request", test_groupby_rejects_empty_aggregations_in_request),
+        (
+            "test_groupby_std_accepts_shared_non_negative_ddof_type_boundary",
+            test_groupby_std_accepts_shared_non_negative_ddof_type_boundary,
+        ),
+        (
+            "test_groupby_rejects_ddof_above_i32_max_with_stable_contract",
+            test_groupby_rejects_ddof_above_i32_max_with_stable_contract,
+        ),
+        ("test_groupby_error_contains_operation_context", test_groupby_error_contains_operation_context),
+        ("test_groupby_multi_column_keys", test_groupby_multi_column_keys),
+        (
+            "test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance",
+            test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance,
+        ),
+    ]);
 }

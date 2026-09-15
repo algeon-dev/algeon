@@ -11,7 +11,6 @@ fn device_fact(err: &cudf::Error, key: FactKeyName) -> i32 {
     }
 }
 
-#[test]
 fn interop_error_converts_with_kind_context_status_and_source() {
     let interop = InteropError::new(InteropErrorKind::UnsupportedType, "dictionary export is not supported")
         .with_context("operation", "interop::PreparedColumnExport::try_prepare_device_column_export")
@@ -39,7 +38,6 @@ fn interop_error_converts_with_kind_context_status_and_source() {
     );
 }
 
-#[test]
 fn interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error() {
     let interop = InteropError::new(InteropErrorKind::InvalidView, "borrowed view rejected")
         .with_context("column_id", "7")
@@ -52,7 +50,6 @@ fn interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error()
     assert_eq!(source.source().map(std::string::ToString::to_string).as_deref(), Some("child cause"));
 }
 
-#[test]
 fn interop_not_found_maps_to_not_found() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding")
@@ -68,7 +65,6 @@ fn interop_not_found_maps_to_not_found() {
     assert_eq!(err.details(), [("buffer_id", "10".to_string())]);
 }
 
-#[test]
 fn interop_readiness_unavailable_without_cudf_source_maps_to_permanent_execution_context_error() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -86,7 +82,6 @@ fn interop_readiness_unavailable_without_cudf_source_maps_to_permanent_execution
     assert_eq!(err.details(), [("field", "cuda_stream.device".to_string())]);
 }
 
-#[test]
 fn interop_execution_binding_unavailable_without_cudf_source_uses_stable_code() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -105,7 +100,6 @@ fn interop_execution_binding_unavailable_without_cudf_source_uses_stable_code() 
     assert_eq!(err.details(), [("binding", "execution".to_string())]);
 }
 
-#[test]
 fn interop_lease_already_active_without_cudf_source_uses_stable_code() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -124,7 +118,6 @@ fn interop_lease_already_active_without_cudf_source_uses_stable_code() {
     assert_eq!(err.details(), [("export_kind", "table".to_string())]);
 }
 
-#[test]
 fn interop_unsupported_layout_maps_to_unsupported() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(InteropErrorKind::UnsupportedLayout, "struct columns are not supported for this export path")
@@ -140,7 +133,6 @@ fn interop_unsupported_layout_maps_to_unsupported() {
     assert_eq!(err.details(), [("layout", "struct".to_string())]);
 }
 
-#[test]
 fn interop_execution_binding_mismatch_maps_to_runtime_binding_mismatch() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -165,7 +157,6 @@ fn interop_execution_binding_mismatch_maps_to_runtime_binding_mismatch() {
     assert_eq!(err.detail_value("right_device"), None);
 }
 
-#[test]
 fn interop_descriptor_runtime_binding_mismatch_maps_to_canonical_device_context() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -190,7 +181,6 @@ fn interop_descriptor_runtime_binding_mismatch_maps_to_canonical_device_context(
     assert_eq!(err.detail_value("right_device"), None);
 }
 
-#[test]
 fn interop_readiness_mismatch_maps_to_runtime_binding_mismatch() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -216,7 +206,6 @@ fn interop_readiness_mismatch_maps_to_runtime_binding_mismatch() {
     assert_eq!(err.detail_value("right_device"), None);
 }
 
-#[test]
 fn interop_release_stream_mismatch_maps_to_canonical_device_context() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -242,7 +231,6 @@ fn interop_release_stream_mismatch_maps_to_canonical_device_context() {
     assert_eq!(err.detail_value("right_device"), None);
 }
 
-#[test]
 fn interop_mixed_device_unsupported_maps_to_cross_device_inputs() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(
@@ -267,7 +255,6 @@ fn interop_mixed_device_unsupported_maps_to_cross_device_inputs() {
     assert_eq!(err.detail_value("right_device"), None);
 }
 
-#[test]
 fn interop_profile_unsupported_maps_to_unsupported_operation_code() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(InteropErrorKind::ProfileUnsupported, "prepared host export requires host-visible readiness")
@@ -286,7 +273,6 @@ fn interop_profile_unsupported_maps_to_unsupported_operation_code() {
     );
 }
 
-#[test]
 fn interop_placement_unsupported_maps_to_unsupported_operation_code() {
     let err = cudf::testing::error::from_interop_in_for_test(
         InteropError::new(InteropErrorKind::PlacementUnsupported, "prepared host export requires host-backed buffers")
@@ -302,7 +288,6 @@ fn interop_placement_unsupported_maps_to_unsupported_operation_code() {
     assert_eq!(err.details(), [("binding", "values".to_string()), ("placement", "cuda".to_string())]);
 }
 
-#[test]
 fn interop_error_promotes_nested_operation_context_into_operation_and_called() {
     let interop = InteropError::new(InteropErrorKind::InvalidView, "borrowed view rejected")
         .with_context("operation", "interop::ActiveReadLease::complete")
@@ -326,7 +311,6 @@ fn interop_error_promotes_nested_operation_context_into_operation_and_called() {
     );
 }
 
-#[test]
 fn interop_projection_negative_offset_contract_maps_to_cudf_error_with_canonical_context() {
     let interop = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test().unwrap_err();
     let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
@@ -340,7 +324,6 @@ fn interop_projection_negative_offset_contract_maps_to_cudf_error_with_canonical
     assert_eq!(err.detail_value("offset"), Some("-1"));
 }
 
-#[test]
 fn interop_projection_missing_null_mask_contract_maps_to_cudf_error_with_canonical_context() {
     let interop = cudf::testing::interop::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
     let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
@@ -354,7 +337,6 @@ fn interop_projection_missing_null_mask_contract_maps_to_cudf_error_with_canonic
     assert_eq!(err.detail_value("row_count"), Some("3"));
 }
 
-#[test]
 fn interop_column_index_limit_contract_maps_to_cudf_error_with_canonical_context() {
     let interop = cudf::testing::interop::trigger_interop_column_index_limit_for_test().unwrap_err();
     let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
@@ -372,7 +354,6 @@ fn interop_column_index_limit_contract_maps_to_cudf_error_with_canonical_context
     assert_eq!(err.detail_value("column_index"), None);
 }
 
-#[test]
 fn interop_error_with_cudf_source_preserves_cudf_kind_and_status() {
     // Synthesize a real nested cudf `Error` via a public testing hook.
     // Construction helpers are crate-internal, so tests cannot build an
@@ -401,7 +382,6 @@ fn interop_error_with_cudf_source_preserves_cudf_kind_and_status() {
     assert_eq!(inner.operation(), "testing::trigger_invariant_violation_for_test");
 }
 
-#[test]
 fn testing_hook_locks_invariant_violation_helper_contract() {
     let err = cudf::testing::core::trigger_invariant_violation_for_test().unwrap_err();
 
@@ -412,7 +392,6 @@ fn testing_hook_locks_invariant_violation_helper_contract() {
     assert_eq!(err.message(), "injected invariant violation for tests");
 }
 
-#[test]
 fn testing_hook_locks_null_handle_on_success_helper_contract() {
     let err = cudf::testing::core::trigger_null_handle_contract_error_for_test().unwrap_err();
 
@@ -424,7 +403,6 @@ fn testing_hook_locks_null_handle_on_success_helper_contract() {
     assert_eq!(err.detail_value("target"), Some("test_handle"));
 }
 
-#[test]
 fn testing_hook_locks_shared_range_limit_helper_contract() {
     let err = cudf::testing::core::trigger_range_limit_error_for_test().unwrap_err();
     let expected_row_count = usize::MAX.to_string();
@@ -440,7 +418,6 @@ fn testing_hook_locks_shared_range_limit_helper_contract() {
     assert_eq!(err.detail_value("remedy"), Some("reduce row_count to fit within i32::MAX"));
 }
 
-#[test]
 fn testing_hook_locks_shared_limit_validation_helper_contract() {
     let err = cudf::testing::core::trigger_table_column_count_limit_error_for_test().unwrap_err();
 
@@ -456,7 +433,6 @@ fn testing_hook_locks_shared_limit_validation_helper_contract() {
     assert_eq!(err.detail_value("table_column_count"), None);
 }
 
-#[test]
 fn testing_hook_locks_column_name_count_mismatch_helper_contract() {
     let err = cudf::testing::dataframe::new_column_length_mismatch_error_for_test(2, 3);
 
@@ -473,7 +449,6 @@ fn testing_hook_locks_column_name_count_mismatch_helper_contract() {
     assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(3)));
 }
 
-#[test]
 fn invariant_violation_is_exposed_as_a_first_class_kind_and_code() {
     // Under the truthful contract, `InvariantViolation` is both an
     // `ErrorCode` leaf (domestic soft-panic replacement) and a first-class
@@ -483,4 +458,104 @@ fn invariant_violation_is_exposed_as_a_first_class_kind_and_code() {
     // for coarse policy while still using `ErrorCode` for precise classification.
     assert_eq!(cudf::core::error::kind_for_code(ErrorCode::InvariantViolation), ErrorKind::InvariantViolation);
     assert_eq!(cudf::core::error::kind_for_code(ErrorCode::ForeignInvariantViolation), ErrorKind::InvariantViolation);
+}
+
+#[test]
+fn error_api_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "interop_error_converts_with_kind_context_status_and_source",
+            interop_error_converts_with_kind_context_status_and_source,
+        ),
+        (
+            "interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error",
+            interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error,
+        ),
+        ("interop_not_found_maps_to_not_found", interop_not_found_maps_to_not_found),
+        (
+            "interop_readiness_unavailable_without_cudf_source_maps_to_permanent_execution_context_error",
+            interop_readiness_unavailable_without_cudf_source_maps_to_permanent_execution_context_error,
+        ),
+        (
+            "interop_execution_binding_unavailable_without_cudf_source_uses_stable_code",
+            interop_execution_binding_unavailable_without_cudf_source_uses_stable_code,
+        ),
+        (
+            "interop_lease_already_active_without_cudf_source_uses_stable_code",
+            interop_lease_already_active_without_cudf_source_uses_stable_code,
+        ),
+        ("interop_unsupported_layout_maps_to_unsupported", interop_unsupported_layout_maps_to_unsupported),
+        (
+            "interop_execution_binding_mismatch_maps_to_runtime_binding_mismatch",
+            interop_execution_binding_mismatch_maps_to_runtime_binding_mismatch,
+        ),
+        (
+            "interop_descriptor_runtime_binding_mismatch_maps_to_canonical_device_context",
+            interop_descriptor_runtime_binding_mismatch_maps_to_canonical_device_context,
+        ),
+        (
+            "interop_readiness_mismatch_maps_to_runtime_binding_mismatch",
+            interop_readiness_mismatch_maps_to_runtime_binding_mismatch,
+        ),
+        (
+            "interop_release_stream_mismatch_maps_to_canonical_device_context",
+            interop_release_stream_mismatch_maps_to_canonical_device_context,
+        ),
+        (
+            "interop_mixed_device_unsupported_maps_to_cross_device_inputs",
+            interop_mixed_device_unsupported_maps_to_cross_device_inputs,
+        ),
+        (
+            "interop_profile_unsupported_maps_to_unsupported_operation_code",
+            interop_profile_unsupported_maps_to_unsupported_operation_code,
+        ),
+        (
+            "interop_placement_unsupported_maps_to_unsupported_operation_code",
+            interop_placement_unsupported_maps_to_unsupported_operation_code,
+        ),
+        (
+            "interop_error_promotes_nested_operation_context_into_operation_and_called",
+            interop_error_promotes_nested_operation_context_into_operation_and_called,
+        ),
+        (
+            "interop_projection_negative_offset_contract_maps_to_cudf_error_with_canonical_context",
+            interop_projection_negative_offset_contract_maps_to_cudf_error_with_canonical_context,
+        ),
+        (
+            "interop_projection_missing_null_mask_contract_maps_to_cudf_error_with_canonical_context",
+            interop_projection_missing_null_mask_contract_maps_to_cudf_error_with_canonical_context,
+        ),
+        (
+            "interop_column_index_limit_contract_maps_to_cudf_error_with_canonical_context",
+            interop_column_index_limit_contract_maps_to_cudf_error_with_canonical_context,
+        ),
+        (
+            "interop_error_with_cudf_source_preserves_cudf_kind_and_status",
+            interop_error_with_cudf_source_preserves_cudf_kind_and_status,
+        ),
+        (
+            "testing_hook_locks_invariant_violation_helper_contract",
+            testing_hook_locks_invariant_violation_helper_contract,
+        ),
+        (
+            "testing_hook_locks_null_handle_on_success_helper_contract",
+            testing_hook_locks_null_handle_on_success_helper_contract,
+        ),
+        (
+            "testing_hook_locks_shared_range_limit_helper_contract",
+            testing_hook_locks_shared_range_limit_helper_contract,
+        ),
+        (
+            "testing_hook_locks_shared_limit_validation_helper_contract",
+            testing_hook_locks_shared_limit_validation_helper_contract,
+        ),
+        (
+            "testing_hook_locks_column_name_count_mismatch_helper_contract",
+            testing_hook_locks_column_name_count_mismatch_helper_contract,
+        ),
+        (
+            "invariant_violation_is_exposed_as_a_first_class_kind_and_code",
+            invariant_violation_is_exposed_as_a_first_class_kind_and_code,
+        ),
+    ]);
 }

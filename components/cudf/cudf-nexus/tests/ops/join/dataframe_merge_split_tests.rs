@@ -49,7 +49,6 @@ fn assert_merge_split_validation_error(err: &cudf::Error, operation: &str, reaso
     assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
-#[test]
 fn test_inner_merge_split_on_shared_key() {
     let left = left_df();
     let right = right_df();
@@ -73,7 +72,6 @@ fn test_inner_merge_split_on_shared_key() {
     assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
 }
 
-#[test]
 fn test_left_merge_split_preserves_all_left_rows() {
     let left = left_df();
     let right = right_df();
@@ -97,7 +95,6 @@ fn test_left_merge_split_preserves_all_left_rows() {
     assert_eq!(right_rows, vec![(None, None), (Some(2), Some(200)), (Some(3), Some(300))]);
 }
 
-#[test]
 fn test_full_merge_split_preserves_all_rows() {
     let left = left_df();
     let right = right_df();
@@ -121,7 +118,6 @@ fn test_full_merge_split_preserves_all_rows() {
     assert_eq!(right_rows, vec![(None, None), (Some(2), Some(200)), (Some(3), Some(300)), (Some(4), Some(400))]);
 }
 
-#[test]
 fn test_merge_split_asymmetric_keys_preserve_each_side_schema() {
     let left = left_df_asym();
     let right = right_df_asym();
@@ -145,7 +141,6 @@ fn test_merge_split_asymmetric_keys_preserve_each_side_schema() {
     assert_eq!(right_rows, vec![(2, 200), (3, 300)]);
 }
 
-#[test]
 fn test_merge_split_respects_null_equality() {
     let left_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let left_vals = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -186,7 +181,6 @@ fn test_merge_split_respects_null_equality() {
     assert_eq!(ne_right_rows, vec![(Some(1), 100), (Some(3), 300)]);
 }
 
-#[test]
 fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
@@ -231,7 +225,6 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
@@ -272,7 +265,6 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-#[test]
 fn test_merge_split_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
@@ -287,7 +279,6 @@ fn test_merge_split_left_on_without_right_on() {
     );
 }
 
-#[test]
 fn test_merge_split_right_on_without_left_on() {
     let left = left_df();
     let right = right_df();
@@ -302,7 +293,6 @@ fn test_merge_split_right_on_without_left_on() {
     );
 }
 
-#[test]
 fn test_merge_split_left_on_right_on_length_mismatch() {
     let left = left_df_asym();
     let right = right_df_asym();
@@ -320,7 +310,6 @@ fn test_merge_split_left_on_right_on_length_mismatch() {
     assert_eq!(error_context_value(&err, "right_on_count").as_deref(), Some("2"));
 }
 
-#[test]
 fn test_merge_split_no_keys_specified() {
     let left = left_df();
     let right = right_df();
@@ -335,7 +324,6 @@ fn test_merge_split_no_keys_specified() {
     );
 }
 
-#[test]
 fn test_merge_split_rejects_ambiguous_join_key_configuration() {
     let left = left_df();
     let right = right_df();
@@ -350,7 +338,6 @@ fn test_merge_split_rejects_ambiguous_join_key_configuration() {
     );
 }
 
-#[test]
 fn test_merge_split_in_context_left_on_without_right_on() {
     let left = left_df();
     let right = right_df();
@@ -365,4 +352,35 @@ fn test_merge_split_in_context_left_on_without_right_on() {
         "left_on_without_right_on",
         "set right_on() or use on()",
     );
+}
+
+#[test]
+fn dataframe_merge_split_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_inner_merge_split_on_shared_key", test_inner_merge_split_on_shared_key),
+        ("test_left_merge_split_preserves_all_left_rows", test_left_merge_split_preserves_all_left_rows),
+        ("test_full_merge_split_preserves_all_rows", test_full_merge_split_preserves_all_rows),
+        (
+            "test_merge_split_asymmetric_keys_preserve_each_side_schema",
+            test_merge_split_asymmetric_keys_preserve_each_side_schema,
+        ),
+        ("test_merge_split_respects_null_equality", test_merge_split_respects_null_equality),
+        (
+            "test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources",
+            test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resources,
+        ),
+        (
+            "test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance",
+            test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance,
+        ),
+        ("test_merge_split_left_on_without_right_on", test_merge_split_left_on_without_right_on),
+        ("test_merge_split_right_on_without_left_on", test_merge_split_right_on_without_left_on),
+        ("test_merge_split_left_on_right_on_length_mismatch", test_merge_split_left_on_right_on_length_mismatch),
+        ("test_merge_split_no_keys_specified", test_merge_split_no_keys_specified),
+        (
+            "test_merge_split_rejects_ambiguous_join_key_configuration",
+            test_merge_split_rejects_ambiguous_join_key_configuration,
+        ),
+        ("test_merge_split_in_context_left_on_without_right_on", test_merge_split_in_context_left_on_without_right_on),
+    ]);
 }

@@ -34,7 +34,7 @@ the only source, lockfile, and full-gate authorities.
 ```bash
 cargo clippy -p cuvs-nexus -p cuvs-nexus-sys --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-flock /tmp/cudf-gpu.lock cargo nextest run -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast
+cargo nt -E 'package(cuvs-nexus) | package(cuvs-nexus-sys)'
 ```
 
 Use `scripts/dev/bindings.sh cuvs --check` for checked bindings and

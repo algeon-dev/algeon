@@ -18,7 +18,6 @@ use crate::common::{
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
-#[test]
 fn mixed_left_state_preserves_duplicate_rows_and_late_residual_matches() {
     let rt = Runtime::new().unwrap();
     let probe_rt = Runtime::builder().with_stream(cudf::runtime::CudaStream::new().unwrap()).build().unwrap();
@@ -57,7 +56,6 @@ fn mixed_left_state_preserves_duplicate_rows_and_late_residual_matches() {
     }
 }
 
-#[test]
 fn mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics() {
     let rt = Runtime::new().unwrap();
     let ctx = ExecutionOverrides::new();
@@ -202,7 +200,6 @@ fn dataframe_mixed_join_options() -> DataFrameMixedJoinOptions {
         .right_predicate_columns(["right_val"])
 }
 
-#[test]
 fn filter_join_indices_rejects_non_int32_index_columns() {
     let left_conditional = i32_table(&[1]);
     let right_conditional = i32_table(&[2]);
@@ -224,7 +221,6 @@ fn filter_join_indices_rejects_non_int32_index_columns() {
     assert_eq!(err.operation(), "join::filter_join_indices");
 }
 
-#[test]
 fn filter_join_indices_rejects_mismatched_index_lengths() {
     let left_conditional = i32_table(&[1, 3]);
     let right_conditional = i32_table(&[2]);
@@ -246,7 +242,6 @@ fn filter_join_indices_rejects_mismatched_index_lengths() {
     assert_eq!(err.operation(), "join::filter_join_indices");
 }
 
-#[test]
 fn filter_join_indices_rejects_nullable_index_columns() {
     let left_conditional = i32_table(&[1]);
     let right_conditional = i32_table(&[2]);
@@ -269,7 +264,6 @@ fn filter_join_indices_rejects_nullable_index_columns() {
     assert_eq!(err.detail_value("reason"), Some("nullable_join_indices"));
 }
 
-#[test]
 fn filter_join_indices_inner_matches_mixed_inner_join_indices() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -302,7 +296,6 @@ fn filter_join_indices_inner_matches_mixed_inner_join_indices() {
     assert_eq!(sorted_join_index_pairs(&filtered), sorted_join_index_pairs(&mixed));
 }
 
-#[test]
 fn filter_join_indices_left_matches_mixed_left_join_indices() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -335,7 +328,6 @@ fn filter_join_indices_left_matches_mixed_left_join_indices() {
     assert_eq!(sorted_join_index_pairs(&filtered), sorted_join_index_pairs(&mixed));
 }
 
-#[test]
 fn filter_join_indices_full_matches_mixed_full_join_indices() {
     let left_equality = i32_table(&[1, 2, 3]);
     let right_equality = i32_table(&[1, 2, 4]);
@@ -371,7 +363,6 @@ fn filter_join_indices_full_matches_mixed_full_join_indices() {
     assert_eq!(sorted_join_index_pairs(&filtered), sorted_join_index_pairs(&mixed));
 }
 
-#[test]
 fn filter_join_indices_full_uses_raw_pair_semantics_for_duplicate_matches() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -412,7 +403,6 @@ fn filter_join_indices_full_uses_raw_pair_semantics_for_duplicate_matches() {
     );
 }
 
-#[test]
 fn mixed_inner_join_indices_requires_equality_and_less_than_predicate() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -430,7 +420,6 @@ fn mixed_inner_join_indices_requires_equality_and_less_than_predicate() {
     assert_eq!(sorted_join_index_pairs(&indices), vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
 }
 
-#[test]
 fn mixed_left_join_indices_preserves_unmatched_left_rows() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -451,7 +440,6 @@ fn mixed_left_join_indices_preserves_unmatched_left_rows() {
     );
 }
 
-#[test]
 fn mixed_full_join_indices_preserves_unmatched_rows_from_both_sides() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -472,7 +460,6 @@ fn mixed_full_join_indices_preserves_unmatched_rows_from_both_sides() {
     );
 }
 
-#[test]
 fn mixed_left_semi_and_anti_join_indices_return_left_existence_shapes() {
     let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
     let predicate = left_less_than_right();
@@ -500,7 +487,6 @@ fn mixed_left_semi_and_anti_join_indices_return_left_existence_shapes() {
     assert_eq!(sorted_single_side_indices(&anti), vec![3, 4]);
 }
 
-#[test]
 fn mixed_inner_join_indices_honors_null_equality_for_equi_keys() {
     let left_equality = nullable_i32_table(&[0, 1], &[false, true]);
     let right_equality = nullable_i32_table(&[0, 1], &[false, true]);
@@ -531,7 +517,6 @@ fn mixed_inner_join_indices_honors_null_equality_for_equi_keys() {
     assert_eq!(sorted_join_index_pairs(&unequal), vec![(1, 1)]);
 }
 
-#[test]
 fn dataframe_projected_cross_join_supports_output_aliases() {
     let rt = Runtime::new().unwrap();
     let left = DataFrame::from_series([
@@ -562,7 +547,6 @@ fn dataframe_projected_cross_join_supports_output_aliases() {
     assert_eq!(result.series("right_val").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9, 7, 8, 9]);
 }
 
-#[test]
 fn dataframe_mixed_join_indices_use_named_equality_and_predicate_columns() {
     let rt = Runtime::new().unwrap();
     let left = DataFrame::from_series([
@@ -600,7 +584,6 @@ fn dataframe_mixed_join_indices_use_named_equality_and_predicate_columns() {
     assert_eq!(pairs, vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
 }
 
-#[test]
 fn dataframe_mixed_inner_join_size_data_materializes_existing_indices_contract() {
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
@@ -622,7 +605,6 @@ fn dataframe_mixed_inner_join_size_data_materializes_existing_indices_contract()
     assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
 }
 
-#[test]
 fn dataframe_mixed_left_join_size_data_materialize_indices_in_matches_existing_indices_contract() {
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
@@ -647,7 +629,6 @@ fn dataframe_mixed_left_join_size_data_materialize_indices_in_matches_existing_i
     assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
 }
 
-#[test]
 fn dataframe_mixed_full_join_size_data_materializes_existing_indices_contract() {
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
@@ -669,7 +650,6 @@ fn dataframe_mixed_full_join_size_data_materializes_existing_indices_contract() 
     assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
 }
 
-#[test]
 fn dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
     // libcudf binds mixed full join retained size data to the stream that built it
     // (cpp/src/join/mixed_join.cu), so begin and materialize must share the same
@@ -709,7 +689,6 @@ fn dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_han
     assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
 }
 
-#[test]
 fn dataframe_mixed_full_join_size_data_materialize_indices_in_rejects_foreign_stream() {
     // Cross-stream materialization of mixed full join retained size data is a hard
     // upstream error. The binding must surface it cleanly instead of masking the
@@ -732,7 +711,6 @@ fn dataframe_mixed_full_join_size_data_materialize_indices_in_rejects_foreign_st
     assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
 }
 
-#[test]
 fn dataframe_mixed_left_semi_join_size_data_materializes_single_indices_contract() {
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
@@ -755,7 +733,6 @@ fn dataframe_mixed_left_semi_join_size_data_materializes_single_indices_contract
     assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
 }
 
-#[test]
 fn dataframe_mixed_left_semi_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
     let _event_guard = lock_event_observation();
     let (left, right) = dataframe_mixed_inputs();
@@ -799,7 +776,6 @@ fn dataframe_mixed_left_semi_join_size_data_begin_and_materialize_in_use_borrowe
     assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
 }
 
-#[test]
 fn dataframe_mixed_left_anti_join_size_data_materialize_indices_in_matches_existing_indices_contract() {
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
@@ -825,7 +801,6 @@ fn dataframe_mixed_left_anti_join_size_data_materialize_indices_in_matches_exist
     assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
 }
 
-#[test]
 fn dataframe_mixed_left_anti_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
     let _event_guard = lock_event_observation();
     let (left, right) = dataframe_mixed_inputs();
@@ -869,7 +844,6 @@ fn dataframe_mixed_left_anti_join_size_data_begin_and_materialize_in_use_borrowe
     assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
 }
 
-#[test]
 fn dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation() {
     let rt = Runtime::new().unwrap();
     let left = DataFrame::from_series([
@@ -895,7 +869,6 @@ fn dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation
     assert_eq!(materialized.device_allocated_size_bytes().unwrap(), 0);
 }
 
-#[test]
 fn dataframe_mixed_left_semi_join_size_data_empty_result_has_zero_gather_reservation() {
     let rt = Runtime::new().unwrap();
     let left = DataFrame::from_series([
@@ -921,7 +894,6 @@ fn dataframe_mixed_left_semi_join_size_data_empty_result_has_zero_gather_reserva
     assert_eq!(materialized.device_allocated_size_bytes().unwrap(), 0);
 }
 
-#[test]
 fn dataframe_filter_join_indices_filter_existing_hash_probe_pairs() {
     let rt = Runtime::new().unwrap();
     let left = DataFrame::from_series([
@@ -958,4 +930,113 @@ fn dataframe_filter_join_indices_filter_existing_hash_probe_pairs() {
         .collect::<Vec<_>>();
     pairs.sort();
     assert_eq!(pairs, vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
+}
+
+#[test]
+fn mixed_join_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "mixed_left_state_preserves_duplicate_rows_and_late_residual_matches",
+            mixed_left_state_preserves_duplicate_rows_and_late_residual_matches,
+        ),
+        (
+            "mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics",
+            mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics,
+        ),
+        ("filter_join_indices_rejects_non_int32_index_columns", filter_join_indices_rejects_non_int32_index_columns),
+        ("filter_join_indices_rejects_mismatched_index_lengths", filter_join_indices_rejects_mismatched_index_lengths),
+        ("filter_join_indices_rejects_nullable_index_columns", filter_join_indices_rejects_nullable_index_columns),
+        (
+            "filter_join_indices_inner_matches_mixed_inner_join_indices",
+            filter_join_indices_inner_matches_mixed_inner_join_indices,
+        ),
+        (
+            "filter_join_indices_left_matches_mixed_left_join_indices",
+            filter_join_indices_left_matches_mixed_left_join_indices,
+        ),
+        (
+            "filter_join_indices_full_matches_mixed_full_join_indices",
+            filter_join_indices_full_matches_mixed_full_join_indices,
+        ),
+        (
+            "filter_join_indices_full_uses_raw_pair_semantics_for_duplicate_matches",
+            filter_join_indices_full_uses_raw_pair_semantics_for_duplicate_matches,
+        ),
+        (
+            "mixed_inner_join_indices_requires_equality_and_less_than_predicate",
+            mixed_inner_join_indices_requires_equality_and_less_than_predicate,
+        ),
+        (
+            "mixed_left_join_indices_preserves_unmatched_left_rows",
+            mixed_left_join_indices_preserves_unmatched_left_rows,
+        ),
+        (
+            "mixed_full_join_indices_preserves_unmatched_rows_from_both_sides",
+            mixed_full_join_indices_preserves_unmatched_rows_from_both_sides,
+        ),
+        (
+            "mixed_left_semi_and_anti_join_indices_return_left_existence_shapes",
+            mixed_left_semi_and_anti_join_indices_return_left_existence_shapes,
+        ),
+        (
+            "mixed_inner_join_indices_honors_null_equality_for_equi_keys",
+            mixed_inner_join_indices_honors_null_equality_for_equi_keys,
+        ),
+        (
+            "dataframe_projected_cross_join_supports_output_aliases",
+            dataframe_projected_cross_join_supports_output_aliases,
+        ),
+        (
+            "dataframe_mixed_join_indices_use_named_equality_and_predicate_columns",
+            dataframe_mixed_join_indices_use_named_equality_and_predicate_columns,
+        ),
+        (
+            "dataframe_mixed_inner_join_size_data_materializes_existing_indices_contract",
+            dataframe_mixed_inner_join_size_data_materializes_existing_indices_contract,
+        ),
+        (
+            "dataframe_mixed_left_join_size_data_materialize_indices_in_matches_existing_indices_contract",
+            dataframe_mixed_left_join_size_data_materialize_indices_in_matches_existing_indices_contract,
+        ),
+        (
+            "dataframe_mixed_full_join_size_data_materializes_existing_indices_contract",
+            dataframe_mixed_full_join_size_data_materializes_existing_indices_contract,
+        ),
+        (
+            "dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_handles",
+            dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_handles,
+        ),
+        (
+            "dataframe_mixed_full_join_size_data_materialize_indices_in_rejects_foreign_stream",
+            dataframe_mixed_full_join_size_data_materialize_indices_in_rejects_foreign_stream,
+        ),
+        (
+            "dataframe_mixed_left_semi_join_size_data_materializes_single_indices_contract",
+            dataframe_mixed_left_semi_join_size_data_materializes_single_indices_contract,
+        ),
+        (
+            "dataframe_mixed_left_semi_join_size_data_begin_and_materialize_in_use_borrowed_handles",
+            dataframe_mixed_left_semi_join_size_data_begin_and_materialize_in_use_borrowed_handles,
+        ),
+        (
+            "dataframe_mixed_left_anti_join_size_data_materialize_indices_in_matches_existing_indices_contract",
+            dataframe_mixed_left_anti_join_size_data_materialize_indices_in_matches_existing_indices_contract,
+        ),
+        (
+            "dataframe_mixed_left_anti_join_size_data_begin_and_materialize_in_use_borrowed_handles",
+            dataframe_mixed_left_anti_join_size_data_begin_and_materialize_in_use_borrowed_handles,
+        ),
+        (
+            "dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation",
+            dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation,
+        ),
+        (
+            "dataframe_mixed_left_semi_join_size_data_empty_result_has_zero_gather_reservation",
+            dataframe_mixed_left_semi_join_size_data_empty_result_has_zero_gather_reservation,
+        ),
+        (
+            "dataframe_filter_join_indices_filter_existing_hash_probe_pairs",
+            dataframe_filter_join_indices_filter_existing_hash_probe_pairs,
+        ),
+    ]);
 }

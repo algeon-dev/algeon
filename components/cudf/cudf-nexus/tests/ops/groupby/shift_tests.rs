@@ -12,7 +12,6 @@ fn sort_pairs<K: Ord + Copy, V: Ord + Copy>(mut pairs: Vec<(K, V)>) -> Vec<(K, V
     pairs
 }
 
-#[test]
 fn groupby_shift_forward_with_null_fill() {
     // Two groups, three rows each. LAG(value, 1) within group.
     let keys = column_from_slice(&[1i32, 1, 1, 2, 2, 2]).unwrap();
@@ -59,7 +58,6 @@ fn groupby_shift_forward_with_null_fill() {
     );
 }
 
-#[test]
 fn groupby_shift_lead_with_value_fill() {
     let keys = column_from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10i32, 20, 30, 100, 200]).unwrap();
@@ -96,7 +94,6 @@ fn groupby_shift_lead_with_value_fill() {
     );
 }
 
-#[test]
 fn groupby_shift_sorted_keys_hint_matches_unsorted() {
     // Keys ascending, so the sorted-keys hint is valid.
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
@@ -145,7 +142,6 @@ fn groupby_shift_sorted_keys_hint_matches_unsorted() {
     assert_eq!(pair_a, pair_b);
 }
 
-#[test]
 fn groupby_shift_dtype_mismatch_rejects() {
     let keys = column_from_slice(&[1i32, 1]).unwrap();
     let vals = column_from_slice(&[10i32, 20]).unwrap();
@@ -159,7 +155,6 @@ fn groupby_shift_dtype_mismatch_rejects() {
     assert!(dump.contains("dtype_mismatch"), "missing reason: {dump}");
 }
 
-#[test]
 fn groupby_shift_empty_specs_rejects() {
     let keys = column_from_slice(&[1i32, 1]).unwrap();
     let vals = column_from_slice(&[10i32, 20]).unwrap();
@@ -171,7 +166,6 @@ fn groupby_shift_empty_specs_rejects() {
     assert!(dump.contains("empty_shift_specs"), "missing reason: {dump}");
 }
 
-#[test]
 fn groupby_shift_missing_column_rejects() {
     let keys = column_from_slice(&[1i32, 1]).unwrap();
     let vals = column_from_slice(&[10i32, 20]).unwrap();
@@ -180,4 +174,16 @@ fn groupby_shift_missing_column_rejects() {
     let fill = null_scalar::<i32>().unwrap();
     let err = df.groupby(["key"]).shift(&[ShiftSpec::new("missing", 1, fill)]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::MissingColumn);
+}
+
+#[test]
+fn shift_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("groupby_shift_forward_with_null_fill", groupby_shift_forward_with_null_fill),
+        ("groupby_shift_lead_with_value_fill", groupby_shift_lead_with_value_fill),
+        ("groupby_shift_sorted_keys_hint_matches_unsorted", groupby_shift_sorted_keys_hint_matches_unsorted),
+        ("groupby_shift_dtype_mismatch_rejects", groupby_shift_dtype_mismatch_rejects),
+        ("groupby_shift_empty_specs_rejects", groupby_shift_empty_specs_rejects),
+        ("groupby_shift_missing_column_rejects", groupby_shift_missing_column_rejects),
+    ]);
 }

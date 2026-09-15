@@ -81,32 +81,37 @@ export CUDAHOSTCXX=/usr/bin/g++-14
 export CMAKE_CUDA_ARCHITECTURES=NATIVE
 unset CUDF_CMAKE_CUDA_ARCHITECTURES
 
-# Checkout-local native build and install identity.
-export CUDF_CPP_BUILD_DIR="$NEXUS_ROOT/target/native/cudf-build"
-export CUDF_INSTALL_DIR="$NEXUS_ROOT/target/native/cudf-install"
-export INSTALL_PREFIX="$CUDF_INSTALL_DIR"
-export CUVS_INSTALL_DIR="$NEXUS_ROOT/target/native/cuvs-install"
-export CUVS_ROOT="$CUVS_INSTALL_DIR"
-export CUGRAPH_CMAKE_BUILD_DIR="$NEXUS_ROOT/target/native/cugraph-build"
-export CUGRAPH_INSTALL_DIR="$NEXUS_ROOT/target/native/cugraph-install"
-
-# Use only this checkout's RAPIDS libraries at runtime.
-export LD_LIBRARY_PATH="$CUGRAPH_CMAKE_BUILD_DIR:$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/lib64"
+# Native selectors default to this checkout's target/native/ prefixes. Clearing
+# them keeps another checkout's libraries out and gives every shell the same
+# build fingerprint. Cargo-built binaries find the native libraries through
+# their rpath, so this block does not set LD_LIBRARY_PATH.
+unset NEXUS_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
+  CUVS_INSTALL_DIR CUVS_ROOT CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
 ```
 
 Edit the CUDA and compiler lines if your toolkit or compiler lives elsewhere.
-The remaining assignments deliberately replace inherited native selectors:
-preserving an older `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, `CUVS_ROOT`, or
-`CUGRAPH_CMAKE_BUILD_DIR` can silently mix libraries from another checkout.
+The `unset` clears any native selectors inherited from a previous shell, such
+as an older `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, `CUVS_ROOT`, or
+`CUGRAPH_CMAKE_BUILD_DIR`, so another checkout's libraries cannot leak in.
+Every Cargo build script and `scripts/build/build_lib*.sh` already default
+each cleared selector to this checkout's `target/native/` prefixes, so leaving
+them unset gives every shell the same build fingerprint.
+
+Also write the CUDA and compiler lines once into a Cargo `[env]` table outside
+the checkout, as described in
+[Native build environment](./prerequisites.md#native-build-environment), so a
+plain shell that never ran this block still builds with the same toolchain.
 
 Confirm that no selector escapes the checkout:
 
 ```bash
-env | sort | grep -E '^(NEXUS_ROOT|INSTALL_PREFIX|LD_LIBRARY_PATH|CMAKE_CUDA_ARCHITECTURES|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)='
+env | sort | grep -E '^(NEXUS_ROOT|CMAKE_CUDA_ARCHITECTURES)='
+env | sort | grep -E '^(INSTALL_PREFIX|NEXUS_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
 ```
 
-Every native path in the output must resolve under
-`$NEXUS_ROOT/target/native/`. If one does not, rerun the block above from the
+The first command must show `NEXUS_ROOT` at the checkout root and
+`CMAKE_CUDA_ARCHITECTURES` at the chosen target list. The second must print
+`clean`; if it prints `selector leaked`, rerun the block above from the
 current repository root. The build scripts and `scripts/check_all.sh` inherit
 the configured identity as-is; they do not guess that an exported path is stale.
 What each selector means is listed under
@@ -135,10 +140,11 @@ need. It then builds and installs the production Rust shim and its crate-version
 marker into the same prefix. Success looks like:
 
 ```bash
-ls "$CUDF_INSTALL_DIR"/lib/libcudf.so "$CUDF_INSTALL_DIR"/lib/librmm.so
-ls "$CUDF_INSTALL_DIR"/lib/libcudf_rust.so \
-   "$CUDF_INSTALL_DIR"/share/cudf_rust/{cargo-link.txt,crate-version}
-ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
+ls "$NEXUS_ROOT"/target/native/cudf-install/lib/libcudf.so \
+   "$NEXUS_ROOT"/target/native/cudf-install/lib/librmm.so
+ls "$NEXUS_ROOT"/target/native/cudf-install/lib/libcudf_rust.so \
+   "$NEXUS_ROOT"/target/native/cudf-install/share/cudf_rust/{cargo-link.txt,crate-version}
+ls -d "$NEXUS_ROOT"/target/native/cudf-install/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
 ### Build cuVS
@@ -148,13 +154,13 @@ bash scripts/build/build_libcuvs.sh
 ```
 
 The script builds `components/cuvs/cuvs` against the RMM in
-`CUDF_INSTALL_DIR` and installs the C++ and C libraries into
-`CUVS_INSTALL_DIR`. Success looks like:
+`target/native/cudf-install` and installs the C++ and C libraries into
+`target/native/cuvs-install`. Success looks like:
 
 ```bash
-ls "$CUVS_INSTALL_DIR"/lib/libcuvs.so \
-   "$CUVS_INSTALL_DIR"/lib/libcuvs_c.so \
-   "$CUVS_INSTALL_DIR"/lib/cmake/cuvs/cuvs-config.cmake
+ls "$NEXUS_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
+   "$NEXUS_ROOT"/target/native/cuvs-install/lib/libcuvs_c.so \
+   "$NEXUS_ROOT"/target/native/cuvs-install/lib/cmake/cuvs/cuvs-config.cmake
 ```
 
 ### Build cuGraph
@@ -170,11 +176,11 @@ selected above, then installs the registry-consumer artifacts into
 resolves a private or different copy of either. Success looks like:
 
 ```bash
-ls "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph.so \
-   "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph_c.so
-ls "$CUGRAPH_INSTALL_DIR"/lib/libcugraph.so \
-   "$CUGRAPH_INSTALL_DIR"/include/cugraph_c/algorithms.h \
-   "$CUGRAPH_INSTALL_DIR"/share/cugraph-nexus/crate-version
+ls "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph.so \
+   "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph_c.so
+ls "$NEXUS_ROOT"/target/native/cugraph-install/lib/libcugraph.so \
+   "$NEXUS_ROOT"/target/native/cugraph-install/include/cugraph_c/algorithms.h \
+   "$NEXUS_ROOT"/target/native/cugraph-install/share/cugraph-nexus/crate-version
 ```
 
 On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
@@ -251,17 +257,21 @@ with [Building with Docker](./docker.md).
 
 ### Build-shell selectors
 
+Every selector below is an optional override. Left unset, as the build shell
+block leaves them, each defaults to this checkout's `target/native/` prefix;
+set one only to point a step at a prefix outside the checkout.
+
 | Variable | Owner and purpose |
 | --- | --- |
 | `NEXUS_ROOT` | Root of the one recursive checkout. |
-| `NEXUS_NATIVE_DIR` | Root containing the three matching registry-consumer install prefixes. |
+| `NEXUS_NATIVE_DIR` | Root containing the three matching registry-consumer install prefixes. Defaults to `target/native`. |
 | `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, and cuGraph. Defaults to `NATIVE`. |
-| `CUDF_CPP_BUILD_DIR` | cuDF CMake cache, normally `target/native/cudf-build`. |
-| `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. |
-| `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. |
-| `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. |
-| `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. |
-| `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuDF/RMM, cuVS, CUDA. |
+| `CUDF_CPP_BUILD_DIR` | cuDF CMake cache. Defaults to `target/native/cudf-build`. |
+| `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. Defaults to `target/native/cudf-install`. |
+| `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. Defaults to `target/native/cuvs-install`. |
+| `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. Defaults to `target/native/cugraph-build`. |
+| `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. Defaults to `target/native/cugraph-install`. |
+| `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuDF/RMM, cuVS, CUDA. Not needed for Cargo-built binaries, which resolve native libraries through their rpath; only a caller that runs a non-Cargo loader, such as a rustdoc doctest binary, needs to compose it. |
 
 The native dependency relationship is:
 
@@ -297,7 +307,7 @@ since nexus scripts did not build it and it carries no record. To inspect the
 records:
 
 ```bash
-for root in "$CUDF_INSTALL_DIR" "$CUVS_INSTALL_DIR" "$CUGRAPH_INSTALL_DIR"; do
+for root in "$NEXUS_ROOT"/target/native/{cudf,cuvs,cugraph}-install; do
   echo "== $root =="
   cat "$root/share/nexus-native/cuda-architectures.env"
 done

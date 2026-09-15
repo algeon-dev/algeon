@@ -4,7 +4,6 @@ use cudf::{TypeId, core::Table, ops::hashing, testing::prelude::*};
 
 use crate::common::column_from_slice;
 
-#[test]
 fn test_murmurhash3_i32_column() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -25,7 +24,6 @@ fn test_murmurhash3_i32_column() {
     assert!(unique.len() >= 4, "Expected mostly unique hashes, got {:?}", values);
 }
 
-#[test]
 fn test_murmurhash3_deterministic() {
     let col = column_from_slice(&[42i32, 99, 7]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -39,7 +37,6 @@ fn test_murmurhash3_deterministic() {
     assert_eq!(v1, v2, "Same input with same seed must produce same hashes");
 }
 
-#[test]
 fn test_murmurhash3_different_seeds() {
     let col = column_from_slice(&[42i32, 99, 7]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -53,7 +50,6 @@ fn test_murmurhash3_different_seeds() {
     assert_ne!(v0, v1, "Different seeds should produce different hashes");
 }
 
-#[test]
 fn test_murmurhash3_device_ptr() {
     // Verify the hash result column has a non-null device pointer.
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -67,7 +63,6 @@ fn test_murmurhash3_device_ptr() {
     assert!(!ptr.is_null(), "hash column device pointer must be non-null");
 }
 
-#[test]
 fn test_xxhash_64() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -83,7 +78,6 @@ fn test_xxhash_64() {
     assert_eq!(values.len(), 3);
 }
 
-#[test]
 fn test_murmurhash3_multi_column() {
     let col1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let col2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
@@ -95,4 +89,16 @@ fn test_murmurhash3_multi_column() {
 
     assert_eq!(hash_view.len().unwrap(), 3);
     assert_eq!(hash_view.data_type().unwrap().id(), TypeId::UInt32);
+}
+
+#[test]
+fn hashing_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_murmurhash3_i32_column", test_murmurhash3_i32_column),
+        ("test_murmurhash3_deterministic", test_murmurhash3_deterministic),
+        ("test_murmurhash3_different_seeds", test_murmurhash3_different_seeds),
+        ("test_murmurhash3_device_ptr", test_murmurhash3_device_ptr),
+        ("test_xxhash_64", test_xxhash_64),
+        ("test_murmurhash3_multi_column", test_murmurhash3_multi_column),
+    ]);
 }

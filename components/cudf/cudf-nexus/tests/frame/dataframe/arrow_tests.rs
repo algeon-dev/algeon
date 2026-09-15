@@ -113,7 +113,6 @@ fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeI
 // Round-trip: DataFrame → RecordBatch → DataFrame
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_arrow_datatype_try_from_type_id_supported_mappings() {
     assert_eq!(ArrowDataType::try_from(TypeId::Int32).unwrap(), ArrowDataType::Int32);
     assert_eq!(ArrowDataType::try_from(TypeId::Float64).unwrap(), ArrowDataType::Float64);
@@ -151,7 +150,6 @@ fn test_arrow_datatype_try_from_type_id_supported_mappings() {
     );
 }
 
-#[test]
 fn test_arrow_datatype_try_from_type_id_rejects_unsupported_types() {
     let err =
         ArrowDataType::try_from(TypeId::List).expect_err("list columns are not supported by Arrow host-copy interop");
@@ -170,7 +168,6 @@ fn test_arrow_datatype_try_from_type_id_rejects_unsupported_types() {
     assert_eq!(error_context_value(&decimal_err, "reason").as_deref(), Some("decimal_scale_required"));
 }
 
-#[test]
 fn test_type_id_try_from_arrow_datatype_supported_mappings() {
     assert_eq!(TypeId::try_from(&ArrowDataType::Int32).unwrap(), TypeId::Int32);
     assert_eq!(TypeId::try_from(&ArrowDataType::Float64).unwrap(), TypeId::Float64);
@@ -222,7 +219,6 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
     );
 }
 
-#[test]
 fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
     let err = TypeId::try_from(&ArrowDataType::LargeBinary)
         .expect_err("large binary arrays are not supported by cudf Arrow import");
@@ -233,7 +229,6 @@ fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
     assert!(err.message().contains("unsupported Arrow type"));
 }
 
-#[test]
 fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
     use cudf::interop::arrow_host::{
         arrow_type_from_cudf_dtype, cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type,
@@ -318,7 +313,6 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
     ));
 }
 
-#[test]
 fn test_arrow_host_rejects_non_positive_fixed_size_list_dimension() {
     use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
 
@@ -333,7 +327,6 @@ fn test_arrow_host_rejects_non_positive_fixed_size_list_dimension() {
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("non_positive_fixed_size_list_dimension"));
 }
 
-#[test]
 fn test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children() {
     use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
 
@@ -366,7 +359,6 @@ fn test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children() {
     }
 }
 
-#[test]
 fn test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation() {
     let runtime = crate::common::sample_runtime();
     let data_type = ArrowDataType::FixedSizeList(Arc::new(Field::new("item", ArrowDataType::Int8, true)), i32::MAX);
@@ -379,7 +371,6 @@ fn test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation
     assert_eq!(error_context_value(&error, "child_rows").as_deref(), Some("4294967294"));
 }
 
-#[test]
 fn test_arrow_host_duration_import_export_mappings() {
     use cudf::interop::arrow_host::{
         arrow_type_from_cudf_dtype, cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type,
@@ -410,7 +401,6 @@ fn test_arrow_host_duration_import_export_mappings() {
     assert_eq!(error_context_value(&duration_days_err, "type_id").as_deref(), Some("duration_days"));
 }
 
-#[test]
 fn test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range() {
     use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
 
@@ -440,7 +430,6 @@ fn test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range() {
     );
 }
 
-#[test]
 fn test_arrow_host_schema_validation_exposes_planner_metadata() {
     use cudf::interop::arrow_host::validate_arrow_schema;
 
@@ -463,7 +452,6 @@ fn test_arrow_host_schema_validation_exposes_planner_metadata() {
     assert_eq!(mapped.field_by_name("label").unwrap().cudf_data_type(), DataType::new(TypeId::String));
 }
 
-#[test]
 fn test_arrow_host_schema_validation_accepts_empty_schema_without_copying() {
     use cudf::interop::arrow_host::validate_arrow_schema;
 
@@ -475,7 +463,6 @@ fn test_arrow_host_schema_validation_accepts_empty_schema_without_copying() {
     assert_eq!(mapped.row_count(), 0);
 }
 
-#[test]
 fn test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying() {
     use cudf::interop::arrow_host::validate_record_batch_schema;
 
@@ -489,7 +476,6 @@ fn test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_c
     assert_eq!(mapped.fields()[0].cudf_data_type(), DataType::new(TypeId::Int32));
 }
 
-#[test]
 fn test_arrow_host_record_batch_schema_validation_reanchors_schema_errors() {
     use cudf::interop::arrow_host::validate_record_batch_schema;
 
@@ -511,7 +497,6 @@ fn test_arrow_host_record_batch_schema_validation_reanchors_schema_errors() {
     assert_eq!(error_context_value(&err, "duplicate_name").as_deref(), Some("id"));
 }
 
-#[test]
 fn test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy() {
     use cudf::interop::arrow_host::{cudf_dtype_from_arrow_type, validate_arrow_schema};
 
@@ -536,7 +521,6 @@ fn test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_befo
     assert_eq!(mapped.fields()[0].cudf_data_type(), DataType::new(TypeId::List));
 }
 
-#[test]
 fn test_arrow_host_schema_validation_rejects_duplicate_names_before_copy() {
     use cudf::interop::arrow_host::validate_arrow_schema;
 
@@ -552,7 +536,6 @@ fn test_arrow_host_schema_validation_rejects_duplicate_names_before_copy() {
     assert_eq!(error_context_value(&err, "duplicate_name").as_deref(), Some("id"));
 }
 
-#[test]
 fn test_arrow_numeric_wrapper_preserves_source_chain() {
     let err = cudf::testing::arrow::trigger_numeric_to_arrow_error_for_test()
         .expect_err("expected numeric Arrow wrapper to surface a mapped error");
@@ -572,7 +555,6 @@ fn test_arrow_numeric_wrapper_preserves_source_chain() {
     assert_eq!(source.to_string(), err.message());
 }
 
-#[test]
 fn test_to_record_batch_wrapper_preserves_source_chain() {
     let err = cudf::testing::arrow::trigger_record_batch_error_for_test()
         .expect_err("expected RecordBatch wrapper to surface a mapped error");
@@ -591,7 +573,6 @@ fn test_to_record_batch_wrapper_preserves_source_chain() {
     assert_eq!(source.to_string(), err.message());
 }
 
-#[test]
 fn test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract() {
     let err = cudf::testing::arrow::trigger_arrow_string_array_downcast_mismatch_for_test()
         .expect_err("expected Utf8 downcast mismatch to surface a mapped foreign-contract error");
@@ -609,7 +590,6 @@ fn test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract() {
     );
 }
 
-#[test]
 fn test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family() {
     let err = cudf::testing::arrow::trigger_arrow_large_string_array_downcast_mismatch_for_test()
         .expect_err("expected LargeUtf8 downcast mismatch to surface a mapped foreign-contract error");
@@ -627,7 +607,6 @@ fn test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_fa
     );
 }
 
-#[test]
 fn test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code() {
     let schema = Schema::new(vec![Field::new("payload", ArrowDataType::LargeBinary, false)]);
     let batch =
@@ -643,7 +622,6 @@ fn test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code(
     assert_eq!(error_context_value(&err, "arrow_type").as_deref(), Some("LargeBinary"));
 }
 
-#[test]
 fn test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls() {
     let decimal32 = Decimal32Array::from(vec![Some(12345i32), None, Some(-5)]).with_precision_and_scale(8, 2).unwrap();
     let decimal64 =
@@ -679,7 +657,6 @@ fn test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_s
     assert_eq!(amount64.iter().collect::<Vec<_>>(), vec![Some(-987654321), None, Some(42)]);
 }
 
-#[test]
 fn test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale() {
     for data_type in [
         ArrowDataType::Decimal32(10, 2),
@@ -694,7 +671,6 @@ fn test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale() {
     }
 }
 
-#[test]
 fn test_round_trip_i32() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -711,7 +687,6 @@ fn test_round_trip_i32() {
     assert_eq!(vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_zero_column_export_preserves_logical_row_count() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -724,7 +699,6 @@ fn test_zero_column_export_preserves_logical_row_count() {
     assert_eq!(batch.num_rows(), 3);
 }
 
-#[test]
 fn test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count() {
     let frame =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -741,7 +715,6 @@ fn test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count
     assert_eq!(batch.num_rows(), 3);
 }
 
-#[test]
 fn test_round_trip_i64() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string()],
@@ -757,7 +730,6 @@ fn test_round_trip_i64() {
     assert_eq!(vals, vec![100, 200, 300]);
 }
 
-#[test]
 fn test_round_trip_f32_f64() {
     let df = crate::common::dataframe_from_columns(
         vec!["f32_col".to_string(), "f64_col".to_string()],
@@ -777,7 +749,6 @@ fn test_round_trip_f32_f64() {
     assert_eq!(f64_vals, vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn test_to_record_batch_exports_decimal128_date32_and_timestamp_units() {
     let decimal = decimal128_series(&[12345, -67890, 5], -2).unwrap();
     let date = timestamp_series(&[18_262, 18_263, 18_264], TypeId::DurationDays, TypeId::TimestampDays).unwrap();
@@ -830,7 +801,6 @@ fn test_to_record_batch_exports_decimal128_date32_and_timestamp_units() {
     );
 }
 
-#[test]
 fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls() {
     let decimal32 = nullable_decimal32_series(&[123, 0, -5], &[true, false, true], -2).unwrap();
     let decimal64 = nullable_decimal64_series(&[12345, 0, -678], &[true, false, true], -3).unwrap();
@@ -862,7 +832,6 @@ fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls
     assert_eq!(amount64.values().as_ref(), &[12345000i128, 0, -678000]);
 }
 
-#[test]
 fn test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract() {
     let decimal64 = nullable_decimal64_series(&[12345, 0, -678], &[true, false, true], -3).unwrap();
     let frame = DataFrame::from_series([("amount", decimal64)]).unwrap();
@@ -881,7 +850,6 @@ fn test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract() {
     assert_eq!(amount.values().as_ref(), &[12345000i128, 0, -678000]);
 }
 
-#[test]
 fn test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export() {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "event_ts",
@@ -907,7 +875,6 @@ fn test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_
     assert!(event_ts.is_valid(2));
 }
 
-#[test]
 fn test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements() {
     let item = Arc::new(Field::new("item", ArrowDataType::Utf8, true));
     let values = Arc::new(StringArray::from(vec![Some("alpha"), Some("beta"), None, Some("delta")]));
@@ -935,7 +902,6 @@ fn test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements() 
     assert_string_list_value(items, 3, &[None, Some("delta")]);
 }
 
-#[test]
 fn test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export() {
     let element = Arc::new(Field::new("element", ArrowDataType::LargeUtf8, true));
     let values = Arc::new(LargeStringArray::from(vec![Some("north"), None, Some("south")]));
@@ -960,7 +926,6 @@ fn test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_exp
     assert_large_string_list_value(items, 1, &[None, Some("south")]);
 }
 
-#[test]
 fn test_sliced_list_utf8_import_normalizes_offsets() {
     let item = Arc::new(Field::new("item", ArrowDataType::Utf8, false));
     let values = Arc::new(StringArray::from(vec!["skip", "kept", "also_kept"]));
@@ -978,7 +943,6 @@ fn test_sliced_list_utf8_import_normalizes_offsets() {
     assert_string_list_value(items, 1, &[]);
 }
 
-#[test]
 fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
     let values = Arc::new(Float32Array::from(vec![Some(1.0), None, Some(3.0), Some(4.0), Some(5.0)]));
@@ -1017,7 +981,6 @@ fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity()
     assert!(matches!(child.layout(), rapids_interop::ColumnLayout::FixedWidth { .. }));
 }
 
-#[test]
 fn test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows() {
     let item = Arc::new(Field::new("element", ArrowDataType::Float64, false));
     let values = Arc::new(Float64Array::from(vec![123.0, f64::INFINITY, f64::NEG_INFINITY, -0.0, f64::NAN, 42.0, 7.0]));
@@ -1049,7 +1012,6 @@ fn test_sliced_large_list_float64_import_preserves_non_null_special_values_and_e
     assert_float64_large_list_value(features, 3, &[-0.0, f64::NAN]);
 }
 
-#[test]
 fn test_integer_list_widths_round_trip_across_list_shapes() {
     let child_types = [
         ArrowDataType::Int8,
@@ -1115,7 +1077,6 @@ fn test_integer_list_widths_round_trip_across_list_shapes() {
     assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
 }
 
-#[test]
 fn test_list_boolean_import_unpacks_bool8_and_reexports_exact_values() {
     let item = Arc::new(Field::new("item", ArrowDataType::Boolean, true));
     let lists = ListArray::new(
@@ -1145,7 +1106,6 @@ fn test_list_boolean_import_unpacks_bool8_and_reexports_exact_values() {
     assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
 }
 
-#[test]
 fn test_large_list_boolean_slice_and_zero_child_shapes_round_trip() {
     let item = Arc::new(Field::new("element", ArrowDataType::Boolean, true));
     let full = LargeListArray::new(
@@ -1191,7 +1151,6 @@ fn test_large_list_boolean_slice_and_zero_child_shapes_round_trip() {
     }
 }
 
-#[test]
 fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
     let values = Arc::new(Float32Array::from(vec![Some(1.0), Some(2.0), Some(3.0), None, Some(5.0), Some(6.0)]));
@@ -1231,7 +1190,6 @@ fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
     assert_eq!(third.as_primitive::<arrow::datatypes::Float32Type>().values(), &[5.0, 6.0]);
 }
 
-#[test]
 fn test_sliced_fixed_size_list_float32_import_uses_active_child_range() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let lists = FixedSizeListArray::new(
@@ -1255,7 +1213,6 @@ fn test_sliced_fixed_size_list_float32_import_uses_active_child_range() {
     assert_float32_list_value(features, 1, &[Some(4.0), Some(5.0)]);
 }
 
-#[test]
 fn test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema() {
     let source_item = Arc::new(Field::new("item", ArrowDataType::Int64, false));
     let source = ListArray::new(
@@ -1283,7 +1240,6 @@ fn test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema() {
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_dtype_mismatch"));
 }
 
-#[test]
 fn test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema() {
     let source_item = Arc::new(Field::new("item", ArrowDataType::Utf8, false));
     let source = ListArray::new(
@@ -1311,7 +1267,6 @@ fn test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema() {
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_dtype_mismatch"));
 }
 
-#[test]
 fn test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema() {
     let source_item = Arc::new(Field::new("item", ArrowDataType::Int64, true));
     let source = ListArray::new(
@@ -1337,7 +1292,6 @@ fn test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schem
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_nullability_mismatch"));
 }
 
-#[test]
 fn test_arrow_list_constructor_rejects_child_length_mismatch_before_import() {
     let child = Arc::new(Field::new("item", ArrowDataType::Int64, true));
     let error = ListArray::try_new(
@@ -1351,7 +1305,6 @@ fn test_arrow_list_constructor_rejects_child_length_mismatch_before_import() {
     assert!(error.to_string().contains("offset"), "{error}");
 }
 
-#[test]
 fn test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let source =
@@ -1375,7 +1328,6 @@ fn test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construct
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_fixed_size_list_dimension_mismatch"));
 }
 
-#[test]
 fn test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let source = ListArray::new(
@@ -1401,7 +1353,6 @@ fn test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_le
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_fixed_size_list_dimension_mismatch"));
 }
 
-#[test]
 fn test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows() {
     let item = Arc::new(Field::new("item", ArrowDataType::Int32, false));
     let source = ListArray::new(
@@ -1430,7 +1381,6 @@ fn test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows() {
     assert_eq!(features.value(2).as_primitive::<arrow::datatypes::Int32Type>().values(), &[3, 4]);
 }
 
-#[test]
 fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     let amount =
         Decimal128Array::from(vec![Some(12345i128), None, Some(-67890)]).with_precision_and_scale(20, 2).unwrap();
@@ -1546,7 +1496,6 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     );
 }
 
-#[test]
 fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("date64", ArrowDataType::Date64, false),
@@ -1601,7 +1550,6 @@ fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
     );
 }
 
-#[test]
 fn test_from_record_batch_mixed_decimal_temporal_boundary_observation() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let observer_records = Arc::clone(&observed);
@@ -1631,7 +1579,6 @@ fn test_from_record_batch_mixed_decimal_temporal_boundary_observation() {
     assert!(!observation.synchronized_for_host);
 }
 
-#[test]
 fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let observer_records = Arc::clone(&observed);
@@ -1680,7 +1627,6 @@ fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
 // Nullable columns: verify null mask round-trip
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_round_trip_nullable_i32() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string()],
@@ -1709,7 +1655,6 @@ fn test_round_trip_nullable_i32() {
     assert_eq!(vals[2], Some(3));
 }
 
-#[test]
 fn test_round_trip_nullable_f64() {
     let df = crate::common::dataframe_from_columns(
         vec!["v".to_string()],
@@ -1741,7 +1686,6 @@ fn test_round_trip_nullable_f64() {
 // Bool8 columns
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_round_trip_bool8() {
     let df = crate::common::dataframe_from_columns(
         vec!["flag".to_string()],
@@ -1762,7 +1706,6 @@ fn test_round_trip_bool8() {
     assert_eq!(vals, vec![true, false, true]);
 }
 
-#[test]
 fn test_round_trip_nullable_bool8() {
     let df = crate::common::dataframe_from_columns(
         vec!["flag".to_string()],
@@ -1784,7 +1727,6 @@ fn test_round_trip_nullable_bool8() {
     assert_eq!(validity, vec![true, false, true]);
 }
 
-#[test]
 fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = crate::common::nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = crate::common::nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
@@ -1806,7 +1748,6 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
 // Schema (column names) preserved
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_schema_preserved_multi_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "active".to_string()],
@@ -1834,7 +1775,6 @@ fn test_schema_preserved_multi_column() {
 // From RecordBatch (Arrow → DataFrame)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_from_record_batch_creates_dataframe() {
     let schema =
         Schema::new(vec![Field::new("x", ArrowDataType::Int32, false), Field::new("y", ArrowDataType::Float64, false)]);
@@ -1856,7 +1796,6 @@ fn test_from_record_batch_creates_dataframe() {
     assert_eq!(y_vals, vec![1.1, 2.2, 3.3]);
 }
 
-#[test]
 fn test_from_record_batch_binds_caller_runtime_provenance() {
     let runtime = crate::common::sample_runtime();
     let expected_id = runtime.testing_execution_domain_id();
@@ -1878,7 +1817,6 @@ fn test_from_record_batch_binds_caller_runtime_provenance() {
     assert_eq!(df.testing_execution_domain_mr_value(), expected_mr);
 }
 
-#[test]
 fn test_from_record_batch_with_nulls() {
     let schema = Schema::new(vec![Field::new("a", ArrowDataType::Int32, true)]);
     let batch =
@@ -1896,7 +1834,6 @@ fn test_from_record_batch_with_nulls() {
     assert_eq!(vals[2], Some(3));
 }
 
-#[test]
 fn test_from_record_batch_primitive_slice_import_uses_logical_values() {
     let schema = Schema::new(vec![Field::new("a", ArrowDataType::Int32, false)]);
     let base: Arc<dyn Array> = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
@@ -1908,7 +1845,6 @@ fn test_from_record_batch_primitive_slice_import_uses_logical_values() {
     assert_eq!(vals, vec![20, 30]);
 }
 
-#[test]
 fn test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls() {
     let schema = Schema::new(vec![Field::new("a", ArrowDataType::Int32, true)]);
     let base: Arc<dyn Array> = Arc::new(Int32Array::from(vec![Some(10), None, Some(30), Some(40)]));
@@ -1928,7 +1864,6 @@ fn test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls
 // String columns: round-trip via Arrow StringArray
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_round_trip_string_only() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string()],
@@ -1954,7 +1889,6 @@ fn test_round_trip_string_only() {
     assert_eq!(strs, vec!["alice", "bob", "charlie"]);
 }
 
-#[test]
 fn test_round_trip_mixed_string_and_numeric() {
     let df = crate::common::dataframe_from_columns(
         vec!["city".to_string(), "pop".to_string()],
@@ -1980,7 +1914,6 @@ fn test_round_trip_mixed_string_and_numeric() {
     assert_eq!(pops, vec![14_000_000, 9_000_000, 2_000_000]);
 }
 
-#[test]
 fn test_round_trip_nullable_string() {
     let df = crate::common::dataframe_from_columns(
         vec!["tag".to_string()],
@@ -2009,7 +1942,6 @@ fn test_round_trip_nullable_string() {
     assert_eq!(strs[2], Some("world".to_string()));
 }
 
-#[test]
 fn test_round_trip_string_with_empty_values() {
     let df = crate::common::dataframe_from_columns(
         vec!["s".to_string()],
@@ -2023,7 +1955,6 @@ fn test_round_trip_string_with_empty_values() {
     assert_eq!(strs, vec!["", "data", ""]);
 }
 
-#[test]
 fn test_round_trip_string_unicode() {
     let df = crate::common::dataframe_from_columns(
         vec!["text".to_string()],
@@ -2042,7 +1973,6 @@ fn test_round_trip_string_unicode() {
     assert_eq!(strs, vec!["héllo", "日本語", "🚀🎉"]);
 }
 
-#[test]
 fn test_from_record_batch_string_array() {
     let schema = Schema::new(vec![Field::new("name", ArrowDataType::Utf8, false)]);
     let batch =
@@ -2056,7 +1986,6 @@ fn test_from_record_batch_string_array() {
     assert_eq!(strs, vec!["alpha", "beta", "gamma"]);
 }
 
-#[test]
 fn test_from_record_batch_nullable_string_array() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8, true)]);
     let batch =
@@ -2075,7 +2004,6 @@ fn test_from_record_batch_nullable_string_array() {
     assert_eq!(strs[2], Some("c".to_string()));
 }
 
-#[test]
 fn test_from_record_batch_string_slice_import_uses_logical_range() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8, true)]);
     let source: Arc<dyn Array> =
@@ -2089,7 +2017,6 @@ fn test_from_record_batch_string_slice_import_uses_logical_range() {
     );
 }
 
-#[test]
 fn test_from_record_batch_large_string_array() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::LargeUtf8, false)]);
     let batch =
@@ -2100,7 +2027,6 @@ fn test_from_record_batch_large_string_array() {
     assert_eq!(strs, vec!["x", "y", "z"]);
 }
 
-#[test]
 fn test_from_record_batch_large_string_slice_import_uses_logical_range() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::LargeUtf8, true)]);
     let source: Arc<dyn Array> =
@@ -2114,7 +2040,6 @@ fn test_from_record_batch_large_string_slice_import_uses_logical_range() {
     );
 }
 
-#[test]
 fn test_from_record_batch_string_view_array() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8View, true)]);
     let batch = RecordBatch::try_new(
@@ -2133,7 +2058,6 @@ fn test_from_record_batch_string_view_array() {
     );
 }
 
-#[test]
 fn test_from_record_batch_string_view_slice_import_uses_logical_range() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8View, true)]);
     let source: Arc<dyn Array> =
@@ -2147,7 +2071,6 @@ fn test_from_record_batch_string_view_slice_import_uses_logical_range() {
     );
 }
 
-#[test]
 fn test_gpu_record_batch_accepts_utf8_view_schema_contract() {
     let frame = crate::common::dataframe_from_columns(
         vec!["s".to_string()],
@@ -2165,7 +2088,6 @@ fn test_gpu_record_batch_accepts_utf8_view_schema_contract() {
     assert_eq!(strings.iter().collect::<Vec<_>>(), vec![Some("x"), None, Some("longer-than-inline")]);
 }
 
-#[test]
 fn test_round_trip_empty_string_schema() {
     let df =
         crate::common::dataframe_from_columns(vec!["s".to_string()], vec![column_from_strs(&[]).unwrap()]).unwrap();
@@ -2202,7 +2124,6 @@ fn batches_from_ranges(ranges: &[std::ops::Range<i64>]) -> Vec<RecordBatch> {
         .collect()
 }
 
-#[test]
 fn test_from_record_batches_matches_per_batch_import() {
     let runtime = crate::common::sample_runtime();
     let batches = batches_from_ranges(&[0..3, 3..8, 8..15]);
@@ -2222,7 +2143,6 @@ fn test_from_record_batches_matches_per_batch_import() {
     assert_eq!(scores.values(), &(0..15).map(|value| value as f64 * 0.5).collect::<Vec<f64>>()[..]);
 }
 
-#[test]
 fn test_from_record_batches_supports_sliced_batches() {
     let runtime = crate::common::sample_runtime();
     let full = batches_from_ranges(std::slice::from_ref(&(0..10))).remove(0);
@@ -2235,7 +2155,6 @@ fn test_from_record_batches_supports_sliced_batches() {
     assert_eq!(ids.values(), &[1, 2, 3, 4, 6, 7, 8][..]);
 }
 
-#[test]
 fn test_from_record_batches_crosses_staging_slab_boundaries() {
     let runtime = crate::common::sample_runtime();
     // 3 batches x 1.5M rows x 8 bytes = 36 MB total, crossing the default
@@ -2258,7 +2177,6 @@ fn test_from_record_batches_crosses_staging_slab_boundaries() {
     assert_eq!(series.sum_value::<i64>().unwrap(), (0..3 * per_batch).sum::<i64>());
 }
 
-#[test]
 fn test_from_record_batches_nullable_and_string_fallback() {
     let runtime = crate::common::sample_runtime();
     let batch_one = RecordBatch::try_from_iter_with_nullable(vec![
@@ -2281,7 +2199,6 @@ fn test_from_record_batches_nullable_and_string_fallback() {
     assert_eq!(strings.iter().collect::<Vec<_>>(), vec![Some("a"), Some("b"), None]);
 }
 
-#[test]
 fn test_from_record_batches_rejects_empty_input() {
     let runtime = crate::common::sample_runtime();
 
@@ -2290,7 +2207,6 @@ fn test_from_record_batches_rejects_empty_input() {
     assert_eq!(error.code(), ErrorCode::EmptyInput);
 }
 
-#[test]
 fn test_from_record_batches_rejects_schema_mismatch() {
     let runtime = crate::common::sample_runtime();
     let ints = RecordBatch::try_from_iter(vec![("v", Arc::new(Int64Array::from(vec![1i64])) as ArrayRef)]).unwrap();
@@ -2300,4 +2216,259 @@ fn test_from_record_batches_rejects_schema_mismatch() {
     let error = DataFrame::from_record_batches(&runtime, &[ints, floats]).unwrap_err();
 
     assert_eq!(error.code(), ErrorCode::TypeMismatch);
+}
+
+#[test]
+fn arrow_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "test_arrow_datatype_try_from_type_id_supported_mappings",
+            test_arrow_datatype_try_from_type_id_supported_mappings,
+        ),
+        (
+            "test_arrow_datatype_try_from_type_id_rejects_unsupported_types",
+            test_arrow_datatype_try_from_type_id_rejects_unsupported_types,
+        ),
+        (
+            "test_type_id_try_from_arrow_datatype_supported_mappings",
+            test_type_id_try_from_arrow_datatype_supported_mappings,
+        ),
+        (
+            "test_type_id_try_from_arrow_datatype_rejects_unsupported_types",
+            test_type_id_try_from_arrow_datatype_rejects_unsupported_types,
+        ),
+        (
+            "test_arrow_host_dtype_mapping_preserves_logical_metadata",
+            test_arrow_host_dtype_mapping_preserves_logical_metadata,
+        ),
+        (
+            "test_arrow_host_rejects_non_positive_fixed_size_list_dimension",
+            test_arrow_host_rejects_non_positive_fixed_size_list_dimension,
+        ),
+        (
+            "test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children",
+            test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children,
+        ),
+        (
+            "test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation",
+            test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation,
+        ),
+        ("test_arrow_host_duration_import_export_mappings", test_arrow_host_duration_import_export_mappings),
+        (
+            "test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range",
+            test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range,
+        ),
+        (
+            "test_arrow_host_schema_validation_exposes_planner_metadata",
+            test_arrow_host_schema_validation_exposes_planner_metadata,
+        ),
+        (
+            "test_arrow_host_schema_validation_accepts_empty_schema_without_copying",
+            test_arrow_host_schema_validation_accepts_empty_schema_without_copying,
+        ),
+        (
+            "test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying",
+            test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying,
+        ),
+        (
+            "test_arrow_host_record_batch_schema_validation_reanchors_schema_errors",
+            test_arrow_host_record_batch_schema_validation_reanchors_schema_errors,
+        ),
+        (
+            "test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy",
+            test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy,
+        ),
+        (
+            "test_arrow_host_schema_validation_rejects_duplicate_names_before_copy",
+            test_arrow_host_schema_validation_rejects_duplicate_names_before_copy,
+        ),
+        ("test_arrow_numeric_wrapper_preserves_source_chain", test_arrow_numeric_wrapper_preserves_source_chain),
+        ("test_to_record_batch_wrapper_preserves_source_chain", test_to_record_batch_wrapper_preserves_source_chain),
+        (
+            "test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract",
+            test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract,
+        ),
+        (
+            "test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family",
+            test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family,
+        ),
+        (
+            "test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code",
+            test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code,
+        ),
+        (
+            "test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls",
+            test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls,
+        ),
+        (
+            "test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale",
+            test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale,
+        ),
+        ("test_round_trip_i32", test_round_trip_i32),
+        ("test_zero_column_export_preserves_logical_row_count", test_zero_column_export_preserves_logical_row_count),
+        (
+            "test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count",
+            test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count,
+        ),
+        ("test_round_trip_i64", test_round_trip_i64),
+        ("test_round_trip_f32_f64", test_round_trip_f32_f64),
+        (
+            "test_to_record_batch_exports_decimal128_date32_and_timestamp_units",
+            test_to_record_batch_exports_decimal128_date32_and_timestamp_units,
+        ),
+        (
+            "test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls",
+            test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls,
+        ),
+        (
+            "test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract",
+            test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract,
+        ),
+        (
+            "test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export",
+            test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_export,
+        ),
+        (
+            "test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements",
+            test_list_utf8_import_exports_arrow_list_with_null_lists_and_null_elements,
+        ),
+        (
+            "test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export",
+            test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_export,
+        ),
+        ("test_sliced_list_utf8_import_normalizes_offsets", test_sliced_list_utf8_import_normalizes_offsets),
+        (
+            "test_list_float32_import_exports_numeric_child_with_root_and_child_validity",
+            test_list_float32_import_exports_numeric_child_with_root_and_child_validity,
+        ),
+        (
+            "test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows",
+            test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows,
+        ),
+        (
+            "test_integer_list_widths_round_trip_across_list_shapes",
+            test_integer_list_widths_round_trip_across_list_shapes,
+        ),
+        (
+            "test_list_boolean_import_unpacks_bool8_and_reexports_exact_values",
+            test_list_boolean_import_unpacks_bool8_and_reexports_exact_values,
+        ),
+        (
+            "test_large_list_boolean_slice_and_zero_child_shapes_round_trip",
+            test_large_list_boolean_slice_and_zero_child_shapes_round_trip,
+        ),
+        (
+            "test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets",
+            test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets,
+        ),
+        (
+            "test_sliced_fixed_size_list_float32_import_uses_active_child_range",
+            test_sliced_fixed_size_list_float32_import_uses_active_child_range,
+        ),
+        (
+            "test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema",
+            test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema,
+        ),
+        (
+            "test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema",
+            test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema,
+        ),
+        (
+            "test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema",
+            test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema,
+        ),
+        (
+            "test_arrow_list_constructor_rejects_child_length_mismatch_before_import",
+            test_arrow_list_constructor_rejects_child_length_mismatch_before_import,
+        ),
+        (
+            "test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction",
+            test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction,
+        ),
+        (
+            "test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length",
+            test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length,
+        ),
+        (
+            "test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows",
+            test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows,
+        ),
+        (
+            "test_round_trip_nullable_decimal128_date32_and_timestamp_units",
+            test_round_trip_nullable_decimal128_date32_and_timestamp_units,
+        ),
+        (
+            "test_gpu_record_batch_preserves_date64_and_time_schema_contract",
+            test_gpu_record_batch_preserves_date64_and_time_schema_contract,
+        ),
+        (
+            "test_from_record_batch_mixed_decimal_temporal_boundary_observation",
+            test_from_record_batch_mixed_decimal_temporal_boundary_observation,
+        ),
+        (
+            "test_to_record_batch_mixed_decimal_temporal_boundary_observation",
+            test_to_record_batch_mixed_decimal_temporal_boundary_observation,
+        ),
+        ("test_round_trip_nullable_i32", test_round_trip_nullable_i32),
+        ("test_round_trip_nullable_f64", test_round_trip_nullable_f64),
+        ("test_round_trip_bool8", test_round_trip_bool8),
+        ("test_round_trip_nullable_bool8", test_round_trip_nullable_bool8),
+        (
+            "test_to_record_batch_nullable_bool_from_comparison_preserves_nulls",
+            test_to_record_batch_nullable_bool_from_comparison_preserves_nulls,
+        ),
+        ("test_schema_preserved_multi_column", test_schema_preserved_multi_column),
+        ("test_from_record_batch_creates_dataframe", test_from_record_batch_creates_dataframe),
+        (
+            "test_from_record_batch_binds_caller_runtime_provenance",
+            test_from_record_batch_binds_caller_runtime_provenance,
+        ),
+        ("test_from_record_batch_with_nulls", test_from_record_batch_with_nulls),
+        (
+            "test_from_record_batch_primitive_slice_import_uses_logical_values",
+            test_from_record_batch_primitive_slice_import_uses_logical_values,
+        ),
+        (
+            "test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls",
+            test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls,
+        ),
+        ("test_round_trip_string_only", test_round_trip_string_only),
+        ("test_round_trip_mixed_string_and_numeric", test_round_trip_mixed_string_and_numeric),
+        ("test_round_trip_nullable_string", test_round_trip_nullable_string),
+        ("test_round_trip_string_with_empty_values", test_round_trip_string_with_empty_values),
+        ("test_round_trip_string_unicode", test_round_trip_string_unicode),
+        ("test_from_record_batch_string_array", test_from_record_batch_string_array),
+        ("test_from_record_batch_nullable_string_array", test_from_record_batch_nullable_string_array),
+        (
+            "test_from_record_batch_string_slice_import_uses_logical_range",
+            test_from_record_batch_string_slice_import_uses_logical_range,
+        ),
+        ("test_from_record_batch_large_string_array", test_from_record_batch_large_string_array),
+        (
+            "test_from_record_batch_large_string_slice_import_uses_logical_range",
+            test_from_record_batch_large_string_slice_import_uses_logical_range,
+        ),
+        ("test_from_record_batch_string_view_array", test_from_record_batch_string_view_array),
+        (
+            "test_from_record_batch_string_view_slice_import_uses_logical_range",
+            test_from_record_batch_string_view_slice_import_uses_logical_range,
+        ),
+        (
+            "test_gpu_record_batch_accepts_utf8_view_schema_contract",
+            test_gpu_record_batch_accepts_utf8_view_schema_contract,
+        ),
+        ("test_round_trip_empty_string_schema", test_round_trip_empty_string_schema),
+        ("test_from_record_batches_matches_per_batch_import", test_from_record_batches_matches_per_batch_import),
+        ("test_from_record_batches_supports_sliced_batches", test_from_record_batches_supports_sliced_batches),
+        (
+            "test_from_record_batches_crosses_staging_slab_boundaries",
+            test_from_record_batches_crosses_staging_slab_boundaries,
+        ),
+        (
+            "test_from_record_batches_nullable_and_string_fallback",
+            test_from_record_batches_nullable_and_string_fallback,
+        ),
+        ("test_from_record_batches_rejects_empty_input", test_from_record_batches_rejects_empty_input),
+        ("test_from_record_batches_rejects_schema_mismatch", test_from_record_batches_rejects_schema_mismatch),
+    ]);
 }

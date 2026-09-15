@@ -267,7 +267,6 @@ fn read_json_series(rt: &Runtime, filename: &str, rows: &str, column_name: &str)
 
 // ── Timestamp / Duration ────────────────────────────────────────────
 
-#[test]
 fn copy_into_domain_timestamp_microseconds() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("t", &[1_000_000]).unwrap();
@@ -285,7 +284,6 @@ fn copy_into_domain_timestamp_microseconds() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_timestamp_days() {
     let rt = sample_runtime();
     let s = crate::common::series::<i32>("t", &[100]).unwrap();
@@ -303,7 +301,6 @@ fn copy_into_domain_timestamp_days() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_duration_seconds() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("d", &[42]).unwrap();
@@ -315,7 +312,6 @@ fn copy_into_domain_duration_seconds() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_null_timestamp() {
     let rt = sample_runtime();
     // Create a nullable timestamp column where the only element is null, so min() is null
@@ -334,7 +330,6 @@ fn copy_into_domain_null_timestamp() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value() {
     let rt = sample_runtime();
     let scalar = crate::common::timestamp_raw_scalar(1_700_000_000_123_456, TimestampResolution::Microseconds).unwrap();
@@ -349,7 +344,6 @@ fn copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value() {
     let rt = sample_runtime();
     let scalar = crate::common::timestamp_raw_scalar(-12, TimestampResolution::Days).unwrap();
@@ -364,7 +358,6 @@ fn copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_duration_raw_scalar_preserves_dtype_and_value() {
     let rt = sample_runtime();
     let scalar = crate::common::duration_raw_scalar(-42_000, TimestampResolution::Milliseconds).unwrap();
@@ -375,7 +368,6 @@ fn copy_into_domain_duration_raw_scalar_preserves_dtype_and_value() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn series_from_scalar_cross_runtime_copy_waits_on_target_stream() {
     let _event_observation = lock_event_observation();
     let source_rt = crate::common::sample_runtime();
@@ -405,7 +397,6 @@ fn series_from_scalar_cross_runtime_copy_waits_on_target_stream() {
 
 // ── Decimal ─────────────────────────────────────────────────────────
 
-#[test]
 fn copy_into_domain_decimal64() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("d", &[100]).unwrap();
@@ -420,7 +411,6 @@ fn copy_into_domain_decimal64() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_decimal128() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("d", &[200]).unwrap();
@@ -435,7 +425,6 @@ fn copy_into_domain_decimal128() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value() {
     let rt = sample_runtime();
     let scalar = crate::common::decimal32_raw_scalar(12345, -2).unwrap();
@@ -448,7 +437,6 @@ fn copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value() {
     let rt = sample_runtime();
     let raw = 123456789012345678901234567890i128;
@@ -464,7 +452,6 @@ fn copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value() {
 
 // ── Regression: numeric and string ──────────────────────────────────
 
-#[test]
 fn copy_into_domain_numeric_i32_regression() {
     let rt = sample_runtime();
     let scalar = scalar(42i32).unwrap();
@@ -473,7 +460,6 @@ fn copy_into_domain_numeric_i32_regression() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42]);
 }
 
-#[test]
 fn copy_into_domain_string_regression() {
     let rt = sample_runtime();
     let scalar = crate::common::string_scalar("hello").unwrap();
@@ -485,7 +471,6 @@ fn copy_into_domain_string_regression() {
 
 // ── End-to-end: scalar copy → DataFrame round-trip ──────────────────
 
-#[test]
 fn scalar_copy_dataframe_round_trip() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("t", &[1_000_000]).unwrap();
@@ -509,7 +494,6 @@ fn scalar_copy_dataframe_round_trip() {
 
 // ── List / Struct ────────────────────────────────────────────────────
 
-#[test]
 fn copy_into_domain_list_scalar() {
     let rt = sample_runtime();
     let list_series = read_json_series(
@@ -536,7 +520,6 @@ fn copy_into_domain_list_scalar() {
     assert_series_host_export_equivalent(&expected, &result);
 }
 
-#[test]
 fn copy_into_domain_struct_scalar() {
     let rt = sample_runtime();
     let struct_series = read_json_series(
@@ -561,4 +544,45 @@ fn copy_into_domain_struct_scalar() {
     );
 
     assert_series_host_export_equivalent(&expected, &result);
+}
+
+#[test]
+fn scalar_copy_domain_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("copy_into_domain_timestamp_microseconds", copy_into_domain_timestamp_microseconds),
+        ("copy_into_domain_timestamp_days", copy_into_domain_timestamp_days),
+        ("copy_into_domain_duration_seconds", copy_into_domain_duration_seconds),
+        ("copy_into_domain_null_timestamp", copy_into_domain_null_timestamp),
+        (
+            "copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value",
+            copy_into_domain_timestamp_raw_scalar_preserves_dtype_and_value,
+        ),
+        (
+            "copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value",
+            copy_into_domain_timestamp_days_raw_scalar_preserves_dtype_and_value,
+        ),
+        (
+            "copy_into_domain_duration_raw_scalar_preserves_dtype_and_value",
+            copy_into_domain_duration_raw_scalar_preserves_dtype_and_value,
+        ),
+        (
+            "series_from_scalar_cross_runtime_copy_waits_on_target_stream",
+            series_from_scalar_cross_runtime_copy_waits_on_target_stream,
+        ),
+        ("copy_into_domain_decimal64", copy_into_domain_decimal64),
+        ("copy_into_domain_decimal128", copy_into_domain_decimal128),
+        (
+            "copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value",
+            copy_into_domain_decimal32_raw_scalar_preserves_dtype_scale_and_value,
+        ),
+        (
+            "copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value",
+            copy_into_domain_decimal128_raw_scalar_preserves_dtype_scale_and_value,
+        ),
+        ("copy_into_domain_numeric_i32_regression", copy_into_domain_numeric_i32_regression),
+        ("copy_into_domain_string_regression", copy_into_domain_string_regression),
+        ("scalar_copy_dataframe_round_trip", scalar_copy_dataframe_round_trip),
+        ("copy_into_domain_list_scalar", copy_into_domain_list_scalar),
+        ("copy_into_domain_struct_scalar", copy_into_domain_struct_scalar),
+    ]);
 }

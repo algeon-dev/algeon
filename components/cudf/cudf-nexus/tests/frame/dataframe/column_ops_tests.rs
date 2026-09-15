@@ -37,7 +37,6 @@ fn assert_amount_decimal128_scale_8(df: &DataFrame) {
 // Column-level convenience (with_column, fillna_with_scalar, cast_column)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_with_column_adds_new_column() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -59,7 +58,6 @@ fn test_with_column_adds_new_column() {
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn test_with_column_replaces_existing_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -82,7 +80,6 @@ fn test_with_column_replaces_existing_column() {
     assert_eq!(b_vals, vec![99, 100]);
 }
 
-#[test]
 fn test_with_column_preserves_schema_order_on_replace() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
@@ -104,7 +101,6 @@ fn test_with_column_preserves_schema_order_on_replace() {
     assert_eq!(y_val, vec![42]);
 }
 
-#[test]
 fn test_with_column_mismatched_row_count_returns_error() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -121,7 +117,6 @@ fn test_with_column_mismatched_row_count_returns_error() {
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
-#[test]
 fn test_fillna_with_scalar_fills_values() {
     let col_a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let col_b = column_from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
@@ -143,7 +138,6 @@ fn test_fillna_with_scalar_fills_values() {
     assert_eq!(b_vals, vec![10, 99, 30]);
 }
 
-#[test]
 fn test_fillna_with_scalar_nonexistent_column_returns_error() {
     let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
         .unwrap();
@@ -153,7 +147,6 @@ fn test_fillna_with_scalar_nonexistent_column_returns_error() {
     assert_missing_column_error(&err, "missing");
 }
 
-#[test]
 fn test_fillna_with_scalar_preserves_other_columns() {
     let col_a = column_from_slice(&[1i32, 2]).unwrap();
     let col_b = column_from_slice_nullable(&[10i32, 0], &[true, false]).unwrap();
@@ -177,7 +170,6 @@ fn test_fillna_with_scalar_preserves_other_columns() {
     assert_eq!(c_vals, vec![100, 200]);
 }
 
-#[test]
 fn test_cast_column_changes_type() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -202,7 +194,6 @@ fn test_cast_column_changes_type() {
     assert_eq!(b_vals, vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn test_cast_column_nonexistent_returns_error() {
     let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
         .unwrap();
@@ -212,7 +203,6 @@ fn test_cast_column_nonexistent_returns_error() {
     assert_missing_column_error(&err, "missing");
 }
 
-#[test]
 fn test_cast_column_preserves_schema_order() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
@@ -236,7 +226,6 @@ fn test_cast_column_preserves_schema_order() {
     assert_eq!(y_vals, vec![2]);
 }
 
-#[test]
 fn test_with_column_add_preserves_existing_string_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "a".to_string()],
@@ -258,7 +247,6 @@ fn test_with_column_add_preserves_existing_string_column() {
     assert_eq!(b_vals, vec![10, 20, 30]);
 }
 
-#[test]
 fn test_fillna_with_scalar_with_string_sibling_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "b".to_string()],
@@ -279,7 +267,6 @@ fn test_fillna_with_scalar_with_string_sibling_column() {
     assert_eq!(b_vals, vec![10, 99, 30]);
 }
 
-#[test]
 fn test_cast_column_with_string_sibling_column() {
     let df = crate::common::dataframe_from_columns(
         vec!["name".to_string(), "qty".to_string()],
@@ -321,7 +308,6 @@ fn assert_all_observed_exec_mrs_are_manager_mr(token: &cudf::ExecutionBudgetToke
     );
 }
 
-#[test]
 fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -353,7 +339,6 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
-#[test]
 fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
     let df = crate::common::dataframe_from_columns(
         vec!["score".to_string(), "fallback".to_string()],
@@ -382,7 +367,6 @@ fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
     assert_eq!(outcome.value().series("derived_score").unwrap().null_count(), 1);
 }
 
-#[test]
 fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "qty".to_string()],
@@ -414,7 +398,6 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
-#[test]
 fn test_cast_column_decimal128_scale_to_scale_preserves_requested_scale() {
     let df = decimal128_scale_zero_frame();
 
@@ -423,7 +406,6 @@ fn test_cast_column_decimal128_scale_to_scale_preserves_requested_scale() {
     assert_amount_decimal128_scale_8(&result);
 }
 
-#[test]
 fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator() {
     let df = decimal128_scale_zero_frame();
     let token = with_test_runtime(|runtime| {
@@ -455,7 +437,6 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
-#[test]
 fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     let df = crate::common::dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
@@ -479,7 +460,6 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
-#[test]
 fn test_cast_column_with_budget_reports_exceeded_budget_details() {
     let df = crate::common::dataframe_from_columns(
         vec!["id".to_string(), "qty".to_string()],
@@ -503,7 +483,6 @@ fn test_cast_column_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
-#[test]
 fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts() {
     let df = decimal128_scale_zero_frame();
     let token = with_test_runtime(|runtime| {
@@ -523,4 +502,61 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn column_ops_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_with_column_adds_new_column", test_with_column_adds_new_column),
+        ("test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
+        ("test_with_column_preserves_schema_order_on_replace", test_with_column_preserves_schema_order_on_replace),
+        ("test_with_column_mismatched_row_count_returns_error", test_with_column_mismatched_row_count_returns_error),
+        ("test_fillna_with_scalar_fills_values", test_fillna_with_scalar_fills_values),
+        (
+            "test_fillna_with_scalar_nonexistent_column_returns_error",
+            test_fillna_with_scalar_nonexistent_column_returns_error,
+        ),
+        ("test_fillna_with_scalar_preserves_other_columns", test_fillna_with_scalar_preserves_other_columns),
+        ("test_cast_column_changes_type", test_cast_column_changes_type),
+        ("test_cast_column_nonexistent_returns_error", test_cast_column_nonexistent_returns_error),
+        ("test_cast_column_preserves_schema_order", test_cast_column_preserves_schema_order),
+        (
+            "test_with_column_add_preserves_existing_string_column",
+            test_with_column_add_preserves_existing_string_column,
+        ),
+        ("test_fillna_with_scalar_with_string_sibling_column", test_fillna_with_scalar_with_string_sibling_column),
+        ("test_cast_column_with_string_sibling_column", test_cast_column_with_string_sibling_column),
+        (
+            "test_with_columns_with_budget_reports_output_and_routes_allocator",
+            test_with_columns_with_budget_reports_output_and_routes_allocator,
+        ),
+        (
+            "test_with_columns_with_budget_case_report_uses_owner_preflight",
+            test_with_columns_with_budget_case_report_uses_owner_preflight,
+        ),
+        (
+            "test_cast_column_with_budget_reports_output_and_routes_allocator",
+            test_cast_column_with_budget_reports_output_and_routes_allocator,
+        ),
+        (
+            "test_cast_column_decimal128_scale_to_scale_preserves_requested_scale",
+            test_cast_column_decimal128_scale_to_scale_preserves_requested_scale,
+        ),
+        (
+            "test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator",
+            test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator,
+        ),
+        (
+            "test_with_columns_with_budget_reports_exceeded_budget_details",
+            test_with_columns_with_budget_reports_exceeded_budget_details,
+        ),
+        (
+            "test_cast_column_with_budget_reports_exceeded_budget_details",
+            test_cast_column_with_budget_reports_exceeded_budget_details,
+        ),
+        (
+            "test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts",
+            test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts,
+        ),
+    ]);
 }

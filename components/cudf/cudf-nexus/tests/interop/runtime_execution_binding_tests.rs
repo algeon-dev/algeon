@@ -23,7 +23,6 @@ fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     out
 }
 
-#[test]
 fn runtime_execution_binding_matches_retained_runtime_provenance() {
     let runtime = Runtime::builder().build().unwrap();
 
@@ -35,7 +34,6 @@ fn runtime_execution_binding_matches_retained_runtime_provenance() {
     assert_eq!(binding.memory_resource().as_raw() as usize, runtime.memory_resource().testing_raw_handle_value());
 }
 
-#[test]
 fn order_after_execution_binding_noops_for_exact_runtime_provenance() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -51,7 +49,6 @@ fn order_after_execution_binding_noops_for_exact_runtime_provenance() {
     assert_eq!(observed_raw_record_call_count_for_stream_raw(runtime.stream().testing_raw_handle_value()), 0);
 }
 
-#[test]
 fn order_after_execution_binding_noops_for_same_stream_different_memory_resource() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -77,7 +74,6 @@ fn order_after_execution_binding_noops_for_same_stream_different_memory_resource
     assert_eq!(observed_raw_record_call_count_for_stream_raw(runtime.stream().testing_raw_handle_value()), 0);
 }
 
-#[test]
 fn order_after_execution_binding_records_barrier_for_same_device_different_stream() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -104,7 +100,6 @@ fn order_after_execution_binding_records_barrier_for_same_device_different_strea
     assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_wait);
 }
 
-#[test]
 fn order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
@@ -124,4 +119,30 @@ fn order_after_execution_binding_rejects_cross_device_bindings_before_cuda_order
     assert_eq!(err.kind(), InteropErrorKind::ExecutionBindingMismatch);
     assert_eq!(observed_stream_wait_call_count_for_stream_raw(runtime.stream().testing_raw_handle_value()), 0);
     assert_eq!(observed_raw_record_call_count_for_stream_raw(runtime.stream().testing_raw_handle_value()), 0);
+}
+
+#[test]
+fn runtime_execution_binding_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "runtime_execution_binding_matches_retained_runtime_provenance",
+            runtime_execution_binding_matches_retained_runtime_provenance,
+        ),
+        (
+            "order_after_execution_binding_noops_for_exact_runtime_provenance",
+            order_after_execution_binding_noops_for_exact_runtime_provenance,
+        ),
+        (
+            "order_after_execution_binding_noops_for_same_stream_different_memory_resource",
+            order_after_execution_binding_noops_for_same_stream_different_memory_resource,
+        ),
+        (
+            "order_after_execution_binding_records_barrier_for_same_device_different_stream",
+            order_after_execution_binding_records_barrier_for_same_device_different_stream,
+        ),
+        (
+            "order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering",
+            order_after_execution_binding_rejects_cross_device_bindings_before_cuda_ordering,
+        ),
+    ]);
 }

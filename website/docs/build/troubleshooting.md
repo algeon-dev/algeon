@@ -16,7 +16,8 @@ This page keeps the failures whose error text does not point at the cause.
 ## cuGraph configure aborts: private RMM detected
 
 `scripts/build/build_libcugraph.sh` refuses to finish when the configure resolved an
-RMM or rapids_logger other than the one exported by `CUDF_INSTALL_DIR`, or when
+RMM or rapids_logger other than the one installed under `target/native/cudf-install`
+(or an explicit `CUDF_INSTALL_DIR` override), or when
 CPM-built copies linger under `target/native/cugraph-build/_deps`. This protects the
 one-RMM-per-process invariant
 ([native dependency relationship](./from-source.md#2-configure-the-build-shell)).
@@ -48,7 +49,7 @@ intact:
 ```bash
 cd "$NEXUS_ROOT" && bash scripts/build/build_libcugraph.sh
 # or just the prefix-completion step:
-CUDF_INSTALL_DIR="$CUDF_INSTALL_DIR" bash scripts/build/bootstrap_cudf_install.sh
+bash scripts/build/bootstrap_cudf_install.sh
 ```
 
 Only if the canonical cuDF build cache (`target/native/cudf-build/_deps`) was deleted — leaving the
@@ -92,8 +93,8 @@ cuVS, and cuGraph in that order. The build helpers then confirm the three
 layers agree. For deeper inspection, list each `.so`:
 
 ```bash
-for so in "$CUDF_INSTALL_DIR"/lib/libcudf.so \
-          "$CUVS_INSTALL_DIR"/lib/libcuvs.so \
+for so in "$NEXUS_ROOT"/target/native/cudf-install/lib/libcudf.so \
+          "$NEXUS_ROOT"/target/native/cuvs-install/lib/libcuvs.so \
           "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph.so; do
   echo "== $so =="
   cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+[a-z]?' | sort | uniq -c

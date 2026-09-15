@@ -1,45 +1,61 @@
 # schema: https://nexte.st/schemas/repo-config.json
-nextest-version = { required = "0.9.140" }
+nextest-version = { required = "0.9.144" }
+experimental = ["wrapper-scripts"]
+
+[test-groups]
+# The NVIDIA driver serializes CUDA context creation: on one GPU, test
+# throughput peaks at 4-8 concurrent processes and falls beyond that.
+gpu = { max-threads = 8 }
+gpu-exclusive = { max-threads = 1 }
+
+[scripts.wrapper.gpu-lock]
+command = { command-line = "scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock", relative-to = "workspace-root" }
 
 [profile.default]
-# Match the local `cargo test --no-fail-fast` workflow while letting nextest
-# schedule independent test cases across CPU cores.
-fail-fast = false
-slow-timeout = { period = "120s" }
-final-status-level = "skip"
+fail-fast = { max-fail = 20 }
+status-level = "slow"
+final-status-level = "slow"
+failure-output = "final"
+# Applies to GPU tests, whose lock waits count toward it: the longest GPU test
+# takes 105s, and a focused run still ends with a summary inside a 10-minute
+# agent tool call.
+slow-timeout = { period = "60s", terminate-after = 5 }
 
-[test-groups.gpu]
-# Use every CPU core available to the current environment for shared-GPU tests.
-# scripts/check_all.sh resolves the same value with `nproc` and passes it
-# explicitly through `--test-threads`. The outer GPU lock still serializes this
-# lane against other GPU consumers.
-max-threads = "num-cpus"
+[[profile.default.scripts]]
+filter = 'all()'
+run-wrapper = 'gpu-lock'
 
-[test-groups.gpu-exclusive]
-# Binaries that mutate process-global allocator state or require whole-device
-# isolation. This cap serializes them against each other; the generated
-# override below adds `threads-required = "num-test-threads"` so they also run
-# alone against every other test (including the shared gpu group) in a single
-# unfiltered invocation. scripts/check_all.sh additionally serializes the lane
-# itself with flock and `--test-threads 1`.
-max-threads = 1
+[[profile.default.overrides]]
+filter = 'binary(/_gpu_exclusive$/)'
+test-group = 'gpu-exclusive'
+threads-required = 'num-test-threads'
+priority = -100
 
+# CPU is opt-in: a `_cpu` target suffix or an entry below. Everything else runs
+# in the gpu group, so a new unlisted target is only slower, never unsafe.
 [[profile.default.overrides]]
 filter = '''
-(kind(test) & binary(/_gpu$/))
-| (package(datafusion-nexus) & (binary(root_gpu_tests) | binary(native_exec_tests)))
-| (kind(lib) & (
-    package(cudf-nexus)
-    | package(cugraph-nexus)
-    | package(cuvs-nexus)
-    | package(datafusion-nexus)
-    | package(nexus-query-runtime)
-    | package(nexus-server)
-))
+binary(/_cpu$/)
+| binary_id(cudf-nexus-sys) | binary_id(cugraph-nexus-sys) | binary_id(cuvs-nexus-sys)
+| binary_id(datafusion-facade-consumer) | binary_id(nexus-bench) | binary_id(nexus-build-support)
+| binary_id(nexus-iceberg) | binary_id(nexus-query-engine) | binary_id(nexus-query-planning)
+| binary_id(rapids-interop)
+| binary_id(cudf-nexus-sys::build_link_contract) | binary_id(cudf-nexus-sys::fingerprint_matrix_contract)
+| binary_id(datafusion-nexus::cpu_contract_tests) | binary_id(datafusion-nexus::native_planning_tests)
+| binary_id(nexus-query-engine::native_contract_tests) | binary_id(nexus-query-engine::public_api_boundary)
+| binary_id(nexus-server::bin/datafusion_nexus_server) | binary_id(nexus-tools::bin/nexus_tools)
 '''
-test-group = "gpu"
+test-group = '@global'
+# CPU tests take no lock; the longest takes 13s.
+slow-timeout = { period = "30s", terminate-after = 4 }
 
 [[profile.default.overrides]]
-filter = '(kind(test) & binary(/_gpu_exclusive$/))'
-test-group = "gpu-exclusive"
-threads-required = "num-test-threads"
+filter = 'all()'
+test-group = 'gpu'
+
+[profile.gate]
+fail-fast = false
+junit.path = "junit.xml"
+# A gate's exclusive tests may wait for another run's shared GPU tests to drain.
+slow-timeout = { period = "60s", terminate-after = 20 }
+global-timeout = "90m"

@@ -160,7 +160,8 @@ PROFILE=crates/nexus-tools/fixtures/stress/stress-s2-scan-nsys-calibration-sf10.
 flock /tmp/cudf-gpu.lock timeout --signal=INT --kill-after=10s 120s sudo -n \
   env "HOME=$HOME" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
   "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" \
-  "CUDF_INSTALL_DIR=$CUDF_INSTALL_DIR" "CUVS_INSTALL_DIR=$CUVS_INSTALL_DIR" \
+  "CUDF_INSTALL_DIR=${CUDF_INSTALL_DIR:-target/native/cudf-install}" \
+  "CUVS_INSTALL_DIR=${CUVS_INSTALL_DIR:-target/native/cuvs-install}" \
   nsys profile --run-as=ubuntu --duration=90 --trace=cuda,nvtx,osrt \
   --cuda-trace-scope=system-wide --cuda-memory-usage=true \
   --gpu-metrics-devices=cuda-visible --gpu-metrics-frequency=10000 \
