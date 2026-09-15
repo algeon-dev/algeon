@@ -662,6 +662,9 @@ pub enum CapabilityEnvelope {
     MultiJoinResidentGroupedAggregateSubqueryFilter,
     /// Native union pipeline over admitted branch-local work.
     UnionPipeline,
+    /// A pipeline the compiled task and resource contracts connect without
+    /// matching any named plan family.
+    ComposedPipeline,
 }
 
 impl CapabilityEnvelope {
@@ -694,6 +697,7 @@ impl CapabilityEnvelope {
                 "multi_join_resident_grouped_aggregate_subquery_filter"
             },
             Self::UnionPipeline => "union_pipeline",
+            Self::ComposedPipeline => "composed_pipeline",
         }
     }
 }
@@ -904,6 +908,17 @@ impl CapabilityAnalysis {
         matches!(self.capability_envelope_admission(), CapabilityEnvelopeAdmission::Admitted { .. })
     }
 
+    /// Names the plan family this analysis recognizes, for diagnostics only.
+    ///
+    /// A pipeline the compiled contracts connect without matching a named
+    /// family reports [`CapabilityEnvelope::ComposedPipeline`]; the label never
+    /// decides whether the pipeline is admitted.
+    pub fn capability_envelope_label(&self) -> CapabilityEnvelope {
+        self.selected_specialized_capability_envelope()
+            .or_else(|| self.selected_generic_capability_envelope())
+            .unwrap_or(CapabilityEnvelope::ComposedPipeline)
+    }
+
     /// Projects the first local rejection or lower-level block into report diagnostics.
     pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
         match self.capability_envelope_admission() {
@@ -977,7 +992,7 @@ impl CapabilityAnalysis {
         .find_map(|(envelope, decision)| (*decision == CapabilityDecision::Satisfied).then_some(envelope))
     }
 
-    fn first_local_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
+    pub(crate) fn first_local_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
         self.nodes
             .iter()
             .find_map(|node| {

@@ -1,6 +1,6 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
-    admission::bounded_pipeline_decision,
+    admission::{BoundedPipelineDecision, bounded_pipeline_decision},
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::CapabilityEnvelopeStatus,
     pipeline::CompiledPipeline,
@@ -111,10 +111,32 @@ impl NativeCapabilityCompiledGraphDiagnostics {
     }
 }
 
+/// Decides the executable bounded plan once for the candidate flow.
+///
+/// Returns `None` when there is nothing to decide yet: the policy is
+/// unbounded, the plan has no join, or a composed consumer still awaits its
+/// producer binding. Callers pass the same decision to the boundary check and
+/// to the accepted/rejected diagnostics instead of re-deriving it.
+pub(super) fn native_bounded_decision(
+    plan: &QueryPlan,
+    execution_config: &NexusNativeExecutionConfig,
+) -> DataFusionResult<Option<BoundedPipelineDecision>> {
+    if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
+        return Ok(None);
+    }
+    if composed_admission_requires_producer_binding(plan) {
+        return Ok(None);
+    }
+    bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode())
+        .map(Some)
+        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+}
+
 pub(super) fn accepted_plan_contract_diagnostics(
     plan: &QueryPlan,
     candidate: GpuCandidate,
     execution_config: &NexusNativeExecutionConfig,
+    bounded_decision: Option<&BoundedPipelineDecision>,
 ) -> DataFusionResult<NativeCapabilityContractDiagnostics> {
     if !execution_config.memory_control_policy().is_bounded() {
         return Ok(NativeCapabilityContractDiagnostics::default());
@@ -140,15 +162,18 @@ pub(super) fn accepted_plan_contract_diagnostics(
         });
     }
 
-    let decision = bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode())
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
+    let Some(decision) = bounded_decision else {
+        return Err(capability_contract_candidate_error(
+            "bounded rewrite has no capability-envelope admission evidence",
+        ));
+    };
     let admission = decision.admission().ok_or_else(|| {
         capability_contract_candidate_error("bounded rewrite has no capability-envelope admission evidence")
     })?;
     let report = stamp_capability_report_correlation(
-        CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline()).map_err(
-            |error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)),
-        )?,
+        CapabilityContractReport::from_admission(admission).map_err(|error| {
+            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
+        })?,
         execution_config,
     );
     Ok(NativeCapabilityContractDiagnostics {
@@ -164,17 +189,15 @@ pub(super) fn accepted_plan_contract_diagnostics(
     })
 }
 
-pub(super) fn capability_envelope_admission_is_rejected(
-    plan: &QueryPlan,
-    execution_config: &NexusNativeExecutionConfig,
-) -> DataFusionResult<bool> {
-    if composed_admission_requires_producer_binding(plan) {
-        return Ok(false);
-    }
-    match bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode()) {
-        Ok(decision) => Ok(decision.admission().is_none()),
-        Err(error) => Err(capability_contract_report_error(stamp_native_error_correlation(error, execution_config))),
-    }
+/// Reads the boundary verdict off an already-made decision.
+///
+/// A missing decision means there was nothing to decide (unbounded policy,
+/// joinless plan, or a composed consumer awaiting producer binding) and never
+/// rejects.
+pub(super) fn native_execution_boundary_is_rejected_on_decision(
+    bounded_decision: Option<&BoundedPipelineDecision>,
+) -> bool {
+    matches!(bounded_decision, Some(decision) if decision.admission().is_none())
 }
 
 /// A plan with a GPU-resident source is a composed consumer whose producer
@@ -190,12 +213,13 @@ pub(super) fn rejected_plan_contract_diagnostics(
     plan: &QueryPlan,
     candidate: GpuCandidate,
     execution_config: &NexusNativeExecutionConfig,
+    bounded_decision: Option<&BoundedPipelineDecision>,
 ) -> DataFusionResult<NativeCapabilityContractDiagnostics> {
     if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
         return Ok(NativeCapabilityContractDiagnostics::default());
     }
 
-    let Some(blocking_row) = first_blocking_contract_row(plan, execution_config)? else {
+    let Some(blocking_row) = first_blocking_contract_row(plan, execution_config, bounded_decision)? else {
         return Ok(NativeCapabilityContractDiagnostics::default());
     };
     Ok(NativeCapabilityContractDiagnostics {
@@ -213,10 +237,9 @@ pub(super) fn rejected_plan_contract_diagnostics(
 fn first_blocking_contract_row(
     plan: &QueryPlan,
     execution_config: &NexusNativeExecutionConfig,
+    bounded_decision: Option<&BoundedPipelineDecision>,
 ) -> DataFusionResult<Option<CapabilityDecisionRow>> {
-    let decision = bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode())
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
-    if let Some(projection) = decision.rejection_projection() {
+    if let Some(projection) = bounded_decision.and_then(|decision| decision.rejection_projection()) {
         return CapabilityDecisionRow::from_rejection_projection(0, projection).map(Some).map_err(|error| {
             capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
         });

@@ -19,7 +19,7 @@ use crate::{
         execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
         execute_bounded_compiled_join_probe_from_stream,
     },
-    pipeline::PipelineTask,
+    pipeline::{PipelineTask, ResidentDataForm, ResourceSharing},
     plan::{JoinNode, NodeId},
 };
 
@@ -274,7 +274,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     lazy_output,
                 )
             } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
-                if !self.join_probe_task_can_consume_frame_stream(task) {
+                if self.resource_data_form(input) != ResidentDataForm::FrameStream {
                     return Err(invalid("compiled join probe cannot share this resident frame stream")
                         .with_fact("compiled_task_id", task.id())
                         .with_fact("plan_node_id", node_id)
@@ -336,14 +336,14 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str())
         })?;
-        let resource = if self.output_can_preserve_frame_stream(task.id(), output) {
+        let resource = if self.resource_data_form(output) == ResidentDataForm::FrameStream {
             match execute_bounded_compiled_join_materialize_preserving_stream(&mut self.execution, node_id, node, probe)
                 .map_err(|error| attach_task_facts(error, task, node_id))?
             {
                 BoundedCompiledJoinMaterializeOutput::Frame(frame) => CompiledGpuResource::new(*frame),
                 BoundedCompiledJoinMaterializeOutput::Stream(frames) => CompiledGpuResource::frame_stream(frames),
                 BoundedCompiledJoinMaterializeOutput::LazyStream(stream) => {
-                    if self.resource_has_multiple_consumers(output) {
+                    if self.resource_sharing(output) != ResourceSharing::SingleConsume {
                         CompiledGpuResource::frame_stream(stream.into_remaining_frames_owned(&mut self.execution)?)
                     } else {
                         CompiledGpuResource::frame_stream_payload(stream)

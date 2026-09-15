@@ -1,7 +1,6 @@
 use super::{
     CapabilityDecision, EdgeContract, InvariantSelector, NodeCapability, QueryPlan, SubgraphInvariant,
-    collect_reachable_node_ids, first_reachable_edge_rejection, first_reachable_node_rejection,
-    root_topk_join_aggregate_shape_decision, solved_invariant_decision,
+    reachable_local_capability_rejection, root_topk_join_aggregate_shape_decision, solved_invariant_decision,
 };
 
 pub(in crate::capability) fn analyze_root_topk_join_aggregate_admission(
@@ -10,14 +9,7 @@ pub(in crate::capability) fn analyze_root_topk_join_aggregate_admission(
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match root_topk_join_aggregate_shape_decision(plan) {

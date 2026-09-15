@@ -12,7 +12,7 @@ use crate::{
         plan_bounded_shared_join_aggregate_local_parquet_source_stream,
         try_start_bounded_join_leaf_local_parquet_source_prefetch,
     },
-    pipeline::PipelineTask,
+    pipeline::{PipelineTask, ResourceSharing},
     plan::PlanNode,
     source::SourceNode,
 };
@@ -32,9 +32,9 @@ impl CompiledGpuTaskExecutor<'_> {
         let resource = match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source) if !source.has_position_delete_visible_scan_limit() => {
-                    let has_multiple_consumers = self.resource_has_multiple_consumers(output);
-                    let can_defer_source = !has_multiple_consumers
-                        || self.shared_source_consumers_can_clone_source_stream(task.id(), output);
+                    let sharing = self.resource_sharing(output);
+                    let has_multiple_consumers = sharing != ResourceSharing::SingleConsume;
+                    let can_defer_source = sharing != ResourceSharing::SharedImmutableFrame;
                     let feeds_direct_join = self.task_feeds_direct_join_input(task.id());
                     let feeds_join_through_unary = self.task_feeds_any_join_input_through_unary_chain(task.id());
                     let feeds_aggregate = self.task_feeds_aggregate_input(task.id());

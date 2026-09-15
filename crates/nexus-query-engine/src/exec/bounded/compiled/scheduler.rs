@@ -783,10 +783,13 @@ mod tests {
         let source = PipelineTaskId::new(0);
         let unary = PipelineTaskId::new(1);
         let frame = ResidentResourceId::new(0);
+        let unary_frame = ResidentResourceId::new(1);
         CompiledPipeline::new(
             vec![
                 PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
-                PipelineTask::new(unary, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+                PipelineTask::new(unary, PipelineTaskKind::Unary)
+                    .with_input_resources(vec![frame])
+                    .with_output_resources(vec![unary_frame]),
             ],
             vec![
                 PipelineEdge::new(PipelineEdgeId::new(0), source, unary, PipelineEdgeKind::ResidentFrame)
@@ -799,12 +802,10 @@ mod tests {
                 PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SinkBoundary)
                     .with_upstream_tasks(vec![unary]),
             ],
-            vec![ResidentResource::new(
-                frame,
-                source,
-                vec![unary],
-                ResidentLifetime::BetweenTasks { producer: source },
-            )],
+            vec![
+                ResidentResource::new(frame, source, vec![unary], ResidentLifetime::BetweenTasks { producer: source }),
+                ResidentResource::new(unary_frame, unary, vec![], ResidentLifetime::TaskLocal { task: unary }),
+            ],
             SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, unary),
         )
     }

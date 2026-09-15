@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fmt};
 use serde_json::{Value, json};
 
 use crate::{
+    admission::BoundedPipelineAdmission,
     capability::{
         CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner,
         CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, InvariantId, NodeOperator, ResultSinkKind,
@@ -38,6 +39,14 @@ impl CapabilityContractReport {
     pub fn from_compiled_pipeline(analysis: &CapabilityAnalysis, pipeline: &CompiledPipeline) -> Result<Self> {
         pipeline.validate()?;
         Self::from_capability_analysis(analysis)
+    }
+
+    /// Builds a report from an admitted artifact.
+    ///
+    /// The artifact is the single decided source: the report reads its
+    /// analysis instead of re-validating or re-deriving a decision.
+    pub fn from_admission(admission: &BoundedPipelineAdmission) -> Result<Self> {
+        Self::from_capability_analysis(admission.analysis())
     }
 
     /// Builds a report from capability analysis.

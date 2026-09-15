@@ -1696,7 +1696,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
 }
 
 #[test]
-fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_bounded_envelope() {
+fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-aggregate-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
@@ -1746,22 +1746,23 @@ fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_bounded_
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    let error = match execute_query_plan(&context, &optimized.plan) {
-        Ok(_) => panic!("aggregate keyset join input needs explicit bounded envelope admission"),
-        Err(error) => error,
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&optimized.plan).is_none());
+    let result = execute_query_plan(&context, &optimized.plan).expect("aggregate keyset join input should execute");
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    assert_bounded_join_rejection_contract(&error);
-    assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
-    assert_eq!(
-        error.fact_value("bounded_join_rejection_reason"),
-        Some("source_leaf_pipeline_requires_source_filter_projection")
-    );
+    let mut rows = (0..batch.num_rows()).map(|row| int32_array(batch, 0).value(row)).collect::<Vec<_>>();
+    rows.sort_unstable();
+    // The build keyset is {2}, so the inner join keeps both order_id = 2 probe
+    // rows; a dynamic filter may prune row groups but never join results.
+    assert_eq!(rows, vec![20, 21]);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_without_bounded_envelope() {
+fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-aggregate-probe-dynamic-filter");
     let fact_path = dir.join("store_returns.parquet");
@@ -1815,16 +1816,15 @@ fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_witho
     ));
     let context = backend_context_with_grant(1024 * 1024);
 
-    let error = match execute_query_plan(&context, &optimized.plan) {
-        Ok(_) => panic!("aggregate probe input needs explicit bounded envelope admission"),
-        Err(error) => error,
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&optimized.plan).is_none());
+    let result = execute_query_plan(&context, &optimized.plan).expect("aggregate probe input should execute");
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    assert_bounded_join_rejection_contract(&error);
-    assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
-    assert_eq!(
-        error.fact_value("bounded_join_rejection_reason"),
-        Some("source_leaf_pipeline_requires_source_filter_projection")
-    );
+    let mut rows = (0..batch.num_rows()).map(|row| int32_array(batch, 0).value(row)).collect::<Vec<_>>();
+    rows.sort_unstable();
+    assert_eq!(rows, vec![2]);
 
     fs::remove_dir_all(dir).unwrap();
 }

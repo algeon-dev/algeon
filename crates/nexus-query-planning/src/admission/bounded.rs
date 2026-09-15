@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use arrow::datatypes::{DataType as ArrowDataType, Schema};
 
 use super::{
-    CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support,
+    scope::AttemptExecutionScope,
     shared::{
         CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
     },
@@ -23,7 +23,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateFunction, AggregateSpec, Expr},
     mode::StatisticalAggregateExecutionMode,
-    pipeline::{CompiledPipeline, compile_pipeline},
+    pipeline::{CompiledPipeline, SinkBoundaryKind},
     plan::{NodeId, PlanNode, QueryPlan, ResultSink},
     prepared::{
         aggregate_spec_has_floating_statistical_aggregate, datafusion_exact_host_accumulator,
@@ -35,12 +35,19 @@ use crate::{
 /// Capability-envelope admission evidence for a compiled bounded pipeline.
 ///
 /// Presence means capability analysis admitted the plan and compilation
-/// produced the exact pipeline selected by the bounded controller.
+/// produced the exact pipeline selected by the bounded controller. The
+/// artifact binds one plan, execution mode, and sink to one compiled
+/// pipeline: execution and reporting read this same artifact instead of
+/// re-deriving a decision, and any change to the plan, mode, or sink needs a
+/// rebuilt artifact. A mismatch is never a fallback.
 #[derive(Debug, Clone)]
 pub struct BoundedPipelineAdmission {
     analysis: CapabilityAnalysis,
     envelope: CapabilityEnvelope,
     pipeline: CompiledPipeline,
+    sink_kind: SinkBoundaryKind,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    scope: AttemptExecutionScope,
 }
 
 impl BoundedPipelineAdmission {
@@ -57,6 +64,121 @@ impl BoundedPipelineAdmission {
     /// Capability envelope selected by admission.
     pub const fn envelope(&self) -> CapabilityEnvelope {
         self.envelope
+    }
+
+    /// Sink boundary the admitted pipeline was compiled for.
+    pub const fn sink_kind(&self) -> SinkBoundaryKind {
+        self.sink_kind
+    }
+
+    /// Execution mode the admission decision was made under.
+    pub const fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
+        self.statistical_aggregate_execution_mode
+    }
+
+    /// Plan-scope identity the admitted pipeline was compiled for.
+    pub fn scope(&self) -> &AttemptExecutionScope {
+        &self.scope
+    }
+
+    /// Returns whether this artifact binds to `plan` under `mode`.
+    ///
+    /// A mismatch is never a fallback: the caller must rebuild the artifact
+    /// for the plan it actually executes.
+    pub fn matches(&self, plan: &QueryPlan, mode: StatisticalAggregateExecutionMode) -> bool {
+        self.binding_rejection(plan, mode).is_none()
+    }
+
+    /// Names the first binding clause `plan` under `mode` violates, if any.
+    #[doc(hidden)]
+    pub fn binding_rejection(
+        &self,
+        plan: &QueryPlan,
+        mode: StatisticalAggregateExecutionMode,
+    ) -> Option<CapabilityRejectionProjection> {
+        if self.statistical_aggregate_execution_mode != mode {
+            return Some(binding_rejection(
+                "compiled_pipeline_artifact_mode_mismatch",
+                [
+                    (
+                        "admitted_statistical_aggregate_execution_mode",
+                        self.statistical_aggregate_execution_mode.as_str().to_string(),
+                    ),
+                    ("requested_statistical_aggregate_execution_mode", mode.as_str().to_string()),
+                ],
+            ));
+        }
+        let sink_kind = sink_boundary_kind_for_plan(plan);
+        if sink_kind != self.sink_kind || self.pipeline.sink().kind() != self.sink_kind {
+            return Some(binding_rejection(
+                "compiled_pipeline_sink_binding_mismatch",
+                [
+                    ("plan_sink_kind", sink_kind.as_str().to_string()),
+                    ("admitted_sink_kind", self.sink_kind.as_str().to_string()),
+                    ("pipeline_sink_kind", self.pipeline.sink().kind().as_str().to_string()),
+                ],
+            ));
+        }
+        match pipeline_sink_output_plan_node(&self.pipeline) {
+            Some(final_plan_node) if final_plan_node == plan.sink().input() => {},
+            Some(final_plan_node) => {
+                return Some(binding_rejection(
+                    "compiled_pipeline_sink_output_plan_node_mismatch",
+                    [
+                        ("plan_sink_input_node_id", plan.sink().input().to_string()),
+                        ("pipeline_sink_output_node_id", final_plan_node.to_string()),
+                    ],
+                ));
+            },
+            None => {
+                return Some(binding_rejection(
+                    "compiled_pipeline_sink_output_plan_node_missing",
+                    [("sink_boundary_task_id", self.pipeline.sink().input().to_string())],
+                ));
+            },
+        }
+        if !self.scope.matches(plan) {
+            return Some(binding_rejection(
+                "compiled_pipeline_artifact_scope_mismatch",
+                [("admitted_execution_scope_fingerprint", self.scope.execution_scope_fingerprint().to_string())],
+            ));
+        }
+        None
+    }
+}
+
+fn binding_rejection(
+    reason: &'static str,
+    facts: impl IntoIterator<Item = (&'static str, String)>,
+) -> CapabilityRejectionProjection {
+    CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Admission("compiled_pipeline_artifact_binding"),
+        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+        contract_scope: CapabilityScope::Subgraph,
+        boundary: "compiled_pipeline",
+        reason,
+        facts: std::collections::BTreeMap::from_iter(facts),
+    }
+}
+
+fn sink_boundary_kind_for_plan(plan: &QueryPlan) -> SinkBoundaryKind {
+    match plan.sink() {
+        ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
+        ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
+    }
+}
+
+fn pipeline_sink_output_plan_node(pipeline: &CompiledPipeline) -> Option<NodeId> {
+    match pipeline.sink().kind() {
+        SinkBoundaryKind::HostArrowMaterialization => {
+            let edge = pipeline.edges().iter().find(|edge| {
+                edge.to() == pipeline.sink().input() && edge.kind() == crate::pipeline::PipelineEdgeKind::SinkInput
+            })?;
+            pipeline.tasks().iter().find(|task| task.id() == edge.from()).and_then(|task| task.plan_node())
+        },
+        SinkBoundaryKind::GpuResidentOutput => {
+            pipeline.tasks().iter().find(|task| task.id() == pipeline.sink().input()).and_then(|task| task.plan_node())
+        },
     }
 }
 
@@ -121,11 +243,15 @@ pub fn bounded_pipeline_decision(
     }
     match admission.candidate_status() {
         CapabilityFirstCandidateStatus::Admitted => {
-            let mut admission = capability_admission_from_capability_first(admission)?;
+            let mut admission =
+                capability_admission_from_capability_first(admission, plan, statistical_aggregate_execution_mode)?;
+            // The exact and tolerant statistical envelopes admit the same
+            // compiled pipeline; only the diagnostic label differs with the
+            // execution mode.
             if admission.envelope() == CapabilityEnvelope::ExactStatisticalJoinFinalFullSort
                 && !statistical_aggregate_execution_mode.is_datafusion_exact()
             {
-                admission = tolerant_statistical_join_final_full_sort_admission(plan, admission)?;
+                admission.envelope = CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort;
             }
             Ok(BoundedPipelineDecision {
                 admission: Some(admission),
@@ -138,10 +264,14 @@ pub fn bounded_pipeline_decision(
                 .rejection_projection()
                 .expect("rejected capability-first admission should carry a projection")
                 .clone();
+            // A compiled-pipeline or sink-boundary rejection means the plan
+            // reached the compiled runtime and that runtime refused it, so the
+            // caller gets a structured error instead of a silent fallback.
             let execution_error = (plan.contains_graph_algorithm()
                 || matches!(
-                    rejection_projection.reason,
-                    "unsupported_sink_boundary" | "unsupported_compiled_pipeline_envelope"
+                    rejection_projection.category,
+                    CapabilityRejectionCategory::UnsupportedSinkBoundary
+                        | CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
                 ))
             .then(|| compiled_bounded_pipeline_required_error(plan, admission.pipeline(), &rejection_projection));
             Ok(BoundedPipelineDecision {
@@ -296,31 +426,10 @@ fn data_type_label(data_type: Option<&ArrowDataType>) -> String {
     data_type.map_or_else(|| "none".to_string(), |data_type| format!("{data_type:?}"))
 }
 
-fn tolerant_statistical_join_final_full_sort_admission(
-    plan: &QueryPlan,
-    admission: BoundedPipelineAdmission,
-) -> Result<BoundedPipelineAdmission> {
-    let analysis = admission.analysis;
-    let pipeline = compile_pipeline(plan, &analysis)?;
-    match compiled_bounded_query_plan_support(plan, &pipeline)? {
-        CompiledBoundedPipelineSupport::Supported => Ok(BoundedPipelineAdmission {
-            analysis,
-            envelope: CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort,
-            pipeline,
-        }),
-        CompiledBoundedPipelineSupport::Unsupported => Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "nexus_query_engine.bounded.tolerant_statistical_admission",
-            "tolerant statistical join final full sort requires compiled bounded pipeline support",
-        )
-        .with_fact("capability_envelope", CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort.as_str())
-        .with_fact("compiled_task_count", pipeline.tasks().len())
-        .with_fact("compiled_edge_count", pipeline.edges().len())),
-    }
-}
-
 fn capability_admission_from_capability_first(
     admission: CapabilityFirstPipelineAdmission,
+    plan: &QueryPlan,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
 ) -> Result<BoundedPipelineAdmission> {
     let envelope = admission.envelope().ok_or_else(|| {
         QueryError::new(
@@ -341,7 +450,27 @@ fn capability_admission_from_capability_first(
         .with_fact("execution_mode", crate::mode::CapabilityEnvelopeStatus::Admitted.as_str())
         .with_fact("candidate_status", "admitted")
     })?;
-    Ok(BoundedPipelineAdmission { analysis, envelope, pipeline })
+    Ok(BoundedPipelineAdmission {
+        sink_kind: sink_boundary_kind_for_plan(plan),
+        scope: AttemptExecutionScope::for_query_plan(plan),
+        statistical_aggregate_execution_mode,
+        analysis,
+        envelope,
+        pipeline,
+    })
+}
+
+/// Converts an artifact binding rejection into the execution-facing error.
+///
+/// A mismatched artifact is never re-decided: the caller must rebuild the
+/// artifact for the plan it actually executes.
+#[doc(hidden)]
+pub fn artifact_binding_error(
+    plan: &QueryPlan,
+    pipeline: Option<&CompiledPipeline>,
+    projection: &CapabilityRejectionProjection,
+) -> QueryError {
+    compiled_bounded_pipeline_required_error(plan, pipeline, projection)
 }
 
 fn compiled_bounded_pipeline_required_error(

@@ -4,9 +4,9 @@ use super::{
     CapabilityDecision, EdgeContract, InvariantSelector, JoinExecutionCapability, JoinNode, JoinSide, JoinType,
     KeylessConditionalJoinKind, NodeCapability, NodeId, PlanNode, QueryPlan, ResultSink,
     RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, SubgraphInvariant, SubgraphInvariantKind,
-    collect_reachable_node_ids, consumer_nodes_for_reachable, first_reachable_edge_rejection,
-    first_reachable_node_rejection, join_node_execution_capability, join_node_with_missing_reason, join_side_index,
-    node_ids_fact, peel_resident_unary_chain_for_capability, root_full_sort_join_aggregate_shape_decision,
+    collect_reachable_node_ids, consumer_nodes_for_reachable, join_node_execution_capability,
+    join_node_with_missing_reason, join_side_index, node_ids_fact, peel_resident_unary_chain_for_capability,
+    reachable_local_capability_rejection, root_full_sort_join_aggregate_shape_decision,
     root_full_sort_window_allows_sink_path_grouped_aggregate_search, solved_invariant_decision,
 };
 
@@ -16,14 +16,7 @@ pub(in crate::capability) fn analyze_root_full_sort_join_aggregate_admission(
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match root_full_sort_join_aggregate_shape_decision(plan) {
@@ -128,14 +121,7 @@ pub(in crate::capability) fn analyze_exact_statistical_join_final_full_sort_admi
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     match analyze_root_full_sort_join_aggregate_admission(plan, nodes, edges, invariants) {

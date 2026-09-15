@@ -74,8 +74,7 @@ pub(in crate::capability) use root_full_sort_join_aggregate::{
     root_full_sort_join_aggregate_shape_decision, root_full_sort_window_allows_sink_path_grouped_aggregate_search,
 };
 pub(in crate::capability) use root_join::{
-    root_join_shape_decision, root_join_with_post_root_stages, validate_general_post_root_stages,
-    validate_optional_projection_then_sort_post_root_stages, validate_resident_leaf_pipeline_for_capability,
+    root_join_shape_decision, root_join_with_post_root_stages, validate_optional_projection_then_sort_post_root_stages,
 };
 pub(in crate::capability) use root_topk_join_aggregate::root_topk_join_aggregate_shape_decision;
 pub(in crate::capability) use single_join_post_root::single_join_post_root_pipeline_shape_decision;
@@ -111,11 +110,6 @@ pub fn capability_shape_contract_projection_ids(plan: &QueryPlan) -> BTreeSet<No
     if let Ok(shape) = root_full_sort_join_aggregate_shape_decision(plan) {
         ids.insert(shape.aggregate_projection_id);
         ids.extend(shape.post_root_projection_ids);
-    }
-    if let Ok(shape) = projection_global_limit_shape_decision(plan)
-        && let Some(post_limit_projection_id) = shape.post_limit_projection_id
-    {
-        ids.insert(post_limit_projection_id);
     }
     if let Ok(shape) = keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan) {
         ids.insert(shape.grouped_aggregate_projection_id);

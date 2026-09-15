@@ -78,7 +78,8 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
         .expect("one source resource should feed both join inputs")
         .id();
     assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -113,7 +114,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
 }
 
 #[test]
-fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_bounded_envelope() {
+fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("nexus-query-engine-compiled-aggregate-join-input");
     let left_path = dir.join("left.parquet");
@@ -131,21 +132,89 @@ fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_bounded
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let runtime = shared_runtime(runtime);
-    let error = match runtime.acquire_context_for_plan(&plan) {
-        Ok(_) => panic!("grouped aggregate join-build input needs explicit bounded admission"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
+
+    let decision = bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default())
+        .expect("bounded admission should not error");
+    let admission = decision.admission().expect("a grouped aggregate join-build input is an executable composition");
     assert_eq!(
-        error.fact_value("bounded_join_rejection_reason"),
-        Some("source_leaf_pipeline_requires_source_filter_projection")
+        admission.pipeline(),
+        &pipeline,
+        "execution and reporting must share the pipeline the admitted candidate compiled"
     );
-    assert_eq!(error.fact_value("bounded_join_rejection_category"), Some("missing_subgraph_invariant"));
+
+    let runtime = shared_runtime(runtime);
+    let context = runtime
+        .acquire_context_for_plan(&plan)
+        .expect("an admitted grouped aggregate join-build input plan needs no envelope recognizer");
+    let result = execute_query_plan(&context, &plan).expect("admitted aggregate join input plan should execute");
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int32_int64_pairs_sorted(batch, 0, 1), vec![(Some(1), Some(15)), (Some(2), Some(20))]);
+}
+
+#[test]
+fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
+    // Join → Sort → Limit → Filter is decided by the Limit/Unary task contracts,
+    // not by the retired post-limit projection allowlist: the filter stays above
+    // the limit and still executes natively with the same rows.
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-sort-limit-filter");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+
+    let plan = root_join_sort_limit_filter_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("join sort limit filter plan should compile");
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let decision = bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default())
+        .expect("bounded admission should not error");
+    let admission = decision.admission().expect("join sort limit filter is an executable composition");
+    assert_eq!(
+        admission.pipeline(),
+        &pipeline,
+        "execution and reporting must share the pipeline the admitted candidate compiled"
+    );
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Unary, 1);
+    let limit_position =
+        pipeline.tasks().iter().position(|task| task.kind() == PipelineTaskKind::Limit).expect("one limit task");
+    let filter_position =
+        pipeline.tasks().iter().position(|task| task.kind() == PipelineTaskKind::Unary).expect("one filter task");
+    assert!(
+        limit_position < filter_position,
+        "the limit must stay below the filter instead of being reordered around it"
+    );
+
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let context = compiled_executor_context(shared_runtime(runtime), &plan);
+    let mut metrics = QueryMetrics::default();
+    let gpu_inputs = GpuResidentInputMap::new();
+    let (state, batch) = {
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+        let state = scheduler.run(&mut executor).expect("join sort limit filter should execute");
+        let output = executor.take_host_output().expect("compiled host sink should materialize");
+        (state, output)
+    };
+
+    assert_eq!(state.live_resource_count(), 0);
+    // Inner join yields (2, 200) and (4, 400); descending sort plus fetch 1 keeps
+    // (4, 400), which also passes the trailing right_value > 100 filter.
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_values(&batch, 0), vec![Some(4)]);
+    assert_eq!(int32_values(&batch, 1), vec![Some(400)]);
 }
 
 #[test]
@@ -165,7 +234,8 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -239,7 +309,8 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         "shared source must remain represented as one fan-out resource"
     );
     assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
@@ -291,7 +362,8 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
         let pipeline =
             compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
         assert_eq!(
-            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+                .expect("plan-aware support check should not fail"),
             CompiledBoundedPipelineSupport::Supported,
             "{label}: non-linear plan should be admitted by compiled support"
         );
@@ -422,7 +494,8 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
     assert!(analysis.admits_root_join());
     let pipeline = compile_pipeline(&plan, &analysis).expect("keyless root join should compile");
     assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
     let context = bounded_context(shared_runtime(runtime), &plan);
@@ -507,6 +580,11 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         .expect("bounded admission should not fail")
         .expect("GPU sink root join should be admitted");
     assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
+    // The composed execution path hands the executable (GPU-sink) plan to both
+    // the preflight and execution: the artifact binds that same sink.
+    assert_eq!(admission.sink_kind(), SinkBoundaryKind::GpuResidentOutput);
+    assert!(admission.matches(&plan, StatisticalAggregateExecutionMode::default()));
+    assert!(admission.scope().matches(&plan));
     assert!(
         bounded_pipeline_rejection_projection(&plan).expect("bounded rejection projection should not fail").is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
@@ -556,27 +634,53 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
 }
 
 #[test]
-fn compiled_support_rejects_plan_pipeline_sink_mismatch() {
+fn bounded_artifact_binding_rejects_plan_pipeline_sink_mismatch() {
+    // A host-sink artifact must not execute a GPU-sink plan and vice versa.
+    // The mismatch is a typed caller error on the artifact, not a silent
+    // re-decision and not a support-check relabel.
+    let mode = StatisticalAggregateExecutionMode::default();
     let plan = root_join_data_plan(
         Path::new("/tmp/compiled-sink-mismatch-left.parquet"),
         Path::new("/tmp/compiled-sink-mismatch-right.parquet"),
     );
     let gpu_plan = plan.clone_with_gpu_resident_sink();
-    let host_pipeline =
-        compile_pipeline(&plan, &plan.capability_analysis()).expect("host-sink root join should compile");
-    let gpu_pipeline =
-        compile_pipeline(&gpu_plan, &gpu_plan.capability_analysis()).expect("GPU-sink root join should compile");
+    let host_admission = bounded_pipeline_decision(&plan, mode)
+        .expect("host-sink decision should not fail")
+        .admission()
+        .cloned()
+        .expect("host-sink root join should be admitted");
+    let gpu_admission = bounded_pipeline_decision(&gpu_plan, mode)
+        .expect("GPU-sink decision should not fail")
+        .admission()
+        .cloned()
+        .expect("GPU-sink root join should be admitted");
 
-    assert_eq!(
-        compiled_bounded_query_plan_support(&gpu_plan, &host_pipeline).expect("support check should not fail"),
-        CompiledBoundedPipelineSupport::Unsupported,
-        "a host-sink compiled pipeline must not be reused for a GPU-sink query plan"
+    assert!(host_admission.matches(&plan, mode));
+    assert!(gpu_admission.matches(&gpu_plan, mode));
+    assert!(!host_admission.matches(&gpu_plan, mode));
+    assert!(!gpu_admission.matches(&plan, mode));
+    let host_for_gpu =
+        host_admission.binding_rejection(&gpu_plan, mode).expect("mismatched sink must name its binding clause");
+    assert_eq!(host_for_gpu.reason, "compiled_pipeline_sink_binding_mismatch");
+    assert_eq!(host_for_gpu.boundary, "compiled_pipeline");
+    let gpu_for_host =
+        gpu_admission.binding_rejection(&plan, mode).expect("mismatched sink must name its binding clause");
+    assert_eq!(gpu_for_host.reason, "compiled_pipeline_sink_binding_mismatch");
+
+    // End to end: handing the host artifact to the GPU-sink plan is a typed
+    // binding error carrying the rejection reason as a fact.
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let context = bounded_context(shared_runtime(runtime), &gpu_plan);
+    let outcome = nexus_query_engine::exec::execute_query_plan(
+        &context,
+        nexus_query_engine::exec::QueryExecutionRequest::new(&gpu_plan).with_bounded_admission(&host_admission),
     );
-    assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &gpu_pipeline).expect("support check should not fail"),
-        CompiledBoundedPipelineSupport::Unsupported,
-        "a GPU-sink compiled pipeline must not be reused for a host-sink query plan"
-    );
+    let (result, _, _) = outcome.into_parts();
+    let error = match result {
+        Ok(_) => panic!("mismatched artifact must not execute"),
+        Err(error) => error,
+    };
+    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some("compiled_pipeline_sink_binding_mismatch"));
 }
 
 #[test]
@@ -707,7 +811,8 @@ fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_r
     let pipeline = compile_pipeline(&plan, &analysis).expect("string grouped aggregate plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
     assert_eq!(
-        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
     let context = bounded_context(shared_runtime(runtime), &plan);

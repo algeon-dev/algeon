@@ -122,7 +122,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_pos
         nexus_query_engine::admission::CompiledBoundedPipelineSupport::Supported
     );
     assert_eq!(
-        nexus_query_engine::admission::compiled_bounded_query_plan_support(&plan, &pipeline)
+        nexus_query_engine::admission::compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
             .expect("plan-aware support check should not fail"),
         nexus_query_engine::admission::CompiledBoundedPipelineSupport::Supported
     );

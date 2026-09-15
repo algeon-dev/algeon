@@ -1,15 +1,10 @@
 //! Capability-first bounded-pipeline admission with one decision path.
 
-use std::collections::BTreeMap;
-
 use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
 use crate::{
-    capability::{
-        CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionCategory,
-        CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
-    },
-    error::{QueryError, QueryErrorCode, Result},
-    pipeline::{CompiledPipeline, compile_pipeline},
+    capability::{CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionProjection},
+    error::Result,
+    pipeline::{CompiledPipeline, PipelineCompilation, PipelineTaskKind, compile_pipeline_outcome},
     plan::QueryPlan,
 };
 
@@ -88,63 +83,82 @@ fn capability_first_bounded_pipeline_admission_impl(
     }
 
     let analysis = plan.capability_analysis();
-    let envelope = match analysis.capability_envelope_admission() {
-        CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
-        CapabilityEnvelopeAdmission::Rejected { projection } => {
+    if let Some(projection) = analysis.first_local_rejection_projection() {
+        return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+    }
+    let envelope_admission = analysis.capability_envelope_admission();
+    let pipeline = match compile_pipeline_outcome(plan, &analysis)? {
+        PipelineCompilation::Compiled(pipeline) => pipeline,
+        // A plan the compiler cannot construct never reaches the migrated
+        // contracts, so a plan family that already refused it keeps reporting
+        // the refusal it found first.
+        PipelineCompilation::Rejected(projection) => {
+            let projection = match envelope_admission {
+                CapabilityEnvelopeAdmission::Rejected { projection } => projection,
+                CapabilityEnvelopeAdmission::Admitted { .. } => projection,
+            };
             return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
         },
     };
-    let pipeline = match compile_pipeline(plan, &analysis) {
-        Ok(pipeline) => pipeline,
-        Err(error) if compiled_pipeline_graph_is_unsupported_envelope(&error) => {
-            let projection = admission_projection(
-                CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-                "compiled_pipeline",
-                "unsupported_compiled_pipeline_envelope",
-                [("pipeline_compile_error", error.message().to_string())],
-            );
-            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
-        },
-        Err(error) => return Err(error),
+    let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) {
+        analysis.capability_envelope_label()
+    } else {
+        match envelope_admission {
+            CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
+            CapabilityEnvelopeAdmission::Rejected { projection } => {
+                return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)));
+            },
+        }
     };
-    match compiled_bounded_query_plan_support(plan, &pipeline)? {
+    match compiled_bounded_query_plan_support(plan, &analysis, &pipeline)? {
         CompiledBoundedPipelineSupport::Supported => {
             Ok(Some(CapabilityFirstPipelineAdmission::admitted(analysis, envelope, pipeline)))
         },
-        CompiledBoundedPipelineSupport::Unsupported => {
-            let projection = admission_projection(
-                CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-                "compiled_pipeline",
-                "unsupported_compiled_pipeline_envelope",
-                [
-                    ("compiled_task_count", pipeline.tasks().len().to_string()),
-                    ("compiled_edge_count", pipeline.edges().len().to_string()),
-                ],
-            );
+        CompiledBoundedPipelineSupport::Unsupported(projection) => {
             Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)))
         },
     }
 }
 
-fn admission_projection(
-    category: CapabilityRejectionCategory,
-    boundary: &'static str,
-    reason: &'static str,
-    facts: impl IntoIterator<Item = (&'static str, String)>,
-) -> CapabilityRejectionProjection {
-    CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Admission(reason),
-        category,
-        contract_scope: CapabilityScope::Subgraph,
-        boundary,
-        reason,
-        facts: BTreeMap::from_iter(facts),
-    }
-}
-
-fn compiled_pipeline_graph_is_unsupported_envelope(error: &QueryError) -> bool {
-    error.code() == QueryErrorCode::InvalidPlan
-        && matches!(error.operation(), "nexus_query_engine.pipeline.compile" | "nexus_query_engine.pipeline.validate")
+/// Execution capabilities the compiled task and resource contracts already
+/// decide on their own.
+///
+/// One join task group, unary and limit stages, and a resource shared only
+/// from a source read are admitted by those contracts alone: the named
+/// plan-family recognisers keep no veto over such a pipeline and only supply
+/// its compatibility label. Everything else still needs a capability no
+/// compiled contract carries yet — blocking stage composition, computed shared
+/// producers, and which join kernels accept another join's retained output —
+/// so it keeps the recogniser gate until those contracts exist. Delete this
+/// function, and the branch that calls it, once they do.
+fn pipeline_is_within_migrated_execution_scope(pipeline: &CompiledPipeline) -> bool {
+    pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinMaterialize).count() == 1
+        && pipeline.tasks().iter().all(|task| {
+            matches!(
+                task.kind(),
+                PipelineTaskKind::SourceRead
+                    | PipelineTaskKind::GpuResidentSource
+                    | PipelineTaskKind::LiteralBatchSource
+                    | PipelineTaskKind::Unary
+                    | PipelineTaskKind::Limit
+                    | PipelineTaskKind::JoinBuild
+                    | PipelineTaskKind::JoinProbe
+                    | PipelineTaskKind::JoinMaterialize
+                    | PipelineTaskKind::SinkMaterialize
+            )
+        })
+        && pipeline.resources().iter().all(|resource| {
+            resource.consumers().len() <= 1
+                || pipeline.tasks().iter().any(|task| {
+                    task.id() == resource.producer()
+                        && matches!(
+                            task.kind(),
+                            PipelineTaskKind::SourceRead
+                                | PipelineTaskKind::GpuResidentSource
+                                | PipelineTaskKind::LiteralBatchSource
+                        )
+                })
+        })
 }
 
 #[cfg(test)]
@@ -155,6 +169,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        capability::CapabilityRejectionOwner,
         dynamic_filter::{
             DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
             DynamicFilterProducer, DynamicFilterRoute,
@@ -206,34 +221,31 @@ mod tests {
     }
 
     #[test]
-    fn capability_admission_demotes_dynamic_filter_control_cycle_to_unsupported_envelope() {
+    fn capability_admission_reports_dynamic_filter_control_cycle_as_a_dependency_cycle() {
         let plan = dynamic_filter_control_cycle_plan();
-        let analysis = plan.capability_analysis();
-        let compile_error = compile_pipeline(&plan, &analysis).expect_err("raw compiler should reject the cycle");
-
-        assert_eq!(compile_error.code(), QueryErrorCode::InvalidPlan);
-        assert_eq!(compile_error.operation(), "nexus_query_engine.pipeline.validate");
 
         let admission = capability_first_bounded_pipeline_admission(&plan)
-            .expect("admission should classify the cycle as an unsupported envelope")
+            .expect("admission should classify the control cycle")
             .expect("join plan should be considered by bounded admission");
 
         assert!(matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Rejected));
-        assert_eq!(
-            admission.rejection_projection().map(|projection| projection.reason),
-            Some("unsupported_compiled_pipeline_envelope")
-        );
+        let projection =
+            admission.rejection_projection().expect("a rejected candidate carries its rejection projection");
+        assert_eq!(projection.reason, "compiled_pipeline_dependency_cycle");
+        assert_eq!(projection.owner, CapabilityRejectionOwner::Admission("compiled_pipeline_dependency_cycle"));
+        assert_eq!(projection.boundary, "compiled_pipeline");
+        assert!(projection.facts.contains_key("task_id"), "the cycle names the task it closed on: {:?}", projection);
         assert!(admission.pipeline().is_none());
 
         assert!(
             crate::admission::bounded_join_modeled_facts(&plan).is_none(),
-            "unsupported compiled envelopes must not emit modeled bounded-join facts"
+            "a rejected compiled pipeline must not emit modeled bounded-join facts"
         );
         let unsupported_facts = crate::admission::bounded_join_unsupported_shape_facts(&plan)
-            .expect("unsupported compiled envelope should emit unsupported bounded-join facts");
+            .expect("a rejected compiled pipeline emits unsupported bounded-join facts");
         assert_eq!(
             unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str),
-            Some("unsupported_compiled_pipeline_envelope")
+            Some("compiled_pipeline_dependency_cycle")
         );
         assert_eq!(
             unsupported_facts.get("bounded_join_rejection_boundary").map(String::as_str),
@@ -242,11 +254,6 @@ mod tests {
         assert_eq!(
             unsupported_facts.get("bounded_join_rejection_category").map(String::as_str),
             Some("unsupported_compiled_pipeline_envelope")
-        );
-        assert!(
-            unsupported_facts
-                .get("bounded_join_rejection_facts")
-                .is_some_and(|facts| facts.contains("pipeline_compile_error="))
         );
     }
 

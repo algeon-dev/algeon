@@ -42,8 +42,8 @@ pub(super) use basic::{
     analyze_root_join_admission, analyze_single_join_post_root_pipeline_admission, analyze_union_pipeline_admission,
 };
 pub(super) use projection::{analyze_projection_global_limit_admission, analyze_projection_scalar_setop_admission};
+pub(super) use rejections::reachable_local_capability_rejection;
 pub(in crate::capability::admission) use rejections::{InvariantSelector, node_ids_fact, solved_invariant_decision};
-pub(super) use rejections::{first_reachable_edge_rejection, first_reachable_node_rejection};
 pub(super) use resident::{
     analyze_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
     analyze_keyed_hash_join_resident_subplan_admission,

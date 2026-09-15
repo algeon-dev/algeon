@@ -3,10 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{
     CapabilityDecision, EdgeContract, InvariantSelector, JoinExecutionCapability, JoinNode, JoinSide, JoinType,
     NodeCapability, NodeId, PlanNode, ProjectionScalarSetopKind, ProjectionScalarSetopShape, QueryPlan, SourceNode,
-    SubgraphInvariant, collect_reachable_node_ids, consumer_nodes_for_reachable, first_reachable_edge_rejection,
-    first_reachable_node_rejection, join_node_execution_capability, join_node_with_missing_reason, join_side_index,
-    node_ids_fact, projection_global_limit_shape_decision, projection_scalar_setop_shape_decision,
-    solved_invariant_decision,
+    SubgraphInvariant, collect_reachable_node_ids, consumer_nodes_for_reachable, join_node_execution_capability,
+    join_node_with_missing_reason, join_side_index, node_ids_fact, projection_global_limit_shape_decision,
+    projection_scalar_setop_shape_decision, reachable_local_capability_rejection, solved_invariant_decision,
 };
 
 pub(in crate::capability) fn analyze_projection_global_limit_admission(
@@ -15,14 +14,7 @@ pub(in crate::capability) fn analyze_projection_global_limit_admission(
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match projection_global_limit_shape_decision(plan) {
@@ -110,14 +102,7 @@ pub(in crate::capability) fn analyze_projection_scalar_setop_admission(
         },
         Err(decision) => return decision,
     };
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     if projection_scalar_setop_scalar_fanout_has_cardinality_proof(plan, &shape)

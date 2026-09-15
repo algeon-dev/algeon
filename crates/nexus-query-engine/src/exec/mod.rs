@@ -113,15 +113,18 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     nexus_query_planning::validate_query_plan(plan)
 }
 
-/// Validates a native plan and applies the bounded execution shape contract.
+/// Decides the executable plan once and hands the admitted artifact to the
+/// caller.
 ///
 /// This boundary is used after frontend-owned plan resolution, before bounded
-/// execution selects a compiled pipeline. Unbounded plans continue to use
-/// [`preflight_query_plan`] alone.
+/// execution selects a compiled pipeline. Execution runs this same artifact
+/// instead of re-deriving it; a missing artifact means the plan has no join
+/// to decide. Unbounded plans continue to use [`preflight_query_plan`] alone.
+/// A rejection carries the caller-visible sink as a diagnostic fact only.
 pub fn preflight_bounded_query_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Result<()> {
+) -> Result<Option<crate::admission::BoundedPipelineAdmission>> {
     preflight_query_plan(plan)?;
     bounded::preflight_bounded_join_plan(plan, statistical_aggregate_execution_mode)
 }
@@ -204,17 +207,29 @@ impl HashJoinCacheKey {
 pub struct QueryExecutionRequest<'a> {
     plan: &'a QueryPlan,
     gpu_inputs: Option<&'a GpuResidentInputMap>,
+    bounded_admission: Option<&'a crate::admission::BoundedPipelineAdmission>,
 }
 
 impl<'a> QueryExecutionRequest<'a> {
     /// Creates an execution request without external GPU-resident inputs.
     pub const fn new(plan: &'a QueryPlan) -> Self {
-        Self { plan, gpu_inputs: None }
+        Self { plan, gpu_inputs: None, bounded_admission: None }
     }
 
     /// Supplies GPU-resident inputs keyed by the source names in the plan.
     pub const fn with_gpu_inputs(mut self, gpu_inputs: &'a GpuResidentInputMap) -> Self {
         self.gpu_inputs = Some(gpu_inputs);
+        self
+    }
+
+    /// Supplies the admission artifact the preflight decided for this plan.
+    ///
+    /// Execution checks the artifact against the plan instead of re-deriving
+    /// it; a plan, mode, or sink the artifact does not bind to is a caller
+    /// error. Callers without a preflight artifact omit this and keep the
+    /// engine-local decision.
+    pub const fn with_bounded_admission(mut self, admission: &'a crate::admission::BoundedPipelineAdmission) -> Self {
+        self.bounded_admission = Some(admission);
         self
     }
 }
@@ -228,12 +243,13 @@ impl<'a> QueryExecutionRequest<'a> {
 pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionRequest<'_>) -> QueryExecutionOutcome {
     let empty_inputs = GpuResidentInputMap::new();
     let gpu_inputs = request.gpu_inputs.unwrap_or(&empty_inputs);
-    execute_query_plan_with_observation(context, request.plan, gpu_inputs)
+    execute_query_plan_with_observation(context, request.plan, request.bounded_admission, gpu_inputs)
 }
 
 fn execute_query_plan_with_observation(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    bounded_admission: Option<&crate::admission::BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
 ) -> QueryExecutionOutcome {
     let observation_handle = context.runtime_observation().clone();
@@ -262,7 +278,14 @@ fn execute_query_plan_with_observation(
     let result = observed_context
         .and_then(|context| context.with_runtime_execution_scope(execution_scope.clone()))
         .and_then(|observed_context| {
-            execute_query_plan_output(&observed_context, plan, gpu_inputs, &mut metrics, Some(&execution_scope))
+            execute_query_plan_output(
+                &observed_context,
+                plan,
+                bounded_admission,
+                gpu_inputs,
+                &mut metrics,
+                Some(&execution_scope),
+            )
         })
         .map_err(|error| with_optional_trace_id(error.with_query_id(query_id), trace_id.as_ref()));
     let terminal = match &result {
@@ -334,6 +357,7 @@ fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> Quer
 fn execute_query_plan_output(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    bounded_admission: Option<&crate::admission::BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
@@ -349,7 +373,7 @@ fn execute_query_plan_output(
             && plan_requires_datafusion_exact_statistical_order(plan),
     );
     let output = if context.memory_control_policy().is_bounded() {
-        execute_bounded_query_plan(context, plan, gpu_inputs, metrics, observation_scope)?
+        execute_bounded_query_plan(context, plan, bounded_admission, gpu_inputs, metrics, observation_scope)?
     } else {
         let mut scratch = ExecutionScratch::new(context)?;
         let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;

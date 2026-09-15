@@ -2,9 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::{
+    contract::resolve_task_and_resource_contracts,
+    validate::{ScheduleRejection, validate_schedule},
+};
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
+        CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
+        CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
         ResultSinkKind, SubgraphInvariantKind,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterReadiness},
@@ -20,6 +25,19 @@ use crate::{
 
 const OPERATION: &str = "nexus_query_engine.pipeline.compile";
 
+/// Outcome of compiling one plan into a validated bounded pipeline.
+///
+/// A plan the compiler or the schedule validator refuses is a structured
+/// rejection, not an error: admission reports it with the contract that
+/// failed. Malformed inputs the compiler cannot classify stay `Err`.
+#[derive(Debug)]
+pub(crate) enum PipelineCompilation {
+    /// The plan compiled into a schedule that satisfies every pipeline contract.
+    Compiled(CompiledPipeline),
+    /// A compiler or schedule contract rejects the plan.
+    Rejected(CapabilityRejectionProjection),
+}
+
 /// Compile a native plan and matching capability analysis into a symbolic pipeline.
 ///
 /// `analysis` must cover the same reachable plan graph. Any local node, edge,
@@ -27,6 +45,66 @@ const OPERATION: &str = "nexus_query_engine.pipeline.compile";
 /// a report-family fallback. The resulting graph is consumed by the one
 /// capability-first bounded executor.
 pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::error::Result<CompiledPipeline> {
+    let pipeline = match compile_pipeline_graph(plan, analysis)? {
+        GraphCompilation::Graph(pipeline) => pipeline,
+        GraphCompilation::Rejected(projection) => return Err(contract_rejection_error(&projection)),
+    };
+    validate_schedule(&pipeline).map_err(ScheduleRejection::into_error)?;
+    Ok(pipeline)
+}
+
+/// Compiles a plan and reports a refused plan as a structured rejection.
+pub(crate) fn compile_pipeline_outcome(
+    plan: &QueryPlan,
+    analysis: &CapabilityAnalysis,
+) -> crate::error::Result<PipelineCompilation> {
+    let pipeline = match compile_pipeline_graph(plan, analysis) {
+        Ok(GraphCompilation::Graph(pipeline)) => pipeline,
+        Ok(GraphCompilation::Rejected(projection)) => return Ok(PipelineCompilation::Rejected(projection)),
+        Err(error) if error.code() == QueryErrorCode::InvalidPlan => {
+            return Ok(PipelineCompilation::Rejected(compile_rejection_projection(
+                "compiled_pipeline_graph_not_constructible",
+                &error,
+            )));
+        },
+        Err(error) => return Err(error),
+    };
+    match validate_schedule(&pipeline) {
+        Ok(()) => Ok(PipelineCompilation::Compiled(pipeline)),
+        Err(rejection) => {
+            Ok(PipelineCompilation::Rejected(compile_rejection_projection(rejection.reason(), rejection.error())))
+        },
+    }
+}
+
+fn compile_rejection_projection(reason: &'static str, error: &QueryError) -> CapabilityRejectionProjection {
+    let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+    facts.insert("pipeline_compile_error", error.message().to_string());
+    CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Admission(reason),
+        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+        contract_scope: CapabilityScope::Subgraph,
+        boundary: "compiled_pipeline",
+        reason,
+        facts,
+    }
+}
+
+/// A constructed graph, or the execution contract that refuses to connect it.
+enum GraphCompilation {
+    Graph(CompiledPipeline),
+    Rejected(CapabilityRejectionProjection),
+}
+
+fn contract_rejection_error(projection: &CapabilityRejectionProjection) -> QueryError {
+    projection.facts.iter().fold(
+        QueryError::new(QueryErrorCode::UnsupportedPlanShape, OPERATION, "compiled pipeline contract refuses an edge")
+            .with_fact("capability_reason", projection.reason),
+        |error, (key, value)| error.with_fact(key, value.as_str()),
+    )
+}
+
+fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::error::Result<GraphCompilation> {
     reject_local_capability_rejections(analysis)?;
 
     let node_order = reachable_postorder(plan)?;
@@ -37,17 +115,19 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crat
     let resource_ids = assign_resource_ids(&node_order);
     let mut tasks = build_tasks(plan, &node_order, &dependencies, &task_ids, &resource_ids)?;
     let mut edges = build_plan_edges(plan, analysis, &dependencies, &task_ids, &resource_ids)?;
-    append_join_internal_edges(plan, &node_order, analysis, &task_ids, &mut edges)?;
+    append_join_internal_edges(plan, &node_order, &task_ids, &mut edges)?;
     append_dynamic_filter_control_edges(plan, &task_ids, &mut edges)?;
 
     let sink_compilation = append_sink_task(plan, &task_ids, &resource_ids, &mut tasks, &mut edges)?;
     let resources = build_resources(plan, &node_order, &dependencies, &task_ids, &resource_ids, sink_compilation.task)?;
-    let barriers = build_barriers(plan, &node_order, analysis, &dependencies, &task_ids, sink_compilation.task)?;
+    let (tasks, resources) = match resolve_task_and_resource_contracts(plan, tasks, resources, &edges) {
+        Ok(resolved) => resolved,
+        Err(projection) => return Ok(GraphCompilation::Rejected(projection)),
+    };
+    let barriers = build_barriers(plan, &node_order, &dependencies, &task_ids, sink_compilation.task)?;
     let sink = build_sink_boundary(plan, &task_ids, sink_compilation)?;
 
-    let pipeline = CompiledPipeline::new(tasks, edges, barriers, resources, sink);
-    pipeline.validate()?;
-    Ok(pipeline)
+    Ok(GraphCompilation::Graph(CompiledPipeline::new(tasks, edges, barriers, resources, sink)))
 }
 
 fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::error::Result<()> {
@@ -470,10 +550,12 @@ fn build_plan_edges(
     Ok(edges)
 }
 
+/// Emits the build-before-probe and probe-before-materialize ordering a join
+/// task group always requires. The schedule validator proves the resulting
+/// graph stays acyclic once dynamic-filter readiness edges are added.
 fn append_join_internal_edges(
     plan: &QueryPlan,
     node_order: &[NodeId],
-    analysis: &CapabilityAnalysis,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     edges: &mut Vec<PipelineEdge>,
 ) -> crate::error::Result<()> {
@@ -484,7 +566,6 @@ fn append_join_internal_edges(
         if !matches!(node.kind, PlanNode::Join(_)) {
             continue;
         }
-        require_build_before_probe_invariant(analysis, *node_id)?;
         let tasks = tasks_for(task_ids, *node_id)?;
         let build = tasks
             .join_build()
@@ -624,7 +705,6 @@ fn build_resources(
 fn build_barriers(
     plan: &QueryPlan,
     node_order: &[NodeId],
-    analysis: &CapabilityAnalysis,
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_task: Option<PipelineTaskId>,
@@ -652,7 +732,6 @@ fn build_barriers(
                 );
             },
             PlanNode::Join(_) => {
-                require_build_before_probe_invariant(analysis, *node_id)?;
                 let tasks = tasks_for(task_ids, *node_id)?;
                 let build = tasks
                     .join_build()
@@ -756,22 +835,6 @@ fn edge_kind_for_dependency(contract: &EdgeContract, input_role: InputRole) -> P
         },
         _ => PipelineEdgeKind::ResidentFrame,
     }
-}
-
-fn require_build_before_probe_invariant(analysis: &CapabilityAnalysis, join_id: NodeId) -> crate::error::Result<()> {
-    let Some(invariant) = analysis
-        .invariants
-        .iter()
-        .find(|invariant| matches!(invariant.kind, SubgraphInvariantKind::BuildBeforeProbe { join_id: candidate } if candidate == join_id))
-    else {
-        return Err(invalid("join node is missing build-before-probe invariant").with_fact("node_id", join_id));
-    };
-    if invariant.decision != CapabilityDecision::Satisfied {
-        return Err(invalid("join build-before-probe invariant is not satisfied")
-            .with_fact("node_id", join_id)
-            .with_fact("invariant_id", invariant.invariant_id.index()));
-    }
-    Ok(())
 }
 
 fn tasks_for(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::error::Result<NodeTasks> {

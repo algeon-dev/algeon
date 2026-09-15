@@ -28,6 +28,7 @@ mod expr;
 mod graph;
 mod invariant;
 mod join;
+mod join_strategy;
 mod model;
 mod node;
 mod shape;
@@ -54,6 +55,8 @@ pub use join::{
     one_shot_equi_join_supported, partitioned_equi_join_supported, partitioned_keyed_residual_join_supported,
     projected_cross_join_capable, single_join_node_execution_capability,
 };
+#[doc(hidden)]
+pub use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityEnvelope, CapabilityEnvelopeAdmission,
     CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,

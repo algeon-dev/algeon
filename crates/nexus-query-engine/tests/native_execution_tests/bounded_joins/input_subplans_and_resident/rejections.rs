@@ -69,7 +69,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
 }
 
 #[test]
-fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_bounded_envelope() {
+fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-aggregate-join-input");
     let left_path = dir.join("left.parquet");
@@ -129,18 +129,19 @@ fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_bound
         join_schema,
     );
     let plan = builder.finish_with_host_sink(join);
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none());
     let context = bounded_join_execution_context(&runtime);
 
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("grouped aggregate join-build input needs explicit bounded envelope admission"),
-        Err(error) => error,
+    let result = execute_query_plan(&context, &plan).expect("grouped aggregate join-build input should execute");
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    assert_bounded_join_rejection_contract(&error);
-    assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
-    assert_eq!(
-        error.fact_value("bounded_join_rejection_reason"),
-        Some("source_leaf_pipeline_requires_source_filter_projection")
-    );
+    let mut rows = (0..batch.num_rows())
+        .map(|row| (int32_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+    assert_eq!(rows, vec![(1, 15), (2, 20)]);
 
     fs::remove_dir_all(dir).unwrap();
 }

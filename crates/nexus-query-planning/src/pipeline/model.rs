@@ -2,9 +2,9 @@
 //!
 //! Ids in this module are local to one [`CompiledPipeline`] and are expected to
 //! match their position in the corresponding vector. Builders do not validate
-//! cross references; call [`CompiledPipeline::validate`] before execution.
+//! cross-references; call [`CompiledPipeline::validate`] before execution.
 
-use crate::plan::NodeId;
+use crate::{capability::CompiledJoinExecutionStrategy, plan::NodeId};
 
 /// Mode-agnostic compiled graph for a native query DAG.
 ///
@@ -137,12 +137,29 @@ pub struct PipelineTask {
     plan_node: Option<NodeId>,
     input_resources: Vec<ResidentResourceId>,
     output_resources: Vec<ResidentResourceId>,
+    accepted_input_form: AcceptedInputForm,
+    sort_strategy: Option<SortStrategy>,
+    plan_join_strategy: Option<CompiledJoinExecutionStrategy>,
 }
 
 impl PipelineTask {
     /// Create a task that is not tied to one native plan node.
+    ///
+    /// The execution contract defaults to the narrowest form a task can
+    /// require: one complete resident frame, no fused sort, no join strategy.
+    /// [`compile_pipeline`](crate::pipeline::compile_pipeline) replaces it with
+    /// the contract it resolved for the task.
     pub fn new(id: PipelineTaskId, kind: PipelineTaskKind) -> Self {
-        Self { id, kind, plan_node: None, input_resources: Vec::new(), output_resources: Vec::new() }
+        Self {
+            id,
+            kind,
+            plan_node: None,
+            input_resources: Vec::new(),
+            output_resources: Vec::new(),
+            accepted_input_form: AcceptedInputForm::Frame,
+            sort_strategy: None,
+            plan_join_strategy: None,
+        }
     }
 
     /// Create a task associated with a native plan node.
@@ -159,6 +176,24 @@ impl PipelineTask {
     /// Attach resident resources produced by this task.
     pub fn with_output_resources(mut self, output_resources: Vec<ResidentResourceId>) -> Self {
         self.output_resources = output_resources;
+        self
+    }
+
+    /// Record the strongest payload form this task accepts on a data input.
+    pub fn with_accepted_input_form(mut self, accepted_input_form: AcceptedInputForm) -> Self {
+        self.accepted_input_form = accepted_input_form;
+        self
+    }
+
+    /// Record the final-sort execution strategy selected for this task.
+    pub fn with_sort_strategy(mut self, sort_strategy: SortStrategy) -> Self {
+        self.sort_strategy = Some(sort_strategy);
+        self
+    }
+
+    /// Record the plan-derived join strategy selected for this join task.
+    pub fn with_plan_join_strategy(mut self, plan_join_strategy: CompiledJoinExecutionStrategy) -> Self {
+        self.plan_join_strategy = Some(plan_join_strategy);
         self
     }
 
@@ -185,6 +220,76 @@ impl PipelineTask {
     /// Resident resources produced by this task.
     pub fn output_resources(&self) -> &[ResidentResourceId] {
         &self.output_resources
+    }
+
+    /// Strongest payload form this task accepts on a data input.
+    pub fn accepted_input_form(&self) -> AcceptedInputForm {
+        self.accepted_input_form
+    }
+
+    /// Final-sort execution strategy, set on [`PipelineTaskKind::FinalSort`].
+    pub fn sort_strategy(&self) -> Option<SortStrategy> {
+        self.sort_strategy
+    }
+
+    /// Plan-derived join strategy, set on join build and probe tasks.
+    ///
+    /// This is the strategy the plan alone determines. The executor may still
+    /// refine it from observed build facts before running the kernel.
+    pub fn plan_join_strategy(&self) -> Option<CompiledJoinExecutionStrategy> {
+        self.plan_join_strategy
+    }
+}
+
+/// Strongest payload form a task accepts on its data inputs.
+///
+/// The variants are ordered: each one accepts every payload the previous one
+/// accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AcceptedInputForm {
+    /// One complete resident frame only.
+    Frame,
+    /// A complete resident frame or a resident frame stream.
+    FrameOrStream,
+    /// Also a deferred source stream the task re-stages and pulls itself.
+    FrameStreamOrSourceStream,
+    /// Also an in-flight source prefetch the task finishes itself.
+    AnyProducedForm,
+}
+
+impl AcceptedInputForm {
+    /// Stable diagnostic label for this accepted input form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Frame => "frame",
+            Self::FrameOrStream => "frame_or_stream",
+            Self::FrameStreamOrSourceStream => "frame_stream_or_source_stream",
+            Self::AnyProducedForm => "any_produced_form",
+        }
+    }
+}
+
+/// Final-sort execution strategy, selected once at compile time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SortStrategy {
+    /// Sort the whole input, then hand one frame downstream.
+    FullSort,
+    /// Fuse the single downstream limit into a top-k over the sort input.
+    FusedTopK {
+        /// Task that applies the fused limit.
+        limit_task: PipelineTaskId,
+        /// Plan node of the fused limit.
+        limit_node: NodeId,
+    },
+}
+
+impl SortStrategy {
+    /// Stable diagnostic label for this sort strategy.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullSort => "full_sort",
+            Self::FusedTopK { .. } => "fused_topk",
+        }
     }
 }
 
@@ -414,17 +519,34 @@ pub struct ResidentResource {
     producer: PipelineTaskId,
     consumers: Vec<PipelineTaskId>,
     lifetime: ResidentLifetime,
+    data_form: ResidentDataForm,
+    sharing: ResourceSharing,
 }
 
 impl ResidentResource {
     /// Create a resident resource with its producer, consumers, and lifetime.
+    ///
+    /// The consumption contract defaults to the narrowest form a consumer can
+    /// require: one complete resident frame, moved into a single consumer or
+    /// read as a shared immutable frame.
+    /// [`compile_pipeline`](crate::pipeline::compile_pipeline) replaces it with
+    /// the contract it resolved for the resource.
     pub fn new(
         id: ResidentResourceId,
         producer: PipelineTaskId,
         consumers: Vec<PipelineTaskId>,
         lifetime: ResidentLifetime,
     ) -> Self {
-        Self { id, producer, consumers, lifetime }
+        let sharing =
+            if consumers.len() > 1 { ResourceSharing::SharedImmutableFrame } else { ResourceSharing::SingleConsume };
+        Self { id, producer, consumers, lifetime, data_form: ResidentDataForm::Frame, sharing }
+    }
+
+    /// Record the payload form and sharing mode resolved for this resource.
+    pub fn with_consumption(mut self, data_form: ResidentDataForm, sharing: ResourceSharing) -> Self {
+        self.data_form = data_form;
+        self.sharing = sharing;
+        self
     }
 
     /// Local resident-resource id.
@@ -445,6 +567,65 @@ impl ResidentResource {
     /// Symbolic lifetime for release planning.
     pub fn lifetime(&self) -> ResidentLifetime {
         self.lifetime
+    }
+
+    /// Strongest payload form the producer may hand this resource's consumers.
+    ///
+    /// The producer may hand over a weaker form than this: a deferred source
+    /// read that observes a single chunk materializes it, and a shared stream
+    /// is collected eagerly. It never hands over a stronger one.
+    pub fn data_form(&self) -> ResidentDataForm {
+        self.data_form
+    }
+
+    /// How this resource's consumers read it.
+    pub fn sharing(&self) -> ResourceSharing {
+        self.sharing
+    }
+}
+
+/// Payload form a compiled resident resource may carry between tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResidentDataForm {
+    /// One complete resident frame.
+    Frame,
+    /// A resident frame stream the consumers pull chunk by chunk.
+    FrameStream,
+    /// A deferred source stream the consumers re-stage and pull themselves.
+    SourceStream,
+}
+
+impl ResidentDataForm {
+    /// Stable diagnostic label for this payload form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Frame => "frame",
+            Self::FrameStream => "frame_stream",
+            Self::SourceStream => "source_stream",
+        }
+    }
+}
+
+/// How several consumers read one resident resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResourceSharing {
+    /// Exactly one consumer; the payload moves into it.
+    SingleConsume,
+    /// Several consumers read the same immutable resident frame, or the same
+    /// eagerly collected chunk list.
+    SharedImmutableFrame,
+    /// Several consumers each take an independent cursor over the producer.
+    IndependentCursorStream,
+}
+
+impl ResourceSharing {
+    /// Stable diagnostic label for this sharing mode.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleConsume => "single_consume",
+            Self::SharedImmutableFrame => "shared_immutable_frame",
+            Self::IndependentCursorStream => "independent_cursor_stream",
+        }
     }
 }
 

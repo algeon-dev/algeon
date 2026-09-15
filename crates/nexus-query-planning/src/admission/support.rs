@@ -1,22 +1,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::join_strategy::CompiledJoinExecutionStrategy;
 use crate::{
-    capability::{CapabilityDecision, SubgraphInvariantKind},
-    error::Result,
-    pipeline::{
-        CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
-        ResidentLifetime, SinkBoundaryKind,
+    capability::{
+        CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
+        CapabilityRejectionProjection, CapabilityScope, CompiledJoinExecutionStrategy, KeyedHashJoinStrategyDecision,
+        SubgraphInvariantKind,
     },
-    plan::{NodeId, PlanNode, QueryPlan, ResultSink},
+    error::Result,
+    pipeline::{CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, SinkBoundaryKind},
+    plan::{NodeId, PlanNode, QueryPlan},
 };
 
 #[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompiledBoundedPipelineSupport {
-    /// The graph is capability-admitted but outside the compiled
-    /// executor envelope.
-    Unsupported,
+    /// A compiled-execution contract rejects the graph. The projection names
+    /// the owner, the contract that failed, and its facts.
+    Unsupported(CapabilityRejectionProjection),
     /// The graph is inside the compiled executor envelope.
     Supported,
 }
@@ -26,53 +26,46 @@ pub enum CompiledBoundedPipelineSupport {
 pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<CompiledBoundedPipelineSupport> {
     pipeline.validate()?;
 
-    let Some(join_groups) = join_task_groups(pipeline) else {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    };
-    if join_groups.is_empty() {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    match join_task_groups(pipeline) {
+        JoinTaskGroups::Complete(groups) if groups.is_empty() => {
+            return Ok(admission_rejection(
+                "compiled_pipeline_requires_join_task_group",
+                [("pipeline_task_count", pipeline.tasks().len().to_string())],
+            ));
+        },
+        JoinTaskGroups::Complete(_) => {},
+        JoinTaskGroups::Incomplete { plan_node } => {
+            return Ok(admission_rejection(
+                "compiled_pipeline_join_task_group_incomplete",
+                [("plan_node_id", plan_node.map_or_else(|| "none".to_string(), |node| node.to_string()))],
+            ));
+        },
     }
-    if !sink_boundary_shape_is_in_d3_6_envelope(pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    if let Some((producer, kind)) = unsupported_shared_resident_producer(pipeline) {
+        return Ok(admission_rejection(
+            "compiled_pipeline_shared_producer_task_kind_unsupported",
+            [("producer_task_id", producer.to_string()), ("producer_task_kind", kind.as_str().to_string())],
+        ));
     }
-    if !task_kinds_are_in_d2_envelope(pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    let sink_path = sink_data_path(pipeline);
+    if let Some(task) = unmigrated_graph_composition_task(pipeline, &sink_path) {
+        return Ok(match task.plan_node() {
+            Some(node_id) => node_rejection(
+                node_id,
+                "compiled_graph_task_composition_not_migrated",
+                [("task_id", task.id().to_string()), ("pipeline_task_kind", task.kind().as_str().to_string())],
+            ),
+            None => admission_rejection(
+                "compiled_graph_task_composition_not_migrated",
+                [("task_id", task.id().to_string()), ("pipeline_task_kind", task.kind().as_str().to_string())],
+            ),
+        });
     }
-    if task_kind_count(pipeline, PipelineTaskKind::SourceRead)
-        + task_kind_count(pipeline, PipelineTaskKind::GpuResidentSource)
-        + task_kind_count(pipeline, PipelineTaskKind::LiteralBatchSource)
-        < 1
-    {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !task_resource_shapes_are_in_d2_envelope(pipeline, &join_groups) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !edge_kinds_are_in_d3_2_envelope(pipeline) || !barrier_kinds_are_in_d2_envelope(pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !shared_resident_producer_edges_are_in_d3_5_envelope(pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !join_edges_are_in_d2_envelope(pipeline, &join_groups) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    let Some(sink_path) = explicit_sink_path_in_d3_6_envelope(pipeline) else {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    };
-    if !stage_tasks_are_in_d3_6_envelope(pipeline, &sink_path) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !join_barriers_are_in_d2_envelope(pipeline, &join_groups) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !pipeline.barriers().iter().any(|barrier| {
-        barrier.kind() == PipelineBarrierKind::SinkBoundary && barrier.upstream_tasks() == [pipeline.sink().input()]
-    }) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !stage_barriers_are_in_d3_3_envelope(pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    if let Some(task) = stage_task_outside_sink_path(pipeline, &sink_path) {
+        return Ok(admission_rejection(
+            "compiled_pipeline_stage_task_position_unsupported",
+            [("task_id", task.id().to_string()), ("task_kind", task.kind().as_str().to_string())],
+        ));
     }
 
     Ok(CompiledBoundedPipelineSupport::Supported)
@@ -80,162 +73,91 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
 
 #[doc(hidden)]
 /// Checks graph shape plus plan-node compatibility for compiled execution.
+///
+/// `analysis` is the capability analysis the pipeline was compiled from; the
+/// shared-producer lineage contract reads its invariants instead of running a
+/// second analysis.
 pub fn compiled_bounded_query_plan_support(
     plan: &QueryPlan,
+    analysis: &CapabilityAnalysis,
     pipeline: &CompiledPipeline,
 ) -> Result<CompiledBoundedPipelineSupport> {
-    if compiled_bounded_pipeline_support(pipeline)? == CompiledBoundedPipelineSupport::Unsupported {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    match compiled_bounded_pipeline_support(pipeline)? {
+        CompiledBoundedPipelineSupport::Supported => {},
+        unsupported => return Ok(unsupported),
     }
-    if !plan_sink_matches_pipeline_sink(plan, pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !task_plan_nodes_match_kinds(plan, pipeline) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if pipeline_has_computed_shared_resident_producer(pipeline)
-        && !computed_shared_resident_producers_have_satisfied_lineage(plan, pipeline)
-    {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    if let Some(rejection) = shared_resident_producer_lineage_rejection(analysis, pipeline) {
+        return Ok(rejection);
     }
 
-    let Some(join_groups) = join_task_groups(pipeline) else {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    let join_groups = match join_task_groups(pipeline) {
+        JoinTaskGroups::Complete(groups) => groups,
+        JoinTaskGroups::Incomplete { plan_node } => {
+            return Ok(admission_rejection(
+                "compiled_pipeline_join_task_group_incomplete",
+                [("plan_node_id", plan_node.map_or_else(|| "none".to_string(), |node| node.to_string()))],
+            ));
+        },
     };
-    for group in join_groups {
-        let Some(node) = plan.node(group.plan_node) else {
-            return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    for join_node in join_groups {
+        let Some(PlanNode::Join(join)) = plan.node(join_node).map(|node| &node.kind) else {
+            return Ok(node_rejection(
+                join_node,
+                "compiled_pipeline_join_task_group_plan_node_mismatch",
+                [("plan_node_id", join_node.to_string())],
+            ));
         };
-        let PlanNode::Join(join) = &node.kind else {
-            return Ok(CompiledBoundedPipelineSupport::Unsupported);
-        };
-        let Ok(Some(_)) = CompiledJoinExecutionStrategy::from_plan_join_node(plan, group.plan_node, join) else {
-            return Ok(CompiledBoundedPipelineSupport::Unsupported);
-        };
+        match CompiledJoinExecutionStrategy::from_plan_join_node(plan, join_node, join) {
+            Ok(Some(_)) => {},
+            Ok(None) | Err(KeyedHashJoinStrategyDecision::Selected { .. }) => {
+                return Ok(node_rejection(
+                    join_node,
+                    "compiled_pipeline_join_execution_strategy_unavailable",
+                    [("plan_node_id", join_node.to_string())],
+                ));
+            },
+            Err(KeyedHashJoinStrategyDecision::Rejected { reason, facts }) => {
+                return Ok(node_rejection(join_node, reason, facts));
+            },
+        }
     }
-    let Some(final_plan_node) = sink_output_plan_node(pipeline) else {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    };
-    if plan.sink().input() != final_plan_node {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-    if !sink_path_post_limit_unary_nodes_are_projection(plan) {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-
     Ok(CompiledBoundedPipelineSupport::Supported)
 }
 
-fn plan_sink_matches_pipeline_sink(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
-    matches!(
-        (plan.sink(), pipeline.sink().kind()),
-        (ResultSink::HostArrow { .. }, SinkBoundaryKind::HostArrowMaterialization)
-            | (ResultSink::GpuResident { .. }, SinkBoundaryKind::GpuResidentOutput)
-    )
-}
-
-fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
-    pipeline.tasks().iter().all(|task| {
-        matches!(
-            task.kind(),
-            PipelineTaskKind::SourceRead
-                | PipelineTaskKind::GpuResidentSource
-                | PipelineTaskKind::LiteralBatchSource
-                | PipelineTaskKind::Unary
-                | PipelineTaskKind::Aggregate
-                | PipelineTaskKind::Window
-                | PipelineTaskKind::JoinBuild
-                | PipelineTaskKind::JoinProbe
-                | PipelineTaskKind::JoinMaterialize
-                | PipelineTaskKind::FinalSort
-                | PipelineTaskKind::Limit
-                | PipelineTaskKind::Union
-                | PipelineTaskKind::EdgeNormalize
-                | PipelineTaskKind::GraphAlgorithm
-                | PipelineTaskKind::SinkMaterialize
-        )
+fn admission_rejection(
+    reason: &'static str,
+    facts: impl IntoIterator<Item = (&'static str, String)>,
+) -> CompiledBoundedPipelineSupport {
+    CompiledBoundedPipelineSupport::Unsupported(CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Admission(reason),
+        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+        contract_scope: CapabilityScope::Subgraph,
+        boundary: "compiled_pipeline",
+        reason,
+        facts: BTreeMap::from_iter(facts),
     })
 }
 
-fn task_resource_shapes_are_in_d2_envelope(pipeline: &CompiledPipeline, join_groups: &[JoinTaskGroup<'_>]) -> bool {
-    pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => {
-            task.input_resources().is_empty() && task.output_resources().len() == 1
-        },
-        PipelineTaskKind::Unary
-        | PipelineTaskKind::Aggregate
-        | PipelineTaskKind::Window
-        | PipelineTaskKind::FinalSort
-        | PipelineTaskKind::Limit => task.input_resources().len() == 1 && task.output_resources().len() == 1,
-        PipelineTaskKind::Union => !task.input_resources().is_empty() && task.output_resources().len() == 1,
-        PipelineTaskKind::GraphAlgorithm => !task.input_resources().is_empty() && task.output_resources().len() == 1,
-        PipelineTaskKind::EdgeNormalize => task.input_resources().len() == 1 && task.output_resources().len() == 1,
-        PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => {
-            task.input_resources().len() == 1 && task.output_resources().is_empty()
-        },
-        PipelineTaskKind::JoinMaterialize => task.input_resources().is_empty() && task.output_resources().len() == 1,
-        PipelineTaskKind::SinkMaterialize => task.input_resources().len() == 1 && task.output_resources().is_empty(),
-    }) && sink_materialize_tasks_are_in_d3_6_envelope(pipeline)
-        && join_groups.iter().all(|group| {
-            group.build.plan_node() == Some(group.plan_node)
-                && group.probe.plan_node() == Some(group.plan_node)
-                && group.materialize.plan_node() == Some(group.plan_node)
-        })
-}
-
-fn sink_materialize_tasks_are_in_d3_6_envelope(pipeline: &CompiledPipeline) -> bool {
-    let sink_materialize_tasks =
-        pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::SinkMaterialize).collect::<Vec<_>>();
-    match pipeline.sink().kind() {
-        SinkBoundaryKind::HostArrowMaterialization => {
-            let [sink_materialize] = sink_materialize_tasks.as_slice() else {
-                return false;
-            };
-            pipeline.sink().input() == sink_materialize.id() && sink_materialize.plan_node().is_none()
-        },
-        SinkBoundaryKind::GpuResidentOutput => sink_materialize_tasks.is_empty(),
-    }
-}
-
-fn sink_boundary_shape_is_in_d3_6_envelope(pipeline: &CompiledPipeline) -> bool {
-    match pipeline.sink().kind() {
-        SinkBoundaryKind::HostArrowMaterialization => {
-            let Some(sink_materialize) = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize) else {
-                return false;
-            };
-            pipeline.sink().input() == sink_materialize.id()
-                && single_sink_input_edge_to_task(pipeline, sink_materialize.id()).is_some()
-        },
-        SinkBoundaryKind::GpuResidentOutput => single_sink_output_resource_from_task(pipeline, pipeline.sink().input())
-            .is_some_and(|resource| {
-                task_index(pipeline)
-                    .get(&pipeline.sink().input())
-                    .is_some_and(|task| task.output_resources().contains(&resource.id()))
-            }),
-    }
-}
-
-fn edge_kinds_are_in_d3_2_envelope(pipeline: &CompiledPipeline) -> bool {
-    pipeline.edges().iter().all(|edge| {
-        matches!(
-            edge.kind(),
-            PipelineEdgeKind::Control
-                | PipelineEdgeKind::ResidentFrame
-                | PipelineEdgeKind::SharedResidentProducer
-                | PipelineEdgeKind::JoinBuildInput
-                | PipelineEdgeKind::JoinProbeInput
-                | PipelineEdgeKind::SinkInput
-        )
+fn node_rejection(
+    node_id: NodeId,
+    reason: &'static str,
+    facts: impl IntoIterator<Item = (&'static str, String)>,
+) -> CompiledBoundedPipelineSupport {
+    CompiledBoundedPipelineSupport::Unsupported(CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Node(node_id),
+        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+        contract_scope: CapabilityScope::Node,
+        boundary: "compiled_pipeline",
+        reason,
+        facts: BTreeMap::from_iter(facts),
     })
 }
 
-fn shared_resident_producer_edges_are_in_d3_5_envelope(pipeline: &CompiledPipeline) -> bool {
+fn unsupported_shared_resident_producer(pipeline: &CompiledPipeline) -> Option<(PipelineTaskId, PipelineTaskKind)> {
     let tasks = task_index(pipeline);
-    pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer).all(|edge| {
-        let Some(task) = tasks.get(&edge.from()) else {
-            return false;
-        };
-        matches!(
+    pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer).find_map(|edge| {
+        let task = tasks.get(&edge.from())?;
+        (!matches!(
             task.kind(),
             PipelineTaskKind::SourceRead
                 | PipelineTaskKind::GpuResidentSource
@@ -246,15 +168,19 @@ fn shared_resident_producer_edges_are_in_d3_5_envelope(pipeline: &CompiledPipeli
                 | PipelineTaskKind::Limit
                 | PipelineTaskKind::JoinMaterialize
                 | PipelineTaskKind::Union
-        ) && edge.resources().len() == 1
-            && task.output_resources().contains(&edge.resources()[0])
+        ))
+        .then(|| (task.id(), task.kind()))
     })
 }
 
-fn pipeline_has_computed_shared_resident_producer(pipeline: &CompiledPipeline) -> bool {
+fn computed_shared_resident_producer_tasks(pipeline: &CompiledPipeline) -> Vec<&PipelineTask> {
     let tasks = task_index(pipeline);
-    pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer).any(|edge| {
-        tasks.get(&edge.from()).is_some_and(|task| {
+    pipeline
+        .edges()
+        .iter()
+        .filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer)
+        .filter_map(|edge| {
+            let task = *tasks.get(&edge.from())?;
             matches!(
                 task.kind(),
                 PipelineTaskKind::Unary
@@ -264,12 +190,20 @@ fn pipeline_has_computed_shared_resident_producer(pipeline: &CompiledPipeline) -
                     | PipelineTaskKind::JoinMaterialize
                     | PipelineTaskKind::Union
             )
+            .then_some(task)
         })
-    })
+        .collect()
 }
 
-fn computed_shared_resident_producers_have_satisfied_lineage(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
-    let analysis = plan.capability_analysis();
+/// A computed (non-source) shared producer is only reusable when the analysis
+/// proved the shared subplan lineage that keeps every consumer reading the same
+/// producer occurrence.
+fn shared_resident_producer_lineage_rejection(
+    analysis: &CapabilityAnalysis,
+    pipeline: &CompiledPipeline,
+) -> Option<CompiledBoundedPipelineSupport> {
+    let computed = computed_shared_resident_producer_tasks(pipeline);
+    let first = computed.first()?;
     let satisfied_shared_producers = analysis
         .invariants
         .iter()
@@ -281,298 +215,109 @@ fn computed_shared_resident_producers_have_satisfied_lineage(plan: &QueryPlan, p
         })
         .collect::<BTreeSet<_>>();
     if satisfied_shared_producers.is_empty() {
-        return false;
+        return Some(admission_rejection(
+            "compiled_pipeline_shared_producer_lineage_unproven",
+            [("producer_task_id", first.id().to_string())],
+        ));
     }
-
-    let tasks = task_index(pipeline);
-    pipeline
-        .edges()
-        .iter()
-        .filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer)
-        .filter_map(|edge| {
-            let task = tasks.get(&edge.from())?;
-            matches!(
-                task.kind(),
-                PipelineTaskKind::Unary
-                    | PipelineTaskKind::Aggregate
-                    | PipelineTaskKind::Window
-                    | PipelineTaskKind::Limit
-                    | PipelineTaskKind::JoinMaterialize
-                    | PipelineTaskKind::Union
+    computed.iter().filter_map(|task| task.plan_node()).find(|node| !satisfied_shared_producers.contains(node)).map(
+        |node| {
+            admission_rejection(
+                "compiled_pipeline_shared_producer_lineage_unproven",
+                [("producer_node_id", node.to_string())],
             )
-            .then(|| task.plan_node())
-            .flatten()
-        })
-        .all(|producer| satisfied_shared_producers.contains(&producer))
+        },
+    )
 }
 
-fn barrier_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
-    pipeline.barriers().iter().all(|barrier| {
-        matches!(
-            barrier.kind(),
-            PipelineBarrierKind::SourceChunkBoundary
-                | PipelineBarrierKind::AggregateBoundary
-                | PipelineBarrierKind::JoinBuildBeforeProbe
-                | PipelineBarrierKind::JoinMaterialization
-                | PipelineBarrierKind::SortBoundary
-                | PipelineBarrierKind::SinkBoundary
-        )
+/// Graph composition the compiled executor has no output contract for yet.
+///
+/// A graph or edge-normalize task can feed a join input, where the join task
+/// group owns the hand-off. Carrying its output on to the sink through the
+/// stages above the joins has no compiled contract; it used to be refused
+/// implicitly, by not appearing in a sink-path task-kind allowlist.
+fn unmigrated_graph_composition_task<'a>(
+    pipeline: &'a CompiledPipeline,
+    sink_path: &BTreeSet<PipelineTaskId>,
+) -> Option<&'a PipelineTask> {
+    pipeline.tasks().iter().find(|task| {
+        matches!(task.kind(), PipelineTaskKind::GraphAlgorithm | PipelineTaskKind::EdgeNormalize)
+            && sink_path.contains(&task.id())
     })
 }
 
-fn join_edges_are_in_d2_envelope(pipeline: &CompiledPipeline, join_groups: &[JoinTaskGroup<'_>]) -> bool {
-    join_groups.iter().all(|group| {
-        has_edge(pipeline, group.build.id(), group.probe.id(), PipelineEdgeKind::Control)
-            && has_edge(pipeline, group.probe.id(), group.materialize.id(), PipelineEdgeKind::Control)
-            && has_join_input_edge(pipeline, group.build.id(), PipelineEdgeKind::JoinBuildInput)
-            && has_join_input_edge(pipeline, group.probe.id(), PipelineEdgeKind::JoinProbeInput)
-    })
-}
-
-fn join_barriers_are_in_d2_envelope(pipeline: &CompiledPipeline, join_groups: &[JoinTaskGroup<'_>]) -> bool {
-    join_groups.iter().all(|group| {
-        has_barrier(pipeline, group.build.id(), group.probe.id(), PipelineBarrierKind::JoinBuildBeforeProbe)
-            && has_barrier(pipeline, group.probe.id(), group.materialize.id(), PipelineBarrierKind::JoinMaterialization)
-    })
-}
-
-fn explicit_sink_path_in_d3_6_envelope(pipeline: &CompiledPipeline) -> Option<BTreeSet<PipelineTaskId>> {
+/// The chain of tasks that carries the final output, walked back from the sink
+/// to the first join materialization or union fan-in.
+///
+/// The walk stops where the chain stops being a single resident frame hand-off;
+/// it classifies tasks for the stage-position contract and refuses nothing.
+fn sink_data_path(pipeline: &CompiledPipeline) -> BTreeSet<PipelineTaskId> {
     let tasks = task_index(pipeline);
-    let mut current = sink_path_terminal_task(pipeline)?;
-    let mut reverse_path = Vec::new();
-    let mut visited = BTreeSet::new();
-
+    let mut path = BTreeSet::new();
+    let Some(mut current) = sink_path_terminal_task(pipeline) else {
+        return path;
+    };
     loop {
-        if !visited.insert(current) {
-            return None;
+        if !path.insert(current) {
+            return path;
         }
-        reverse_path.push(current);
-
-        let current_task = tasks.get(&current).copied()?;
-        if !task_has_single_data_output_toward_sink(pipeline, current_task) {
-            return None;
+        let Some(task) = tasks.get(&current).copied() else {
+            return path;
+        };
+        if matches!(task.kind(), PipelineTaskKind::JoinMaterialize | PipelineTaskKind::Union) {
+            return path;
         }
-
-        if current_task.kind() == PipelineTaskKind::JoinMaterialize {
-            break;
-        }
-        if current_task.kind() == PipelineTaskKind::Union {
-            if !union_fan_in_is_in_d3_6_envelope(pipeline, current_task) {
-                return None;
-            }
-            break;
-        }
-
-        if !matches!(
-            current_task.kind(),
-            PipelineTaskKind::Unary
-                | PipelineTaskKind::Aggregate
-                | PipelineTaskKind::Window
-                | PipelineTaskKind::FinalSort
-                | PipelineTaskKind::Limit
-        ) {
-            return None;
-        }
-
         let incoming = pipeline
             .edges()
             .iter()
             .filter(|edge| edge.to() == current && edge.kind() == PipelineEdgeKind::ResidentFrame)
             .collect::<Vec<_>>();
         let [incoming] = incoming.as_slice() else {
-            return None;
+            return path;
         };
         let [resource] = incoming.resources() else {
-            return None;
+            return path;
         };
-        if current_task.input_resources() != [*resource] {
-            return None;
+        if task.input_resources() != [*resource] {
+            return path;
         }
-        let producer = tasks.get(&incoming.from()).copied()?;
-        if !producer.output_resources().contains(resource) {
-            return None;
-        }
-        current = producer.id();
+        current = incoming.from();
     }
-
-    reverse_path.reverse();
-    if !sink_path_stage_order_is_in_d3_6_envelope(pipeline, &reverse_path) {
-        return None;
-    }
-
-    Some(reverse_path.into_iter().collect())
 }
 
 fn sink_path_terminal_task(pipeline: &CompiledPipeline) -> Option<PipelineTaskId> {
     match pipeline.sink().kind() {
         SinkBoundaryKind::HostArrowMaterialization => {
             let sink_materialize = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize)?;
-            let sink_edge = single_sink_input_edge_to_task(pipeline, sink_materialize.id())?;
-            let [sink_resource] = sink_edge.resources() else {
-                return None;
-            };
-            if !sink_materialize.input_resources().contains(sink_resource) {
-                return None;
-            }
+            let sink_edge = pipeline
+                .edges()
+                .iter()
+                .find(|edge| edge.kind() == PipelineEdgeKind::SinkInput && edge.to() == sink_materialize.id())?;
             Some(sink_edge.from())
         },
         SinkBoundaryKind::GpuResidentOutput => Some(pipeline.sink().input()),
     }
 }
 
-fn union_fan_in_is_in_d3_6_envelope(pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
-    let tasks = task_index(pipeline);
-    let incoming = pipeline
-        .edges()
-        .iter()
-        .filter(|edge| edge.to() == task.id() && edge.kind() == PipelineEdgeKind::ResidentFrame)
-        .collect::<Vec<_>>();
-    if incoming.is_empty() || incoming.len() != task.input_resources().len() {
-        return false;
-    }
-    let input_resources = task.input_resources().iter().copied().collect::<BTreeSet<_>>();
-    let incoming_resources = incoming
-        .iter()
-        .flat_map(|edge| {
-            let [resource] = edge.resources() else {
-                return None;
-            };
-            let producer = tasks.get(&edge.from()).copied()?;
-            producer.output_resources().contains(resource).then_some(*resource)
-        })
-        .collect::<BTreeSet<_>>();
-    input_resources == incoming_resources
-}
-
-fn single_sink_input_edge_to_task(
-    pipeline: &CompiledPipeline,
-    sink_task: PipelineTaskId,
-) -> Option<&crate::pipeline::PipelineEdge> {
-    let mut sink_edges = pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SinkInput);
-    let first = sink_edges.next()?;
-    if sink_edges.next().is_some() || first.to() != sink_task {
-        return None;
-    }
-    Some(first)
-}
-
-fn task_has_single_data_output_toward_sink(pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
-    if pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput && pipeline.sink().input() == task.id() {
-        return single_sink_output_resource_from_task(pipeline, task.id())
-            .is_some_and(|resource| task.output_resources().contains(&resource.id()));
-    }
-
-    let outgoing_data_edges = pipeline
-        .edges()
-        .iter()
-        .filter(|edge| {
-            edge.from() == task.id()
-                && matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SinkInput)
-        })
-        .collect::<Vec<_>>();
-    let [edge] = outgoing_data_edges.as_slice() else {
-        return false;
-    };
-    let [resource] = edge.resources() else {
-        return false;
-    };
-    task.output_resources().contains(resource)
-}
-
-fn single_sink_output_resource_from_task(
-    pipeline: &CompiledPipeline,
-    task_id: PipelineTaskId,
-) -> Option<&crate::pipeline::ResidentResource> {
-    let mut resources = pipeline.resources().iter().filter(
-        |resource| matches!(resource.lifetime(), ResidentLifetime::SinkOutput { producer } if producer == task_id),
-    );
-    let first = resources.next()?;
-    if resources.next().is_some() {
-        return None;
-    }
-    Some(first)
-}
-
-fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_path: &[PipelineTaskId]) -> bool {
-    let tasks = task_index(pipeline);
-    let mut seen_limit = false;
-
-    for task_id in sink_path {
-        let Some(task) = tasks.get(task_id) else {
-            return false;
-        };
-        match task.kind() {
-            PipelineTaskKind::JoinMaterialize | PipelineTaskKind::SinkMaterialize => {},
-            PipelineTaskKind::Unary
-            | PipelineTaskKind::Aggregate
-            | PipelineTaskKind::Window
-            | PipelineTaskKind::Union
-            | PipelineTaskKind::GraphAlgorithm
-            | PipelineTaskKind::EdgeNormalize
-                if !seen_limit => {},
-            PipelineTaskKind::FinalSort if !seen_limit => {},
-            PipelineTaskKind::Limit if !seen_limit => {
-                seen_limit = true;
-            },
-            PipelineTaskKind::Unary if seen_limit => {},
-            PipelineTaskKind::SourceRead
-            | PipelineTaskKind::GpuResidentSource
-            | PipelineTaskKind::LiteralBatchSource
-            | PipelineTaskKind::JoinBuild
-            | PipelineTaskKind::JoinProbe
-            | PipelineTaskKind::Unary
-            | PipelineTaskKind::Aggregate
-            | PipelineTaskKind::Window
-            | PipelineTaskKind::Union
-            | PipelineTaskKind::GraphAlgorithm
-            | PipelineTaskKind::EdgeNormalize
-            | PipelineTaskKind::FinalSort
-            | PipelineTaskKind::Limit => return false,
-        }
-    }
-
-    true
-}
-
-fn stage_tasks_are_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_path: &BTreeSet<PipelineTaskId>) -> bool {
-    pipeline.tasks().iter().all(|task| {
+fn stage_task_outside_sink_path<'a>(
+    pipeline: &'a CompiledPipeline,
+    sink_path: &BTreeSet<PipelineTaskId>,
+) -> Option<&'a PipelineTask> {
+    pipeline.tasks().iter().find(|task| {
         if !matches!(
             task.kind(),
             PipelineTaskKind::Aggregate
                 | PipelineTaskKind::Window
                 | PipelineTaskKind::Union
                 | PipelineTaskKind::FinalSort
-                | PipelineTaskKind::Limit
         ) {
-            return true;
+            return false;
         }
 
-        sink_path.contains(&task.id())
+        !(sink_path.contains(&task.id())
             || task_feeds_modeled_join_input_or_shared_branch(pipeline, task.id())
             || (stage_task_kind_can_feed_sink_path_union(task.kind())
-                && task_feeds_sink_path_union(pipeline, task.id(), sink_path))
-    })
-}
-
-fn stage_barriers_are_in_d3_3_envelope(pipeline: &CompiledPipeline) -> bool {
-    pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::Aggregate => stage_boundary_dominates_downstream_join_inputs_or_sink_path_union(
-            pipeline,
-            task.id(),
-            PipelineBarrierKind::AggregateBoundary,
-        ),
-        PipelineTaskKind::Window => stage_boundary_dominates_downstream_join_inputs_or_sink_path_union(
-            pipeline,
-            task.id(),
-            PipelineBarrierKind::AggregateBoundary,
-        ),
-        PipelineTaskKind::Union => true,
-        PipelineTaskKind::FinalSort => stage_boundary_dominates_downstream_join_inputs_or_sink_path_union(
-            pipeline,
-            task.id(),
-            PipelineBarrierKind::SortBoundary,
-        ),
-        _ => true,
+                && task_feeds_sink_path_union(pipeline, task.id(), sink_path)))
     })
 }
 
@@ -640,186 +385,8 @@ fn task_feeds_sink_path_union(
     false
 }
 
-fn stage_boundary_dominates_downstream_join_inputs_or_sink_path_union(
-    pipeline: &CompiledPipeline,
-    task: PipelineTaskId,
-    barrier_kind: PipelineBarrierKind,
-) -> bool {
-    let downstream_join_inputs = downstream_join_input_tasks(pipeline, task);
-    let downstream_sink_path_unions = downstream_sink_path_union_tasks(pipeline, task);
-    pipeline.barriers().iter().any(|barrier| {
-        barrier.kind() == barrier_kind
-            && barrier.upstream_tasks() == [task]
-            && downstream_join_inputs.iter().all(|join_input| {
-                barrier.downstream_tasks().iter().any(|downstream| task_reaches(pipeline, *downstream, *join_input))
-            })
-            && downstream_sink_path_unions.iter().all(|union_input| {
-                barrier.downstream_tasks().iter().any(|downstream| task_reaches(pipeline, *downstream, *union_input))
-            })
-    })
-}
-
-fn downstream_join_input_tasks(pipeline: &CompiledPipeline, task: PipelineTaskId) -> BTreeSet<PipelineTaskId> {
-    let mut pending = vec![task];
-    let mut visited = BTreeSet::new();
-    let mut join_inputs = BTreeSet::new();
-
-    while let Some(current) = pending.pop() {
-        if !visited.insert(current) {
-            continue;
-        }
-
-        for edge in pipeline.edges().iter().filter(|edge| edge.from() == current) {
-            match edge.kind() {
-                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => {
-                    join_inputs.insert(edge.to());
-                },
-                PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer => pending.push(edge.to()),
-                PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => {},
-            }
-        }
-    }
-
-    join_inputs
-}
-
-fn downstream_sink_path_union_tasks(pipeline: &CompiledPipeline, task: PipelineTaskId) -> BTreeSet<PipelineTaskId> {
-    let Some(sink_path) = explicit_sink_path_in_d3_6_envelope(pipeline) else {
-        return BTreeSet::new();
-    };
-    let tasks = task_index(pipeline);
-    let mut pending = vec![task];
-    let mut visited = BTreeSet::new();
-    let mut unions = BTreeSet::new();
-
-    while let Some(current) = pending.pop() {
-        if !visited.insert(current) {
-            continue;
-        }
-        if current != task
-            && sink_path.contains(&current)
-            && tasks.get(&current).is_some_and(|task| task.kind() == PipelineTaskKind::Union)
-        {
-            unions.insert(current);
-        }
-
-        for edge in pipeline.edges().iter().filter(|edge| edge.from() == current) {
-            if edge.kind() != PipelineEdgeKind::ResidentFrame {
-                continue;
-            }
-            pending.push(edge.to());
-        }
-    }
-
-    unions
-}
-
-fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
-    pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Source(_)))
-        },
-        PipelineTaskKind::Unary => matches!(
-            task.plan_node().and_then(|node_id| plan.node(node_id)),
-            Some(node) if matches!(&node.kind, PlanNode::Filter(_) | PlanNode::Projection(_))
-        ),
-        PipelineTaskKind::Aggregate => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Aggregate(_)))
-        },
-        PipelineTaskKind::Window => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Window(_)))
-        },
-        PipelineTaskKind::Union => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Union(_)))
-        },
-        PipelineTaskKind::GraphAlgorithm => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::GraphAlgorithm(_)))
-        },
-        PipelineTaskKind::EdgeNormalize => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::EdgeNormalize(_)))
-        },
-        PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe | PipelineTaskKind::JoinMaterialize => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Join(_)))
-        },
-        PipelineTaskKind::FinalSort => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Sort(_)))
-        },
-        PipelineTaskKind::Limit => {
-            matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Limit(_)))
-        },
-        PipelineTaskKind::SinkMaterialize => task.plan_node().is_none(),
-    })
-}
-
-fn sink_output_plan_node(pipeline: &CompiledPipeline) -> Option<NodeId> {
-    match pipeline.sink().kind() {
-        SinkBoundaryKind::HostArrowMaterialization => {
-            let edge = pipeline
-                .edges()
-                .iter()
-                .find(|edge| edge.to() == pipeline.sink().input() && edge.kind() == PipelineEdgeKind::SinkInput)?;
-            task_index(pipeline).get(&edge.from()).and_then(|task| task.plan_node())
-        },
-        SinkBoundaryKind::GpuResidentOutput => {
-            task_index(pipeline).get(&pipeline.sink().input()).and_then(|task| task.plan_node())
-        },
-    }
-}
-
-fn sink_path_post_limit_unary_nodes_are_projection(plan: &QueryPlan) -> bool {
-    let mut current = plan.sink().input();
-    let mut visited = BTreeSet::new();
-    loop {
-        if !visited.insert(current) {
-            return false;
-        }
-        let Some(node) = plan.node(current) else {
-            return false;
-        };
-        match &node.kind {
-            PlanNode::Projection(projection) => current = projection.input,
-            PlanNode::Limit(_) => return true,
-            PlanNode::Filter(filter) => return !projection_chain_reaches_limit(plan, filter.input),
-            PlanNode::Source(_)
-            | PlanNode::Aggregate(_)
-            | PlanNode::Join(_)
-            | PlanNode::Window(_)
-            | PlanNode::Sort(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => return true,
-        }
-    }
-}
-
-fn projection_chain_reaches_limit(plan: &QueryPlan, mut current: NodeId) -> bool {
-    let mut visited = BTreeSet::new();
-    loop {
-        if !visited.insert(current) {
-            return false;
-        }
-        let Some(node) = plan.node(current) else {
-            return false;
-        };
-        match &node.kind {
-            PlanNode::Projection(projection) => current = projection.input,
-            PlanNode::Limit(_) => return true,
-            _ => return false,
-        }
-    }
-}
-
 fn task_index(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, &PipelineTask> {
     pipeline.tasks().iter().map(|task| (task.id(), task)).collect()
-}
-
-#[derive(Debug, Clone, Copy)]
-struct JoinTaskGroup<'a> {
-    plan_node: NodeId,
-    build: &'a PipelineTask,
-    probe: &'a PipelineTask,
-    materialize: &'a PipelineTask,
 }
 
 #[derive(Debug, Default)]
@@ -829,15 +396,25 @@ struct PartialJoinTaskGroup<'a> {
     materialize: Option<&'a PipelineTask>,
 }
 
-fn join_task_groups(pipeline: &CompiledPipeline) -> Option<Vec<JoinTaskGroup<'_>>> {
-    let mut partials = BTreeMap::<NodeId, PartialJoinTaskGroup<'_>>::new();
+/// Plan nodes whose build/probe/materialize trio the compiled graph declares
+/// exactly once, or the plan node whose trio it did not.
+enum JoinTaskGroups {
+    Complete(Vec<NodeId>),
+    Incomplete { plan_node: Option<NodeId> },
+}
+
+fn join_task_groups(pipeline: &CompiledPipeline) -> JoinTaskGroups {
+    let mut partials = BTreeMap::<Option<NodeId>, PartialJoinTaskGroup<'_>>::new();
     for task in pipeline.tasks().iter().filter(|task| {
         matches!(
             task.kind(),
             PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe | PipelineTaskKind::JoinMaterialize
         )
     }) {
-        let plan_node = task.plan_node()?;
+        let plan_node = task.plan_node();
+        if plan_node.is_none() {
+            return JoinTaskGroups::Incomplete { plan_node };
+        }
         let partial = partials.entry(plan_node).or_default();
         let slot = match task.kind() {
             PipelineTaskKind::JoinBuild => &mut partial.build,
@@ -846,21 +423,20 @@ fn join_task_groups(pipeline: &CompiledPipeline) -> Option<Vec<JoinTaskGroup<'_>
             _ => unreachable!("filtered to join tasks"),
         };
         if slot.replace(task).is_some() {
-            return None;
+            return JoinTaskGroups::Incomplete { plan_node };
         }
     }
 
-    partials
-        .into_iter()
-        .map(|(plan_node, partial)| {
-            Some(JoinTaskGroup {
-                plan_node,
-                build: partial.build?,
-                probe: partial.probe?,
-                materialize: partial.materialize?,
-            })
-        })
-        .collect()
+    let mut groups = Vec::with_capacity(partials.len());
+    for (plan_node, partial) in partials {
+        let (Some(plan_node), Some(_), Some(_), Some(_)) =
+            (plan_node, partial.build, partial.probe, partial.materialize)
+        else {
+            return JoinTaskGroups::Incomplete { plan_node };
+        };
+        groups.push(plan_node);
+    }
+    JoinTaskGroups::Complete(groups)
 }
 
 fn single_task_of_kind(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> Option<&PipelineTask> {
@@ -870,58 +446,4 @@ fn single_task_of_kind(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> O
         return None;
     }
     first
-}
-
-fn task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> usize {
-    pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
-}
-
-fn has_edge(pipeline: &CompiledPipeline, from: PipelineTaskId, to: PipelineTaskId, kind: PipelineEdgeKind) -> bool {
-    pipeline.edges().iter().any(|edge| edge.from() == from && edge.to() == to && edge.kind() == kind)
-}
-
-fn has_join_input_edge(pipeline: &CompiledPipeline, to: PipelineTaskId, kind: PipelineEdgeKind) -> bool {
-    pipeline.edges().iter().any(|edge| edge.to() == to && edge.kind() == kind && edge.resources().len() == 1)
-}
-
-fn has_barrier(
-    pipeline: &CompiledPipeline,
-    upstream: PipelineTaskId,
-    downstream: PipelineTaskId,
-    kind: PipelineBarrierKind,
-) -> bool {
-    pipeline.barriers().iter().any(|barrier| {
-        barrier.kind() == kind
-            && task_set(barrier.upstream_tasks()) == BTreeSet::from([upstream])
-            && task_set(barrier.downstream_tasks()) == BTreeSet::from([downstream])
-    })
-}
-
-fn task_set(tasks: &[PipelineTaskId]) -> BTreeSet<PipelineTaskId> {
-    tasks.iter().copied().collect()
-}
-
-fn task_reaches(pipeline: &CompiledPipeline, from: PipelineTaskId, to: PipelineTaskId) -> bool {
-    if from == to {
-        return true;
-    }
-
-    let adjacency =
-        pipeline.edges().iter().fold(BTreeMap::<PipelineTaskId, Vec<PipelineTaskId>>::new(), |mut map, edge| {
-            map.entry(edge.from()).or_default().push(edge.to());
-            map
-        });
-    let mut pending = adjacency.get(&from).cloned().unwrap_or_default();
-    let mut visited = BTreeSet::new();
-
-    while let Some(current) = pending.pop() {
-        if current == to {
-            return true;
-        }
-        if visited.insert(current) {
-            pending.extend(adjacency.get(&current).into_iter().flatten().copied());
-        }
-    }
-
-    false
 }

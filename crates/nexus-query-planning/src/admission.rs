@@ -6,14 +6,13 @@
 mod bounded;
 mod diagnostics;
 mod evidence;
-mod join_strategy;
 mod scope;
 mod shared;
 mod support;
 
-#[doc(hidden)]
-pub use bounded::statistical_aggregate_execution_mode_rejection;
 pub use bounded::{BoundedPipelineAdmission, BoundedPipelineDecision, bounded_pipeline_decision};
+#[doc(hidden)]
+pub use bounded::{artifact_binding_error, statistical_aggregate_execution_mode_rejection};
 pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
 #[doc(hidden)]
 pub use diagnostics::{
@@ -25,13 +24,13 @@ pub use evidence::{
     CUGRAPH_GRAPH_EXECUTION_CAPABILITY, ExecutionCapability,
 };
 #[doc(hidden)]
-pub use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
-#[doc(hidden)]
 pub use scope::{AttemptExecutionScope, AttemptProducerOccurrence};
 #[doc(hidden)]
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
 
+#[doc(hidden)]
+pub use crate::capability::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 #[doc(hidden)]
 pub use crate::{plan::canonical_execution_scope_fingerprint, util::log_safe_fingerprint};
