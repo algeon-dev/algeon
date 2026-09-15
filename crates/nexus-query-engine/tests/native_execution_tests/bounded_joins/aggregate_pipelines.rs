@@ -582,7 +582,10 @@ fn bounded_stddev_join_aggregate_uses_gpu_native_tolerant_statistical_contract()
 
 #[test]
 fn bounded_stddev_join_aggregate_uses_exact_statistical_contract() {
-    let context = backend_context_with_grant(1024 * 1024);
+    let context = backend_context_with_grant_and_statistical_aggregate_mode(
+        1024 * 1024,
+        StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+    );
     let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-exact-stddev-join-aggregate");
     let plan = bounded_stddev_join_aggregate_plan(&runtime, &dir);

@@ -313,6 +313,11 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Select the execution contract for floating statistical aggregates.
+    ///
+    /// Defaults to [`StatisticalAggregateExecutionMode::GpuNativeTolerant`],
+    /// whose results can differ from DataFusion in floating-point bits. Select
+    /// [`StatisticalAggregateExecutionMode::DataFusionExactHostWelford`] when
+    /// results must match DataFusion exactly.
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
         self.statistical_aggregate_execution_mode = mode;
         self

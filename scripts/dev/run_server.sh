@@ -79,13 +79,13 @@ export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
 #   conservative | local_parquet_throughput
 #
 # NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
-#   datafusion_exact_host_welford | gpu_native_tolerant
+#   gpu_native_tolerant (default) | datafusion_exact_host_welford
 # ---------------------------------------------------------------------------
 export NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS="${NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
 export NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS="${NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS:-1}"
 export NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
 export NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE="${NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
-export NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-datafusion_exact_host_welford}"
+export NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-gpu_native_tolerant}"
 
 # ---------------------------------------------------------------------------
 # DataFusion session

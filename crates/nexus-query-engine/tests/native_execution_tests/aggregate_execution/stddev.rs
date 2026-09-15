@@ -8,7 +8,8 @@ use super::*;
 fn grouped_stddev_samp_matches_datafusion_welford_contract() {
     let dir = unique_temp_dir("nexus-query-engine-stddev-samp");
     let path = dir.join("input.parquet");
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_stddev_input_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -97,7 +98,8 @@ fn grouped_stddev_samp_matches_datafusion_welford_contract() {
 fn grouped_stddev_samp_handles_repeated_string_multi_key_groups() {
     let dir = unique_temp_dir("nexus-query-engine-string-multi-key-stddev-samp");
     let path = dir.join("input.parquet");
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("w_name", DataType::Utf8, false),
@@ -177,9 +179,20 @@ fn grouped_stddev_samp_handles_repeated_string_multi_key_groups() {
 
 #[test]
 fn global_stddev_samp_count_zero_and_one_return_null() {
+    assert_global_stddev_samp_count_zero_and_one_return_null(
+        StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+    );
+}
+
+#[test]
+fn tolerant_global_stddev_samp_count_zero_and_one_return_null() {
+    assert_global_stddev_samp_count_zero_and_one_return_null(StatisticalAggregateExecutionMode::GpuNativeTolerant);
+}
+
+fn assert_global_stddev_samp_count_zero_and_one_return_null(mode: StatisticalAggregateExecutionMode) {
     let dir = unique_temp_dir("nexus-query-engine-global-stddev-samp");
     let path = dir.join("input.parquet");
-    let context = backend_context();
+    let context = backend_context_with_statistical_aggregate_mode(mode);
     let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, true)]));
     let batch =
@@ -224,7 +237,8 @@ fn global_stddev_samp_preserves_multifile_input_order_bits() {
     let dir = unique_temp_dir("nexus-query-engine-ordered-stddev-samp");
     let first_path = dir.join("first.parquet");
     let second_path = dir.join("second.parquet");
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
     write_f64_parquet(&runtime, &schema, &first_path, vec![Some(1.0e16), Some(1.0e-16)]);
@@ -264,7 +278,8 @@ fn global_stddev_samp_preserves_multifile_input_order_bits() {
 
 #[test]
 fn global_stddev_samp_preserves_row_group_filter_projection_order_bits() {
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let dir = unique_temp_dir("nexus-query-engine-row-group-ordered-stddev-samp");
     let first_path = dir.join("first.parquet");
     let second_path = dir.join("second.parquet");
@@ -330,7 +345,8 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     let dir = unique_temp_dir("nexus-query-engine-join-ordered-stddev-samp");
     let left_paths = [dir.join("left-0.parquet"), dir.join("left-1.parquet"), dir.join("left-2.parquet")];
     let right_path = dir.join("right.parquet");
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let left_schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Float64, true)]));
@@ -482,7 +498,8 @@ fn join_grouped_stddev_samp_can_preserve_left_probe_order_bits() {
     let dir = unique_temp_dir("nexus-query-engine-left-probe-ordered-stddev-samp");
     let fact_path = dir.join("fact.parquet");
     let date_path = dir.join("date.parquet");
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("date_sk", DataType::Int64, false),
@@ -601,7 +618,8 @@ fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-residual-join-ordered-stddev-samp");
     let fact_path = dir.join("fact.parquet");
     let date_path = dir.join("date.parquet");
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("date_sk", DataType::Int64, false),
@@ -739,7 +757,8 @@ fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
 
 #[test]
 fn bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch() {
-    let context = backend_context();
+    let context =
+        backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::DataFusionExactHostWelford);
     let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-empty-join-stddev");
     let left_path = dir.join("left.parquet");

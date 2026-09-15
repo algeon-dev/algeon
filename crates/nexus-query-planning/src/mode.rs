@@ -9,15 +9,29 @@ use std::{fmt, str::FromStr};
 
 /// Execution contract for floating statistical aggregates such as
 /// `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, and `VAR_POP`.
+///
+/// The default is [`Self::GpuNativeTolerant`], so statistical aggregates stay
+/// on the GPU without a host round trip. Its results are not guaranteed to
+/// match DataFusion bit for bit. Select [`Self::DataFusionExactHostWelford`]
+/// when they must.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatisticalAggregateExecutionMode {
     /// Preserve DataFusion's order-sensitive Welford accumulator bits by
-    /// materializing to host and evaluating in DataFusion input order.
-    #[default]
+    /// materializing the aggregate input to host and evaluating it in
+    /// DataFusion input order.
+    ///
+    /// Aggregates in the same spec keep DataFusion's integer and NaN
+    /// semantics. Planning rejects group-key and aggregate types that this
+    /// host kernel does not cover, so those plans stay on DataFusion.
     DataFusionExactHostWelford,
     /// Use libcudf's native grouped/scalar statistical kernels with each
-    /// aggregate's declared degrees of freedom; floating-point bits may differ
-    /// from DataFusion Welford order.
+    /// aggregate's declared degrees of freedom. This is the default.
+    ///
+    /// Variance is derived from sum and sum-of-squares moments rather than
+    /// DataFusion's Welford updates, so floating-point results can differ from
+    /// DataFusion, and precision degrades when values are large relative to
+    /// their spread.
+    #[default]
     GpuNativeTolerant,
 }
 

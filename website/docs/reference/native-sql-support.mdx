@@ -68,8 +68,14 @@ distinct aggregates are not. Ordered aggregate arguments are not supported.
 
 Aggregate mode matters. AVG uses explicit sum/count state for partial/final
 execution. Median is single-stage, and plans that mix median with floating
-statistical aggregates are rejected. Statistical execution also follows the
-configured exact-host or GPU-tolerant policy.
+statistical aggregates are rejected.
+
+Floating statistical aggregates (`stddev` and `var` variants) run under the
+GPU-tolerant policy by default, so their results can differ from DataFusion.
+The exact-host policy matches DataFusion but supports fewer group-key and
+aggregate types. See
+`statistical_aggregate_execution_mode` in
+[configuration](../integration/configuration.mdx).
 
 ## Source boundaries
 
