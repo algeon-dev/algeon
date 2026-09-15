@@ -5,7 +5,7 @@ use crate::{
     device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
     elements::CagraElement,
-    error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero},
+    error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero, unsupported},
     params_handle::ParamsHandle,
     resources::CuvsResources,
 };
@@ -117,6 +117,16 @@ impl<'data, T: CagraElement> CagraIndex<'data, T> {
         {
             return Err(invalid_input(operation, "unsupported CAGRA metric and build algorithm combination"));
         }
+        let parts = dataset.as_tensor().parts();
+        let row_pitch_aligned = columns.is_multiple_of(16 / mem::size_of::<T>());
+        let effective_address = parts.data.as_ptr().wrapping_byte_add(parts.byte_offset).addr();
+        if row_pitch_aligned && !effective_address.is_multiple_of(16) {
+            // The pinned owning-copy path rejects device input with an already padded row pitch.
+            return Err(unsupported(
+                operation,
+                "CAGRA requires a 16-byte-aligned dataset address when row pitch is padded",
+            ));
+        }
         resources.with_native(operation, |native| {
             let mut config = ParamsHandle::new(
                 cuvs_sys::cuvsCagraIndexParamsCreate,
@@ -139,7 +149,7 @@ impl<'data, T: CagraElement> CagraIndex<'data, T> {
             // common.hpp:1068-1078,1157-1165 rejects an owning copy when the
             // device row width already has the required 16-byte alignment.
             unsafe {
-                if columns.is_multiple_of(16 / mem::size_of::<T>()) {
+                if row_pitch_aligned {
                     check_cuvs(
                         cuvs_sys::cuvsDatasetMakePaddedView(native, tensor.as_mut_ptr(), &mut padded),
                         operation,
