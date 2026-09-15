@@ -77,8 +77,11 @@ this one repository-owned cargo-hack feature-isolation command:
 cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
 ```
 
-That exact compile-only command is the sole exception; it proves package-local
-no-feature and non-default feature compilation. Do not generalize the
+That exact compile-only matrix is the sole exception; it proves package-local
+no-feature and non-default feature compilation. `scripts/check_all.sh` executes
+it as six package shards (`FEATURE_ISOLATION_SHARDS`, one isolated target
+directory per shard) and fail-closes the phase unless the union of executed
+checks matches the exact command's `--print-command-list` output. Do not generalize the
 exception to tests, Clippy, or ad-hoc feature combinations.
 The harness may replay nextest binaries previously built with `--all-features`
 using `--cargo-metadata` and `--binaries-metadata`; nextest rejects feature and
