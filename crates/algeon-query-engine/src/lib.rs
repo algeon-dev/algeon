@@ -20,7 +20,8 @@
 //! stable global handles.
 //!
 //! The `cuvs` feature enables vector-algorithm execution; the `cuml` feature
-//! enables query-local PCA and TSVD execution. Their planning contracts remain
+//! enables query-local TSVD, HDBSCAN, UMAP, logistic-regression, and
+//! random-forest execution. Their planning contracts remain
 //! available when either feature is disabled.
 
 #[cfg(test)]

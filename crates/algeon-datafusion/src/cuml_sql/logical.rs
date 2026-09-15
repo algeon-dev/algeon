@@ -135,16 +135,14 @@ impl CumlLogicalNode {
                 },
             };
             if let Some(dimension) = dimension {
-                if dimension < 2 && matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+                if dimension < 2 && operation == CumlOperation::Tsvd {
                     return Err(invalid_call(
                         operation,
                         "insufficient_feature_dimension",
                         "cuML dimensionality reduction requires at least two input feature columns",
                     ));
                 }
-                if options.n_components().is_some_and(|count| count > dimension)
-                    && matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd)
-                {
+                if options.n_components().is_some_and(|count| count > dimension) && operation == CumlOperation::Tsvd {
                     return Err(invalid_call(
                         operation,
                         "component_count_exceeds_dimension",
@@ -202,7 +200,7 @@ impl CumlLogicalNode {
         }
         let id_type = ids.last().expect("cuML requires a relation").clone();
         let output = match operation {
-            CumlOperation::Pca | CumlOperation::Tsvd => {
+            CumlOperation::Tsvd => {
                 vector_pca_output_schema(id_type, options.n_components().expect("decomposition components"))
             },
             CumlOperation::Hdbscan => ml_hdbscan_output_schema(id_type),

@@ -23,7 +23,7 @@ mod tests {
 
     use super::*;
     use crate::plan::{
-        MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlPcaParams, MlRelationBinding, VectorRowIdBinding,
+        MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlRelationBinding, MlTsvdParams, VectorRowIdBinding,
         vector_pca_output_schema,
     };
 
@@ -31,8 +31,8 @@ mod tests {
     fn unavailable_ml_feature_returns_structured_facts() {
         let input = NodeId::from_index_for_internal_use(0);
         let spec = MlAlgorithmSpec::new(
-            MlAlgorithm::Pca,
-            MlAlgorithmParams::Pca(MlPcaParams::new(
+            MlAlgorithm::Tsvd,
+            MlAlgorithmParams::Tsvd(MlTsvdParams::new(
                 MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]),
                 1,
             )),

@@ -109,7 +109,7 @@ fn find_exec(plan: &dyn ExecutionPlan) -> Option<&CumlAlgoExec> {
         .or_else(|| plan.children().into_iter().find_map(|child| find_exec(child.as_ref())))
 }
 
-fn check_oracle(batches: &[RecordBatch], pca: bool) {
+fn check_oracle(batches: &[RecordBatch]) {
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 8);
     let ids = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
     let score = batches[0].column(1).as_any().downcast_ref::<Float32Array>().unwrap();
@@ -117,23 +117,20 @@ fn check_oracle(batches: &[RecordBatch], pca: bool) {
     for i in 0..8 {
         assert_eq!(ids.value(i), i as i64);
         let x = i as f32 - 3.0;
-        let expected = if pca { (x - 0.5).abs() * 6.0_f32.sqrt() } else { x.abs() * 6.0_f32.sqrt() };
+        let expected = x.abs() * 6.0_f32.sqrt();
         assert!((score.value(i).abs() - expected).abs() < 1e-2, "score {} expected {expected}", score.value(i));
         assert!(second.value(i).abs() < 1e-2);
     }
 }
 
 #[tokio::test]
-async fn pca_and_tsvd_wide_sql_match_host_oracle_with_host_input_boundary() {
+async fn tsvd_wide_sql_matches_host_oracle_with_host_input_boundary() {
     let (backend, ctx) = context();
-    for (name, pca) in [("cuml_pca", true), ("cuml_tsvd", false)] {
-        let sql =
-            format!("SELECT id, pc_0, pc_1 FROM {name}(input => (SELECT id, d0, d1, d2 FROM t), n_components => 2)");
-        let physical = plan(&ctx, &sql).await;
-        assert!(find_exec(physical.as_ref()).is_some());
-        assert_eq!(classify_final_plan(physical.as_ref()), FinalPlanDisposition::Mixed);
-        check_oracle(&collect(physical, ctx.task_ctx()).await.unwrap(), pca);
-    }
+    let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM t), n_components => 2)";
+    let physical = plan(&ctx, sql).await;
+    assert!(find_exec(physical.as_ref()).is_some());
+    assert_eq!(classify_final_plan(physical.as_ref()), FinalPlanDisposition::Mixed);
+    check_oracle(&collect(physical, ctx.task_ctx()).await.unwrap());
     close(backend, ctx);
 }
 
@@ -178,7 +175,6 @@ async fn hdbscan_and_umap_wide_and_fixed_list_sql_return_stable_shapes() {
         }
     }
     for (name, options, columns) in [
-        ("cuml_pca", "n_components => 2", ["pc_0", "pc_1"]),
         ("cuml_tsvd", "n_components => 2", ["pc_0", "pc_1"]),
         ("cuml_hdbscan", "min_samples => 2, min_cluster_size => 2", ["cluster_id", "probability"]),
         ("cuml_umap", "n_neighbors => 3, init => 'random'", ["dim_0", "dim_1"]),
@@ -395,8 +391,8 @@ async fn fixed_size_list_and_parquet_sources_execute() {
     )
     .unwrap();
     ctx.register_table("lists", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
-    let sql = "SELECT id, pc_0, pc_1 FROM cuml_pca(input => (SELECT id, vector FROM lists), n_components => 2)";
-    check_oracle(&collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap(), true);
+    let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, vector FROM lists), n_components => 2)";
+    check_oracle(&collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap());
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("vectors.parquet");
@@ -406,7 +402,7 @@ async fn fixed_size_list_and_parquet_sources_execute() {
     writer.close().unwrap();
     ctx.register_parquet("parquet_vectors", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM parquet_vectors), n_components => 2)";
-    check_oracle(&collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap(), false);
+    check_oracle(&collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap());
     close(backend, ctx);
 }
 
@@ -415,7 +411,7 @@ async fn fixed_size_list_and_parquet_sources_execute() {
 async fn relational_composition_and_cuvs_share_one_admission() {
     let (backend, ctx) = context();
     let sql = "WITH components AS (
-        SELECT id, pc_0 FROM cuml_pca(input => (SELECT id, d0, d1, d2 FROM t), n_components => 1)),
+        SELECT id, pc_0 FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM t), n_components => 1)),
         neighbors AS (
         SELECT neighbor_id FROM cuvs_brute_force_knn(
             dataset => (SELECT id, d0, d1, d2 FROM t),
@@ -443,7 +439,7 @@ async fn relational_composition_and_cuvs_share_one_admission() {
 #[tokio::test]
 async fn dropping_result_stream_releases_admission_and_plan_can_run_again() {
     let (backend, ctx) = context();
-    let sql = "SELECT * FROM cuml_pca(input => (SELECT id, d0, d1, d2 FROM t), n_components => 1)";
+    let sql = "SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM t), n_components => 1)";
     let physical = plan(&ctx, sql).await;
     let mut stream = execute_stream(Arc::clone(&physical), ctx.task_ctx()).unwrap();
     assert!(stream.next().await.transpose().unwrap().is_some());

@@ -59,7 +59,6 @@ async fn flight_sql_lists_and_executes_all_cuml_functions() {
         [
             "cuml_hdbscan",
             "cuml_logistic_regression",
-            "cuml_pca",
             "cuml_random_forest_classifier",
             "cuml_random_forest_regressor",
             "cuml_tsvd",
@@ -68,7 +67,6 @@ async fn flight_sql_lists_and_executes_all_cuml_functions() {
     );
     assert!((0..names.len()).all(|row| available.value(row)));
     for function in [
-        "cuml_pca",
         "cuml_tsvd",
         "cuml_hdbscan",
         "cuml_umap",

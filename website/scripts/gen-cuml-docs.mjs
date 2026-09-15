@@ -26,14 +26,13 @@ const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
 const OFFICIAL_DOCS_ROOT = 'https://docs.rapids.ai/api/cuml/stable/api/';
 
 const FAMILIES = {
-  dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuml_pca', 'cuml_tsvd'] },
+  dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuml_tsvd'] },
   clustering: { label: 'Clustering', functions: ['cuml_hdbscan'] },
   manifold: { label: 'Manifold Embedding', functions: ['cuml_umap'] },
   classification: { label: 'Classification', functions: ['cuml_logistic_regression', 'cuml_random_forest_classifier'] },
   regression: { label: 'Regression', functions: ['cuml_random_forest_regressor'] },
 };
 const FUNCTIONS = {
-  cuml_pca: { officialApi: 'Python API', officialPath: '#cuml.PCA' },
   cuml_tsvd: { officialApi: 'Python API', officialPath: '#cuml.TruncatedSVD' },
   cuml_hdbscan: { officialApi: 'Python API', officialPath: '#cuml.HDBSCAN' },
   cuml_umap: { officialApi: 'Python API', officialPath: '#cuml.UMAP' },

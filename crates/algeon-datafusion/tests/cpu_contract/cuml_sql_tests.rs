@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, fs, sync::Arc};
 
 use algeon_datafusion::{
     cuml_sql::{
-        CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY, CUML_PCA_FUNCTION,
+        CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY,
         CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,
         CUML_UMAP_FUNCTION, CumlAlgoExec, CumlLogicalNode, CumlOperation, GpuOptionKind, MlRelationRole,
         cuml_options_json_schema,
@@ -120,7 +120,6 @@ fn registry_drives_names_roles_options_and_schema() {
     assert_eq!(
         CUML_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect::<Vec<_>>(),
         [
-            CUML_PCA_FUNCTION,
             CUML_TSVD_FUNCTION,
             CUML_HDBSCAN_FUNCTION,
             CUML_UMAP_FUNCTION,
@@ -148,7 +147,7 @@ fn registry_drives_names_roles_options_and_schema() {
         assert_eq!(schema, entry.options_json_schema());
         assert_eq!(
             schema["required"],
-            if matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+            if operation == CumlOperation::Tsvd {
                 serde_json::json!(["input", "n_components"])
             } else if matches!(
                 operation,
@@ -161,11 +160,10 @@ fn registry_drives_names_roles_options_and_schema() {
                 serde_json::json!(["input"])
             }
         );
-        if matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+        if operation == CumlOperation::Tsvd {
             assert_eq!(schema["properties"]["n_components"]["minimum"], 1);
             assert_eq!(schema["properties"]["solver"]["default"], "cov_eig_dq");
         }
-        assert_eq!(schema["properties"].get("whiten").is_some(), operation == CumlOperation::Pca);
         if operation == CumlOperation::Hdbscan {
             assert_eq!(schema["properties"]["alpha"]["exclusiveMinimum"], 0);
         }
@@ -219,7 +217,7 @@ async fn new_options_and_exact_row_count_have_structured_validation() {
                 | CumlOperation::RandomForestRegressor
         )
     }) {
-        let values = if matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+        let values = if operation == CumlOperation::Tsvd {
             serde_json::json!({"n_components": 1})
         } else if operation == CumlOperation::Umap {
             serde_json::json!({"n_neighbors": 2})
@@ -435,7 +433,7 @@ async fn sql_schemas_match_ir_and_physical_nodes() {
             node.schema().as_ref(),
             &DFSchema::try_from(
                 match operation {
-                    CumlOperation::Pca | CumlOperation::Tsvd => vector_pca_output_schema(DataType::Int64, 2),
+                    CumlOperation::Tsvd => vector_pca_output_schema(DataType::Int64, 2),
                     CumlOperation::Hdbscan => ml_hdbscan_output_schema(DataType::Int64),
                     CumlOperation::Umap => ml_embedding_output_schema(DataType::Int64, 2),
                     CumlOperation::LogisticRegression | CumlOperation::RandomForestClassifier =>
@@ -481,23 +479,23 @@ fn installation_is_idempotent_and_rejects_opaque_planners() {
 #[tokio::test]
 async fn named_binder_accepts_reordering_and_rejects_bad_arguments() {
     let ctx = context();
-    let normal = sql(CUML_PCA_FUNCTION, "vectors", 1);
-    let reordered = "SELECT * FROM cuml_pca(n_components => 1, input => (SELECT id, d0, d1 FROM vectors))";
+    let normal = sql(CUML_TSVD_FUNCTION, "vectors", 1);
+    let reordered = "SELECT * FROM cuml_tsvd(n_components => 1, input => (SELECT id, d0, d1 FROM vectors))";
     assert_eq!(
         ctx.state().create_logical_plan(&normal).await.unwrap().display_indent().to_string(),
         ctx.state().create_logical_plan(reordered).await.unwrap().display_indent().to_string()
     );
     for (statement, reason) in [
         (
-            "SELECT * FROM cuml_pca(input => (SELECT id, d0, d1 FROM vectors), n_components => 1, n_components => 2)",
+            "SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM vectors), n_components => 1, n_components => 2)",
             "duplicate_argument",
         ),
-        ("SELECT * FROM cuml_pca(input => (SELECT id, d0, d1 FROM vectors))", "missing_argument"),
+        ("SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM vectors))", "missing_argument"),
         (
-            "SELECT * FROM cuml_pca(input => (SELECT id, d0, d1 FROM vectors), n_components => 1, bogus => 1)",
+            "SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM vectors), n_components => 1, bogus => 1)",
             "unknown_argument",
         ),
-        ("SELECT * FROM cuml_pca((SELECT id, d0, d1 FROM vectors), 1)", "positional_argument_not_supported"),
+        ("SELECT * FROM cuml_tsvd((SELECT id, d0, d1 FROM vectors), 1)", "positional_argument_not_supported"),
     ] {
         let error = ctx.state().create_logical_plan(statement).await.unwrap_err();
         assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some(reason), "{statement}");
@@ -607,7 +605,7 @@ async fn schema_rejections_preserve_structured_reasons_and_float32_support() {
             assert_eq!(typed.fact_value("expected_type"), Some("Float32"));
         }
     }
-    let error = ctx.state().create_logical_plan(&sql(CUML_PCA_FUNCTION, "vectors", 3)).await.unwrap_err();
+    let error = ctx.state().create_logical_plan(&sql(CUML_TSVD_FUNCTION, "vectors", 3)).await.unwrap_err();
     assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("component_count_exceeds_dimension"));
 }
 
@@ -633,7 +631,7 @@ async fn catalog_reports_validation_paths_for_option_and_relation_fields() {
             serde_json::json!({"relations": {"input": {"table": relation}}, "options": {"n_components": components}})
                 .to_string();
         let result = ctx
-            .sql(&format!("SELECT error_code, details_json FROM gpu_validate_call('cuml_pca', '{call}')"))
+            .sql(&format!("SELECT error_code, details_json FROM gpu_validate_call('cuml_tsvd', '{call}')"))
             .await
             .unwrap()
             .collect()
@@ -652,7 +650,7 @@ async fn catalog_reports_validation_paths_for_option_and_relation_fields() {
 async fn execution_rejects_a_disabled_cuml_feature_before_any_child_executes() {
     let ctx = context();
     let listed = ctx
-        .sql("SELECT available, unavailable_reason FROM gpu_list_functions() WHERE function_name = 'cuml_pca'")
+        .sql("SELECT available, unavailable_reason FROM gpu_list_functions() WHERE function_name = 'cuml_tsvd'")
         .await
         .unwrap()
         .collect()
@@ -663,7 +661,7 @@ async fn execution_rejects_a_disabled_cuml_feature_before_any_child_executes() {
         listed[0].column(1).as_any().downcast_ref::<StringArray>().unwrap().value(0),
         "required_feature_disabled"
     );
-    let physical = ctx.sql(&sql(CUML_PCA_FUNCTION, "vectors", 1)).await.unwrap().create_physical_plan().await.unwrap();
+    let physical = ctx.sql(&sql(CUML_TSVD_FUNCTION, "vectors", 1)).await.unwrap().create_physical_plan().await.unwrap();
     let exec = find_exec(physical.as_ref()).unwrap();
     let counter = Arc::new(AtomicUsize::new(0));
     let child: Arc<dyn ExecutionPlan> =

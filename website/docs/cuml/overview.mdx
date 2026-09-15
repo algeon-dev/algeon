@@ -7,20 +7,14 @@ description: SQL-visible cuML decomposition, clustering, embedding, classificati
 # cuML SQL API
 
 Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml)
-as relation-valued functions in DataFusion SQL sessions. `cuml_pca` fits and
-transforms principal components; `cuml_tsvd` fits and transforms a truncated
-singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
+as relation-valued functions in DataFusion SQL sessions. `cuml_tsvd` fits and
+transforms a truncated singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
 membership probabilities, and `cuml_umap` produces a manifold embedding.
 `cuml_logistic_regression` and `cuml_random_forest_classifier` fit Int32 class
 labels from a `training` relation and classify a separate `predict` relation.
 `cuml_random_forest_regressor` fits finite Float32 targets. Forest prediction
 copies the predict features to host and walks trees there; it is not GPU inference. Each result includes
 `row_ordinal` and an `id` from the relation supplying output rows.
-
-`cuml_pca` and `cuvs_pca` have the same row schema but use separate cuML and
-cuVS native implementations. Calls select the provider by function name; no
-automatic substitution occurs. The catalog exposes their respective `cuml`
-and `cuvs` providers.
 
 ## Input and call shape
 
@@ -45,7 +39,7 @@ requires a binary built with the `cuml` Cargo feature and an installed
 [DataFusion session guide](../integration/datafusion-session.mdx) describes
 backend and execution-mode setup.
 
-All seven functions fit their evaluated input within one statement.
+All six functions fit their evaluated input within one statement.
 Models and transforms are released after that call; there is no model cache,
 cross-statement reuse, or serialization. Allocations run within the admitted
 query memory cap. Requests exceeding that cap produce a typed allocation

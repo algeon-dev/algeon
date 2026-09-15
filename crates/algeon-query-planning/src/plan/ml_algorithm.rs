@@ -13,7 +13,6 @@ use super::{
     },
 };
 
-pub const CUML_PCA_FUNCTION: &str = "cuml_pca";
 pub const CUML_TSVD_FUNCTION: &str = "cuml_tsvd";
 pub const CUML_HDBSCAN_FUNCTION: &str = "cuml_hdbscan";
 pub const CUML_UMAP_FUNCTION: &str = "cuml_umap";
@@ -23,7 +22,6 @@ pub const CUML_RANDOM_FOREST_REGRESSOR_FUNCTION: &str = "cuml_random_forest_regr
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CumlOperation {
-    Pca,
     Tsvd,
     Hdbscan,
     Umap,
@@ -132,19 +130,6 @@ const COMMON_OPTIONS: &[GpuOptionDefinition] = &[
         required: false,
         kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(15) },
         description: "Maximum number of eigensolver iterations.",
-    },
-];
-const PCA_OPTIONS: &[GpuOptionDefinition] = &[
-    COMMON_OPTIONS[0],
-    COMMON_OPTIONS[1],
-    COMMON_OPTIONS[2],
-    COMMON_OPTIONS[3],
-    COMMON_OPTIONS[4],
-    GpuOptionDefinition {
-        name: "whiten",
-        required: false,
-        kind: GpuOptionKind::Boolean { default: Some(false) },
-        description: "Scale transformed components by their fitted variance.",
     },
 ];
 const HDBSCAN_METHODS: &[&str] = &["eom", "leaf"];
@@ -537,37 +522,18 @@ const OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
         description: "Transformed component value, repeated n_components times.",
     },
 ];
-const LIMITATIONS: &[&str] = &[
+const TSVD_LIMITATIONS: &[&str] = &[
     "Empty input returns an empty result without a native call. Nonempty input requires at least two evaluated rows and two feature dimensions. n_components cannot exceed dimension; known dimensions are checked during planning, otherwise execution reports a structured error.",
     "Only Float32 features are supported. Use CAST in the input subquery for other element types.",
     "Component sign is not semantic; this operation returns transformed rows only, not components, explained variance, or mean.",
-];
-const TSVD_LIMITATIONS: &[&str] = &[
-    LIMITATIONS[0],
-    LIMITATIONS[1],
-    LIMITATIONS[2],
     "TSVD allocates a temporary rows * n_components score matrix inside the query device cap.",
 ];
 
 pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
-        operation: CumlOperation::Pca,
-        sql_function_name: CUML_PCA_FUNCTION,
-        display_name: "cuML PCA",
-        summary: "cuML PCA fits and transforms the input; cuvs_pca uses a separate cuVS implementation with the same row schema.",
-        use_this_when: "Fit and transform Float32 features within one query, then join results by row_ordinal.",
-        relation_roles: ROLES,
-        vector_element_support: ELEMENTS,
-        output_contract: CumlOutputContract::Components,
-        options: PCA_OPTIONS,
-        output_fields: OUTPUT_FIELDS,
-        quickstart_sql: "SELECT id, pc_0, pc_1 FROM cuml_pca(input => (SELECT id, d0, d1 FROM t), n_components => 2) ORDER BY row_ordinal;",
-        limitations: LIMITATIONS,
-    },
-    CumlOperationDescriptor {
         operation: CumlOperation::Tsvd,
         sql_function_name: CUML_TSVD_FUNCTION,
-        display_name: "cuML TSVD",
+        display_name: "TSVD",
         summary: "cuML truncated SVD fits and transforms Float32 input rows.",
         use_this_when: "Reduce input features to query-local transformed rows using truncated SVD.",
         relation_roles: ROLES,
@@ -581,7 +547,7 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
         operation: CumlOperation::Hdbscan,
         sql_function_name: CUML_HDBSCAN_FUNCTION,
-        display_name: "cuML HDBSCAN",
+        display_name: "HDBSCAN",
         summary: "cuML HDBSCAN fits density-based clusters and returns query-local labels and membership probabilities.",
         use_this_when: "Find dense groups and identify noise among Float32 feature rows.",
         relation_roles: ROLES,
@@ -595,7 +561,7 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
         operation: CumlOperation::Umap,
         sql_function_name: CUML_UMAP_FUNCTION,
-        display_name: "cuML UMAP",
+        display_name: "UMAP",
         summary: "cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows.",
         use_this_when: "Embed dense Float32 feature rows into a chosen number of dimensions.",
         relation_roles: ROLES,
@@ -609,7 +575,7 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
         operation: CumlOperation::LogisticRegression,
         sql_function_name: CUML_LOGISTIC_REGRESSION_FUNCTION,
-        display_name: "cuML Logistic Regression",
+        display_name: "Logistic Regression",
         summary: "Fit a query-local cuML logistic or softmax classifier and score independent rows.",
         use_this_when: "Classify Float32 predict rows after fitting contiguous Int32 training labels.",
         relation_roles: SUPERVISED_ROLES,
@@ -623,7 +589,7 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
         operation: CumlOperation::RandomForestClassifier,
         sql_function_name: CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION,
-        display_name: "cuML Random Forest Classifier",
+        display_name: "Random Forest Classifier",
         summary: "Fit a query-local cuML random forest classifier and score independent rows.",
         use_this_when: "Classify Float32 rows after fitting contiguous Int32 training labels.",
         relation_roles: SUPERVISED_ROLES,
@@ -637,7 +603,7 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
     CumlOperationDescriptor {
         operation: CumlOperation::RandomForestRegressor,
         sql_function_name: CUML_RANDOM_FOREST_REGRESSOR_FUNCTION,
-        display_name: "cuML Random Forest Regressor",
+        display_name: "Random Forest Regressor",
         summary: "Fit a query-local cuML random forest regressor and score independent rows.",
         use_this_when: "Predict Float32 targets from Float32 feature rows.",
         relation_roles: SUPERVISED_ROLES,
@@ -721,7 +687,6 @@ pub fn canonicalize_cuml_options(operation: CumlOperation, raw: &str) -> Result<
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MlAlgorithm {
-    Pca,
     Tsvd,
     Hdbscan,
     Umap,
@@ -733,7 +698,6 @@ pub enum MlAlgorithm {
 impl MlAlgorithm {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Pca => "pca",
             Self::Tsvd => "tsvd",
             Self::Hdbscan => "hdbscan",
             Self::Umap => "umap",
@@ -773,12 +737,12 @@ impl MlRelationBinding {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MlPcaSolver {
+pub enum MlDecompositionSolver {
     CovEigDq,
     CovEigJacobi,
 }
 
-impl MlPcaSolver {
+impl MlDecompositionSolver {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CovEigDq => "cov_eig_dq",
@@ -787,29 +751,9 @@ impl MlPcaSolver {
     }
 }
 
-impl fmt::Display for MlPcaSolver {
+impl fmt::Display for MlDecompositionSolver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MlPcaParams {
-    pub input: MlRelationBinding,
-    pub n_components: usize,
-    pub solver: MlPcaSolver,
-    pub tolerance: f64,
-    pub n_iterations: u32,
-    pub whiten: bool,
-}
-
-impl MlPcaParams {
-    pub fn new(input: MlRelationBinding, n_components: usize) -> Self {
-        let descriptor = CumlOperation::Pca.descriptor();
-        let (solver, tolerance, n_iterations) = decomposition_defaults(descriptor);
-        let whiten =
-            descriptor.option("whiten").and_then(|option| option.kind.default_bool()).expect("PCA whiten default");
-        Self { input, n_components, solver, tolerance, n_iterations, whiten }
     }
 }
 
@@ -817,7 +761,7 @@ impl MlPcaParams {
 pub struct MlTsvdParams {
     pub input: MlRelationBinding,
     pub n_components: usize,
-    pub solver: MlPcaSolver,
+    pub solver: MlDecompositionSolver,
     pub tolerance: f64,
     pub n_iterations: u32,
 }
@@ -829,10 +773,10 @@ impl MlTsvdParams {
     }
 }
 
-fn decomposition_defaults(descriptor: &CumlOperationDescriptor) -> (MlPcaSolver, f64, u32) {
+fn decomposition_defaults(descriptor: &CumlOperationDescriptor) -> (MlDecompositionSolver, f64, u32) {
     let solver = match descriptor.option("solver").and_then(|option| option.kind.default_str()) {
-        Some("cov_eig_dq") => MlPcaSolver::CovEigDq,
-        Some("cov_eig_jacobi") => MlPcaSolver::CovEigJacobi,
+        Some("cov_eig_dq") => MlDecompositionSolver::CovEigDq,
+        Some("cov_eig_jacobi") => MlDecompositionSolver::CovEigJacobi,
         _ => panic!("canonical cuML solver default"),
     };
     let tolerance =
@@ -1085,7 +1029,6 @@ impl MlRandomForestParams {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MlAlgorithmParams {
-    Pca(MlPcaParams),
     Tsvd(MlTsvdParams),
     Hdbscan(MlHdbscanParams),
     Umap(MlUmapParams),
@@ -1098,8 +1041,7 @@ impl MlAlgorithmParams {
     pub const fn supports_algorithm(&self, algorithm: MlAlgorithm) -> bool {
         matches!(
             (self, algorithm),
-            (Self::Pca(_), MlAlgorithm::Pca)
-                | (Self::Tsvd(_), MlAlgorithm::Tsvd)
+            (Self::Tsvd(_), MlAlgorithm::Tsvd)
                 | (Self::Hdbscan(_), MlAlgorithm::Hdbscan)
                 | (Self::Umap(_), MlAlgorithm::Umap)
                 | (Self::LogisticRegression(_), MlAlgorithm::LogisticRegression)
@@ -1110,7 +1052,6 @@ impl MlAlgorithmParams {
 
     pub fn relation_bindings(&self) -> impl Iterator<Item = &MlRelationBinding> {
         let (first, second) = match self {
-            Self::Pca(params) => (&params.input, None),
             Self::Tsvd(params) => (&params.input, None),
             Self::Hdbscan(params) => (&params.input, None),
             Self::Umap(params) => (&params.input, None),
@@ -1139,7 +1080,6 @@ impl MlAlgorithmParams {
     #[doc(hidden)]
     pub fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
         match self {
-            Self::Pca(params) => params.input.input = remap(params.input.input),
             Self::Tsvd(params) => params.input.input = remap(params.input.input),
             Self::Hdbscan(params) => params.input.input = remap(params.input.input),
             Self::Umap(params) => params.input.input = remap(params.input.input),

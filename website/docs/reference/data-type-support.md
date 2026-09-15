@@ -174,7 +174,7 @@ Use `gpu_describe_function('<function>')` for the catalog contract and `gpu_vali
 
 ## cuML feature relations
 
-The seven `cuml_*` functions accept dense `Float32` features only, either as
+The six `cuml_*` functions accept dense `Float32` features only, either as
 ordered wide columns or a `vector` column containing `FixedSizeList<Float32>`
 (or a uniform `List<Float32>` / `LargeList<Float32>`). Features must be finite;
 there is no implicit numeric cast. Every relation requires a non-null `id`
@@ -187,7 +187,7 @@ requires finite `Float32` targets. The separate `predict` relation rejects
 `label`. Unsupervised `input` treats every non-`id` wide column as a feature,
 including a column named `label`.
 
-PCA and TSVD output `pc_<i> Float32`; UMAP outputs `dim_<i> Float32`.
+TSVD outputs `pc_<i> Float32`; UMAP outputs `dim_<i> Float32`.
 HDBSCAN outputs `cluster_id Int64` (`-1` for noise) and `probability Float32`.
 Supervised output is `prediction Int32` for classifiers or `prediction Float32`
 for the regressor. Each output also contains `row_ordinal UInt64` and an `id`

@@ -25,7 +25,7 @@ mod enabled {
             RuntimeObservationPayload, RuntimeOperatorStageKind, RuntimeOperatorStageState,
         },
         plan::{
-            MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlHdbscanParams, MlLogisticRegressionParams, MlPcaParams,
+            MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlHdbscanParams, MlLogisticRegressionParams,
             MlRandomForestParams, MlRelationBinding, MlTsvdParams, MlUmapInit, MlUmapParams, QueryPlan,
             QueryPlanBuilder, VectorRowIdBinding, ml_embedding_output_schema, ml_hdbscan_output_schema,
             ml_predictions_output_schema, vector_pca_output_schema,
@@ -76,7 +76,6 @@ mod enabled {
             },
         };
         let params = match algorithm {
-            MlAlgorithm::Pca => MlAlgorithmParams::Pca(MlPcaParams::new(binding, components)),
             MlAlgorithm::Tsvd => MlAlgorithmParams::Tsvd(MlTsvdParams::new(binding, components)),
             MlAlgorithm::Hdbscan => {
                 let mut params = MlHdbscanParams::new(binding);
@@ -96,7 +95,7 @@ mod enabled {
             | MlAlgorithm::RandomForestRegressor => unreachable!("unsupervised plan helper"),
         };
         let output_schema = match algorithm {
-            MlAlgorithm::Pca | MlAlgorithm::Tsvd => vector_pca_output_schema(DataType::Int64, components),
+            MlAlgorithm::Tsvd => vector_pca_output_schema(DataType::Int64, components),
             MlAlgorithm::Hdbscan => ml_hdbscan_output_schema(DataType::Int64),
             MlAlgorithm::Umap => ml_embedding_output_schema(DataType::Int64, components),
             MlAlgorithm::LogisticRegression
@@ -502,81 +501,70 @@ mod enabled {
     }
 
     #[test]
-    fn pca_and_tsvd_match_rank_one_host_oracle_and_preserve_row_identity() {
-        for algorithm in [MlAlgorithm::Pca, MlAlgorithm::Tsvd] {
-            for shape in [Shape::Wide, Shape::Fixed] {
-                let (result, metrics, observation) = execute(algorithm, shape, 8, 1);
-                let QueryOutput::HostArrow(output) = result.expect("cuML fit_transform") else { panic!("host output") };
-                let ids = output.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-                let ordinals = output.column(0).as_any().downcast_ref::<UInt64Array>().unwrap();
-                let scores = output.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
-                assert_eq!(ordinals.values().as_ref(), &(0..8_u64).collect::<Vec<_>>());
-                assert_eq!(ids.values().as_ref(), &[0, 0, 2, 3, 4, 5, 6, 7]);
-                for i in 0..8 {
-                    let x = i as f32 - 3.0;
-                    let expected = match algorithm {
-                        MlAlgorithm::Pca => (x - 0.5).abs() * 6.0_f32.sqrt(),
-                        MlAlgorithm::Tsvd => x.abs() * 6.0_f32.sqrt(),
-                        MlAlgorithm::Hdbscan
-                        | MlAlgorithm::Umap
-                        | MlAlgorithm::LogisticRegression
-                        | MlAlgorithm::RandomForestClassifier
-                        | MlAlgorithm::RandomForestRegressor => {
-                            unreachable!("decomposition oracle")
-                        },
-                    };
-                    assert!(
-                        (scores.value(i).abs() - expected).abs() < 1e-2,
-                        "{algorithm:?} {i}: {} vs {expected}",
-                        scores.value(i)
-                    );
-                }
+    fn tsvd_matches_rank_one_host_oracle_and_preserves_row_identity() {
+        let algorithm = MlAlgorithm::Tsvd;
+        for shape in [Shape::Wide, Shape::Fixed] {
+            let (result, metrics, observation) = execute(algorithm, shape, 8, 1);
+            let QueryOutput::HostArrow(output) = result.expect("cuML fit_transform") else { panic!("host output") };
+            let ids = output.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+            let ordinals = output.column(0).as_any().downcast_ref::<UInt64Array>().unwrap();
+            let scores = output.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
+            assert_eq!(ordinals.values().as_ref(), &(0..8_u64).collect::<Vec<_>>());
+            assert_eq!(ids.values().as_ref(), &[0, 0, 2, 3, 4, 5, 6, 7]);
+            for i in 0..8 {
+                let x = i as f32 - 3.0;
+                let expected = x.abs() * 6.0_f32.sqrt();
                 assert!(
-                    metrics
-                        .plan_task_mappings()
-                        .iter()
-                        .any(|mapping| mapping.operator_kind.as_deref() == Some("ml_algorithm"))
+                    (scores.value(i).abs() - expected).abs() < 1e-2,
+                    "{algorithm:?} {i}: {} vs {expected}",
+                    scores.value(i)
                 );
-                let observation = observation.expect("ML observation sealed");
-                {
-                    let stages = observation
-                        .events()
-                        .iter()
-                        .filter_map(|event| match &event.payload {
-                            RuntimeObservationPayload::OperatorStage(stage)
-                                if matches!(stage.lifecycle, RuntimeOperatorStageState::Finished)
-                                    && matches!(
-                                        stage.stage_kind,
-                                        RuntimeOperatorStageKind::MlPack
-                                            | RuntimeOperatorStageKind::MlNative
-                                            | RuntimeOperatorStageKind::MlAssemble
-                                    ) =>
-                            {
-                                Some(stage.as_ref())
-                            },
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
+            }
+            assert!(
+                metrics
+                    .plan_task_mappings()
+                    .iter()
+                    .any(|mapping| mapping.operator_kind.as_deref() == Some("ml_algorithm"))
+            );
+            let observation = observation.expect("ML observation sealed");
+            {
+                let stages = observation
+                    .events()
+                    .iter()
+                    .filter_map(|event| match &event.payload {
+                        RuntimeObservationPayload::OperatorStage(stage)
+                            if matches!(stage.lifecycle, RuntimeOperatorStageState::Finished)
+                                && matches!(
+                                    stage.stage_kind,
+                                    RuntimeOperatorStageKind::MlPack
+                                        | RuntimeOperatorStageKind::MlNative
+                                        | RuntimeOperatorStageKind::MlAssemble
+                                ) =>
+                        {
+                            Some(stage.as_ref())
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    stages.iter().map(|stage| stage.stage_kind).collect::<Vec<_>>(),
+                    vec![
+                        RuntimeOperatorStageKind::MlPack,
+                        RuntimeOperatorStageKind::MlNative,
+                        RuntimeOperatorStageKind::MlAssemble,
+                    ]
+                );
+                for stage in stages {
+                    assert_eq!(stage.ml_algorithm.as_deref(), Some(algorithm.as_str()));
                     assert_eq!(
-                        stages.iter().map(|stage| stage.stage_kind).collect::<Vec<_>>(),
-                        vec![
-                            RuntimeOperatorStageKind::MlPack,
-                            RuntimeOperatorStageKind::MlNative,
-                            RuntimeOperatorStageKind::MlAssemble,
-                        ]
+                        (stage.native_version_major, stage.native_version_minor, stage.native_version_patch),
+                        (Some(26), Some(8), Some(0))
                     );
-                    for stage in stages {
-                        assert_eq!(stage.ml_algorithm.as_deref(), Some(algorithm.as_str()));
-                        assert_eq!(
-                            (stage.native_version_major, stage.native_version_minor, stage.native_version_patch),
-                            (Some(26), Some(8), Some(0))
-                        );
-                        assert_eq!(stage.input_rows, Some(8));
-                        assert_eq!(stage.vector_dimension, Some(3));
-                        assert_eq!(stage.matrix_layout.as_deref(), Some("column_major"));
-                        if stage.stage_kind == RuntimeOperatorStageKind::MlNative {
-                            assert_eq!(stage.strategy_label.as_deref(), Some("cov_eig_dq"));
-                        }
+                    assert_eq!(stage.input_rows, Some(8));
+                    assert_eq!(stage.vector_dimension, Some(3));
+                    assert_eq!(stage.matrix_layout.as_deref(), Some("column_major"));
+                    if stage.stage_kind == RuntimeOperatorStageKind::MlNative {
+                        assert_eq!(stage.strategy_label.as_deref(), Some("cov_eig_dq"));
                     }
                 }
             }
@@ -585,23 +573,20 @@ mod enabled {
 
     #[test]
     fn two_components_split_into_distinct_device_columns() {
-        for algorithm in [MlAlgorithm::Pca, MlAlgorithm::Tsvd] {
-            let (result, _, _) = execute(algorithm, Shape::Wide, 8, 2);
-            let QueryOutput::HostArrow(output) = result.expect("two-component transform") else {
-                panic!("host output")
-            };
-            assert_eq!(output.schema().field(2).name(), "pc_0");
-            assert_eq!(output.schema().field(3).name(), "pc_1");
-            let first = output.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
-            let second = output.column(3).as_any().downcast_ref::<Float32Array>().unwrap();
-            assert!(first.values().iter().any(|value| value.abs() > 1.0));
-            assert!(second.values().iter().all(|value| value.abs() < 1e-2), "{algorithm:?}: {second:?}");
-        }
+        let algorithm = MlAlgorithm::Tsvd;
+        let (result, _, _) = execute(algorithm, Shape::Wide, 8, 2);
+        let QueryOutput::HostArrow(output) = result.expect("two-component transform") else { panic!("host output") };
+        assert_eq!(output.schema().field(2).name(), "pc_0");
+        assert_eq!(output.schema().field(3).name(), "pc_1");
+        let first = output.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
+        let second = output.column(3).as_any().downcast_ref::<Float32Array>().unwrap();
+        assert!(first.values().iter().any(|value| value.abs() > 1.0));
+        assert!(second.values().iter().all(|value| value.abs() < 1e-2), "{algorithm:?}: {second:?}");
     }
 
     #[test]
     fn runtime_row_count_and_uniform_list_dimension_errors_are_structured() {
-        let (result, _, _) = execute(MlAlgorithm::Pca, Shape::Wide, 1, 1);
+        let (result, _, _) = execute(MlAlgorithm::Tsvd, Shape::Wide, 1, 1);
         assert_eq!(result.err().expect("single row").fact_value("reason"), Some("insufficient_input_rows"));
         let (result, _, _) = execute(MlAlgorithm::Tsvd, Shape::List, 8, 4);
         assert_eq!(
@@ -612,9 +597,9 @@ mod enabled {
 
     #[test]
     fn empty_ml_input_returns_exact_schema_without_native_stage() {
-        for algorithm in [MlAlgorithm::Pca, MlAlgorithm::Tsvd, MlAlgorithm::Hdbscan, MlAlgorithm::Umap] {
+        for algorithm in [MlAlgorithm::Tsvd, MlAlgorithm::Hdbscan, MlAlgorithm::Umap] {
             let expected = match algorithm {
-                MlAlgorithm::Pca | MlAlgorithm::Tsvd => vector_pca_output_schema(DataType::Int64, 2),
+                MlAlgorithm::Tsvd => vector_pca_output_schema(DataType::Int64, 2),
                 MlAlgorithm::Hdbscan => ml_hdbscan_output_schema(DataType::Int64),
                 MlAlgorithm::Umap => ml_embedding_output_schema(DataType::Int64, 2),
                 MlAlgorithm::LogisticRegression
@@ -834,7 +819,7 @@ mod enabled {
     #[test]
     fn tiny_query_grant_reports_allocation_failure_and_releases_attempt() {
         let schema = input_schema(Shape::Wide);
-        let plan = plan(Arc::clone(&schema), MlAlgorithm::Pca, Shape::Wide, 2);
+        let plan = plan(Arc::clone(&schema), MlAlgorithm::Tsvd, Shape::Wide, 2);
         let context = backend_context_with_grant(8 * 1024_u64);
         let admitted = context.admit_plan(&plan).expect("ML plan admission");
         let runtime = Arc::new(admitted.runtime().unwrap());
@@ -875,8 +860,8 @@ mod enabled {
             vec!["id".into(), "x0".into(), "x1".into(), "x2".into()],
         )));
         let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-            MlAlgorithm::Pca,
-            MlAlgorithmParams::Pca(MlPcaParams::new(
+            MlAlgorithm::Tsvd,
+            MlAlgorithmParams::Tsvd(MlTsvdParams::new(
                 MlRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x0", "x1", "x2"]),
                 1,
             )),
@@ -907,7 +892,7 @@ fn cuml_disabled_rejects_before_local_source_staging() {
         error::QueryErrorCode,
         exec::QueryExecutionRequest,
         plan::{
-            MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlPcaParams, MlRelationBinding, QueryPlanBuilder,
+            MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlRelationBinding, MlTsvdParams, QueryPlanBuilder,
             VectorRowIdBinding, vector_pca_output_schema,
         },
         source::{LocalParquetSource, SourceNode},
@@ -927,8 +912,8 @@ fn cuml_disabled_rejects_before_local_source_staging() {
         vec!["id".into(), "x".into(), "y".into()],
     )));
     let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Pca,
-        MlAlgorithmParams::Pca(MlPcaParams::new(
+        MlAlgorithm::Tsvd,
+        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
             MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x", "y"]),
             1,
         )),

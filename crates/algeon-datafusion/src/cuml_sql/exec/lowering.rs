@@ -3,9 +3,9 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use query_engine::plan::{
-    MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlHdbscanParams,
-    MlLogisticRegressionParams, MlPcaParams, MlPcaSolver, MlRandomForestParams, MlRelationBinding, MlSplitCriterion,
-    MlTsvdParams, MlUmapInit, MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding,
+    MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver, MlHdbscanParams,
+    MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlSplitCriterion, MlTsvdParams, MlUmapInit,
+    MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding,
 };
 
 use crate::{
@@ -66,8 +66,8 @@ pub(super) fn lower_cuml_query_plan(
     })?;
     let decomposition = || {
         let solver = match canonical["solver"].as_str().expect("validated cuML solver") {
-            "cov_eig_dq" => MlPcaSolver::CovEigDq,
-            "cov_eig_jacobi" => MlPcaSolver::CovEigJacobi,
+            "cov_eig_dq" => MlDecompositionSolver::CovEigDq,
+            "cov_eig_jacobi" => MlDecompositionSolver::CovEigJacobi,
             _ => unreachable!("canonical solver is registry validated"),
         };
         let tolerance = canonical["tol"].as_f64().expect("validated cuML tolerance");
@@ -75,15 +75,6 @@ pub(super) fn lower_cuml_query_plan(
         (solver, tolerance, n_iterations)
     };
     let (algorithm, params) = match operation {
-        CumlOperation::Pca => {
-            let (solver, tolerance, n_iterations) = decomposition();
-            let mut params = MlPcaParams::new(relations.remove(0), options.n_components().expect("PCA components"));
-            params.solver = solver;
-            params.tolerance = tolerance;
-            params.n_iterations = n_iterations;
-            params.whiten = canonical["whiten"].as_bool().expect("validated cuML whiten");
-            (MlAlgorithm::Pca, MlAlgorithmParams::Pca(params))
-        },
         CumlOperation::Tsvd => {
             let (solver, tolerance, n_iterations) = decomposition();
             let mut params = MlTsvdParams::new(relations.remove(0), options.n_components().expect("TSVD components"));
