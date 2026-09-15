@@ -511,6 +511,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             residual_predicate: None,
             output_projection,
             null_equality: join.spec.null_equality,
+            null_aware: join.spec.null_aware,
             build_side: join.spec.build_side,
             datafusion_order_preserved_side: join.spec.datafusion_order_preserved_side,
             build_artifact_id: None,

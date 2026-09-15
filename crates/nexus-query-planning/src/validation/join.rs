@@ -42,6 +42,15 @@ pub fn validate_join_capability(
         )
         .with_fact("join_type", join.spec.join_type));
     }
+    if join.spec.null_aware && (join.spec.join_type != JoinType::LeftAnti || join.spec.keys.len() != 1) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.join.validate",
+            "native null-aware joins must be single-key left anti joins",
+        )
+        .with_fact("join_type", join.spec.join_type)
+        .with_fact("key_count", join.spec.keys.len()));
+    }
     if join.spec.join_type == JoinType::Cross && !join.spec.keys.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

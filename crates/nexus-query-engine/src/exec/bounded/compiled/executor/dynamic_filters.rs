@@ -1059,13 +1059,23 @@ fn dynamic_filter_i64_range_from_series(
         arrow::datatypes::DataType::UInt64 => {
             let min = series
                 .min_value::<u64>()
-                .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?
-                .and_then(|value| i64::try_from(value).ok());
+                .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?;
             let max = series
                 .max_value::<u64>()
-                .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?
-                .and_then(|value| i64::try_from(value).ok());
-            Some((min, max))
+                .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?;
+            match (min, max) {
+                // No non-null values: a genuine empty producer keyset.
+                (None, None) => Some((None, None)),
+                (Some(min), Some(max)) => {
+                    let (Ok(min), Ok(max)) = (i64::try_from(min), i64::try_from(max)) else {
+                        // A value above `i64::MAX` cannot be represented in the i64 range
+                        // payload; skip the filter instead of misreporting it as empty.
+                        return Ok(None);
+                    };
+                    Some((Some(min), Some(max)))
+                },
+                (None, Some(_)) | (Some(_), None) => None,
+            }
         },
         _ => None,
     };

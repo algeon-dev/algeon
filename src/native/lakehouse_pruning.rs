@@ -32,7 +32,9 @@ use nexus_query_engine::{
         LakehouseFooterPruningOptions, LakehouseFooterPruningResolver, LocalParquetRowGroupSelection,
         optimize_lakehouse_footer_pruning,
     },
-    parquet_stats::{leaf_column_statistics, row_group_i64_range_for_root_column},
+    parquet_stats::{
+        integer_statistics_range, leaf_column_chunk, leaf_column_statistics, row_group_i64_range_for_root_column,
+    },
     plan::{NodeId, QueryPlan},
     runtime::SourceStorageProfile,
     source::{LocalParquetSource, SourceColumnRef},
@@ -495,12 +497,12 @@ fn static_row_group_may_satisfy_atom(
 ) -> Option<bool> {
     match atom {
         StaticRowGroupPruningAtom::Comparison { column_index, op, literal } => {
-            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
-            static_row_group_may_satisfy_comparison(statistics, *op, literal)
+            let column = leaf_column_chunk(row_group, schema, *column_index)?;
+            static_row_group_may_satisfy_comparison(column, *op, literal)
         },
         StaticRowGroupPruningAtom::InList { column_index, literals } => {
-            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
-            static_row_group_may_satisfy_in_list(statistics, literals)
+            let column = leaf_column_chunk(row_group, schema, *column_index)?;
+            static_row_group_may_satisfy_in_list(column, literals)
         },
         StaticRowGroupPruningAtom::IsNull { column_index } => {
             let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
@@ -514,13 +516,16 @@ fn static_row_group_may_satisfy_atom(
     }
 }
 
-fn static_row_group_may_satisfy_in_list(statistics: &Statistics, literals: &[StaticPruningLiteral]) -> Option<bool> {
+fn static_row_group_may_satisfy_in_list(
+    column: &parquet::file::metadata::ColumnChunkMetaData,
+    literals: &[StaticPruningLiteral],
+) -> Option<bool> {
     if literals.is_empty() {
         return Some(false);
     }
     let mut saw_unknown = false;
     for literal in literals {
-        match static_row_group_may_satisfy_comparison(statistics, BinaryOp::Eq, literal) {
+        match static_row_group_may_satisfy_comparison(column, BinaryOp::Eq, literal) {
             Some(true) => return Some(true),
             Some(false) => {},
             None => saw_unknown = true,
@@ -530,22 +535,16 @@ fn static_row_group_may_satisfy_in_list(statistics: &Statistics, literals: &[Sta
 }
 
 fn static_row_group_may_satisfy_comparison(
-    statistics: &Statistics,
+    column: &parquet::file::metadata::ColumnChunkMetaData,
     op: BinaryOp,
     literal: &StaticPruningLiteral,
 ) -> Option<bool> {
+    let statistics = column.statistics()?;
     match statistics {
-        Statistics::Int32(stats) => {
-            let min = i128::from(*stats.min_opt()?);
-            let max = i128::from(*stats.max_opt()?);
+        Statistics::Int32(_) | Statistics::Int64(_) => {
+            let range = integer_statistics_range(column)?;
             static_integer_or_decimal_literal(literal)
-                .map(|literal| static_i128_range_may_satisfy(min, max, op, literal))
-        },
-        Statistics::Int64(stats) => {
-            let min = i128::from(*stats.min_opt()?);
-            let max = i128::from(*stats.max_opt()?);
-            static_integer_or_decimal_literal(literal)
-                .map(|literal| static_i128_range_may_satisfy(min, max, op, literal))
+                .map(|literal| static_i128_range_may_satisfy(range.min, range.max, op, literal))
         },
         Statistics::Float(stats) => {
             let min = f64::from(*stats.min_opt()?);
@@ -789,7 +788,7 @@ mod tests {
     };
 
     use arrow::{
-        array::{ArrayRef, Int64Array, StructArray},
+        array::{ArrayRef, Int64Array, StructArray, UInt32Array},
         datatypes::{Field, Fields, Schema},
         record_batch::RecordBatch,
     };
@@ -801,8 +800,18 @@ mod tests {
             reader::{FileReader, SerializedFileReader},
         },
     };
+    use parquet::{file::metadata::ColumnChunkMetaData, schema::parser::parse_message_type};
 
     use super::*;
+
+    fn column_chunk_with_statistics(schema_body: &str, statistics: Statistics) -> ColumnChunkMetaData {
+        let parquet_type = parse_message_type(schema_body).expect("test Parquet schema should parse");
+        let schema = Arc::new(SchemaDescriptor::new(Arc::new(parquet_type)));
+        ColumnChunkMetaData::builder(schema.columns()[0].clone())
+            .set_statistics(statistics)
+            .build()
+            .expect("test column metadata should build")
+    }
 
     #[derive(Debug)]
     struct TestSourceError {
@@ -923,48 +932,77 @@ mod tests {
 
     #[test]
     fn static_row_group_comparison_uses_decimal128_literals_against_int64_stats() {
-        let statistics = Statistics::int64(Some(5), Some(7), None, Some(0), false);
+        let column = column_chunk_with_statistics(
+            "message schema { required int64 k; }",
+            Statistics::int64(Some(5), Some(7), None, Some(0), false),
+        );
 
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Eq, &StaticPruningLiteral::Decimal128(6)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::Eq, &StaticPruningLiteral::Decimal128(6)),
             Some(true)
         );
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Eq, &StaticPruningLiteral::Decimal128(8)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::Eq, &StaticPruningLiteral::Decimal128(8)),
             Some(false)
         );
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Lt, &StaticPruningLiteral::Decimal128(5)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::Lt, &StaticPruningLiteral::Decimal128(5)),
             Some(false)
         );
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::GtEq, &StaticPruningLiteral::Decimal128(7)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::GtEq, &StaticPruningLiteral::Decimal128(7)),
             Some(true)
         );
     }
 
     #[test]
     fn static_row_group_comparison_uses_decimal128_literals_against_fixed_len_byte_array_stats() {
-        let statistics = Statistics::fixed_len_byte_array(
-            Some(FixedLenByteArray::from((-10_i128).to_be_bytes().to_vec())),
-            Some(FixedLenByteArray::from(10_i128.to_be_bytes().to_vec())),
-            None,
-            Some(0),
-            false,
+        let column = column_chunk_with_statistics(
+            "message schema { required fixed_len_byte_array(16) k; }",
+            Statistics::fixed_len_byte_array(
+                Some(FixedLenByteArray::from((-10_i128).to_be_bytes().to_vec())),
+                Some(FixedLenByteArray::from(10_i128.to_be_bytes().to_vec())),
+                None,
+                Some(0),
+                false,
+            ),
         );
 
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Eq, &StaticPruningLiteral::Decimal128(0)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::Eq, &StaticPruningLiteral::Decimal128(0)),
             Some(true)
         );
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Lt, &StaticPruningLiteral::Decimal128(-10)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::Lt, &StaticPruningLiteral::Decimal128(-10)),
             Some(false)
         );
         assert_eq!(
-            static_row_group_may_satisfy_comparison(&statistics, BinaryOp::Gt, &StaticPruningLiteral::Decimal128(10)),
+            static_row_group_may_satisfy_comparison(&column, BinaryOp::Gt, &StaticPruningLiteral::Decimal128(10)),
             Some(false)
         );
+    }
+
+    #[test]
+    fn static_row_group_comparison_decodes_unsigned_uint32_statistics_as_unsigned() {
+        let dir = unique_test_dir("lakehouse-static-uint32");
+        fs::create_dir_all(&dir).expect("temporary lakehouse pruning directory should be created");
+        let path = dir.join("uint32.parquet");
+        write_uint32_key_parquet(&path);
+        let reader = SerializedFileReader::try_from(path.as_path()).expect("test parquet file should be readable");
+        let metadata = reader.metadata();
+        assert_eq!(metadata.num_row_groups(), 1);
+        let schema = metadata.file_metadata().schema_descr();
+
+        let predicate = StaticRowGroupPruningExpr::Atom(StaticRowGroupPruningAtom::Comparison {
+            column_index: 0,
+            op: BinaryOp::Eq,
+            literal: StaticPruningLiteral::Int64(3_000_000_000),
+        });
+        assert_eq!(static_row_group_may_satisfy_expr(metadata.row_group(0), schema, &predicate), Some(true));
+
+        assert_eq!(row_group_key_ranges(metadata, 0, &[0]), vec![Some(KeyRange { min: 100, max: 3_000_000_000 })]);
+
+        fs::remove_dir_all(dir).expect("temporary lakehouse pruning directory should be removable");
     }
 
     #[test]
@@ -1067,6 +1105,16 @@ mod tests {
         let result = reader.get_bytes(0..10).await;
         let err = result.expect_err("reading missing object must fail");
         assert!(matches!(err, ParquetError::External(_)), "error should be External ParquetError: {err}");
+    }
+
+    fn write_uint32_key_parquet(path: &Path) {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::UInt32, false)]));
+        let key = Arc::new(UInt32Array::from(vec![100u32, 3_000_000_000u32])) as ArrayRef;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![key]).expect("test batch should be valid");
+        let file = File::create(path).expect("test parquet file should be creatable");
+        let mut writer = ArrowWriter::try_new(file, schema, None).expect("test parquet writer should be valid");
+        writer.write(&batch).expect("test parquet batch should be writable");
+        writer.close().expect("test parquet writer should close");
     }
 
     fn write_nested_key_parquet(path: &Path) {

@@ -483,6 +483,102 @@ fn native_query_executes_left_anti_join_with_left_only_projection() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn null_aware_anti_join_output_qtys<C: TestExecutionContext + ?Sized>(
+    context: &C,
+    runtime: &cudf::Runtime,
+    dir: &std::path::Path,
+    case: &str,
+    left_keys: Vec<Option<i32>>,
+    right_keys: Vec<Option<i32>>,
+) -> Vec<i32> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, true),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let write = |path: &std::path::Path, keys: Vec<Option<i32>>| {
+        let qtys = (0..keys.len() as i32).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(keys)), Arc::new(Int32Array::from(qtys))],
+        )
+        .unwrap();
+        DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    };
+    let left_path = dir.join(format!("{case}-left.parquet"));
+    let right_path = dir.join(format!("{case}-right.parquet"));
+    write(&left_path, left_keys);
+    write(&right_path, right_keys);
+
+    let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
+    let left_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["key".to_string(), "qty".to_string()],
+    );
+    let right_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftAnti,
+            vec![JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "key", "left_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "key", "right_key"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"),
+            "qty",
+        )])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right)
+        .with_null_aware(true),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+
+    let result = execute_query_plan(context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    (0..batch.num_rows()).map(|row| int32_array(batch, 0).value(row)).collect()
+}
+
+#[test]
+fn native_query_executes_null_aware_left_anti_join_not_in_semantics() {
+    let dir = unique_temp_dir("nexus-query-engine-native-null-aware-anti-join");
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
+
+    assert_eq!(
+        null_aware_anti_join_output_qtys(
+            &context,
+            &runtime,
+            &dir,
+            "null-right-key",
+            vec![Some(1), Some(2)],
+            vec![Some(1), None]
+        ),
+        Vec::<i32>::new(),
+        "a NULL right key should empty a null-aware anti join"
+    );
+    assert_eq!(
+        null_aware_anti_join_output_qtys(&context, &runtime, &dir, "null-left-key", vec![Some(1), None], vec![Some(9)]),
+        vec![0],
+        "a NULL left key should drop out when the right input is non-empty"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn native_query_executes_left_mark_join_with_boolean_mark_column() {
     let dir = unique_temp_dir("nexus-query-engine-native-left-mark-join");

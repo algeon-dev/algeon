@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use parquet::{
-    basic::{ConvertedType, Encoding, LogicalType, Type as ParquetPhysicalType},
+    basic::{ConvertedType, Encoding, LogicalType, SortOrder, Type as ParquetPhysicalType},
     file::{
-        metadata::{ParquetMetaData, RowGroupMetaData},
+        metadata::{ColumnChunkMetaData, ParquetMetaData, RowGroupMetaData},
         statistics::Statistics,
     },
     schema::types::SchemaDescriptor,
@@ -72,14 +72,23 @@ pub fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_i
     leaf_indices.next().is_none().then_some(leaf_index)
 }
 
+/// Returns the column chunk metadata for a top-level primitive root column represented by one leaf.
+pub fn leaf_column_chunk<'a>(
+    row_group: &'a RowGroupMetaData,
+    schema: &SchemaDescriptor,
+    root_column_index: usize,
+) -> Option<&'a ColumnChunkMetaData> {
+    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
+    row_group.columns().get(leaf_column_index)
+}
+
 /// Returns statistics for a top-level primitive root column represented by one leaf.
 pub fn leaf_column_statistics<'a>(
     row_group: &'a RowGroupMetaData,
     schema: &SchemaDescriptor,
     root_column_index: usize,
 ) -> Option<&'a Statistics> {
-    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
-    row_group.columns().get(leaf_column_index)?.statistics()
+    leaf_column_chunk(row_group, schema, root_column_index)?.statistics()
 }
 
 /// Which encoded byte count to read from a Parquet column chunk.
@@ -225,6 +234,51 @@ pub fn row_group_null_counts_by_root_column(metadata: &ParquetMetaData) -> BTree
         .collect()
 }
 
+/// Inclusive integer range decoded from Parquet Int32/Int64 statistics, wide
+/// enough to hold both the signed and unsigned physical-slot domains.
+///
+/// Parquet stores `Integer{is_signed:false}` / converted `UINT_8/16/32/64`
+/// column min/max in the same physical INT32/INT64 statistics slot as signed
+/// values, ordered by unsigned comparison. Decoding that slot as plain `i32`
+/// / `i64` sign-extends values above the signed range (e.g. a `UInt32` max of
+/// `3_000_000_000` decodes as a negative `i32`). `i128` is wide enough to hold
+/// an unsigned `u64` without truncation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegerStatisticsRange {
+    /// Minimum integer value recorded by Parquet statistics.
+    pub min: i128,
+    /// Maximum integer value recorded by Parquet statistics.
+    pub max: i128,
+}
+
+/// Decodes Int32/Int64 Parquet statistics into an inclusive range, reading
+/// unsigned-sorted columns as unsigned. Other physical types return `None`.
+pub fn integer_statistics_range(column: &ColumnChunkMetaData) -> Option<IntegerStatisticsRange> {
+    let statistics = column.statistics()?;
+    let unsigned = column.column_descr().sort_order() == SortOrder::UNSIGNED;
+    match statistics {
+        Statistics::Int32(stats) => {
+            let min = *stats.min_opt()?;
+            let max = *stats.max_opt()?;
+            Some(if unsigned {
+                IntegerStatisticsRange { min: i128::from(min as u32), max: i128::from(max as u32) }
+            } else {
+                IntegerStatisticsRange { min: i128::from(min), max: i128::from(max) }
+            })
+        },
+        Statistics::Int64(stats) => {
+            let min = *stats.min_opt()?;
+            let max = *stats.max_opt()?;
+            Some(if unsigned {
+                IntegerStatisticsRange { min: i128::from(min as u64), max: i128::from(max as u64) }
+            } else {
+                IntegerStatisticsRange { min: i128::from(min), max: i128::from(max) }
+            })
+        },
+        _ => None,
+    }
+}
+
 /// Inclusive `i64` range decoded from integer Parquet statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct I64StatisticsRange {
@@ -234,20 +288,13 @@ pub struct I64StatisticsRange {
     pub max: i64,
 }
 
-/// Decodes Int32/Int64 Parquet statistics into an inclusive `i64` range.
-pub fn statistics_i64_range(statistics: &Statistics) -> Option<I64StatisticsRange> {
-    match statistics {
-        Statistics::Int32(stats) => {
-            Some(I64StatisticsRange { min: i64::from(*stats.min_opt()?), max: i64::from(*stats.max_opt()?) })
-        },
-        Statistics::Int64(stats) => Some(I64StatisticsRange { min: *stats.min_opt()?, max: *stats.max_opt()? }),
-        _ => None,
-    }
-}
-
-/// Decodes Int32/Int64 statistics for a leaf column in a row group.
+/// Decodes Int32/Int64 statistics for a leaf column in a row group, narrowed
+/// to `i64`. Returns `None` (unknown stats; callers retain the row group)
+/// when the logical-type-aware range does not fit `i64`, e.g. a `UINT_64`
+/// column with a value above `i64::MAX`.
 pub fn row_group_i64_range(row_group: &RowGroupMetaData, leaf_column_index: usize) -> Option<I64StatisticsRange> {
-    statistics_i64_range(row_group.columns().get(leaf_column_index)?.statistics()?)
+    let range = integer_statistics_range(row_group.columns().get(leaf_column_index)?)?;
+    Some(I64StatisticsRange { min: i64::try_from(range.min).ok()?, max: i64::try_from(range.max).ok()? })
 }
 
 /// Decodes Int32/Int64 statistics for a primitive root represented by one leaf.
@@ -266,14 +313,60 @@ mod tests {
 
     use parquet::{
         basic::Encoding,
-        file::metadata::{ColumnChunkMetaData, FileMetaData, ParquetMetaData, RowGroupMetaData},
+        file::{
+            metadata::{ColumnChunkMetaData, FileMetaData, ParquetMetaData, RowGroupMetaData},
+            statistics::Statistics,
+        },
         schema::{parser::parse_message_type, types::SchemaDescriptor},
     };
 
     use super::{
-        ParquetVariableWidthEncodingProof, single_leaf_primitive_root_column_index,
-        variable_width_payload_evidence_for_root_column,
+        I64StatisticsRange, ParquetVariableWidthEncodingProof, row_group_i64_range,
+        single_leaf_primitive_root_column_index, variable_width_payload_evidence_for_root_column,
     };
+
+    fn row_group_with_statistics(schema_body: &str, statistics: Statistics) -> RowGroupMetaData {
+        let parquet_type = parse_message_type(schema_body).expect("test Parquet schema should parse");
+        let schema = Arc::new(SchemaDescriptor::new(Arc::new(parquet_type)));
+        let column = ColumnChunkMetaData::builder(schema.columns()[0].clone())
+            .set_statistics(statistics)
+            .build()
+            .expect("test column metadata should build");
+        RowGroupMetaData::builder(Arc::clone(&schema))
+            .set_num_rows(2)
+            .add_column_metadata(column)
+            .build()
+            .expect("test row-group metadata should build")
+    }
+
+    #[test]
+    fn row_group_i64_range_decodes_unsigned_int32_statistics_as_unsigned() {
+        let row_group = row_group_with_statistics(
+            "message schema { required int32 k (INTEGER(32,false)); }",
+            Statistics::int32(Some(100), Some(3_000_000_000u32 as i32), None, None, false),
+        );
+        let range = row_group_i64_range(&row_group, 0).expect("unsigned int32 stats should decode");
+        assert_eq!(range, I64StatisticsRange { min: 100, max: 3_000_000_000 });
+    }
+
+    #[test]
+    fn row_group_i64_range_is_none_for_unsigned_int64_beyond_i64_max() {
+        let row_group = row_group_with_statistics(
+            "message schema { required int64 k (INTEGER(64,false)); }",
+            Statistics::int64(Some(0), Some(u64::MAX as i64), None, None, false),
+        );
+        assert_eq!(row_group_i64_range(&row_group, 0), None);
+    }
+
+    #[test]
+    fn row_group_i64_range_keeps_signed_int32_statistics_unchanged() {
+        let row_group = row_group_with_statistics(
+            "message schema { required int32 k; }",
+            Statistics::int32(Some(-5), Some(42), None, None, false),
+        );
+        let range = row_group_i64_range(&row_group, 0).expect("signed int32 stats should decode");
+        assert_eq!(range, I64StatisticsRange { min: -5, max: 42 });
+    }
 
     fn variable_width_metadata(
         schema_body: &str,

@@ -1778,6 +1778,9 @@ pub nexus_query_planning::parquet_stats::ParquetVariableWidthEncodingProof::Plai
 pub struct nexus_query_planning::parquet_stats::I64StatisticsRange
 pub nexus_query_planning::parquet_stats::I64StatisticsRange::max: i64
 pub nexus_query_planning::parquet_stats::I64StatisticsRange::min: i64
+pub struct nexus_query_planning::parquet_stats::IntegerStatisticsRange
+pub nexus_query_planning::parquet_stats::IntegerStatisticsRange::max: i128
+pub nexus_query_planning::parquet_stats::IntegerStatisticsRange::min: i128
 pub struct nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence
 pub nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence::encoding_proof: nexus_query_planning::parquet_stats::ParquetVariableWidthEncodingProof
 pub nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence::payload_upper_bound_bytes: u64
@@ -1785,6 +1788,8 @@ pub nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence::ph
 pub nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence::selected_row_groups: alloc::vec::Vec<usize>
 impl nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence
 pub fn nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence::new(usize, alloc::vec::Vec<usize>, u64, nexus_query_planning::parquet_stats::ParquetVariableWidthEncodingProof) -> Self
+pub fn nexus_query_planning::parquet_stats::integer_statistics_range(&parquet::file::metadata::ColumnChunkMetaData) -> core::option::Option<nexus_query_planning::parquet_stats::IntegerStatisticsRange>
+pub fn nexus_query_planning::parquet_stats::leaf_column_chunk<'a>(&'a parquet::file::metadata::RowGroupMetaData, &parquet::schema::types::SchemaDescriptor, usize) -> core::option::Option<&'a parquet::file::metadata::ColumnChunkMetaData>
 pub fn nexus_query_planning::parquet_stats::leaf_column_statistics<'a>(&'a parquet::file::metadata::RowGroupMetaData, &parquet::schema::types::SchemaDescriptor, usize) -> core::option::Option<&'a parquet::file::statistics::Statistics>
 pub fn nexus_query_planning::parquet_stats::row_group_column_bytes(&parquet::file::metadata::RowGroupMetaData, &alloc::collections::btree::set::BTreeSet<usize>, nexus_query_planning::parquet_stats::ColumnByteKind) -> core::option::Option<u64>
 pub fn nexus_query_planning::parquet_stats::row_group_i64_range(&parquet::file::metadata::RowGroupMetaData, usize) -> core::option::Option<nexus_query_planning::parquet_stats::I64StatisticsRange>
@@ -1792,7 +1797,6 @@ pub fn nexus_query_planning::parquet_stats::row_group_i64_range_for_root_column(
 pub fn nexus_query_planning::parquet_stats::row_group_null_counts_by_root_column(&parquet::file::metadata::ParquetMetaData) -> alloc::collections::btree::map::BTreeMap<usize, alloc::vec::Vec<core::option::Option<u64>>>
 pub fn nexus_query_planning::parquet_stats::row_group_null_counts_for_root_column(&parquet::file::metadata::ParquetMetaData, usize) -> core::option::Option<alloc::vec::Vec<core::option::Option<u64>>>
 pub fn nexus_query_planning::parquet_stats::single_leaf_primitive_root_column_index(&parquet::schema::types::SchemaDescriptor, usize) -> core::option::Option<usize>
-pub fn nexus_query_planning::parquet_stats::statistics_i64_range(&parquet::file::statistics::Statistics) -> core::option::Option<nexus_query_planning::parquet_stats::I64StatisticsRange>
 pub fn nexus_query_planning::parquet_stats::variable_width_payload_evidence_by_root_column(&parquet::file::metadata::ParquetMetaData, &alloc::collections::btree::set::BTreeSet<usize>, core::option::Option<&[usize]>) -> alloc::collections::btree::map::BTreeMap<usize, nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence>
 pub fn nexus_query_planning::parquet_stats::variable_width_payload_evidence_for_root_column(&parquet::file::metadata::ParquetMetaData, usize, core::option::Option<&[usize]>) -> core::option::Option<nexus_query_planning::parquet_stats::ParquetVariableWidthPayloadEvidence>
 pub mod nexus_query_planning::pipeline
@@ -2758,6 +2762,7 @@ pub nexus_query_planning::plan::JoinSpec::datafusion_order_preserved_side: nexus
 pub nexus_query_planning::plan::JoinSpec::join_type: nexus_query_planning::plan::JoinType
 pub nexus_query_planning::plan::JoinSpec::keys: alloc::vec::Vec<nexus_query_planning::plan::JoinKey>
 pub nexus_query_planning::plan::JoinSpec::mark_column_name: core::option::Option<alloc::string::String>
+pub nexus_query_planning::plan::JoinSpec::null_aware: bool
 pub nexus_query_planning::plan::JoinSpec::null_equality: nexus_query_planning::plan::JoinNullEquality
 pub nexus_query_planning::plan::JoinSpec::output_projection: alloc::vec::Vec<nexus_query_planning::plan::JoinOutputColumn>
 pub nexus_query_planning::plan::JoinSpec::residual_predicate: core::option::Option<nexus_query_planning::expr::Expr>
@@ -2768,6 +2773,7 @@ pub fn nexus_query_planning::plan::JoinSpec::with_build_artifact_id(self, impl c
 pub fn nexus_query_planning::plan::JoinSpec::with_build_side(self, nexus_query_planning::plan::JoinSide) -> Self
 pub fn nexus_query_planning::plan::JoinSpec::with_datafusion_order_preserved_side(self, nexus_query_planning::plan::JoinSide) -> Self
 pub fn nexus_query_planning::plan::JoinSpec::with_mark_column_name(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn nexus_query_planning::plan::JoinSpec::with_null_aware(self, bool) -> Self
 pub fn nexus_query_planning::plan::JoinSpec::with_null_equality(self, nexus_query_planning::plan::JoinNullEquality) -> Self
 pub fn nexus_query_planning::plan::JoinSpec::with_output_projection(self, alloc::vec::Vec<nexus_query_planning::plan::JoinOutputColumn>) -> Self
 pub fn nexus_query_planning::plan::JoinSpec::with_preserved_total_payload_bound_for_output(self, impl core::convert::Into<alloc::string::String>) -> Self

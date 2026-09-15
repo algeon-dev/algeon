@@ -149,6 +149,7 @@ pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     input_build_bytes: u64,
     filtered_join: GpuFilteredJoinBuildHandle,
     hash_table_bytes: u64,
+    null_aware_probe: NullAwareAntiProbe,
     timer: Instant,
 }
 

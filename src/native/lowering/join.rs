@@ -452,6 +452,7 @@ pub(super) fn lower_hash_join_input(
     let mut spec = NativeJoinSpec::new(canonical.join_type, keys)
         .with_output_projection(output_columns.projection)
         .with_null_equality(lower_join_null_equality(join.join.null_equality()))
+        .with_null_aware(join.join.null_aware)
         .with_build_side(build_side)
         .with_datafusion_order_preserved_side(datafusion_order_preserved_side);
     if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {

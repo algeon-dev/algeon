@@ -77,6 +77,85 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn null_aware_anti_join_rows(batches: &[RecordBatch]) -> Vec<(Option<i32>, i32)> {
+    let mut rows = batches
+        .iter()
+        .flat_map(|batch| {
+            let keys = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            let payloads = batch.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
+            (0..batch.num_rows()).map(|row| (keys.is_valid(row).then(|| keys.value(row)), payloads.value(row)))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+    rows
+}
+
+fn assert_null_aware_anti_join_native_matches_datafusion(
+    plan: Arc<dyn ExecutionPlan>,
+    expected_rows: Vec<(Option<i32>, i32)>,
+) {
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.selected_count(), 1, "report={report:?}; diagnostics={:?}", rule.last_planning_diagnostics());
+
+    let native_rows = null_aware_anti_join_rows(
+        &futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap(),
+    );
+    let datafusion_rows = null_aware_anti_join_rows(
+        &futures::executor::block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap(),
+    );
+    assert_eq!(native_rows, expected_rows);
+    assert_eq!(datafusion_rows, expected_rows);
+}
+
+#[test]
+fn native_optimizer_rule_executes_null_aware_left_anti_join_with_null_right_key_as_empty() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-null-aware-anti-join-null-right-key");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_null_aware_anti_join_left_parquet_file(&left);
+    write_null_aware_anti_join_right_parquet_file(&right, vec![Some(1), None]);
+    let plan = root_null_aware_left_anti_join_plan(&left, parquet_scan(&right));
+
+    assert_null_aware_anti_join_native_matches_datafusion(plan, vec![]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_executes_null_aware_left_anti_join_drops_null_left_key_when_right_is_nonempty() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-null-aware-anti-join-drops-null-left-key");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_null_aware_anti_join_left_parquet_file(&left);
+    write_null_aware_anti_join_right_parquet_file(&right, vec![Some(1), Some(2)]);
+    let plan = root_null_aware_left_anti_join_plan(&left, parquet_scan(&right));
+
+    assert_null_aware_anti_join_native_matches_datafusion(plan, vec![(Some(4), 40)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_executes_null_aware_left_anti_join_keeps_null_left_key_when_right_is_empty_at_runtime() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-null-aware-anti-join-empty-right");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_null_aware_anti_join_left_parquet_file(&left);
+    write_null_aware_anti_join_right_parquet_file(&right, vec![Some(7)]);
+    let plan = root_null_aware_left_anti_join_plan(&left, filter_scan_to_empty_at_runtime(parquet_scan(&right)));
+
+    assert_null_aware_anti_join_native_matches_datafusion(
+        plan,
+        vec![(None, 30), (Some(1), 10), (Some(2), 20), (Some(4), 40)],
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-q11-admission");
