@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use super::{
     AggregateNode, AggregateSpec, EdgeNormalizeNode, EdgeNormalizeSpec, Expr, Field, FilterNode, GraphAlgorithmNode,
-    GraphAlgorithmSpec, GraphConstructionPolicy, JoinNode, JoinSpec, LimitNode, LimitSpec, NodeId, PlanFacts, PlanNode,
-    ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink, Schema, SchemaBehavior, SchemaRef, SortNode,
-    SortSpec, SourceNode, UnionNode, VectorAlgorithmNode, VectorAlgorithmSpec, WindowNode, WindowSpec,
+    GraphAlgorithmSpec, GraphConstructionPolicy, JoinNode, JoinSpec, LimitNode, LimitSpec, MlAlgorithmNode,
+    MlAlgorithmSpec, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink,
+    Schema, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode,
+    VectorAlgorithmSpec, WindowNode, WindowSpec,
 };
 use crate::error::{QueryError, QueryErrorCode, Result};
 
@@ -258,6 +259,31 @@ impl QueryPlanBuilder {
         Ok(self.push(
             PlanNode::VectorAlgorithm(VectorAlgorithmNode { inputs, spec }),
             PlanFacts::device(output_schema, SchemaBehavior::VectorAlgorithm),
+        ))
+    }
+
+    /// Adds a cuML node over its ordered relation bindings.
+    pub fn add_ml_algorithm(&mut self, spec: MlAlgorithmSpec) -> NodeId {
+        self.try_add_ml_algorithm(spec).expect("ML algorithm relation inputs must exist")
+    }
+
+    pub fn try_add_ml_algorithm(&mut self, spec: MlAlgorithmSpec) -> Result<NodeId> {
+        let inputs = spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>();
+        for input in &inputs {
+            if self.nodes.get(input.index()).is_none() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "query_engine.plan.builder.ml_algorithm",
+                    "ML algorithm references a missing or forward relation input",
+                )
+                .with_fact("algorithm", spec.algorithm.as_str())
+                .with_fact("input", input));
+            }
+        }
+        let output_schema = Arc::clone(&spec.output_schema);
+        Ok(self.push(
+            PlanNode::MlAlgorithm(MlAlgorithmNode { inputs, spec }),
+            PlanFacts::device(output_schema, SchemaBehavior::MlAlgorithm),
         ))
     }
 

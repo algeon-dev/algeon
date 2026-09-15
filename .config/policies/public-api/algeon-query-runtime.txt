@@ -904,6 +904,9 @@ pub query_runtime::observability::RuntimeOperatorStageKind::FinalMerge
 pub query_runtime::observability::RuntimeOperatorStageKind::FinalSort
 pub query_runtime::observability::RuntimeOperatorStageKind::HashPartition
 pub query_runtime::observability::RuntimeOperatorStageKind::LibcudfGroupby
+pub query_runtime::observability::RuntimeOperatorStageKind::MlAssemble
+pub query_runtime::observability::RuntimeOperatorStageKind::MlNative
+pub query_runtime::observability::RuntimeOperatorStageKind::MlPack
 pub query_runtime::observability::RuntimeOperatorStageKind::PartialAggregate
 pub query_runtime::observability::RuntimeOperatorStageKind::PartitionLocalTopK
 pub query_runtime::observability::RuntimeOperatorStageKind::PreparedGroupbyAggregate
@@ -1580,6 +1583,7 @@ pub fn query_runtime::observability::RuntimeOperatorStageGuard::cancel(self)
 pub fn query_runtime::observability::RuntimeOperatorStageGuard::fail(self, &query_planning::error::QueryError)
 pub fn query_runtime::observability::RuntimeOperatorStageGuard::finish(self, core::option::Option<u64>, core::option::Option<u64>)
 pub fn query_runtime::observability::RuntimeOperatorStageGuard::finish_with_bounded_control_scalars(self, core::option::Option<u64>, core::option::Option<u64>, u64, u64)
+pub fn query_runtime::observability::RuntimeOperatorStageGuard::finish_with_strategy_label(self, impl core::convert::Into<alloc::string::String>, core::option::Option<u64>, core::option::Option<u64>)
 pub fn query_runtime::observability::RuntimeOperatorStageGuard::start(query_runtime::observability::RuntimeObservationHandle, core::option::Option<query_runtime::observability::PlanExecutionId>, core::option::Option<query_runtime::observability::RuntimeSpanId>, query_runtime::observability::RuntimeOperatorStageKind, query_runtime::observability::RuntimeOperatorStageIdentity) -> Self
 impl core::ops::drop::Drop for query_runtime::observability::RuntimeOperatorStageGuard
 pub fn query_runtime::observability::RuntimeOperatorStageGuard::drop(&mut self)
@@ -1592,6 +1596,7 @@ pub query_runtime::observability::RuntimeOperatorStageIdentity::execution_bindin
 pub query_runtime::observability::RuntimeOperatorStageIdentity::input_bytes: core::option::Option<u64>
 pub query_runtime::observability::RuntimeOperatorStageIdentity::input_rows: core::option::Option<u64>
 pub query_runtime::observability::RuntimeOperatorStageIdentity::matrix_layout: core::option::Option<alloc::string::String>
+pub query_runtime::observability::RuntimeOperatorStageIdentity::ml_algorithm: core::option::Option<alloc::string::String>
 pub query_runtime::observability::RuntimeOperatorStageIdentity::native_version: core::option::Option<(u16, u16, u16)>
 pub query_runtime::observability::RuntimeOperatorStageIdentity::node_id: core::option::Option<alloc::string::String>
 pub query_runtime::observability::RuntimeOperatorStageIdentity::partition_index: core::option::Option<usize>
@@ -1611,6 +1616,7 @@ pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_executio
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_input_bytes(self, u64) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_input_rows(self, u64) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_matrix_layout(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_ml_algorithm(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_native_version(self, u16, u16, u16) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_node_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageIdentity::with_partition_index(self, usize) -> Self
@@ -1631,6 +1637,7 @@ pub query_runtime::observability::RuntimeOperatorStageObservation::input_bytes: 
 pub query_runtime::observability::RuntimeOperatorStageObservation::input_rows: core::option::Option<u64>
 pub query_runtime::observability::RuntimeOperatorStageObservation::lifecycle: query_runtime::observability::RuntimeOperatorStageState
 pub query_runtime::observability::RuntimeOperatorStageObservation::matrix_layout: core::option::Option<alloc::string::String>
+pub query_runtime::observability::RuntimeOperatorStageObservation::ml_algorithm: core::option::Option<alloc::string::String>
 pub query_runtime::observability::RuntimeOperatorStageObservation::native_version_major: core::option::Option<u16>
 pub query_runtime::observability::RuntimeOperatorStageObservation::native_version_minor: core::option::Option<u16>
 pub query_runtime::observability::RuntimeOperatorStageObservation::native_version_patch: core::option::Option<u16>
@@ -1655,6 +1662,7 @@ pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_execu
 pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_input_bytes(self, u64) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_input_rows(self, u64) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_matrix_layout(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_ml_algorithm(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_native_version(self, u16, u16, u16) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_node_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_runtime::observability::RuntimeOperatorStageObservation::with_output_bytes(self, u64) -> Self

@@ -1,7 +1,84 @@
+#[cfg(feature = "cuml")]
+use cudf::CudfAllocationAttribution;
+#[cfg(feature = "cuml")]
+use cuml::{ErrorCode, ErrorKind, ErrorStatus};
 use query_planning::error::QueryErrorCode;
 
+#[cfg(feature = "cuml")]
+use super::classify_cuml_error;
+#[cfg(feature = "cuvs")]
 use super::cuvs_query_error;
 
+#[cfg(feature = "cuml")]
+#[test]
+fn cuml_error_projection_uses_typed_code_kind_status_and_allocation_source() {
+    use CudfAllocationAttribution::{
+        ConfirmedPhysical, ConfirmedQueryLimit, NonAllocationFailure, UnattributedAllocationFailure,
+    };
+    let cases = [
+        (
+            ErrorCode::HostOutOfMemory,
+            ErrorKind::ResourceExhausted,
+            ErrorStatus::Temporary,
+            UnattributedAllocationFailure,
+            QueryErrorCode::CudfTemporaryFailure,
+        ),
+        (
+            ErrorCode::OutOfMemory,
+            ErrorKind::ResourceExhausted,
+            ErrorStatus::Temporary,
+            ConfirmedQueryLimit,
+            QueryErrorCode::QueryMemoryLimitExceeded,
+        ),
+        (
+            ErrorCode::OutOfMemory,
+            ErrorKind::ResourceExhausted,
+            ErrorStatus::Temporary,
+            ConfirmedPhysical,
+            QueryErrorCode::DeviceOutOfMemory,
+        ),
+        (
+            ErrorCode::OutOfMemory,
+            ErrorKind::ResourceExhausted,
+            ErrorStatus::Temporary,
+            UnattributedAllocationFailure,
+            QueryErrorCode::DeviceAllocationFailed,
+        ),
+        (
+            ErrorCode::RuntimeBindingMismatch,
+            ErrorKind::ExecutionContext,
+            ErrorStatus::Permanent,
+            NonAllocationFailure,
+            QueryErrorCode::InternalInvariantViolation,
+        ),
+        (
+            ErrorCode::CudaRuntime,
+            ErrorKind::DependencyFailure,
+            ErrorStatus::Temporary,
+            NonAllocationFailure,
+            QueryErrorCode::CudfTemporaryFailure,
+        ),
+        (
+            ErrorCode::FatalCuda,
+            ErrorKind::DependencyFailure,
+            ErrorStatus::Persistent,
+            NonAllocationFailure,
+            QueryErrorCode::DeviceFault,
+        ),
+        (
+            ErrorCode::ForeignUnknown,
+            ErrorKind::DependencyFailure,
+            ErrorStatus::Permanent,
+            NonAllocationFailure,
+            QueryErrorCode::CudfDependencyFailure,
+        ),
+    ];
+    for (code, kind, status, attribution, expected) in cases {
+        assert_eq!(classify_cuml_error(code, kind, status, attribution), expected, "{code:?} {attribution:?}");
+    }
+}
+
+#[cfg(feature = "cuvs")]
 #[test]
 fn cuvs_query_error_maps_only_typed_kind_and_status() {
     let cases = [
@@ -32,6 +109,7 @@ fn cuvs_query_error_maps_only_typed_kind_and_status() {
     }
 }
 
+#[cfg(feature = "cuvs")]
 #[test]
 fn cuvs_query_error_duplicate_context_projects_effective_value_without_panic() {
     let source = cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.duplicate")

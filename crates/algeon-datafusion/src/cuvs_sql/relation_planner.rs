@@ -1,17 +1,21 @@
 use std::sync::Arc;
 
 use datafusion::{
-    common::{DFSchema, DataFusionError, Result, ScalarValue},
+    common::{DFSchema, DataFusionError, Result},
     logical_expr::{
-        Expr, Extension, LogicalPlan,
+        Extension, LogicalPlan,
         planner::{PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning},
     },
     sql::sqlparser::ast::{Expr as SqlExpr, TableFactor},
 };
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 
-use super::{CuvsLogicalNode, CuvsOperation, CuvsOptionKind, error::invalid_call, options::options_from_named_values};
-use crate::gpu_functions::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments};
+use super::{CuvsLogicalNode, CuvsOperation, GpuOptionKind, error::invalid_call, options::options_from_named_values};
+use crate::gpu_functions::{
+    bind_named_arguments,
+    dense_relation::dense_relation_argument_definitions,
+    scalar_arguments::{scalar_json, scalar_literal},
+};
 
 #[derive(Debug, Default)]
 pub struct CuvsRelationPlanner;
@@ -60,7 +64,10 @@ impl RelationPlanner for CuvsRelationPlanner {
             ));
         }
 
-        let definitions = argument_definitions(operation);
+        let definitions = dense_relation_argument_definitions(
+            operation.descriptor().relation_roles.iter().map(|role| role.as_str()),
+            operation.descriptor().options,
+        );
         let mut arguments =
             bind_named_arguments(operation.descriptor().sql_function_name, function_args, &definitions, |ident| {
                 context.normalize_ident(ident)
@@ -80,7 +87,7 @@ impl RelationPlanner for CuvsRelationPlanner {
 
         let mut values = Map::new();
         for option in operation.descriptor().options {
-            if matches!(option.kind, CuvsOptionKind::RelationBinding) {
+            if matches!(option.kind, GpuOptionKind::RelationBinding) {
                 continue;
             }
             if let Some(expression) = arguments.take_value(option.name) {
@@ -106,22 +113,6 @@ fn recognized_operation(relation: &TableFactor, context: &dyn RelationPlannerCon
     CuvsOperation::from_sql_function_name(&context.normalize_ident(ident))
 }
 
-fn argument_definitions(operation: CuvsOperation) -> Vec<NamedArgumentDefinition> {
-    let descriptor = operation.descriptor();
-    descriptor
-        .relation_roles
-        .iter()
-        .map(|role| NamedArgumentDefinition { name: role.as_str(), kind: NamedArgumentKind::Relation, required: true })
-        .chain(descriptor.options.iter().filter_map(|option| {
-            (!matches!(option.kind, CuvsOptionKind::RelationBinding)).then_some(NamedArgumentDefinition {
-                name: option.name,
-                kind: NamedArgumentKind::Value,
-                required: option.required,
-            })
-        }))
-        .collect()
-}
-
 fn value_argument(
     operation: CuvsOperation,
     name: &'static str,
@@ -129,79 +120,8 @@ fn value_argument(
     context: &mut dyn RelationPlannerContext,
 ) -> Result<Value> {
     let expression = context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?;
-    scalar_literal(operation, name, expression).and_then(|value| scalar_json(operation, name, value))
-}
-
-fn scalar_literal(operation: CuvsOperation, name: &'static str, expression: Expr) -> Result<ScalarValue> {
-    match expression {
-        Expr::Literal(value, _) => Ok(value),
-        Expr::Negative(inner) => negate_scalar(operation, name, scalar_literal(operation, name, *inner)?),
-        Expr::Cast(cast) => scalar_literal(operation, name, *cast.expr)?
-            .cast_to(cast.field.data_type())
-            .map_err(|_| invalid_value(operation, name)),
-        _ => Err(invalid_value(operation, name)),
-    }
-}
-
-fn negate_scalar(operation: CuvsOperation, name: &'static str, value: ScalarValue) -> Result<ScalarValue> {
     let invalid = || invalid_value(operation, name);
-    match value {
-        ScalarValue::Int8(Some(value)) => {
-            value.checked_neg().map(|value| ScalarValue::Int8(Some(value))).ok_or_else(invalid)
-        },
-        ScalarValue::Int16(Some(value)) => {
-            value.checked_neg().map(|value| ScalarValue::Int16(Some(value))).ok_or_else(invalid)
-        },
-        ScalarValue::Int32(Some(value)) => {
-            value.checked_neg().map(|value| ScalarValue::Int32(Some(value))).ok_or_else(invalid)
-        },
-        ScalarValue::Int64(Some(value)) => {
-            value.checked_neg().map(|value| ScalarValue::Int64(Some(value))).ok_or_else(invalid)
-        },
-        ScalarValue::Float32(Some(value)) => Ok(ScalarValue::Float32(Some(-value))),
-        ScalarValue::Float64(Some(value)) => Ok(ScalarValue::Float64(Some(-value))),
-        _ => Err(invalid()),
-    }
-}
-
-fn scalar_json(operation: CuvsOperation, name: &'static str, value: ScalarValue) -> Result<Value> {
-    let value = match value {
-        ScalarValue::Null
-        | ScalarValue::Boolean(None)
-        | ScalarValue::Int8(None)
-        | ScalarValue::Int16(None)
-        | ScalarValue::Int32(None)
-        | ScalarValue::Int64(None)
-        | ScalarValue::UInt8(None)
-        | ScalarValue::UInt16(None)
-        | ScalarValue::UInt32(None)
-        | ScalarValue::UInt64(None)
-        | ScalarValue::Float32(None)
-        | ScalarValue::Float64(None)
-        | ScalarValue::Utf8(None)
-        | ScalarValue::LargeUtf8(None)
-        | ScalarValue::Utf8View(None) => Value::Null,
-        ScalarValue::Boolean(Some(value)) => Value::Bool(value),
-        ScalarValue::Int8(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::Int16(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::Int32(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::Int64(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::UInt8(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::UInt16(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::UInt32(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::UInt64(Some(value)) => Value::Number(Number::from(value)),
-        ScalarValue::Float32(Some(value)) => {
-            Number::from_f64(f64::from(value)).map(Value::Number).ok_or_else(|| invalid_value(operation, name))?
-        },
-        ScalarValue::Float64(Some(value)) => {
-            Number::from_f64(value).map(Value::Number).ok_or_else(|| invalid_value(operation, name))?
-        },
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
-            Value::String(value)
-        },
-        _ => return Err(invalid_value(operation, name)),
-    };
-    Ok(value)
+    scalar_literal(&invalid, expression).and_then(|value| scalar_json(&invalid, value))
 }
 
 fn invalid_value(operation: CuvsOperation, name: &'static str) -> DataFusionError {

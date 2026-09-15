@@ -184,7 +184,8 @@ impl NativePlanCostFacts {
                 | PlanNode::Union(_)
                 | PlanNode::EdgeNormalize(_)
                 | PlanNode::GraphAlgorithm(_)
-                | PlanNode::VectorAlgorithm(_) => {},
+                | PlanNode::VectorAlgorithm(_)
+                | PlanNode::MlAlgorithm(_) => {},
             }
         }
 

@@ -3,6 +3,8 @@
 #[cfg(not(feature = "cugraph"))]
 #[path = "cpu_contract/cugraph_sql_feature_off_tests.rs"]
 mod cugraph_sql_feature_off_tests;
+#[path = "cpu_contract/cuml_sql_tests.rs"]
+mod cuml_sql_tests;
 #[path = "cpu_contract/cuvs_sql_tests.rs"]
 mod cuvs_sql_tests;
 #[path = "cpu_contract/observability_facade_tests.rs"]

@@ -43,6 +43,7 @@ pub(crate) mod lakehouse;
 mod metrics;
 mod occurrence;
 mod producer;
+pub(crate) mod relation_function;
 
 pub(crate) use common::{NativeHostOutputCursor, native_host_output_stream, run_gpu_execution_task};
 

@@ -19,7 +19,7 @@ use crate::{
         PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
         ResidentResourceId, SinkBoundary, SinkBoundaryKind,
     },
-    plan::{JoinSide, NodeId, PlanNode, QueryPlan, ResultSink},
+    plan::{JoinSide, MlRelationRole, NodeId, PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
 };
 
@@ -341,6 +341,7 @@ fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::VectorAlgorithm(vector) => {
             InputRole::VectorAlgorithmInput { role: VectorInputRole::for_vector_input(vector, input_index) }
         },
+        PlanNode::MlAlgorithm(ml) => InputRole::MlAlgorithmInput { role: ml.spec.params.relation_role(input_index) },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {
@@ -460,10 +461,15 @@ fn build_tasks(
                         .with_output_resources(vec![output]),
                 );
             },
-            PlanNode::VectorAlgorithm(_) => {
+            PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => {
                 let task = single_task(task_ids, *node_id)?;
+                let kind = if matches!(node.kind, PlanNode::MlAlgorithm(_)) {
+                    PipelineTaskKind::MlAlgorithm
+                } else {
+                    PipelineTaskKind::VectorAlgorithm
+                };
                 tasks.push(
-                    PipelineTask::for_plan_node(task, PipelineTaskKind::VectorAlgorithm, *node_id)
+                    PipelineTask::for_plan_node(task, kind, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output]),
                 );
@@ -787,7 +793,8 @@ fn build_barriers(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {},
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {},
         }
     }
     let sink_input = match sink_task {
@@ -900,6 +907,9 @@ fn input_role_label(role: InputRole) -> &'static str {
         InputRole::LimitInput => "limit_input",
         InputRole::UnionInput { .. } => "union_input",
         InputRole::GraphAlgorithmInput => "graph_algorithm_input",
+        InputRole::MlAlgorithmInput { role: MlRelationRole::Input } => "ml_input",
+        InputRole::MlAlgorithmInput { role: MlRelationRole::Training } => "ml_training_input",
+        InputRole::MlAlgorithmInput { role: MlRelationRole::Predict } => "ml_predict_input",
         InputRole::VectorAlgorithmInput { role } => match role {
             VectorInputRole::Dataset => "vector_dataset_input",
             VectorInputRole::Queries => "vector_queries_input",

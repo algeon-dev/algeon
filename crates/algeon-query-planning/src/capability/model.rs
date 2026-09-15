@@ -9,7 +9,10 @@ use super::{
     AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId,
     aggregate::AggregateStateContract,
 };
-use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams};
+use crate::plan::{
+    EdgeDedupStrategy, EdgeWeightCombiner, MlAlgorithm, MlRelationRole, VectorAlgorithm, VectorAlgorithmNode,
+    VectorAlgorithmParams,
+};
 
 /// The most local graph scope that owns a capability decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -208,6 +211,8 @@ pub enum NodeOperator {
         /// Algorithm family whose parameter contract must be supported.
         algorithm: VectorAlgorithm,
     },
+    /// cuML dimensionality reduction over resident relations.
+    MlAlgorithm { algorithm: MlAlgorithm },
 }
 
 /// Source format capability known by the native engine.
@@ -328,6 +333,8 @@ pub enum EdgeContractKind {
         /// Semantic relation role within the vector algorithm.
         role: VectorInputRole,
     },
+    /// cuML relation-input residency contract.
+    MlAlgorithmInput { role: MlRelationRole },
     /// Final result materialization boundary.
     ExplicitSinkMaterialization,
 }
@@ -373,6 +380,8 @@ pub enum InputRole {
         /// Semantic relation role within the vector algorithm.
         role: VectorInputRole,
     },
+    /// Input consumed by a cuML node.
+    MlAlgorithmInput { role: MlRelationRole },
     /// Input consumed by a limit node.
     LimitInput,
     /// Build-side input consumed by a join node.

@@ -5,6 +5,7 @@
 //! | [`AlgeonGpuBackend::install_on`](crate::backend::AlgeonGpuBackend::install_on) | backend-bound optimizer, coverage | built backend | same backend | yes |
 //! | [`AlgeonSessionStateBuilderExt::with_algeon_native`] | optimizer, coverage | [`AlgeonNativeOptimizerConfig`] | replaces existing Algeon rules | no |
 //! | [`AlgeonSessionStateBuilderExt::try_with_cuvs_sql`] | cuVS planner, metadata, function family | none | identical installation is a no-op | no |
+//! | [`AlgeonSessionStateBuilderExt::try_with_cuml_sql`] | cuML planner, metadata, function family | none | identical installation is a no-op | no |
 //! | [`AlgeonSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph planner, metadata, function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no |
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
@@ -21,7 +22,9 @@ use datafusion::{
     catalog::Session,
     common::{DataFusionError, Result as DataFusionResult},
     execution::SessionStateBuilder,
+    logical_expr::planner::RelationPlanner,
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
+    physical_planner::ExtensionPlanner,
 };
 
 #[cfg(feature = "cugraph")]
@@ -32,13 +35,11 @@ use crate::planner::AlgeonGpuExecutionMode;
 use crate::planner::RelationalNativeRewritePolicy;
 use crate::{
     cugraph_sql::{CugraphExtensionPlanner, CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_relation_planner},
-    cuvs_sql::{
-        AlgeonQueryPlanner, CuvsExtensionPlanner, CuvsGpuFunctionFamily, cuvs_gpu_function_availability,
-        cuvs_relation_planner,
-    },
+    cuml_sql::{CumlExtensionPlanner, CumlGpuFunctionFamily, cuml_gpu_function_availability, cuml_relation_planner},
+    cuvs_sql::{CuvsExtensionPlanner, CuvsGpuFunctionFamily, cuvs_gpu_function_availability, cuvs_relation_planner},
     error::{Error, ErrorCode},
     gpu_coverage::gpu_coverage_table_function,
-    gpu_functions::{GpuFunctionCatalog, install_gpu_function_family},
+    gpu_functions::{GpuFunctionCatalog, GpuFunctionFamily, install_gpu_function_family},
     planner::{
         ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonFinalPlanRequirementRule, AlgeonNativeOptimizerConfig,
         AlgeonNativePhysicalOptimizerRule,
@@ -51,6 +52,8 @@ pub const ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "algeon_datafusion_
 pub const ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "algeon_datafusion_native_count_only";
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
+
+pub use crate::gpu_query_planner::AlgeonQueryPlanner;
 
 type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
 
@@ -70,6 +73,11 @@ pub trait AlgeonSessionStateBuilderExt {
     /// physical extension planners can compose them with the public
     /// [`AlgeonQueryPlanner`].
     fn try_with_cuvs_sql(self) -> DataFusionResult<Self>
+    where Self: Sized;
+
+    /// Install relation-aware cuML SQL, metadata, and typed physical planning.
+    /// Existing opaque query planners are rejected. Installation is idempotent.
+    fn try_with_cuml_sql(self) -> DataFusionResult<Self>
     where Self: Sized;
 
     /// Install relation-aware cuGraph SQL, metadata, and typed physical planning.
@@ -94,110 +102,50 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
     }
 
     fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
-        let catalog_has_cuvs = self
-            .config()
-            .as_ref()
-            .and_then(|config| config.get_extension::<GpuFunctionCatalog>())
-            .is_some_and(|catalog| catalog.contains_family("cuvs"));
-
-        if catalog_has_cuvs {
-            let has_cuvs_planner = self
-                .query_planner()
-                .as_ref()
-                .and_then(|planner| (planner.as_ref() as &dyn std::any::Any).downcast_ref::<AlgeonQueryPlanner>())
-                .is_some_and(|planner| planner.contains_family("cuvs"));
-            if !has_cuvs_planner {
-                return Err(Error::new(
-                    ErrorCode::InvalidRequest,
-                    "algeon_datafusion.cuvs_sql.install",
-                    "cannot install cuVS SQL over an existing query planner",
-                )
-                .with_log_safe_fact("reason", "query_planner_conflict")
-                .into());
-            }
-            if let Some(relation_planners) = self.relation_planners().as_ref() {
-                let has_cuvs_relation_planner =
-                    relation_planners.iter().any(|p| format!("{p:?}").contains("CuvsRelationPlanner"));
-                if !has_cuvs_relation_planner {
-                    return Err(Error::new(
-                        ErrorCode::InvalidRequest,
-                        "algeon_datafusion.cuvs_sql.install",
-                        "inconsistent cuVS SQL installation: catalog contains cuVS family but relation planner is missing",
-                    )
-                    .with_log_safe_fact("reason", "inconsistent_installation")
-                    .into());
-                }
-            }
-            return Ok(self);
-        }
-
-        let query_planner = match self.query_planner().as_ref() {
-            None => AlgeonQueryPlanner::default(),
-            Some(planner) => (planner.as_ref() as &dyn std::any::Any)
-                .downcast_ref::<AlgeonQueryPlanner>()
-                .cloned()
-                .ok_or_else(|| {
-                    DataFusionError::from(
-                        Error::new(
-                            ErrorCode::InvalidRequest,
-                            "algeon_datafusion.cuvs_sql.install",
-                            "cannot install cuVS SQL over an existing query planner",
-                        )
-                        .with_log_safe_fact("reason", "query_planner_conflict"),
-                    )
-                })?,
-        }
-        .with_family("cuvs", Arc::new(CuvsExtensionPlanner));
-        self.relation_planners().get_or_insert_with(Vec::new).insert(0, cuvs_relation_planner());
         let availability = cuvs_gpu_function_availability(self.config().as_ref());
-        install_gpu_function_family(&mut self, Arc::new(CuvsGpuFunctionFamily::new(availability)))?;
-        Ok(self.with_query_planner(Arc::new(query_planner)))
+        install_gpu_sql_family(
+            self,
+            GpuSqlFamilyInstall {
+                family_id: "cuvs",
+                display_name: "cuVS",
+                install_operation: "algeon_datafusion.cuvs_sql.install",
+                relation_planner_name: "CuvsRelationPlanner",
+                extension_planner: Arc::new(CuvsExtensionPlanner),
+                relation_planner: cuvs_relation_planner(),
+                gpu_family: Arc::new(CuvsGpuFunctionFamily::new(availability)),
+            },
+        )
     }
 
-    fn try_with_cugraph_sql(mut self, config: CugraphSqlConfig) -> DataFusionResult<Self> {
-        let catalog_has_cugraph = self
-            .config()
-            .as_ref()
-            .and_then(|config| config.get_extension::<GpuFunctionCatalog>())
-            .is_some_and(|catalog| catalog.contains_family("cugraph"));
-        install_gpu_function_family(&mut self, Arc::new(CugraphGpuFunctionFamily::new(config.clone())))?;
-        if catalog_has_cugraph {
-            let has_planner = self
-                .query_planner()
-                .as_ref()
-                .and_then(|planner| (planner.as_ref() as &dyn std::any::Any).downcast_ref::<AlgeonQueryPlanner>())
-                .is_some_and(|planner| planner.contains_family("cugraph"));
-            if !has_planner {
-                return Err(Error::new(
-                    ErrorCode::InvalidRequest,
-                    "algeon_datafusion.cugraph_sql.install",
-                    "inconsistent cuGraph SQL installation: catalog contains cuGraph family but query planner is missing",
-                )
-                .with_log_safe_fact("reason", "inconsistent_installation")
-                .into());
-            }
-            return Ok(self);
-        }
+    fn try_with_cuml_sql(mut self) -> DataFusionResult<Self> {
+        let availability = cuml_gpu_function_availability(self.config().as_ref());
+        install_gpu_sql_family(
+            self,
+            GpuSqlFamilyInstall {
+                family_id: "cuml",
+                display_name: "cuML",
+                install_operation: "algeon_datafusion.cuml_sql.install",
+                relation_planner_name: "CumlRelationPlanner",
+                extension_planner: Arc::new(CumlExtensionPlanner),
+                relation_planner: cuml_relation_planner(),
+                gpu_family: Arc::new(CumlGpuFunctionFamily::new(availability)),
+            },
+        )
+    }
 
-        let query_planner = match self.query_planner().as_ref() {
-            None => AlgeonQueryPlanner::default(),
-            Some(planner) => (planner.as_ref() as &dyn std::any::Any)
-                .downcast_ref::<AlgeonQueryPlanner>()
-                .cloned()
-                .ok_or_else(|| {
-                    DataFusionError::from(
-                        Error::new(
-                            ErrorCode::InvalidRequest,
-                            "algeon_datafusion.cugraph_sql.install",
-                            "cannot install cuGraph SQL over an existing query planner",
-                        )
-                        .with_log_safe_fact("reason", "query_planner_conflict"),
-                    )
-                })?,
-        }
-        .with_family("cugraph", Arc::new(CugraphExtensionPlanner));
-        self.relation_planners().get_or_insert_with(Vec::new).insert(0, cugraph_relation_planner(config));
-        Ok(self.with_query_planner(Arc::new(query_planner)))
+    fn try_with_cugraph_sql(self, config: CugraphSqlConfig) -> DataFusionResult<Self> {
+        install_gpu_sql_family(
+            self,
+            GpuSqlFamilyInstall {
+                family_id: "cugraph",
+                display_name: "cuGraph",
+                install_operation: "algeon_datafusion.cugraph_sql.install",
+                relation_planner_name: "CugraphRelationPlanner",
+                extension_planner: Arc::new(CugraphExtensionPlanner),
+                relation_planner: cugraph_relation_planner(config.clone()),
+                gpu_family: Arc::new(CugraphGpuFunctionFamily::new(config)),
+            },
+        )
     }
 
     fn with_algeon_native_rule(mut self, rule: Arc<AlgeonNativePhysicalOptimizerRule>) -> Self {
@@ -206,6 +154,67 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
         insert_algeon_native_rules_before_final_validation(&mut rules, rule);
         self.with_physical_optimizer_rules(rules)
     }
+}
+
+struct GpuSqlFamilyInstall {
+    family_id: &'static str,
+    display_name: &'static str,
+    install_operation: &'static str,
+    relation_planner_name: &'static str,
+    extension_planner: Arc<dyn ExtensionPlanner + Send + Sync>,
+    relation_planner: Arc<dyn RelationPlanner>,
+    gpu_family: Arc<dyn GpuFunctionFamily>,
+}
+
+fn install_gpu_sql_family(
+    mut builder: SessionStateBuilder,
+    family: GpuSqlFamilyInstall,
+) -> DataFusionResult<SessionStateBuilder> {
+    let family_was_installed = builder
+        .config()
+        .as_ref()
+        .and_then(|config| config.get_extension::<GpuFunctionCatalog>())
+        .is_some_and(|catalog| catalog.contains_family(family.family_id));
+    install_gpu_function_family(&mut builder, family.gpu_family)?;
+
+    let planner_conflict = || {
+        DataFusionError::from(
+            Error::new(
+                ErrorCode::InvalidRequest,
+                family.install_operation,
+                format!("cannot install {} SQL over an existing query planner", family.display_name),
+            )
+            .with_log_safe_fact("reason", "query_planner_conflict"),
+        )
+    };
+    let query_planner = match builder.query_planner().as_ref() {
+        None => AlgeonQueryPlanner::default(),
+        Some(planner) => (planner.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<AlgeonQueryPlanner>()
+            .cloned()
+            .ok_or_else(planner_conflict)?,
+    };
+    if family_was_installed {
+        let has_relation_planner = builder.relation_planners().as_ref().is_none_or(|relation_planners| {
+            relation_planners.iter().any(|planner| format!("{planner:?}").contains(family.relation_planner_name))
+        });
+        if !query_planner.contains_family(family.family_id) || !has_relation_planner {
+            return Err(Error::new(
+                ErrorCode::InvalidRequest,
+                family.install_operation,
+                format!(
+                    "inconsistent {} SQL installation: catalog contains the {} family but its planners are missing",
+                    family.display_name, family.display_name
+                ),
+            )
+            .with_log_safe_fact("reason", "inconsistent_installation")
+            .into());
+        }
+        return Ok(builder);
+    }
+    let query_planner = query_planner.with_family(family.family_id, family.extension_planner);
+    builder.relation_planners().get_or_insert_with(Vec::new).insert(0, family.relation_planner);
+    Ok(builder.with_query_planner(Arc::new(query_planner)))
 }
 
 #[cfg(feature = "cugraph")]

@@ -2,6 +2,7 @@
 #include "shim_common.hpp"
 
 #include <cudf_rust/error_boundary.hpp>
+#include <cuml/version_config.hpp>
 #include <raft/core/error.hpp>
 #include <rmm/error.hpp>
 #include <cuda_runtime_api.h>
@@ -67,6 +68,20 @@ cuml_status_t classify_cuda(std::int32_t* error) noexcept
   *error = static_cast<std::int32_t>(reported);
   return CUML_ERROR_CUDA;
 }
+}
+
+cuml_status_t cuml_record_error(cuml_status_t status, char const* message) noexcept;
+
+extern "C" cuml_status_t cuml_version_get(int32_t* major, int32_t* minor, int32_t* patch)
+{
+  cuml_clear_error();
+  if (major == nullptr || minor == nullptr || patch == nullptr) {
+    return cuml_record_error(CUML_ERROR_NULL, "version output is null");
+  }
+  *major = CUML_VERSION_MAJOR;
+  *minor = CUML_VERSION_MINOR;
+  *patch = CUML_VERSION_PATCH;
+  return CUML_SUCCESS;
 }
 
 extern "C" cuml_error_detail_t const* cuml_last_error_detail(void)

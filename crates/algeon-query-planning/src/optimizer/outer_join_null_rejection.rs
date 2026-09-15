@@ -509,7 +509,8 @@ fn trace_right_origins_inner(
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => {},
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => {},
     }
     path.pop();
 }

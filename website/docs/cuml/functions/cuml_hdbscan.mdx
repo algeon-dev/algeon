@@ -1,0 +1,91 @@
+---
+title: cuML HDBSCAN
+sidebar_label: cuML HDBSCAN
+description: "cuML HDBSCAN fits density-based clusters and returns query-local labels and membership probabilities."
+slug: /cuml/functions/cuml_hdbscan
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}
+
+# cuML HDBSCAN
+
+SQL function: `cuml_hdbscan`
+
+Official cuML reference: [Python API](https://docs.rapids.ai/api/cuml/stable/api/#cuml.HDBSCAN)
+
+cuML HDBSCAN fits density-based clusters and returns query-local labels and membership probabilities.
+
+## Quickstart
+
+Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
+
+```sql
+SELECT id, cluster_id, probability FROM cuml_hdbscan(input => (SELECT id, d0, d1 FROM t), min_cluster_size => 5) ORDER BY row_ordinal;
+```
+
+## Inputs
+
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+
+| Role | Required | Validation reference | Description |
+| --- | --- | --- | --- |
+| `input` | yes | `table` | Dense Float32 rows fitted and transformed in this statement. |
+
+### Vector element types
+
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | Not applicable |
+
+## Arguments and options
+
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `min_samples` | `integer` | no | Minimum samples in a core-distance neighborhood. |
+| `min_cluster_size` | `integer` | no | Minimum size of a selected cluster. |
+| `max_cluster_size` | `integer` | no | Maximum cluster size; zero disables the bound. |
+| `cluster_selection_epsilon` | `number` | no | Nonnegative threshold for cluster selection. |
+| `alpha` | `number` | no | Positive mutual-reachability distance scale. |
+| `allow_single_cluster` | `boolean` | no | Allow one cluster to cover all input rows. |
+| `cluster_selection_method` | `enum ("eom", "leaf")` | no | Select clusters by excess of mass or leaf nodes. |
+
+### SQL value argument schemas
+
+| Argument | Required | Literal shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `allow_single_cluster` | no | `boolean` | `false` |  | Allow one cluster to cover all input rows. |
+| `alpha` | no | `number` | `1` | greater than 0 | Positive mutual-reachability distance scale. |
+| `cluster_selection_epsilon` | no | `number` | `0` | minimum 0 | Nonnegative threshold for cluster selection. |
+| `cluster_selection_method` | no | `string` | `"eom"` | one of `"eom"`, `"leaf"` | Select clusters by excess of mass or leaf nodes. |
+| `max_cluster_size` | no | `integer` | `0` | minimum 0; maximum 2147483647 | Maximum cluster size; zero disables the bound. |
+| `min_cluster_size` | no | `integer` | `5` | minimum 2; maximum 2147483647 | Minimum size of a selected cluster. |
+| `min_samples` | no | `integer` | `5` | minimum 1; maximum 2147483647 | Minimum samples in a core-distance neighborhood. |
+
+### Vector binding shapes
+
+Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+
+The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. |
+| `id` | `same_as_input.id` | no | Logical input ID. |
+| `cluster_id` | `Int64` | no | Selected cluster ID; -1 indicates noise. |
+| `probability` | `Float32` | no | Membership probability for the selected cluster. |
+
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Limits
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Only Float32 features are supported; L2SqrtExpanded distance and brute-force kNN are fixed.
+- Empty input returns an empty result. Other inputs require min_samples &lt; rows, min_cluster_size &lt;= rows, and max_cluster_size &lt;= rows; row-dependent conditions are checked at execution.
+- Cluster ID -1 denotes noise. The fit and output are query-local.
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

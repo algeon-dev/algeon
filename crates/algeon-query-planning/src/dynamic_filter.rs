@@ -723,6 +723,7 @@ fn dynamic_filter_downstream_work_boundary(node: &PlanNode) -> bool {
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
             | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_)
     )
 }
 

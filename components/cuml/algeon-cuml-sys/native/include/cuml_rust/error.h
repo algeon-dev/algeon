@@ -41,6 +41,10 @@ typedef struct {
   char message[CUML_ERROR_MESSAGE_CAPACITY];
 } cuml_error_detail_t;
 
+// Reports the cuML version compiled into libcuml_rust.so from CUML_VERSION_* headers.
+// The loaded libcuml.so is pinned to the same install by build-support rpath and direct NEEDED entries.
+cuml_status_t cuml_version_get(int32_t* major, int32_t* minor, int32_t* patch);
+
 cuml_error_detail_t const* cuml_last_error_detail(void);
 char const* cuml_last_error_message(void);
 void cuml_clear_error(void);

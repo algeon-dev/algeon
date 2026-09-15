@@ -18,6 +18,10 @@
 //! explicitly labeled as host or Arrow bytes. Native ids and cache keys are
 //! local identities for one plan or runtime; callers should not treat them as
 //! stable global handles.
+//!
+//! The `cuvs` feature enables vector-algorithm execution; the `cuml` feature
+//! enables query-local PCA and TSVD execution. Their planning contracts remain
+//! available when either feature is disabled.
 
 #[cfg(test)]
 extern crate self as query_engine;

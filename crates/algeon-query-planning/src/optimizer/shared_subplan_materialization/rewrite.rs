@@ -96,7 +96,7 @@ fn scalar_materialization_input_shape_inner(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -893,7 +893,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
             | PlanNode::Window(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => {
+            | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => {
                 panic!("unsupported scalar filtered materialization subtree")
             },
         }

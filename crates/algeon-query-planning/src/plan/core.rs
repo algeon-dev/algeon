@@ -5,8 +5,9 @@
 use std::{fmt, sync::Arc};
 
 use super::{
-    AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, PlanFacts, ProjectionNode,
-    ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode, WindowNode,
+    AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, MlAlgorithmNode, PlanFacts,
+    ProjectionNode, ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode,
+    VectorAlgorithmNode, WindowNode,
 };
 use crate::{
     capability::KeyedHashJoinStrategyOptions,
@@ -334,6 +335,10 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::VectorAlgorithm(_)))
     }
 
+    pub fn contains_ml_algorithm(&self) -> bool {
+        self.nodes.iter().any(|node| matches!(node.kind, PlanNode::MlAlgorithm(_)))
+    }
+
     /// Returns nodes that are not reachable from the explicit sink input.
     ///
     /// Builders normally produce sink-reachable plans, but this is useful for
@@ -410,6 +415,7 @@ impl QueryNode {
             PlanNode::Projection(projection) => projection.output_schema(),
             PlanNode::GraphAlgorithm(graph) => graph.output_schema(),
             PlanNode::VectorAlgorithm(vector) => vector.output_schema(),
+            PlanNode::MlAlgorithm(ml) => ml.output_schema(),
             _ => &self.facts.output_schema,
         }
     }
@@ -453,6 +459,8 @@ pub enum PlanNode {
     GraphAlgorithm(GraphAlgorithmNode),
     /// Runs a vector search or vector-ML algorithm over relation inputs.
     VectorAlgorithm(VectorAlgorithmNode),
+    /// Runs a cuML operation on dense relation inputs.
+    MlAlgorithm(MlAlgorithmNode),
 }
 
 impl PlanNode {
@@ -475,6 +483,7 @@ impl PlanNode {
             Self::EdgeNormalize(node) => std::slice::from_ref(&node.input),
             Self::GraphAlgorithm(node) => &node.inputs,
             Self::VectorAlgorithm(node) => &node.inputs,
+            Self::MlAlgorithm(node) => &node.inputs,
         }
     }
 }

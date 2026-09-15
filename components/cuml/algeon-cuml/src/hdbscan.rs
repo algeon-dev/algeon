@@ -4,7 +4,7 @@ use crate::{
     resources::CumlResources,
 };
 
-const FIT: &str = "Hdbscan::fit";
+const FIT: &str = "HdbscanFit::fit";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -14,7 +14,7 @@ pub enum ClusterSelectionMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HdbscanParameters {
+pub struct HdbscanParams {
     pub min_samples: usize,
     pub min_cluster_size: usize,
     pub max_cluster_size: usize,
@@ -24,7 +24,7 @@ pub struct HdbscanParameters {
     pub alpha: f32,
 }
 
-impl Default for HdbscanParameters {
+impl Default for HdbscanParams {
     fn default() -> Self {
         Self {
             min_samples: 5,
@@ -90,21 +90,7 @@ impl HdbscanFit {
         self.n_clusters
     }
 
-    pub fn fit(resources: &CumlResources, input: &DeviceMatrix<'_>, parameters: HdbscanParameters) -> Result<Self> {
-        Hdbscan::fit(resources, input, parameters)
-    }
-}
-
-pub struct Hdbscan;
-
-pub type HdbscanParams = HdbscanParameters;
-
-impl Hdbscan {
-    pub fn fit(
-        resources: &CumlResources,
-        input: &DeviceMatrix<'_>,
-        parameters: HdbscanParameters,
-    ) -> Result<HdbscanFit> {
+    pub fn fit(resources: &CumlResources, input: &DeviceMatrix<'_>, parameters: HdbscanParams) -> Result<HdbscanFit> {
         validate_input(resources, input, parameters)?;
         resources.validate_exact_binding(FIT)?;
         let rows = i32::try_from(input.rows()).map_err(|_| invalid_input(FIT, "row count exceeds cuML limits"))?;
@@ -168,7 +154,7 @@ impl Hdbscan {
     }
 }
 
-fn validate_input(resources: &CumlResources, input: &DeviceMatrix<'_>, parameters: HdbscanParameters) -> Result<()> {
+fn validate_input(resources: &CumlResources, input: &DeviceMatrix<'_>, parameters: HdbscanParams) -> Result<()> {
     if input.rows() < 2 || input.columns() == 0 {
         return Err(invalid_input(FIT, "input needs at least two rows and one feature"));
     }

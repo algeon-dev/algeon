@@ -9,7 +9,8 @@ Start with the [RAPIDS install guide](https://docs.rapids.ai/install/) for your
 Linux distribution. It owns NVIDIA driver, CUDA toolkit, GPU support,
 host-compiler, CMake, and Ninja compatibility. The upstream dependency
 manifests are [cuDF](https://github.com/NVIDIA/cudf/blob/main/dependencies.yaml),
-[cuVS](https://github.com/NVIDIA/cuvs/blob/main/dependencies.yaml), and
+[cuVS](https://github.com/NVIDIA/cuvs/blob/main/dependencies.yaml),
+[cuML](https://github.com/rapidsai/cuml/blob/main/dependencies.yaml), and
 [cuGraph](https://github.com/rapidsai/cugraph/blob/main/dependencies.yaml).
 The exact native sources in this checkout are the authority for this build;
 their `dependencies.yaml` and `CMakeLists.txt` files take precedence if they
@@ -20,8 +21,8 @@ Algeon. Linux is the only supported platform.
 
 ## Native build environment
 
-The recursive checkout builds its pinned `libcudf`, `libcuvs`, and
-`libcugraph` sources locally. Before continuing, use the RAPIDS guidance to
+The recursive checkout builds its pinned `libcudf`, `libcuvs`, `libcuml`,
+and `libcugraph` sources locally. Before continuing, use the RAPIDS guidance to
 install a compatible NVIDIA driver, CUDA toolkit, host compiler, CMake, and
 Ninja. `nvcc` must be available from the CUDA installation you intend to use.
 

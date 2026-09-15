@@ -1,17 +1,17 @@
 use datafusion::{common::Result, logical_expr::LogicalPlan};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use super::{
-    CuvsDenseVectorBinding, CuvsOperation, CuvsOptionKind, CuvsOutputContract, CuvsRelationRole,
-    canonicalize_cuvs_options,
+    CuvsOperation, CuvsOutputContract, CuvsRelationRole, DenseVectorBinding, GpuOptionKind, canonicalize_cuvs_options,
     error::{invalid_call, invalid_option},
 };
+use crate::gpu_functions::dense_relation::infer_dense_relation_binding;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CuvsVectorRelationBinding {
     relation_role: CuvsRelationRole,
     id: String,
-    vector: CuvsDenseVectorBinding,
+    vector: DenseVectorBinding,
 }
 
 impl CuvsVectorRelationBinding {
@@ -23,7 +23,7 @@ impl CuvsVectorRelationBinding {
         &self.id
     }
 
-    pub fn vector(&self) -> &CuvsDenseVectorBinding {
+    pub fn vector(&self) -> &DenseVectorBinding {
         &self.vector
     }
 }
@@ -71,7 +71,7 @@ impl CuvsValidatedOptions {
             .descriptor()
             .options
             .iter()
-            .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+            .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
             .filter_map(|option| canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value)))
             .collect()
     }
@@ -129,32 +129,13 @@ pub(super) fn options_from_named_values(
 }
 
 fn relation_binding(operation: CuvsOperation, role: CuvsRelationRole, input: &LogicalPlan) -> Result<Value> {
-    let schema = input.schema();
-    schema
-        .field_with_unqualified_name("id")
-        .map_err(|_| super::error::field_not_found(operation, role.as_str(), "id"))?;
-    let feature_names =
-        schema.fields().iter().map(|field| field.name().as_str()).filter(|name| *name != "id").collect::<Vec<_>>();
-    if feature_names.is_empty() {
-        return Err(invalid_call(
-            operation,
-            "missing_vector_features",
-            format!("cuVS {} relation requires at least one feature field after 'id'", role.as_str()),
-        ));
-    }
-    let vector = if feature_names.contains(&"vector") {
-        if feature_names.len() != 1 {
-            return Err(invalid_call(
-                operation,
-                "vector_field_with_additional_features",
-                format!("cuVS {} relation cannot combine 'vector' with other feature fields", role.as_str()),
-            ));
-        }
-        json!({"column": "vector"})
-    } else {
-        json!({"columns": feature_names})
-    };
-    Ok(json!({"id": "id", "vector": vector}))
+    infer_dense_relation_binding(
+        input,
+        role.as_str(),
+        "cuVS",
+        || super::error::field_not_found(operation, role.as_str(), "id"),
+        |reason, message| invalid_call(operation, reason, message),
+    )
 }
 
 fn binding(object: &Map<String, Value>, role: CuvsRelationRole) -> CuvsVectorRelationBinding {
@@ -171,7 +152,7 @@ fn binding(object: &Map<String, Value>, role: CuvsRelationRole) -> CuvsVectorRel
         .and_then(Value::as_object)
         .expect("canonical cuVS relation binding must contain a vector object");
     let vector = if let Some(columns) = vector_object.get("columns") {
-        CuvsDenseVectorBinding::Columns(
+        DenseVectorBinding::Columns(
             columns
                 .as_array()
                 .expect("canonical cuVS columns binding must be an array")
@@ -180,7 +161,7 @@ fn binding(object: &Map<String, Value>, role: CuvsRelationRole) -> CuvsVectorRel
                 .collect(),
         )
     } else {
-        CuvsDenseVectorBinding::VectorColumn(
+        DenseVectorBinding::VectorColumn(
             vector_object
                 .get("column")
                 .and_then(Value::as_str)

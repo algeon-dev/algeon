@@ -1,6 +1,15 @@
 use cuml_sys::*;
 
 #[test]
+fn installed_cuml_runtime_version_matches_bindings() {
+    assert_eq!(validate_runtime_version().expect("installed cuML version"), EXPECTED_CUML_VERSION);
+    assert_eq!(
+        unsafe { cuml_version_get(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) },
+        CUML_ERROR_NULL
+    );
+}
+
+#[test]
 fn error_status_and_detail_abi_are_fixed() {
     assert_eq!(CUML_SUCCESS, 0);
     assert_eq!(CUML_ERROR_NULL, 1);

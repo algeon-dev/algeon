@@ -15,6 +15,7 @@ fn main() {
         consumers: rapids_build_support::RapidsConsumers::new(
             std::env::var_os("DEP_CUGRAPH_RUNTIME_LIB_DIRS").is_some(),
             std::env::var_os("DEP_CUVS_C_METADATA").is_some(),
+            std::env::var_os("DEP_CUML_RUST_RUNTIME_LIB_DIRS").is_some(),
         ),
         nvtx3interop: false,
     });

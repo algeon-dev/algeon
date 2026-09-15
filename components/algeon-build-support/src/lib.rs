@@ -18,6 +18,39 @@ use std::{
 
 const DOCS_RS_ENV: &str = "DOCS_RS";
 const ALGEON_NATIVE_DIR_ENV: &str = "ALGEON_NATIVE_DIR";
+const CUDA_HOME_ENV: &str = "CUDA_HOME";
+const CUDA_PATH_ENV: &str = "CUDA_PATH";
+const CUDA_TOOLKIT_ROOT_ENV: &str = "CUDAToolkit_ROOT";
+const NVTX3INTEROP_LIBRARY: &str = "libnvtx3interop.so";
+const CANONICAL_CUDA_ROOT: &str = "/usr/local/cuda";
+
+const CUDF_METADATA_ENV: &str = "DEP_CUDF_RUST_METADATA";
+const CUDF_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUDF_RUST_RUNTIME_LIB_DIR";
+const CUDF_RUST_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_CUDF_RUST_RUNTIME_LIB";
+const CUDF_LIBCUDF_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_LIBCUDF_RUNTIME_LIB";
+const CUDF_RMM_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_RMM_RUNTIME_LIB";
+const CUDF_RAPIDS_LOGGER_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB";
+const CUDF_RAPIDS_LOGGER_LINKAGE_ENV: &str = "DEP_CUDF_RUST_RAPIDS_LOGGER_LINKAGE";
+
+const CUGRAPH_METADATA_ENV: &str = "DEP_CUGRAPH_METADATA";
+const CUGRAPH_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUGRAPH_RUNTIME_LIB_DIRS";
+const CUGRAPH_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUGRAPH_NATIVE_LINK_DIRS";
+const CUGRAPH_CUVS_LIBRARY_PATH_ENV: &str = "DEP_CUGRAPH_CUVS_LIBRARY_PATH";
+const CUGRAPH_CUVS_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUGRAPH_CUVS_RUNTIME_LIB_DIR";
+
+const CUVS_METADATA_ENV: &str = "DEP_CUVS_C_METADATA";
+const CUVS_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUVS_C_RUNTIME_LIB_DIRS";
+const CUVS_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUVS_C_NATIVE_LINK_DIRS";
+const CUVS_LIBCUVS_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_RUNTIME_LIB";
+const CUVS_LIBCUVS_C_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_C_RUNTIME_LIB";
+
+const CUML_METADATA_ENV: &str = "DEP_CUML_RUST_METADATA";
+const CUML_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUML_RUST_RUNTIME_LIB_DIRS";
+const CUML_RUST_RUNTIME_LIB_ENV: &str = "DEP_CUML_RUST_CUML_RUST_RUNTIME_LIB";
+const CUML_LIBCUML_RUNTIME_LIB_ENV: &str = "DEP_CUML_RUST_LIBCUML_RUNTIME_LIB";
+const CUML_TREELITE_RUNTIME_LIB_ENV: &str = "DEP_CUML_RUST_TREELITE_RUNTIME_LIB";
+const CUML_NVFOREST_RUNTIME_LIB_ENV: &str = "DEP_CUML_RUST_NVFOREST_RUNTIME_LIB";
+const CUML_CUVS_LIBRARY_PATH_ENV: &str = "DEP_CUML_RUST_CUVS_LIBRARY_PATH";
 
 /// Native artifact contract owned by one sys crate.
 pub struct NativeComponent {
@@ -199,32 +232,6 @@ pub fn verify_prebuilt_crate_version(
     Ok(())
 }
 
-const CUDF_METADATA_ENV: &str = "DEP_CUDF_RUST_METADATA";
-const CUDF_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUDF_RUST_RUNTIME_LIB_DIR";
-const CUDF_RUST_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_CUDF_RUST_RUNTIME_LIB";
-const CUDF_LIBCUDF_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_LIBCUDF_RUNTIME_LIB";
-const CUDF_RMM_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_RMM_RUNTIME_LIB";
-const CUDF_RAPIDS_LOGGER_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB";
-const CUDF_RAPIDS_LOGGER_LINKAGE_ENV: &str = "DEP_CUDF_RUST_RAPIDS_LOGGER_LINKAGE";
-
-const CUGRAPH_METADATA_ENV: &str = "DEP_CUGRAPH_METADATA";
-const CUGRAPH_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUGRAPH_RUNTIME_LIB_DIRS";
-const CUGRAPH_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUGRAPH_NATIVE_LINK_DIRS";
-const CUGRAPH_CUVS_LIBRARY_PATH_ENV: &str = "DEP_CUGRAPH_CUVS_LIBRARY_PATH";
-const CUGRAPH_CUVS_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUGRAPH_CUVS_RUNTIME_LIB_DIR";
-
-const CUVS_METADATA_ENV: &str = "DEP_CUVS_C_METADATA";
-const CUVS_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUVS_C_RUNTIME_LIB_DIRS";
-const CUVS_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUVS_C_NATIVE_LINK_DIRS";
-const CUVS_LIBCUVS_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_RUNTIME_LIB";
-const CUVS_LIBCUVS_C_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_C_RUNTIME_LIB";
-
-const CUDA_HOME_ENV: &str = "CUDA_HOME";
-const CUDA_PATH_ENV: &str = "CUDA_PATH";
-const CUDA_TOOLKIT_ROOT_ENV: &str = "CUDAToolkit_ROOT";
-const NVTX3INTEROP_LIBRARY: &str = "libnvtx3interop.so";
-const CANONICAL_CUDA_ROOT: &str = "/usr/local/cuda";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkArgTargets {
     all: bool,
@@ -256,10 +263,9 @@ impl LinkArgTargets {
     }
 
     fn required_runtime_library_directives(self, library: &Path) -> Vec<String> {
-        // Promote libcudf_rust's native children to direct NEEDED entries. The
-        // wrapper carries a $ORIGIN-only DT_RUNPATH, and a binary's DT_RUNPATH
-        // is not inherited when resolving those children. Direct entries let
-        // this binary's selected RAPIDS rpath resolve the authoritative files.
+        // Promote native children to direct NEEDED entries: a binary's
+        // DT_RUNPATH is not inherited when resolving another library's children.
+        // This pins the cuDF and cuML dependencies to the selected install dirs.
         self.directives(&format!("-Wl,--push-state,--no-as-needed,{},--pop-state", library.display()))
     }
 }
@@ -268,15 +274,16 @@ impl LinkArgTargets {
 pub struct RapidsConsumers {
     cugraph: bool,
     cuvs: bool,
+    cuml: bool,
 }
 
 impl RapidsConsumers {
-    pub const fn new(cugraph: bool, cuvs: bool) -> Self {
-        Self { cugraph, cuvs }
+    pub const fn new(cugraph: bool, cuvs: bool, cuml: bool) -> Self {
+        Self { cugraph, cuvs, cuml }
     }
 
     const fn any(self) -> bool {
-        self.cugraph || self.cuvs
+        self.cugraph || self.cuvs || self.cuml
     }
 }
 
@@ -324,10 +331,22 @@ struct CuvsEnvironment {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CumlEnvironment {
+    aggregate_metadata: Option<String>,
+    runtime_lib_dirs: Option<String>,
+    cuml_rust_runtime_lib: Option<String>,
+    libcuml_runtime_lib: Option<String>,
+    treelite_runtime_lib: Option<String>,
+    nvforest_runtime_lib: Option<String>,
+    cuvs_library_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct EnvironmentSnapshot {
     cudf: CudfEnvironment,
     cugraph: CugraphEnvironment,
     cuvs: CuvsEnvironment,
+    cuml: CumlEnvironment,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -357,10 +376,21 @@ struct CuvsMetadata {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CumlMetadata {
+    runtime_lib_dirs: Option<Vec<PathBuf>>,
+    cuml_rust_runtime_lib: Option<PathBuf>,
+    libcuml_runtime_lib: Option<PathBuf>,
+    treelite_runtime_lib: Option<PathBuf>,
+    nvforest_runtime_lib: Option<PathBuf>,
+    cuvs_library_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ResolvedMetadata {
     cudf: CudfMetadata,
     cugraph: CugraphMetadata,
     cuvs: CuvsMetadata,
+    cuml: CumlMetadata,
 }
 
 fn read_environment(consumers: RapidsConsumers) -> EnvironmentSnapshot {
@@ -395,13 +425,27 @@ fn read_environment(consumers: RapidsConsumers) -> EnvironmentSnapshot {
     } else {
         CuvsEnvironment::default()
     };
-    EnvironmentSnapshot { cudf, cugraph, cuvs }
+    let cuml = if consumers.cuml {
+        CumlEnvironment {
+            aggregate_metadata: std::env::var(CUML_METADATA_ENV).ok(),
+            runtime_lib_dirs: std::env::var(CUML_RUNTIME_LIB_DIRS_ENV).ok(),
+            cuml_rust_runtime_lib: std::env::var(CUML_RUST_RUNTIME_LIB_ENV).ok(),
+            libcuml_runtime_lib: std::env::var(CUML_LIBCUML_RUNTIME_LIB_ENV).ok(),
+            treelite_runtime_lib: std::env::var(CUML_TREELITE_RUNTIME_LIB_ENV).ok(),
+            nvforest_runtime_lib: std::env::var(CUML_NVFOREST_RUNTIME_LIB_ENV).ok(),
+            cuvs_library_path: std::env::var(CUML_CUVS_LIBRARY_PATH_ENV).ok(),
+        }
+    } else {
+        CumlEnvironment::default()
+    };
+    EnvironmentSnapshot { cudf, cugraph, cuvs, cuml }
 }
 
 fn resolve_metadata(environment: &EnvironmentSnapshot) -> ResolvedMetadata {
     let cudf = &environment.cudf;
     let cugraph = &environment.cugraph;
     let cuvs = &environment.cuvs;
+    let cuml = &environment.cuml;
     ResolvedMetadata {
         cudf: CudfMetadata {
             runtime_lib_dir: select_metadata_value(
@@ -463,6 +507,44 @@ fn resolve_metadata(environment: &EnvironmentSnapshot) -> ResolvedMetadata {
                 cugraph.cuvs_runtime_lib_dir.as_deref(),
                 cugraph.aggregate_metadata.as_deref(),
                 "cuvs-runtime-lib-dir",
+            )
+            .map(PathBuf::from),
+        },
+        cuml: CumlMetadata {
+            runtime_lib_dirs: select_metadata_value(
+                cuml.runtime_lib_dirs.as_deref(),
+                cuml.aggregate_metadata.as_deref(),
+                "runtime-lib-dirs",
+            )
+            .map(|value| parse_platform_path_list(OsStr::new(&value))),
+            cuml_rust_runtime_lib: select_metadata_value(
+                cuml.cuml_rust_runtime_lib.as_deref(),
+                cuml.aggregate_metadata.as_deref(),
+                "cuml-rust-runtime-lib",
+            )
+            .map(PathBuf::from),
+            libcuml_runtime_lib: select_metadata_value(
+                cuml.libcuml_runtime_lib.as_deref(),
+                cuml.aggregate_metadata.as_deref(),
+                "libcuml-runtime-lib",
+            )
+            .map(PathBuf::from),
+            treelite_runtime_lib: select_metadata_value(
+                cuml.treelite_runtime_lib.as_deref(),
+                cuml.aggregate_metadata.as_deref(),
+                "treelite-runtime-lib",
+            )
+            .map(PathBuf::from),
+            nvforest_runtime_lib: select_metadata_value(
+                cuml.nvforest_runtime_lib.as_deref(),
+                cuml.aggregate_metadata.as_deref(),
+                "nvforest-runtime-lib",
+            )
+            .map(PathBuf::from),
+            cuvs_library_path: select_metadata_value(
+                cuml.cuvs_library_path.as_deref(),
+                cuml.aggregate_metadata.as_deref(),
+                "cuvs-library-path",
             )
             .map(PathBuf::from),
         },
@@ -553,6 +635,24 @@ fn runtime_directories(metadata: &ResolvedMetadata, consumers: RapidsConsumers) 
             }
         }
     }
+    if consumers.cuml {
+        for dir in metadata.cuml.runtime_lib_dirs.iter().flatten() {
+            push_unique_path(&mut runtime_dirs, dir.clone());
+        }
+        for library in [
+            metadata.cuml.cuml_rust_runtime_lib.as_ref(),
+            metadata.cuml.libcuml_runtime_lib.as_ref(),
+            metadata.cuml.treelite_runtime_lib.as_ref(),
+            metadata.cuml.nvforest_runtime_lib.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(parent) = library.parent() {
+                push_unique_path(&mut runtime_dirs, parent.to_path_buf());
+            }
+        }
+    }
     runtime_dirs
 }
 
@@ -575,6 +675,20 @@ fn link_directives(metadata: &ResolvedMetadata, consumers: RapidsConsumers, targ
         for library in [metadata.cuvs.libcuvs_runtime_lib.as_ref(), metadata.cuvs.libcuvs_c_runtime_lib.as_ref()]
             .into_iter()
             .flatten()
+        {
+            directives.extend(targets.required_runtime_library_directives(library));
+        }
+    }
+    if consumers.cuml {
+        for library in [
+            metadata.cuml.cuml_rust_runtime_lib.as_ref(),
+            metadata.cuml.libcuml_runtime_lib.as_ref(),
+            metadata.cuml.treelite_runtime_lib.as_ref(),
+            metadata.cuml.nvforest_runtime_lib.as_ref(),
+            metadata.cuml.cuvs_library_path.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             directives.extend(targets.required_runtime_library_directives(library));
         }
@@ -700,6 +814,20 @@ fn track_cuvs_env() {
     track_env(CUVS_METADATA_ENV);
 }
 
+fn track_cuml_env() {
+    for name in [
+        CUML_METADATA_ENV,
+        CUML_RUNTIME_LIB_DIRS_ENV,
+        CUML_RUST_RUNTIME_LIB_ENV,
+        CUML_LIBCUML_RUNTIME_LIB_ENV,
+        CUML_TREELITE_RUNTIME_LIB_ENV,
+        CUML_NVFOREST_RUNTIME_LIB_ENV,
+        CUML_CUVS_LIBRARY_PATH_ENV,
+    ] {
+        track_env(name);
+    }
+}
+
 fn track_cuda_environment() {
     track_env(CUDA_TOOLKIT_ROOT_ENV);
     track_env(CUDA_HOME_ENV);
@@ -741,6 +869,14 @@ pub fn configure(config: Config) {
         }
     }
 
+    if consumers.cuml {
+        track_cuml_env();
+        require_runtime_library("cuml", CUML_RUST_RUNTIME_LIB_ENV, metadata.cuml.cuml_rust_runtime_lib.as_deref());
+        require_runtime_library("cuml", CUML_LIBCUML_RUNTIME_LIB_ENV, metadata.cuml.libcuml_runtime_lib.as_deref());
+        require_runtime_library("cuml", CUML_TREELITE_RUNTIME_LIB_ENV, metadata.cuml.treelite_runtime_lib.as_deref());
+        require_runtime_library("cuml", CUML_NVFOREST_RUNTIME_LIB_ENV, metadata.cuml.nvforest_runtime_lib.as_deref());
+        require_runtime_library("cuml", CUML_CUVS_LIBRARY_PATH_ENV, metadata.cuml.cuvs_library_path.as_deref());
+    }
     track_required_runtime_library(CUDF_RUST_RUNTIME_LIB_ENV, metadata.cudf.cudf_rust_runtime_lib.as_deref());
 
     emit_cargo_directives(link_directives(&metadata, consumers, config.link_arg_targets));
@@ -918,6 +1054,7 @@ fn enforce_single_rapids_runtime_libraries(metadata: &ResolvedMetadata, consumer
     }
 
     enforce_cuvs_runtime_contract(metadata, consumers);
+    enforce_cuml_runtime_contract(metadata, consumers);
 }
 
 fn enforce_absorbed_logger_has_no_shared_candidate(
@@ -1010,6 +1147,13 @@ fn enforce_cuvs_runtime_contract(metadata: &ResolvedMetadata, consumers: RapidsC
         canonical_runtime_path("cuvs-sys", libcuvs)
     });
 
+    let cuml_library = consumers.cuml.then(|| {
+        let libcuvs =
+            require_runtime_library("cuml", CUML_CUVS_LIBRARY_PATH_ENV, metadata.cuml.cuvs_library_path.as_deref());
+        reject_private_cuvs_path("cuml-sys", libcuvs);
+        canonical_runtime_path("cuml-sys", libcuvs)
+    });
+
     let cugraph_library = consumers.cugraph.then(|| {
         let libcuvs = require_runtime_library(
             "cugraph",
@@ -1020,10 +1164,34 @@ fn enforce_cuvs_runtime_contract(metadata: &ResolvedMetadata, consumers: RapidsC
         canonical_runtime_path("cugraph-sys", libcuvs)
     });
 
-    if let (Some(cuvs_path), Some(cugraph_path)) = (&cuvs_library, &cugraph_library)
-        && cuvs_path != cugraph_path
+    for consumer_path in [cugraph_library.as_ref(), cuml_library.as_ref()].into_iter().flatten() {
+        if let Some(cuvs_path) = &cuvs_library
+            && cuvs_path != consumer_path
+        {
+            panic!("{}", divergent_cuvs_identity_diagnostic(cuvs_path, consumer_path));
+        }
+    }
+    if let (Some(cugraph_path), Some(cuml_path)) = (&cugraph_library, &cuml_library)
+        && cugraph_path != cuml_path
     {
-        panic!("{}", divergent_cuvs_identity_diagnostic(cuvs_path, cugraph_path));
+        panic!("{}", divergent_cuvs_identity_diagnostic(cugraph_path, cuml_path));
+    }
+}
+
+fn enforce_cuml_runtime_contract(metadata: &ResolvedMetadata, consumers: RapidsConsumers) {
+    if !consumers.cuml {
+        return;
+    }
+    require_runtime_library("cuml", CUML_LIBCUML_RUNTIME_LIB_ENV, metadata.cuml.libcuml_runtime_lib.as_deref());
+    let expected =
+        require_runtime_library("cuml", CUML_CUVS_LIBRARY_PATH_ENV, metadata.cuml.cuvs_library_path.as_deref());
+    reject_private_cuvs_path("cuml-sys", expected);
+    let dirs =
+        metadata.cuml.runtime_lib_dirs.as_deref().unwrap_or_else(|| {
+            panic!("{CUML_RUNTIME_LIB_DIRS_ENV} is required to resolve libcuml.so's native children")
+        });
+    for dir in dirs {
+        reject_private_cuvs_path("cuml-sys", dir);
     }
 }
 
@@ -1357,14 +1525,56 @@ mod tests {
                 ..Default::default()
             },
             cuvs: CuvsMetadata::default(),
+            cuml: CumlMetadata::default(),
         };
-        let directives =
-            link_directives(&metadata, RapidsConsumers::new(true, false), LinkArgTargets::new(true, false, true));
+        let directives = link_directives(
+            &metadata,
+            RapidsConsumers::new(true, false, false),
+            LinkArgTargets::new(true, false, true),
+        );
         assert_eq!(directives[0], "cargo:rustc-link-arg=-Wl,-rpath,/runtime");
         assert_eq!(directives[1], "cargo:rustc-link-arg-tests=-Wl,-rpath,/runtime");
         assert!(directives.iter().any(|line| line.contains("/cudf/libcudf.so")));
         assert!(directives.iter().any(|line| line.contains("/rmm/librmm.so")));
         assert!(!directives.iter().any(|line| line.starts_with("cargo:rustc-link-arg-bins=")));
+    }
+
+    #[test]
+    fn cuml_metadata_and_link_directives_bind_the_native_shim() {
+        let resolved = resolve_metadata(&EnvironmentSnapshot {
+            cuml: CumlEnvironment {
+                aggregate_metadata: Some("runtime-lib-dirs=/cuml:/cuvs;cuml-rust-runtime-lib=/cuml/libcuml_rust.so;libcuml-runtime-lib=/cuml/libcuml.so;treelite-runtime-lib=/cuml/libtreelite.so;nvforest-runtime-lib=/cuml/libnvforest.so;cuvs-library-path=/cuvs/libcuvs.so".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert_eq!(resolved.cuml.runtime_lib_dirs, Some(vec!["/cuml".into(), "/cuvs".into()]));
+        assert_eq!(resolved.cuml.cuvs_library_path, Some("/cuvs/libcuvs.so".into()));
+        let directives = link_directives(
+            &resolved,
+            RapidsConsumers::new(false, false, true),
+            LinkArgTargets::new(false, true, true),
+        );
+        assert!(directives.contains(&"cargo:rustc-link-arg-bins=-Wl,-rpath,/cuml".to_string()));
+        assert!(directives.contains(&"cargo:rustc-link-arg-tests=-Wl,-rpath,/cuvs".to_string()));
+        assert!(directives.contains(
+            &"cargo:rustc-link-arg-bins=-Wl,--push-state,--no-as-needed,/cuml/libcuml_rust.so,--pop-state".to_string()
+        ));
+        assert!(directives.contains(
+            &"cargo:rustc-link-arg-tests=-Wl,--push-state,--no-as-needed,/cuml/libcuml_rust.so,--pop-state".to_string()
+        ));
+        for name in ["libcuml.so", "libtreelite.so", "libnvforest.so"] {
+            assert!(directives.iter().any(|line| line.contains(&format!("--no-as-needed,/cuml/{name},"))));
+        }
+        assert!(!directives.iter().any(|line| line.contains("rustc-link-arg=-Wl,-rpath,/cuml")));
+    }
+
+    #[test]
+    fn private_cuvs_copy_is_rejected_for_cuml() {
+        let panic = std::panic::catch_unwind(|| {
+            reject_private_cuvs_path("cuml-sys", Path::new("/native/_deps/cuvs/libcuvs.so"))
+        });
+        assert!(panic.is_err());
     }
 
     #[test]

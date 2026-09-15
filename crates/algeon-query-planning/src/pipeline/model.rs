@@ -344,6 +344,8 @@ pub enum PipelineTaskKind {
     GraphAlgorithm,
     /// Execute one vector algorithm after its relation input frames are resident.
     VectorAlgorithm,
+    /// Execute a cuML algorithm over its resident relation inputs.
+    MlAlgorithm,
     /// Materialize the explicit result sink.
     SinkMaterialize,
 }
@@ -367,6 +369,7 @@ impl PipelineTaskKind {
             Self::EdgeNormalize => "edge_normalize",
             Self::GraphAlgorithm => "graph_algorithm",
             Self::VectorAlgorithm => "vector_algorithm",
+            Self::MlAlgorithm => "ml_algorithm",
             Self::SinkMaterialize => "sink_materialize",
         }
     }

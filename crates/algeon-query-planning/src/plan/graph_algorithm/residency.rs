@@ -420,7 +420,8 @@ fn edge_node_has_simple_directed_edge_topology(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => false,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
 
@@ -470,7 +471,8 @@ fn graph_residency_descriptor_for_edge_node(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
     }
 }
 

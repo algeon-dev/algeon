@@ -89,6 +89,8 @@ pub enum SchemaBehavior {
     GraphAlgorithm,
     /// Schema is produced by a vector algorithm result contract.
     VectorAlgorithm,
+    /// Schema is produced by a cuML result contract.
+    MlAlgorithm,
 }
 
 impl fmt::Display for SchemaBehavior {
@@ -103,6 +105,7 @@ impl fmt::Display for SchemaBehavior {
             Self::EdgeNormalize => "edge_normalize",
             Self::GraphAlgorithm => "graph_algorithm",
             Self::VectorAlgorithm => "vector_algorithm",
+            Self::MlAlgorithm => "ml_algorithm",
         })
     }
 }

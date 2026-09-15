@@ -434,6 +434,8 @@ mod graph_algorithm_execution;
 mod join_test_support;
 #[path = "native_execution_tests/metrics_assertions.rs"]
 mod metrics_assertions;
+#[path = "native_execution_tests/ml_algorithm_execution.rs"]
+mod ml_algorithm_execution;
 #[path = "native_execution_tests/native_join_execution.rs"]
 mod native_join_execution;
 #[path = "native_execution_tests/parquet_fixtures.rs"]

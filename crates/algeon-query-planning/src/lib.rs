@@ -34,6 +34,7 @@ pub mod expr;
 #[doc(hidden)]
 pub mod expression_lowering_policy;
 pub mod graph_observation;
+mod ml_validation;
 pub mod mode;
 pub mod naming;
 pub mod optimizer;

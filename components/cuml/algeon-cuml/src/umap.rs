@@ -135,6 +135,11 @@ impl UmapModel {
         &self.embedding
     }
 
+    /// Transfers the fitted embedding; the retained training matrix is released.
+    pub fn into_embedding(self) -> OwnedFloat32Matrix {
+        self.embedding
+    }
+
     pub fn transform(&mut self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<OwnedFloat32Matrix> {
         if input.binding_id() != resources.binding_id()
             || self.training.binding_id() != resources.binding_id()
@@ -280,6 +285,9 @@ fn validate_parameters(parameters: UmapParams, rows: usize) -> Result<()> {
     }
     if !parameters.spread.is_finite() || parameters.spread <= 0.0 {
         return Err(invalid_input(FIT, "spread must be finite and positive"));
+    }
+    if parameters.min_dist > parameters.spread {
+        return Err(invalid_input(FIT, "min_dist must not exceed spread"));
     }
     if parameters.set_op_mix_ratio > 1.0 {
         return Err(invalid_input(FIT, "set_op_mix_ratio must not exceed 1"));

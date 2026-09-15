@@ -73,6 +73,7 @@ pub const CUML_ERROR_FAILURE_SOURCE_UNKNOWN: cuml_error_failure_source_t = 2;
 pub const CUML_MATRIX_ROW_MAJOR: cuml_matrix_layout_t = 0;
 pub const CUML_MATRIX_COLUMN_MAJOR: cuml_matrix_layout_t = 1;
 unsafe extern "C" {
+    pub fn cuml_version_get(major: *mut i32, minor: *mut i32, patch: *mut i32) -> cuml_status_t;
     pub fn cuml_last_error_detail() -> *const cuml_error_detail_t;
     pub fn cuml_last_error_message() -> *const core::ffi::c_char;
     pub fn cuml_clear_error();

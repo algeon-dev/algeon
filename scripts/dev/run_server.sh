@@ -9,7 +9,8 @@
 #   cargo build --workspace --all-features --release --bin algeon_server
 # The cuGraph SQL frontend is enabled by default. Set
 # ALGEON_SERVER_CUGRAPH_ENABLED=false to hide it; execution requires the
-# cugraph build.
+# cugraph build. cuVS and cuML SQL functions are installed by the server;
+# execution requires the corresponding `cuvs` or `cuml` build feature.
 #
 # AWS credentials (short-lived STS tokens) must be in the host environment:
 #   export AWS_ACCESS_KEY_ID=...

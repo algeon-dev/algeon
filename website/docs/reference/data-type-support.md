@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-description: Arrow, cuDF, cuGraph, and cuVS data type support boundaries for native Algeon execution.
+description: Arrow, cuDF, cuGraph, cuVS, and cuML data type support boundaries for native Algeon execution.
 ---
 
 # Data Type Support
@@ -171,3 +171,26 @@ Floating elements must be finite. Integer elements have no finite-value scan. No
 :::
 
 Use `gpu_describe_function('<function>')` for the catalog contract and `gpu_validate_call('<function>', '<call_json>')` for static input validation.
+
+## cuML feature relations
+
+The seven `cuml_*` functions accept dense `Float32` features only, either as
+ordered wide columns or a `vector` column containing `FixedSizeList<Float32>`
+(or a uniform `List<Float32>` / `LargeList<Float32>`). Features must be finite;
+there is no implicit numeric cast. Every relation requires a non-null `id`
+of type `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Repeated IDs are
+allowed because `row_ordinal UInt64` identifies each output row.
+
+For logistic regression and both random-forest functions, `training` requires
+a non-null `label` column. Classifiers require `Int32` labels; the regressor
+requires finite `Float32` targets. The separate `predict` relation rejects
+`label`. Unsupervised `input` treats every non-`id` wide column as a feature,
+including a column named `label`.
+
+PCA and TSVD output `pc_<i> Float32`; UMAP outputs `dim_<i> Float32`.
+HDBSCAN outputs `cluster_id Int64` (`-1` for noise) and `probability Float32`.
+Supervised output is `prediction Int32` for classifiers or `prediction Float32`
+for the regressor. Each output also contains `row_ordinal UInt64` and an `id`
+with the relation's input ID type. See [cuML SQL inputs](../cuml/ml-inputs.mdx)
+for relation bindings and [cuML functions](../cuml/functions/index.mdx) for
+function-specific output contracts.

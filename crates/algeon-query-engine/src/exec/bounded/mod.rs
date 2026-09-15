@@ -99,6 +99,14 @@ pub(super) fn execute_bounded_query_plan(
         ));
     }
 
+    if plan.nodes().iter().any(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::MlAlgorithm(_)))
+    {
+        return Err(unsupported_bounded_shape(
+            "ML execution requires an admitted compiled pipeline",
+            "compiled_ml_pipeline_required",
+        ));
+    }
+
     if plan.contains_join() {
         reject_bounded_join_plan(context, plan)?;
     }

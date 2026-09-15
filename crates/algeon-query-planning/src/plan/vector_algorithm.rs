@@ -4,11 +4,18 @@
 //! algorithm parameters, and result schemas without depending on cuVS. The
 //! optional cuVS executor is selected later by the runtime.
 
-use std::{collections::BTreeSet, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use serde_json::{Value, json};
 
-use super::{DataType, Field, NodeId, Schema, SchemaRef};
+use super::{
+    DataType, DenseVectorBinding, Field, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError,
+    GpuOutputFieldDefinition, NodeId, Schema, SchemaRef, VectorElementType,
+    gpu_function_options::{
+        canonicalize_options, dense_relation_binding_schema, option_schema as gpu_option_schema,
+        validate_dense_relation_binding_value,
+    },
+};
 
 /// Public SQL names for the query-local cuVS operations.
 pub const CUVS_BRUTE_FORCE_KNN_FUNCTION: &str = "cuvs_brute_force_knn";
@@ -19,76 +26,6 @@ pub const CUVS_KMEANS_FUNCTION: &str = "cuvs_kmeans";
 pub const CUVS_PCA_FUNCTION: &str = "cuvs_pca";
 pub const CUVS_PAIRWISE_DISTANCE_FUNCTION: &str = "cuvs_pairwise_distance";
 pub const CUVS_TOP_K_FUNCTION: &str = "cuvs_top_k";
-
-/// Scalar ID types accepted by every cuVS relational operation.
-///
-/// This is deliberately narrower than the set of Arrow integer types. Native
-/// cuVS output/gather paths are only defined for these five stable SQL types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CuvsIdType {
-    Int32,
-    Int64,
-    Utf8,
-    LargeUtf8,
-    Utf8View,
-}
-
-impl CuvsIdType {
-    pub fn from_data_type(data_type: &DataType) -> Option<Self> {
-        match data_type {
-            DataType::Int32 => Some(Self::Int32),
-            DataType::Int64 => Some(Self::Int64),
-            DataType::Utf8 => Some(Self::Utf8),
-            DataType::LargeUtf8 => Some(Self::LargeUtf8),
-            DataType::Utf8View => Some(Self::Utf8View),
-            _ => None,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Int32 => "Int32",
-            Self::Int64 => "Int64",
-            Self::Utf8 => "Utf8",
-            Self::LargeUtf8 => "LargeUtf8",
-            Self::Utf8View => "Utf8View",
-        }
-    }
-}
-
-/// Stable order used in generated descriptions and validation diagnostics.
-pub const CUVS_ID_TYPES: &[CuvsIdType] =
-    &[CuvsIdType::Int32, CuvsIdType::Int64, CuvsIdType::Utf8, CuvsIdType::LargeUtf8, CuvsIdType::Utf8View];
-
-/// Vector element types accepted by cuVS operation descriptors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CuvsVectorElementType {
-    Float32,
-    Float64,
-    Int8,
-    UInt8,
-}
-
-impl CuvsVectorElementType {
-    pub fn from_data_type(data_type: &DataType) -> Option<Self> {
-        match data_type {
-            DataType::Float32 => Some(Self::Float32),
-            DataType::Float64 => Some(Self::Float64),
-            DataType::Int8 => Some(Self::Int8),
-            DataType::UInt8 => Some(Self::UInt8),
-            _ => None,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Float32 => "Float32",
-            Self::Float64 => "Float64",
-            Self::Int8 => "Int8",
-            Self::UInt8 => "UInt8",
-        }
-    }
-}
 
 /// SQL relation argument roles in the canonical operation registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -133,99 +70,10 @@ pub enum CuvsOutputContract {
     TopKValues,
 }
 
-/// Canonical scalar option metadata used by JSON schema generation and value
-/// validation in the DataFusion adapter.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CuvsOptionKind {
-    RelationBinding,
-    Integer { minimum: u64, maximum: u64, default: Option<u64> },
-    NonnegativeNumber { default: f64 },
-    Fraction { default: f64 },
-    Boolean { default: Option<bool> },
-    Enum { values: &'static [&'static str], default: Option<&'static str> },
-}
-
-impl CuvsOptionKind {
-    pub const fn default_u64(self) -> Option<u64> {
-        match self {
-            Self::Integer { default, .. } => default,
-            _ => None,
-        }
-    }
-
-    pub const fn default_f64(self) -> Option<f64> {
-        match self {
-            Self::NonnegativeNumber { default } | Self::Fraction { default } => Some(default),
-            _ => None,
-        }
-    }
-
-    pub const fn default_bool(self) -> Option<bool> {
-        match self {
-            Self::Boolean { default } => default,
-            _ => None,
-        }
-    }
-
-    pub const fn default_str(self) -> Option<&'static str> {
-        match self {
-            Self::Enum { default, .. } => default,
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CuvsOptionDefinition {
-    pub name: &'static str,
-    pub required: bool,
-    pub kind: CuvsOptionKind,
-    /// User-facing semantics projected through the unified GPU descriptor.
-    pub description: &'static str,
-}
-
-/// One documented output field in a cuVS relational result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CuvsOutputFieldDefinition {
-    pub name: &'static str,
-    pub data_type: &'static str,
-    pub nullable: bool,
-    /// Literal option that determines how many physical output fields exist.
-    pub repeats: Option<&'static str>,
-    pub description: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CuvsOptionValidationError {
-    code: &'static str,
-    message: String,
-    argument: Option<&'static str>,
-}
-
-impl CuvsOptionValidationError {
-    pub fn code(&self) -> &'static str {
-        self.code
-    }
-
-    /// The declared option this error concerns, when it is attributable to one.
-    pub fn argument(&self) -> Option<&'static str> {
-        self.argument
-    }
-
-    fn for_argument(mut self, argument: &'static str) -> Self {
-        self.argument = Some(argument);
-        self
-    }
-
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-}
-
 /// Verified metrics for one vector element type within an operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CuvsVectorElementSupport {
-    pub element: CuvsVectorElementType,
+    pub element: VectorElementType,
     pub metrics: &'static [&'static str],
 }
 
@@ -247,8 +95,8 @@ pub struct CuvsOperationDescriptor {
     /// Supported dense-vector element types for every relation binding.
     pub vector_element_support: &'static [CuvsVectorElementSupport],
     pub output_contract: CuvsOutputContract,
-    pub options: &'static [CuvsOptionDefinition],
-    pub output_fields: &'static [CuvsOutputFieldDefinition],
+    pub options: &'static [GpuOptionDefinition],
+    pub output_fields: &'static [GpuOutputFieldDefinition],
     /// Generic SQL that demonstrates the real execution syntax, not only the
     /// metadata-validation envelope.
     pub quickstart_sql: &'static str,
@@ -257,62 +105,8 @@ pub struct CuvsOperationDescriptor {
     pub limitations: &'static [&'static str],
 }
 
-fn cuvs_vector_relation_binding_schema(element_support: &[CuvsVectorElementSupport]) -> Value {
-    let elements = element_support.iter().map(|element| element.element.as_str()).collect::<Vec<_>>().join(", ");
-    let list_types = element_support
-        .iter()
-        .map(|element| {
-            format!(
-                "FixedSizeList<{}, D>, List<{}>, or LargeList<{}>",
-                element.element.as_str(),
-                element.element.as_str(),
-                element.element.as_str()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "vector"],
-        "properties": {
-            "id": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows."
-            },
-            "vector": {
-                "description": "Choose exactly one dense-vector binding shape.",
-                "oneOf": [
-                    {
-                        "type": "object", "additionalProperties": false,
-                        "required": ["columns"],
-                        "properties": {
-                            "columns": {
-                                "type": "array", "minItems": 1, "uniqueItems": true,
-                                "description": format!("Ordered, unique non-null {elements} feature columns; order defines vector dimensions."),
-                                "items": {"type": "string", "minLength": 1}
-                            }
-                        }
-                    },
-                    {
-                        "type": "object", "additionalProperties": false,
-                        "required": ["column"],
-                        "properties": {
-                            "column": {
-                                "type": "string", "minLength": 1,
-                                "description": format!("One non-null {list_types} column.")
-                            }
-                        }
-                    }
-                ]
-            }
-        }
-    })
-}
-
 const FLOAT32_VECTOR_SUPPORT: &[CuvsVectorElementSupport] =
-    &[CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: &[] }];
+    &[CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: &[] }];
 const KNN_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::Dataset, CuvsRelationRole::Queries];
 const INPUT_RELATION: &[CuvsRelationRole] = &[CuvsRelationRole::Input];
 const PAIRWISE_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::X, CuvsRelationRole::Y];
@@ -321,152 +115,152 @@ const KNN_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded", "cosine", "inn
 const KMEANS_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded"];
 const IVF_PQ_INTEGER_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded", "inner_product"];
 const BRUTE_FORCE_SUPPORT: &[CuvsVectorElementSupport] =
-    &[CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS }];
+    &[CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: KNN_METRICS }];
 const IVF_SUPPORT: &[CuvsVectorElementSupport] = &[
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Int8, metrics: KNN_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::UInt8, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Int8, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::UInt8, metrics: KNN_METRICS },
 ];
 const IVF_PQ_SUPPORT: &[CuvsVectorElementSupport] = &[
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Int8, metrics: IVF_PQ_INTEGER_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::UInt8, metrics: IVF_PQ_INTEGER_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Int8, metrics: IVF_PQ_INTEGER_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::UInt8, metrics: IVF_PQ_INTEGER_METRICS },
 ];
 const CAGRA_SUPPORT: &[CuvsVectorElementSupport] = &[
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: CAGRA_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Int8, metrics: CAGRA_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::UInt8, metrics: CAGRA_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: CAGRA_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Int8, metrics: CAGRA_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::UInt8, metrics: CAGRA_METRICS },
 ];
 const PAIRWISE_SUPPORT: &[CuvsVectorElementSupport] = &[
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KNN_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float64, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: KNN_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float64, metrics: KNN_METRICS },
 ];
 const KMEANS_SUPPORT: &[CuvsVectorElementSupport] = &[
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float32, metrics: KMEANS_METRICS },
-    CuvsVectorElementSupport { element: CuvsVectorElementType::Float64, metrics: KMEANS_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float32, metrics: KMEANS_METRICS },
+    CuvsVectorElementSupport { element: VectorElementType::Float64, metrics: KMEANS_METRICS },
 ];
 const KMEANS_INIT: &[&str] = &["kmeans++", "random"];
 const PCA_SOLVERS: &[&str] = &["cov_eig_dq", "cov_eig_jacobi"];
 
-const KNN_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition {
+const KNN_OPTIONS: &[GpuOptionDefinition] = &[
+    GpuOptionDefinition {
         name: "dataset",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "Names the dataset ID column and one dense-vector binding shape.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "queries",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "Names the query ID column and one dense-vector binding shape.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "k",
         required: true,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: None },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: None },
         description: "Number of neighbors returned for each evaluated query row.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "metric",
         required: true,
-        kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: None },
+        kind: GpuOptionKind::Enum { values: KNN_METRICS, default: None },
         description: "Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first.",
     },
 ];
 const CAGRA_METRICS: &[&str] = &["l2_expanded", "inner_product", "cosine"];
 const CAGRA_BUILD_ALGOS: &[&str] = &["ivf_pq", "nn_descent"];
 const CAGRA_SEARCH_ALGOS: &[&str] = &["auto", "single_cta", "multi_cta", "multi_kernel"];
-const CAGRA_OPTIONS: &[CuvsOptionDefinition] = &[
+const CAGRA_OPTIONS: &[GpuOptionDefinition] = &[
     KNN_OPTIONS[0],
     KNN_OPTIONS[1],
     KNN_OPTIONS[2],
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "metric",
         required: false,
-        kind: CuvsOptionKind::Enum { values: CAGRA_METRICS, default: Some("l2_expanded") },
+        kind: GpuOptionKind::Enum { values: CAGRA_METRICS, default: Some("l2_expanded") },
         description: "Distance or score metric; native default l2_expanded. inner_product ranks higher scores first.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "graph_degree",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(64) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(64) },
         description: "Output graph degree; native default 64. Must be less than dataset rows.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "intermediate_graph_degree",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(128) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(128) },
         description: "Build graph degree; native default 128. Must exceed graph_degree and be less than dataset rows.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "build_algo",
         required: false,
-        kind: CuvsOptionKind::Enum { values: CAGRA_BUILD_ALGOS, default: Some("ivf_pq") },
+        kind: GpuOptionKind::Enum { values: CAGRA_BUILD_ALGOS, default: Some("ivf_pq") },
         description: "Graph construction algorithm; native default ivf_pq. nn_descent does not support cosine.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "itopk_size",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(64) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(64) },
         description: "Intermediate search results; native default 64. Must be at least k.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "search_width",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(1) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(1) },
         description: "Starting graph nodes per iteration; native default 1.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "max_iterations",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 0, maximum: u32::MAX as u64, default: Some(0) },
+        kind: GpuOptionKind::Integer { minimum: 0, maximum: u32::MAX as u64, default: Some(0) },
         description: "Maximum search iterations; native default 0 selects automatically.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "search_algo",
         required: false,
-        kind: CuvsOptionKind::Enum { values: CAGRA_SEARCH_ALGOS, default: Some("auto") },
+        kind: GpuOptionKind::Enum { values: CAGRA_SEARCH_ALGOS, default: Some("auto") },
         description: "Search kernel; auto is set explicitly (the native zero-initialized default is single_cta).",
     },
 ];
-const IVF_FLAT_OPTIONS: &[CuvsOptionDefinition] = &[
+const IVF_FLAT_OPTIONS: &[GpuOptionDefinition] = &[
     KNN_OPTIONS[0],
     KNN_OPTIONS[1],
     KNN_OPTIONS[2],
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "metric",
         required: false,
-        kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: Some("l2_expanded") },
+        kind: GpuOptionKind::Enum { values: KNN_METRICS, default: Some("l2_expanded") },
         description: "Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "n_lists",
         required: true,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: None },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: None },
         description: "Number of inverted lists; must not exceed the evaluated dataset row count.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "n_probes",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(20) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(20) },
         description: "Lists probed per query; native default 20, and must not exceed n_lists.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "kmeans_n_iters",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(20) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: Some(20) },
         description: "Iterations for training list centers; native default 20.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "kmeans_trainset_fraction",
         required: false,
-        kind: CuvsOptionKind::Fraction { default: 0.5 },
+        kind: GpuOptionKind::Fraction { default: 0.5 },
         description: "Fraction of the dataset used for training centers; native default 0.5.",
     },
 ];
 const IVF_PQ_CODEBOOK_KINDS: &[&str] = &["per_subspace", "per_cluster"];
-const IVF_PQ_OPTIONS: &[CuvsOptionDefinition] = &[
+const IVF_PQ_OPTIONS: &[GpuOptionDefinition] = &[
     IVF_FLAT_OPTIONS[0],
     IVF_FLAT_OPTIONS[1],
     IVF_FLAT_OPTIONS[2],
@@ -475,191 +269,191 @@ const IVF_PQ_OPTIONS: &[CuvsOptionDefinition] = &[
     IVF_FLAT_OPTIONS[5],
     IVF_FLAT_OPTIONS[6],
     IVF_FLAT_OPTIONS[7],
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "pq_dim",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 0, maximum: u32::MAX as u64, default: Some(0) },
+        kind: GpuOptionKind::Integer { minimum: 0, maximum: u32::MAX as u64, default: Some(0) },
         description: "Compressed dimensions; native default 0 selects the dimension automatically. pq_dim * pq_bits must be divisible by 8.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "pq_bits",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 4, maximum: 8, default: Some(8) },
+        kind: GpuOptionKind::Integer { minimum: 4, maximum: 8, default: Some(8) },
         description: "Bits per PQ code; native default 8.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "codebook_kind",
         required: false,
-        kind: CuvsOptionKind::Enum { values: IVF_PQ_CODEBOOK_KINDS, default: Some("per_subspace") },
+        kind: GpuOptionKind::Enum { values: IVF_PQ_CODEBOOK_KINDS, default: Some("per_subspace") },
         description: "PQ codebook training scope; native default per_subspace.",
     },
 ];
-const PAIRWISE_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition {
+const PAIRWISE_OPTIONS: &[GpuOptionDefinition] = &[
+    GpuOptionDefinition {
         name: "x",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "First dense-vector relation.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "y",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "Second dense-vector relation.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "metric",
         required: true,
-        kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: None },
+        kind: GpuOptionKind::Enum { values: KNN_METRICS, default: None },
         description: "Distance metric; inner_product is a similarity where larger is closer.",
     },
 ];
-const TOP_K_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition {
+const TOP_K_OPTIONS: &[GpuOptionDefinition] = &[
+    GpuOptionDefinition {
         name: "input",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "Dense-vector rows to select from.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "k",
         required: true,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: None },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: u32::MAX as u64, default: None },
         description: "Number of values selected from each row.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "select",
         required: true,
-        kind: CuvsOptionKind::Enum { values: TOP_K_SELECTIONS, default: None },
+        kind: GpuOptionKind::Enum { values: TOP_K_SELECTIONS, default: None },
         description: "Select the minimum or maximum values.",
     },
 ];
-const KMEANS_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition {
+const KMEANS_OPTIONS: &[GpuOptionDefinition] = &[
+    GpuOptionDefinition {
         name: "input",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "Names the input ID column and one dense-vector binding shape.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "n_clusters",
         required: true,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: None },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: None },
         description: "Number of clusters fitted for this one statement.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "metric",
         required: false,
-        kind: CuvsOptionKind::Enum { values: KMEANS_METRICS, default: Some("l2_expanded") },
+        kind: GpuOptionKind::Enum { values: KMEANS_METRICS, default: Some("l2_expanded") },
         description: "L2 distance form used while fitting and assigning the current input relation.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "max_iter",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(100) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(100) },
         description: "Maximum fitting iterations for this invocation.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "tol",
         required: false,
-        kind: CuvsOptionKind::NonnegativeNumber { default: 0.0001 },
+        kind: GpuOptionKind::NonnegativeNumber { default: 0.0001 },
         description: "Non-negative convergence tolerance used by the fitted model.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "n_init",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(1) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(1) },
         description: "Number of initialization attempts performed within this call.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "init",
         required: false,
-        kind: CuvsOptionKind::Enum { values: KMEANS_INIT, default: Some("kmeans++") },
+        kind: GpuOptionKind::Enum { values: KMEANS_INIT, default: Some("kmeans++") },
         description: "Centroid initialization strategy for this fitted model.",
     },
 ];
-const PCA_OPTIONS: &[CuvsOptionDefinition] = &[
-    CuvsOptionDefinition {
+const PCA_OPTIONS: &[GpuOptionDefinition] = &[
+    GpuOptionDefinition {
         name: "input",
         required: true,
-        kind: CuvsOptionKind::RelationBinding,
+        kind: GpuOptionKind::RelationBinding,
         description: "Names the input ID column and one dense-vector binding shape.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "n_components",
         required: true,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: None },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: None },
         description: "Number of principal-component columns emitted as pc_0 through pc_<n_components - 1>.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "whiten",
         required: false,
-        kind: CuvsOptionKind::Boolean { default: Some(false) },
+        kind: GpuOptionKind::Boolean { default: Some(false) },
         description: "Whether the query-local transformed components are whitened.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "solver",
         required: false,
-        kind: CuvsOptionKind::Enum { values: PCA_SOLVERS, default: Some("cov_eig_dq") },
+        kind: GpuOptionKind::Enum { values: PCA_SOLVERS, default: Some("cov_eig_dq") },
         description: "Covariance eigensolver used for this fit-transform call.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "tol",
         required: false,
-        kind: CuvsOptionKind::NonnegativeNumber { default: 0.0 },
+        kind: GpuOptionKind::NonnegativeNumber { default: 0.0 },
         description: "Non-negative eigensolver tolerance.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "n_iterations",
         required: false,
-        kind: CuvsOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(15) },
+        kind: GpuOptionKind::Integer { minimum: 1, maximum: i32::MAX as u64, default: Some(15) },
         description: "Maximum eigensolver iterations for this invocation.",
     },
-    CuvsOptionDefinition {
+    GpuOptionDefinition {
         name: "flip_signs_based_on_u",
         required: false,
-        kind: CuvsOptionKind::Boolean { default: Some(false) },
+        kind: GpuOptionKind::Boolean { default: Some(false) },
         description: "Whether cuVS applies its U-based component-sign convention.",
     },
 ];
 
-const KNN_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
-    CuvsOutputFieldDefinition {
+const KNN_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
+    GpuOutputFieldDefinition {
         name: "query_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based ordinal of the evaluated query row; it disambiguates duplicate query IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "query_id",
         data_type: "same_as_queries.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the queries relation.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "neighbor_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based ordinal of the matched dataset row; it disambiguates duplicate dataset IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "neighbor_id",
         data_type: "same_as_dataset.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the matched dataset row.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "rank",
         data_type: "UInt32",
         nullable: false,
         repeats: None,
         description: "One-based neighbor rank within a query. Order consumers explicitly by query_ordinal, rank.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "distance",
         data_type: "Float32",
         nullable: false,
@@ -668,36 +462,36 @@ const KNN_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
     },
 ];
 
-const PAIRWISE_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
-    CuvsOutputFieldDefinition {
+const PAIRWISE_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
+    GpuOutputFieldDefinition {
         name: "x_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based physical ordinal of the evaluated x row; it disambiguates duplicate x IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "x_id",
         data_type: "same_as_x.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the x relation.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "y_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based physical ordinal of the evaluated y row; it disambiguates duplicate y IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "y_id",
         data_type: "same_as_y.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the y relation.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "distance",
         data_type: "same_as_x.vector_element",
         nullable: false,
@@ -705,36 +499,36 @@ const PAIRWISE_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
         description: "Float32 for Float32 input, Float64 for Float64 input. Smaller is closer for distance metrics; inner_product prefers larger values.",
     },
 ];
-const TOP_K_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
-    CuvsOutputFieldDefinition {
+const TOP_K_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
+    GpuOutputFieldDefinition {
         name: "row_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based physical ordinal of the evaluated input row; it disambiguates duplicate input IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "id",
         data_type: "same_as_input.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the input relation.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "rank",
         data_type: "UInt32",
         nullable: false,
         repeats: None,
         description: "One-based value rank within an input row. Order consumers explicitly by row_ordinal, rank.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "position",
         data_type: "Int64",
         nullable: false,
         repeats: None,
         description: "Zero-based dimension index of the selected value within the input vector.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "value",
         data_type: "Float32",
         nullable: false,
@@ -742,22 +536,22 @@ const TOP_K_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
         description: "Selected Float32 input vector value; rank follows ascending values for min and descending values for max.",
     },
 ];
-const KMEANS_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
-    CuvsOutputFieldDefinition {
+const KMEANS_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
+    GpuOutputFieldDefinition {
         name: "row_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "id",
         data_type: "same_as_input.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the input relation.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "cluster_id",
         data_type: "Int32",
         nullable: false,
@@ -766,22 +560,22 @@ const KMEANS_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
     },
 ];
 
-const PCA_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
-    CuvsOutputFieldDefinition {
+const PCA_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
+    GpuOutputFieldDefinition {
         name: "row_ordinal",
         data_type: "UInt64",
         nullable: false,
         repeats: None,
         description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "id",
         data_type: "same_as_input.id",
         nullable: false,
         repeats: None,
         description: "Logical ID copied from the input relation.",
     },
-    CuvsOutputFieldDefinition {
+    GpuOutputFieldDefinition {
         name: "pc_<index>",
         data_type: "Float32",
         nullable: false,
@@ -1027,11 +821,11 @@ ORDER BY row_ordinal;"#,
 ];
 
 impl CuvsOperationDescriptor {
-    pub fn element_support(&self, element: CuvsVectorElementType) -> Option<&CuvsVectorElementSupport> {
+    pub fn element_support(&self, element: VectorElementType) -> Option<&CuvsVectorElementSupport> {
         self.vector_element_support.iter().find(|support| support.element == element)
     }
 
-    pub fn option(&self, name: &str) -> Option<&'static CuvsOptionDefinition> {
+    pub fn option(&self, name: &str) -> Option<&'static GpuOptionDefinition> {
         self.options.iter().find(|option| option.name == name)
     }
 
@@ -1039,7 +833,12 @@ impl CuvsOperationDescriptor {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for option in self.options {
-            let mut schema = option_schema(option.kind, self.vector_element_support);
+            let mut schema = gpu_option_schema(
+                option.kind,
+                &dense_relation_binding_schema(
+                    &self.vector_element_support.iter().map(|support| support.element).collect::<Vec<_>>(),
+                ),
+            );
             schema["description"] = Value::String(option.description.to_string());
             properties.insert(option.name.to_string(), schema);
             if option.required {
@@ -1069,72 +868,22 @@ impl CuvsOperationDescriptor {
     }
 }
 
-fn option_schema(kind: CuvsOptionKind, element_support: &[CuvsVectorElementSupport]) -> Value {
-    match kind {
-        CuvsOptionKind::RelationBinding => cuvs_vector_relation_binding_schema(element_support),
-        CuvsOptionKind::Integer { minimum, maximum, default } => {
-            let mut value = json!({"type": "integer", "minimum": minimum, "maximum": maximum});
-            if let Some(default) = default {
-                value["default"] = json!(default);
-            }
-            value
-        },
-        CuvsOptionKind::NonnegativeNumber { default } => json!({"type": "number", "minimum": 0.0, "default": default}),
-        CuvsOptionKind::Fraction { default } => {
-            json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": default})
-        },
-        CuvsOptionKind::Boolean { default } => {
-            let mut value = json!({"type": "boolean"});
-            if let Some(default) = default {
-                value["default"] = json!(default);
-            }
-            value
-        },
-        CuvsOptionKind::Enum { values, default } => {
-            let mut value = json!({"type": "string", "enum": values});
-            if let Some(default) = default {
-                value["default"] = json!(default);
-            }
-            value
-        },
-    }
+#[cfg(test)]
+fn option_schema(kind: GpuOptionKind, element_support: &[CuvsVectorElementSupport]) -> Value {
+    gpu_option_schema(
+        kind,
+        &dense_relation_binding_schema(&element_support.iter().map(|support| support.element).collect::<Vec<_>>()),
+    )
 }
 
 /// Validate and canonicalize the scalar portion of an options JSON object.
 /// Relation binding field names/types are checked by the SQL adapter against
 /// its child schema, but presence and object shape are enforced here.
-pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<Value, CuvsOptionValidationError> {
-    let parsed: Value = serde_json::from_str(raw)
-        .map_err(|_| option_error("invalid_options_json", "cuVS options must be valid JSON"))?;
-    let mut object = parsed
-        .as_object()
-        .cloned()
-        .ok_or_else(|| option_error("options_not_object", "cuVS options must be a JSON object"))?;
+pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<Value, GpuOptionValidationError> {
     let descriptor = operation.descriptor();
-    if let Some(unknown) = object.keys().find(|key| descriptor.option(key).is_none()) {
-        return Err(option_error("unknown_option", format!("unknown cuVS option '{unknown}'")));
-    }
-    for option in descriptor.options {
-        let Some(value) = object.get_mut(option.name) else {
-            if option.required {
-                return Err(option_error(
-                    "missing_or_invalid_option",
-                    format!("cuVS option '{}' is required", option.name),
-                )
-                .for_argument(option.name));
-            }
-            let default = match option.kind {
-                CuvsOptionKind::Integer { default: Some(value), .. } => json!(value),
-                CuvsOptionKind::NonnegativeNumber { default } | CuvsOptionKind::Fraction { default } => json!(default),
-                CuvsOptionKind::Boolean { default: Some(value) } => json!(value),
-                CuvsOptionKind::Enum { default: Some(value), .. } => json!(value),
-                _ => continue,
-            };
-            object.insert(option.name.to_string(), default);
-            continue;
-        };
-        validate_option_value(option, value).map_err(|error| error.for_argument(option.name))?;
-    }
+    let object = canonicalize_options(descriptor.options, raw, "cuVS", |option, value| {
+        validate_dense_relation_binding_value("cuVS", option, value, false)
+    })?;
     if matches!(operation, CuvsOperation::IvfFlat | CuvsOperation::IvfPq) {
         let n_probes = object.get("n_probes").and_then(Value::as_u64).expect("validated n_probes");
         let n_lists = object.get("n_lists").and_then(Value::as_u64).expect("validated n_lists");
@@ -1178,110 +927,8 @@ pub fn canonicalize_cuvs_options(operation: CuvsOperation, raw: &str) -> Result<
     Ok(Value::Object(object))
 }
 
-fn validate_option_value(option: &CuvsOptionDefinition, value: &Value) -> Result<(), CuvsOptionValidationError> {
-    let invalid = || option_error("missing_or_invalid_option", format!("invalid cuVS option '{}'", option.name));
-    match option.kind {
-        CuvsOptionKind::RelationBinding => {
-            validate_relation_binding_value(option, value)?;
-        },
-        CuvsOptionKind::Integer { minimum, maximum, .. } => {
-            if value.as_u64().filter(|value| *value >= minimum && *value <= maximum).is_none() {
-                return Err(invalid());
-            }
-        },
-        CuvsOptionKind::NonnegativeNumber { .. } => {
-            if value.as_f64().filter(|value| value.is_finite() && *value >= 0.0).is_none() {
-                return Err(invalid());
-            }
-        },
-        CuvsOptionKind::Fraction { .. } => {
-            if value.as_f64().filter(|value| value.is_finite() && *value > 0.0 && *value <= 1.0).is_none() {
-                return Err(invalid());
-            }
-        },
-        CuvsOptionKind::Boolean { .. } => {
-            if !value.is_boolean() {
-                return Err(invalid());
-            }
-        },
-        CuvsOptionKind::Enum { values, .. } => {
-            if value.as_str().is_none_or(|value| !values.contains(&value)) {
-                return Err(invalid());
-            }
-        },
-    }
-    Ok(())
-}
-
-fn validate_relation_binding_value(
-    option: &CuvsOptionDefinition,
-    value: &Value,
-) -> Result<(), CuvsOptionValidationError> {
-    let invalid = || option_error("missing_or_invalid_option", format!("invalid cuVS option '{}'", option.name));
-    let binding = value.as_object().ok_or_else(invalid)?;
-    if let Some(unknown) = binding.keys().find(|key| !matches!(key.as_str(), "id" | "vector")) {
-        return Err(option_error("unknown_option", format!("unknown cuVS option '{unknown}' in {}", option.name)));
-    }
-    if binding.get("id").and_then(Value::as_str).filter(|value| !value.is_empty()).is_none() {
-        return Err(option_error(
-            "missing_or_invalid_option",
-            format!("cuVS option '{}.id' must be a non-empty string", option.name),
-        ));
-    }
-    let vector = binding.get("vector").and_then(Value::as_object).ok_or_else(|| {
-        option_error("missing_or_invalid_option", format!("cuVS option '{}.vector' must be an object", option.name))
-    })?;
-    if let Some(unknown) = vector.keys().find(|key| !matches!(key.as_str(), "columns" | "column")) {
-        return Err(option_error(
-            "unknown_option",
-            format!("unknown cuVS option '{unknown}' in {}.vector", option.name),
-        ));
-    }
-
-    match (vector.get("columns"), vector.get("column")) {
-        (Some(columns), None) => {
-            let columns = columns.as_array().filter(|columns| !columns.is_empty()).ok_or_else(|| {
-                option_error(
-                    "invalid_vector_binding",
-                    format!("cuVS option '{}.vector.columns' must be a non-empty string array", option.name),
-                )
-            })?;
-            let mut unique = BTreeSet::new();
-            for column in columns {
-                let column = column.as_str().filter(|column| !column.is_empty()).ok_or_else(|| {
-                    option_error(
-                        "invalid_vector_binding",
-                        format!("cuVS option '{}.vector.columns' entries must be non-empty strings", option.name),
-                    )
-                })?;
-                if !unique.insert(column) {
-                    return Err(option_error(
-                        "duplicate_vector_column",
-                        format!("cuVS option '{}.vector.columns' contains duplicate field '{column}'", option.name),
-                    ));
-                }
-            }
-        },
-        (None, Some(column)) => {
-            if column.as_str().filter(|column| !column.is_empty()).is_none() {
-                return Err(option_error(
-                    "invalid_vector_binding",
-                    format!("cuVS option '{}.vector.column' must be a non-empty string", option.name),
-                ));
-            }
-        },
-        _ => {
-            return Err(option_error(
-                "invalid_vector_binding",
-                format!("cuVS option '{}.vector' must contain exactly one of columns or column", option.name),
-            ));
-        },
-    }
-    Ok(())
-}
-
-fn option_error(code: &'static str, message: impl Into<String>) -> CuvsOptionValidationError {
-    CuvsOptionValidationError { code, message: message.into(), argument: None }
+fn option_error(code: &'static str, message: impl Into<String>) -> GpuOptionValidationError {
+    GpuOptionValidationError::new(code, message)
 }
 
 /// Vector algorithm identity carried by the native IR.
@@ -1351,32 +998,6 @@ impl VectorRowIdBinding {
     }
 }
 
-/// Binding from one native relation to a dense vector matrix.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CuvsDenseVectorBinding {
-    /// Separate non-null columns of one supported element type packed in the listed order.
-    Columns(Vec<String>),
-    /// One non-null fixed-size or variable-size list column of a supported element type.
-    VectorColumn(String),
-}
-
-impl CuvsDenseVectorBinding {
-    pub fn columns(columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self::Columns(columns.into_iter().map(Into::into).collect())
-    }
-
-    pub fn vector_column(column: impl Into<String>) -> Self {
-        Self::VectorColumn(column.into())
-    }
-
-    pub fn display_label(&self) -> String {
-        match self {
-            Self::Columns(columns) => columns.join("|"),
-            Self::VectorColumn(column) => format!("[{column}]"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorRelationBinding {
     /// Native relation that supplies row ids and feature columns.
@@ -1384,7 +1005,7 @@ pub struct VectorRelationBinding {
     /// Row identity emitted by relational results.
     pub row_id: VectorRowIdBinding,
     /// Ordered dense vector binding.
-    pub vector: CuvsDenseVectorBinding,
+    pub vector: DenseVectorBinding,
 }
 
 impl VectorRelationBinding {
@@ -1394,12 +1015,12 @@ impl VectorRelationBinding {
         row_id: VectorRowIdBinding,
         feature_columns: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
-        Self { input, row_id, vector: CuvsDenseVectorBinding::columns(feature_columns) }
+        Self { input, row_id, vector: DenseVectorBinding::columns(feature_columns) }
     }
 
     /// Construct a binding backed by one list/vector column.
     pub fn new_vector_column(input: NodeId, row_id: VectorRowIdBinding, column: impl Into<String>) -> Self {
-        Self { input, row_id, vector: CuvsDenseVectorBinding::vector_column(column) }
+        Self { input, row_id, vector: DenseVectorBinding::vector_column(column) }
     }
 }
 
@@ -2004,9 +1625,21 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CuvsOperation, CuvsOptionDefinition, CuvsOptionKind, canonicalize_cuvs_options, option_schema,
-        validate_option_value,
+        CuvsOperation, GpuOptionDefinition, GpuOptionKind, canonicalize_cuvs_options, option_schema,
+        validate_dense_relation_binding_value,
     };
+    use crate::plan::{
+        GpuOptionValidationError, gpu_function_options::validate_option_value as gpu_validate_option_value,
+    };
+
+    fn validate_option_value(
+        option: &GpuOptionDefinition,
+        value: &serde_json::Value,
+    ) -> Result<(), GpuOptionValidationError> {
+        gpu_validate_option_value(option, value, "cuVS", &|option, value| {
+            validate_dense_relation_binding_value("cuVS", option, value, false)
+        })
+    }
 
     #[test]
     fn ivf_flat_rejects_probes_above_lists_with_argument_attribution() {
@@ -2085,10 +1718,10 @@ mod tests {
     #[test]
     fn integer_options_honor_zero_and_bounded_minima() {
         for (minimum, maximum, accepted, rejected) in [(0, 10, [0, 10], [11, 12]), (4, 8, [4, 8], [0, 9])] {
-            let option = CuvsOptionDefinition {
+            let option = GpuOptionDefinition {
                 name: "integer",
                 required: false,
-                kind: CuvsOptionKind::Integer { minimum, maximum, default: Some(minimum) },
+                kind: GpuOptionKind::Integer { minimum, maximum, default: Some(minimum) },
                 description: "Integer range.",
             };
             assert_eq!(option_schema(option.kind, &[])["minimum"], json!(minimum));
@@ -2103,10 +1736,10 @@ mod tests {
 
     #[test]
     fn fraction_options_exclude_zero_and_values_above_one() {
-        let option = CuvsOptionDefinition {
+        let option = GpuOptionDefinition {
             name: "fraction",
             required: false,
-            kind: CuvsOptionKind::Fraction { default: 0.5 },
+            kind: GpuOptionKind::Fraction { default: 0.5 },
             description: "Training fraction.",
         };
         assert_eq!(option_schema(option.kind, &[])["exclusiveMinimum"], json!(0));

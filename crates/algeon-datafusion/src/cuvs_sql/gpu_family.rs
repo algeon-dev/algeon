@@ -4,25 +4,16 @@
 //! Named validation relations become schema-only `TableScan` logical inputs, so
 //! no relation scan, GPU allocation, or cuVS operation is performed here.
 
-use arrow::datatypes::SchemaRef;
-use datafusion::{
-    catalog::Session,
-    common::{DataFusionError, TableReference},
-    datasource::provider_as_source,
-    execution::{SessionState, context::SessionConfig},
-    logical_expr::{LogicalPlan, LogicalPlanBuilder},
-};
+use datafusion::{catalog::Session, execution::context::SessionConfig};
 use serde_json::{Map, Value, json};
 
 use super::{
-    CUVS_OPERATION_REGISTRY, CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsOutputContract, CuvsRelationRole,
+    CUVS_OPERATION_REGISTRY, CuvsLogicalNode, CuvsOperation, CuvsOutputContract, CuvsRelationRole, GpuOptionKind,
     options::options_from_named_values,
 };
-use crate::{
-    error::{DataFusionErrorExt, ErrorCode},
-    gpu_functions::{
-        GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
-    },
+use crate::gpu_functions::{
+    GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
+    dense_relation::{resolve_schema_only_input, schema_json, validation_error, validation_request_schema},
 };
 
 const CUVS_FAMILY_ID: &str = "cuvs";
@@ -122,7 +113,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             Ok(options_json) => options_json,
             Err(error) => {
                 let mut details = base_details(operation, relation_details);
-                let (error_code, message) = validation_error(&error, &mut details);
+                let (error_code, message) = validation_error(&error, &mut details, "cuvs_validation_failed");
                 return GpuCallValidation {
                     valid: false,
                     error_code: Some(error_code),
@@ -160,7 +151,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             },
             Err(error) => {
                 let mut details = base_details(operation, relation_details);
-                let (error_code, message) = validation_error(&error, &mut details);
+                let (error_code, message) = validation_error(&error, &mut details, "cuvs_validation_failed");
                 GpuCallValidation {
                     valid: false,
                     error_code: Some(error_code),
@@ -216,7 +207,8 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
         })
         .collect::<Vec<_>>();
     let options_schema = value_options_schema(operation);
-    let validation_request_schema = validation_request_schema(descriptor.relation_roles, &options_schema);
+    let validation_request_schema =
+        validation_request_schema(descriptor.relation_roles.iter().map(|role| role.as_str()), &options_schema);
     GpuFunctionDescriptor {
         function_name: descriptor.sql_function_name.to_string(),
         provider: CUVS_PROVIDER.to_string(),
@@ -243,7 +235,7 @@ fn signature(operation: CuvsOperation) -> String {
             descriptor
                 .options
                 .iter()
-                .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+                .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
                 .map(|option| format!("{} => value", option.name)),
         )
         .collect::<Vec<_>>()
@@ -275,7 +267,7 @@ fn argument_descriptions(operation: CuvsOperation) -> Value {
             .descriptor()
             .options
             .iter()
-            .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+            .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
             .map(|option| {
                 json!({
                     "name": option.name,
@@ -295,7 +287,7 @@ fn canonical_value_options(operation: CuvsOperation, canonical: &Value) -> Value
             .descriptor()
             .options
             .iter()
-            .filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+            .filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
             .filter_map(|option| canonical.get(option.name).cloned().map(|value| (option.name.to_string(), value)))
             .collect(),
     )
@@ -322,38 +314,6 @@ fn result_schemas(operation: CuvsOperation) -> Value {
     json!({
         "output_contract": output_contract_name(descriptor.output_contract),
         "fields": fields,
-    })
-}
-
-fn validation_request_schema(roles: &[CuvsRelationRole], options_schema: &Value) -> Value {
-    let relation_properties = roles
-        .iter()
-        .map(|role| {
-            (
-                role.as_str().to_string(),
-                json!({
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["table"],
-                    "properties": {"table": {"type": "string"}}
-                }),
-            )
-        })
-        .collect::<Map<_, _>>();
-    json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["relations", "options"],
-        "properties": {
-            "relations": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
-                "properties": relation_properties,
-            },
-            "options": options_schema,
-        }
     })
 }
 
@@ -426,37 +386,6 @@ fn limitations(operation: CuvsOperation) -> Value {
     )
 }
 
-struct ResolvedSchemaOnlyInput {
-    plan: LogicalPlan,
-    schema: SchemaRef,
-}
-
-async fn resolve_schema_only_input(
-    session: &dyn Session,
-    name: &str,
-    table_reference: TableReference,
-) -> std::result::Result<ResolvedSchemaOnlyInput, String> {
-    let state = session.as_any().downcast_ref::<SessionState>().ok_or_else(|| {
-        "GPU validation requires a DataFusion SessionState so named relations can be resolved".to_string()
-    })?;
-    let catalog_options = &state.config_options().catalog;
-    let resolved = table_reference.clone().resolve(&catalog_options.default_catalog, &catalog_options.default_schema);
-    let catalog =
-        state.catalog_list().catalog(&resolved.catalog).ok_or_else(|| format!("table '{name}' was not found"))?;
-    let schema = catalog.schema(&resolved.schema).ok_or_else(|| format!("table '{name}' was not found"))?;
-    let provider = schema
-        .table(&resolved.table)
-        .await
-        .map_err(|error| format!("could not resolve table '{name}': {error}"))?
-        .ok_or_else(|| format!("table '{name}' was not found"))?;
-    let provider_schema = provider.schema();
-    let plan = LogicalPlanBuilder::scan(table_reference, provider_as_source(provider), None)
-        .map_err(|error| format!("could not construct schema-only input for table '{name}': {error}"))?
-        .build()
-        .map_err(|error| format!("could not construct schema-only input for table '{name}': {error}"))?;
-    Ok(ResolvedSchemaOnlyInput { plan, schema: provider_schema })
-}
-
 fn unavailable_validation(
     operation: CuvsOperation,
     request: &GpuCallRequest,
@@ -485,54 +414,11 @@ fn unavailable_validation(
     }
 }
 
-/// Projects a typed validation rejection into the stable error code plus the
-/// `details_json` locator: `path` names `options.<argument>` or
-/// `relations.<role>[.fields.<field>]`, and the typed facts that located the
-/// failure (`argument`, `relation_role`, `field`, `actual_type`,
-/// `expected_type`) are copied alongside it.
-fn validation_error(error: &DataFusionError, details: &mut Value) -> (String, String) {
-    let Some(error) = error.find_algeon_error() else {
-        details["path"] = Value::String("options".to_string());
-        return ("cuvs_validation_failed".to_string(), error.to_string());
-    };
-    let code = match error.code() {
-        ErrorCode::FieldNotFound => "column_not_found",
-        ErrorCode::UnsupportedType => "unsupported_type",
-        _ => error.facts().get("reason").unwrap_or("cuvs_validation_failed"),
-    };
-    let facts = error.facts();
-    let path = match (facts.get("argument"), facts.get("relation_role"), facts.get("field")) {
-        (Some(argument), _, _) => format!("options.{argument}"),
-        (None, Some(role), Some(field)) => format!("relations.{role}.fields.{field}"),
-        (None, Some(role), None) => format!("relations.{role}"),
-        (None, None, _) => "options".to_string(),
-    };
-    details["path"] = Value::String(path);
-    for key in ["argument", "relation_role", "field", "actual_type", "expected_type"] {
-        if let Some(value) = facts.get(key) {
-            details[key] = Value::String(value.to_string());
-        }
-    }
-    (code.to_string(), error.message().to_string())
-}
-
 fn base_details(operation: CuvsOperation, relations: Map<String, Value>) -> Value {
     json!({
         "provider": CUVS_PROVIDER,
         "operation": operation_name(operation),
         "relations": relations,
-    })
-}
-
-fn schema_json(schema: &SchemaRef) -> Value {
-    json!({
-        "fields": schema.fields().iter().map(|field| json!({
-            "name": field.name(),
-            "data_type": format!("{:?}", field.data_type()),
-            "nullable": field.is_nullable(),
-            "metadata": field.metadata(),
-        })).collect::<Vec<_>>(),
-        "metadata": schema.metadata(),
     })
 }
 

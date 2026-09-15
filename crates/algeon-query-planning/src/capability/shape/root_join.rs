@@ -63,7 +63,8 @@ pub(in crate::capability) fn root_join_with_post_root_stages(
             PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "post_root_stage_unsupported_node",
                     [

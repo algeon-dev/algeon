@@ -15,6 +15,7 @@ use crate::{
         },
         types::TypeId,
     },
+    frame::Series,
     ops::{
         concatenate::concatenate_columns_with_exec,
         reshape::interleave_columns_with_exec,
@@ -24,6 +25,7 @@ use crate::{
 
 const PACK_OPERATION: &str = "runtime::pack_columns";
 const PACK_FLAT_OPERATION: &str = "runtime::pack_flat_column";
+const UNPACK_OPERATION: &str = "runtime::unpack_dense_matrix";
 
 pub(crate) fn matrix_element_bytes(element: TypeId, operation: &'static str) -> Result<usize> {
     match element {
@@ -344,6 +346,50 @@ fn validate_columns(columns: &[&Column]) -> Result<(usize, usize, TypeId)> {
 }
 
 impl Runtime {
+    /// Split a flat dense numeric column into device-resident feature series.
+    /// Row-major values are gathered by stride; column-major values use contiguous slices.
+    pub fn unpack_dense_matrix(
+        &self,
+        values: Column,
+        rows: usize,
+        columns: usize,
+        layout: DenseMatrixLayout,
+    ) -> Result<Vec<Series>> {
+        if columns == 0 || rows == 0 {
+            return Err(Error::new_with(ErrorCode::EmptyInput, UNPACK_OPERATION, "matrix dimensions must be positive"));
+        }
+        let expected = checked_matrix_element_count_in(rows, columns, UNPACK_OPERATION)?;
+        let element = values.data_type().map_err(|e| e.reanchor(UNPACK_OPERATION))?.id();
+        matrix_element_bytes(element, UNPACK_OPERATION)?;
+        let actual = values.len().map_err(|e| e.reanchor(UNPACK_OPERATION))?;
+        if actual != expected {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                UNPACK_OPERATION,
+                "flat matrix length differs from its shape",
+            )
+            .with_fact(FACT_EXPECTED_ROWS, expected)
+            .with_fact(FACT_ACTUAL_ROWS, actual));
+        }
+        if values.null_count().map_err(|e| e.reanchor(UNPACK_OPERATION))? != 0 {
+            return Err(Error::new_with(ErrorCode::NullUnexpected, UNPACK_OPERATION, "matrix values must be non-null"));
+        }
+        let flat = Series::from_column(values).map_err(|e| e.reanchor(UNPACK_OPERATION))?;
+        (0..columns)
+            .map(|index| {
+                let series = match layout {
+                    DenseMatrixLayout::ColumnMajor => flat.slice(index * rows, rows),
+                    DenseMatrixLayout::RowMajor => {
+                        let indices = self.sequence(index as i32, columns as i32, rows)?;
+                        flat.gather(&indices)
+                    },
+                }
+                .map_err(|e| e.reanchor(UNPACK_OPERATION))?;
+                series.copy_into_runtime(self).map_err(|e| e.reanchor(UNPACK_OPERATION))
+            })
+            .collect()
+    }
+
     /// Copy one borrowed device-resident row-major numeric span into a packed
     /// matrix on this runtime's exact execution domain.
     ///

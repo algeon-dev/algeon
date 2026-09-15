@@ -2,22 +2,18 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
-use query_engine::{
-    expr::Expr as NativeExpr,
-    plan::{
-        ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo,
-        VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit,
-        VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
-        VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
-    },
-    source::{GpuResidentSource, SourceNode},
+use query_engine::plan::{
+    QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
+    VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo, VectorDistanceMetric,
+    VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit, VectorKMeansMetric,
+    VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+    VectorRowIdBinding, VectorTopKParams,
 };
 
 use crate::{
-    cuvs_sql::{CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions, error::invalid_call},
+    cuvs_sql::{CuvsOperation, CuvsValidatedOptions, DenseVectorBinding, error::invalid_call},
     error::{Error, ErrorCode},
-    native_exec::child_inputs::NativeChildBinding,
+    native_exec::{child_inputs::NativeChildBinding, relation_function::add_projected_relation_source},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,28 +48,12 @@ pub(super) fn lower_cuvs_query_plan(
                 "cuVS physical child order does not match semantic relation order",
             ));
         }
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-            child.input_name.clone(),
-            Arc::clone(&child.schema),
-        )));
-        let input = if is_identity_projection(&child.projection, child.schema.fields().len()) {
-            source
-        } else {
-            let outputs = child
-                .projection
-                .iter()
-                .map(|index| {
-                    let field = child.schema.field(*index);
-                    ProjectionOutput::new(NativeExpr::column(field.name()), field.as_ref().clone())
-                })
-                .collect();
-            builder.add_projection(source, outputs)
-        };
+        let input = add_projected_relation_source(&mut builder, child);
         let relation = match binding.vector() {
-            CuvsDenseVectorBinding::Columns(columns) => {
+            DenseVectorBinding::Columns(columns) => {
                 VectorRelationBinding::new(input, VectorRowIdBinding::column(binding.id()), columns.iter().cloned())
             },
-            CuvsDenseVectorBinding::VectorColumn(column) => VectorRelationBinding::new_vector_column(
+            DenseVectorBinding::VectorColumn(column) => VectorRelationBinding::new_vector_column(
                 input,
                 VectorRowIdBinding::column(binding.id()),
                 column.clone(),
@@ -259,10 +239,6 @@ pub(super) fn lower_cuvs_query_plan(
         },
         CuvsPlanSink::GpuResident => builder.finish_gpu_resident(root),
     })
-}
-
-fn is_identity_projection(projection: &[usize], field_count: usize) -> bool {
-    projection.len() == field_count && projection.iter().copied().eq(0..field_count)
 }
 
 fn value<'a>(

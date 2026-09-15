@@ -25,6 +25,7 @@ use super::{
 };
 use crate::{
     backend::AnalysisContext,
+    ml_validation::validate_ml_algorithm_node_contract,
     plan::{
         AggregateNode, DataPlacement, EdgeNormalizeNode, EdgeWeightCombiner, GraphAlgorithmNode, GraphAlgorithmParams,
         GraphVertexPairInput, SortNode, UnionNode, VectorAlgorithmNode, WindowFrame, WindowFunction, WindowNode,
@@ -120,6 +121,7 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
         },
         PlanNode::GraphAlgorithm(graph) => NodeOperator::GraphAlgorithm { algorithm: graph.spec.algorithm },
         PlanNode::VectorAlgorithm(vector) => NodeOperator::VectorAlgorithm { algorithm: vector.spec.algorithm },
+        PlanNode::MlAlgorithm(ml) => NodeOperator::MlAlgorithm { algorithm: ml.spec.algorithm },
     }
 }
 
@@ -170,6 +172,18 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCon
         },
         PlanNode::GraphAlgorithm(graph) => graph_algorithm_node_executable_decision(plan, node.id, graph),
         PlanNode::VectorAlgorithm(vector) => vector_algorithm_node_executable_decision(plan, node.id, vector),
+        PlanNode::MlAlgorithm(ml) => match validate_ml_algorithm_node_contract(ml, plan, node.id) {
+            Ok(()) => CapabilityDecision::Satisfied,
+            Err(error) => {
+                let mut facts =
+                    error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+                facts.entry("node_id").or_insert_with(|| node.id.to_string());
+                facts.entry("algorithm").or_insert_with(|| ml.spec.algorithm.as_str().to_string());
+                facts.insert("validation_code", error.code().to_string());
+                facts.insert("validation_operation", error.operation().to_string());
+                CapabilityDecision::Rejected { reason: "unsupported_ml_algorithm_node_capability", facts }
+            },
+        },
     }
 }
 

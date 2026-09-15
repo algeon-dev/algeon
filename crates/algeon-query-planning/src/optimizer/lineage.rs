@@ -159,7 +159,8 @@ pub(super) fn lineages_for_column(
         PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Vec::new(),
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Vec::new(),
     }
 }
 
@@ -241,7 +242,8 @@ pub(super) fn producer_input_is_direct_aggregate_keyset_alias(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => false,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
 
@@ -360,7 +362,8 @@ fn consumer_pre_aggregate_lineages_for_column(
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Vec::new(),
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Vec::new(),
     }
 }
 
@@ -440,7 +443,8 @@ pub(super) fn simple_lineages_for_column(
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Vec::new(),
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Vec::new(),
     }
 }
 

@@ -5,13 +5,10 @@ use datafusion::{
     catalog::Session,
     common::Result,
     execution::context::QueryPlanner,
-    logical_expr::{LogicalPlan, UserDefinedLogicalNode, physical_planning_context::PhysicalPlanningContext},
+    logical_expr::LogicalPlan,
     physical_plan::ExecutionPlan,
     physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner},
 };
-
-use super::{CuvsAlgoExec, CuvsLogicalNode};
-use crate::{native_exec::AlgeonNativeExecutionConfig, session::installed_algeon_native_optimizer_config};
 
 #[derive(Clone)]
 pub struct AlgeonQueryPlanner {
@@ -68,36 +65,5 @@ impl QueryPlanner for AlgeonQueryPlanner {
         DefaultPhysicalPlanner::with_extension_planners(self.extension_planners())
             .create_physical_plan(logical_plan, session)
             .await
-    }
-}
-
-#[derive(Debug)]
-pub struct CuvsExtensionPlanner;
-
-#[async_trait]
-impl ExtensionPlanner for CuvsExtensionPlanner {
-    async fn plan_extension(
-        &self,
-        _planner: &dyn PhysicalPlanner,
-        node: &dyn UserDefinedLogicalNode,
-        _logical_inputs: &[&LogicalPlan],
-        physical_inputs: &[Arc<dyn ExecutionPlan>],
-        session: &dyn Session,
-        _planning_ctx: &PhysicalPlanningContext,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(node) = node.as_any().downcast_ref::<CuvsLogicalNode>() else {
-            return Ok(None);
-        };
-        let native_execution_config = installed_algeon_native_optimizer_config(session)
-            .map(|config| config.native_execution_config().clone())
-            .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
-        CuvsAlgoExec::try_new(
-            node.operation(),
-            node.validated_options().clone(),
-            physical_inputs.to_vec(),
-            node.output_schema(),
-            native_execution_config,
-        )
-        .map(|exec| Some(Arc::new(exec) as Arc<dyn ExecutionPlan>))
     }
 }

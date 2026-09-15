@@ -13,7 +13,7 @@ use algeon_datafusion::{
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
         CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,
-        CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationRole,
+        CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsRelationRole, GpuOptionKind,
         cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
@@ -51,7 +51,7 @@ use datafusion::{
     },
 };
 use query_engine::plan::{
-    CUVS_ID_TYPES, CuvsIdType, CuvsOutputContract, CuvsVectorElementType, vector_kmeans_output_schema,
+    CuvsOutputContract, RELATION_ID_TYPES, RelationIdType, VectorElementType, vector_kmeans_output_schema,
     vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
     vector_top_k_output_schema,
 };
@@ -85,14 +85,14 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     assert_eq!(CuvsRelationRole::X.as_str(), "x");
     assert_eq!(CuvsRelationRole::Y.as_str(), "y");
     let expected = [
-        &[CuvsVectorElementType::Float32][..],
-        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Int8, CuvsVectorElementType::UInt8],
-        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Int8, CuvsVectorElementType::UInt8],
-        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Int8, CuvsVectorElementType::UInt8],
-        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Float64],
-        &[CuvsVectorElementType::Float32],
-        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Float64],
-        &[CuvsVectorElementType::Float32],
+        &[VectorElementType::Float32][..],
+        &[VectorElementType::Float32, VectorElementType::Int8, VectorElementType::UInt8],
+        &[VectorElementType::Float32, VectorElementType::Int8, VectorElementType::UInt8],
+        &[VectorElementType::Float32, VectorElementType::Int8, VectorElementType::UInt8],
+        &[VectorElementType::Float32, VectorElementType::Float64],
+        &[VectorElementType::Float32],
+        &[VectorElementType::Float32, VectorElementType::Float64],
+        &[VectorElementType::Float32],
     ];
     for (descriptor, expected) in CUVS_OPERATION_REGISTRY.iter().zip(expected) {
         assert_eq!(
@@ -102,7 +102,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         let metric_option = descriptor.option("metric");
         for support in descriptor.vector_element_support {
             if let Some(option) = metric_option {
-                let CuvsOptionKind::Enum { values, .. } = option.kind else { panic!("metric must be an enum") };
+                let GpuOptionKind::Enum { values, .. } = option.kind else { panic!("metric must be an enum") };
                 assert!(!support.metrics.is_empty());
                 assert!(support.metrics.iter().all(|metric| values.contains(metric)));
             } else {
@@ -111,7 +111,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         }
     }
     assert_eq!(
-        CuvsOperation::IvfPq.descriptor().element_support(CuvsVectorElementType::Int8).unwrap().metrics,
+        CuvsOperation::IvfPq.descriptor().element_support(VectorElementType::Int8).unwrap().metrics,
         ["l2_expanded", "l2_sqrt_expanded", "inner_product"]
     );
 
@@ -124,8 +124,14 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         serde_json::json!(["l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product"])
     );
     assert_eq!(
-        CUVS_ID_TYPES,
-        &[CuvsIdType::Int32, CuvsIdType::Int64, CuvsIdType::Utf8, CuvsIdType::LargeUtf8, CuvsIdType::Utf8View,]
+        RELATION_ID_TYPES,
+        &[
+            RelationIdType::Int32,
+            RelationIdType::Int64,
+            RelationIdType::Utf8,
+            RelationIdType::LargeUtf8,
+            RelationIdType::Utf8View,
+        ]
     );
 
     let ivf = cuvs_options_json_schema(CuvsOperation::IvfFlat);
@@ -219,7 +225,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             options_schema, expected_options_schema,
             "captured value options schema must be an exact projection of the canonical registry"
         );
-        for option in descriptor.options.iter().filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+        for option in descriptor.options.iter().filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
         {
             assert_eq!(
                 options_schema["properties"][option.name]["description"],
@@ -332,7 +338,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
                 assert!(page.contains(&format!("`{metric}`")), "{}", page_path.display());
             }
         }
-        for option in descriptor.options.iter().filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
+        for option in descriptor.options.iter().filter(|option| !matches!(option.kind, GpuOptionKind::RelationBinding))
         {
             assert!(page.contains(&format!("`{}`", option.name)), "{}", page_path.display());
             assert!(page.contains(&mdx_table_text(option.description)), "{}", page_path.display());
@@ -346,24 +352,25 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
     for descriptor in CUVS_OPERATION_REGISTRY {
         let row =
             partial.lines().find(|line| line.starts_with(&format!("| `{}` |", descriptor.sql_function_name))).unwrap();
-        let cells = [
-            CuvsVectorElementType::Float32,
-            CuvsVectorElementType::Float64,
-            CuvsVectorElementType::Int8,
-            CuvsVectorElementType::UInt8,
-        ]
-        .map(|element| {
-            descriptor.element_support(element).map_or_else(
-                || "No".to_string(),
-                |support| {
-                    if support.metrics.is_empty() {
-                        "Yes".to_string()
-                    } else {
-                        support.metrics.iter().map(|metric| format!("`{metric}`")).collect::<Vec<_>>().join(", ")
-                    }
-                },
-            )
-        });
+        let cells =
+            [VectorElementType::Float32, VectorElementType::Float64, VectorElementType::Int8, VectorElementType::UInt8]
+                .map(|element| {
+                    descriptor.element_support(element).map_or_else(
+                        || "No".to_string(),
+                        |support| {
+                            if support.metrics.is_empty() {
+                                "Yes".to_string()
+                            } else {
+                                support
+                                    .metrics
+                                    .iter()
+                                    .map(|metric| format!("`{metric}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            }
+                        },
+                    )
+                });
         assert_eq!(row, format!("| `{}` | {} |", descriptor.sql_function_name, cells.join(" | ")));
     }
 }

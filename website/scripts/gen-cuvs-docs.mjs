@@ -9,8 +9,13 @@ import { fileURLToPath } from 'node:url';
 import {
   cell,
   code,
-  defaultCell,
+  assertRenderableOptions,
+  assertRenderableOutputFields,
+  densePresentation as presentation,
+  denseQuickstartPrerequisite as quickstartPrerequisite,
   loadProviderSpecs,
+  renderDenseArguments as renderArguments,
+  renderDenseOutputSchema as renderOutputSchema,
   prose,
   renderFunctionPage,
   table,
@@ -118,48 +123,6 @@ function loadSpecs() {
   });
 }
 
-function presentation(spec) {
-  const entry = spec.examples.find(candidate => candidate?.quickstart?.sql && candidate?.validation?.call);
-  if (!entry) throw new Error(`${spec.function_name}: examples_json must contain quickstart SQL and a validation call`);
-  const quickstart = entry.quickstart;
-  if (typeof quickstart.display_name !== 'string' || quickstart.display_name.trim() === '') {
-    throw new Error(`${spec.function_name}: quickstart metadata must contain display_name`);
-  }
-  if (typeof quickstart.sql !== 'string' || quickstart.sql.trim() === '') {
-    throw new Error(`${spec.function_name}: quickstart metadata must contain executable SQL`);
-  }
-  return entry;
-}
-
-const RENDERED_OPTION_KEYS = new Set([
-  'type', 'default', 'enum', 'minimum', 'exclusiveMinimum', 'maximum', 'minLength', 'minItems',
-  'oneOf', 'description', 'additionalProperties', 'properties', 'required',
-]);
-
-function assertRenderableOptions(spec) {
-  for (const [name, option] of Object.entries(spec.options_schema.properties || {})) {
-    for (const key of Object.keys(option)) {
-      if (!RENDERED_OPTION_KEYS.has(key)) throw new Error(`${spec.function_name}: option ${name} has unrendered descriptor key ${key}`);
-    }
-    if (typeof option.description !== 'string' || option.description.trim() === '') {
-      throw new Error(`${spec.function_name}: option ${name} has no descriptor description`);
-    }
-  }
-}
-
-function assertRenderableOutputFields(spec) {
-  for (const field of spec.result_schemas.fields) {
-    for (const key of Object.keys(field)) {
-      if (!['name', 'data_type', 'nullable', 'repeats', 'description'].includes(key)) {
-        throw new Error(`${spec.function_name}: result field ${field.name || '<unnamed>'} has unrendered descriptor key ${key}`);
-      }
-    }
-    if (typeof field.name !== 'string' || typeof field.data_type !== 'string' || typeof field.description !== 'string') {
-      throw new Error(`${spec.function_name}: result fields require name, data_type, and description`);
-    }
-  }
-}
-
 function vectorElementTypes(spec) {
   return spec.relation_roles[0].fields.features.element_types;
 }
@@ -178,65 +141,6 @@ function renderInputs(spec) {
       code(support.element), support.metrics.length ? support.metrics.map(code).join(', ') : 'Not applicable',
     ])),
   ].join('\n');
-}
-
-function optionConstraints(option) {
-  const constraints = [];
-  if (option.enum) constraints.push(`one of ${option.enum.map(value => code(JSON.stringify(value))).join(', ')}`);
-  if ('minimum' in option) constraints.push(`minimum ${option.minimum}`);
-  if ('exclusiveMinimum' in option) constraints.push(`greater than ${option.exclusiveMinimum}`);
-  if ('maximum' in option) constraints.push(`maximum ${option.maximum}`);
-  if ('minLength' in option) constraints.push(`minimum string length ${option.minLength}`);
-  if ('minItems' in option) constraints.push(`at least ${option.minItems} item${option.minItems === 1 ? '' : 's'}`);
-  if (option.oneOf) constraints.push('one of the documented vector-binding shapes');
-  return constraints.join('; ');
-}
-
-function optionType(option) {
-  if (option.oneOf) return 'object (binding)';
-  return option.type || 'unknown';
-}
-
-function renderArguments(spec) {
-  const argumentsTable = spec.argument_descriptions.length === 0
-    ? '_This function has no scalar SQL arguments beyond its relation arguments._'
-    : table(['Argument', 'Type', 'Required', 'Description'], spec.argument_descriptions.map(argument => [
-      code(argument.name),
-      code(argument.type || sqlArgumentType(argument)),
-      argument.required ? 'yes' : 'no',
-      cell(argument.description),
-    ]));
-  const required = new Set(spec.options_schema.required || []);
-  const rows = Object.entries(spec.options_schema.properties || {})
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, option]) => [
-      code(name),
-      required.has(name) ? 'yes' : 'no',
-      code(optionType(option)),
-      defaultCell(option),
-      cell(optionConstraints(option)),
-      cell(option.description),
-    ]);
-  return [
-    '### Scalar SQL arguments',
-    '',
-    argumentsTable,
-    '',
-    '### SQL value argument schemas',
-    '',
-    rows.length === 0 ? '_This function has no options._' : table(['Argument', 'Required', 'Literal shape', 'Default', 'Constraints', 'Description'], rows),
-    '',
-    '### Vector binding shapes',
-    '',
-    renderVectorBindingShapes(spec),
-  ].join('\n');
-}
-
-function sqlArgumentType(argument) {
-  const schema = argument.schema || {};
-  if (schema.enum) return `enum (${schema.enum.map(value => JSON.stringify(value)).join(', ')})`;
-  if (schema.type) return schema.type;
-  return schema.oneOf ? 'object' : 'literal';
 }
 
 function renderVectorBindingShapes(spec) {
@@ -275,35 +179,6 @@ function renderVectorBindingShapes(spec) {
   ].join('\n');
 }
 
-// A repeated field's descriptor name carries an `<index>` placeholder; the
-// physical column count equals the value of the literal option it names.
-function repeatedFieldSentence(field) {
-  const prefix = field.name.replace(/<index>$/, '');
-  if (prefix === field.name) throw new Error(`repeated result field ${field.name} must end with <index>`);
-  return `The output contains ${code(field.repeats)} such columns, ${code(`${prefix}0`)} through ${code(`${prefix}<${field.repeats} - 1>`)}.`;
-}
-
-function renderOutputSchema(spec) {
-  return [
-    table(['Column', 'Type', 'Nullable', 'Description'], spec.result_schemas.fields.map(field => [
-      code(field.name),
-      code(field.data_type),
-      field.nullable ? 'yes' : 'no',
-      cell(field.repeats ? `${field.description} ${repeatedFieldSentence(field)}` : field.description),
-    ])),
-    '',
-    '**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
-  ].join('\n');
-}
-
-function quickstartPrerequisite(spec, entry) {
-  const relations = Object.entries(entry.validation.call.relations || {});
-  if (relations.length === 0) throw new Error(`${spec.function_name}: validation call names no relations`);
-  const named = relations.map(([role, relation]) => `${code(relation.table)} (the ${code(role)} role)`);
-  const passed = named.length > 1 ? 'each passed' : 'passed';
-  return `The call below expects the registered relation${named.length > 1 ? 's' : ''} ${named.join(' and ')}, ${passed} as a parenthesized ${code('SELECT')} subquery. Substitute your own relations and column names.`;
-}
-
 function renderPage(spec) {
   const entry = presentation(spec);
   const documentation = documentationFor(spec.function_name);
@@ -316,7 +191,7 @@ function renderPage(spec) {
     reference: `Official cuVS reference: [${documentation.officialApi}](${officialDocsUrl})`,
     quickstart: { prerequisite: quickstartPrerequisite(spec, entry), sql: entry.quickstart.sql },
     inputs: renderInputs(spec),
-    argumentsAndOptions: renderArguments(spec),
+    argumentsAndOptions: renderArguments(spec, renderVectorBindingShapes(spec)),
     output: renderOutputSchema(spec),
     examples: null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),

@@ -15,15 +15,18 @@ source build**, not a replacement for building the component crates under
 
 Complete [Building from Source](./from-source.md) before following this page.
 `docker/stage-docker-payload.sh` packages the locally built native libraries;
-it cannot create their cuDF, cuVS, or cuGraph artifacts itself.
+it cannot create their cuDF, cuVS, cuML, or cuGraph artifacts itself.
 
 :::
+
+Docker staging selects `cugraph`, `cuvs`, `cuml`, and `nvml` by default.
+A `FEATURES=cuml` payload also stages the canonical cuVS runtime dependency.
 
 The image build has two phases:
 
 1. `docker/stage-docker-payload.sh` runs on the host. It builds
    `algeon_server`, stages the binary, copies the locally built
-   forked cuDF/RMM libraries, then adds cuVS and cuGraph libraries for the
+   forked cuDF/RMM libraries, then adds cuVS, cuGraph, and cuML libraries for the
    selected features. cuGraph always brings its cuVS runtime dependency.
    It also bundles optional KvikIO/nvCOMP libraries when they are present.
    It strips staged artifacts with `strip --strip-unneeded` when `strip` is
@@ -46,15 +49,19 @@ algeon/
 ├── target/native/cudf-install/lib/librmm.so
 ├── target/native/cudf-install/lib/libcudf_rust.so
 ├── target/native/cuvs-install/lib/libcuvs.so
-└── target/native/cugraph-install/lib/libcugraph.so
+├── target/native/cugraph-install/lib/libcugraph.so
+├── target/native/cuml-install/lib/libcuml.so
+├── target/native/cuml-install/lib/libcuml_rust.so
+├── target/native/cuml-install/lib/libtreelite.so
+└── target/native/cuml-install/lib/libnvforest.so
 ```
 
 The cuDF script also installs `libcudf_rust_rmm_interop.so` beside the shim;
 `docker/stage-docker-payload.sh` stages both automatically. Docker consumes the
-three matching install prefixes under `ALGEON_NATIVE_DIR`; the cuGraph CMake
+matching install prefixes under `ALGEON_NATIVE_DIR`; the cuGraph CMake
 build tree is only an intermediate used while producing `cugraph-install`.
 
-The lean `FEATURES=nvml` image omits cuVS and cuGraph, so it
+The lean `FEATURES=nvml` image omits cuVS, cuML, and cuGraph, so it
 needs neither optional native artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
@@ -73,12 +80,12 @@ From the `algeon` checkout:
 ```bash
 cd "$ALGEON_ROOT"
 
-# Current image: Flight SQL server + cuVS/cuGraph SQL + NVML diagnostics.
+# Default image: Flight SQL server + cuVS/cuGraph/cuML SQL + NVML diagnostics.
 bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
 
-For a smaller cuDF-only server image, omit both `cugraph` and `cuvs` when
+For a smaller cuDF-only server image, omit `cugraph`, `cuvs`, and `cuml` when
 staging the payload:
 
 ```bash
@@ -204,7 +211,7 @@ algorithms
 
 - `docker/stage-docker-payload.sh` cannot find `libcudf.so`, `librmm.so`, or
   `libcugraph.so`: finish the source build first, or set `ALGEON_NATIVE_DIR` to
-  the root containing the three matching install prefixes.
+  the root containing the matching install prefixes.
 - The container starts but the first GPU query fails with
   `cudaErrorNoKernelImageForDevice`: rebuild the forked native libraries with
   CUDA architectures covering the deployment GPU.

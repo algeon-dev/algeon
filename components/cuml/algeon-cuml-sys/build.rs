@@ -35,7 +35,12 @@ fn use_prefix(prefix: &std::path::Path, cuml_install: &std::path::Path) {
         println!("cargo:{directive}");
     }
     println!("cargo:rerun-if-changed={}", link_file.display());
-    println!("cargo:cuml-rust-runtime-lib={}", prefix.join("lib/libcuml_rust.so").display());
+    let shim = prefix.join("lib/libcuml_rust.so").canonicalize().expect("installed cuML shim");
+    let cuml = cuml_install.join("lib/libcuml.so").canonicalize().expect("installed libcuml.so");
+    let treelite = cuml_install.join("lib/libtreelite.so").canonicalize().expect("installed libtreelite.so");
+    let nvforest = cuml_install.join("lib/libnvforest.so").canonicalize().expect("installed libnvforest.so");
+    println!("cargo:cuml-rust-runtime-lib={}", shim.display());
+    println!("cargo::metadata=cuml-rust-runtime-lib={}", shim.display());
     println!("cargo:metadata=cuml-rust-root={}", prefix.display());
     let cudf = env::var_os("CUDF_INSTALL_DIR")
         .map(PathBuf::from)
@@ -53,7 +58,25 @@ fn use_prefix(prefix: &std::path::Path, cuml_install: &std::path::Path) {
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join(":");
+    let cuvs_library = cuvs.join("lib/libcuvs.so").canonicalize().expect("canonical libcuvs.so");
+    println!("cargo:runtime-lib-dirs={encoded}");
     println!("cargo::metadata=runtime-lib-dirs={encoded}");
+    println!("cargo:libcuml-runtime-lib={}", cuml.display());
+    println!("cargo::metadata=libcuml-runtime-lib={}", cuml.display());
+    println!("cargo:treelite-runtime-lib={}", treelite.display());
+    println!("cargo::metadata=treelite-runtime-lib={}", treelite.display());
+    println!("cargo:nvforest-runtime-lib={}", nvforest.display());
+    println!("cargo::metadata=nvforest-runtime-lib={}", nvforest.display());
+    println!("cargo:cuvs-library-path={}", cuvs_library.display());
+    println!("cargo::metadata=cuvs-library-path={}", cuvs_library.display());
+    println!(
+        "cargo::metadata=metadata=runtime-lib-dirs={encoded};cuml-rust-runtime-lib={};libcuml-runtime-lib={};treelite-runtime-lib={};nvforest-runtime-lib={};cuvs-library-path={}",
+        shim.display(),
+        cuml.display(),
+        treelite.display(),
+        nvforest.display(),
+        cuvs_library.display()
+    );
     println!("cargo:metadata=cuda-runtime={}", env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".into()));
 }
 

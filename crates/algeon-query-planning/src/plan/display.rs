@@ -276,6 +276,17 @@ impl QueryNode {
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
+            PlanNode::MlAlgorithm(node) => writeln!(
+                f,
+                "{padding}{} MlAlgorithm inputs={} algorithm={} params={} output_schema_fields={} placement={} schema_behavior={}",
+                self.id,
+                format_node_ids(&node.inputs),
+                node.spec.algorithm,
+                format_ml_algorithm_params(&node.spec.params),
+                node.output_schema().fields().len(),
+                self.facts.placement,
+                self.facts.schema_behavior
+            ),
         }
     }
 }
@@ -374,6 +385,75 @@ fn format_vector_algorithm_params(params: &super::VectorAlgorithmParams) -> Stri
             params.flip_signs_based_on_u
         ),
     }
+}
+
+fn format_ml_algorithm_params(params: &super::MlAlgorithmParams) -> String {
+    let (input, components, solver, tolerance, iterations, whiten) = match params {
+        super::MlAlgorithmParams::Pca(p) => {
+            (&p.input, p.n_components, p.solver, p.tolerance, p.n_iterations, Some(p.whiten))
+        },
+        super::MlAlgorithmParams::Tsvd(p) => (&p.input, p.n_components, p.solver, p.tolerance, p.n_iterations, None),
+        super::MlAlgorithmParams::Hdbscan(p) => {
+            return format!(
+                "input=({};row_id:{};features:{}) min_samples={} min_cluster_size={} max_cluster_size={} cluster_selection_method={}",
+                p.input.input,
+                p.input.row_id.diagnostic_label(),
+                p.input.features.display_label(),
+                p.min_samples,
+                p.min_cluster_size,
+                p.max_cluster_size,
+                p.cluster_selection_method
+            );
+        },
+        super::MlAlgorithmParams::RandomForestClassifier(p) | super::MlAlgorithmParams::RandomForestRegressor(p) => {
+            return format!(
+                "training=({};row_id:{};features:{};label:{}) predict=({};row_id:{};features:{}) n_trees={} criterion={:?}",
+                p.training.input,
+                p.training.row_id.diagnostic_label(),
+                p.training.features.display_label(),
+                p.training.label.as_deref().unwrap_or("none"),
+                p.predict.input,
+                p.predict.row_id.diagnostic_label(),
+                p.predict.features.display_label(),
+                p.n_trees,
+                p.criterion
+            );
+        },
+        super::MlAlgorithmParams::LogisticRegression(p) => {
+            return format!(
+                "training=({};row_id:{};features:{};label:{}) predict=({};row_id:{};features:{})",
+                p.training.input,
+                p.training.row_id.diagnostic_label(),
+                p.training.features.display_label(),
+                p.training.label.as_deref().unwrap_or("none"),
+                p.predict.input,
+                p.predict.row_id.diagnostic_label(),
+                p.predict.features.display_label()
+            );
+        },
+        super::MlAlgorithmParams::Umap(p) => {
+            return format!(
+                "input=({};row_id:{};features:{}) n_components={} n_neighbors={} init={}",
+                p.input.input,
+                p.input.row_id.diagnostic_label(),
+                p.input.features.display_label(),
+                p.n_components,
+                p.n_neighbors,
+                p.init
+            );
+        },
+    };
+    format!(
+        "input=({};row_id:{};features:{}) n_components={} solver={} tolerance={} n_iterations={}{}",
+        input.input,
+        input.row_id.diagnostic_label(),
+        input.features.display_label(),
+        components,
+        solver,
+        tolerance,
+        iterations,
+        whiten.map_or_else(String::new, |value| format!(" whiten={value}"))
+    )
 }
 
 fn format_node_ids(ids: &[super::NodeId]) -> String {

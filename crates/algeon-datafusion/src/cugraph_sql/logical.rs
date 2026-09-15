@@ -125,6 +125,7 @@ impl CugraphLogicalNode {
         Arc::clone(&self.spec.output_schema)
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
     }

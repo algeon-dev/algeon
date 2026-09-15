@@ -634,7 +634,8 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             | PlanNode::Window(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => None,
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => None,
         }
     }
 
@@ -677,7 +678,8 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             | PlanNode::Join(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => None,
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => None,
         }
     }
 

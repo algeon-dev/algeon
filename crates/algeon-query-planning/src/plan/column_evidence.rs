@@ -1047,7 +1047,10 @@ fn unique_keys_by_node(nodes: &[QueryNode]) -> Vec<Vec<BTreeSet<String>>> {
                     Vec::new()
                 }
             },
-            PlanNode::Union(_) | PlanNode::EdgeNormalize(_) | PlanNode::VectorAlgorithm(_) => Vec::new(),
+            PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => Vec::new(),
         };
         by_node.push(keys);
     }

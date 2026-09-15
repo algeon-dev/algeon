@@ -1,47 +1,37 @@
 use datafusion::common::DataFusionError;
 
 use super::CuvsOperation;
-use crate::error::{Error, ErrorCode};
+use crate::gpu_functions::dense_relation_errors::DenseRelationErrorContext;
+
+const ERRORS: DenseRelationErrorContext = DenseRelationErrorContext {
+    family: "cuVS",
+    operation_fact: "cuvs_operation",
+    validate_operation: "algeon_datafusion.cuvs_sql.validate",
+    validate_schema_operation: "algeon_datafusion.cuvs_sql.validate_schema",
+    execute_operation: "algeon_datafusion.cuvs_sql.execute",
+    required_feature: "cuvs",
+    feature_disabled_message: "cuVS vector algorithm execution requires the cuvs Cargo feature",
+};
 
 pub(super) fn invalid_call(
     operation: CuvsOperation,
     reason: &'static str,
     message: impl Into<String>,
 ) -> DataFusionError {
-    invalid_call_error(operation, reason, message).into()
+    ERRORS.invalid_call(operation.descriptor().sql_function_name, reason, message)
 }
 
-/// Option rejection attributed to one declared value argument, so metadata
-/// validation can report `options.<argument>` as the failing path.
 pub(super) fn invalid_option(
     operation: CuvsOperation,
     reason: &'static str,
     argument: Option<&'static str>,
     message: impl Into<String>,
 ) -> DataFusionError {
-    let error = invalid_call_error(operation, reason, message);
-    match argument {
-        Some(argument) => error.with_log_safe_fact("argument", argument).into(),
-        None => error.into(),
-    }
-}
-
-fn invalid_call_error(operation: CuvsOperation, reason: &'static str, message: impl Into<String>) -> Error {
-    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.cuvs_sql.validate", message)
-        .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
-        .with_log_safe_fact("reason", reason)
+    ERRORS.invalid_option(operation.descriptor().sql_function_name, reason, argument, message)
 }
 
 pub(super) fn field_not_found(operation: CuvsOperation, relation_role: &'static str, field: &str) -> DataFusionError {
-    Error::new(
-        ErrorCode::FieldNotFound,
-        "algeon_datafusion.cuvs_sql.validate_schema",
-        format!("cuVS {relation_role} relation has no field named '{field}'"),
-    )
-    .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
-    .with_log_safe_fact("relation_role", relation_role)
-    .with_fact("field", field)
-    .into()
+    ERRORS.field_not_found(operation.descriptor().sql_function_name, relation_role, field)
 }
 
 pub(super) fn unsupported_type(
@@ -51,29 +41,9 @@ pub(super) fn unsupported_type(
     actual: impl ToString,
     expected: impl ToString,
 ) -> DataFusionError {
-    let expected = expected.to_string();
-    Error::new(
-        ErrorCode::UnsupportedType,
-        "algeon_datafusion.cuvs_sql.validate_schema",
-        format!("cuVS {relation_role} field '{field}' has an unsupported type; supported types: {expected}"),
-    )
-    .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
-    .with_log_safe_fact("relation_role", relation_role)
-    .with_fact("field", field)
-    .with_log_safe_fact("actual_type", actual)
-    .with_log_safe_fact("expected_type", expected)
-    .into()
+    ERRORS.unsupported_type(operation.descriptor().sql_function_name, relation_role, field, actual, expected)
 }
 
 pub(super) fn feature_disabled(operation: CuvsOperation) -> DataFusionError {
-    Error::new(
-        ErrorCode::UnsupportedOperator,
-        "algeon_datafusion.cuvs_sql.execute",
-        "cuVS vector algorithm execution requires the cuvs Cargo feature",
-    )
-    .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
-    .with_log_safe_fact("reason", "required_feature_disabled")
-    .with_log_safe_fact("required_feature", "cuvs")
-    .with_log_safe_fact("host_fallback", "disabled")
-    .into()
+    ERRORS.feature_disabled(operation.descriptor().sql_function_name)
 }

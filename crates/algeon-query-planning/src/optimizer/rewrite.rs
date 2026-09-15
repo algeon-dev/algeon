@@ -124,6 +124,12 @@ pub(super) fn clone_plan_node_with_inputs(
             vector.inputs = vector.spec.params.relation_bindings().map(|binding| binding.input).collect();
             PlanNode::VectorAlgorithm(vector)
         },
+        PlanNode::MlAlgorithm(ml) => {
+            let mut ml = ml.clone();
+            ml.spec.params.remap_relation_inputs(&mut rewrite_input);
+            ml.inputs = ml.spec.params.relation_bindings().map(|binding| binding.input).collect();
+            PlanNode::MlAlgorithm(ml)
+        },
     }
 }
 

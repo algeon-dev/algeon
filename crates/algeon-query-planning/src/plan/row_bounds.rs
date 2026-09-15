@@ -139,6 +139,6 @@ pub fn hard_row_upper_bound_with_resident_rows(
         // memory model's edge/vertex accounting; it no longer contributes a
         // provable row bound.
         PlanNode::GraphAlgorithm(_) => None,
-        PlanNode::EdgeNormalize(_) | PlanNode::VectorAlgorithm(_) => None,
+        PlanNode::EdgeNormalize(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
     }
 }

@@ -35,12 +35,15 @@ use cudf::{
 };
 
 mod bounded;
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
+mod dense_relation;
 mod edge_normalize;
 mod edge_null_filter;
 mod execution_metrics;
 mod graph_algorithm;
 mod join;
 mod materialize;
+mod ml_algorithm;
 mod nvtx;
 mod operators;
 mod order;
@@ -65,6 +68,8 @@ use edge_normalize::execute_edge_normalize;
 pub use execution_metrics::ExecutionMetrics;
 #[cfg(not(feature = "test-hooks"))]
 pub(crate) use execution_metrics::ExecutionMetrics;
+#[cfg(not(feature = "cuml"))]
+use ml_algorithm::ml_algorithm_execution_unavailable;
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
 use query_planning::validate_query_plan;
@@ -340,6 +345,28 @@ fn execute_query_plan_output(
 ) -> Result<Output> {
     context.check_cancellation("query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan, rapids_analysis_context())?;
+    if plan.contains_ml_algorithm() {
+        let unreachable = plan.unreachable_node_ids();
+        if let Some(node) = plan
+            .nodes()
+            .iter()
+            .find(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::MlAlgorithm(_)))
+            && let PlanNode::MlAlgorithm(_ml) = &node.kind
+        {
+            #[cfg(not(feature = "cuml"))]
+            return Err(ml_algorithm_execution_unavailable(node.id, _ml));
+            #[cfg(feature = "cuml")]
+            if !context.memory_control_policy().is_bounded() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "query_engine.ml_algorithm.admission",
+                    "ML execution requires a bounded compiled pipeline",
+                )
+                .with_fact("node_id", node.id)
+                .with_fact("reason", "compiled_ml_pipeline_required"));
+            }
+        }
+    }
     let vector_node = if plan.contains_vector_algorithm() {
         let unreachable = plan.unreachable_node_ids();
         plan.nodes()
@@ -504,6 +531,18 @@ fn execute_node(
                 let result = execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics);
                 Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
             }
+        },
+        PlanNode::MlAlgorithm(_ml) => {
+            #[cfg(not(feature = "cuml"))]
+            return Err(ml_algorithm_execution_unavailable(node.id, _ml));
+            #[cfg(feature = "cuml")]
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "query_engine.ml_algorithm.execute",
+                "ML execution requires the compiled pipeline",
+            )
+            .with_fact("node_id", node.id)
+            .with_fact("reason", "compiled_ml_pipeline_required"))
         },
         PlanNode::VectorAlgorithm(_) => Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,

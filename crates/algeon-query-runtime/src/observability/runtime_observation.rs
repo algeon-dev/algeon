@@ -682,6 +682,9 @@ pub enum RuntimeOperatorStageKind {
     VectorPack,
     VectorNative,
     VectorAssemble,
+    MlPack,
+    MlNative,
+    MlAssemble,
 }
 
 impl RuntimeOperatorStageKind {
@@ -702,6 +705,9 @@ impl RuntimeOperatorStageKind {
             Self::VectorPack => "vector_pack",
             Self::VectorNative => "vector_native",
             Self::VectorAssemble => "vector_assemble",
+            Self::MlPack => "ml_pack",
+            Self::MlNative => "ml_native",
+            Self::MlAssemble => "ml_assemble",
         }
     }
 }
@@ -743,6 +749,8 @@ pub struct RuntimeOperatorStageObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vector_algorithm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub ml_algorithm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub vector_relation_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vector_dimension: Option<usize>,
@@ -782,6 +790,7 @@ impl RuntimeOperatorStageObservation {
             output_bytes: None,
             reserved_bytes: None,
             vector_algorithm: None,
+            ml_algorithm: None,
             vector_relation_role: None,
             vector_dimension: None,
             matrix_layout: None,
@@ -852,6 +861,11 @@ impl RuntimeOperatorStageObservation {
 
     pub fn with_vector_algorithm(mut self, algorithm: impl Into<String>) -> Self {
         self.vector_algorithm = Some(algorithm.into());
+        self
+    }
+
+    pub fn with_ml_algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.ml_algorithm = Some(algorithm.into());
         self
     }
 

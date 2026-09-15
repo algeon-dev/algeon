@@ -5,9 +5,11 @@
 //! by the engine alone, so its projection lives here.
 
 #[cfg(feature = "cuvs")]
-use std::{collections::BTreeMap, error::Error as StdError};
-
+use std::collections::BTreeMap;
 #[cfg(feature = "cuvs")]
+use std::error::Error as StdError;
+
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
 use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
 pub use query_runtime::native_error::{
     cudf_budget_exhaustion, cudf_message_fact, cudf_query_error, cudf_query_error_with_budget_details,
@@ -100,5 +102,115 @@ fn is_safe_cuvs_context_fact(key: &str) -> bool {
     )
 }
 
-#[cfg(all(test, feature = "cuvs"))]
+#[cfg(feature = "cuml")]
+pub fn query_error_code_for_cuml_error(error: &cuml::Error) -> QueryErrorCode {
+    classify_cuml_error(error.code(), error.kind(), error.status(), cuml::allocation_attribution(error))
+}
+
+#[cfg(feature = "cuml")]
+fn classify_cuml_error(
+    code: cuml::ErrorCode,
+    kind: cuml::ErrorKind,
+    status: cuml::ErrorStatus,
+    attribution: cudf::CudfAllocationAttribution,
+) -> QueryErrorCode {
+    use cudf::CudfAllocationAttribution;
+    use cuml::{ErrorCode, ErrorKind, ErrorStatus};
+
+    if code == ErrorCode::HostOutOfMemory {
+        return QueryErrorCode::CudfTemporaryFailure;
+    }
+    match attribution {
+        CudfAllocationAttribution::ConfirmedQueryLimit => return QueryErrorCode::QueryMemoryLimitExceeded,
+        CudfAllocationAttribution::ConfirmedPhysical => return QueryErrorCode::DeviceOutOfMemory,
+        CudfAllocationAttribution::UnattributedAllocationFailure => return QueryErrorCode::DeviceAllocationFailed,
+        CudfAllocationAttribution::NonAllocationFailure => {},
+    }
+    match kind {
+        ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
+        ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
+        ErrorKind::ExecutionContext => QueryErrorCode::InternalInvariantViolation,
+        ErrorKind::ResourceExhausted => QueryErrorCode::SizeOverflow,
+        ErrorKind::DependencyFailure => match status {
+            ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
+            ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
+            ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
+        },
+        ErrorKind::InvariantViolation => QueryErrorCode::CudfInvariantViolation,
+    }
+}
+
+#[cfg(feature = "cuml")]
+pub fn cuml_query_error(operation: &'static str, message: impl Into<String>, source: cuml::Error) -> QueryError {
+    let mut error = QueryError::new(query_error_code_for_cuml_error(&source), operation, message)
+        .with_fact("cuml_code", source.code())
+        .with_fact("cuml_kind", source.kind())
+        .with_fact("cuml_status", source.status())
+        .with_fact("cuml_phase", source.phase())
+        .with_fact("cuml_operation", source.operation())
+        .with_fact("cuml_call_chain", source.call_chain().join(" -> "));
+    if !source.message().trim().is_empty() {
+        error = error.with_fact("cuml_message", redact_uri_tokens(source.message().trim()));
+    }
+    if let Some(detail) = source.ffi_detail() {
+        error = error
+            .with_fact("cuml_failure_source", detail.failure_source)
+            .with_fact("cuml_domain_id", detail.domain_id)
+            .with_fact("cuml_member_id", detail.member_id)
+            .with_fact("cuml_requested_bytes", detail.requested_bytes)
+            .with_fact("cuml_cuda_error", detail.cuda_error)
+            .with_fact("failure_source", detail.failure_source)
+            .with_fact("requested_allocation_bytes", detail.requested_bytes);
+        if detail.domain_id != 0 {
+            error = error.with_fact("allocation_domain_id", detail.domain_id);
+        }
+        if detail.member_id != 0 {
+            error = error.with_fact("allocation_member_id", detail.member_id);
+        }
+    }
+    for (key, value) in source.details().filter(|(key, _)| {
+        matches!(
+            *key,
+            "cudf_code"
+                | "cudf_operation"
+                | "reason"
+                | "null_count"
+                | "observed_min"
+                | "observed_max"
+                | "distinct_count"
+                | "matrix_binding_id"
+                | "resource_binding_id"
+                | "matrix_device"
+                | "resource_device"
+        )
+    }) {
+        error = error.with_fact(key, value);
+    }
+    let mut current = source.source();
+    while let Some(cause) = current {
+        if let Some(cudf_error) = cause.downcast_ref::<cudf::Error>() {
+            for (key, value) in cudf_error.details() {
+                if matches!(*key, "budget_enforcement" | "budget_status" | "budget_current_aligned_bytes") {
+                    error = error.with_fact(key, value);
+                }
+            }
+        }
+        if let Some(cudf_error) = cause.downcast_ref::<cudf::Error>()
+            && let Some(detail) = cudf_error.budget_exhaustion()
+        {
+            error = error
+                .with_fact("budget_boundary", detail.boundary())
+                .with_fact("budget_bytes", detail.hard_budget_bytes())
+                .with_fact("budget_peak_bytes", detail.peak_bytes())
+                .with_fact("budget_peak_aligned_bytes", detail.peak_aligned_bytes())
+                .with_fact("budget_current_bytes", detail.current_bytes())
+                .with_fact("budget_failed_allocation_count", detail.failed_allocation_count())
+                .with_fact("budget_largest_failed_allocation_bytes", detail.largest_failed_allocation_bytes());
+        }
+        current = cause.source();
+    }
+    error.with_source(source)
+}
+
+#[cfg(all(test, any(feature = "cuvs", feature = "cuml")))]
 mod tests;

@@ -346,6 +346,25 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     assert!(arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
+fn unpack_dense_matrix_recovers_columns_on_device() {
+    let runtime = Runtime::new().unwrap();
+    let rows = 4;
+    let columns = 3;
+    let sources = (0..columns)
+        .map(|column| {
+            runtime.column_from_slice(&(0..rows).map(|row| (column * 10 + row) as f32).collect::<Vec<_>>()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    for layout in [DenseMatrixLayout::RowMajor, DenseMatrixLayout::ColumnMajor] {
+        let packed = runtime.pack_columns(&sources.iter().collect::<Vec<_>>(), layout).unwrap();
+        let restored = runtime.unpack_dense_matrix(packed.into_column(), rows, columns, layout).unwrap();
+        assert_eq!(restored.len(), sources.len());
+        for (column, source) in restored.iter().zip(&sources) {
+            assert_eq!(column.to_vec_strict::<f32>().unwrap(), source.to_vec::<f32>().unwrap());
+        }
+    }
+}
+
 #[test]
 fn matrix_tests_cases() {
     run_named_cases(&[
@@ -355,6 +374,7 @@ fn matrix_tests_cases() {
         ),
         ("row_major_pack_interleaves_columns_on_target_runtime", row_major_pack_interleaves_columns_on_target_runtime),
         ("column_major_pack_concatenates_columns", column_major_pack_concatenates_columns),
+        ("unpack_dense_matrix_recovers_columns_on_device", unpack_dense_matrix_recovers_columns_on_device),
         ("numeric_pack_supports_all_element_widths_and_layouts", numeric_pack_supports_all_element_widths_and_layouts),
         (
             "pack_rejects_mixed_supported_elements_and_unsupported_first_element",

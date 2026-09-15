@@ -1,10 +1,9 @@
-use std::collections::BTreeSet;
-
 use cudf::{DataType, Series, TypeId, runtime::ExecutionBindingId};
 
 use crate::{
     DeviceBuffer, DeviceMatrix, Error, ErrorCode, FailurePhase, MatrixLayout, Result,
     error::{check_status, error, from_cudf, invalid_input},
+    labels::{adopt_labels, validate_class_labels},
     resources::CumlResources,
 };
 
@@ -147,19 +146,11 @@ impl LogisticRegressionModel {
                 "input and resources use different execution bindings",
             ));
         }
-        if labels.dtype().map_err(|e| from_cudf(OP, e))?.id() != TypeId::Int32
-            || labels.len() != input.rows()
-            || labels.null_count() != 0
-        {
-            return Err(invalid_input(OP, "labels must be a non-null Int32 column matching the row count"));
+        if labels.len() != input.rows() {
+            return Err(invalid_input(OP, "label count must match training rows"));
         }
-        let label_values = labels.to_vec_strict::<i32>().map_err(|e| from_cudf(OP, e))?;
-        let classes = label_values.iter().copied().collect::<BTreeSet<_>>().len();
-        let min = label_values.iter().copied().min();
-        let max = label_values.iter().copied().max();
-        if classes < 2 || min != Some(0) || max != i32::try_from(classes - 1).ok() {
-            return Err(invalid_input(OP, "labels must contain contiguous classes 0..C-1 with C >= 2"));
-        }
+        let labels = adopt_labels(resources, labels, OP)?;
+        let classes = validate_class_labels(&labels, OP)?;
         let class_count = i32::try_from(classes).map_err(|_| size_error(OP, "class count exceeds i32"))?;
         if class_count < 2 {
             return Err(invalid_input(OP, "n_classes must be at least two"));
@@ -282,13 +273,10 @@ impl LogisticRegressionModel {
         })?;
         predictions.validate_finite(OP)?;
         let predicted = Series::from_column(predictions.into_column()?).map_err(|e| from_cudf(OP, e))?;
-        let classes = self.n_classes as f32;
-        if predicted
-            .to_vec_strict::<f32>()
-            .map_err(|e| from_cudf(OP, e))?
-            .iter()
-            .any(|&value| value < 0.0 || value >= classes || value.fract() != 0.0)
-        {
+        let min = predicted.min_value::<f32>().map_err(|e| from_cudf(OP, e))?;
+        let indices = predicted.astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(OP, e))?;
+        let max_index = indices.max_value::<i32>().map_err(|e| from_cudf(OP, e))?;
+        if min.is_none_or(|value| value < 0.0) || max_index.is_none_or(|value| value >= self.n_classes as i32) {
             return Err(error(
                 ErrorCode::OutputOutOfRange,
                 FailurePhase::OutputValidation,
@@ -296,7 +284,17 @@ impl LogisticRegressionModel {
                 "QN predictions must be integral class indices in 0..n_classes",
             ));
         }
-        predicted.astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(OP, e))
+        let roundtrip = indices.astype(DataType::new(TypeId::Float32)).map_err(|e| from_cudf(OP, e))?;
+        // Equality reduces the device comparison mask to one host boolean.
+        if !predicted.eq(&roundtrip).map_err(|e| from_cudf(OP, e))?.all_value().map_err(|e| from_cudf(OP, e))? {
+            return Err(error(
+                ErrorCode::OutputOutOfRange,
+                FailurePhase::OutputValidation,
+                OP,
+                "QN predictions must be integral class indices in 0..n_classes",
+            ));
+        }
+        Ok(indices)
     }
 }
 
