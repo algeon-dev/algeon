@@ -1,4 +1,4 @@
-use std::{cell::Cell, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
 use cudf::{DataFrame, SortOptions as CudfSortOptions};
@@ -14,35 +14,6 @@ use crate::{
 const SOURCE_ORDER_MAJOR_COLUMN: &str = "__nexus_native_df_order_0";
 const SOURCE_ORDER_ROW_COLUMN: &str = "__nexus_native_df_order_1";
 
-thread_local! {
-    static DATAFUSION_ORDER_TRACKING_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
-
-pub(in crate::exec) struct DataFusionOrderTrackingGuard {
-    enabled: bool,
-}
-
-impl DataFusionOrderTrackingGuard {
-    pub(in crate::exec) fn new(enabled: bool) -> Self {
-        if enabled {
-            DATAFUSION_ORDER_TRACKING_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
-        }
-        Self { enabled }
-    }
-}
-
-impl Drop for DataFusionOrderTrackingGuard {
-    fn drop(&mut self) {
-        if self.enabled {
-            DATAFUSION_ORDER_TRACKING_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-        }
-    }
-}
-
-pub(in crate::exec) fn datafusion_order_tracking_enabled() -> bool {
-    DATAFUSION_ORDER_TRACKING_DEPTH.with(|depth| depth.get() > 0)
-}
-
 pub(in crate::exec) fn plan_requires_datafusion_exact_statistical_order(plan: &QueryPlan) -> bool {
     plan.nodes().iter().any(|node| match &node.kind {
         PlanNode::Aggregate(aggregate) => {
@@ -52,10 +23,11 @@ pub(in crate::exec) fn plan_requires_datafusion_exact_statistical_order(plan: &Q
     })
 }
 
+/// Lists the hidden DataFusion order columns materialized on a frame.
+/// Detection is purely by column name so frames keep their order facts across
+/// the source-read worker thread boundary; whether a query may create such
+/// columns is governed by [`ExecutionContext::datafusion_order_tracking`].
 pub(in crate::exec) fn datafusion_order_columns(frame: &DataFrame) -> Vec<String> {
-    if !datafusion_order_tracking_enabled() {
-        return Vec::new();
-    }
     frame
         .column_names()
         .into_iter()
@@ -69,7 +41,7 @@ pub(in crate::exec) fn append_source_order_columns(
     frame: DataFrame,
     major_ordinal: usize,
 ) -> Result<DataFrame> {
-    if !datafusion_order_tracking_enabled() || frame.contains(SOURCE_ORDER_MAJOR_COLUMN) {
+    if !context.datafusion_order_tracking() || frame.contains(SOURCE_ORDER_MAJOR_COLUMN) {
         return Ok(frame);
     }
     let frame = frame.copy_into_runtime(&context.runtime()?).map_err(|error| {
@@ -141,10 +113,9 @@ pub(in crate::exec) fn append_datafusion_join_order_columns(
     join_type: JoinType,
     preserved_side: JoinSide,
 ) -> Result<()> {
-    if !datafusion_order_tracking_enabled() {
-        return Ok(());
-    }
-
+    // Order inputs are detected by column name: join sides only carry such
+    // columns when the query's execution context enabled order tracking at
+    // the sources, so there is nothing to propagate otherwise.
     let mut next_index = 0usize;
     match join_type {
         // DataFusion HashJoinExec preserves its probe stream for inner joins.
