@@ -142,8 +142,8 @@ pub(in crate::exec::bounded::join) fn build_bounded_hash_join(
     };
     let hash_table_bytes = hash_join.device_allocated_size_bytes();
     if record_hash_join_metrics {
-        execution.metrics_mut().record_hash_join_build();
-        execution.metrics_mut().record_hash_join_hash_table_bytes(hash_table_bytes);
+        execution.metrics().record_hash_join_build();
+        execution.metrics().record_hash_join_hash_table_bytes(hash_table_bytes);
     }
     Ok((hash_join, hash_table_bytes))
 }

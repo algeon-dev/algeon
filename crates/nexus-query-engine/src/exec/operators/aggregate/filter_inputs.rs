@@ -4,7 +4,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, CaseWhen, DataFrame, ExecutionBudgetToken,
-    ExecutionContext, Expr, Field, LiteralValue, QueryError, QueryErrorCode, QueryMetrics, Result, Schema,
+    ExecutionContext, ExecutionMetrics, Expr, Field, LiteralValue, QueryError, QueryErrorCode, Result, Schema,
     aggregate_spec_has_filters, budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
     execution_overrides, global_count_star_expr, lower_expr,
 };
@@ -15,7 +15,7 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
     input_schema: &ArrowSchemaRef,
     spec: &AggregateSpec,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<(DataFrame, AggregateSpec, ArrowSchemaRef)> {
     if !aggregate_spec_has_filters(spec) {
         return Ok((frame, spec.clone(), Arc::clone(input_schema)));
@@ -68,7 +68,7 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
             })?
         },
     };
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     let mut prepared_spec = AggregateSpec::new(spec.group_exprs.clone(), prepared_aggr_exprs);
     prepared_spec.grouping_sets = spec.grouping_sets.clone();
     Ok((frame, prepared_spec, Arc::new(Schema::new(fields))))

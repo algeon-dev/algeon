@@ -11,10 +11,11 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use nexus_query_engine::contract_report::CapabilityDecisionRow;
 
 use super::{
-    NativeAggregateStrategyMetricRow, NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow,
-    NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow,
-    NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow, WorkloadDatasetMetadata, metrics::NativePlanTaskMappingMetricRow,
+    NativeAggregateStrategyMetricRow, NativeDataFusionExecutionRow, NativeDynamicFilterRuntimeMetricRow,
+    NativeGraphRuntimeMetricRow, NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow,
+    NativeLakehouseCacheFillEventMetricRow, NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, WorkloadDatasetMetadata,
+    metrics::NativePlanTaskMappingMetricRow,
 };
 use crate::planner::NativeCapabilityCompiledGraphDiagnostics;
 
@@ -237,6 +238,18 @@ pub(super) fn write_workload_dataset_metadata(output: &mut impl Write, metadata:
     let _ = writeln!(output, "# dataset_table_row_counts={}", metadata.table_row_counts);
     let _ = writeln!(output, "# dataset_table_byte_sizes={}", metadata.table_byte_sizes);
     let _ = writeln!(output, "# dataset_table_row_group_counts={}", metadata.table_row_group_counts);
+}
+
+/// Names each query whose detail rows were rendered from an incomplete
+/// capture, so a reader never takes the retained rows for the full history.
+pub(super) fn write_metric_detail_completeness(output: &mut impl Write, rows: &[NativeDataFusionExecutionRow]) {
+    for row in rows.iter().filter(|row| row.metrics.detail_capture_lost) {
+        let _ = writeln!(
+            output,
+            "# metric_detail_capture query_id={} status=incomplete lost_records=unknown",
+            metadata_value(&row.query_id)
+        );
+    }
 }
 
 fn metadata_value(value: &str) -> String {

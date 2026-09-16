@@ -1,9 +1,9 @@
 use super::{
-    BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, LocalParquetSource, MemoryControlPolicy, NodeId,
-    QueryMetrics, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-    annotate_join_leaf_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps,
-    plan_local_parquet_source_chunks_with_execution_context, record_bounded_parquet_source_metrics,
-    unsupported_bounded_shape, validate_local_parquet_source,
+    BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, ExecutionMetrics, LocalParquetSource,
+    MemoryControlPolicy, NodeId, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy,
+    SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
+    apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
+    record_bounded_parquet_source_metrics, unsupported_bounded_shape, validate_local_parquet_source,
 };
 
 pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stream(
@@ -11,7 +11,7 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     source: &LocalParquetSource,
     node_id: NodeId,
     has_source_adjacent_stages: bool,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
         context,
@@ -29,7 +29,7 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
     node_id: NodeId,
     has_source_adjacent_stages: bool,
     chunk_cap_hints: SourceAdjacentAggregateChunkCapHints,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
         context,
@@ -47,7 +47,7 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
     node_id: NodeId,
     has_source_adjacent_stages: bool,
     chunk_cap_hints: SourceAdjacentAggregateChunkCapHints,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
         context,
@@ -65,7 +65,7 @@ fn plan_bounded_local_parquet_source_stream(
     node_id: NodeId,
     memory_model: SourceTaskMemoryModel,
     chunk_cap_hints: Option<SourceAdjacentAggregateChunkCapHints>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
     if source.has_position_delete_visible_scan_limit() {

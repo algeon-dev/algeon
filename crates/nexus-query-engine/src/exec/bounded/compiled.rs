@@ -25,8 +25,7 @@ pub use state::{CompiledPipelineState, ReleasedCompiledResource};
 
 use crate::{
     error::Result,
-    exec::output::QueryOutput,
-    metrics::QueryMetrics,
+    exec::{ExecutionMetrics, output::QueryOutput},
     observability::{
         BarrierDefinitionRow, CompiledEdgeRow, RuntimeBarrierId, RuntimePipelineEdgeId, RuntimePlanNodeId,
         RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeTaskId,
@@ -42,7 +41,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     plan: &QueryPlan,
     pipeline: &CompiledPipeline,
     gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     if let Some(scope) = observation_scope {
@@ -54,8 +53,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     )?;
     metrics.record_compiled_pipeline_attempt();
     let (completed_task_count, output, host_sink) = {
-        let mut executor =
-            CompiledGpuTaskExecutor::new(context, plan, pipeline, gpu_inputs, metrics, observation_scope)?;
+        let mut executor = CompiledGpuTaskExecutor::new(context, plan, pipeline, gpu_inputs, metrics)?;
         let mut state = match observation_scope {
             Some(scope) => scheduler.run_observed(&mut executor, scope)?,
             None => scheduler.run(&mut executor)?,

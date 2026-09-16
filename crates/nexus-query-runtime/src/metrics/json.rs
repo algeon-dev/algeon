@@ -29,6 +29,7 @@ impl QueryMetrics {
             "triage": self.triage_summary().to_json(),
             "memory_control_policy": self.memory_control_policy.as_str(),
             "execution_boundary_policy": execution_boundary_policy_json(self.execution_boundary_policy),
+            "completeness": self.completeness_json(),
             "descriptors": Self::descriptors().iter().map(|descriptor| descriptor.to_json()).collect::<Vec<_>>(),
             "metrics": self.described_metrics_json(),
             "rows": {
@@ -48,6 +49,25 @@ impl QueryMetrics {
                 "join_strategy_decisions": self.join_strategy_decisions.iter().map(JoinStrategyDecisionMetrics::to_json).collect::<Vec<_>>(),
                 "aggregate_strategy_decisions": self.aggregate_strategy_decisions.iter().map(AggregateStrategyDecisionMetrics::to_json).collect::<Vec<_>>(),
             },
+        })
+    }
+
+    /// Where these rows came from and whether they are all the detail there
+    /// was. A value not projected from an observation owner cannot say, so its
+    /// completeness is reported as unknown.
+    fn completeness_json(&self) -> Value {
+        let Some(projection) = &self.projection else {
+            return json!({ "status": "unknown" });
+        };
+        let completeness = &projection.completeness;
+        json!({
+            "status": completeness.detail_status(),
+            "revision": projection.revision,
+            "sealed": projection.sealed,
+            "capture_mode": completeness.capture_mode.as_str(),
+            "truncated": completeness.truncated,
+            "detail_rows_dropped": completeness.detail_rows_dropped,
+            "totals_saturated": completeness.totals_saturated,
         })
     }
 
@@ -180,7 +200,7 @@ impl QueryMetrics {
             "one_shot_join_index_bytes" => json!(self.one_shot_join_index_bytes),
             "one_shot_join_materialization_bytes" => json!(self.one_shot_join_materialization_bytes),
             "one_shot_join_output_bytes" => json!(self.one_shot_join_output_bytes),
-            "join_gather_map_bytes" => json!(self.join_gather_map_bytes()),
+            "join_gather_map_bytes" => json!(self.join_gather_map_bytes),
             "native_aggregate_strategy_rows" => json!(self.aggregate_strategy_decisions.len()),
             "native_join_strategy_rows" => json!(self.join_strategy_decisions.len()),
             "source_metadata_load_time" => json!(duration_ns(self.source_metadata_load_time)),
@@ -194,13 +214,6 @@ impl QueryMetrics {
             "materialization_time" => json!(duration_ns(self.materialization_time)),
             _ => return None,
         })
-    }
-
-    fn join_gather_map_bytes(&self) -> u64 {
-        self.operators
-            .iter()
-            .filter_map(|operator| operator.join.as_ref())
-            .fold(0_u64, |total, join| total.saturating_add(join.gather_map_bytes))
     }
 }
 

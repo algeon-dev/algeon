@@ -9,19 +9,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use parquet::file::reader::FileReader;
-
 use super::{
-    BoundedExecutionAttempt, ExecutionContext, GpuDataFrame, LocalParquetSource, QueryError, QueryErrorCode,
-    QueryMetrics, Result, SourceChunk, attach_row_group_facts, cudf_query_error, parquet_chunk_path_fact,
-    read_local_parquet_chunk,
+    BoundedExecutionAttempt, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, QueryError,
+    QueryErrorCode, Result, SourceChunk, attach_row_group_facts, cudf_query_error, observed_chunk_row_group_count,
+    parquet_chunk_path_fact, read_local_parquet_chunk,
 };
 use crate::{
     exec::bounded::chunks::{record_chunk_retry_error, source_read_budget_correction_from_error},
     observability::{
-        RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimePlanNodeId,
+        MetricsRecorder, RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimePlanNodeId,
         RuntimeSourceReadObservation, RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId,
-        SourceReadLifecycleState, TaskDefinitionRow, WorkerDefinitionRow,
+        SourceReadFact, SourceReadLifecycleState, TaskDefinitionRow, WorkerDefinitionRow,
     },
     runtime::{
         ExecutionCancellation, ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown,
@@ -59,9 +57,7 @@ pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
 
 struct ScheduledLocalParquetReadResult {
     frame: Result<GpuDataFrame>,
-    metrics: QueryMetrics,
     observed_row_group_count: Option<u64>,
-    queue_wait: Duration,
 }
 
 /// Owns one detached source-read worker until it has been joined.
@@ -234,6 +230,7 @@ impl<T: Send + 'static> ProcessExitShutdown for SourceReadWorkerSupervisor<T> {
 
 struct SourceReadObservation {
     observation: RuntimeObservationHandle,
+    metrics: MetricsRecorder,
     context: RuntimeEventContext,
     task_id: RuntimeTaskId,
     worker_id: RuntimeWorkerId,
@@ -252,6 +249,7 @@ impl SourceReadObservation {
         let span_id = RuntimeSpanId::new(NEXT_SOURCE_READ_SPAN_ID.fetch_add(1, Ordering::Relaxed));
         let observation = Arc::new(Self {
             observation: scope.observation().clone(),
+            metrics: scope.metrics().clone(),
             context: RuntimeEventContext::for_plan(scope.plan_execution_id().clone())
                 .with_span(span_id, Some(scope.plan_span_id())),
             task_id: task_id.clone(),
@@ -332,6 +330,11 @@ impl SourceReadObservation {
             }))
         });
     }
+
+    /// Folds one source-read fact into this worker's plan execution totals.
+    fn record_source_read(&self, fact: SourceReadFact) {
+        self.metrics.record_source_read(fact);
+    }
 }
 
 struct SourceReadQueueStart {
@@ -346,15 +349,23 @@ impl SourceReadQueueStart {
         Self { recorder_monotonic_ns, fallback_started_at }
     }
 
+    // The sole recording site for queue wait: the totals must see the same
+    // measurement whether or not trace capture retained the worker-started
+    // event, so the fallback clock feeds the fact exactly as it feeds the
+    // caller's return value.
     fn worker_started(self, observation: Option<&SourceReadObservation>) -> Duration {
         let fallback = self.fallback_started_at.elapsed();
-        let Some(enqueued_monotonic_ns) = self.recorder_monotonic_ns else {
-            return fallback;
+        let duration = match self.recorder_monotonic_ns {
+            Some(enqueued_monotonic_ns) => observation
+                .and_then(|observation| observation.worker_started(enqueued_monotonic_ns))
+                .map(Duration::from_nanos)
+                .unwrap_or(fallback),
+            None => fallback,
         };
-        observation
-            .and_then(|observation| observation.worker_started(enqueued_monotonic_ns))
-            .map(Duration::from_nanos)
-            .unwrap_or(fallback)
+        if let Some(observation) = observation {
+            observation.record_source_read(SourceReadFact::QueueWait(duration));
+        }
+        duration
     }
 }
 
@@ -457,6 +468,7 @@ impl ScheduledLocalParquetRead {
     )]
     pub(in crate::exec) fn spawn(
         context: ExecutionContext,
+        metrics: ExecutionMetrics,
         source: LocalParquetSource,
         chunk: SourceChunk,
         budget_bytes: u64,
@@ -476,18 +488,16 @@ impl ScheduledLocalParquetRead {
             queue_start,
             thread_observation,
             worker_cancellation,
-            move |queue_wait, thread_observation| {
+            move |_queue_wait, thread_observation| {
                 let read_started_at = Instant::now();
                 let mut observation_guard = SourceReadWorkerGuard::new(thread_observation);
-                let mut metrics = QueryMetrics::default();
-                let selected_row_groups_before_read = metrics.row_groups_selected;
                 let frame = read_local_parquet_chunk(
                     &thread_context,
                     &thread_source,
                     &thread_chunk,
                     budget_bytes,
                     budget_boundary,
-                    &mut metrics,
+                    &metrics,
                 )
                 .and_then(|frame| {
                     thread_context.runtime()?.synchronize().map_err(|error| {
@@ -499,10 +509,13 @@ impl ScheduledLocalParquetRead {
                     })?;
                     Ok(frame)
                 });
-                let observed_row_group_count = metrics
-                    .row_groups_selected
-                    .checked_sub(selected_row_groups_before_read)
-                    .filter(|row_groups| *row_groups > 0);
+                // A pure function of the chunk's own metadata, not a metrics
+                // counter delta: the read succeeded only when `frame` is `Ok`.
+                let observed_row_group_count = frame
+                    .is_ok()
+                    .then(|| observed_chunk_row_group_count(&thread_chunk))
+                    .flatten()
+                    .map(|count| count as u64);
                 let read_duration_ns = read_started_at.elapsed().as_nanos() as u64;
                 match &frame {
                     Ok(_) => observation_guard.terminal(SourceReadLifecycleState::ReadFinished { read_duration_ns }),
@@ -514,7 +527,7 @@ impl ScheduledLocalParquetRead {
                         read_duration_ns,
                     }),
                 }
-                ScheduledLocalParquetReadResult { frame, metrics, observed_row_group_count, queue_wait }
+                ScheduledLocalParquetReadResult { frame, observed_row_group_count }
             },
         )?;
         Ok(Self {
@@ -593,8 +606,6 @@ impl ScheduledLocalParquetRead {
                     &chunk,
                 )
             })?;
-        execution.metrics_mut().record_source_read_queue_wait(result.queue_wait);
-        execution.metrics_mut().merge_from(result.metrics);
         match result.frame {
             Ok(frame) => Ok(ScheduledLocalParquetReadOutput {
                 chunk,
@@ -628,26 +639,20 @@ impl ScheduledLocalParquetRead {
 
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
         let ScheduledLocalParquetRead { state, .. } = self;
-        let result = match state {
-            ScheduledLocalParquetReadState::Running { worker, observation, .. } => {
-                if let Some(observation) = &observation {
-                    observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
-                }
-                let join_started_at = Instant::now();
-                let result = worker.join();
-                if let Some(observation) = &observation {
-                    observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
-                        join_duration_ns: join_started_at.elapsed().as_nanos() as u64,
-                    });
-                }
-                result
-            },
-        };
-        execution.metrics_mut().record_source_read_prefetch_abandoned();
-        if let Some(Ok(result)) = result {
-            execution.metrics_mut().record_source_read_queue_wait(result.queue_wait);
-            execution.metrics_mut().merge_from(result.metrics);
+        let ScheduledLocalParquetReadState::Running { worker, observation, .. } = state;
+        if let Some(observation) = &observation {
+            observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
         }
+        let join_started_at = Instant::now();
+        // The worker already reported its read to the plan execution; an
+        // abandoned read's frame is discarded unconsumed.
+        let _abandoned = worker.join();
+        if let Some(observation) = &observation {
+            observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
+                join_duration_ns: join_started_at.elapsed().as_nanos() as u64,
+            });
+        }
+        execution.record_source_read(SourceReadFact::PrefetchAbandoned);
     }
 }
 
@@ -667,53 +672,28 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     let Some(correction) = source_read_budget_correction_from_error(execution, error) else {
         return Ok(None);
     };
-    record_chunk_retry_error(error, execution.metrics_mut());
-    execution.metrics_mut().record_source_chunk_retry();
+    record_chunk_retry_error(error, execution.metrics());
+    execution.record_source_read(SourceReadFact::ChunkRetried);
     crate::exec::retry::backoff_before_retry(execution.context(), "nexus_query_engine.source_scheduler.budget_retry")?;
-    execution.metrics_mut().record_source_chunk_attempt();
-    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
+    execution.record_source_read(SourceReadFact::ChunkAttempted);
     let frame = read_local_parquet_chunk(
         execution.context(),
         source,
         chunk,
         correction.corrected_budget_bytes(),
         budget_boundary,
-        execution.metrics_mut(),
+        execution.metrics(),
     )
     .map_err(|error| correction.attach_to_error(error))?;
     Ok(Some(ScheduledLocalParquetReadRetryOutput {
         frame,
-        observed_row_group_count: scheduled_source_chunk_read_row_groups(
-            chunk,
-            selected_row_groups_before_read,
-            execution.metrics_mut(),
-        ),
+        observed_row_group_count: observed_chunk_row_group_count(chunk).map(|count| count as u64),
     }))
 }
 
 struct ScheduledLocalParquetReadRetryOutput {
     frame: GpuDataFrame,
     observed_row_group_count: Option<u64>,
-}
-
-fn scheduled_source_chunk_read_row_groups(
-    chunk: &SourceChunk,
-    selected_row_groups_before_read: u64,
-    metrics: &QueryMetrics,
-) -> Option<u64> {
-    if let Some(row_groups) = chunk.known_read_row_group_count() {
-        return Some(row_groups as u64);
-    }
-    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
-    if observed_delta > 0 {
-        return Some(observed_delta);
-    }
-    if chunk.reads_all_row_groups && chunk.path.is_file() {
-        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
-            .ok()
-            .map(|reader| reader.metadata().num_row_groups() as u64);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -767,6 +747,7 @@ mod observation_tests {
         });
         Arc::new(SourceReadObservation {
             observation: owner.handle(),
+            metrics: MetricsRecorder::new(owner.handle(), plan_execution_id.clone()),
             context: RuntimeEventContext::for_plan(plan_execution_id)
                 .with_span(RuntimeSpanId::new(3), Some(RuntimeSpanId::new(1))),
             task_id,
@@ -786,10 +767,10 @@ mod observation_tests {
         observation.record(SourceReadLifecycleState::ReadFinished { read_duration_ns: 23 });
         observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
         observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns: 101 });
-        let mut metrics = QueryMetrics::default();
-        metrics.record_source_read_queue_wait(Duration::from_nanos(17));
+        observation.record_source_read(SourceReadFact::QueueWait(Duration::from_nanos(17)));
 
-        assert_eq!(metrics.source_read_queue_wait_time, Duration::from_nanos(17));
+        let checkpoint = observation.metrics.checkpoint().unwrap();
+        assert_eq!(checkpoint.summary.source_read.source_read_queue_wait_time, Duration::from_nanos(17));
         let snapshot = owner.live_snapshot().unwrap();
         crate::observability::assert_live_topology_references_resolve(&snapshot);
         let states = snapshot

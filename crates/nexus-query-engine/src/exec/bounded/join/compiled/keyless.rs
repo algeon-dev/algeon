@@ -36,7 +36,7 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             )
             .with_fact("join_type", node.spec.join_type)
         })?;
-        execution.metrics_mut().record_mixed_join_size_data_bytes(size_data_bytes);
+        execution.metrics().record_mixed_join_size_data_bytes(size_data_bytes);
         (size_data_bytes, expected_output_rows, CompiledKeylessWork::Full { size_data: Box::new(size_data) })
     } else {
         let output_size = keyless_conditional_join_output_size(

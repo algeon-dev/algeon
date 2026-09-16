@@ -44,6 +44,7 @@ pub use self::{
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::{BudgetedExecutionEvent, TaskOperatorMetrics, TaskRuntimeMetrics},
 };
+use crate::observability::{MetricsCaptureMode, MetricsCompleteness};
 
 /// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -237,6 +238,50 @@ pub struct QueryMetrics {
     pub dynamic_filter_filter_post_decode_rows_filtered: u64,
     /// Materialized rows removed by hash-join-probe post-decode dynamic filters.
     pub dynamic_filter_join_probe_post_decode_rows_filtered: u64,
+    /// Where this value's owner-projected metrics came from and what they can
+    /// claim. `None` means no observation owner has projected into it.
+    pub projection: Option<MetricsProjection>,
+    /// Join gather-map bytes across every recorded operator. Kept as a total
+    /// because operator rows are retained under a bound and may be incomplete.
+    pub join_gather_map_bytes: u64,
+}
+
+/// Provenance and completeness of metrics projected from an observation owner.
+///
+/// A `QueryMetrics` is a detached value: editing it never writes back to the
+/// runtime. This records which checkpoint it was projected from, so a consumer
+/// can tell a complete report from a truncated or uncaptured one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricsProjection {
+    /// Revision of the one checkpoint this value was projected from, or `None`
+    /// once projections from several checkpoints were merged into it.
+    pub revision: Option<u64>,
+    /// Whether that checkpoint's owner had already sealed.
+    pub sealed: bool,
+    pub completeness: MetricsCompleteness,
+}
+
+impl MetricsProjection {
+    /// Combines two projections so the result never claims more than either:
+    /// detail is disabled if either side was, and losses and saturation add up.
+    fn merged(self, other: Self) -> Self {
+        let capture_mode = match (self.completeness.capture_mode, other.completeness.capture_mode) {
+            (MetricsCaptureMode::Bounded, MetricsCaptureMode::Bounded) => MetricsCaptureMode::Bounded,
+            _ => MetricsCaptureMode::Disabled,
+        };
+        let detail_rows_dropped =
+            self.completeness.detail_rows_dropped.saturating_add(other.completeness.detail_rows_dropped);
+        Self {
+            revision: None,
+            sealed: self.sealed && other.sealed,
+            completeness: MetricsCompleteness {
+                capture_mode,
+                detail_rows_dropped,
+                truncated: self.completeness.truncated || other.completeness.truncated,
+                totals_saturated: self.completeness.totals_saturated || other.completeness.totals_saturated,
+            },
+        }
+    }
 }
 
 impl QueryMetrics {
@@ -282,7 +327,7 @@ impl QueryMetrics {
         inherited_query_id(&self.query_id)
     }
 
-    fn stamp_existing_rows_with_query_id(&mut self) {
+    pub(crate) fn stamp_existing_rows_with_query_id(&mut self) {
         let Some(query_id) = self.inherited_query_id() else {
             return;
         };
@@ -468,6 +513,13 @@ impl QueryMetrics {
         self.dynamic_filter_join_probe_post_decode_rows_filtered = self
             .dynamic_filter_join_probe_post_decode_rows_filtered
             .saturating_add(other.dynamic_filter_join_probe_post_decode_rows_filtered);
+        self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(other.join_gather_map_bytes);
+        // A side with no projection contributed no owner-projected metrics, so
+        // it is the identity here rather than an unknown that erases the other.
+        self.projection = match (self.projection, other.projection) {
+            (Some(left), Some(right)) => Some(left.merged(right)),
+            (left, right) => left.or(right),
+        };
         self.stamp_existing_rows_with_query_id();
     }
 }

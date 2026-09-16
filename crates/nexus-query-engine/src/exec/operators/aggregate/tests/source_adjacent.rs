@@ -40,7 +40,7 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_large_group_key_ch
         &schema,
         65_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -73,7 +73,7 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_group_key_
         &schema,
         64_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -101,7 +101,7 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_bounded_unpartitio
         &schema,
         64_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -127,7 +127,7 @@ fn source_adjacent_envelope_does_not_select_prepared_sort_for_byte_bounded_unpar
         &schema,
         65_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -154,7 +154,7 @@ fn source_adjacent_envelope_still_rejects_prepared_for_oversized_unpartitioned_b
         &schema,
         65_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -178,7 +178,7 @@ fn source_adjacent_envelope_does_not_select_prepared_for_unknown_read_all_row_gr
         &schema,
         65_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -203,7 +203,7 @@ fn source_adjacent_envelope_does_not_select_prepared_even_with_byte_bound_unknow
         &schema,
         65_000_000,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -230,7 +230,7 @@ fn source_adjacent_row_group_option_is_reported_but_does_not_select_prepared() {
         65_000_000,
         Some(evidence),
         options,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -264,7 +264,7 @@ fn aggregate_strategy_options_report_source_adjacent_thresholds_without_selectin
         65_000_000,
         Some(evidence),
         options,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -339,7 +339,7 @@ fn source_adjacent_runtime_preflight_requires_group_key_partition_and_bounded_fa
         &schema,
         14_804_077,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
     assert!(source_adjacent_prepared_sort_groupby_runtime_candidate(
@@ -360,7 +360,7 @@ fn source_adjacent_runtime_preflight_requires_group_key_partition_and_bounded_fa
         &schema,
         14_804_077,
         Some(high_fan_in),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert!(!source_adjacent_prepared_sort_groupby_runtime_candidate(
         &high_fan_in_decision,
@@ -377,7 +377,7 @@ fn source_adjacent_runtime_preflight_requires_group_key_partition_and_bounded_fa
         &schema,
         14_804_077,
         Some(unpartitioned),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert!(!source_adjacent_prepared_sort_groupby_runtime_candidate(
         &unpartitioned_decision,
@@ -398,7 +398,7 @@ fn source_adjacent_runtime_preflight_uses_exact_facts_for_prepared_or_libcudf() 
         &schema,
         14_804_077,
         Some(evidence),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert!(prepared_sort_groupby_should_select_for_runtime_facts(

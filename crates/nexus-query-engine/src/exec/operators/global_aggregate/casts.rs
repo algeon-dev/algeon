@@ -1,7 +1,7 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
-    AggregateFunction, AggregateSpec, DataFrame, ExecutionBudgetToken, QueryError, QueryErrorCode, QueryMetrics,
+    AggregateFunction, AggregateSpec, DataFrame, ExecutionBudgetToken, ExecutionMetrics, QueryError, QueryErrorCode,
     Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
 };
 
@@ -18,7 +18,7 @@ pub(in crate::exec) fn cast_count_output_columns_with_budget(
     spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     cast_count_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
 }
@@ -27,7 +27,7 @@ fn cast_count_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
-    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+    mut token: Option<(&ExecutionBudgetToken, &ExecutionMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec
         .aggr_exprs
@@ -103,7 +103,7 @@ pub(in crate::exec) fn cast_reduction_output_columns_with_budget(
     spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     cast_reduction_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
 }
@@ -112,7 +112,7 @@ fn cast_reduction_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
-    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+    mut token: Option<(&ExecutionBudgetToken, &ExecutionMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec.aggr_exprs.iter().filter(|expr| {
         matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)

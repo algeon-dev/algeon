@@ -1,4 +1,5 @@
-use super::{ExecutionContext, QueryMetrics, Result, RuntimeExecutionObservationScope};
+use super::{ExecutionContext, ExecutionMetrics, Result};
+use crate::observability::SourceReadFact;
 
 /// One admitted bounded execution attempt.
 ///
@@ -7,15 +8,14 @@ use super::{ExecutionContext, QueryMetrics, Result, RuntimeExecutionObservationS
 pub(in crate::exec) struct BoundedExecutionAttempt<'a> {
     context: &'a ExecutionContext,
     device_budget_bytes: u64,
-    metrics: &'a mut QueryMetrics,
+    metrics: &'a ExecutionMetrics,
 }
 
 impl<'a> BoundedExecutionAttempt<'a> {
     pub(in crate::exec::bounded) fn new(
         context: &'a ExecutionContext,
         device_budget_bytes: u64,
-        metrics: &'a mut QueryMetrics,
-        _observation_scope: Option<&RuntimeExecutionObservationScope>,
+        metrics: &'a ExecutionMetrics,
     ) -> Result<Self> {
         Ok(Self { context, device_budget_bytes, metrics })
     }
@@ -24,12 +24,15 @@ impl<'a> BoundedExecutionAttempt<'a> {
         self.context
     }
 
-    pub(in crate::exec) fn metrics(&self) -> &QueryMetrics {
+    /// Where this attempt reports its metrics. The attempt holds no metrics of
+    /// its own; the plan execution's observation owner is the only store.
+    pub(in crate::exec) const fn metrics(&self) -> &'a ExecutionMetrics {
         self.metrics
     }
 
-    pub(in crate::exec) fn metrics_mut(&mut self) -> &mut QueryMetrics {
-        self.metrics
+    /// Folds one source-read fact into this attempt's plan execution.
+    pub(in crate::exec) fn record_source_read(&self, fact: SourceReadFact) {
+        self.metrics.record_source_read(fact);
     }
 
     pub(in crate::exec) const fn device_budget_bytes(&self) -> u64 {

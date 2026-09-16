@@ -1,6 +1,6 @@
 use super::{
-    DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionOverrides,
-    GroupByOptions, LoweredAggregate, QueryMetrics, Result, attach_budget_token_failure_facts, budgeted_value,
+    DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
+    ExecutionOverrides, GroupByOptions, LoweredAggregate, Result, attach_budget_token_failure_facts, budgeted_value,
     cudf_query_error, cudf_query_error_with_budget_details,
 };
 
@@ -29,7 +29,7 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
     message: &'static str,
 ) -> Result<DataFrame> {
@@ -48,7 +48,7 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
     message: &'static str,
 ) -> Result<DataFrame> {

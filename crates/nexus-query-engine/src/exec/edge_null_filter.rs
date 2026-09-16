@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use super::{DataFrame, ExecutionContext, NodeId, QueryMetrics, Result, col, cudf_query_error, execution_overrides};
+use super::{
+    DataFrame, ExecutionContext, ExecutionMetrics, NodeId, Result, col, cudf_query_error, execution_overrides,
+};
 use crate::{metrics::OperatorMetrics, plan::GraphEdgeColumnBindings};
 
 /// Which optional edge columns may gate null-row dropping for an operation.
@@ -27,7 +29,7 @@ pub(super) fn filter_null_edge_rows(
     frame: DataFrame,
     edge_columns: &GraphEdgeColumnBindings,
     scope: EdgeNullFilterScope,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let columns = edge_filter_columns(edge_columns, scope);
     let mut null_counts = Vec::new();
@@ -66,7 +68,7 @@ pub(super) fn filter_null_edge_rows(
         .with_fact("node_id", node_id)
         .with_fact("null_edge_columns", null_counts_metadata(&null_counts))
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
 
     let output_rows = output.num_rows() as u64;
     metrics.record_operator_metrics(OperatorMetrics {
@@ -76,6 +78,7 @@ pub(super) fn filter_null_edge_rows(
         output_rows,
         ..Default::default()
     });
+    metrics.record_null_edge_rows_dropped(node_id, input_rows.saturating_sub(output_rows));
     Ok(output)
 }
 

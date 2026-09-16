@@ -1,6 +1,6 @@
 use super::{
     BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedJoinLeafSourceStreamStage,
-    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, NodeId, ProjectionNode, QueryMetrics, ResidentGpuFrame,
+    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame, NodeId, ProjectionNode, ResidentGpuFrame,
     Result, execute_filter_with_budget, execute_projection_with_budget, execution_budget_token_for_boundary,
     observe_device_memory_bytes,
 };
@@ -30,7 +30,7 @@ pub(super) fn apply_join_leaf_source_stream_stages(
                     },
                 )?;
                 if let Some(dynamic_filter) = dynamic_filter {
-                    execution.metrics_mut().record_dynamic_filter_source_post_decode_stage(
+                    execution.metrics().record_dynamic_filter_source_post_decode_stage(
                         &dynamic_filter.route,
                         &dynamic_filter.filter,
                         Some(rows_before),
@@ -73,7 +73,7 @@ pub(super) fn execute_join_leaf_source_stream_unary(
         &ExecutionContext,
         GpuDataFrame,
         Option<&ExecutionBudgetToken>,
-        &mut QueryMetrics,
+        &ExecutionMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     let token = match execution_budget_token_for_boundary(
@@ -88,14 +88,14 @@ pub(super) fn execute_join_leaf_source_stream_unary(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let result = execute(execution.context(), input.frame, Some(&token), execution.metrics_mut());
+    let result = execute(execution.context(), input.frame, Some(&token), execution.metrics());
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error.with_fact_if_absent("node_id", node_id));

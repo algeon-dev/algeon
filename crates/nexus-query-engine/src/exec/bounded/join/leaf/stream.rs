@@ -60,7 +60,7 @@ impl ResidentFrameStreamSource for JoinLeafSourceFrameStreamSource {
                 Err(error) if is_retryable_chunk_error(&error) => {
                     let (left, right, next_attempt) = if batch.is_singleton() {
                         let chunk = &batch.chunks[0];
-                        record_chunk_retry_error(&error, execution.metrics_mut());
+                        record_chunk_retry_error(&error, execution.metrics());
                         let children = if attempt < self.stream.max_attempts {
                             split_retryable_chunk(chunk, self.stream.min_retry_chunk_row_groups)
                         } else {
@@ -68,14 +68,14 @@ impl ResidentFrameStreamSource for JoinLeafSourceFrameStreamSource {
                         };
                         let Some((left, right)) = children else {
                             self.batches.clear();
-                            return Some(Err(chunk_retry_facts(chunk, execution.metrics_mut()).attach_to_error(error)));
+                            return Some(Err(chunk_retry_facts(chunk, execution).attach_to_error(error)));
                         };
                         (singleton_retry_batch(left), singleton_retry_batch(right), attempt + 1)
                     } else {
                         let (left, right) = batch.split_for_retry().expect("non-singleton source batch splits in two");
                         (left, right, 1)
                     };
-                    execution.metrics_mut().record_source_chunk_retry();
+                    execution.metrics().record_source_chunk_retry();
                     if let Err(error) = crate::exec::retry::backoff_before_retry(
                         execution.context(),
                         "nexus_query_engine.exec.bounded.join_leaf_stream_source_split_retry",
@@ -166,7 +166,7 @@ where
     match stream_join_leaf_source_batch_with_consumer(execution, stream, &batch, consume) {
         Ok(()) => Ok(()),
         Err(error) if is_retryable_chunk_error(&error) => {
-            execution.metrics_mut().record_source_chunk_retry();
+            execution.metrics().record_source_chunk_retry();
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
@@ -261,11 +261,11 @@ pub(super) fn retry_join_leaf_source_stream_chunk_after_error<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    record_chunk_retry_error(&error, execution.metrics_mut());
+    record_chunk_retry_error(&error, execution.metrics());
     if attempt < stream.max_attempts
         && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
     {
-        execution.metrics_mut().record_source_chunk_retry();
+        execution.metrics().record_source_chunk_retry();
         crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.join_leaf_stream_source_split_retry",
@@ -275,7 +275,7 @@ where
         return Ok(());
     }
 
-    Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
+    Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
 }
 
 pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(
@@ -312,7 +312,7 @@ where
             Ok(output) => output,
             Err(error) if is_retryable_chunk_error(&error) => {
                 if is_prefetch {
-                    execution.metrics_mut().record_source_read_prefetch_abandoned();
+                    execution.metrics().record_source_read_prefetch_abandoned();
                 }
                 abandon_join_leaf_reads(execution, pending);
                 return stream_join_leaf_source_chunks_serial_from(execution, stream, &stream.chunks[index..], consume);
@@ -329,9 +329,9 @@ where
             },
         };
         if is_prefetch {
-            execution.metrics_mut().record_source_read_prefetch_completed();
+            execution.metrics().record_source_read_prefetch_completed();
         }
-        let observed_bytes = match observe_device_memory_bytes(&output.frame, execution.metrics_mut()) {
+        let observed_bytes = match observe_device_memory_bytes(&output.frame, execution.metrics()) {
             Ok(bytes) => bytes,
             Err(error) => {
                 abandon_join_leaf_reads(execution, pending);
@@ -342,9 +342,9 @@ where
             &stream.reader_dynamic_filters,
             &output.chunk,
             &output.frame,
-            execution.metrics_mut(),
+            execution.metrics(),
         );
-        execution.metrics_mut().record_source_chunk_commit(
+        execution.metrics().record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))

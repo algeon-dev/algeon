@@ -279,7 +279,7 @@ fn concatenate_join_build_input_frames(
         .with_fact("chunk_count", chunk_count)
     })?;
     let output = GpuDataFrame::new(output);
-    let bytes = observe_device_memory_bytes(&output, execution.metrics_mut())?;
+    let bytes = observe_device_memory_bytes(&output, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(output, bytes))
 }
 
@@ -367,7 +367,7 @@ impl PartitionedJoinBuildAccumulator {
                 .with_fact("accumulated_build_rows", self.rows)
                 .with_fact("accumulated_partitioned_bytes", self.partitioned_bytes)
             })?;
-            let slice_bytes = observe_device_memory_bytes(&GpuDataFrame::new(slice.clone()), execution.metrics_mut())?;
+            let slice_bytes = observe_device_memory_bytes(&GpuDataFrame::new(slice.clone()), execution.metrics())?;
             chunk_partitioned_bytes = chunk_partitioned_bytes.saturating_add(slice_bytes);
             chunk_slices.push((partition, slice));
         }
@@ -436,7 +436,7 @@ impl PartitionedJoinBuildAccumulator {
                     output
                 },
             };
-            let frame_bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+            let frame_bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;
             device_bytes = device_bytes.saturating_add(frame_bytes);
             partitions.push(frame);
         }

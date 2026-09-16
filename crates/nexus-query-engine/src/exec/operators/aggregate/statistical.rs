@@ -6,8 +6,8 @@ use std::{
 use super::{
     AggregateExecutionStage, AggregateExpr, AggregateFunction, AggregateSpec, AggregateStrategyCapabilityDecision,
     AggregateStrategyExecutionOptions, ArrowDataType, ArrowSchemaRef, AvgStateAliases, BinaryOp, CaseWhen, CudfAggSpec,
-    DataFrame, ExecutionBudgetToken, ExecutionContext, Expr, GpuDataFrame, GroupByAgg, LiteralValue, LoweredAggregate,
-    NodeId, QueryError, QueryErrorCode, QueryMetrics, Result, StatisticalAggregateExecutionMode,
+    DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame, GroupByAgg, LiteralValue,
+    LoweredAggregate, NodeId, QueryError, QueryErrorCode, Result, StatisticalAggregateExecutionMode,
     add_floating_statistical_aggregate_contract_facts, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_strategy_capability_decision, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
@@ -78,7 +78,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     spec: AggregateSpec,
     prepared_input_schema: ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let plan = lower_gpu_native_statistical_aggregate_plan(&frame, &spec, output_schema)?;
     let input_rows = frame.num_rows() as u64;
@@ -145,7 +145,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
 
     let elapsed = total_timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_gpu_native_statistical_decision(
         metrics,
         context,
@@ -176,7 +176,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     prepared_input_schema: ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let plan = lower_gpu_native_statistical_aggregate_plan(&frame, &spec, output_schema)?;
     let input_rows = frame.num_rows() as u64;
@@ -254,7 +254,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
 
     let elapsed = total_timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_gpu_native_statistical_decision(
         metrics,
         context,
@@ -280,7 +280,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_names = input_schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     let plan = lower_gpu_native_statistical_partial_aggregate_plan(&frame, spec, &input_names)?;
@@ -333,7 +333,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
 
     let elapsed = total_timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_grouped_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),
@@ -367,7 +367,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     original_input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     validate_gpu_native_statistical_output_fields(spec, output_schema)?;
     let input_names = original_input_schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
@@ -428,7 +428,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
 
     let elapsed = total_timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_grouped_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),
@@ -457,7 +457,7 @@ fn gpu_native_statistical_decision(
     input_rows: u64,
     stage: AggregateExecutionStage,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
-    metrics: &QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> AggregateStrategyCapabilityDecision {
     let mut decision = select_partial_aggregate_strategy_decision_with_options(
         aggregate_strategy_capability_decision(spec, input_schema, stage),
@@ -483,7 +483,7 @@ fn gpu_native_statistical_decision(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 fn record_gpu_native_statistical_decision(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,

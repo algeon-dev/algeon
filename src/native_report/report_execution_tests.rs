@@ -545,6 +545,43 @@ fn native_datafusion_execution_report_keeps_unobserved_optional_memory_metrics_e
 }
 
 #[test]
+fn native_datafusion_execution_report_marks_lost_metric_detail_without_changing_the_header() {
+    let report_for = |capture_loss: usize| {
+        let metrics = ExecutionPlanMetricsSet::new();
+        MetricBuilder::new(&metrics)
+            .with_type(MetricType::Summary)
+            .counter(crate::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME, 0)
+            .add(capture_loss);
+        NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
+            "q01",
+            native_exec_leaf_for_report(),
+            accepted_native_diagnostics(),
+            NativeDataFusionRuntime::Succeeded {
+                output_batches: 1,
+                output_rows: 4,
+                output_bytes: 256,
+                metrics: metrics.clone_inner(),
+            },
+        )])
+        .to_tsv()
+    };
+
+    let complete = report_for(0);
+    let incomplete = report_for(1);
+
+    assert!(!complete.contains("# metric_detail_capture"));
+    assert!(
+        incomplete
+            .lines()
+            .any(|line| line == "# metric_detail_capture query_id=q01 status=incomplete lost_records=unknown"),
+        "{incomplete}"
+    );
+    let header = |text: &str| text.lines().find(|line| !line.starts_with('#')).map(str::to_string);
+    assert_eq!(header(&incomplete).as_deref(), Some(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER));
+    assert_eq!(header(&complete), header(&incomplete));
+}
+
+#[test]
 fn native_datafusion_execution_report_projects_runtime_for_mixed_plan_despite_candidate_declines() {
     let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "mixed_gpu_island",

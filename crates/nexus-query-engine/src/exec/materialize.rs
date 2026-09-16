@@ -7,18 +7,16 @@ use arrow::{
 };
 
 use super::{
-    Array, BoundedExecutionAttempt, CommittedPartial, ExecutionContext, GpuDataFrame, GpuResultHandle, NodeId,
-    QueryError, QueryErrorCode, QueryMetrics, RecordBatch, Result, RetryFacts, RuntimeResourceFacts,
+    Array, BoundedExecutionAttempt, CommittedPartial, ExecutionContext, ExecutionMetrics, GpuDataFrame,
+    GpuResultHandle, NodeId, QueryError, QueryErrorCode, RecordBatch, Result, RetryFacts, RuntimeResourceFacts,
     record_batch_memory_size,
 };
 
-pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
+pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &ExecutionMetrics) -> Result<RecordBatch> {
     let timer = Instant::now();
     let output = input.to_host_record_batch()?;
-    metrics.materialization_time += timer.elapsed();
-    metrics
-        .boundary
-        .record_device_to_host_materialization(output.num_rows() as u64, record_batch_memory_size(&output) as u64);
+    metrics.add_materialization_time(timer.elapsed());
+    metrics.record_device_to_host_materialization(output.num_rows() as u64, record_batch_memory_size(&output) as u64);
     Ok(output)
 }
 
@@ -51,10 +49,10 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
     let handle = match GpuResultHandle::new(execution.context(), frame, Arc::clone(executable_schema)) {
         Ok(handle) => handle,
         Err(error) => {
-            return Err(host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error));
+            return Err(host_materialization_failure_facts(execution.metrics()).attach_to_error(error));
         },
     };
-    let result = materialize_to_host_with_schema(handle, output_schema, execution.metrics_mut()).map_err(|error| {
+    let result = materialize_to_host_with_schema(handle, output_schema, execution.metrics()).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "host_materialization",
             stage: "materialization",
@@ -62,11 +60,11 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
             attempt: 1,
             max_attempts: 1,
             resume_boundary: "host_materialization",
-            metrics: execution.metrics_mut(),
+            metrics: execution.metrics(),
         }
         .attach_to(error)
     });
-    result.map_err(|error| host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error))
+    result.map_err(|error| host_materialization_failure_facts(execution.metrics()).attach_to_error(error))
 }
 
 pub(super) fn materialize_gpu_frame_to_host(
@@ -74,7 +72,7 @@ pub(super) fn materialize_gpu_frame_to_host(
     frame: GpuDataFrame,
     executable_schema: SchemaRef,
     output_schema: &SchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<RecordBatch> {
     let handle = GpuResultHandle::new(context, frame, executable_schema)?;
     materialize_to_host_with_schema(handle, output_schema, metrics)
@@ -83,7 +81,7 @@ pub(super) fn materialize_gpu_frame_to_host(
 fn materialize_to_host_with_schema(
     input: GpuResultHandle,
     output_schema: &SchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<RecordBatch> {
     let output = materialize_to_host(input, metrics)?;
     if output.schema().as_ref() == output_schema.as_ref() {
@@ -157,9 +155,10 @@ fn column_with_sink_field_contract(column: &ArrayRef, sink_field: &Field, field_
     })
 }
 
-pub(super) fn host_materialization_failure_facts(metrics: &QueryMetrics) -> RetryFacts {
+pub(super) fn host_materialization_failure_facts(metrics: &ExecutionMetrics) -> RetryFacts {
+    let progress = metrics.progress();
     RetryFacts::new()
         .with_resume_boundary("host_materialization")
-        .with_committed_chunks(metrics.source_chunks_committed as usize)
-        .with_committed_partials(metrics.partial_aggregate_count as usize)
+        .with_committed_chunks(progress.source_chunks_committed as usize)
+        .with_committed_partials(progress.partial_aggregate_count as usize)
 }

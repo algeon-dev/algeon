@@ -93,7 +93,7 @@ pub(super) fn settle_partitioned_join_build(
         build_basis_bytes.map_or_else(|| "none".to_string(), |bytes| bytes.to_string()),
     );
     facts.insert("build_chunks_before_commitment", observation.map_or(0, |observation| observation.chunks).to_string());
-    execution.metrics_mut().record_join_strategy_decision(node_id, &facts);
+    execution.metrics().record_join_strategy_decision(node_id, &facts);
     Ok(Some(commitment))
 }
 
@@ -148,7 +148,7 @@ impl CompiledGpuTaskExecutor<'_> {
             );
         }
         if let Some(facts) = strategy.facts.as_ref() {
-            self.execution.metrics_mut().record_join_strategy_decision(node_id, facts);
+            self.execution.metrics().record_join_strategy_decision(node_id, facts);
         }
         Ok(strategy)
     }

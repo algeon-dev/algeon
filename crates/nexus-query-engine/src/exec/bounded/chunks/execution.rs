@@ -4,14 +4,15 @@ use parquet::file::reader::FileReader;
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, CommittedPartial, LocalParquetSource, MemoryControlPolicy,
-    PartialAggregateInputEvidence, QueryError, QueryMetrics, Result, ScheduledLocalParquetReadOutput, SourceChunk,
-    SourceChunkBatch, aggregate_spec_has_distinct, attach_chunk_resource_facts, attach_source_batch_resource_facts,
-    chunk_retry_facts, execute_partial_aggregate_with_budget, execution_budget_token_for_boundary,
-    is_retryable_chunk_error, observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint,
-    read_local_parquet_chunk, read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
+    PartialAggregateInputEvidence, QueryError, Result, ScheduledLocalParquetReadOutput, SourceChunk, SourceChunkBatch,
+    aggregate_spec_has_distinct, attach_chunk_resource_facts, attach_source_batch_resource_facts, chunk_retry_facts,
+    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, is_retryable_chunk_error,
+    observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, read_local_parquet_chunk,
+    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
     source_adjacent::execute_source_adjacent_chunk_stages,
     source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error, split_retryable_chunk,
 };
+use crate::observability::SourceReadFact;
 
 pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) partial: CommittedPartial,
@@ -69,14 +70,14 @@ pub(in crate::exec::bounded::chunks) fn retry_after_chunk_error(
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
 ) -> Result<Vec<CommittedPartial>> {
-    record_chunk_retry_error(&error, execution.metrics_mut());
+    record_chunk_retry_error(&error, execution.metrics());
     if aggregate_spec_has_distinct(&bounded.aggregate.0.spec) {
-        return Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error));
+        return Err(chunk_retry_facts(&chunk, execution).attach_to_error(error));
     }
     if attempt < max_attempts
         && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
     {
-        execution.metrics_mut().record_source_chunk_retry();
+        execution.record_source_read(SourceReadFact::ChunkRetried);
         crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.source_chunk_split_retry",
@@ -100,7 +101,7 @@ pub(in crate::exec::bounded::chunks) fn retry_after_chunk_error(
         return Ok(partials);
     }
 
-    Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
+    Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
 }
 
 pub(in crate::exec::bounded::chunks) fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
@@ -123,9 +124,8 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
     chunk: &SourceChunk,
 ) -> Result<RawSourceInput> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.raw_source_chunk")?;
-    let source = read_bounded_chunk_source(execution, bounded.source, chunk, 1, 1).map_err(|error| {
-        attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, execution.metrics_mut())
-    })?;
+    let source = read_bounded_chunk_source(execution, bounded.source, chunk, 1, 1)
+        .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, execution.metrics()))?;
     let source_row_group_count = reported_source_chunk_read_row_groups(chunk, source.observed_row_group_count);
     let source_rows = source.frame.num_rows() as u64;
     let source_bytes = source.observed_bytes;
@@ -144,7 +144,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
     let source =
         read_local_parquet_chunk_batch_required_only_no_commit(execution, bounded.source, batch, "source_chunk_read")
             .map_err(|error| {
-            attach_source_batch_resource_facts(error, batch, "source_chunk_read", 1, 1, execution.metrics_mut())
+            attach_source_batch_resource_facts(error, batch, "source_chunk_read", 1, 1, execution.metrics())
         })?;
     let source_row_group_count = reported_source_chunk_batch_read_row_groups(batch, source.observed_row_group_count);
     let source_rows = source.frame.num_rows() as u64;
@@ -164,14 +164,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunk_attempt(
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_attempt")?;
     let source =
         read_bounded_chunk_source(execution, bounded.source, chunk, attempt, max_attempts).map_err(|error| {
-            attach_chunk_resource_facts(
-                error,
-                chunk,
-                "source_chunk_read",
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            )
+            attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, execution.metrics())
         })?;
     execute_bounded_chunk_operator_from_source(execution, bounded, source, attempt, max_attempts, |_execution| Ok(()))
 }
@@ -184,8 +177,7 @@ pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.source_chunk_read")?;
-    execution.metrics_mut().record_source_chunk_attempt();
-    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
+    execution.record_source_read(SourceReadFact::ChunkAttempted);
     let source_token_budget = execution.device_budget_bytes();
     let frame = match read_local_parquet_chunk(
         execution.context(),
@@ -193,7 +185,7 @@ pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
         chunk,
         source_token_budget,
         "source_chunk_read",
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
@@ -220,26 +212,10 @@ pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
         chunk: chunk.clone(),
         frame,
         observed_bytes: 0,
-        observed_row_group_count: source_chunk_read_row_groups(
-            chunk,
-            selected_row_groups_before_read,
-            execution.metrics_mut(),
-        ),
+        observed_row_group_count: source_chunk_static_read_row_groups(chunk),
     };
-    output.observed_bytes = observe_device_memory_bytes(&output.frame, execution.metrics_mut())?;
+    output.observed_bytes = observe_device_memory_bytes(&output.frame, execution.metrics())?;
     Ok(output)
-}
-
-pub(in crate::exec::bounded::chunks) fn source_chunk_read_row_groups(
-    chunk: &SourceChunk,
-    selected_row_groups_before_read: u64,
-    metrics: &QueryMetrics,
-) -> Option<u64> {
-    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
-    if observed_delta > 0 {
-        return Some(observed_delta);
-    }
-    source_chunk_static_read_row_groups(chunk)
 }
 
 pub(in crate::exec::bounded::chunks) fn source_chunk_static_read_row_groups(chunk: &SourceChunk) -> Option<u64> {
@@ -270,18 +246,6 @@ pub(in crate::exec::bounded::chunks) fn reported_source_chunk_batch_read_row_gro
     observed_row_group_count
         .or_else(|| source_chunk_batch_static_read_row_groups(batch))
         .unwrap_or_else(|| batch.row_group_count() as u64)
-}
-
-pub(in crate::exec::bounded::chunks) fn source_chunk_batch_read_row_groups(
-    batch: &SourceChunkBatch,
-    selected_row_groups_before_read: u64,
-    metrics: &QueryMetrics,
-) -> Option<u64> {
-    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
-    if observed_delta > 0 {
-        return Some(observed_delta);
-    }
-    source_chunk_batch_static_read_row_groups(batch)
 }
 
 pub(in crate::exec::bounded::chunks) fn source_chunk_batch_static_read_row_groups(
@@ -322,7 +286,7 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_operator_from_sour
                 "chunk_operator",
                 attempt,
                 max_attempts,
-                execution.metrics_mut(),
+                execution.metrics(),
             ));
         },
     };
@@ -355,9 +319,9 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_operator_from_sour
         frame,
         &operator_token,
         Some(input_evidence),
-        execution.metrics_mut(),
+        execution.metrics(),
     );
-    execution.metrics_mut().chunk_operator_time += chunk_operator_timer.elapsed();
+    execution.metrics().add_chunk_operator_time(chunk_operator_timer.elapsed());
     let frame = match chunk_output {
         Ok(frame) => frame,
         Err(error) => {
@@ -367,16 +331,19 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_operator_from_sour
                 "chunk_operator",
                 attempt,
                 max_attempts,
-                execution.metrics_mut(),
+                execution.metrics(),
             ));
         },
     };
 
-    let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
-        attach_chunk_resource_facts(error, &chunk, "partial_state", attempt, max_attempts, execution.metrics_mut())
+    let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics()).map_err(|error| {
+        attach_chunk_resource_facts(error, &chunk, "partial_state", attempt, max_attempts, execution.metrics())
     })?;
-    execution.metrics_mut().record_source_chunk_commit(source_chunk_row_group_count);
-    execution.metrics_mut().record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_bytes);
+    execution.record_source_read(SourceReadFact::ChunkCommitted {
+        chunk_count: 1,
+        row_groups: source_chunk_row_group_count,
+    });
+    execution.metrics().record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_bytes);
 
     Ok(CommittedPartial::with_device_bytes(frame, partial_bytes))
 }

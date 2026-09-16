@@ -357,6 +357,10 @@ pub nexus_query_runtime::metrics::MetricDescriptor::semantics: &'static str
 pub nexus_query_runtime::metrics::MetricDescriptor::unit: nexus_query_runtime::metrics::MetricUnit
 impl nexus_query_runtime::metrics::MetricDescriptor
 pub fn nexus_query_runtime::metrics::MetricDescriptor::to_json(self) -> serde_json::value::Value
+pub struct nexus_query_runtime::metrics::MetricsProjection
+pub nexus_query_runtime::metrics::MetricsProjection::completeness: nexus_query_runtime::observability::MetricsCompleteness
+pub nexus_query_runtime::metrics::MetricsProjection::revision: core::option::Option<u64>
+pub nexus_query_runtime::metrics::MetricsProjection::sealed: bool
 pub struct nexus_query_runtime::metrics::OperatorMetrics
 pub nexus_query_runtime::metrics::OperatorMetrics::input_bytes: u64
 pub nexus_query_runtime::metrics::OperatorMetrics::input_rows: u64
@@ -419,6 +423,7 @@ pub nexus_query_runtime::metrics::QueryMetrics::hash_join_cache_misses: u64
 pub nexus_query_runtime::metrics::QueryMetrics::hash_join_hash_table_bytes: u64
 pub nexus_query_runtime::metrics::QueryMetrics::input_batches: u64
 pub nexus_query_runtime::metrics::QueryMetrics::input_rows: u64
+pub nexus_query_runtime::metrics::QueryMetrics::join_gather_map_bytes: u64
 pub nexus_query_runtime::metrics::QueryMetrics::join_strategy_decisions: alloc::vec::Vec<nexus_query_runtime::metrics::JoinStrategyDecisionMetrics>
 pub nexus_query_runtime::metrics::QueryMetrics::materialization_time: core::time::Duration
 pub nexus_query_runtime::metrics::QueryMetrics::max_task_observed_peak_bytes: core::option::Option<u64>
@@ -441,6 +446,7 @@ pub nexus_query_runtime::metrics::QueryMetrics::partial_aggregate_rows: u64
 pub nexus_query_runtime::metrics::QueryMetrics::peak_device_memory_bytes: core::option::Option<u64>
 pub nexus_query_runtime::metrics::QueryMetrics::plan_task_mapping_datafusion_shape: core::option::Option<alloc::string::String>
 pub nexus_query_runtime::metrics::QueryMetrics::plan_task_mapping_rows: alloc::vec::Vec<nexus_query_runtime::metrics::PlanTaskMapping>
+pub nexus_query_runtime::metrics::QueryMetrics::projection: core::option::Option<nexus_query_runtime::metrics::MetricsProjection>
 pub nexus_query_runtime::metrics::QueryMetrics::query_id: nexus_query_planning::correlation::QueryId
 pub nexus_query_runtime::metrics::QueryMetrics::read_columns: u64
 pub nexus_query_runtime::metrics::QueryMetrics::resident_dataframe_peak_bytes: core::option::Option<u64>
@@ -464,6 +470,22 @@ pub nexus_query_runtime::metrics::QueryMetrics::source_read_time: core::time::Du
 pub nexus_query_runtime::metrics::QueryMetrics::task_operator_metrics: alloc::collections::btree::map::BTreeMap<alloc::string::String, nexus_query_runtime::metrics::TaskOperatorMetrics>
 pub nexus_query_runtime::metrics::QueryMetrics::task_runtime_metrics: alloc::collections::btree::map::BTreeMap<alloc::string::String, nexus_query_runtime::metrics::TaskRuntimeMetrics>
 pub nexus_query_runtime::metrics::QueryMetrics::trace_id: core::option::Option<nexus_query_planning::correlation::TraceId>
+impl nexus_query_runtime::metrics::QueryMetrics
+pub fn nexus_query_runtime::metrics::QueryMetrics::apply_owner_checkpoint(&mut self, &nexus_query_runtime::observability::QueryMetricsCheckpoint)
+pub fn nexus_query_runtime::metrics::QueryMetrics::apply_source_read_checkpoint(&mut self, &nexus_query_runtime::observability::QueryMetricsCheckpoint)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_input_batch(&mut self, u64)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_parquet_source(&mut self, core::option::Option<u64>, u64, u64)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_attempt(&mut self)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_commit(&mut self, u64)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_commit_count(&mut self, u64, u64)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_planned(&mut self, u64)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_retry(&mut self)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_abandoned(&mut self)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_completed(&mut self)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_skipped(&mut self)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_started(&mut self)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_queue_wait(&mut self, core::time::Duration)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_runtime(&mut self, nexus_query_runtime::metrics::SourceReadRuntimeMetrics)
 impl nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_runtime::metrics::QueryMetrics::budgeted_execution_event_count(&self) -> usize
 pub fn nexus_query_runtime::metrics::QueryMetrics::plan_task_mappings(&self) -> alloc::vec::Vec<nexus_query_runtime::metrics::PlanTaskMapping>
@@ -524,20 +546,6 @@ pub fn nexus_query_runtime::metrics::QueryMetrics::record_one_shot_join(&mut sel
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_one_shot_join_index_bytes(&mut self, u64)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_one_shot_join_materialization_bytes(&mut self, u64)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_one_shot_join_output_bytes(&mut self, u64)
-impl nexus_query_runtime::metrics::QueryMetrics
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_input_batch(&mut self, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_parquet_source(&mut self, core::option::Option<u64>, u64, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_attempt(&mut self)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_commit(&mut self, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_commit_count(&mut self, u64, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_planned(&mut self, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_chunk_retry(&mut self)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_abandoned(&mut self)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_completed(&mut self)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_skipped(&mut self)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_prefetch_started(&mut self)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_queue_wait(&mut self, core::time::Duration)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_source_read_runtime(&mut self, nexus_query_runtime::metrics::SourceReadRuntimeMetrics)
 impl nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_operator_metrics(&mut self, nexus_query_runtime::metrics::OperatorMetrics)
 impl nexus_query_runtime::metrics::QueryMetrics
@@ -772,6 +780,11 @@ pub nexus_query_runtime::observability::GpuJobLifecycleState::Failed::error_code
 pub nexus_query_runtime::observability::GpuJobLifecycleState::Finished
 pub nexus_query_runtime::observability::GpuJobLifecycleState::Panicked
 pub nexus_query_runtime::observability::GpuJobLifecycleState::Started
+pub enum nexus_query_runtime::observability::MetricsCaptureMode
+pub nexus_query_runtime::observability::MetricsCaptureMode::Bounded
+pub nexus_query_runtime::observability::MetricsCaptureMode::Disabled
+impl nexus_query_runtime::observability::MetricsCaptureMode
+pub const fn nexus_query_runtime::observability::MetricsCaptureMode::as_str(self) -> &'static str
 pub enum nexus_query_runtime::observability::PlanExecutionBoundaryKind
 pub nexus_query_runtime::observability::PlanExecutionBoundaryKind::Cancelled
 pub nexus_query_runtime::observability::PlanExecutionBoundaryKind::Failed
@@ -860,13 +873,19 @@ pub nexus_query_runtime::observability::RuntimeObservationRecord::WorkerDefiniti
 pub nexus_query_runtime::observability::RuntimeObservationRecord::WorkerDefinition::row: nexus_query_runtime::observability::WorkerDefinitionRow
 pub nexus_query_runtime::observability::RuntimeObservationRecord::WorkerDefinition::sequence: nexus_query_runtime::observability::ObservationSequence
 pub enum nexus_query_runtime::observability::RuntimeObservationRecordClass
+pub nexus_query_runtime::observability::RuntimeObservationRecordClass::AggregateStrategyDetail
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::BarrierDefinition
+pub nexus_query_runtime::observability::RuntimeObservationRecordClass::BudgetDetail
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::CompiledEdge
+pub nexus_query_runtime::observability::RuntimeObservationRecordClass::DynamicFilterDetail
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::JobDefinition
+pub nexus_query_runtime::observability::RuntimeObservationRecordClass::JoinStrategyDetail
+pub nexus_query_runtime::observability::RuntimeObservationRecordClass::OperatorDetail
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::PlanEdge
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::PlanNode
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::Resource
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::SinkDefinition
+pub nexus_query_runtime::observability::RuntimeObservationRecordClass::SourceReadDetail
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::TaskDefinition
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::TimelineEvent
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::WorkerDefinition
@@ -954,6 +973,29 @@ pub nexus_query_runtime::observability::RuntimeTopologyRecord::Resource(nexus_qu
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::SinkDefinition(nexus_query_runtime::observability::SinkDefinitionRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::TaskDefinition(nexus_query_runtime::observability::TaskDefinitionRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::WorkerDefinition(nexus_query_runtime::observability::WorkerDefinitionRow)
+pub enum nexus_query_runtime::observability::SourceReadFact
+pub nexus_query_runtime::observability::SourceReadFact::ChunkAttempted
+pub nexus_query_runtime::observability::SourceReadFact::ChunkCommitted
+pub nexus_query_runtime::observability::SourceReadFact::ChunkCommitted::chunk_count: u64
+pub nexus_query_runtime::observability::SourceReadFact::ChunkCommitted::row_groups: u64
+pub nexus_query_runtime::observability::SourceReadFact::ChunkPlanned
+pub nexus_query_runtime::observability::SourceReadFact::ChunkPlanned::row_groups: u64
+pub nexus_query_runtime::observability::SourceReadFact::ChunkRetried
+pub nexus_query_runtime::observability::SourceReadFact::InputBatch
+pub nexus_query_runtime::observability::SourceReadFact::InputBatch::rows: u64
+pub nexus_query_runtime::observability::SourceReadFact::MetadataLoadTime(core::time::Duration)
+pub nexus_query_runtime::observability::SourceReadFact::ParquetReadTime(core::time::Duration)
+pub nexus_query_runtime::observability::SourceReadFact::ParquetSource
+pub nexus_query_runtime::observability::SourceReadFact::ParquetSource::files: u64
+pub nexus_query_runtime::observability::SourceReadFact::ParquetSource::known_bytes: u64
+pub nexus_query_runtime::observability::SourceReadFact::ParquetSource::read_columns: u64
+pub nexus_query_runtime::observability::SourceReadFact::ParquetSource::selected_row_groups: u64
+pub nexus_query_runtime::observability::SourceReadFact::PrefetchAbandoned
+pub nexus_query_runtime::observability::SourceReadFact::PrefetchCompleted
+pub nexus_query_runtime::observability::SourceReadFact::PrefetchSkipped
+pub nexus_query_runtime::observability::SourceReadFact::PrefetchStarted
+pub nexus_query_runtime::observability::SourceReadFact::QueueWait(core::time::Duration)
+pub nexus_query_runtime::observability::SourceReadFact::SourceReadTime(core::time::Duration)
 pub enum nexus_query_runtime::observability::SourceReadLifecycleState
 pub nexus_query_runtime::observability::SourceReadLifecycleState::Cancelled
 pub nexus_query_runtime::observability::SourceReadLifecycleState::ConsumerJoinFinished
@@ -1162,6 +1204,10 @@ pub nexus_query_runtime::observability::BarrierDefinitionRow::barrier_kind: allo
 pub nexus_query_runtime::observability::BarrierDefinitionRow::downstream_task_ids: alloc::vec::Vec<nexus_query_planning::execution_contracts::RuntimeTaskId>
 pub nexus_query_runtime::observability::BarrierDefinitionRow::plan_execution_id: nexus_query_runtime::observability::PlanExecutionId
 pub nexus_query_runtime::observability::BarrierDefinitionRow::upstream_task_ids: alloc::vec::Vec<nexus_query_planning::execution_contracts::RuntimeTaskId>
+pub struct nexus_query_runtime::observability::BudgetWindow(_)
+pub struct nexus_query_runtime::observability::BudgetWindowPeaks
+pub nexus_query_runtime::observability::BudgetWindowPeaks::observed_peak_bytes: core::option::Option<u64>
+pub nexus_query_runtime::observability::BudgetWindowPeaks::retained_bytes: core::option::Option<u64>
 pub struct nexus_query_runtime::observability::CleanupFailureSummary
 impl nexus_query_runtime::observability::CleanupFailureSummary
 pub const fn nexus_query_runtime::observability::CleanupFailureSummary::callback_abandoned() -> Self
@@ -1185,6 +1231,10 @@ pub fn nexus_query_runtime::observability::DeterministicRuntimeObservationClock:
 impl nexus_query_runtime::observability::RuntimeObservationClock for nexus_query_runtime::observability::DeterministicRuntimeObservationClock
 pub fn nexus_query_runtime::observability::DeterministicRuntimeObservationClock::monotonic_ns(&self) -> u64
 pub fn nexus_query_runtime::observability::DeterministicRuntimeObservationClock::unix_epoch_ns(&self) -> core::option::Option<u64>
+pub struct nexus_query_runtime::observability::ExecutionProgress
+pub nexus_query_runtime::observability::ExecutionProgress::partial_aggregate_count: u64
+pub nexus_query_runtime::observability::ExecutionProgress::source_chunks_committed: u64
+pub nexus_query_runtime::observability::ExecutionProgress::source_chunks_planned: u64
 pub struct nexus_query_runtime::observability::JobDefinitionRow
 pub nexus_query_runtime::observability::JobDefinitionRow::device_ordinal: u32
 pub nexus_query_runtime::observability::JobDefinitionRow::job_id: nexus_query_runtime::observability::RuntimeJobId
@@ -1197,6 +1247,93 @@ pub fn nexus_query_runtime::observability::LiveRuntimeObservationSnapshot::event
 pub fn nexus_query_runtime::observability::LiveRuntimeObservationSnapshot::footer(&self) -> &nexus_query_runtime::observability::RuntimeObservationFooter
 pub fn nexus_query_runtime::observability::LiveRuntimeObservationSnapshot::manifest(&self) -> &nexus_query_runtime::observability::RuntimeObservationManifest
 pub fn nexus_query_runtime::observability::LiveRuntimeObservationSnapshot::topology(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &nexus_query_runtime::observability::RuntimeTopologyRecord>
+pub struct nexus_query_runtime::observability::MetricsCompleteness
+pub nexus_query_runtime::observability::MetricsCompleteness::capture_mode: nexus_query_runtime::observability::MetricsCaptureMode
+pub nexus_query_runtime::observability::MetricsCompleteness::detail_rows_dropped: u64
+pub nexus_query_runtime::observability::MetricsCompleteness::totals_saturated: bool
+pub nexus_query_runtime::observability::MetricsCompleteness::truncated: bool
+impl nexus_query_runtime::observability::MetricsCompleteness
+pub const fn nexus_query_runtime::observability::MetricsCompleteness::detail_is_complete(&self) -> bool
+pub const fn nexus_query_runtime::observability::MetricsCompleteness::detail_status(&self) -> &'static str
+pub struct nexus_query_runtime::observability::MetricsRecorder
+impl nexus_query_runtime::observability::MetricsRecorder
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_chunk_operator_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_final_merge_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_final_sort_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_materialization_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_operator_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_parquet_read_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_source_metadata_load_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::add_source_read_time(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::bind(&nexus_query_runtime::observability::RuntimeObservationHandle, nexus_query_runtime::observability::PlanExecutionId, &str, core::option::Option<&str>) -> Self
+pub fn nexus_query_runtime::observability::MetricsRecorder::boundary(&self) -> nexus_query_runtime::metrics::BoundaryMetrics
+pub fn nexus_query_runtime::observability::MetricsRecorder::checkpoint(&self) -> core::option::Option<nexus_query_runtime::observability::QueryMetricsCheckpoint>
+pub fn nexus_query_runtime::observability::MetricsRecorder::close_budget_window(&self, impl alloc::string::ToString, nexus_query_runtime::observability::BudgetWindow)
+pub fn nexus_query_runtime::observability::MetricsRecorder::new(nexus_query_runtime::observability::RuntimeObservationHandle, nexus_query_runtime::observability::PlanExecutionId) -> Self
+pub fn nexus_query_runtime::observability::MetricsRecorder::open_budget_window(&self) -> nexus_query_runtime::observability::BudgetWindow
+pub const fn nexus_query_runtime::observability::MetricsRecorder::plan_execution_id(&self) -> &nexus_query_runtime::observability::PlanExecutionId
+pub fn nexus_query_runtime::observability::MetricsRecorder::progress(&self) -> nexus_query_runtime::observability::ExecutionProgress
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_aggregate_strategy_decision(&self, impl alloc::string::ToString, &alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_budgeted_execution(&self, impl core::convert::Into<alloc::string::String>, &cudf::runtime::budget::ExecutionBudgetReport)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_compiled_pipeline_attempt(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_compiled_pipeline_host_arrow_sink(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_compiled_pipeline_task_execution(&self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_compiled_pipeline_task_mapping(&self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<nexus_query_planning::correlation::PlanNodeId>>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_compiled_pipeline_tasks_executed(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_device_memory_observation(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_device_to_device_copy(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_device_to_host_materialization(&self, u64, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_applied(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, nexus_query_runtime::metrics::DynamicFilterSourceSnapshot, nexus_query_runtime::metrics::DynamicFilterSourceSnapshot)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_applied_post_decode(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, core::option::Option<u64>, core::option::Option<u64>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_post_decode_rows(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, core::option::Option<u64>, core::option::Option<u64>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_produced(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_reader_predicate_source_reduction(&self, core::option::Option<u64>, core::option::Option<u64>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_skipped(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, impl core::convert::Into<alloc::string::String>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_source_post_decode_stage(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, core::option::Option<u64>, core::option::Option<u64>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_source_reader_predicate_batch_rows(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, core::option::Option<u64>, core::option::Option<u64>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_dynamic_filter_source_reader_predicate_rows(&self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, usize, usize, core::option::Option<u64>, core::option::Option<u64>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_filtered_join_build(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_filtered_join_hash_table_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_filtered_join_probe_state_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_final_merge_attempt(&self, usize)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_final_merge_level(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_gpu_resident_input_handoff(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_graph_algorithm_runtime(&self, nexus_query_runtime::metrics::GraphAlgorithmRuntimeMetrics)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_graph_claim_calibration(&self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_algorithm_started(&self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_measurement(&self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_hash_join_build(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_hash_join_cache_hit(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_hash_join_cache_miss(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_hash_join_hash_table_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_host_to_device_upload(&self, u64, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_input_batch(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_join_strategy_decision(&self, impl alloc::string::ToString, &alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_mixed_join_size_data_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_one_shot_join(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_one_shot_join_index_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_one_shot_join_materialization_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_one_shot_join_output_bytes(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_operator_metrics(&self, nexus_query_runtime::metrics::OperatorMetrics)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_parquet_source(&self, core::option::Option<u64>, u64, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_partial_aggregate(&self, u64, u64, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_retry_resource_exhausted(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_chunk_attempt(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_chunk_commit(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_chunk_commit_count(&self, u64, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_chunk_planned(&self, u64)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_chunk_retry(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read(&self, nexus_query_runtime::observability::SourceReadFact)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read_prefetch_abandoned(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read_prefetch_completed(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read_prefetch_skipped(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read_prefetch_started(&self)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read_queue_wait(&self, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_source_read_runtime(&self, nexus_query_runtime::metrics::SourceReadRuntimeMetrics)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_task_elapsed(&self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>, core::time::Duration)
+pub fn nexus_query_runtime::observability::MetricsRecorder::record_task_execution(&self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::register_task_definition(&self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>)
+pub fn nexus_query_runtime::observability::MetricsRecorder::take_budget_window(&self, nexus_query_runtime::observability::BudgetWindow) -> nexus_query_runtime::observability::BudgetWindowPeaks
 pub struct nexus_query_runtime::observability::ObservationSequence(_)
 impl nexus_query_runtime::observability::ObservationSequence
 pub const fn nexus_query_runtime::observability::ObservationSequence::get(self) -> u64
@@ -1264,6 +1401,15 @@ impl nexus_query_runtime::observability::QueryAttemptReport
 pub fn nexus_query_runtime::observability::QueryAttemptReport::sealed_projection(&self) -> nexus_query_runtime::observability::SealedAttemptProjection
 impl core::convert::From<&nexus_query_runtime::observability::QueryAttemptReport> for nexus_query_runtime::observability::SealedAttemptProjection
 pub fn nexus_query_runtime::observability::SealedAttemptProjection::from(&nexus_query_runtime::observability::QueryAttemptReport) -> Self
+pub struct nexus_query_runtime::observability::QueryMetricsCheckpoint
+pub nexus_query_runtime::observability::QueryMetricsCheckpoint::completeness: nexus_query_runtime::observability::MetricsCompleteness
+pub nexus_query_runtime::observability::QueryMetricsCheckpoint::metrics: nexus_query_runtime::metrics::QueryMetrics
+pub nexus_query_runtime::observability::QueryMetricsCheckpoint::revision: u64
+pub nexus_query_runtime::observability::QueryMetricsCheckpoint::sealed: bool
+pub nexus_query_runtime::observability::QueryMetricsCheckpoint::source_read_rows: alloc::vec::Vec<nexus_query_runtime::metrics::SourceReadRuntimeMetrics>
+pub nexus_query_runtime::observability::QueryMetricsCheckpoint::summary: nexus_query_runtime::observability::QueryMetricsSummary
+pub struct nexus_query_runtime::observability::QueryMetricsSummary
+pub nexus_query_runtime::observability::QueryMetricsSummary::source_read: nexus_query_runtime::observability::SourceReadTotals
 pub struct nexus_query_runtime::observability::RuntimeAdmissionObservation
 pub nexus_query_runtime::observability::RuntimeAdmissionObservation::admission_request_id: nexus_query_runtime::observability::AdmissionRequestId
 pub nexus_query_runtime::observability::RuntimeAdmissionObservation::device_ordinal: core::option::Option<u32>
@@ -1291,9 +1437,15 @@ pub fn nexus_query_runtime::observability::RuntimeEventContext::for_plan(nexus_q
 pub const fn nexus_query_runtime::observability::RuntimeEventContext::with_span(self, nexus_query_runtime::observability::RuntimeSpanId, core::option::Option<nexus_query_runtime::observability::RuntimeSpanId>) -> Self
 pub struct nexus_query_runtime::observability::RuntimeExecutionObservationScope
 impl nexus_query_runtime::observability::RuntimeExecutionObservationScope
+pub fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::for_metrics(nexus_query_runtime::observability::RuntimeObservationHandle, nexus_query_runtime::observability::MetricsRecorder) -> Self
+pub const fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::metrics(&self) -> &nexus_query_runtime::observability::MetricsRecorder
+pub fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::metrics_checkpoint(&self) -> core::option::Option<nexus_query_runtime::observability::QueryMetricsCheckpoint>
 pub const fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::observation(&self) -> &nexus_query_runtime::observability::RuntimeObservationHandle
 pub const fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::plan_execution_id(&self) -> &nexus_query_runtime::observability::PlanExecutionId
 pub const fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::plan_span_id(&self) -> nexus_query_runtime::observability::RuntimeSpanId
+pub fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::record_source_read(&self, nexus_query_runtime::observability::SourceReadFact)
+pub fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::record_source_read_row(&self, nexus_query_runtime::metrics::SourceReadRuntimeMetrics)
+pub fn nexus_query_runtime::observability::RuntimeExecutionObservationScope::with_metrics(self, nexus_query_runtime::observability::MetricsRecorder) -> Self
 pub struct nexus_query_runtime::observability::RuntimeGpuJobObservation
 pub nexus_query_runtime::observability::RuntimeGpuJobObservation::device_ordinal: u32
 pub nexus_query_runtime::observability::RuntimeGpuJobObservation::job_id: nexus_query_runtime::observability::RuntimeJobId
@@ -1352,13 +1504,17 @@ pub struct nexus_query_runtime::observability::RuntimeObservationHandle
 impl nexus_query_runtime::observability::RuntimeObservationHandle
 pub const fn nexus_query_runtime::observability::RuntimeObservationHandle::config(&self) -> nexus_query_runtime::observability::RuntimeObservationConfig
 pub const fn nexus_query_runtime::observability::RuntimeObservationHandle::disabled() -> Self
+pub const fn nexus_query_runtime::observability::RuntimeObservationHandle::has_owner(&self) -> bool
 pub const fn nexus_query_runtime::observability::RuntimeObservationHandle::is_enabled(&self) -> bool
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::is_same_session(&self, &Self) -> bool
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::live_snapshot(&self) -> core::option::Option<nexus_query_runtime::observability::LiveRuntimeObservationSnapshot>
+pub fn nexus_query_runtime::observability::RuntimeObservationHandle::metrics_checkpoint(&self, &nexus_query_runtime::observability::PlanExecutionId) -> core::option::Option<nexus_query_runtime::observability::QueryMetricsCheckpoint>
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::owns_snapshot(&self, &nexus_query_runtime::observability::SealedRuntimeObservationSnapshot) -> bool
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::query_id(&self) -> core::option::Option<&nexus_query_runtime::observability::RuntimeQueryId>
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record<F>(&self, F) -> nexus_query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> nexus_query_runtime::observability::RuntimeObservationPayload
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record_for_plan<F>(&self, nexus_query_runtime::observability::PlanExecutionId, F) -> nexus_query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> nexus_query_runtime::observability::RuntimeObservationPayload
+pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record_source_read(&self, &nexus_query_runtime::observability::PlanExecutionId, nexus_query_runtime::observability::SourceReadFact)
+pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record_source_read_row(&self, &nexus_query_runtime::observability::PlanExecutionId, nexus_query_runtime::metrics::SourceReadRuntimeMetrics)
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record_topology<F>(&self, nexus_query_runtime::observability::RuntimeObservationRecordClass, F) -> nexus_query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> nexus_query_runtime::observability::RuntimeTopologyRecord
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record_with_context<F>(&self, nexus_query_runtime::observability::RuntimeEventContext, F) -> nexus_query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> nexus_query_runtime::observability::RuntimeObservationPayload
 pub fn nexus_query_runtime::observability::RuntimeObservationHandle::record_with_context_sized<F>(&self, nexus_query_runtime::observability::RuntimeEventContext, u64, F) -> nexus_query_runtime::observability::RuntimeObservationRecordDisposition where F: core::ops::function::FnOnce() -> nexus_query_runtime::observability::RuntimeObservationPayload
@@ -1757,6 +1913,27 @@ pub nexus_query_runtime::observability::SinkDefinitionRow::input_task_id: nexus_
 pub nexus_query_runtime::observability::SinkDefinitionRow::plan_execution_id: nexus_query_runtime::observability::PlanExecutionId
 pub nexus_query_runtime::observability::SinkDefinitionRow::sink_id: nexus_query_runtime::observability::RuntimeSinkId
 pub nexus_query_runtime::observability::SinkDefinitionRow::sink_kind: alloc::string::String
+pub struct nexus_query_runtime::observability::SourceReadTotals
+pub nexus_query_runtime::observability::SourceReadTotals::input_batches: u64
+pub nexus_query_runtime::observability::SourceReadTotals::input_rows: u64
+pub nexus_query_runtime::observability::SourceReadTotals::parquet_bytes_known: u64
+pub nexus_query_runtime::observability::SourceReadTotals::parquet_files: u64
+pub nexus_query_runtime::observability::SourceReadTotals::parquet_read_time: core::time::Duration
+pub nexus_query_runtime::observability::SourceReadTotals::read_columns: u64
+pub nexus_query_runtime::observability::SourceReadTotals::row_groups_committed: u64
+pub nexus_query_runtime::observability::SourceReadTotals::row_groups_planned: u64
+pub nexus_query_runtime::observability::SourceReadTotals::row_groups_selected: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_chunks_attempted: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_chunks_committed: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_chunks_planned: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_chunks_retried: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_metadata_load_time: core::time::Duration
+pub nexus_query_runtime::observability::SourceReadTotals::source_read_prefetches_abandoned: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_read_prefetches_completed: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_read_prefetches_skipped: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_read_prefetches_started: u64
+pub nexus_query_runtime::observability::SourceReadTotals::source_read_queue_wait_time: core::time::Duration
+pub nexus_query_runtime::observability::SourceReadTotals::source_read_time: core::time::Duration
 pub struct nexus_query_runtime::observability::SystemRuntimeObservationClock
 impl nexus_query_runtime::observability::SystemRuntimeObservationClock
 pub fn nexus_query_runtime::observability::SystemRuntimeObservationClock::new() -> Self

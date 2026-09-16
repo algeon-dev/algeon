@@ -22,8 +22,8 @@ pub(super) fn finalize_final_sort_output_reservation(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<CommittedPartial> {
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
-        final_sort_runtime_facts("final_sort_output", node_id, attempt, max_attempts, execution.metrics_mut(), error)
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics()).map_err(|error| {
+        final_sort_runtime_facts("final_sort_output", node_id, attempt, max_attempts, execution.metrics(), error)
     })?;
 
     Ok(CommittedPartial::with_device_bytes(frame, output_bytes))

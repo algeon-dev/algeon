@@ -2,18 +2,17 @@ use std::{collections::VecDeque, time::Duration};
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, Arc, ArrowSchemaRef, BoundedExecutionAttempt,
-    BoundedFinalMergePolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, GpuDataFrame, Instant,
-    MemoryControlPolicy, NodeId, QueryError, QueryErrorCode, QueryMetrics, ResidentGpuFrame, Result,
-    aggregate_spec_has_avg, aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision,
-    attach_budget_token_failure_facts, cast_count_output_columns_with_budget,
-    concatenate_partitioned_final_merge_outputs, cudf_query_error, execute_aggregate_with_budget,
-    execute_compiled_bounded_aggregate_from_empty_input, execute_global_aggregate_with_budget,
-    execute_groupby_aggregate_with_budget_observed, execution_budget_token_for_boundary, execution_overrides,
-    final_global_aggregate_spec, final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget,
-    lower_final_aggregate_spec, observe_device_memory_bytes, partition_final_merge_partial,
-    partitioned_final_merge_partition_count, record_default_grouped_aggregate_strategy_decision,
-    record_grouped_aggregate_strategy_decision, reduce_merge_fan_in, release_nested_partials_reverse,
-    release_partials_reverse, validate_aggregate_output_names,
+    BoundedFinalMergePolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame,
+    Instant, MemoryControlPolicy, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, aggregate_spec_has_avg,
+    aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision, attach_budget_token_failure_facts,
+    cast_count_output_columns_with_budget, concatenate_partitioned_final_merge_outputs, cudf_query_error,
+    execute_aggregate_with_budget, execute_compiled_bounded_aggregate_from_empty_input,
+    execute_global_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
+    execution_budget_token_for_boundary, execution_overrides, final_global_aggregate_spec,
+    final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, lower_final_aggregate_spec,
+    observe_device_memory_bytes, partition_final_merge_partial, partitioned_final_merge_partition_count,
+    record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
+    reduce_merge_fan_in, release_nested_partials_reverse, release_partials_reverse, validate_aggregate_output_names,
 };
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
@@ -89,12 +88,12 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
                 merge_fan_in,
             ) {
                 Ok(level_output) => {
-                    execution.metrics_mut().record_final_merge_level();
+                    execution.metrics().record_final_merge_level();
                     partials = commit_compiled_final_merge_level(partials, level_output);
                     break;
                 },
                 Err(error) if is_retryable_compiled_final_merge_error(&error) => {
-                    record_compiled_final_merge_retry_error(&error, execution.metrics_mut());
+                    record_compiled_final_merge_retry_error(&error, execution.metrics());
                     if attempt < max_attempts
                         && let Some(reduced_fan_in) = reduce_merge_fan_in(merge_fan_in)
                     {
@@ -219,8 +218,8 @@ fn execute_compiled_partitioned_final_aggregate_merge(
         .with_fact("node_id", node_id)
         .with_fact("partition_count", partition_count));
     }
-    execution.metrics_mut().record_final_merge_attempt(max_partition_fan_in.max(1));
-    execution.metrics_mut().record_final_merge_level();
+    execution.metrics().record_final_merge_attempt(max_partition_fan_in.max(1));
+    execution.metrics().record_final_merge_level();
     let merged = concatenate_partitioned_final_merge_outputs(execution, node_id, merged_partitions)?;
     let elapsed = timer.elapsed();
     let output_rows = merged.frame.num_rows() as u64;
@@ -235,7 +234,8 @@ fn execute_compiled_partitioned_final_aggregate_merge(
         non_empty_partition_count,
         max_partition_fan_in,
         elapsed,
-        execution.metrics_mut(),
+        [],
+        execution.metrics(),
     );
     Ok(merged)
 }
@@ -277,13 +277,13 @@ fn execute_compiled_partitioned_final_merge_group(
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            execution.metrics_mut().final_merge_time += merge_elapsed;
+            execution.metrics().add_final_merge_time(merge_elapsed);
             return Err(error);
         },
     };
-    execution.metrics_mut().final_merge_time += merge_elapsed;
+    execution.metrics().add_final_merge_time(merge_elapsed);
 
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
@@ -327,7 +327,7 @@ pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
         })?
     };
     let concatenated = GpuDataFrame::new(concatenated);
-    observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    observe_device_memory_bytes(&concatenated, execution.metrics())?;
     execute_compiled_final_aggregate(
         execution.context(),
         aggregate,
@@ -335,7 +335,7 @@ pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
         output_schema,
         concatenated,
         token,
-        execution.metrics_mut(),
+        execution.metrics(),
     )
 }
 
@@ -382,7 +382,7 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
         }
     };
     let concatenated = GpuDataFrame::new(concatenated);
-    match observe_device_memory_bytes(&concatenated, execution.metrics_mut()) {
+    match observe_device_memory_bytes(&concatenated, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             release_partials_reverse(partials);
@@ -398,7 +398,7 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
         output_schema,
         concatenated,
         token,
-        execution.metrics_mut(),
+        execution.metrics(),
     )
 }
 
@@ -417,7 +417,8 @@ pub(super) fn record_compiled_partitioned_final_merge_strategy(
     non_empty_partition_count: usize,
     max_partition_fan_in: usize,
     elapsed: Duration,
-    metrics: &mut QueryMetrics,
+    extra_facts: impl IntoIterator<Item = (&'static str, String)>,
+    metrics: &ExecutionMetrics,
 ) {
     let mut decision = aggregate_strategy_capability_decision(
         &aggregate.spec,
@@ -432,6 +433,7 @@ pub(super) fn record_compiled_partitioned_final_merge_strategy(
     decision.facts.insert("partitioned_merge_topk_partition_count", "0".to_string());
     decision.facts.insert("partitioned_merge_topk_input_rows", "0".to_string());
     decision.facts.insert("partitioned_merge_topk_output_rows", "0".to_string());
+    decision.facts.extend(extra_facts);
     record_grouped_aggregate_strategy_decision(
         metrics,
         Some(node_id.to_string()),
@@ -494,7 +496,7 @@ fn execute_compiled_final_merge_level_attempt(
     partials: &[CommittedPartial],
     merge_fan_in: usize,
 ) -> Result<Vec<CompiledMergeLevelItem>> {
-    execution.metrics_mut().record_final_merge_attempt(merge_fan_in);
+    execution.metrics().record_final_merge_attempt(merge_fan_in);
     let mut output = Vec::with_capacity(partials.len().div_ceil(merge_fan_in));
 
     for (group_index, group) in partials.chunks(merge_fan_in).enumerate() {
@@ -543,13 +545,13 @@ fn execute_compiled_final_merge_group_attempt(
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            execution.metrics_mut().final_merge_time += merge_elapsed;
+            execution.metrics().add_final_merge_time(merge_elapsed);
             return Err(error);
         },
     };
-    execution.metrics_mut().final_merge_time += merge_elapsed;
+    execution.metrics().add_final_merge_time(merge_elapsed);
 
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
@@ -572,7 +574,7 @@ fn merge_compiled_final_aggregate_partials(
             error,
         )
     })?;
-    observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    observe_device_memory_bytes(&concatenated, execution.metrics())?;
 
     execute_compiled_final_aggregate(
         execution.context(),
@@ -581,7 +583,7 @@ fn merge_compiled_final_aggregate_partials(
         output_schema,
         concatenated,
         token,
-        execution.metrics_mut(),
+        execution.metrics(),
     )
 }
 
@@ -620,7 +622,7 @@ fn is_retryable_compiled_final_merge_error(error: &QueryError) -> bool {
     crate::exec::retry::is_retryable_resource_error(error)
 }
 
-fn record_compiled_final_merge_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+fn record_compiled_final_merge_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
@@ -654,7 +656,7 @@ pub(super) fn execute_compiled_final_aggregate_projection(
             input.frame,
             output_schema,
             &token,
-            execution.metrics_mut(),
+            execution.metrics(),
         )
     } else {
         execute_compiled_final_aggregate(
@@ -664,7 +666,7 @@ pub(super) fn execute_compiled_final_aggregate_projection(
             output_schema,
             input.frame,
             &token,
-            execution.metrics_mut(),
+            execution.metrics(),
         )
         .and_then(|frame| {
             finalize_compiled_final_aggregate_output(
@@ -673,12 +675,12 @@ pub(super) fn execute_compiled_final_aggregate_projection(
                 output_schema,
                 frame,
                 &token,
-                execution.metrics_mut(),
+                execution.metrics(),
             )
         })
     };
     let frame = frame?;
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
 
@@ -688,7 +690,7 @@ fn finalize_compiled_final_aggregate_output(
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     let result = if aggregate_spec_has_avg(&aggregate.spec) {
@@ -723,7 +725,7 @@ fn execute_compiled_final_aggregate(
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let bounded = CompiledAggregatePlan { aggregate, input_schema, output_schema };
     execute_final_aggregate_for_plan(context, &bounded, input, token, metrics)
@@ -740,7 +742,7 @@ fn execute_final_aggregate_for_plan(
     bounded: &CompiledAggregatePlan<'_>,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if bounded.aggregate.spec.group_exprs.is_empty() {
         let final_spec = final_global_aggregate_spec(&bounded.aggregate.spec);

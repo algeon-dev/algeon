@@ -4,7 +4,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, CudfAggSpec, DataFrame, ExecutionBudgetToken, ExecutionContext,
-    GpuDataFrame, GroupByAgg, LoweredAggregate, QueryError, QueryErrorCode, QueryMetrics, Result,
+    ExecutionMetrics, GpuDataFrame, GroupByAgg, LoweredAggregate, QueryError, QueryErrorCode, Result,
     aggregate_spec_has_avg, aggregate_spec_has_floating_statistical_aggregate, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
@@ -20,7 +20,7 @@ pub(super) fn execute_grouping_sets_aggregate(
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if aggregate_spec_has_floating_statistical_aggregate(spec) {
         return Err(QueryError::new(
@@ -68,7 +68,7 @@ pub(super) fn execute_grouping_sets_aggregate(
             error,
         )
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 
@@ -79,7 +79,7 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     aggregate_output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if aggregate_spec_has_floating_statistical_aggregate(spec) {
         return Err(QueryError::new(
@@ -116,7 +116,7 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
             error,
         )
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 
@@ -132,7 +132,7 @@ fn execute_grouping_sets_groupby(
     frame: DataFrame,
     aggregate: &LoweredAggregate,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     synthesize_empty_grand_total: bool,
     operation: &'static str,
 ) -> Result<DataFrame> {
@@ -207,7 +207,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     grouping_id_alias: &str,
     levels: &[usize],
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     synthesize_empty_grand_total: bool,
     operation: &'static str,
 ) -> Result<DataFrame> {
@@ -340,7 +340,7 @@ fn execute_single_grouping_set_groupby(
     grouping_id_alias: &str,
     group: &[bool],
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     synthesize_empty_grand_total: bool,
     operation: &'static str,
 ) -> Result<DataFrame> {
@@ -444,7 +444,7 @@ fn empty_grand_total_grouping_set_frame(
     grouping_id_alias: &str,
     group: &[bool],
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let mut columns = Vec::with_capacity(aggregate.output_names.len());
@@ -551,7 +551,7 @@ fn empty_grouping_set_null_series(
     output_schema: &ArrowSchemaRef,
     column: &str,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<cudf::Series> {
     let field = output_schema.field_with_name(column).map_err(|error| {
@@ -571,7 +571,7 @@ fn empty_grouping_set_null_series_with_type(
     data_type: &ArrowDataType,
     column: &str,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<cudf::Series> {
     let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
@@ -609,7 +609,7 @@ fn empty_grouping_set_zero_series(
     data_type: &ArrowDataType,
     column: &str,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<cudf::Series> {
     match data_type {
@@ -636,7 +636,7 @@ fn empty_grouping_set_typed_zero_series<T>(
     value: T,
     column: &str,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<cudf::Series>
 where
@@ -674,7 +674,7 @@ fn empty_grouping_set_literal_series(
     data_type: &ArrowDataType,
     value: u64,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<cudf::Series> {
     match data_type {
@@ -738,7 +738,7 @@ fn complete_grouping_set_output(
     grouping_id_alias: &str,
     group: &[bool],
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let mut expressions = Vec::<(String, cudf::Expr)>::new();
@@ -816,7 +816,7 @@ fn with_grouping_id_column(
     grouping_id_alias: &str,
     grouping_id: u64,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let grouping_id_field = output_schema.field_with_name(grouping_id_alias).map_err(|error| {
@@ -949,7 +949,7 @@ fn prepare_grouping_set_frame(
     grouping_id_alias: &str,
     group: &[bool],
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let mut expressions = Vec::<(String, cudf::Expr)>::new();

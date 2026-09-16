@@ -225,8 +225,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             )
             .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
         }
-        execution.metrics_mut().record_final_merge_attempt(self.max_partition_fan_in.max(1));
-        execution.metrics_mut().record_final_merge_level();
+        execution.metrics().record_final_merge_attempt(self.max_partition_fan_in.max(1));
+        execution.metrics().record_final_merge_level();
         let elapsed = self.merge_time.saturating_add(timer.elapsed());
         let output_rows = partitions.iter().map(|partial| partial.frame.num_rows() as u64).sum();
         record_compiled_partitioned_final_merge_strategy(
@@ -240,14 +240,14 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             non_empty_partition_count,
             self.max_partition_fan_in,
             elapsed,
-            execution.metrics_mut(),
+            [
+                ("partitioned_merge_incremental", "true".to_string()),
+                ("partitioned_merge_incremental_partials", self.partial_count.to_string()),
+                ("partitioned_merge_incremental_flushes", self.flush_count.to_string()),
+                ("partitioned_merge_streamed_finalization", streamed_output.to_string()),
+            ],
+            execution.metrics(),
         );
-        if let Some(decision) = execution.metrics_mut().aggregate_strategy_decisions.last_mut() {
-            decision.facts.insert("partitioned_merge_incremental".to_string(), "true".to_string());
-            decision.facts.insert("partitioned_merge_incremental_partials".to_string(), self.partial_count.to_string());
-            decision.facts.insert("partitioned_merge_incremental_flushes".to_string(), self.flush_count.to_string());
-            decision.facts.insert("partitioned_merge_streamed_finalization".to_string(), streamed_output.to_string());
-        }
         let retained_bytes = partitions.iter().map(CommittedPartial::device_bytes).sum();
         Ok(ResidentFrameStreamPayload::from_producer(
             // The allocator cap bounds each eventual output; retained partial
@@ -379,7 +379,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             match self.merge_prefix(execution, partition_index, inputs, fan_in.min(available)) {
                 Ok(()) => return Ok(()),
                 Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
-                    crate::exec::retry::record_retryable_resource_error(&error, execution.metrics_mut());
+                    crate::exec::retry::record_retryable_resource_error(&error, execution.metrics());
                     if attempt < self.max_attempts
                         && let Some(reduced) = reduce_merge_fan_in(fan_in)
                     {
@@ -433,7 +433,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         );
         self.merge_time = self.merge_time.saturating_add(timer.elapsed());
         let frame = result?;
-        let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
         let released = match inputs {
             MergeInputs::PendingSlices => {
                 let released = self.pending[partition_index].drain(..take).collect::<Vec<_>>();

@@ -136,7 +136,7 @@ pub mod bench_support {
         sql_top_level_order_by_covers_output_columns,
     };
 }
-use tsv::{TsvRow, stable_tsv_field, write_workload_dataset_metadata};
+use tsv::{TsvRow, stable_tsv_field, write_metric_detail_completeness, write_workload_dataset_metadata};
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
     NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,

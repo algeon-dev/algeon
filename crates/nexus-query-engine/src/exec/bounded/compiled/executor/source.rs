@@ -49,7 +49,7 @@ impl CompiledGpuTaskExecutor<'_> {
                             source,
                             node_id,
                             has_join_source_adjacent_stages,
-                            self.execution.metrics_mut(),
+                            self.execution.metrics(),
                         )?;
                         materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)
                             .map(CompiledGpuResource::new)
@@ -67,7 +67,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 node_id,
                                 has_source_adjacent_stages,
                                 aggregate_chunk_cap_hints,
-                                self.execution.metrics_mut(),
+                                self.execution.metrics(),
                             )?
                         } else if feeds_aggregate {
                             plan_bounded_aggregate_input_local_parquet_source_stream(
@@ -76,7 +76,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 node_id,
                                 has_aggregate_source_adjacent_stages,
                                 aggregate_chunk_cap_hints,
-                                self.execution.metrics_mut(),
+                                self.execution.metrics(),
                             )?
                         } else {
                             plan_bounded_join_leaf_local_parquet_source_stream(
@@ -84,7 +84,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 source,
                                 node_id,
                                 has_join_source_adjacent_stages,
-                                self.execution.metrics_mut(),
+                                self.execution.metrics(),
                             )?
                         };
                         if feeds_direct_join

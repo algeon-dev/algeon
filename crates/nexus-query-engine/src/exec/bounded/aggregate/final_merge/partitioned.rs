@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, BoundedExecutionAttempt, BoundedPlan, CommittedPartial,
-    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, Instant, MemoryControlPolicy, PartitionedFinalMergeTopK,
-    PartitionedFinalMergeTopKStats, QueryError, QueryErrorCode, QueryMetrics, Result, RuntimeResourceFacts,
-    aggregate_strategy_capability_decision, apply_partitioned_final_merge_topk, attach_budget_token_failure_facts,
-    concatenate_partitioned_final_merge_outputs, cudf_query_error, execute_compiled_bounded_aggregate_from_empty_input,
-    execute_final_aggregate, execute_final_aggregate_projection, execution_budget_token_for_boundary,
-    final_merge_retry_facts, lower_final_aggregate_spec, observe_device_memory_bytes, partition_final_merge_partial,
-    partitioned_final_merge_partition_count, partitioned_final_merge_topk_candidate,
-    record_grouped_aggregate_strategy_decision, reduce_merge_fan_in, release_nested_partials_reverse,
-    release_partials_reverse,
+    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame, Instant, MemoryControlPolicy,
+    PartitionedFinalMergeTopK, PartitionedFinalMergeTopKStats, QueryError, QueryErrorCode, Result,
+    RuntimeResourceFacts, aggregate_strategy_capability_decision, apply_partitioned_final_merge_topk,
+    attach_budget_token_failure_facts, concatenate_partitioned_final_merge_outputs, cudf_query_error,
+    execute_compiled_bounded_aggregate_from_empty_input, execute_final_aggregate, execute_final_aggregate_projection,
+    execution_budget_token_for_boundary, final_merge_retry_facts, lower_final_aggregate_spec,
+    observe_device_memory_bytes, partition_final_merge_partial, partitioned_final_merge_partition_count,
+    partitioned_final_merge_topk_candidate, record_grouped_aggregate_strategy_decision, reduce_merge_fan_in,
+    release_nested_partials_reverse, release_partials_reverse,
 };
 
 /// Pre-aligned group-key partition partials from the source-adjacent streaming path.
@@ -133,8 +133,8 @@ pub(in crate::exec::bounded) fn execute_aligned_group_key_partitioned_final_aggr
         .with_fact("node_id", bounded.aggregate_id)
         .with_fact("partition_count", partition_count));
     }
-    execution.metrics_mut().record_final_merge_attempt(max_partition_fan_in.max(1));
-    execution.metrics_mut().record_final_merge_level();
+    execution.metrics().record_final_merge_attempt(max_partition_fan_in.max(1));
+    execution.metrics().record_final_merge_level();
     let merged = concatenate_partitioned_final_merge_outputs(execution, bounded.aggregate_id, merged_partitions)?;
     let elapsed = timer.elapsed();
     let output_rows = merged.frame.num_rows() as u64;
@@ -148,14 +148,14 @@ pub(in crate::exec::bounded) fn execute_aligned_group_key_partitioned_final_aggr
         max_partition_fan_in,
         &topk_stats,
         elapsed,
-        execution.metrics_mut(),
+        // The merge consumes already-aligned group-key partition identity.
+        [
+            ("partitioned_merge_aligned_input", "group_key_source_adjacent".to_string()),
+            ("partitioned_merge_rehash_skipped", "true".to_string()),
+            ("partitioned_merge_key_columns", key_columns.join(",")),
+        ],
+        execution.metrics(),
     );
-    // Mark the merge as consuming already-aligned group-key partition identity.
-    if let Some(decision) = execution.metrics_mut().aggregate_strategy_decisions.last_mut() {
-        decision.facts.insert("partitioned_merge_aligned_input".to_string(), "group_key_source_adjacent".to_string());
-        decision.facts.insert("partitioned_merge_rehash_skipped".to_string(), "true".to_string());
-        decision.facts.insert("partitioned_merge_key_columns".to_string(), key_columns.join(","));
-    }
     execute_final_aggregate_projection(execution, bounded, merged)
 }
 
@@ -216,13 +216,13 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
             match execute_final_merge_level_attempt(execution, bounded, &partials, merge_fan_in, attempt, max_attempts)
             {
                 Ok(level_output) => {
-                    execution.metrics_mut().record_final_merge_level();
+                    execution.metrics().record_final_merge_level();
                     partials = commit_final_merge_level(partials, level_output);
                     merge_level += 1;
                     break;
                 },
                 Err(error) if is_retryable_final_merge_error(&error) => {
-                    record_final_merge_retry_error(&error, execution.metrics_mut());
+                    record_final_merge_retry_error(&error, execution.metrics());
                     if attempt < max_attempts
                         && let Some(reduced_fan_in) = reduce_merge_fan_in(merge_fan_in)
                     {
@@ -235,8 +235,9 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
                         continue;
                     }
 
-                    return Err(final_merge_retry_facts(merge_level, merge_fan_in, execution.metrics_mut())
-                        .attach_to_error(error));
+                    return Err(
+                        final_merge_retry_facts(merge_level, merge_fan_in, execution.metrics()).attach_to_error(error)
+                    );
                 },
                 Err(error) => return Err(error),
             }
@@ -254,7 +255,7 @@ fn execute_final_merge_level_attempt(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<Vec<MergeLevelItem>> {
-    execution.metrics_mut().record_final_merge_attempt(merge_fan_in);
+    execution.metrics().record_final_merge_attempt(merge_fan_in);
     let mut output = Vec::with_capacity(partials.len().div_ceil(merge_fan_in));
 
     for (group_index, group) in partials.chunks(merge_fan_in).enumerate() {
@@ -300,7 +301,7 @@ fn execute_final_merge_group_attempt(
                 attempt,
                 max_attempts,
                 resume_boundary: "final_merge",
-                metrics: execution.metrics_mut(),
+                metrics: execution.metrics(),
             }
             .attach_to(error));
         },
@@ -328,7 +329,7 @@ fn execute_final_merge_group_attempt(
             frame
         },
         Err(error) => {
-            execution.metrics_mut().final_merge_time += merge_elapsed;
+            execution.metrics().add_final_merge_time(merge_elapsed);
             let error = RuntimeResourceFacts {
                 memory_boundary: "final_aggregate_merge",
                 stage: "final_merge",
@@ -336,16 +337,16 @@ fn execute_final_merge_group_attempt(
                 attempt,
                 max_attempts,
                 resume_boundary: "final_merge",
-                metrics: execution.metrics_mut(),
+                metrics: execution.metrics(),
             }
             .attach_to(error);
             stage_guard.fail(&error);
             return Err(error);
         },
     };
-    execution.metrics_mut().final_merge_time += merge_elapsed;
+    execution.metrics().add_final_merge_time(merge_elapsed);
 
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics()).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "final_aggregate_merge_output",
             stage: "final_merge",
@@ -353,7 +354,7 @@ fn execute_final_merge_group_attempt(
             attempt,
             max_attempts,
             resume_boundary: "final_merge",
-            metrics: execution.metrics_mut(),
+            metrics: execution.metrics(),
         }
         .attach_to(error)
     })?;
@@ -382,9 +383,9 @@ fn merge_final_aggregate_partials(
         )
     })?;
     let concatenated = GpuDataFrame::new(concatenated);
-    observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    observe_device_memory_bytes(&concatenated, execution.metrics())?;
 
-    execute_final_aggregate(execution.context(), bounded, concatenated, token, true, execution.metrics_mut())
+    execute_final_aggregate(execution.context(), bounded, concatenated, token, true, execution.metrics())
 }
 
 fn should_execute_partitioned_final_aggregate_merge(
@@ -472,8 +473,8 @@ fn execute_partitioned_final_aggregate_merge(
         .with_fact("node_id", bounded.aggregate_id)
         .with_fact("partition_count", partition_count));
     }
-    execution.metrics_mut().record_final_merge_attempt(max_partition_fan_in.max(1));
-    execution.metrics_mut().record_final_merge_level();
+    execution.metrics().record_final_merge_attempt(max_partition_fan_in.max(1));
+    execution.metrics().record_final_merge_level();
     let merged = concatenate_partitioned_final_merge_outputs(execution, bounded.aggregate_id, merged_partitions)?;
     let elapsed = timer.elapsed();
     let output_rows = merged.frame.num_rows() as u64;
@@ -487,7 +488,8 @@ fn execute_partitioned_final_aggregate_merge(
         max_partition_fan_in,
         &topk_stats,
         elapsed,
-        execution.metrics_mut(),
+        [],
+        execution.metrics(),
     );
     Ok(merged)
 }
@@ -517,7 +519,7 @@ fn execute_partitioned_final_merge_group(
     release_partials_reverse(inputs);
     let frame = result?;
     let frame = apply_partitioned_final_merge_topk(execution, bounded, partition_index, frame, topk, topk_stats)?;
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
 }
 
@@ -550,9 +552,9 @@ fn merge_partitioned_final_aggregate_partials(
         })?
     };
     let concatenated = GpuDataFrame::new(concatenated);
-    observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    observe_device_memory_bytes(&concatenated, execution.metrics())?;
 
-    execute_final_aggregate(execution.context(), bounded, concatenated, token, false, execution.metrics_mut())
+    execute_final_aggregate(execution.context(), bounded, concatenated, token, false, execution.metrics())
 }
 
 #[expect(
@@ -569,7 +571,8 @@ fn record_partitioned_final_merge_strategy(
     max_partition_fan_in: usize,
     topk_stats: &PartitionedFinalMergeTopKStats,
     elapsed: Duration,
-    metrics: &mut QueryMetrics,
+    extra_facts: impl IntoIterator<Item = (&'static str, String)>,
+    metrics: &ExecutionMetrics,
 ) {
     let mut decision = aggregate_strategy_capability_decision(
         &bounded.aggregate.0.spec,
@@ -587,6 +590,7 @@ fn record_partitioned_final_merge_strategy(
     decision.facts.insert("partitioned_merge_topk_partition_count", topk_stats.partition_count.to_string());
     decision.facts.insert("partitioned_merge_topk_input_rows", topk_stats.input_rows.to_string());
     decision.facts.insert("partitioned_merge_topk_output_rows", topk_stats.output_rows.to_string());
+    decision.facts.extend(extra_facts);
     record_grouped_aggregate_strategy_decision(
         metrics,
         Some(bounded.aggregate_id.to_string()),
@@ -642,6 +646,6 @@ fn is_retryable_final_merge_error(error: &QueryError) -> bool {
     crate::exec::retry::is_retryable_resource_error(error)
 }
 
-fn record_final_merge_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+fn record_final_merge_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }

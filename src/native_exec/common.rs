@@ -196,6 +196,7 @@ impl NativeHostOutputCursor {
             )
             .await?;
 
+            metrics.record_deferred_host_sink_executed();
             let Some(batch) = batch else {
                 return Ok(NativeHostOutputStep { cursor: None, batch: None, reservation: None });
             };

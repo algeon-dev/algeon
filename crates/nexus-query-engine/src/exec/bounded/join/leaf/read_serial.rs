@@ -1,14 +1,11 @@
-use parquet::file::reader::FileReader;
-
 use super::{
     BoundedExecutionAttempt, BoundedJoinLeafSourceStreamDynamicFilterStage, GpuDataFrame, LocalParquetSource, NodeId,
-    QueryError, QueryMetrics, Result, SourceChunk, SourceChunkBatch, attach_join_source_read_resource_facts,
-    chunk_retry_facts, is_retryable_chunk_error, join_leaf_source_chunk_batches_for_execution,
-    observe_device_memory_bytes, read_local_parquet_chunk_batch,
-    read_local_parquet_chunk_with_reader_dynamic_filter_count, record_chunk_retry_error,
-    record_dynamic_filter_reader_predicate_batch_rows, record_dynamic_filter_reader_predicate_rows,
-    release_join_source_chunks_reverse, source_chunk_batch_target_bytes, source_read_budget_correction_from_error,
-    split_retryable_chunk,
+    QueryError, Result, SourceChunk, SourceChunkBatch, attach_join_source_read_resource_facts, chunk_retry_facts,
+    is_retryable_chunk_error, join_leaf_source_chunk_batches_for_execution, observe_device_memory_bytes,
+    read_local_parquet_chunk_batch, read_local_parquet_chunk_with_reader_dynamic_filter_count,
+    record_chunk_retry_error, record_dynamic_filter_reader_predicate_batch_rows,
+    record_dynamic_filter_reader_predicate_rows, release_join_source_chunks_reverse, source_chunk_batch_target_bytes,
+    source_read_budget_correction_from_error, split_retryable_chunk,
 };
 
 pub(super) fn read_join_leaf_source_chunks_serial(
@@ -119,7 +116,7 @@ pub(super) fn read_join_leaf_source_batch_or_split(
     match read_join_leaf_source_batch_attempt(execution, source, &batch, reader_dynamic_filters) {
         Ok(output) => Ok(vec![output]),
         Err(error) if is_retryable_chunk_error(&error) => {
-            execution.metrics_mut().record_source_chunk_retry();
+            execution.metrics().record_source_chunk_retry();
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
@@ -166,7 +163,7 @@ pub(super) fn read_join_leaf_source_batch_attempt(
 ) -> Result<(GpuDataFrame, u64)> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_chunk_batch")?;
     for _chunk in &batch.chunks {
-        execution.metrics_mut().record_source_chunk_attempt();
+        execution.metrics().record_source_chunk_attempt();
     }
     let source_token_budget = execution.device_budget_bytes();
     let frame = match read_local_parquet_chunk_batch(
@@ -176,18 +173,16 @@ pub(super) fn read_join_leaf_source_batch_attempt(
         source_token_budget,
         "join_source_read",
         reader_dynamic_filters.len(),
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
             return Err(error);
         },
     };
-    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
-    record_dynamic_filter_reader_predicate_batch_rows(reader_dynamic_filters, batch, &frame, execution.metrics_mut());
-    execution
-        .metrics_mut()
-        .record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
+    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
+    record_dynamic_filter_reader_predicate_batch_rows(reader_dynamic_filters, batch, &frame, execution.metrics());
+    execution.metrics().record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
     Ok((frame, observed_bytes))
 }
 
@@ -244,11 +239,11 @@ pub(super) fn retry_join_leaf_source_chunk_after_error(
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
 ) -> Result<Vec<(GpuDataFrame, u64)>> {
-    record_chunk_retry_error(&error, execution.metrics_mut());
+    record_chunk_retry_error(&error, execution.metrics());
     if attempt < max_attempts
         && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
     {
-        execution.metrics_mut().record_source_chunk_retry();
+        execution.metrics().record_source_chunk_retry();
         crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.join_leaf_source_split_retry",
@@ -276,7 +271,7 @@ pub(super) fn retry_join_leaf_source_chunk_after_error(
         return Ok(outputs);
     }
 
-    Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
+    Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
 }
 pub(super) fn read_join_leaf_source_chunk_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -288,8 +283,7 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
     max_attempts: usize,
 ) -> Result<(GpuDataFrame, u64)> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_chunk")?;
-    execution.metrics_mut().record_source_chunk_attempt();
-    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
+    execution.metrics().record_source_chunk_attempt();
     let source_token_budget = execution.device_budget_bytes();
     let frame = match read_local_parquet_chunk_with_reader_dynamic_filter_count(
         execution.context(),
@@ -298,7 +292,7 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
         source_token_budget,
         "join_source_read",
         reader_dynamic_filters.len(),
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
@@ -327,33 +321,15 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
             }
         },
     };
-    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
-    record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &frame, execution.metrics_mut());
-    let committed_row_groups =
-        committed_join_source_chunk_row_groups(chunk, selected_row_groups_before_read, execution.metrics());
-    execution.metrics_mut().record_source_chunk_commit(committed_row_groups);
+    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
+    record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &frame, execution.metrics());
+    let committed_row_groups = committed_join_source_chunk_row_groups(chunk);
+    execution.metrics().record_source_chunk_commit(committed_row_groups);
     Ok((frame, observed_bytes))
 }
 
-fn committed_join_source_chunk_row_groups(
-    chunk: &SourceChunk,
-    selected_row_groups_before_read: u64,
-    metrics: &QueryMetrics,
-) -> u64 {
-    if let Some(row_groups) = chunk.known_read_row_group_count() {
-        return row_groups as u64;
-    }
-    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
-    if observed_delta > 0 {
-        return observed_delta;
-    }
-    if chunk.reads_all_row_groups && chunk.path.is_file() {
-        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
-            .ok()
-            .map(|reader| reader.metadata().num_row_groups() as u64)
-            .unwrap_or(0);
-    }
-    chunk.row_group_count() as u64
+fn committed_join_source_chunk_row_groups(chunk: &SourceChunk) -> u64 {
+    crate::exec::source::observed_chunk_row_group_count(chunk).unwrap_or_else(|| chunk.row_group_count()) as u64
 }
 
 pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
@@ -372,13 +348,13 @@ pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
     let Some(correction) = source_read_budget_correction_from_error(execution, error) else {
         return Ok(None);
     };
-    record_chunk_retry_error(error, execution.metrics_mut());
-    execution.metrics_mut().record_source_chunk_retry();
+    record_chunk_retry_error(error, execution.metrics());
+    execution.metrics().record_source_chunk_retry();
     crate::exec::retry::backoff_before_retry(
         execution.context(),
         "nexus_query_engine.exec.bounded.join_leaf_source_budget_retry",
     )?;
-    execution.metrics_mut().record_source_chunk_attempt();
+    execution.metrics().record_source_chunk_attempt();
     read_local_parquet_chunk_with_reader_dynamic_filter_count(
         execution.context(),
         source,
@@ -386,7 +362,7 @@ pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
         correction.corrected_budget_bytes(),
         "join_source_read",
         reader_dynamic_filters.len(),
-        execution.metrics_mut(),
+        execution.metrics(),
     )
     .map(Some)
     .map_err(|error| correction.attach_to_error(error))

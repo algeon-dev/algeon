@@ -3,14 +3,13 @@ use super::{
     BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
     BoundedPartitionTargetPolicy, CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy,
-    CompiledMixedSizeData, DataFrame, ExecutionContext, ExecutionOverrides, GpuDataFrame, Instant,
+    CompiledMixedSizeData, DataFrame, ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, Instant,
     JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError,
-    QueryErrorCode, QueryMetrics, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts,
-    StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
-    cudf_query_error, dataframe_mixed_join_options, execution_overrides, join_index_error,
-    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
-    materialize_bounded_join_leaf_local_parquet_source_stream,
+    QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts, StreamedPartitionedJoinSummary,
+    VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs, cudf_query_error,
+    dataframe_mixed_join_options, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
+    lower_join_residual_predicate, materialize_bounded_join_leaf_local_parquet_source_stream,
     materialize_compiled_keyed_equality_join_indices_with_preflight, observe_device_memory_bytes,
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
     record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame,
@@ -184,7 +183,7 @@ pub(super) fn hash_partition_join_side(
     };
     let (partitioned, offsets) = partitioned.into_parts();
     let partitioned_frame = GpuDataFrame::new(partitioned.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, execution.metrics_mut()) {
+    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
@@ -222,7 +221,7 @@ pub(super) fn slice_partition_join_side_range(
         // A split partition already is the whole join input for this partition;
         // sharing its columns avoids one partition-sized copy per probe chunk.
         let frame = partition_frame.clone();
-        let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+        let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;
         return Ok(BoundedJoinSideFrame { frame, rows: partition_len as u64, bytes });
     }
     let start = partition_start.saturating_add(range.offset);
@@ -240,7 +239,7 @@ pub(super) fn slice_partition_join_side_range(
         .with_fact("partition_rows", len)
     })?;
     let gpu = GpuDataFrame::new(frame.clone());
-    let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
+    let bytes = observe_device_memory_bytes(&gpu, execution.metrics())?;
     Ok(BoundedJoinSideFrame { frame, rows: len as u64, bytes })
 }
 

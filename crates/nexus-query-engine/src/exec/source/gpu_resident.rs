@@ -1,4 +1,6 @@
-use super::{ExecutionContext, GpuDataFrame, GpuResidentInputMap, QueryError, QueryErrorCode, QueryMetrics, Result};
+use super::{
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, GpuResidentInputMap, QueryError, QueryErrorCode, Result,
+};
 
 /// Read a caller-supplied GPU-resident source by plan-local input name.
 ///
@@ -10,7 +12,7 @@ pub(in crate::exec) fn read_gpu_resident_source(
     context: &ExecutionContext,
     source: &crate::source::GpuResidentSource,
     inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let handle = inputs.get(&source.input_name).ok_or_else(|| {
         QueryError::new(
@@ -60,6 +62,6 @@ pub(in crate::exec) fn read_gpu_resident_source(
 
     metrics.record_input_batch(handle.num_rows() as u64);
 
-    metrics.boundary.record_gpu_resident_input_handoff();
+    metrics.record_gpu_resident_input_handoff();
     Ok(handle.clone().into_gpu_frame())
 }

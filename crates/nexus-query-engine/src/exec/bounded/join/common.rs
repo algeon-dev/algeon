@@ -51,7 +51,7 @@ fn prepare_bounded_join_side_input(
         },
     };
     let rows = selected.num_rows() as u64;
-    let bytes = match observe_device_memory_bytes(&GpuDataFrame::new(selected.clone()), execution.metrics_mut()) {
+    let bytes = match observe_device_memory_bytes(&GpuDataFrame::new(selected.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);

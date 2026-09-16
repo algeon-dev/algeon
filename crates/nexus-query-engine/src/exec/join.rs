@@ -6,8 +6,8 @@ use cudf::{
 };
 
 use super::{
-    ArrowDataType, BinaryOp, ExecutionContext, ExecutionOverrides, ExecutionScratch, Expr, GpuDataFrame,
-    GpuHashJoinBuildHandle, HashJoinCacheKey, JoinNode, LiteralValue, NodeId, QueryError, QueryErrorCode, QueryMetrics,
+    ArrowDataType, BinaryOp, ExecutionContext, ExecutionMetrics, ExecutionOverrides, ExecutionScratch, Expr,
+    GpuDataFrame, GpuHashJoinBuildHandle, HashJoinCacheKey, JoinNode, LiteralValue, NodeId, QueryError, QueryErrorCode,
     Result, col, cudf_query_error, execution_overrides, observe_device_memory_bytes, timestamp_unit_to_cudf_resolution,
 };
 use crate::{
@@ -124,7 +124,7 @@ pub(super) fn execute_join(
     left: GpuDataFrame,
     right: GpuDataFrame,
     scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     validate_executable_join_subset(node)?;
 
@@ -184,7 +184,7 @@ pub(super) fn execute_join(
         node.spec.datafusion_order_preserved_side,
         node.spec.mark_column_name.as_deref(),
     )?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
 
     let output_rows = output.num_rows() as u64;
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
@@ -268,7 +268,7 @@ fn execute_cross_join(
     left: DataFrame,
     right: DataFrame,
     stats: JoinInputStats,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if !node.spec.keys.is_empty() {
         return Err(QueryError::new(
@@ -287,7 +287,7 @@ fn execute_cross_join(
         cudf_query_error("nexus_query_engine.join.cross", "failed to execute nexus native cross join", error)
     })?;
     let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
 
     let output_rows = output.num_rows() as u64;
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
@@ -332,7 +332,7 @@ fn execute_join_indices(
     input: JoinIndexInput<'_, '_>,
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<JoinIndexResult> {
     if node.spec.keys.is_empty() {
         return execute_conditional_join_indices(&input, node).map(JoinIndexResult::without_hash_table);

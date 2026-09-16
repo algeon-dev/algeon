@@ -15,11 +15,13 @@ use super::{
 use crate::{
     dynamic_filter::{DynamicFilterId, DynamicFilterSet},
     error::{QueryError, QueryErrorCode, Result},
-    exec::bounded::{
-        BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ResidentGpuFrame,
-        release_bounded_compiled_join_probe_state,
+    exec::{
+        ExecutionMetrics,
+        bounded::{
+            BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ResidentGpuFrame,
+            release_bounded_compiled_join_probe_state,
+        },
     },
-    metrics::QueryMetrics,
     native_error::cudf_query_error,
     pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
     plan::{NodeId, QueryPlan},
@@ -71,14 +73,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         plan: &'a QueryPlan,
         pipeline: &'a CompiledPipeline,
         gpu_inputs: &'a GpuResidentInputMap,
-        metrics: &'a mut QueryMetrics,
-        observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+        metrics: &'a ExecutionMetrics,
     ) -> Result<Self> {
         let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
             return Err(invalid("compiled bounded task execution requires bounded memory control")
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };
-        let execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
+        let execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics)?;
         let gpu_inputs = gpu_inputs.clone();
         Ok(Self {
             execution,
@@ -163,13 +164,13 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         self.execution.context().check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
-        self.execution.metrics_mut().record_compiled_pipeline_task_mapping(
+        self.execution.metrics().record_compiled_pipeline_task_mapping(
             task.id(),
             task.kind().as_str(),
             task.plan_node(),
         );
-        self.execution.metrics_mut().record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
-        let budget_event_start = self.execution.metrics_mut().budgeted_execution_event_count();
+        self.execution.metrics().record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
+        let budget_window = self.execution.metrics().open_budget_window();
         let timer = Instant::now();
         let result = match task.kind() {
             PipelineTaskKind::SourceRead
@@ -188,8 +189,8 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::GraphAlgorithm => self.execute_graph_algorithm_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
-        self.execution.metrics_mut().record_task_budget_observations_since(task.id(), budget_event_start);
-        self.execution.metrics_mut().record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
+        self.execution.metrics().close_budget_window(task.id(), budget_window);
+        self.execution.metrics().record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
         result
     }
 

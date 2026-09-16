@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-    BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt, JoinNode, JoinSide, NodeId,
-    OneShotJoinChunkMetrics, QueryMetrics, ResidentGpuFrame, Result, StreamedOneShotJoinSummary,
-    StreamedPartitionedJoinSummary, concatenate_streamed_hash_join_outputs, probe_side,
-    release_bounded_join_side_frame,
+    BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt, ExecutionMetrics, JoinNode, JoinSide, NodeId,
+    OneShotJoinChunkMetrics, ResidentGpuFrame, Result, StreamedOneShotJoinSummary, StreamedPartitionedJoinSummary,
+    concatenate_streamed_hash_join_outputs, probe_side, release_bounded_join_side_frame,
 };
 
 pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
@@ -30,7 +29,7 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
         build_rows,
         build_bytes,
         &summary,
-        execution.metrics_mut(),
+        execution.metrics(),
     );
     Ok(output)
 }
@@ -57,7 +56,7 @@ pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
         build_rows,
         build_bytes,
         &summary,
-        execution.metrics_mut(),
+        execution.metrics(),
     );
     Ok(output)
 }
@@ -74,7 +73,7 @@ pub(super) fn record_streamed_one_shot_join_metrics(
     build_rows: u64,
     build_bytes: u64,
     summary: &StreamedOneShotJoinSummary,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(summary.index_bytes);
@@ -112,7 +111,7 @@ pub(super) fn record_one_shot_join_chunk_metrics(
     build_side: JoinSide,
     probe_side: JoinSide,
     chunk: &OneShotJoinChunkMetrics,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(chunk.index_bytes);
@@ -156,7 +155,7 @@ pub(super) fn record_streamed_partitioned_hash_join_metrics(
     build_rows: u64,
     build_bytes: u64,
     summary: &StreamedPartitionedJoinSummary,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,

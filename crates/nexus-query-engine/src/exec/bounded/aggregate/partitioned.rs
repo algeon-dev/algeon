@@ -75,7 +75,7 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     };
     let (partitioned_frame, offsets) = partitioned.into_parts();
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
+    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
@@ -145,7 +145,7 @@ fn slice_compiled_aggregate_partition(
         .with_fact("partition_rows", len)
     })?;
     let gpu = GpuDataFrame::new(sliced);
-    let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
+    let bytes = observe_device_memory_bytes(&gpu, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(gpu, bytes))
 }
 

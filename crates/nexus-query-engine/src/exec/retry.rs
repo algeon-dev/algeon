@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::{ExecutionContext, QueryError, QueryErrorCode, QueryMetrics, Result};
+use super::{ExecutionContext, ExecutionMetrics, QueryError, QueryErrorCode, Result};
 
 const BOUNDED_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
@@ -41,7 +41,7 @@ pub(in crate::exec) fn is_retryable_resource_error(error: &QueryError) -> bool {
     resource_failure_recovery(error) == ResourceFailureRecovery::ShrinkWorkingSet
 }
 
-pub(in crate::exec) fn record_retryable_resource_error(error: &QueryError, metrics: &mut QueryMetrics) {
+pub(in crate::exec) fn record_retryable_resource_error(error: &QueryError, metrics: &ExecutionMetrics) {
     if is_retryable_resource_error(error) {
         metrics.record_retry_resource_exhausted();
     }
@@ -85,10 +85,10 @@ mod tests {
 
     #[test]
     fn retry_evidence_counts_only_recoverable_failures() {
-        let mut metrics = QueryMetrics::default();
-        record_retryable_resource_error(&error(QueryErrorCode::QueryMemoryLimitExceeded), &mut metrics);
-        record_retryable_resource_error(&error(QueryErrorCode::DeviceOutOfMemory), &mut metrics);
-        record_retryable_resource_error(&error(QueryErrorCode::DeviceAllocationFailed), &mut metrics);
-        assert_eq!(metrics.retry_resource_exhausted_count, 1);
+        let metrics = crate::exec::ExecutionMetrics::detached("retry-evidence");
+        record_retryable_resource_error(&error(QueryErrorCode::QueryMemoryLimitExceeded), &metrics);
+        record_retryable_resource_error(&error(QueryErrorCode::DeviceOutOfMemory), &metrics);
+        record_retryable_resource_error(&error(QueryErrorCode::DeviceAllocationFailed), &metrics);
+        assert_eq!(metrics.snapshot().retry_resource_exhausted_count, 1);
     }
 }

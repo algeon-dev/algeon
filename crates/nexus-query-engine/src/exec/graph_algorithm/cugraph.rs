@@ -55,7 +55,7 @@ pub(in crate::exec) fn execute_graph_algorithm(
     node: &crate::plan::GraphAlgorithmNode,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     execute_prepared_graph_algorithm(context, node_id, node, input, side_inputs, metrics)
 }
@@ -78,12 +78,12 @@ fn execute_prepared_graph_algorithm(
     node: &crate::plan::GraphAlgorithmNode,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
     let input_columns = input.num_columns() as u64;
     let input_graph_residency = input.graph_residency().cloned();
-    let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, node.input);
+    let prior_null_edge_rows_dropped = metrics.null_edge_rows_dropped(node.input);
     let null_filter_scope = super::super::edge_null_filter::EdgeNullFilterScope {
         weight: node.spec.algorithm.consumes_weight(),
         edge_id: node.spec.edge_columns.edge_id.is_some(),
@@ -143,9 +143,9 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     input_columns: u64,
     null_edge_rows_dropped: u64,
     empty_input_prevalidated: bool,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    let boundary_before = metrics.boundary.clone();
+    let boundary_before = metrics.boundary();
     let timer = Instant::now();
     let result = if empty_input_prevalidated {
         resolve_empty_graph_input(context, node, input.frame(), &side_inputs, input_rows, input.num_rows() as u64)?
@@ -178,7 +178,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
         }
     };
     let elapsed = timer.elapsed();
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
 
     let gpu = GpuDataFrame::new(result.frame);
     let output_device_bytes = gpu.device_allocated_size_bytes().ok();
@@ -190,7 +190,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
         measured_graph_peak_bytes,
         measured_peak_provenance,
     );
-    let boundary_delta = boundary_delta(&boundary_before, &metrics.boundary);
+    let boundary_delta = boundary_delta(&boundary_before, &metrics.boundary());
     metrics.record_graph_algorithm_runtime(crate::metrics::GraphAlgorithmRuntimeMetrics {
         query_id: None,
         node_id: node_id.to_string(),
@@ -239,7 +239,7 @@ fn graph_peak_measurement(
 }
 
 fn record_graph_claim_peak_on_error(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     node_id: NodeId,
     algorithm: crate::plan::GraphAlgorithm,
     cache_scope_peak_bytes: Option<u64>,
@@ -325,8 +325,8 @@ fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> Result<Gr
 mod graph_peak_measurement_tests {
     use super::{graph_peak_measurement, max_graph_peak, record_graph_claim_peak_on_error};
     use crate::{
-        graph_observation::{GraphMeasuredPeakProvenance, GraphMeasuredPeakRow},
-        metrics::QueryMetrics,
+        exec::ExecutionMetrics,
+        graph_observation::GraphMeasuredPeakProvenance,
         plan::{GraphAlgorithm, NodeId},
     };
 
@@ -352,16 +352,12 @@ mod graph_peak_measurement_tests {
     #[test]
     fn graph_claim_error_records_the_measured_cache_scope_peak() {
         let node_id = NodeId::from_index_for_internal_use(7);
-        let mut metrics = QueryMetrics::new("graph-claim-error");
-        metrics.graph_claim_calibration_rows.push(GraphMeasuredPeakRow::pending(
-            None,
-            node_id.to_string(),
-            node_id.index(),
-            GraphAlgorithm::PageRank,
-        ));
+        let metrics = ExecutionMetrics::detached("graph-claim-error");
+        metrics.record_graph_claim_calibration(node_id, GraphAlgorithm::PageRank);
 
-        record_graph_claim_peak_on_error(&mut metrics, node_id, GraphAlgorithm::PageRank, Some(1_536));
+        record_graph_claim_peak_on_error(&metrics, node_id, GraphAlgorithm::PageRank, Some(1_536));
 
+        let metrics = metrics.snapshot();
         let row = &metrics.graph_claim_calibration_rows[0];
         assert_eq!(row.measured_peak_bytes, Some(1_536));
         assert_eq!(row.measured_peak_provenance, GraphMeasuredPeakProvenance::CacheScopeHighWater);
@@ -371,16 +367,12 @@ mod graph_peak_measurement_tests {
     #[test]
     fn graph_claim_error_without_any_measurement_stays_unavailable() {
         let node_id = NodeId::from_index_for_internal_use(8);
-        let mut metrics = QueryMetrics::new("graph-claim-incomplete-error");
-        metrics.graph_claim_calibration_rows.push(GraphMeasuredPeakRow::pending(
-            None,
-            node_id.to_string(),
-            node_id.index(),
-            GraphAlgorithm::PageRank,
-        ));
+        let metrics = ExecutionMetrics::detached("graph-claim-incomplete-error");
+        metrics.record_graph_claim_calibration(node_id, GraphAlgorithm::PageRank);
 
-        record_graph_claim_peak_on_error(&mut metrics, node_id, GraphAlgorithm::PageRank, None);
+        record_graph_claim_peak_on_error(&metrics, node_id, GraphAlgorithm::PageRank, None);
 
+        let metrics = metrics.snapshot();
         let row = &metrics.graph_claim_calibration_rows[0];
         assert_eq!(row.measured_peak_bytes, None);
         assert_eq!(row.measured_peak_provenance, GraphMeasuredPeakProvenance::Unavailable);

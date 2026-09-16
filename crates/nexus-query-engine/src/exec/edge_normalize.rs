@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    CudfSortOptions, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionContext, GpuDataFrame, NodeId,
-    QueryMetrics, Result, cudf_query_error, execution_overrides,
+    CudfSortOptions, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionContext, ExecutionMetrics,
+    GpuDataFrame, NodeId, Result, cudf_query_error, execution_overrides,
 };
 use crate::plan::{EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner};
 
@@ -11,7 +11,7 @@ pub(super) fn execute_edge_normalize(
     node_id: NodeId,
     node: &EdgeNormalizeNode,
     mut input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let retained_normalization_source = input.take_resident_owner();
     let graph_residency = input.graph_residency().cloned();
@@ -85,7 +85,7 @@ pub(super) fn execute_edge_normalize(
             })?;
     }
 
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     let output = GpuDataFrame::try_new_with_source_residency(frame, &input)?
         .with_retained_normalization_source(retained_normalization_source);
     Ok(match graph_residency {

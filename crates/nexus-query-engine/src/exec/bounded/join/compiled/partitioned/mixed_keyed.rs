@@ -85,11 +85,11 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     };
 
     if preserve_stream {
-        record_partitioned_join_selection(plan, original, execution.metrics_mut());
+        record_partitioned_join_selection(plan, original, execution.metrics());
         let partitioned = partition_join_sides(execution, plan, left, right)?;
         let left_partitioned_bytes = partitioned.left.device_bytes();
         let right_partitioned_bytes = partitioned.right.device_bytes();
-        record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics_mut());
+        record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics());
         let PartitionedJoinSides { left: left_partitioned, right: right_partitioned } = partitioned;
         let stream = PartitionedMixedJoinStreamSource {
             node_id,
@@ -123,7 +123,7 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     )?;
     let output = concatenate_streamed_hash_join_outputs(execution, node_id, result.outputs)?;
     result.summary.observe_concatenated_output(&output);
-    record_partitioned_join_operator_metrics(plan, result.original, &result.summary, execution.metrics_mut());
+    record_partitioned_join_operator_metrics(plan, result.original, &result.summary, execution.metrics());
     Ok(BoundedCompiledJoinMaterializeOutput::Frame(Box::new(output)))
 }
 
@@ -188,7 +188,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
-    execution.metrics_mut().record_mixed_join_size_data_bytes(mixed_size_data_bytes);
+    execution.metrics().record_mixed_join_size_data_bytes(mixed_size_data_bytes);
     let indices = match size_data.materialize_indices_in(&overrides, node) {
         Ok(indices) => indices,
         Err(error) => {
@@ -229,8 +229,8 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    execution.metrics().add_operator_time(timer.elapsed());
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             txn.rollback();
@@ -304,7 +304,7 @@ impl PartitionedMixedJoinStreamSource {
             partition_count: self.partition_count,
             partition_target_bytes: partitioned_join_target_bytes_for_context(execution.context()),
         };
-        record_partitioned_join_operator_metrics(plan, self.original, &self.output_summary, execution.metrics_mut());
+        record_partitioned_join_operator_metrics(plan, self.original, &self.output_summary, execution.metrics());
     }
 }
 

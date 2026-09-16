@@ -404,15 +404,15 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     });
     let admitted = context.admit_plan_for_compiled_executor_test(&plan).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
     let (state, batch) = {
+        let metrics_context = metrics_recorder.scope_context(&admitted).unwrap();
         let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
-            &admitted,
+            &metrics_context,
             &plan,
             &pipeline,
             &gpu_inputs,
-            &mut metrics,
-            None,
+            &metrics_recorder,
         )
         .unwrap();
         let state = scheduler.run(&mut executor).unwrap();
@@ -439,15 +439,15 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     drop(admitted);
 
     let admitted = context.admit_plan_for_compiled_executor_test(&plan).unwrap();
-    let mut cancellation_metrics = QueryMetrics::default();
+    let cancellation_metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("cancellation_metrics");
     let (result, retained_at_cancel) = {
+        let cancellation_metrics_context = cancellation_metrics_recorder.scope_context(&admitted).unwrap();
         let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
-            &admitted,
+            &cancellation_metrics_context,
             &plan,
             &pipeline,
             &gpu_inputs,
-            &mut cancellation_metrics,
-            None,
+            &cancellation_metrics_recorder,
         )
         .unwrap();
         let mut cancel_after_consumer =

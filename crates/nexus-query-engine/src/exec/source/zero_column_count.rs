@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    DataFrame, ExecutionBudgetRequest, ExecutionContext, GpuDataFrame, LocalParquetSource, NodeId, QueryError,
-    QueryErrorCode, QueryMetrics, Result, SourceChunkPlanningPolicy, ZERO_COLUMN_COUNT_COLUMN, attach_row_group_facts,
+    DataFrame, ExecutionBudgetRequest, ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, NodeId,
+    QueryError, QueryErrorCode, Result, SourceChunkPlanningPolicy, ZERO_COLUMN_COUNT_COLUMN, attach_row_group_facts,
     cudf_query_error, cudf_query_error_with_budget_details, parquet_chunk_path_fact,
     plan_local_parquet_source_chunks_with_execution_context, record_bounded_parquet_source_metrics,
 };
@@ -10,7 +10,7 @@ use super::{
 pub(super) fn read_zero_column_count_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         NodeId::from_index_for_internal_use(0),
@@ -44,7 +44,7 @@ pub(super) fn read_zero_column_count_source(
 pub(super) fn zero_column_count_frame(
     context: &ExecutionContext,
     row_counts: &[u64],
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let counts = row_counts
         .iter()
@@ -76,7 +76,7 @@ pub(super) fn zero_column_count_frame(
         )
     })?;
     let read_elapsed = timer.elapsed();
-    metrics.source_read_time += read_elapsed;
+    metrics.add_source_read_time(read_elapsed);
     metrics.record_input_batch(row_counts.iter().copied().sum());
     Ok(GpuDataFrame::new(frame))
 }
@@ -86,7 +86,7 @@ pub(super) fn zero_column_count_chunk_frame_with_budget(
     row_count: u64,
     budget_bytes: u64,
     budget_boundary: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let count = i64::try_from(row_count).map_err(|_error| {
         QueryError::new(
@@ -133,7 +133,7 @@ pub(super) fn zero_column_count_chunk_frame_with_budget(
         )
     })?;
     let read_elapsed = timer.elapsed();
-    metrics.source_read_time += read_elapsed;
+    metrics.add_source_read_time(read_elapsed);
     metrics.record_input_batch(row_count);
     Ok(GpuDataFrame::new(frame))
 }

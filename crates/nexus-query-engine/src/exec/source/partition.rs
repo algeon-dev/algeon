@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    ArrowDataType, DataFrame, ExecutionContext, GpuDataFrame, LiteralValue, LocalParquetSource, QueryError,
-    QueryErrorCode, QueryMetrics, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
+    ArrowDataType, DataFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame, LiteralValue, LocalParquetSource,
+    QueryError, QueryErrorCode, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
 };
 
 pub(super) fn inject_partition_columns(
@@ -11,7 +11,7 @@ pub(super) fn inject_partition_columns(
     partition_values: &[LiteralValue],
     frame: DataFrame,
     row_count_override: Option<usize>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if source.partition_columns.is_empty() {
         return Ok(GpuDataFrame::new(frame));
@@ -45,7 +45,7 @@ pub(super) fn inject_partition_columns(
             .with_fact("partition_value", partition_value)
         })?;
     }
-    metrics.source_read_time += timer.elapsed();
+    metrics.add_source_read_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 

@@ -328,6 +328,7 @@ pub(crate) struct NexusNativeMetrics {
     row_capture_budget: Arc<Mutex<MetricRowCaptureBudget>>,
     row_capture_loss: Count,
     row_capture_loss_reported: Arc<AtomicBool>,
+    deferred_compiled_host_sink: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -437,6 +438,7 @@ impl NexusNativeMetrics {
             row_capture_budget,
             row_capture_loss,
             row_capture_loss_reported: Arc::new(AtomicBool::new(false)),
+            deferred_compiled_host_sink: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -451,10 +453,24 @@ impl NexusNativeMetrics {
 
     fn admit_metric_row(&self, row: &impl fmt::Debug) -> bool {
         let admitted = self.row_capture_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner).admit(row);
-        if !admitted && !self.row_capture_loss_reported.swap(true, Ordering::Relaxed) {
-            self.row_capture_loss.add(1);
+        if !admitted {
+            self.report_row_capture_loss();
         }
         admitted
+    }
+
+    /// Admits a detail row the metrics owner already selected under its
+    /// retention limits. A projected value is recorded as-is; selecting its
+    /// rows a second time would lose rows the owner kept. Only a value built
+    /// outside an owner still goes through this recorder's own budget.
+    fn admit_owner_selected_row(&self, metrics: &QueryMetrics, row: &impl fmt::Debug) -> bool {
+        metrics.projection.is_some() || self.admit_metric_row(row)
+    }
+
+    fn report_row_capture_loss(&self) {
+        if !self.row_capture_loss_reported.swap(true, Ordering::Relaxed) {
+            self.row_capture_loss.add(1);
+        }
     }
 
     #[cfg(test)]
@@ -468,6 +484,9 @@ impl NexusNativeMetrics {
     }
 
     pub(crate) fn record_query_metrics(&self, metrics: &QueryMetrics) {
+        if metrics.projection.as_ref().is_some_and(|projection| projection.completeness.truncated) {
+            self.report_row_capture_loss();
+        }
         if let Some(capture) = &self.graph_claim_calibration_capture {
             capture.record(metrics.graph_claim_calibration_rows());
         }
@@ -491,13 +510,20 @@ impl NexusNativeMetrics {
         &self,
         outcome: QueryExecutionOutcome,
     ) -> std::result::Result<QueryOutput, QueryError> {
-        let (result, mut metrics, _observation) = outcome.into_parts();
-        if metrics.compiled_pipeline_attempts > 0 {
-            metrics.record_compiled_pipeline_tasks_executed(1);
-            metrics.record_compiled_pipeline_host_arrow_sink();
-        }
+        let (result, metrics, _observation) = outcome.into_parts();
+        self.deferred_compiled_host_sink.store(metrics.compiled_pipeline_attempts > 0, Ordering::Relaxed);
         self.record_query_metrics(&metrics);
         result
+    }
+
+    /// Records the host sink a compiled pipeline deferred to the adapter, once,
+    /// when the adapter's cursor has run it: after its first batch, or at the
+    /// end of an output that had none.
+    pub(crate) fn record_deferred_host_sink_executed(&self) {
+        if self.deferred_compiled_host_sink.swap(false, Ordering::Relaxed) {
+            self.compiled_pipeline_tasks_executed.add(1);
+            self.compiled_pipeline_host_arrow_sinks.add(1);
+        }
     }
 
     pub(crate) fn record_deferred_host_materialization(&self, rows: usize, bytes: usize) {
@@ -659,7 +685,7 @@ impl NexusNativeMetrics {
 
     fn record_dynamic_filter_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.dynamic_filter_runtime_rows {
-            if !self.admit_metric_row(row) {
+            if !self.admit_owner_selected_row(metrics, row) {
                 continue;
             }
             MetricBuilder::new(&self.metrics_set)
@@ -744,7 +770,7 @@ impl NexusNativeMetrics {
 
     fn record_source_read_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.source_read_runtime_rows {
-            if !self.admit_metric_row(row) {
+            if !self.admit_owner_selected_row(metrics, row) {
                 continue;
             }
             MetricBuilder::new(&self.metrics_set)
@@ -829,7 +855,7 @@ impl NexusNativeMetrics {
     fn record_join_strategy_rows(&self, metrics: &QueryMetrics) {
         let mut decision_facts_by_node: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
         for decision in &metrics.join_strategy_decisions {
-            if !self.admit_metric_row(decision) {
+            if !self.admit_owner_selected_row(metrics, decision) {
                 continue;
             }
             decision_facts_by_node
@@ -838,7 +864,7 @@ impl NexusNativeMetrics {
                 .extend(decision.facts.iter().map(|(key, value)| (key.clone(), value.clone())));
         }
         for operator in metrics.operators.iter().filter(|operator| operator.operator_kind == "join") {
-            if !self.admit_metric_row(operator) {
+            if !self.admit_owner_selected_row(metrics, operator) {
                 continue;
             }
             let Some(join) = operator.join.as_ref() else {
@@ -922,7 +948,7 @@ impl NexusNativeMetrics {
 
     fn record_aggregate_strategy_rows(&self, metrics: &QueryMetrics) {
         for decision in &metrics.aggregate_strategy_decisions {
-            if !self.admit_metric_row(decision) {
+            if !self.admit_owner_selected_row(metrics, decision) {
                 continue;
             }
             let facts = &decision.facts;
@@ -1359,10 +1385,6 @@ fn join_runtime_counters(join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
 
 fn count(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
-}
-
-fn join_gather_map_bytes(metrics: &QueryMetrics) -> u64 {
-    metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).map(|join| join.gather_map_bytes).sum()
 }
 
 fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u64>) {

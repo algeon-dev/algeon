@@ -1,6 +1,6 @@
 use super::{
-    AggregateExpr, AggregateFunction, DataFrame, ExecutionBudgetToken, ExecutionContext, QueryError, QueryErrorCode,
-    QueryMetrics, Result, aggregate_expr_is_exact_nunique, budgeted_value, cudf_query_error,
+    AggregateExpr, AggregateFunction, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, QueryError,
+    QueryErrorCode, Result, aggregate_expr_is_exact_nunique, budgeted_value, cudf_query_error,
     cudf_query_error_with_budget_details, global_count_star_expr, lower_column_expr,
 };
 
@@ -17,7 +17,7 @@ pub(in crate::exec) fn global_count_series_with_budget(
     frame: &DataFrame,
     expr: &AggregateExpr,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<cudf::Series> {
     global_count_series_impl(context, frame, expr, Some((token, metrics)))
 }
@@ -26,7 +26,7 @@ fn global_count_series_impl(
     context: &ExecutionContext,
     frame: &DataFrame,
     expr: &AggregateExpr,
-    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+    mut token: Option<(&ExecutionBudgetToken, &ExecutionMetrics)>,
 ) -> Result<cudf::Series> {
     let count = if expr.function == AggregateFunction::Count && !expr.distinct && global_count_star_expr(&expr.expr) {
         frame.num_rows()

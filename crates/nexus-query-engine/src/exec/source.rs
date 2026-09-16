@@ -5,9 +5,9 @@ use parquet::file::reader::FileReader;
 
 use super::{
     ArrowDataType, BinaryOp, BoundedExecutionAttempt, CudfSortOptions, DataFrame, ExecutionBudgetRequest,
-    ExecutionBudgetToken, ExecutionContext, Expr, Field, GpuDataFrame, GpuResidentInputMap, GpuResultHandle,
-    LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError, QueryErrorCode,
-    QueryMetrics, Result, Schema, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode,
+    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame, GpuResidentInputMap,
+    GpuResultHandle, LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError,
+    QueryErrorCode, Result, Schema, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode,
     SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN, append_source_order_columns, budgeted_value, col,
     comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
     cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, execution_overrides, lit,
@@ -36,12 +36,14 @@ use cudf_contract::{
 };
 pub(in crate::exec) use gpu_resident::read_gpu_resident_source;
 use lakehouse_cache::*;
+pub(in crate::exec) use metrics::admitted_source_read_scope;
 pub(super) use metrics::{
     attach_row_group_facts, attach_row_group_facts_if_absent, format_row_groups, record_bounded_parquet_source_metrics,
 };
 use partition::inject_partition_columns;
 use position_delete::*;
 use read::read_local_parquet_file;
+pub(in crate::exec) use read_runtime_metrics::observed_chunk_row_group_count;
 use read_runtime_metrics::*;
 pub(in crate::exec) use scan_limit::apply_source_scan_limit_to_frame;
 use scan_limit::*;
@@ -54,11 +56,26 @@ pub(in crate::exec) use crate::source::{
 };
 use crate::{
     metrics::SourceReadParquetEvidenceMetrics,
+    observability::SourceReadFact,
     source::{local_parquet_execution_frame_schema, validate_local_parquet_source},
 };
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)
+}
+
+/// Folds one source-read fact into the active plan execution's totals.
+pub(in crate::exec) fn record_source_read(context: &ExecutionContext, fact: SourceReadFact) {
+    if let Some(scope) = admitted_source_read_scope(context.runtime_execution_scope()) {
+        scope.record_source_read(fact);
+    }
+}
+
+/// Offers one source-read detail row for the active plan execution.
+pub(in crate::exec) fn record_source_read_row(context: &ExecutionContext, row: SourceReadRuntimeMetrics) {
+    if let Some(scope) = admitted_source_read_scope(context.runtime_execution_scope()) {
+        scope.record_source_read_row(row);
+    }
 }
 
 /// Read a local Parquet source into a GPU dataframe.
@@ -68,7 +85,7 @@ pub(in crate::exec) fn read_local_parquet_source(
     context: &ExecutionContext,
     source_node_id: NodeId,
     source: &LocalParquetSource,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
 
@@ -84,7 +101,7 @@ pub(in crate::exec) fn read_local_parquet_source(
     let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_source(source);
     match cache.checkout_or_claim(key, context, &cache_schema)? {
         crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
-            metrics.record_input_batch(handle.num_rows() as u64);
+            record_source_read(context, SourceReadFact::InputBatch { rows: handle.num_rows() as u64 });
             Ok(handle.into_gpu_frame())
         },
         crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
@@ -144,7 +161,7 @@ fn promote_source_cache_load(
 pub(in crate::exec) fn read_literal_batch_source(
     context: &ExecutionContext,
     source: &crate::source::LiteralBatchSource,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     crate::source::validate_literal_batch_source(source, crate::rapids_backend::rapids_analysis_context())?;
     context.check_cancellation("nexus_query_engine.literal_batch_source.read")?;
@@ -159,10 +176,10 @@ pub(in crate::exec) fn read_literal_batch_source(
         .with_fact("columns", source.schema.fields().len())
         .with_fact("batches", source.batches.len())
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     for batch in &source.batches {
-        metrics.record_input_batch(batch.num_rows() as u64);
-        metrics.boundary.record_host_to_device_upload(batch.num_rows() as u64, record_batch_memory_size(batch) as u64);
+        record_source_read(context, SourceReadFact::InputBatch { rows: batch.num_rows() as u64 });
+        metrics.record_host_to_device_upload(batch.num_rows() as u64, record_batch_memory_size(batch) as u64);
     }
     Ok(GpuDataFrame::new(frame))
 }
@@ -171,7 +188,7 @@ fn read_local_parquet_source_uncached(
     context: &ExecutionContext,
     source_node_id: NodeId,
     source: &LocalParquetSource,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if source.is_zero_column_count_source() {
         return read_zero_column_count_source(context, source, metrics);
@@ -181,7 +198,7 @@ fn read_local_parquet_source_uncached(
         let frame = empty_local_parquet_execution_frame(context, source)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = append_source_order_columns(context, frame, 0)?;
-        metrics.record_input_batch(0);
+        record_source_read(context, SourceReadFact::InputBatch { rows: 0 });
         return Ok(GpuDataFrame::new(frame));
     }
 
@@ -219,9 +236,8 @@ fn read_local_parquet_source_uncached(
                 &cudf_source,
                 &_cudf_chunk,
                 &columns,
-                metrics,
             )?;
-            record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index, metrics);
+            record_background_cache_file_fill_enqueue(context, source_node_id, source, file, file_index);
             frame
         };
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
@@ -237,7 +253,7 @@ fn read_local_parquet_source_uncached(
         )?;
         if source.is_count_star_probe_source() {
             let row_count = frame.num_rows() as u64;
-            let frame = count_star_probe_weight_frame(context, row_count, false, metrics)?.into_frame();
+            let frame = count_star_probe_weight_frame(context, row_count, false)?.into_frame();
             let frame = append_source_order_columns(context, frame, file_index)?;
             frames.push(frame);
             continue;
@@ -261,7 +277,7 @@ fn read_local_parquet_source_uncached(
         let frame = empty_local_parquet_execution_frame(context, source)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = append_source_order_columns(context, frame, 0)?;
-        metrics.record_input_batch(0);
+        record_source_read(context, SourceReadFact::InputBatch { rows: 0 });
         return Ok(GpuDataFrame::new(frame));
     };
     let other_frames = frames.collect::<Vec<_>>();
@@ -282,7 +298,7 @@ fn read_local_parquet_source_uncached(
         .with_fact("file_count", source.file_count())
         .with_fact("read_columns", source.read_column_count())
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
 
     Ok(GpuDataFrame::new(output))
 }
@@ -332,7 +348,7 @@ pub(super) fn read_local_parquet_chunk(
     chunk: &SourceChunk,
     budget_bytes: u64,
     budget_boundary: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     read_local_parquet_chunk_with_reader_dynamic_filter_count(
         context,
@@ -352,7 +368,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     // Count probes and empty chunks are synthetic frames rather than decoded
     // Parquet values. Keeping them out of the resident source cache avoids
@@ -374,7 +390,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_chunk(source, chunk);
     match cache.checkout_or_claim(key, context, &cache_schema)? {
         crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
-            metrics.record_input_batch(handle.num_rows() as u64);
+            record_source_read(context, SourceReadFact::InputBatch { rows: handle.num_rows() as u64 });
             Ok(handle.into_gpu_frame())
         },
         crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
@@ -406,7 +422,7 @@ fn read_local_parquet_chunk_uncached(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_chunk.read")?;
     if chunk.zero_column_count {
@@ -439,7 +455,7 @@ fn read_local_parquet_chunk_uncached(
         let frame = empty_local_parquet_execution_frame(context, source)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
-        metrics.record_input_batch(0);
+        record_source_read(context, SourceReadFact::InputBatch { rows: 0 });
         return Ok(GpuDataFrame::new(frame));
     }
 
@@ -505,13 +521,13 @@ fn read_local_parquet_chunk_uncached(
             chunk,
         )
     })?;
-    record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+    record_background_cache_chunk_fill_enqueue(context, chunk);
     let observed_row_group_count = None;
     metrics.record_budgeted_execution("nexus_query_engine.local_parquet_chunk.read", outcome.report());
     let read_evidence = outcome.value().read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
-    metrics.parquet_read_time += read_elapsed;
-    metrics.source_read_time += read_elapsed;
+    record_source_read(context, SourceReadFact::ParquetReadTime(read_elapsed));
+    record_source_read(context, SourceReadFact::SourceReadTime(read_elapsed));
     let frame = outcome.into_value().into_frame();
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_position_deletes_to_data_file(
@@ -534,19 +550,29 @@ fn read_local_parquet_chunk_uncached(
             read_elapsed,
             reader_dynamic_filter_count,
             read_evidence.as_ref(),
-            metrics,
+            context,
         );
-        return count_star_probe_weight_frame(context, row_count, true, metrics);
+        return count_star_probe_weight_frame(context, row_count, true);
     }
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+    // Row-group metadata was unavailable when the chunk was planned, so the
+    // planned count missed these; this only adds the row groups, not a file.
     if chunk.reads_all_row_groups
         && chunk.row_group_indexes.is_empty()
         && chunk.known_read_row_group_count().is_none()
         && let Some(row_group_count) = observed_chunk_row_group_count(chunk)
     {
-        metrics.row_groups_selected += row_group_count as u64;
+        record_source_read(
+            context,
+            SourceReadFact::ParquetSource {
+                files: 0,
+                known_bytes: 0,
+                selected_row_groups: row_group_count as u64,
+                read_columns: 0,
+            },
+        );
     }
     record_source_chunk_read_runtime(
         source,
@@ -556,9 +582,9 @@ fn read_local_parquet_chunk_uncached(
         read_elapsed,
         reader_dynamic_filter_count,
         read_evidence.as_ref(),
-        metrics,
+        context,
     );
-    metrics.record_input_batch(frame.num_rows() as u64);
+    record_source_read(context, SourceReadFact::InputBatch { rows: frame.num_rows() as u64 });
     Ok(GpuDataFrame::new(frame))
 }
 
@@ -566,7 +592,6 @@ fn count_star_probe_weight_frame(
     context: &ExecutionContext,
     row_count: u64,
     record_input_rows: bool,
-    metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let count = i64::try_from(row_count).map_err(|_error| {
         QueryError::new(
@@ -592,9 +617,9 @@ fn count_star_probe_weight_frame(
             error,
         )
     })?;
-    metrics.source_read_time += timer.elapsed();
+    record_source_read(context, SourceReadFact::SourceReadTime(timer.elapsed()));
     if record_input_rows {
-        metrics.record_input_batch(row_count);
+        record_source_read(context, SourceReadFact::InputBatch { rows: row_count });
     }
     Ok(GpuDataFrame::new(frame))
 }
@@ -606,7 +631,7 @@ pub(super) fn read_local_parquet_chunk_batch(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if batch.is_singleton() {
         let chunk = batch.chunks.first().expect("singleton source chunk batch has one child");
@@ -637,7 +662,7 @@ pub(super) fn read_local_parquet_chunk_batch(
     let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_chunk_batch(source, batch);
     match cache.checkout_or_claim(key, context, &cache_schema)? {
         crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
-            metrics.record_input_batch(handle.num_rows() as u64);
+            record_source_read(context, SourceReadFact::InputBatch { rows: handle.num_rows() as u64 });
             Ok(handle.into_gpu_frame())
         },
         crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
@@ -669,7 +694,7 @@ fn read_local_parquet_chunk_batch_uncached(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if batch.is_singleton() {
         let chunk = batch.chunks.first().expect("singleton source chunk batch has one child");
@@ -751,14 +776,14 @@ fn read_local_parquet_chunk_batch_uncached(
         .with_fact("first_file_index", batch.chunks[0].file_index)
     })?;
     for chunk in &batch.chunks {
-        record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+        record_background_cache_chunk_fill_enqueue(context, chunk);
     }
     drop(cache_read_pins);
     metrics.record_budgeted_execution("nexus_query_engine.local_parquet_chunk_batch.read", outcome.report());
     let read_evidence = outcome.value().read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
-    metrics.parquet_read_time += read_elapsed;
-    metrics.source_read_time += read_elapsed;
+    record_source_read(context, SourceReadFact::ParquetReadTime(read_elapsed));
+    record_source_read(context, SourceReadFact::SourceReadTime(read_elapsed));
     let frame = outcome.into_value().into_frame();
     if source.is_count_star_probe_source() {
         let row_count = frame.num_rows() as u64;
@@ -770,10 +795,10 @@ fn read_local_parquet_chunk_batch_uncached(
             read_elapsed,
             reader_dynamic_filter_count,
             read_evidence.as_ref(),
-            metrics,
+            context,
         );
         let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
-        let frame = count_star_probe_weight_frame(context, row_count, true, metrics)?.into_frame();
+        let frame = count_star_probe_weight_frame(context, row_count, true)?.into_frame();
         let frame = append_source_order_columns(context, frame, first_chunk.chunk_index)?;
         return Ok(GpuDataFrame::new(frame));
     }
@@ -786,9 +811,9 @@ fn read_local_parquet_chunk_batch_uncached(
         read_elapsed,
         reader_dynamic_filter_count,
         read_evidence.as_ref(),
-        metrics,
+        context,
     );
-    metrics.record_input_batch(frame.num_rows() as u64);
+    record_source_read(context, SourceReadFact::InputBatch { rows: frame.num_rows() as u64 });
     if let Some(entry) = optimized_cache_entry.as_ref() {
         let _ = publish_lakehouse_optimized_batch_frame(context, entry, &frame);
     }
@@ -1105,20 +1130,24 @@ mod tests {
             .unwrap()
             .with_file_size_bytes(1024);
         let source = test_source(vec![file.clone()], vec!["c1".to_string()]);
-        let mut metrics = QueryMetrics::default();
-
-        record_background_cache_file_fill_enqueue(
-            &context,
-            NodeId::from_index_for_internal_use(1),
-            &source,
-            &file,
-            0,
-            &mut metrics,
+        let session = crate::observability::RuntimeObservationSession::new(
+            "background-fill",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(16, 1024 * 1024),
         );
+        let scope = crate::observability::RuntimePlanExecutionLifecycle::from_handle(
+            session.handle(),
+            crate::observability::PlanExecutionId::new("background-fill-plan"),
+        )
+        .execution_scope();
+        let context = context.with_runtime_execution_scope(scope.clone()).unwrap();
 
-        assert_eq!(metrics.source_read_runtime_rows.len(), 1);
-        assert_eq!(metrics.source_read_runtime_rows[0].read_kind, "background_cache_fill_file");
-        assert_eq!(metrics.source_read_runtime_rows[0].source_batching_reason, "fill_concurrency_saturated");
+        record_background_cache_file_fill_enqueue(&context, NodeId::from_index_for_internal_use(1), &source, &file, 0);
+
+        let rows = scope.metrics_checkpoint().unwrap().source_read_rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].read_kind, "background_cache_fill_file");
+        assert_eq!(rows[0].source_batching_reason, "fill_concurrency_saturated");
         let _ = fs::remove_dir_all(root);
     }
 

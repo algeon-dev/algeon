@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use super::{QueryId, QueryMetrics, optional_u64};
+use super::{MetricsProjection, QueryId, QueryMetrics, optional_u64};
+use crate::observability::QueryMetricsCheckpoint;
 
 /// Runtime evidence for one local-Parquet source read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -158,6 +159,76 @@ impl Default for SourceReadParquetEvidenceMetrics {
 }
 
 impl QueryMetrics {
+    /// Projects a plan execution's metrics from its owner checkpoint.
+    ///
+    /// Every fact-driven field is replaced by the checkpoint's absolute value,
+    /// so applying the same checkpoint twice leaves the value unchanged. Only
+    /// the identity and policy fields this value was created with are kept;
+    /// the observation owner is the only writer of everything else.
+    pub fn apply_owner_checkpoint(&mut self, checkpoint: &QueryMetricsCheckpoint) {
+        let query_id = self.query_id.clone();
+        let trace_id = self.trace_id.clone();
+        let memory_control_policy = self.memory_control_policy;
+        let execution_boundary_policy = self.execution_boundary_policy;
+        let plan_task_mapping_datafusion_shape = self.plan_task_mapping_datafusion_shape.clone();
+        *self = checkpoint.metrics.clone();
+        self.query_id = query_id;
+        self.trace_id = trace_id;
+        self.memory_control_policy = memory_control_policy;
+        self.execution_boundary_policy = execution_boundary_policy;
+        self.plan_task_mapping_datafusion_shape = plan_task_mapping_datafusion_shape;
+        self.apply_source_read_checkpoint(checkpoint);
+        self.stamp_existing_rows_with_query_id();
+    }
+
+    /// Projects a plan execution's source-read metrics from its owner checkpoint.
+    ///
+    /// Every source-read field is replaced by the checkpoint's absolute value,
+    /// so applying the same checkpoint twice leaves the value unchanged. The
+    /// observation owner is the only writer of this family; nothing else may
+    /// set these fields, or this projection would overwrite it.
+    pub fn apply_source_read_checkpoint(&mut self, checkpoint: &QueryMetricsCheckpoint) {
+        let totals = &checkpoint.summary.source_read;
+        self.input_batches = totals.input_batches;
+        self.input_rows = totals.input_rows;
+        self.parquet_files = totals.parquet_files;
+        self.parquet_bytes_known = totals.parquet_bytes_known;
+        self.row_groups_selected = totals.row_groups_selected;
+        self.read_columns = totals.read_columns;
+        self.source_chunks_planned = totals.source_chunks_planned;
+        self.source_chunks_attempted = totals.source_chunks_attempted;
+        self.source_chunks_committed = totals.source_chunks_committed;
+        self.source_chunks_retried = totals.source_chunks_retried;
+        self.row_groups_planned = totals.row_groups_planned;
+        self.row_groups_committed = totals.row_groups_committed;
+        self.source_read_prefetches_started = totals.source_read_prefetches_started;
+        self.source_read_prefetches_completed = totals.source_read_prefetches_completed;
+        self.source_read_prefetches_skipped = totals.source_read_prefetches_skipped;
+        self.source_read_prefetches_abandoned = totals.source_read_prefetches_abandoned;
+        self.source_metadata_load_time = totals.source_metadata_load_time;
+        self.source_read_queue_wait_time = totals.source_read_queue_wait_time;
+        self.parquet_read_time = totals.parquet_read_time;
+        self.source_read_time = totals.source_read_time;
+
+        let query_id = self.inherited_query_id();
+        self.source_read_runtime_rows = checkpoint
+            .source_read_rows
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                if row.query_id.is_none() {
+                    row.query_id.clone_from(&query_id);
+                }
+                row
+            })
+            .collect();
+        self.projection = Some(MetricsProjection {
+            revision: Some(checkpoint.revision),
+            sealed: checkpoint.sealed,
+            completeness: checkpoint.completeness,
+        });
+    }
+
     /// Records one local-Parquet source read or source-batch read.
     pub fn record_source_read_runtime(&mut self, mut metrics: SourceReadRuntimeMetrics) {
         if metrics.query_id.is_none() {
@@ -230,5 +301,121 @@ impl QueryMetrics {
     /// Adds source-read queue wait time.
     pub fn record_source_read_queue_wait(&mut self, elapsed: Duration) {
         self.source_read_queue_wait_time += elapsed;
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use std::time::Duration;
+
+    use super::{QueryMetrics, SourceReadRuntimeMetrics};
+    use crate::observability::{
+        MetricsCaptureMode, MetricsCompleteness, QueryMetricsCheckpoint, QueryMetricsSummary, SourceReadTotals,
+    };
+
+    fn checkpoint(revision: u64, input_rows: u64, capture_mode: MetricsCaptureMode) -> QueryMetricsCheckpoint {
+        QueryMetricsCheckpoint {
+            revision,
+            sealed: false,
+            summary: QueryMetricsSummary {
+                source_read: SourceReadTotals {
+                    input_rows,
+                    source_read_queue_wait_time: Duration::from_millis(input_rows),
+                    ..SourceReadTotals::default()
+                },
+            },
+            source_read_rows: vec![SourceReadRuntimeMetrics { batch_index: revision, ..Default::default() }],
+            metrics: QueryMetrics::default(),
+            completeness: MetricsCompleteness {
+                capture_mode,
+                detail_rows_dropped: 0,
+                truncated: false,
+                totals_saturated: false,
+            },
+        }
+    }
+
+    #[test]
+    fn projecting_a_checkpoint_again_does_not_add_it_twice() {
+        let checkpoint = checkpoint(4, 10, MetricsCaptureMode::Bounded);
+        let mut metrics = QueryMetrics::new("projection-query");
+
+        metrics.apply_source_read_checkpoint(&checkpoint);
+        let once = metrics.clone();
+        metrics.apply_source_read_checkpoint(&checkpoint);
+
+        assert_eq!(metrics, once, "a repeated projection must be idempotent, not additive");
+        assert_eq!(metrics.input_rows, 10);
+        assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+        assert_eq!(metrics.projection.and_then(|projection| projection.revision), Some(4));
+    }
+
+    #[test]
+    fn a_later_checkpoint_replaces_an_earlier_one() {
+        let mut metrics = QueryMetrics::new("projection-query");
+
+        metrics.apply_source_read_checkpoint(&checkpoint(1, 10, MetricsCaptureMode::Bounded));
+        metrics.apply_source_read_checkpoint(&checkpoint(2, 25, MetricsCaptureMode::Bounded));
+
+        assert_eq!(metrics.input_rows, 25, "a preview then a final projection must not sum");
+        assert_eq!(metrics.source_read_queue_wait_time, Duration::from_millis(25));
+        assert_eq!(metrics.source_read_runtime_rows[0].batch_index, 2);
+    }
+
+    #[test]
+    fn projected_rows_inherit_the_query_id() {
+        let mut metrics = QueryMetrics::new("projection-query");
+
+        metrics.apply_source_read_checkpoint(&checkpoint(1, 1, MetricsCaptureMode::Bounded));
+
+        assert_eq!(
+            metrics.source_read_runtime_rows[0].query_id.as_ref().map(|id| id.as_str()),
+            Some("projection-query")
+        );
+    }
+
+    #[test]
+    fn merging_projections_never_claims_more_than_either_side() {
+        let mut bounded = QueryMetrics::new("merged-query");
+        bounded.apply_source_read_checkpoint(&checkpoint(3, 1, MetricsCaptureMode::Bounded));
+        let mut disabled = QueryMetrics::new("merged-query");
+        disabled.apply_source_read_checkpoint(&checkpoint(7, 1, MetricsCaptureMode::Disabled));
+
+        bounded.merge_from(disabled);
+
+        let projection = bounded.projection.expect("both sides were projected");
+        assert_eq!(projection.revision, None, "a merge of two checkpoints is no single revision");
+        assert_eq!(projection.completeness.capture_mode, MetricsCaptureMode::Disabled);
+        assert!(!projection.completeness.detail_is_complete());
+    }
+
+    #[test]
+    fn json_reports_whether_its_rows_are_the_whole_detail() {
+        let unprojected = QueryMetrics::new("json-query");
+        let mut truncated = QueryMetrics::new("json-query");
+        let mut lossy = checkpoint(9, 1, MetricsCaptureMode::Bounded);
+        lossy.completeness.detail_rows_dropped = 3;
+        lossy.completeness.truncated = true;
+        truncated.apply_source_read_checkpoint(&lossy);
+        let mut not_captured = QueryMetrics::new("json-query");
+        not_captured.apply_source_read_checkpoint(&checkpoint(2, 1, MetricsCaptureMode::Disabled));
+
+        assert_eq!(unprojected.to_json()["completeness"]["status"], "unknown");
+        let completeness = &truncated.to_json()["completeness"];
+        assert_eq!(completeness["status"], "incomplete");
+        assert_eq!(completeness["revision"], 9);
+        assert_eq!(completeness["detail_rows_dropped"], 3);
+        assert_eq!(not_captured.to_json()["completeness"]["status"], "not_captured");
+    }
+
+    #[test]
+    fn an_unprojected_side_does_not_erase_a_projection() {
+        let mut accumulated = QueryMetrics::new("merged-query");
+        let mut stage = QueryMetrics::new("merged-query");
+        stage.apply_source_read_checkpoint(&checkpoint(5, 1, MetricsCaptureMode::Bounded));
+
+        accumulated.merge_from(stage);
+
+        assert_eq!(accumulated.projection.and_then(|projection| projection.revision), Some(5));
     }
 }

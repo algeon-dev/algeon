@@ -11,8 +11,7 @@ pub use super::compiled::{
 use crate::{
     admission::{BoundedPipelineAdmission, artifact_binding_error, bounded_pipeline_decision},
     error::Result,
-    exec::output::QueryOutput,
-    metrics::QueryMetrics,
+    exec::{ExecutionMetrics, output::QueryOutput},
     plan::QueryPlan,
     runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
@@ -22,7 +21,7 @@ pub(in crate::exec) fn try_execute_bounded_pipeline(
     plan: &QueryPlan,
     admission: Option<&BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<Option<QueryOutput>> {
     if let Some(admission) = admission {

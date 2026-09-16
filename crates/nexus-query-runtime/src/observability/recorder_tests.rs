@@ -486,3 +486,209 @@ fn seal_observers_receive_snapshot_identity_and_isolate_panics() {
     owner.register_seal_observer(move |snapshot| *late_for_observer.lock().unwrap() = Some(snapshot));
     assert!(late.lock().unwrap().as_ref().is_some_and(|snapshot| snapshot.is_same_snapshot(&sealed)));
 }
+
+fn metrics_session(query_id: &str, config: RuntimeObservationConfig) -> RuntimeObservationSession {
+    RuntimeObservationSession::with_clock(
+        query_id,
+        None,
+        config,
+        Arc::new(DeterministicRuntimeObservationClock::new(Some(1))),
+    )
+}
+
+fn plan() -> PlanExecutionId {
+    PlanExecutionId::new("plan-a")
+}
+
+fn source_row(batch_index: u64) -> crate::metrics::SourceReadRuntimeMetrics {
+    crate::metrics::SourceReadRuntimeMetrics { source_node_id: "source".to_string(), batch_index, ..Default::default() }
+}
+
+#[test]
+fn disabled_query_session_keeps_exact_totals_without_capturing_trace() {
+    let session = metrics_session("disabled-metrics", RuntimeObservationConfig::disabled());
+    let handle = session.handle();
+
+    handle.record_source_read(&plan(), SourceReadFact::InputBatch { rows: 7 });
+    handle.record_source_read(&plan(), SourceReadFact::InputBatch { rows: 5 });
+    handle.record_source_read_row(&plan(), source_row(0));
+    let payload_builds = Arc::new(AtomicUsize::new(0));
+    let payload_counter = Arc::clone(&payload_builds);
+    let disposition = handle.record(move || {
+        payload_counter.fetch_add(1, Ordering::SeqCst);
+        RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started }
+    });
+
+    // Trace behaviour is exactly what a disabled session always had.
+    assert!(!handle.is_enabled());
+    assert!(matches!(disposition, RuntimeObservationRecordDisposition::Disabled));
+    assert_eq!(payload_builds.load(Ordering::SeqCst), 0, "a disabled trace must not build payloads");
+    assert!(handle.live_snapshot().is_none());
+
+    // Metrics survive it.
+    let checkpoint = handle.metrics_checkpoint(&plan()).expect("a query-bound session always has metrics");
+    assert_eq!(checkpoint.summary.source_read.input_batches, 2);
+    assert_eq!(checkpoint.summary.source_read.input_rows, 12);
+    assert!(checkpoint.source_read_rows.is_empty(), "disabled capture keeps no detail rows");
+    assert_eq!(checkpoint.completeness.capture_mode, MetricsCaptureMode::Disabled);
+    assert!(!checkpoint.completeness.detail_is_complete(), "no capture is not a complete capture");
+}
+
+#[test]
+fn bounded_capture_truncates_detail_but_keeps_totals_exact() {
+    let session = metrics_session("bounded-metrics", RuntimeObservationConfig::bounded(2, 1024 * 1024));
+    let handle = session.handle();
+
+    for batch_index in 0..5 {
+        handle.record_source_read(&plan(), SourceReadFact::ChunkCommitted { chunk_count: 1, row_groups: 2 });
+        handle.record_source_read_row(&plan(), source_row(batch_index));
+    }
+
+    let checkpoint = handle.metrics_checkpoint(&plan()).unwrap();
+    assert_eq!(checkpoint.summary.source_read.source_chunks_committed, 5);
+    assert_eq!(checkpoint.summary.source_read.row_groups_committed, 10);
+    let retained = checkpoint.source_read_rows.iter().map(|row| row.batch_index).collect::<Vec<_>>();
+    assert_eq!(retained, vec![0, 1], "retention keeps the earliest rows up to the record limit");
+    assert_eq!(checkpoint.completeness.detail_rows_dropped, 3);
+    assert!(checkpoint.completeness.truncated);
+    assert!(!checkpoint.completeness.detail_is_complete());
+
+    // The loss is visible through the trace footer too, as its own class.
+    let snapshot = handle.live_snapshot().unwrap();
+    let loss = snapshot
+        .footer()
+        .dropped_by_class
+        .iter()
+        .find(|loss| loss.class == RuntimeObservationRecordClass::SourceReadDetail)
+        .map(|loss| loss.count);
+    assert_eq!(loss, Some(3));
+    assert!(snapshot.footer().truncated);
+}
+
+#[test]
+fn budget_detail_cannot_crowd_out_later_strategy_decisions() {
+    let session = metrics_session("budget-share", RuntimeObservationConfig::bounded(8, 1024 * 1024));
+    let handle = session.handle();
+    let event = crate::metrics::BudgetedExecutionEvent {
+        query_id: None,
+        operation: "groupby".to_string(),
+        boundary: "partial".to_string(),
+        budget_bytes: 64,
+        enforcement: "stream_bound_reservation".to_string(),
+        status: "within_budget".to_string(),
+        allocator_high_water_bytes: Some(32),
+        retained_bytes: None,
+        output_bytes: None,
+        output_rows: None,
+        context_facts: std::collections::BTreeMap::new(),
+    };
+
+    for _ in 0..20 {
+        let event = event.clone();
+        handle.apply_metrics(&plan(), move |metrics| metrics.budgeted_execution_events.push(event));
+    }
+    let facts = std::collections::BTreeMap::from([("execution_stage", "partial".to_string())]);
+    handle.apply_metrics(&plan(), |metrics| metrics.record_aggregate_strategy_decision("aggregate", &facts));
+
+    let checkpoint = handle.metrics_checkpoint(&plan()).unwrap();
+    assert_eq!(checkpoint.metrics.budgeted_execution_events.len(), 4, "budget detail keeps half of the records");
+    assert_eq!(checkpoint.metrics.aggregate_strategy_decisions.len(), 1);
+    assert_eq!(checkpoint.completeness.detail_rows_dropped, 16);
+}
+
+#[test]
+fn zero_capacity_capture_loses_every_row_and_no_total() {
+    let session = metrics_session("zero-cap-metrics", RuntimeObservationConfig::bounded(0, 0));
+    let handle = session.handle();
+
+    handle.record_source_read(&plan(), SourceReadFact::QueueWait(Duration::from_millis(4)));
+    handle.record_source_read_row(&plan(), source_row(0));
+
+    let checkpoint = handle.metrics_checkpoint(&plan()).unwrap();
+    assert_eq!(checkpoint.summary.source_read.source_read_queue_wait_time, Duration::from_millis(4));
+    assert!(checkpoint.source_read_rows.is_empty());
+    assert_eq!(checkpoint.completeness.capture_mode, MetricsCaptureMode::Bounded);
+    assert_eq!(checkpoint.completeness.detail_rows_dropped, 1);
+}
+
+#[test]
+fn sealing_freezes_metrics_whether_or_not_trace_is_captured() {
+    for config in [RuntimeObservationConfig::disabled(), RuntimeObservationConfig::native_execution()] {
+        let session = metrics_session("sealed-metrics", config);
+        let handle = session.handle();
+        handle.record_source_read(&plan(), SourceReadFact::ChunkAttempted);
+
+        let snapshot = session.seal(RuntimeTerminalOutcome::Succeeded);
+        assert_eq!(snapshot.is_some(), config.is_enabled(), "only a captured trace produces a sealed snapshot");
+
+        handle.record_source_read(&plan(), SourceReadFact::ChunkAttempted);
+        handle.record_source_read_row(&plan(), source_row(9));
+        let checkpoint = handle.metrics_checkpoint(&plan()).unwrap();
+        assert!(checkpoint.sealed);
+        assert_eq!(checkpoint.summary.source_read.source_chunks_attempted, 1, "facts after the seal are ignored");
+        assert!(checkpoint.source_read_rows.is_empty());
+    }
+}
+
+#[test]
+fn revision_advances_only_when_metrics_change() {
+    let session = metrics_session("revision-metrics", RuntimeObservationConfig::native_execution());
+    let handle = session.handle();
+
+    let initial = handle.metrics_checkpoint(&plan()).unwrap().revision;
+    assert_eq!(handle.metrics_checkpoint(&plan()).unwrap().revision, initial, "reading must not advance the revision");
+
+    handle.record_source_read(&plan(), SourceReadFact::PrefetchStarted);
+    let after_fact = handle.metrics_checkpoint(&plan()).unwrap().revision;
+    assert!(after_fact > initial);
+
+    handle.record_source_read_row(&plan(), source_row(0));
+    assert!(handle.metrics_checkpoint(&plan()).unwrap().revision > after_fact);
+}
+
+#[test]
+fn saturated_totals_are_reported_as_inexact() {
+    let session = metrics_session("saturated-metrics", RuntimeObservationConfig::disabled());
+    let handle = session.handle();
+
+    handle.record_source_read(&plan(), SourceReadFact::InputBatch { rows: u64::MAX });
+    assert!(!handle.metrics_checkpoint(&plan()).unwrap().completeness.totals_saturated);
+    handle.record_source_read(&plan(), SourceReadFact::InputBatch { rows: 1 });
+
+    let checkpoint = handle.metrics_checkpoint(&plan()).unwrap();
+    assert_eq!(checkpoint.summary.source_read.input_rows, u64::MAX);
+    assert!(checkpoint.completeness.totals_saturated);
+}
+
+#[test]
+fn the_disabled_sentinel_has_no_metrics_owner() {
+    let handle = RuntimeObservationHandle::disabled();
+
+    handle.record_source_read(&plan(), SourceReadFact::ChunkAttempted);
+
+    assert!(handle.metrics_checkpoint(&plan()).is_none(), "a handle with no query has nothing to reduce into");
+}
+
+#[test]
+fn each_plan_execution_projects_only_its_own_facts() {
+    // One query, two plan executions sharing one owner. A consumer that sums
+    // the two projections must see each fact once.
+    let session = metrics_session("two-plan-metrics", RuntimeObservationConfig::native_execution());
+    let handle = session.handle();
+    let first = PlanExecutionId::new("plan-a");
+    let second = PlanExecutionId::new("plan-b");
+
+    handle.record_source_read(&first, SourceReadFact::InputBatch { rows: 3 });
+    handle.record_source_read(&second, SourceReadFact::InputBatch { rows: 4 });
+    handle.record_source_read_row(&second, source_row(1));
+
+    let first_checkpoint = handle.metrics_checkpoint(&first).unwrap();
+    let second_checkpoint = handle.metrics_checkpoint(&second).unwrap();
+    assert_eq!(first_checkpoint.summary.source_read.input_rows, 3);
+    assert!(first_checkpoint.source_read_rows.is_empty());
+    assert_eq!(second_checkpoint.summary.source_read.input_rows, 4);
+    assert_eq!(second_checkpoint.source_read_rows.len(), 1);
+
+    let unseen = handle.metrics_checkpoint(&PlanExecutionId::new("plan-never-ran")).unwrap();
+    assert_eq!(unseen.summary, QueryMetricsSummary::default(), "an execution with no facts reports empty totals");
+}

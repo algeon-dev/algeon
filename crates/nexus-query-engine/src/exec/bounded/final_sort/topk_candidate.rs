@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::{
-    CudfSortOptions, GpuDataFrame, QueryMetrics, Result, SortNode, cudf_query_error_with_budget_details,
+    CudfSortOptions, ExecutionMetrics, GpuDataFrame, Result, SortNode, cudf_query_error_with_budget_details,
     lower_sort_spec,
 };
 
@@ -10,7 +10,7 @@ pub(super) fn sort_topk_candidate_with_budget(
     input: GpuDataFrame,
     work_token: &cudf::ExecutionBudgetToken,
     boundary: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let sort = lower_sort_spec(&sort.spec)?;
     let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
@@ -38,6 +38,6 @@ pub(super) fn sort_topk_candidate_with_budget(
         .with_fact_if_absent("stage", "final_sort")
     })?;
     metrics.record_budgeted_execution("nexus_query_engine.final_sort.topk_materialize", materialized.report());
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(materialized.into_value()))
 }

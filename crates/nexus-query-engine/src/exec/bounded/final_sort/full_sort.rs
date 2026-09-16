@@ -42,10 +42,10 @@ impl FinalSortExecutor<'_, '_> {
                     .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
                 prepared.into_parts()
             };
-            self.execution.metrics_mut().operator_time += timer.elapsed();
+            self.execution.metrics().add_operator_time(timer.elapsed());
 
             self.execution
-                .metrics_mut()
+                .metrics()
                 .record_budgeted_execution("nexus_query_engine.final_sort.prepare", &prepare_report);
             final_sort_retained_bytes(&prepare_report)
                 .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
@@ -84,7 +84,7 @@ impl FinalSortExecutor<'_, '_> {
                     })
                     .map(|outcome| {
                         self.execution
-                            .metrics_mut()
+                            .metrics()
                             .record_budgeted_execution("nexus_query_engine.final_sort.materialize", outcome.report());
                         GpuDataFrame::new(outcome.into_value())
                     })
@@ -96,8 +96,8 @@ impl FinalSortExecutor<'_, '_> {
                     },
                 }
             };
-            self.execution.metrics_mut().operator_time += timer.elapsed();
-            self.execution.metrics_mut().record_device_memory_observation(materialized_output_bytes);
+            self.execution.metrics().add_operator_time(timer.elapsed());
+            self.execution.metrics().record_device_memory_observation(materialized_output_bytes);
 
             (materialized_frame, materialized_reservation)
         };
@@ -117,7 +117,7 @@ impl FinalSortExecutor<'_, '_> {
                 materialized_frame,
                 &limit_token,
                 "nexus_query_engine.final_sort.limit",
-                self.execution.metrics_mut(),
+                self.execution.metrics(),
             )
             .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
             {

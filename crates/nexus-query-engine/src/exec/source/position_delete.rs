@@ -1,8 +1,8 @@
 use std::{borrow::Cow, sync::Arc, time::Instant};
 
 use super::{
-    ArrowDataType, BinaryOp, CudfSortOptions, DataFrame, ExecutionContext, Expr, Field, GpuDataFrame, LiteralValue,
-    LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryErrorCode, QueryMetrics, Result, Schema,
+    ArrowDataType, BinaryOp, CudfSortOptions, DataFrame, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame,
+    LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryErrorCode, Result, Schema,
     SourceChunk, SourceReadMode, acquire_lakehouse_cache_chunk_read_pin, acquire_lakehouse_cache_file_read_pin,
     append_source_order_columns, apply_source_scan_limit_to_frame, attach_row_group_facts,
     coerce_local_parquet_source_schema, col, cudf_error_for_chunk_read, cudf_local_parquet_source_chunk,
@@ -30,7 +30,7 @@ pub(super) fn read_position_delete_parquet_source_as_chunks(
     context: &ExecutionContext,
     source_node_id: NodeId,
     source: &LocalParquetSource,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let chunk_source = source.clone().with_scan_limit(None);
     let planning_policy = if source.scan_limit.is_some() {
@@ -44,7 +44,7 @@ pub(super) fn read_position_delete_parquet_source_as_chunks(
         planning_policy,
         context,
     )?;
-    metrics.source_metadata_load_time += chunk_plan.metadata_load_time;
+    metrics.add_source_metadata_load_time(chunk_plan.metadata_load_time);
 
     let mut frames = Vec::with_capacity(chunk_plan.chunk_count());
     let mut remaining_rows = source.scan_limit;
@@ -88,7 +88,7 @@ pub(super) fn read_position_delete_parquet_source_as_chunks(
         .with_fact("file_count", source.file_count())
         .with_fact("read_columns", source.read_column_count())
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 
@@ -96,7 +96,7 @@ pub(super) fn read_position_delete_source_chunk(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_source.position_delete_chunk.read")?;
     if chunk.scan_limit_rows == Some(0) {
@@ -156,12 +156,12 @@ pub(super) fn read_position_delete_source_chunk(
             chunk,
         )
     })?;
-    record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
+    record_background_cache_chunk_fill_enqueue(context, chunk);
     let observed_row_group_count = None;
     let read_evidence = output.read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
-    metrics.parquet_read_time += read_elapsed;
-    metrics.source_read_time += read_elapsed;
+    metrics.add_parquet_read_time(read_elapsed);
+    metrics.add_source_read_time(read_elapsed);
     let frame = output.into_frame();
     let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
     let frame = apply_position_deletes_to_data_file(
@@ -184,20 +184,18 @@ pub(super) fn read_position_delete_source_chunk(
         read_elapsed,
         0,
         read_evidence.as_ref(),
-        metrics,
+        context,
     );
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(GpuDataFrame::new(frame))
 }
 
-pub(super) fn record_position_delete_source_chunk_top_level_metrics(chunk: &SourceChunk, metrics: &mut QueryMetrics) {
-    metrics.parquet_files = metrics.parquet_files.saturating_add(1);
-    metrics.parquet_bytes_known =
-        metrics.parquet_bytes_known.saturating_add(chunk.known_row_group_bytes.or(chunk.known_file_bytes).unwrap_or(0));
-    metrics.read_columns = metrics.read_columns.saturating_add(chunk.read_columns.len() as u64);
-    if let Some(row_group_count) = chunk.known_read_row_group_count() {
-        metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(row_group_count as u64);
-    }
+pub(super) fn record_position_delete_source_chunk_top_level_metrics(chunk: &SourceChunk, metrics: &ExecutionMetrics) {
+    metrics.record_parquet_source(
+        chunk.known_row_group_bytes.or(chunk.known_file_bytes),
+        chunk.known_read_row_group_count().unwrap_or(0) as u64,
+        chunk.read_columns.len() as u64,
+    );
 }
 
 #[expect(
@@ -212,7 +210,7 @@ pub(super) fn apply_position_deletes_to_data_file(
     file_index: usize,
     row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
     mut frame: DataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
@@ -390,7 +388,7 @@ pub(super) fn apply_position_deletes_to_data_file(
         .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(frame)
 }
 
@@ -570,7 +568,7 @@ pub(super) fn read_position_delete_file(
     row_position_range: Option<crate::chunk::SourceChunkRowPositionRange>,
     data_file_index: usize,
     delete_index: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let file = delete_file.to_local_parquet_file();
     let schema = Arc::new(Schema::new(vec![
@@ -603,7 +601,6 @@ pub(super) fn read_position_delete_file(
             &cudf_source,
             &cudf_chunk,
             &columns,
-            metrics,
         )?
     };
     coerce_local_parquet_source_schema(frame, &source, None, metrics).map_err(|error| {
@@ -621,7 +618,7 @@ pub(super) fn read_equality_delete_file(
     delete_file: &crate::source::ParquetEqualityDeleteFile,
     data_file_index: usize,
     delete_index: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let file = delete_file.to_local_parquet_file();
     let schema_fields = delete_file
@@ -664,7 +661,6 @@ pub(super) fn read_equality_delete_file(
             &cudf_source,
             &cudf_chunk,
             &columns,
-            metrics,
         )?
     };
     let frame = coerce_local_parquet_source_schema(frame, &delete_source, None, metrics).map_err(|error| {

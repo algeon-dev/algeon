@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use super::{
     BoundedCompiledFilteredJoinBuildState, BoundedCompiledFilteredJoinProbeState, BoundedExecutionAttempt,
-    BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionOverrides, GpuDataFrame,
-    GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, QueryMetrics, ResidentGpuFrame, Result,
+    BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionMetrics, ExecutionOverrides,
+    GpuDataFrame, GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
     attach_budget_token_failure_facts, cudf_query_error, execution_budget_token_for_boundary, execution_overrides,
     join_index_error, join_side_output_upper_bound_bytes, keyed_filtered_semi_anti_join_capable, lower_null_equality,
     materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
@@ -102,8 +102,8 @@ fn build_filtered_join_artifact(
                 .with_fact("build_side", JoinSide::Right)
         })?;
     let hash_table_bytes = filtered_join.device_allocated_size_bytes();
-    execution.metrics_mut().record_filtered_join_build();
-    execution.metrics_mut().record_filtered_join_hash_table_bytes(hash_table_bytes);
+    execution.metrics().record_filtered_join_build();
+    execution.metrics().record_filtered_join_hash_table_bytes(hash_table_bytes);
     Ok(BoundedCompiledFilteredJoinBuildState {
         left_keys,
         left_columns,
@@ -127,7 +127,7 @@ fn null_aware_anti_probe_side(
     else {
         return Ok(probe);
     };
-    let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+    let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;
     let rows = frame.num_rows() as u64;
     release_bounded_join_side_frame(probe);
     Ok(BoundedJoinSideFrame { frame, rows, bytes })
@@ -171,7 +171,7 @@ fn deduplicate_filtered_join_build_keys(
             .with_fact("key_count", right_keys.len()));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             release_bounded_join_side_frame(build);
@@ -250,7 +250,7 @@ fn begin_filtered_join_probe_state(
             .with_fact("join_type", node.spec.join_type)
             .with_fact("build_side", JoinSide::Right)
     })?;
-    execution.metrics_mut().record_filtered_join_probe_state_bytes(probe_state_bytes);
+    execution.metrics().record_filtered_join_probe_state_bytes(probe_state_bytes);
     Ok((probe_state, probe_state_bytes))
 }
 
@@ -300,9 +300,9 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
             mark_column_name,
         )?;
         let output_rows = output.num_rows() as u64;
-        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
         record_filtered_join_output_metrics(
-            execution.metrics_mut(),
+            execution.metrics(),
             node_id,
             node,
             build,
@@ -333,9 +333,9 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
             node.spec.join_type,
         )?;
         let output_rows = output.num_rows() as u64;
-        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
         record_filtered_join_output_metrics(
-            execution.metrics_mut(),
+            execution.metrics(),
             node_id,
             node,
             build,
@@ -378,11 +378,11 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             &node.spec.output_projection,
             mark_column_name,
         )?;
-        execution.metrics_mut().operator_time += build.timer.elapsed();
+        execution.metrics().add_operator_time(build.timer.elapsed());
         let output_rows = output.num_rows() as u64;
-        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
         record_filtered_join_output_metrics(
-            execution.metrics_mut(),
+            execution.metrics(),
             node_id,
             node,
             &build,
@@ -412,11 +412,11 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             &node.spec.output_projection,
             node.spec.join_type,
         )?;
-        execution.metrics_mut().operator_time += build.timer.elapsed();
+        execution.metrics().add_operator_time(build.timer.elapsed());
         let output_rows = output.num_rows() as u64;
-        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
         record_filtered_join_output_metrics(
-            execution.metrics_mut(),
+            execution.metrics(),
             node_id,
             node,
             &build,
@@ -437,7 +437,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 fn record_filtered_join_output_metrics(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     node_id: NodeId,
     node: &JoinNode,
     build: &BoundedCompiledFilteredJoinBuildState,

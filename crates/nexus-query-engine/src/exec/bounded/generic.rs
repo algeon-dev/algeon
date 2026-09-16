@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Instant};
 
 use super::{
-    BoundedExecutionAttempt, BoundedPlan, ExecutionBudgetToken, ExecutionContext, FilterNode, GpuDataFrame,
-    GpuResidentInputMap, GpuResidentSource, GpuResultHandle, LocalParquetSource, NodeId, PlanNode, ProjectionNode,
-    QueryError, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlan, ResidentGpuFrame, Result, ResultSink,
+    BoundedExecutionAttempt, BoundedPlan, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, FilterNode,
+    GpuDataFrame, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, LocalParquetSource, NodeId, PlanNode,
+    ProjectionNode, QueryError, QueryErrorCode, QueryOutput, QueryPlan, ResidentGpuFrame, Result, ResultSink,
     SourceChunk, SourceChunkPlanningPolicy, concatenate_source_read_outputs, cudf_query_error,
     execute_bounded_aggregate_to_frame, execute_compiled_bounded_aggregate_from_frame, execute_edge_normalize,
     execute_filter_with_budget, execute_limit, execute_projection_with_budget,
@@ -17,19 +17,19 @@ use super::{
 #[cfg(feature = "cugraph")]
 use super::{DataFrame, execute_graph_algorithm_sanitized, graph_preparation_bypass_input};
 #[cfg(feature = "cugraph")]
-use crate::exec::graph_algorithm::{
-    bounded_betweenness::*, diagnostics::*, graph_empty_input_prevalidated, statistics::*,
-};
+use crate::exec::graph_algorithm::{bounded_betweenness::*, graph_empty_input_prevalidated, statistics::*};
 #[cfg(not(feature = "cugraph"))]
 use crate::exec::graph_algorithm_feature_disabled;
-use crate::exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics};
+use crate::{
+    exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics},
+    observability::SourceReadFact,
+};
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
-    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+    metrics: &ExecutionMetrics,
 ) -> Result<QueryOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.generic_query_plan")?;
     if plan.contains_join() {
@@ -39,7 +39,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
+    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics)?;
     let committed = execute_bounded_generic_node(&mut execution, plan, plan.sink().input(), gpu_inputs)?;
 
     match plan.sink() {
@@ -170,7 +170,7 @@ fn execute_bounded_generic_node(
                     }
                 }
                 let frame = crate::exec::execute_vector_algorithm(execution.context(), plan, id, vector, &inputs)?;
-                let device_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+                let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
                 Ok(ResidentGpuFrame { frame, device_bytes })
             }
             #[cfg(not(feature = "cuvs"))]
@@ -274,10 +274,10 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
             .with_fact("node_id", node_id)
             .with_fact("input_count", input_count)
         })?;
-        execution.metrics_mut().operator_time += timer.elapsed();
+        execution.metrics().add_operator_time(timer.elapsed());
 
         let output_frame = GpuDataFrame::new(output);
-        let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics())?;
         Ok::<_, QueryError>((output_frame, output_bytes))
     })();
     match output {
@@ -344,7 +344,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
     let input_graph_residency = input_frame.graph_residency().cloned();
-    let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(execution.metrics_mut(), graph.input);
+    let prior_null_edge_rows_dropped = execution.metrics().null_edge_rows_dropped(graph.input);
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: graph.spec.algorithm.consumes_weight(),
         edge_id: graph.spec.edge_columns.edge_id.is_some(),
@@ -356,7 +356,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         input_frame.into_frame(),
         &graph.spec.edge_columns,
         null_filter_scope,
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
@@ -394,7 +394,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     };
     let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     if !empty_input_prevalidated {
-        execution.metrics_mut().record_graph_claim_calibration(node_id, graph.spec.algorithm);
+        execution.metrics().record_graph_claim_calibration(node_id, graph.spec.algorithm);
         let graph_statistics_probe =
             match graph_runtime_vertex_count_probe(execution.context(), &graph.spec, filtered_input.frame()) {
                 Ok(probe) => probe,
@@ -421,7 +421,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         input_columns,
         null_edge_rows_dropped,
         empty_input_prevalidated,
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(output) => output,
         Err(error) => {
@@ -429,7 +429,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         },
     };
 
-    let output_bytes = match observe_device_memory_bytes(&output, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&output, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error.with_fact_if_absent("node_id", node_id));
@@ -539,19 +539,15 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
         execution.context(),
     )?;
     for chunk in &chunk_plan.chunks {
-        execution.metrics_mut().record_source_chunk_planned(chunk.row_group_count() as u64);
+        execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
     }
     if chunk_plan.chunks.is_empty() {
-        let frame = crate::exec::source::read_local_parquet_source(
-            execution.context(),
-            node_id,
-            source,
-            execution.metrics_mut(),
-        )?;
-        let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+        let frame =
+            crate::exec::source::read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
+        let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
         return Ok(ResidentGpuFrame { frame, device_bytes: requested_bytes });
     }
-    record_bounded_parquet_source_metrics(source, &chunk_plan, execution.metrics_mut());
+    record_bounded_parquet_source_metrics(source, &chunk_plan, execution.metrics());
 
     let chunks =
         read_local_parquet_chunks_required_only(execution, source, &chunk_plan.chunks, "bounded_generic_source_read")?;
@@ -581,16 +577,12 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     let chunk_plan =
         plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, execution.context())?;
     for chunk in &chunk_plan.chunks {
-        execution.metrics_mut().record_source_chunk_planned(chunk.row_group_count() as u64);
+        execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
     }
     if chunk_plan.chunks.is_empty() {
-        let frame = crate::exec::source::read_local_parquet_source(
-            execution.context(),
-            node_id,
-            source,
-            execution.metrics_mut(),
-        )?;
-        let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+        let frame =
+            crate::exec::source::read_local_parquet_source(execution.context(), node_id, source, execution.metrics())?;
+        let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
         let mut resident = ResidentGpuFrame { frame, device_bytes: requested_bytes };
         for stage in stages {
             resident = match stage {
@@ -621,7 +613,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
         }
         return Ok(resident);
     }
-    record_bounded_parquet_source_metrics(source, &chunk_plan, execution.metrics_mut());
+    record_bounded_parquet_source_metrics(source, &chunk_plan, execution.metrics());
 
     let chunks = read_bounded_generic_source_adjacent_chunks(execution, source, &chunk_plan.chunks, stages)?;
 
@@ -727,8 +719,8 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
     source: &GpuResidentSource,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ResidentGpuFrame> {
-    let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics_mut())?;
-    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics())?;
+    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame { frame, device_bytes: requested_bytes })
 }
 
@@ -736,8 +728,8 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_literal_batch_source(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &crate::source::LiteralBatchSource,
 ) -> Result<ResidentGpuFrame> {
-    let frame = read_literal_batch_source(execution.context(), source, execution.metrics_mut())?;
-    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let frame = read_literal_batch_source(execution.context(), source, execution.metrics())?;
+    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame { frame, device_bytes: requested_bytes })
 }
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
@@ -750,7 +742,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
         &ExecutionContext,
         GpuDataFrame,
         Option<&ExecutionBudgetToken>,
-        &mut QueryMetrics,
+        &ExecutionMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_generic_unary_consuming_input(execution, node_id, stage, input, use_budget_token, execute)
@@ -822,8 +814,7 @@ fn execute_bounded_generic_regexp_projection(
     // Prepared state stays owned by the native operation and runs under the
     // attempt's allocator-enforced budget token.
     let prepared =
-        match projection_regexp_replace_prepare(execution.context(), projection, &input_frame, execution.metrics_mut())
-        {
+        match projection_regexp_replace_prepare(execution.context(), projection, &input_frame, execution.metrics()) {
             Ok(Some(prepared)) => prepared,
             Ok(None) => {
                 // Defense in depth: no regexp after the gate above.
@@ -844,10 +835,10 @@ fn execute_bounded_generic_regexp_projection(
                     projection,
                     input_frame,
                     &token,
-                    execution.metrics_mut(),
+                    execution.metrics(),
                 ) {
                     Ok(frame) => {
-                        let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+                        let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
                             Ok(bytes) => bytes,
                             Err(error) => {
                                 return Err(error.with_fact_if_absent("node_id", node_id));
@@ -884,7 +875,7 @@ fn execute_bounded_generic_regexp_projection(
         input_frame,
         &token,
         Some(prepared),
-        execution.metrics_mut(),
+        execution.metrics(),
     );
     let frame = match result {
         Ok(frame) => frame,
@@ -893,7 +884,7 @@ fn execute_bounded_generic_regexp_projection(
         },
     };
 
-    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error.with_fact_if_absent("node_id", node_id));
@@ -912,7 +903,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
         &ExecutionContext,
         GpuDataFrame,
         Option<&ExecutionBudgetToken>,
-        &mut QueryMetrics,
+        &ExecutionMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     let token = if use_budget_token {
@@ -929,9 +920,9 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
     } else {
         None
     };
-    let frame = execute(execution.context(), input, token.as_ref(), execution.metrics_mut())
+    let frame = execute(execution.context(), input, token.as_ref(), execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     Ok(ResidentGpuFrame { frame, device_bytes: output_bytes })
 }
@@ -946,7 +937,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input(
         &ExecutionContext,
         GpuDataFrame,
         Option<&ExecutionBudgetToken>,
-        &mut QueryMetrics,
+        &ExecutionMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     let input_frame = input.frame;
@@ -966,9 +957,9 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input(
     } else {
         None
     };
-    let frame = execute(execution.context(), input_frame, token.as_ref(), execution.metrics_mut())
+    let frame = execute(execution.context(), input_frame, token.as_ref(), execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     Ok(ResidentGpuFrame { frame, device_bytes: output_bytes })
 }
