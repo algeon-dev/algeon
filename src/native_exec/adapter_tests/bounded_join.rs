@@ -16,8 +16,11 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
     let native = optimized
         .downcast_ref::<NexusNativeExec>()
         .expect("single-join post-root pipeline should optimize to NexusNativeExec");
-    let pipeline = compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis())
-        .expect("lowered single-join post-root pipeline should compile");
+    let pipeline = compile_pipeline(
+        native.native_plan(),
+        &native.native_plan().capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()),
+    )
+    .expect("lowered single-join post-root pipeline should compile");
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);

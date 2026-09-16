@@ -778,7 +778,7 @@ fn execute_pagerank_attempt(
             context,
             crate::runtime::resident::GpuDataFrame::new(
                 cudf::DataFrame::from_record_batch(&runtime, edge_batch).map_err(|error| {
-                    crate::error::QueryError::from_cudf(
+                    crate::native_error::cudf_query_error(
                         "nexus_query_engine.graph_algorithm.attempt_domain.upload_edges",
                         "failed to upload warm-graph test edges into the attempt domain",
                         error,

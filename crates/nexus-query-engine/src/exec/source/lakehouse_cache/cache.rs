@@ -13,6 +13,7 @@ use futures::StreamExt;
 use object_store::ObjectStoreExt;
 
 use super::{
+    cudf_query_error,
     maintenance::start_cache_maintenance_fetch,
     policy::LakehouseCachePolicy,
     s3::{cache_maintenance_location, object_store_key_fact},
@@ -210,7 +211,7 @@ pub(in crate::exec::source) fn publish_lakehouse_optimized_batch_frame(
     );
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temp_path);
-        return Err(QueryError::from_cudf(
+        return Err(cudf_query_error(
             "nexus_query_engine.lakehouse_cache.optimized_batch.write",
             "failed to write optimized lakehouse cache batch parquet file",
             error,

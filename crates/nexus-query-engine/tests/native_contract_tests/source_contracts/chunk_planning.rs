@@ -663,9 +663,13 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
         nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 },
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let plan =
         plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
 
@@ -702,9 +706,13 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
         nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 },
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let plan =
         plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
 
@@ -748,9 +756,13 @@ fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predic
         nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 },
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let plan =
         plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
 
@@ -786,9 +798,13 @@ fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
         nexus_query_engine::dynamic_filter::DynamicFilter::Empty,
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let plan =
         plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
 
@@ -855,9 +871,13 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
         nexus_query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let plan =
         plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
 
@@ -901,12 +921,19 @@ fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
         nexus_query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
 
     let predicate = rewritten.reader_predicate.as_ref().expect("static reader predicate should remain");
-    assert!(rewritten.reader_predicate_is_supported(predicate));
+    assert!(
+        rewritten
+            .reader_predicate_is_supported(predicate, nexus_query_engine::rapids_backend::rapids_analysis_context())
+    );
 }
 
 #[test]
@@ -931,9 +958,13 @@ fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering()
         nexus_query_engine::dynamic_filter::DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 },
     );
 
-    let rewritten =
-        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
-            .unwrap();
+    let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
+        &source,
+        &[&route],
+        &filters,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let plan =
         plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
 

@@ -8,8 +8,9 @@ use super::{
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError,
     QueryErrorCode, QueryMetrics, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts,
     StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
-    dataframe_mixed_join_options, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
-    lower_join_residual_predicate, materialize_bounded_join_leaf_local_parquet_source_stream,
+    cudf_query_error, dataframe_mixed_join_options, execution_overrides, join_index_error,
+    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+    materialize_bounded_join_leaf_local_parquet_source_stream,
     materialize_compiled_keyed_equality_join_indices_with_preflight, observe_device_memory_bytes,
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
     record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame,
@@ -167,7 +168,7 @@ pub(super) fn hash_partition_join_side(
         .with_execution(overrides)
         .hash_partition_by(keys.iter().map(String::as_str), partition_count)
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.hash_partition",
                 "failed to hash-partition compiled bounded join input",
                 error,
@@ -229,7 +230,7 @@ pub(super) fn slice_partition_join_side_range(
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let frame = partition_frame.with_execution(&overrides).slice(start, len).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.hash_partition_slice",
             "failed to slice compiled bounded hash-partitioned join input",
             error,

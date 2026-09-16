@@ -13,14 +13,14 @@ use super::{
     aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, attach_budget_token_failure_facts, avg_sum_state_data_type,
     budgeted_value, cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
-    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, execute_global_aggregate,
-    execute_global_aggregate_with_budget, execution_overrides, final_global_aggregate_spec,
-    final_global_aggregate_state_output_schema, finalize_avg_output_columns, finalize_avg_output_columns_with_budget,
-    global_count_star_expr, global_valid_count_state_alias, lit, lit_null, lower_aggregate_function,
-    lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_final_aggregate_spec, lower_named_column_expr,
-    lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec, partial_global_aggregate_output_schema,
-    partial_global_aggregate_spec, schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
-    validate_avg_output_fields,
+    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_query_error_with_budget_details, execute_global_aggregate, execute_global_aggregate_with_budget,
+    execution_overrides, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
+    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, global_count_star_expr,
+    global_valid_count_state_alias, lit, lit_null, lower_aggregate_function, lower_aggregate_spec_keys,
+    lower_column_expr, lower_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
+    lower_single_stage_grouped_aggregate_spec, partial_global_aggregate_output_schema, partial_global_aggregate_spec,
+    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
 };
 use crate::{
     capability::{
@@ -225,7 +225,7 @@ pub(in crate::exec) fn execute_aggregate(
     output = cast_reduction_output_columns(output, &spec, output_schema)?;
     output = cast_count_output_columns(output, &spec, output_schema)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.select",
             "failed to select nexus native aggregate output columns",
             error,
@@ -618,7 +618,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     output = cast_reduction_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output = cast_count_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.select",
             "failed to select nexus native aggregate output columns",
             error,
@@ -1148,7 +1148,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     };
     output = cast_count_output_columns_with_budget(output, &spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.select_partial",
             "failed to select native partial aggregate output columns",
             error,

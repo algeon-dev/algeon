@@ -35,8 +35,13 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         Arc::clone(&output_schema),
         false,
     );
-    assert!(!plan.capability_analysis().admits_root_join());
-    assert!(plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(
+        !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join()
+    );
+    assert!(
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_input_subplan_pipeline()
+    );
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -81,7 +86,11 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         Arc::clone(&output_schema),
         true,
     );
-    assert!(gpu_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(
+        gpu_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_input_subplan_pipeline()
+    );
     let gpu_result = execute_query_plan(&context, &gpu_plan).expect("GPU sink compiled keyless subplan should execute");
     let handle = gpu_result.output().as_gpu_resident().expect("GPU sink should keep output resident").clone();
     let mut resident_inputs = GpuResidentInputMap::new();

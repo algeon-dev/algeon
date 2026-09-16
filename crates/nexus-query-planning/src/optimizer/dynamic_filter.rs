@@ -9,7 +9,8 @@ use super::{
     rewrite,
 };
 use crate::{
-    datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
+    backend::AnalysisContext,
+    datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     dynamic_filter::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
         DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
@@ -283,8 +284,8 @@ fn consumer_reader_column_is_visible(source: &LocalParquetSource, column: &str) 
     source.read_column_file_indices.contains(&file_index)
 }
 
-fn consumer_column_type_is_supported(source: &LocalParquetSource, column: &str) -> bool {
-    source.schema.field_with_name(column).ok().is_some_and(dynamic_filter_key_type_is_supported)
+fn consumer_column_type_is_supported(source: &LocalParquetSource, column: &str, ctx: AnalysisContext<'_>) -> bool {
+    source.schema.field_with_name(column).ok().is_some_and(|field| dynamic_filter_key_type_is_supported(field, ctx))
 }
 
 fn earliest_filter_consumer_for_column(
@@ -293,6 +294,7 @@ fn earliest_filter_consumer_for_column(
     node_id: NodeId,
     column: &str,
     stop_at_shared_path: bool,
+    ctx: AnalysisContext<'_>,
 ) -> Option<(DynamicFilterConsumer, String)> {
     if stop_at_shared_path && parent_counts[node_id.index()] > 1 {
         return None;
@@ -303,7 +305,7 @@ fn earliest_filter_consumer_for_column(
             .output_schema()
             .field_with_name(column)
             .ok()
-            .filter(|field| dynamic_filter_key_type_is_supported(field))
+            .filter(|field| dynamic_filter_key_type_is_supported(field, ctx))
             .map(|_| (DynamicFilterConsumer::Filter { filter_node_id: node_id }, column.to_string())),
         PlanNode::Projection(projection) => projection
             .outputs
@@ -317,10 +319,11 @@ fn earliest_filter_consumer_for_column(
                     projection.input,
                     input_column,
                     stop_at_shared_path,
+                    ctx,
                 )
             }),
         PlanNode::Sort(sort) => {
-            earliest_filter_consumer_for_column(plan, parent_counts, sort.input, column, stop_at_shared_path)
+            earliest_filter_consumer_for_column(plan, parent_counts, sort.input, column, stop_at_shared_path, ctx)
         },
         PlanNode::Limit(_) => None,
         PlanNode::Source(_)
@@ -341,12 +344,13 @@ fn post_decode_consumer_for_orientation(
     orientation: &RouteOrientation<'_>,
     stop_at_shared_path: bool,
     allow_hash_join_probe_fallback: bool,
+    ctx: AnalysisContext<'_>,
 ) -> Option<(DynamicFilterConsumer, String)> {
     let consumer_key = orientation.consumer_key.name();
     if !plan
         .node(orientation.consumer_input)
         .and_then(|node| node.output_schema().field_with_name(consumer_key).ok())
-        .is_some_and(dynamic_filter_key_type_is_supported)
+        .is_some_and(|field| dynamic_filter_key_type_is_supported(field, ctx))
     {
         return None;
     }
@@ -356,6 +360,7 @@ fn post_decode_consumer_for_orientation(
         orientation.consumer_input,
         consumer_key,
         stop_at_shared_path,
+        ctx,
     );
     consumer.or_else(|| {
         allow_hash_join_probe_fallback.then(|| {
@@ -367,8 +372,8 @@ fn post_decode_consumer_for_orientation(
     })
 }
 
-fn dynamic_filter_key_type_is_supported(field: &arrow::datatypes::Field) -> bool {
-    is_supported_arrow_type(field.data_type())
+fn dynamic_filter_key_type_is_supported(field: &arrow::datatypes::Field, ctx: AnalysisContext<'_>) -> bool {
+    ctx.backend().supports_type(field.data_type())
         && !is_timestamp_with_timezone(field.data_type())
         && !is_supported_list_carry_type(field.data_type())
 }
@@ -452,9 +457,9 @@ fn direct_projection_column_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn consumer_lowering(source: &LocalParquetSource) -> DynamicFilterConsumerLowering {
+fn consumer_lowering(source: &LocalParquetSource, ctx: AnalysisContext<'_>) -> DynamicFilterConsumerLowering {
     match &source.reader_predicate {
-        Some(predicate) if source.reader_predicate_is_supported(predicate) => {
+        Some(predicate) if source.reader_predicate_is_supported(predicate, ctx) => {
             DynamicFilterConsumerLowering::MergedReaderPredicate
         },
         Some(_) => DynamicFilterConsumerLowering::SkippedUnsupportedStaticPredicateMix,

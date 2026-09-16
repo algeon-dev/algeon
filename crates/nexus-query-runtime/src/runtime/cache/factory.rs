@@ -11,9 +11,12 @@ use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 #[cfg(feature = "cugraph")]
 use super::resident_graph::GpuResidentGraphCache;
-use crate::runtime::{
-    cache::{DeviceCacheReport, local_parquet::GpuLocalParquetSourceCache},
-    gpu::DeviceLedger,
+use crate::{
+    native_error::cudf_query_error,
+    runtime::{
+        cache::{DeviceCacheReport, local_parquet::GpuLocalParquetSourceCache},
+        gpu::DeviceLedger,
+    },
 };
 
 /// One per-device cache allocation owner.
@@ -36,7 +39,7 @@ impl DeviceCacheAllocationFactory {
             return Ok(None);
         }
         let device = cudf::DeviceId::new(ledger.device_ordinal()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.runtime.cache.factory",
                 "failed to resolve the ledger device for the cache allocation domain",
                 error,
@@ -44,7 +47,7 @@ impl DeviceCacheAllocationFactory {
             .with_fact("device_ordinal", ledger.device_ordinal())
         })?;
         let domain = cudf::CacheAllocationDomain::new(device, capacity).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.runtime.cache.factory",
                 "failed to create the device cache allocation domain",
                 error,
@@ -71,7 +74,7 @@ impl DeviceCacheAllocationFactory {
     #[doc(hidden)]
     pub fn source_cache(&self) -> Result<GpuLocalParquetSourceCache> {
         let lease = self.domain.lease_runtime().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.runtime.cache.factory.source",
                 "failed to lease the shared cache allocation domain for source cache",
                 error,
@@ -96,7 +99,7 @@ impl DeviceCacheAllocationFactory {
         for _ in 0..MAX_COHERENCE_ATTEMPTS {
             let before = self.ledger.report()?;
             let usage = self.domain.usage().map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.runtime.cache.factory.report",
                     "failed to sample the shared cache allocation domain",
                     error,

@@ -7,6 +7,7 @@ use super::service::disposition::{
 };
 use crate::{
     attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
+    native_error::cudf_query_error,
     observability::{AttemptAdmissionFact, AttemptDisposition},
     runtime::BackendLifecycle,
 };
@@ -1486,7 +1487,7 @@ fn oom_release_projects_truthful_resource_evidence() {
     };
     assert_eq!(allocation_error.kind(), cudf::ErrorKind::ResourceExhausted);
     drop(context);
-    let terminal_error = nexus_query_planning::error::QueryError::from_cudf(
+    let terminal_error = cudf_query_error(
         "nexus_query_engine.query_service.release_commit_test",
         "attempt allocation exceeded its immutable grant limit",
         allocation_error,

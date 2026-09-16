@@ -109,7 +109,7 @@ pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
     bounded: &BoundedPlan<'_>,
 ) -> Result<CommittedPartial> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.aggregate")?;
-    validate_local_parquet_source(bounded.source)?;
+    validate_local_parquet_source(bounded.source, crate::rapids_backend::rapids_analysis_context())?;
     bounded.validate_capabilities()?;
 
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
@@ -434,7 +434,7 @@ fn empty_resident_frame_for_schema(
         .with_source(error)
     })?;
     let frame = DataFrame::from_record_batch(&execution.context().runtime()?, &batch).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.aggregate.empty_input",
             "failed to upload zero-row aggregate input",
             error,

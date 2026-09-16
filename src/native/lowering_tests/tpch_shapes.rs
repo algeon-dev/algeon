@@ -16,9 +16,11 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    let analysis = native_plan.capability_analysis();
+    let analysis = native_plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     assert!(
-        native_plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        native_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should lower to the executable aggregate-over-join subplan TopK pipeline: {:?}\n{native_plan}",
         analysis.multi_join_aggregate_over_join_subplan_topk_admission,
     );
@@ -26,7 +28,11 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should be admitted by the capability contract:\n{native_plan}"
     );
-    let optimized_q2 = nexus_query_engine::optimizer::optimize_query_plan(native_plan.clone(), &Default::default());
+    let optimized_q2 = nexus_query_engine::optimizer::optimize_query_plan(
+        native_plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert!(
         optimized_q2.diagnostics.join_filter_reassociation.applied_count >= 1,
         "q02 should use join-filter reassociation to push nation/region filtering below the partsupp join:\n{}",
@@ -35,12 +41,18 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_q02_reassociated_supplier_filter_precedes_partsupp_join(&optimized_q2.plan);
     assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(&optimized_q2.plan);
     assert!(
-        optimized_q2.plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        optimized_q2
+            .plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
         optimized_q2.plan
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
-        .expect("q02 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
+        native_plan,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q15 = items.iter().find(|item| item.query_id == "q15").expect("TPC-H workload should include q15");
@@ -51,27 +63,44 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert_eq!(
-        native_plan.capability_analysis().root_full_sort_join_aggregate_admission,
+        native_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .root_full_sort_join_aggregate_admission,
         nexus_query_engine::capability::CapabilityDecision::Satisfied,
         "q15 root full-sort admission should be satisfied",
     );
     assert!(
-        native_plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        native_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_root_full_sort_join_aggregate_pipeline(),
         "q15 should lower to the executable root full-sort shared aggregate fanout pipeline:\n{native_plan}"
     );
-    let optimized_q15 = nexus_query_engine::optimizer::optimize_query_plan(native_plan.clone(), &Default::default());
+    let optimized_q15 = nexus_query_engine::optimizer::optimize_query_plan(
+        native_plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(
-        optimized_q15.plan.capability_analysis().root_full_sort_join_aggregate_admission,
+        optimized_q15
+            .plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .root_full_sort_join_aggregate_admission,
         nexus_query_engine::capability::CapabilityDecision::Satisfied,
         "optimized q15 root full-sort admission should remain satisfied",
     );
     assert!(
-        optimized_q15.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        optimized_q15
+            .plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",
         optimized_q15.plan
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
-        .expect("q15 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
+        native_plan,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q18 = items.iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
@@ -83,12 +112,15 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let native_plan = &result.plans[0];
     assert!(
         native_plan
-            .capability_analysis()
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
             .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
-        .expect("q18 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
+        native_plan,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q20 = items.iter().find(|item| item.query_id == "q20").expect("TPC-H workload should include q20");
@@ -99,11 +131,16 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        native_plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
+        native_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
-    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(native_plan)
-        .expect("q20 should expose modeled bounded join facts");
+    let facts = nexus_query_engine::admission::bounded_join_modeled_facts(
+        native_plan,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     fs::remove_dir_all(dir).unwrap();
@@ -170,7 +207,11 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
 
     let result = lower_physical_plan_to_native(plan);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        result.plans[0].clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
 
     assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
@@ -219,7 +260,11 @@ async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
         semijoin_reduction: nexus_query_engine::optimizer::SemijoinReductionOptions::disabled(),
         ..Default::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &options);
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        result.plans[0].clone(),
+        &options,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
 
     let pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert!(
@@ -278,7 +323,11 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         "q21 should lower its NOT EXISTS branch to a right-build native left-anti residual join"
     );
 
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        result.plans[0].clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     for build_side in [NativeJoinSide::Right, NativeJoinSide::Left] {
         let mut nodes = optimized.plan.nodes().to_vec();
         for node in &mut nodes {
@@ -291,7 +340,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         }
         let plan = QueryPlan::from_rewritten_parts(nodes, optimized.plan.root_id(), optimized.plan.sink().clone())
             .with_rewrite_state_from(&optimized.plan);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
         if matches!(build_side, NativeJoinSide::Right) {
             assert!(
                 analysis.admits_bounded_join(),
@@ -308,8 +357,11 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
                 !analysis.admits_bounded_join(),
                 "left-build q21 must not admit before S5 sharing contracts: {analysis:?}\n{plan}"
             );
-            let facts = nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan)
-                .expect("rejected left-build q21 should produce facts");
+            let facts = nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+                &plan,
+                nexus_query_engine::rapids_backend::rapids_analysis_context(),
+            )
+            .expect("rejected left-build q21 should produce facts");
             assert_eq!(
                 facts.get("bounded_join_rejection_reason").map(String::as_str),
                 Some("root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join")
@@ -460,7 +512,11 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(native_plan).is_none(),
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+            native_plan,
+            nexus_query_engine::rapids_backend::rapids_analysis_context()
+        )
+        .is_none(),
         "q07 should use the bounded multi-join native path:\n{native_plan}"
     );
     let nation_projection = native_plan
@@ -562,7 +618,13 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
     let plan = &result.plans[0];
     assert_q11_keyless_proof_admitted(plan, "lowered q11");
-    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(plan).is_none());
+    assert!(
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+            plan,
+            nexus_query_engine::rapids_backend::rapids_analysis_context()
+        )
+        .is_none()
+    );
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
     assert!(
@@ -631,7 +693,11 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
     );
 
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_q11_keyless_proof_admitted(&optimized.plan, "optimized q11");
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(aggregate_join_pushdown.applied_count, 1, "optimizer diagnostics={aggregate_join_pushdown:?}");
@@ -699,7 +765,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 }
 
 fn assert_q11_keyless_proof_admitted(plan: &QueryPlan, context: &str) {
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     assert_eq!(
         analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
         nexus_query_engine::capability::CapabilityDecision::Satisfied,
@@ -808,7 +874,11 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     assert_eq!(proj.outputs[0].field.name(), "c_count");
     assert_eq!(proj.outputs[1].field.name(), "custdist");
 
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(
         aggregate_join_pushdown.applied_count, 1,
@@ -883,12 +953,20 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
 
     let plan = &result.plans[0];
     assert!(
-        plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_root_full_sort_join_aggregate_pipeline(),
         "q16 should be admitted as one root full-sort grouped aggregate pipeline:\n{plan}"
     );
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert!(
-        optimized.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        optimized
+            .plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q16 should remain admitted as one root full-sort grouped aggregate pipeline:\n{}",
         optimized.plan
     );

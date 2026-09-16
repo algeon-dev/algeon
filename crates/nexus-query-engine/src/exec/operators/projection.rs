@@ -3,8 +3,9 @@ use std::time::Instant;
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, Expr, GpuDataFrame, ProjectionNode, QueryError,
     QueryErrorCode, QueryMetrics, Result, attach_budget_token_failure_facts, budgeted_value,
-    cudf_dtype_from_arrow_type, datafusion_order_columns, execution_overrides, is_supported_arrow_implicit_cast,
-    lower_projection_output_expr, projection_schema_mismatch_error,
+    cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details, datafusion_order_columns,
+    execution_overrides, is_supported_arrow_implicit_cast, lower_projection_output_expr,
+    projection_schema_mismatch_error,
 };
 use crate::{
     expr::{alias_wrapped_column, representation_cast_column},
@@ -30,7 +31,7 @@ pub(in crate::exec) fn execute_projection(
     let mut output =
         frame.with_execution(&overrides).with_columns(exprs).and_then(|frame| frame.select(output_columns)).map_err(
             |error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.projection.execute",
                     "failed to execute nexus native projection",
                     error,
@@ -109,7 +110,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut output = budgeted_value(
         frame.with_columns_with_budget(exprs, token).map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
+            cudf_query_error_with_budget_details(
                 "nexus_query_engine.projection.execute",
                 "failed to execute bounded nexus native projection",
                 error,
@@ -120,7 +121,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     )
     .select(output_columns)
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.projection.execute",
             "failed to select bounded nexus native projection columns",
             error,
@@ -206,7 +207,7 @@ fn prepare_projection_regexp_replace(
                 RegexpReplacePreflightClass::DirectColumn { column_name, pattern, replacement } => {
                     saw_supported_regexp = true;
                     let series = frame.series(column_name).map_err(|error| {
-                        QueryError::from_cudf(
+                        cudf_query_error(
                             "nexus_query_engine.projection.regexp_replace_preflight",
                             "failed to access input column for REGEXP_REPLACE prepare",
                             error,
@@ -222,7 +223,7 @@ fn prepare_projection_regexp_replace(
                     let timer = Instant::now();
                     let prepared =
                         series.str().prepare_replace_with_backrefs(pattern, replacement).map_err(|error| {
-                            QueryError::from_cudf(
+                            cudf_query_error(
                                 "nexus_query_engine.projection.regexp_replace_preflight",
                                 "failed to prepare REGEXP_REPLACE reusable size state",
                                 error,
@@ -312,7 +313,7 @@ fn materialize_prepared_regexp_replace_projection(
         if let Some(handle) = remaining.remove(output.field.name().as_str()) {
             let series = budgeted_value(
                 handle.execute_with_budget(token).map_err(|error| {
-                    QueryError::from_cudf_with_budget_details(
+                    cudf_query_error_with_budget_details(
                         "nexus_query_engine.projection.execute",
                         "failed to execute prepared REGEXP_REPLACE projection component",
                         error,
@@ -323,7 +324,7 @@ fn materialize_prepared_regexp_replace_projection(
                 "nexus_query_engine.projection.execute",
             );
             frame = frame.with_column(output.field.name().as_str(), series).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.projection.execute",
                     "failed to attach prepared REGEXP_REPLACE output column",
                     error,
@@ -348,7 +349,7 @@ fn materialize_prepared_regexp_replace_projection(
     if !lower_exprs.is_empty() {
         frame = budgeted_value(
             frame.with_columns_with_budget(lower_exprs, token).map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.projection.execute",
                     "failed to execute bounded nexus native projection non-regexp expressions",
                     error,
@@ -363,7 +364,7 @@ fn materialize_prepared_regexp_replace_projection(
     output_columns.extend(datafusion_order_columns(&frame));
     let output_column_refs = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     frame.select(output_column_refs).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.projection.execute",
             "failed to select bounded nexus native projection columns",
             error,
@@ -450,7 +451,7 @@ fn try_execute_column_only_projection(
     }
     let mapping_refs = mappings.iter().map(|(source, output)| (source.as_str(), output.as_str())).collect::<Vec<_>>();
     let output = frame.select_as(mapping_refs).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.projection.select",
             "failed to select native column-only projection",
             error,
@@ -491,7 +492,7 @@ fn coerce_projection_output_schema(
             continue;
         }
         let actual_type = cudf::interop::arrow_host::arrow_type_from_cudf_dtype(actual_dtype).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.projection.schema_coerce",
                 "failed to map native projection column type to Arrow",
                 error,
@@ -499,7 +500,11 @@ fn coerce_projection_output_schema(
             .with_fact("field_name", field_name)
             .with_fact("field_index", field_index)
         })?;
-        if !is_supported_arrow_implicit_cast(&actual_type, expected_type) {
+        if !is_supported_arrow_implicit_cast(
+            &actual_type,
+            expected_type,
+            crate::rapids_backend::rapids_analysis_context(),
+        ) {
             return Err(projection_schema_mismatch_error_with_budget(
                 token,
                 field_index,
@@ -513,7 +518,7 @@ fn coerce_projection_output_schema(
             Some(token) => budgeted_value(
                 frame.cast_column_with_budget(field_name, target_type, token).map_err(|error| {
                     attach_budget_token_failure_facts(
-                        QueryError::from_cudf_with_budget_details(
+                        cudf_query_error_with_budget_details(
                             "nexus_query_engine.projection.schema_coerce",
                             "failed to cast bounded native projection output column to declared schema type",
                             error,
@@ -530,7 +535,7 @@ fn coerce_projection_output_schema(
                 "nexus_query_engine.projection.schema_coerce",
             ),
             None => frame.cast_column(field_name, target_type).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.projection.schema_coerce",
                     "failed to cast native projection output column to declared schema type",
                     error,
@@ -548,11 +553,11 @@ fn coerce_projection_output_schema(
 
 fn frame_column_cudf_data_type(frame: &DataFrame, column: &str, operation: &'static str) -> Result<cudf::DataType> {
     let series = frame.series(column).map_err(|error| {
-        QueryError::from_cudf(operation, "failed to access native column while inspecting its type", error)
+        cudf_query_error(operation, "failed to access native column while inspecting its type", error)
             .with_fact("column", column)
     })?;
     series.dtype().map_err(|error| {
-        QueryError::from_cudf(operation, "failed to inspect native column type", error).with_fact("column", column)
+        cudf_query_error(operation, "failed to inspect native column type", error).with_fact("column", column)
     })
 }
 

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use arrow::datatypes::{DataType, SchemaRef};
 
 use crate::{
-    datatypes::is_supported_arrow_type,
+    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode, Result},
     expr::Expr,
     plan::{
@@ -132,9 +132,10 @@ pub fn validate_schema_supported_with_vector_ingress(
     schema: &SchemaRef,
     operation: &'static str,
     vector_ingress_columns: Option<&BTreeSet<String>>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<()> {
     for field in schema.fields() {
-        if is_supported_arrow_type(field.data_type()) {
+        if ctx.backend().supports_type(field.data_type()) {
             continue;
         }
         let is_scoped_vector_ingress = vector_ingress_columns.is_some_and(|columns| columns.contains(field.name()))

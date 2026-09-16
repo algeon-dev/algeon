@@ -1,6 +1,7 @@
 use super::{
     AggregateExpr, AggregateFunction, DataFrame, ExecutionBudgetToken, ExecutionContext, QueryError, QueryErrorCode,
-    QueryMetrics, Result, aggregate_expr_is_exact_nunique, budgeted_value, global_count_star_expr, lower_column_expr,
+    QueryMetrics, Result, aggregate_expr_is_exact_nunique, budgeted_value, cudf_query_error,
+    cudf_query_error_with_budget_details, global_count_star_expr, lower_column_expr,
 };
 
 pub(in crate::exec) fn global_count_series(
@@ -32,7 +33,7 @@ fn global_count_series_impl(
     } else {
         let input_column = lower_column_expr(&expr.expr, "nexus_query_engine.global_aggregate.count_expr")?;
         let series = frame.series(input_column.as_str()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.global_aggregate.count_input",
                 "failed to access native global count input column",
                 error,
@@ -43,7 +44,7 @@ fn global_count_series_impl(
             let prepared = series
                 .prepare_scalar_reduction(cudf::ReduceAgg::NUnique { null_policy: cudf::NullPolicy::Exclude })
                 .map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.global_aggregate.count_distinct.prepare",
                         "failed to prepare native global distinct reduction",
                         error,
@@ -58,7 +59,7 @@ fn global_count_series_impl(
                 None => prepared.execute().map(cudf::ScalarReductionOutput::into_scalar),
             }
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.global_aggregate.count_distinct",
                     "failed to count native global distinct values",
                     error,
@@ -67,7 +68,7 @@ fn global_count_series_impl(
                 .with_fact("column", input_column.as_str())
             })?;
             if !scalar.is_valid().map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.global_aggregate.count_distinct",
                     "failed to read native global distinct scalar validity",
                     error,
@@ -76,7 +77,7 @@ fn global_count_series_impl(
                 0
             } else {
                 let count = scalar.value::<i32>().map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.global_aggregate.count_distinct",
                         "failed to read native global distinct scalar value",
                         error,
@@ -109,7 +110,7 @@ fn global_count_series_impl(
             .runtime()?
             .series_from_value_with_budget(count, 1, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.global_aggregate.count_output",
                     "failed to construct bounded native global count output column",
                     error,
@@ -120,7 +121,7 @@ fn global_count_series_impl(
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.count_output")),
         None => {
             let scalar = context.runtime()?.scalar(count).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.global_aggregate.count",
                     "failed to construct native global count scalar",
                     error,
@@ -128,7 +129,7 @@ fn global_count_series_impl(
                 .with_fact("alias", expr.alias.as_str())
             })?;
             context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.global_aggregate.count_output",
                     "failed to construct native global count output column",
                     error,

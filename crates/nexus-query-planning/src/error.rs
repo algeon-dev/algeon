@@ -804,130 +804,6 @@ impl QueryError {
         self
     }
 
-    /// Wraps a `cudf::Error` at the native-engine boundary.
-    ///
-    /// `operation` should be the stable dotted id for the native operation that
-    /// called cuDF, and `message` should describe the failure for humans. cuDF
-    /// classification and a URI-redacted message are preserved as `cudf_*`
-    /// facts.
-    pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
-        let code = code_for_cudf_error(&source);
-        let mut error = Self::new(code, operation, message)
-            .with_fact("cudf_code", source.code())
-            .with_fact("cudf_kind", source.kind())
-            .with_fact("cudf_status", source.status())
-            .with_fact("cudf_operation", source.operation());
-        error = with_cudf_ffi_detail_facts(error, &source);
-        match cudf_message_fact(&source) {
-            Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
-            None => error,
-        }
-        .with_source(source)
-    }
-
-    /// Wraps a `cuvs::Error` at the native vector-execution boundary.
-    ///
-    /// Classification is derived only from the typed cuVS kind and status;
-    /// foreign message text remains diagnostic and never drives retry policy.
-    #[cfg(feature = "cuvs")]
-    pub fn from_cuvs(operation: &'static str, message: impl Into<String>, source: cuvs::Error) -> Self {
-        let code = code_for_cuvs_error(&source);
-        let error = Self::new(code, operation, message)
-            .with_fact("cuvs_kind", source.kind())
-            .with_fact("cuvs_status", source.status())
-            .with_fact("cuvs_operation", source.operation());
-        let cuvs_message = source.message().trim();
-        let mut error = if cuvs_message.is_empty() {
-            error
-        } else {
-            error.with_fact("cuvs_message", redact_uri_tokens(cuvs_message))
-        };
-        // cuVS context is an ordered container that allows duplicate keys with
-        // last-write-wins reads (`context_value`). Collapse to the effective
-        // value per key before projecting into the unique fact map so a
-        // legitimately repeated key (for example two `native_status` entries)
-        // converts without losing the primary error.
-        let mut effective_context = BTreeMap::new();
-        for (key, value) in source.context().filter(|(key, _)| is_safe_cuvs_context_fact(key)) {
-            effective_context.insert(key, value);
-        }
-        for (key, value) in effective_context {
-            error = error.with_fact(key, value);
-        }
-        error.with_source(source)
-    }
-
-    /// Wraps a prepared cuDF interop failure at a native vector boundary.
-    #[cfg(feature = "cuvs")]
-    #[doc(hidden)]
-    pub fn from_cudf_interop<E>(
-        operation: &'static str,
-        message: impl Into<String>,
-        source_kind: impl Into<String>,
-        source: E,
-    ) -> Self
-    where
-        E: StdError + Send + Sync + 'static,
-    {
-        // The engine validates vector schemas and selects every requested
-        // column before preparing this producer-rooted export. A preparation
-        // failure at this point is therefore an execution-binding invariant,
-        // not a second user-input validation surface.
-        let source_kind: String = source_kind.into();
-        Self::new(QueryErrorCode::CudfInvariantViolation, operation, message)
-            .with_fact("cudf_interop_kind", source_kind)
-            .with_source(source)
-    }
-
-    /// Wraps a `cudf::Error` without attaching its display text as a source.
-    ///
-    /// Use this when source text may contain sensitive reader locations. It
-    /// keeps cuDF classification and redacted `cudf_message` facts, but omits
-    /// the unsanitized source chain.
-    #[doc(hidden)]
-    pub fn from_cudf_without_source(operation: &'static str, message: impl Into<String>, source: &cudf::Error) -> Self {
-        let code = code_for_cudf_error(source);
-        let mut error = Self::new(code, operation, message)
-            .with_fact("cudf_code", source.code())
-            .with_fact("cudf_kind", source.kind())
-            .with_fact("cudf_status", source.status())
-            .with_fact("cudf_operation", source.operation());
-        error = with_cudf_ffi_detail_facts(error, source);
-        match cudf_message_fact(source) {
-            Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
-            None => error,
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn from_cudf_without_source_with_budget_details(
-        operation: &'static str,
-        message: impl Into<String>,
-        source: &cudf::Error,
-    ) -> Self {
-        let budget_details = cudf_budget_details(source);
-        let mut error = Self::from_cudf_without_source(operation, message, source);
-        for (key, value) in budget_details {
-            error = error.with_fact(key, value);
-        }
-        error
-    }
-
-    /// Creates a native-engine error from cuDF and preserves budget-token
-    /// diagnostics when the lower layer attached them.
-    pub fn from_cudf_with_budget_details(
-        operation: &'static str,
-        message: impl Into<String>,
-        source: cudf::Error,
-    ) -> Self {
-        let budget_details = cudf_budget_details(&source);
-        let mut error = Self::from_cudf(operation, message, source);
-        for (key, value) in budget_details {
-            error = error.with_fact(key, value);
-        }
-        error
-    }
-
     /// Returns the stable machine-readable error code.
     pub fn code(&self) -> QueryErrorCode {
         self.0.code
@@ -977,20 +853,6 @@ impl QueryError {
         self.0.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
 
-    /// Typed cuDF budget-exhaustion counters preserved from the source chain.
-    pub fn cudf_budget_exhaustion(&self) -> Option<&cudf::BudgetExhaustionDetail> {
-        let mut current = self.source_error();
-        while let Some(error) = current {
-            if let Some(cudf_error) = error.downcast_ref::<cudf::Error>()
-                && let Some(detail) = cudf_error.budget_exhaustion()
-            {
-                return Some(detail);
-            }
-            current = error.source();
-        }
-        None
-    }
-
     /// Serializes this error as a structured diagnostic JSON object.
     pub fn to_json(&self) -> Value {
         let query_id = self.0.query_id.as_ref().map(QueryId::as_str).or_else(|| self.fact_value("query_id"));
@@ -1011,66 +873,17 @@ impl QueryError {
     }
 }
 
-/// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
-fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
-    let message = source.message().trim();
-    if message.is_empty() {
-        return None;
-    }
-    Some(redact_uri_tokens(message))
-}
-
 /// Redacts whitespace-delimited `scheme://...` tokens and normalizes spaces.
-fn redact_uri_tokens(message: &str) -> String {
+///
+/// Native boundaries project foreign error text into diagnostic facts. They
+/// share this helper so one redaction policy covers every such projection,
+/// whichever component produced the message.
+pub fn redact_uri_tokens(message: &str) -> String {
     message
         .split_whitespace()
         .map(|token| if token.contains("://") { "<redacted-uri>" } else { token })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn cudf_budget_details(source: &cudf::Error) -> Vec<(&'static str, String)> {
-    source
-        .details()
-        .iter()
-        .filter(|(key, _)| {
-            matches!(
-                *key,
-                "budget_boundary"
-                    | "budget_bytes"
-                    | "budget_enforcement"
-                    | "budget_status"
-                    | "budget_peak_bytes"
-                    | "budget_current_bytes"
-                    | "budget_peak_aligned_bytes"
-                    | "budget_current_aligned_bytes"
-                    | "budget_failed_allocation_count"
-                    | "budget_largest_failed_allocation_bytes"
-            )
-        })
-        .map(|(key, value)| (*key, value.clone()))
-        .collect()
-}
-
-fn with_cudf_ffi_detail_facts(mut error: QueryError, source: &cudf::Error) -> QueryError {
-    let Some(detail) = source.ffi_detail() else {
-        return error;
-    };
-    error = error
-        .with_fact("failure_source", detail.failure_source)
-        .with_fact("requested_allocation_bytes", detail.requested_bytes)
-        .with_fact("allocation_alignment", detail.alignment)
-        .with_fact("cuda_status", detail.cuda_error);
-    if detail.domain_id != 0 {
-        error = error.with_fact("allocation_domain_id", detail.domain_id);
-    }
-    if detail.member_id != 0 {
-        error = error.with_fact("allocation_member_id", detail.member_id);
-    }
-    if detail.generation != 0 {
-        error = error.with_fact("allocation_domain_generation", detail.generation);
-    }
-    error
 }
 
 impl fmt::Display for QueryError {
@@ -1130,73 +943,6 @@ impl StdError for QueryError {
     }
 }
 
-// Allocation attribution is owned by `cudf-nexus`: the typed FFI failure
-// source proves a query-limit rejection or physical exhaustion, while a
-// budget-scope annotation is only a usage snapshot of the scope the error
-// passed through. See `cudf::allocation_attribution`. Sealed attempt advice,
-// not this status alone, governs retry; Persistent requires escalation or
-// intervention. Notable permanent mappings:
-// `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
-// invariant violation, and unknown kinds fall back to dependency failure.
-fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
-    match cudf::allocation_attribution(error) {
-        cudf::CudfAllocationAttribution::ConfirmedQueryLimit => {
-            return QueryErrorCode::QueryMemoryLimitExceeded;
-        },
-        cudf::CudfAllocationAttribution::ConfirmedPhysical => return QueryErrorCode::DeviceOutOfMemory,
-        cudf::CudfAllocationAttribution::UnattributedAllocationFailure => {
-            return QueryErrorCode::DeviceAllocationFailed;
-        },
-        cudf::CudfAllocationAttribution::NonAllocationFailure => {},
-    }
-    match cudf::classify_cudf_error(error) {
-        cudf::CudfErrorClassification::SizeOverflow => QueryErrorCode::SizeOverflow,
-        cudf::CudfErrorClassification::HostMaterializationLimitExceeded => {
-            QueryErrorCode::HostMaterializationLimitExceeded
-        },
-        cudf::CudfErrorClassification::ResourceExhausted => QueryErrorCode::DeviceAllocationFailed,
-        cudf::CudfErrorClassification::TemporaryFailure => QueryErrorCode::CudfTemporaryFailure,
-        cudf::CudfErrorClassification::PersistentFailure => QueryErrorCode::DeviceFault,
-        cudf::CudfErrorClassification::InvalidInput => QueryErrorCode::CudfInvalidInput,
-        cudf::CudfErrorClassification::Unsupported => QueryErrorCode::CudfUnsupported,
-        cudf::CudfErrorClassification::DependencyFailure => QueryErrorCode::CudfDependencyFailure,
-        cudf::CudfErrorClassification::InvariantViolation => QueryErrorCode::InternalInvariantViolation,
-    }
-}
-
-#[cfg(feature = "cuvs")]
-fn code_for_cuvs_error(error: &cuvs::Error) -> QueryErrorCode {
-    match error.kind() {
-        cuvs::ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
-        cuvs::ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
-        cuvs::ErrorKind::OutOfMemory => QueryErrorCode::DeviceAllocationFailed,
-        cuvs::ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
-        cuvs::ErrorKind::Unexpected => match error.status() {
-            cuvs::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
-            cuvs::ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
-            cuvs::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
-        },
-        _ => QueryErrorCode::CudfDependencyFailure,
-    }
-}
-
-#[cfg(feature = "cuvs")]
-fn is_safe_cuvs_context_fact(key: &str) -> bool {
-    matches!(
-        key,
-        "cudf_code"
-            | "cudf_kind"
-            | "cudf_status"
-            | "cudf_operation"
-            | "interop_kind"
-            | "native_status"
-            | "buffer_binding"
-            | "resource_binding"
-            | "expected_device"
-            | "actual_device"
-    )
-}
-
 fn quote(value: &str) -> String {
     if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '(' | ')')) {
         value.to_string()
@@ -1209,37 +955,6 @@ fn quote(value: &str) -> String {
 mod tests {
     use super::*;
 
-    fn sample_cudf_error() -> cudf::Error {
-        cudf::io::parquet::RemoteParquetSource::s3("gs://bucket/key.parquet")
-            .expect_err("non-s3 scheme must be rejected")
-    }
-
-    #[test]
-    fn from_cudf_preserves_foreign_message_as_cudf_message_fact() {
-        let source = sample_cudf_error();
-        let expected_message = redact_uri_tokens(source.message().trim());
-
-        let error = QueryError::from_cudf("nexus_query_engine.test.from_cudf", "wrapped cudf failure", source);
-
-        assert_eq!(error.fact_value("cudf_message"), Some(expected_message.as_str()));
-        assert!(error.source_error().is_some());
-    }
-
-    #[test]
-    fn from_cudf_without_source_preserves_foreign_message_without_source_chain() {
-        let source = sample_cudf_error();
-        let expected_message = redact_uri_tokens(source.message().trim());
-
-        let error = QueryError::from_cudf_without_source(
-            "nexus_query_engine.test.from_cudf_without_source",
-            "wrapped cudf failure",
-            &source,
-        );
-
-        assert_eq!(error.fact_value("cudf_message"), Some(expected_message.as_str()));
-        assert!(error.source_error().is_none());
-    }
-
     #[test]
     fn redact_uri_tokens_replaces_uri_like_tokens_only() {
         assert_eq!(
@@ -1251,83 +966,6 @@ mod tests {
             "failed to open <redacted-uri> for read"
         );
         assert_eq!(redact_uri_tokens("  spaced   message  "), "spaced message");
-    }
-
-    fn cudf_allocation_error_for_test(
-        code: cudf::ErrorCode,
-        failure_source: Option<cudf::CudfErrorFailureSource>,
-        with_budget_scope: bool,
-    ) -> cudf::Error {
-        use cudf::testing::error as cudf_test_error;
-        let mut error =
-            cudf_test_error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
-        if let Some(failure_source) = failure_source {
-            error = cudf_test_error::with_ffi_detail_for_test(
-                error,
-                cudf::CudfErrorDetail {
-                    status: 0,
-                    failure_source,
-                    domain_id: 0,
-                    member_id: 0,
-                    generation: 0,
-                    requested_bytes: 4096,
-                    alignment: 256,
-                    cuda_error: -1,
-                    message: "synthetic allocation failure".to_string(),
-                },
-            );
-        }
-        if with_budget_scope {
-            error = cudf_test_error::with_budget_exhaustion_for_test(
-                error,
-                cudf_test_error::budget_exhaustion_detail_for_test(
-                    1024,
-                    1024,
-                    1024,
-                    512,
-                    4096,
-                    1,
-                    "test_boundary",
-                    "cudf.test.allocation_attribution",
-                ),
-            );
-        }
-        error
-    }
-
-    #[test]
-    fn cudf_allocation_attribution_drives_native_classification_not_scope_usage() {
-        let cases = [
-            (
-                cudf::ErrorCode::OutOfMemory,
-                Some(cudf::CudfErrorFailureSource::ReservationLimit),
-                true,
-                QueryErrorCode::QueryMemoryLimitExceeded,
-            ),
-            (
-                cudf::ErrorCode::OutOfMemory,
-                Some(cudf::CudfErrorFailureSource::Physical),
-                true,
-                QueryErrorCode::DeviceOutOfMemory,
-            ),
-            (
-                cudf::ErrorCode::OutOfMemory,
-                Some(cudf::CudfErrorFailureSource::Unknown),
-                true,
-                QueryErrorCode::DeviceAllocationFailed,
-            ),
-            (cudf::ErrorCode::OutOfMemory, None, true, QueryErrorCode::DeviceAllocationFailed),
-            (cudf::ErrorCode::IoFailure, None, true, QueryErrorCode::CudfDependencyFailure),
-        ];
-
-        for (index, (code, failure_source, with_budget_scope, expected)) in cases.into_iter().enumerate() {
-            let error = QueryError::from_cudf(
-                "nexus_query_engine.test.allocation_attribution",
-                "wrapped cudf failure",
-                cudf_allocation_error_for_test(code, failure_source, with_budget_scope),
-            );
-            assert_eq!(error.code(), expected, "native mismatch for case {index}");
-        }
     }
 
     #[cfg(feature = "cugraph")]
@@ -1343,37 +981,6 @@ mod tests {
         assert_eq!(error.graph_cache_scope_peak_bytes(), Some(4_096));
         assert_eq!(error.fact_value("graph_cache_scope_peak_bytes"), None);
         assert!(error.to_json()["facts"].get("graph_cache_scope_peak_bytes").is_none());
-    }
-
-    #[cfg(feature = "cuvs")]
-    #[test]
-    fn from_cuvs_maps_only_typed_kind_and_status() {
-        let cases = [
-            (cuvs::Error::new(cuvs::ErrorKind::InvalidInput, "cuvs.invalid"), QueryErrorCode::CudfInvalidInput),
-            (cuvs::Error::new(cuvs::ErrorKind::Unsupported, "cuvs.unsupported"), QueryErrorCode::CudfUnsupported),
-            (cuvs::Error::new(cuvs::ErrorKind::OutOfMemory, "cuvs.oom"), QueryErrorCode::DeviceAllocationFailed),
-            (cuvs::Error::new(cuvs::ErrorKind::InvalidState, "cuvs.state"), QueryErrorCode::InternalInvariantViolation),
-            (
-                cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.temporary")
-                    .with_context("native_status", "CUVS_ERROR")
-                    .set_temporary(),
-                QueryErrorCode::CudfTemporaryFailure,
-            ),
-            (
-                cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.persistent").set_persistent(),
-                QueryErrorCode::DeviceFault,
-            ),
-        ];
-        for (source, expected) in cases {
-            let error = QueryError::from_cuvs("nexus_query_engine.test.from_cuvs", "wrapped cuVS failure", source);
-            assert_eq!(error.code(), expected);
-            assert!(error.fact_value("cuvs_kind").is_some());
-            assert!(error.fact_value("cuvs_status").is_some());
-            assert!(error.fact_value("cuvs_operation").is_some());
-            if error.fact_value("cuvs_operation") == Some("cuvs.temporary") {
-                assert_eq!(error.fact_value("native_status"), Some("CUVS_ERROR"));
-            }
-        }
     }
 
     #[test]
@@ -1394,7 +1001,11 @@ mod tests {
 
     #[test]
     fn repeated_source_decoration_preserves_first_cause() {
-        let first = sample_cudf_error();
+        let first = QueryError::new(
+            QueryErrorCode::CudfInvalidInput,
+            "nexus_query_engine.test.first_cause",
+            "the original cause",
+        );
         let expected_cause = first.to_string();
         let error = QueryError::new(
             QueryErrorCode::CudfInvalidInput,
@@ -1411,22 +1022,5 @@ mod tests {
         let cause = error.source_error().expect("first source must be retained").to_string();
         assert_eq!(cause, expected_cause, "{cause}");
         assert!(!cause.contains("decoration must not replace the cause"), "{cause}");
-    }
-
-    #[cfg(feature = "cuvs")]
-    #[test]
-    fn from_cuvs_duplicate_context_projects_effective_value_without_panic() {
-        let source = cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.duplicate")
-            .with_context("native_status", "CUVS_ERROR")
-            .with_context("native_status", "CUVS_ERROR_RETRY")
-            .set_temporary();
-        assert_eq!(source.context_value("native_status"), Some("CUVS_ERROR_RETRY"));
-
-        let error =
-            QueryError::from_cuvs("nexus_query_engine.test.from_cuvs_duplicate", "wrapped cuVS failure", source);
-
-        assert_eq!(error.code(), QueryErrorCode::CudfTemporaryFailure);
-        assert_eq!(error.fact_value("native_status"), Some("CUVS_ERROR_RETRY"));
-        assert!(error.source_error().is_some());
     }
 }

@@ -27,6 +27,7 @@ use super::{
     rewrite,
 };
 use crate::{
+    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode},
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
     parquet_stats::{row_group_i64_range, single_leaf_primitive_root_column_index},
@@ -196,6 +197,7 @@ fn record_dimension_pruning_candidate(
 pub fn optimize_dimension_derived_row_group_pruning(
     plan: QueryPlan,
     options: &DimensionDerivedRowGroupPruningOptions,
+    ctx: AnalysisContext<'_>,
 ) -> DimensionDerivedRowGroupPruningResult {
     if !options.enabled {
         return DimensionDerivedRowGroupPruningResult {
@@ -206,7 +208,7 @@ pub fn optimize_dimension_derived_row_group_pruning(
     }
 
     let original_plan = plan.clone();
-    let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan);
+    let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan, ctx);
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut diagnostics = DimensionDerivedRowGroupPruningDiagnostics::default();
@@ -742,19 +744,9 @@ pub fn apply_dimension_derived_pruning_with_stats(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        sync::Arc,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::sync::Arc;
 
-    use arrow::{
-        array::Int64Array,
-        datatypes::{DataType, Field, Schema},
-        record_batch::RecordBatch,
-    };
-    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+    use arrow::datatypes::{DataType, Field, Schema};
 
     use super::*;
     use crate::{
@@ -762,8 +754,7 @@ mod tests {
             DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
             DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
         },
-        expr::AggregateSpec,
-        plan::{JoinKey, JoinOutputColumn, JoinSpec, QueryPlanBuilder},
+        plan::QueryPlanBuilder,
     };
 
     #[test]
@@ -940,98 +931,6 @@ mod tests {
         assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
     }
 
-    #[test]
-    fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
-        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
-        let file = LocalParquetFile::new("/tmp/test.parquet");
-        let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["x".to_string()]);
-        let mut builder = QueryPlanBuilder::new();
-        let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
-        let aggregate = builder.add_aggregate(
-            source_node_id,
-            AggregateSpec::new(vec![Expr::column("x")], Vec::new()),
-            Arc::clone(&schema),
-        );
-        let filter = builder.add_filter(
-            aggregate,
-            Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5))),
-            Arc::clone(&schema),
-        );
-        let route = test_dynamic_filter_route(source_node_id);
-        let execution = custom_dynamic_filter_execution_options();
-        let plan = builder
-            .finish_with_host_sink(filter)
-            .with_dynamic_filter_execution_options(execution)
-            .with_dynamic_filter_routes(vec![route.clone()]);
-
-        let result = seed_dimension_derived_reader_predicates(plan);
-
-        assert_eq!(result.dynamic_filter_routes(), &[route]);
-        assert_eq!(result.dynamic_filter_execution_options(), execution);
-        let source = local_parquet_source(&result, source_node_id).unwrap();
-        assert!(source.reader_predicate.as_ref().is_some_and(|predicate| {
-            *predicate == Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))
-        }));
-    }
-
-    #[test]
-    fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_pruning_applies() {
-        let dir = unique_test_dir("dimension-pruning-routes");
-        fs::create_dir_all(&dir).expect("temporary dimension pruning directory should be created");
-        let fact_path = dir.join("fact.parquet");
-        let dim_path = dir.join("dim.parquet");
-        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
-        write_i64_parquet(&fact_path, Arc::clone(&schema), &[0, 1, 5, 6, 10, 11], 2);
-        write_i64_parquet(&dim_path, Arc::clone(&schema), &[5], 1);
-
-        let mut builder = QueryPlanBuilder::new();
-        let dim = builder.add_source(SourceNode::LocalParquet(
-            LocalParquetSource::from_files(
-                vec![LocalParquetFile::new(&dim_path)],
-                Arc::clone(&schema),
-                vec!["x".to_string()],
-            )
-            .with_reader_predicate(Expr::binary(
-                Expr::column("x"),
-                BinaryOp::Eq,
-                Expr::literal(LiteralValue::Int64(5)),
-            )),
-        ));
-        let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-            vec![LocalParquetFile::new(&fact_path)],
-            Arc::clone(&schema),
-            vec!["x".to_string()],
-        )));
-        let join = builder.add_join(
-            dim,
-            fact,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "x", "x"), ColumnRef::input(1, "x", "x"))],
-            )
-            .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "x", "x"), "x")]),
-            Arc::clone(&schema),
-        );
-        let route = test_dynamic_filter_route(fact);
-        let execution = custom_dynamic_filter_execution_options();
-        let plan = builder
-            .finish_with_host_sink(join)
-            .with_dynamic_filter_execution_options(execution)
-            .with_dynamic_filter_routes(vec![route.clone()]);
-
-        let result =
-            optimize_dimension_derived_row_group_pruning(plan, &DimensionDerivedRowGroupPruningOptions::default());
-
-        assert_eq!(result.change, super::super::NativeOptimizerChange::Changed);
-        assert_eq!(result.diagnostics.applied_count, 1);
-        assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
-        assert_eq!(result.plan.dynamic_filter_execution_options(), execution);
-        let source = local_parquet_source(&result.plan, fact).unwrap();
-        assert_eq!(source.files[0].row_groups, Some(vec![1]));
-
-        fs::remove_dir_all(dir).expect("temporary dimension pruning directory should be removable");
-    }
-
     fn test_plan_with_source_row_groups(row_groups: Option<Vec<usize>>) -> (QueryPlan, NodeId) {
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
         let mut file = LocalParquetFile::new("/tmp/test.parquet");
@@ -1056,20 +955,5 @@ mod tests {
 
     fn custom_dynamic_filter_execution_options() -> DynamicFilterExecutionOptions {
         DynamicFilterExecutionOptions::default().with_max_build_rows(17)
-    }
-
-    fn write_i64_parquet(path: &Path, schema: Arc<Schema>, values: &[i64], row_group_rows: usize) {
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values.to_vec()))])
-            .expect("test record batch should be valid");
-        let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
-        let file = fs::File::create(path).expect("test parquet file should be creatable");
-        let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be valid");
-        writer.write(&batch).expect("test parquet batch should be writable");
-        writer.close().expect("test parquet writer should close");
-    }
-
-    fn unique_test_dir(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time should be valid").as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }

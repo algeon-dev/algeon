@@ -1,6 +1,6 @@
 //! Runtime betweenness seed policy and validation.
 
-use super::{CudfSortOptions, DataFrame, QueryError, QueryErrorCode, Result};
+use super::{CudfSortOptions, DataFrame, QueryError, QueryErrorCode, Result, cudf_query_error};
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) enum RuntimeGraphSpecResolution {
@@ -237,16 +237,15 @@ fn sorted_graph_vertices_i64(
 ) -> Result<Vec<i64>> {
     let source = input
         .series(&spec.edge_columns.source)
-        .map_err(|error| QueryError::from_cudf(operation, "failed to read graph source column", error))?;
+        .map_err(|error| cudf_query_error(operation, "failed to read graph source column", error))?;
     let destination = input
         .series(&spec.edge_columns.destination)
-        .map_err(|error| QueryError::from_cudf(operation, "failed to read graph destination column", error))?;
-    let source_dtype = source
-        .dtype()
-        .map_err(|error| QueryError::from_cudf(operation, "failed to inspect graph source dtype", error))?;
+        .map_err(|error| cudf_query_error(operation, "failed to read graph destination column", error))?;
+    let source_dtype =
+        source.dtype().map_err(|error| cudf_query_error(operation, "failed to inspect graph source dtype", error))?;
     let destination_dtype = destination
         .dtype()
-        .map_err(|error| QueryError::from_cudf(operation, "failed to inspect graph destination dtype", error))?;
+        .map_err(|error| cudf_query_error(operation, "failed to inspect graph destination dtype", error))?;
     if source_dtype.id() != destination_dtype.id() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -261,15 +260,15 @@ fn sorted_graph_vertices_i64(
     let vertices = cudf::Series::concat(&[&source, &destination])
         .and_then(|series| series.unique())
         .and_then(|series| series.sort_values(CudfSortOptions::new()))
-        .map_err(|error| QueryError::from_cudf(operation, "failed to collect graph vertices", error))?;
+        .map_err(|error| cudf_query_error(operation, "failed to collect graph vertices", error))?;
     match source_dtype.id() {
         cudf::TypeId::Int32 => vertices
             .to_vec_strict::<i32>()
             .map(|values| values.into_iter().map(i64::from).collect())
-            .map_err(|error| QueryError::from_cudf(operation, "failed to copy graph Int32 vertices to host", error)),
+            .map_err(|error| cudf_query_error(operation, "failed to copy graph Int32 vertices to host", error)),
         cudf::TypeId::Int64 => vertices
             .to_vec_strict::<i64>()
-            .map_err(|error| QueryError::from_cudf(operation, "failed to copy graph Int64 vertices to host", error)),
+            .map_err(|error| cudf_query_error(operation, "failed to copy graph Int64 vertices to host", error)),
         dtype => Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             operation,

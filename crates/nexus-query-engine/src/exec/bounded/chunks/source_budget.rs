@@ -1,6 +1,6 @@
 use super::{
     BoundedExecutionAttempt, GpuDataFrame, LocalParquetSource, MemoryControlPolicy, QueryError, QueryErrorCode, Result,
-    SourceChunk, SourceReadBudgetPolicy, read_local_parquet_chunk, record_chunk_retry_error,
+    SourceChunk, SourceReadBudgetPolicy, cudf_budget_exhaustion, read_local_parquet_chunk, record_chunk_retry_error,
 };
 
 pub(in crate::exec::bounded) fn source_read_budget_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
@@ -120,7 +120,7 @@ pub(in crate::exec) fn source_read_budget_correction_from_error(
     if error.code() != QueryErrorCode::CudfResourceExhausted {
         return None;
     }
-    let detail = error.cudf_budget_exhaustion()?;
+    let detail = cudf_budget_exhaustion(error)?;
     if detail.failed_allocation_count() == 0 || detail.largest_failed_allocation_bytes() == 0 {
         return None;
     }

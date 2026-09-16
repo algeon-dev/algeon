@@ -13,7 +13,7 @@ use cudf::{
 
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, LiteralValue, LocalParquetSource, QueryError, QueryErrorCode,
-    Result, timestamp_unit_to_cudf_resolution,
+    Result, cudf_query_error, cudf_query_error_without_source, timestamp_unit_to_cudf_resolution,
 };
 use crate::source::{
     ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
@@ -32,7 +32,7 @@ pub(super) fn lower_source_reader_predicate(
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
     };
-    if !source.reader_predicate_is_supported(predicate) {
+    if !source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,
@@ -57,7 +57,7 @@ pub(super) fn lower_source_reader_batch_predicate(
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
     };
-    if !source.reader_predicate_is_supported(predicate) {
+    if !source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,
@@ -113,9 +113,9 @@ fn cudf_reader_predicate_error(
     error: cudf::Error,
 ) -> QueryError {
     if source.files.iter().any(|file| !file.location.is_local_path()) {
-        QueryError::from_cudf_without_source(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     } else {
-        QueryError::from_cudf(operation, message, error)
+        cudf_query_error(operation, message, error)
     }
 }
 
@@ -129,7 +129,7 @@ fn lower_source_reader_ast_expr(
         Expr::Column(column) => {
             let index = source_reader_column_index(source, column.name())?;
             AstExpression::left_column(index).map_err(|error| {
-                QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST source column reference", error)
+                cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST source column reference", error)
                     .with_fact("column", column.name())
                     .with_fact("index", index)
             })
@@ -138,21 +138,19 @@ fn lower_source_reader_ast_expr(
         Expr::Not(input) => {
             let input = lower_source_reader_ast_expr(context, source, input, None)?;
             AstExpression::unary(AstOperator::Not, input)
-                .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST NOT", error))
+                .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST NOT", error))
         },
         Expr::IsNull(input) => {
             let input = lower_source_reader_ast_expr(context, source, input, None)?;
             AstExpression::unary(AstOperator::IsNull, input)
-                .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST IS NULL", error))
+                .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST IS NULL", error))
         },
         Expr::IsNotNull(input) => {
             let input = lower_source_reader_ast_expr(context, source, input, None)?;
-            let is_null = AstExpression::unary(AstOperator::IsNull, input).map_err(|error| {
-                QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST IS NULL", error)
-            })?;
-            AstExpression::unary(AstOperator::Not, is_null).map_err(|error| {
-                QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST IS NOT NULL", error)
-            })
+            let is_null = AstExpression::unary(AstOperator::IsNull, input)
+                .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST IS NULL", error))?;
+            AstExpression::unary(AstOperator::Not, is_null)
+                .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST IS NOT NULL", error))
         },
         Expr::Cast { expr, target_type } => {
             let input = lower_source_reader_ast_expr(context, source, expr, None)?;
@@ -170,7 +168,7 @@ fn lower_source_reader_ast_expr(
                 },
             };
             expression.map_err(|error| {
-                QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST cast expression", error)
+                cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST cast expression", error)
                     .with_fact("target_type", format!("{target_type:?}"))
             })
         },
@@ -190,7 +188,7 @@ fn lower_source_reader_ast_expr(
             let right = lower_source_reader_ast_expr(context, source, right, right_literal_target_type)?;
             let op = lower_source_reader_ast_operator(*op)?;
             AstExpression::binary(op, left, right).map_err(|error| {
-                QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST binary expression", error)
+                cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST binary expression", error)
             })
         },
         Expr::InList { expr, list, negated } => {
@@ -223,7 +221,7 @@ fn lower_source_reader_ast_expr(
                 AstExpression::is_in_list(input, values)
             }
             .map_err(|error| {
-                QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST IN list expression", error)
+                cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST IN list expression", error)
                     .with_fact("negated", negated.to_string())
                     .with_fact("value_count", list.len())
             })
@@ -329,11 +327,7 @@ fn lower_cudf_source_reader_predicate(source: &LocalParquetSource, expr: &Expr) 
             let column = cudf_source_reader_predicate_column(source, expr)?;
             let literals = list.iter().map(cudf_source_reader_predicate_literal).collect::<Result<Vec<_>>>()?;
             CudfSourceReaderPredicate::in_list(column, literals, *negated).map_err(|error| {
-                QueryError::from_cudf(
-                    OP_READER_PREDICATE,
-                    "failed to build cudf source reader IN list predicate",
-                    error,
-                )
+                cudf_query_error(OP_READER_PREDICATE, "failed to build cudf source reader IN list predicate", error)
             })
         },
         Expr::Not(input) => {
@@ -421,13 +415,9 @@ fn cudf_source_reader_predicate_column(
         .with_fact("file_column_index", file_index));
     };
     CudfSourceReaderPredicateColumn::read_column(column.name(), read_index).map_err(|error| {
-        QueryError::from_cudf(
-            OP_READER_PREDICATE,
-            "failed to build cudf source reader predicate column reference",
-            error,
-        )
-        .with_fact("column", column.name())
-        .with_fact("read_index", read_index)
+        cudf_query_error(OP_READER_PREDICATE, "failed to build cudf source reader predicate column reference", error)
+            .with_fact("column", column.name())
+            .with_fact("read_index", read_index)
     })
 }
 
@@ -566,7 +556,7 @@ fn lower_source_reader_ast_literal(
         && let Some(scalar) = lower_source_reader_ast_literal_with_target(context, value, target_type)?
     {
         return AstExpression::literal(scalar)
-            .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error));
+            .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST literal", error));
     }
     let scalar = match value {
         LiteralValue::Boolean(value) => runtime.scalar(*value),
@@ -624,15 +614,11 @@ fn lower_source_reader_ast_literal(
         },
     }
     .map_err(|error| {
-        QueryError::from_cudf(
-            OP_READER_PREDICATE,
-            "failed to build cudf scalar for reader predicate AST literal",
-            error,
-        )
-        .with_fact("literal", value)
+        cudf_query_error(OP_READER_PREDICATE, "failed to build cudf scalar for reader predicate AST literal", error)
+            .with_fact("literal", value)
     })?;
     AstExpression::literal(scalar)
-        .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error))
+        .map_err(|error| cudf_query_error(OP_READER_PREDICATE, "failed to build cudf AST literal", error))
 }
 
 fn lower_source_reader_ast_literal_with_target(
@@ -701,7 +687,7 @@ fn lower_source_reader_ast_literal_with_target(
         _ => Ok(None),
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             OP_READER_PREDICATE,
             "failed to build cudf scalar for typed reader predicate AST literal",
             error,

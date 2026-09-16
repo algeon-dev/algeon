@@ -509,7 +509,8 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
 
     let plan = builder.finish_with_host_sink(sorted);
     assert_eq!(
-        plan.capability_analysis().root_full_sort_join_aggregate_admission,
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .root_full_sort_join_aggregate_admission,
         nexus_query_engine::capability::CapabilityDecision::Satisfied,
         "Q15 shared grouped-aggregate keyless root must satisfy root full-sort admission",
     );

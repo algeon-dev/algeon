@@ -4,7 +4,7 @@ use cudf::ops::ast::{AstExpression, AstOperator};
 
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, Expr, JoinNode, JoinNullEquality, JoinSide, LiteralValue, QueryError,
-    QueryErrorCode, Result, timestamp_unit_to_cudf_resolution,
+    QueryErrorCode, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
 };
 use crate::expr::{ColumnQualifier, interval_month_day_nano};
 
@@ -279,7 +279,7 @@ fn lower_join_ast_expr(
                 JoinSide::Right => AstExpression::right_column(index),
             };
             expression.map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST column reference",
                     error,
@@ -290,30 +290,22 @@ fn lower_join_ast_expr(
         Expr::Not(input) => {
             let input = lower_join_ast_expr(context, input, residual_columns)?;
             AstExpression::unary(AstOperator::Not, input).map_err(|error| {
-                QueryError::from_cudf("nexus_query_engine.join.lower_residual", "failed to build cudf AST NOT", error)
+                cudf_query_error("nexus_query_engine.join.lower_residual", "failed to build cudf AST NOT", error)
             })
         },
         Expr::IsNull(input) => {
             let input = lower_join_ast_expr(context, input, residual_columns)?;
             AstExpression::unary(AstOperator::IsNull, input).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.join.lower_residual",
-                    "failed to build cudf AST IS NULL",
-                    error,
-                )
+                cudf_query_error("nexus_query_engine.join.lower_residual", "failed to build cudf AST IS NULL", error)
             })
         },
         Expr::IsNotNull(input) => {
             let input = lower_join_ast_expr(context, input, residual_columns)?;
             let is_null = AstExpression::unary(AstOperator::IsNull, input).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.join.lower_residual",
-                    "failed to build cudf AST IS NULL",
-                    error,
-                )
+                cudf_query_error("nexus_query_engine.join.lower_residual", "failed to build cudf AST IS NULL", error)
             })?;
             AstExpression::unary(AstOperator::Not, is_null).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST IS NOT NULL",
                     error,
@@ -336,7 +328,7 @@ fn lower_join_ast_expr(
                 },
             };
             expression.map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST cast expression",
                     error,
@@ -364,7 +356,7 @@ fn lower_join_ast_expr(
             let right = lower_join_ast_expr(context, right, residual_columns)?;
             let op = lower_join_ast_operator(*op)?;
             AstExpression::binary(op, left, right).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST binary expression",
                     error,
@@ -400,7 +392,7 @@ fn lower_join_ast_expr(
                 AstExpression::is_in_list(input, values)
             }
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST IN list expression",
                     error,
@@ -452,7 +444,7 @@ fn lower_join_ast_datetime_interval_comparison(
         let base = lower_join_ast_expr(context, base, residual_columns)?;
         (
             AstExpression::binary(AstOperator::Sub, left, base).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST timestamp difference for interval comparison",
                     error,
@@ -465,7 +457,7 @@ fn lower_join_ast_datetime_interval_comparison(
         let right = lower_join_ast_expr(context, right, residual_columns)?;
         (
             AstExpression::binary(AstOperator::Sub, base, right).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.join.lower_residual",
                     "failed to build cudf AST timestamp difference for interval comparison",
                     error,
@@ -490,7 +482,7 @@ fn lower_join_ast_datetime_interval_comparison(
     let duration = lower_duration_days_ast_literal(context, raw_days)?;
     let op = lower_join_ast_operator(op)?;
     AstExpression::binary(op, diff_left, duration).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.lower_residual",
             "failed to build cudf AST datetime interval comparison expression",
             error,
@@ -551,7 +543,7 @@ fn interval_date_offset_expr(expr: &Expr) -> Result<Option<(&Expr, i32)>> {
 fn lower_duration_days_ast_literal(context: &ExecutionContext, value: i32) -> Result<AstExpression> {
     let scalar =
         context.runtime()?.duration_raw_scalar(i64::from(value), cudf::TimestampResolution::Days).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.lower_residual",
                 "failed to build duration-days scalar for join residual interval literal",
                 error,
@@ -559,7 +551,7 @@ fn lower_duration_days_ast_literal(context: &ExecutionContext, value: i32) -> Re
             .with_fact("value", value)
         })?;
     AstExpression::literal(scalar).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.lower_residual",
             "failed to build cudf AST duration-days literal",
             error,
@@ -724,7 +716,7 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
         },
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.lower_residual",
             "failed to build cudf scalar for join residual AST literal",
             error,
@@ -732,7 +724,7 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
         .with_fact("literal", value)
     })?;
     AstExpression::literal(scalar).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.join.lower_residual", "failed to build cudf AST literal", error)
+        cudf_query_error("nexus_query_engine.join.lower_residual", "failed to build cudf AST literal", error)
     })
 }
 

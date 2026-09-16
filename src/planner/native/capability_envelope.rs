@@ -127,9 +127,13 @@ pub(super) fn native_bounded_decision(
     if composed_admission_requires_producer_binding(plan) {
         return Ok(None);
     }
-    bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode())
-        .map(Some)
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+    bounded_pipeline_decision(
+        plan,
+        execution_config.statistical_aggregate_execution_mode(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .map(Some)
+    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
 }
 
 pub(super) fn accepted_plan_contract_diagnostics(
@@ -245,7 +249,7 @@ fn first_blocking_contract_row(
         });
     }
 
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
     Ok(report.decision_rows().first().cloned())

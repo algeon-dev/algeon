@@ -35,6 +35,7 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
 
 #[test]
 fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     let cases = [
         (DataType::Decimal32(9, 2), TypeId::Decimal32, -2),
         (DataType::Decimal32(9, -1), TypeId::Decimal32, 1),
@@ -50,7 +51,7 @@ fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
             Some(CudfDataType::fixed_point(cudf_type_id, cudf_scale).unwrap()),
             "{arrow_type:?}"
         );
-        assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type), "{arrow_type:?}");
+        assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type, ctx), "{arrow_type:?}");
     }
 }
 
@@ -83,17 +84,19 @@ fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() 
 
 #[test]
 fn timestamp_with_timezone_type_support_policy_is_carry_only() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     let timestamp_tz = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
     assert!(is_supported_arrow_type(&timestamp_tz));
     assert_eq!(cudf_dtype_from_arrow_type(&timestamp_tz), Some(CudfDataType::new(TypeId::TimestampMicroseconds)));
-    assert!(is_supported_arrow_implicit_cast(&timestamp_tz, &timestamp_tz));
-    assert!(!is_supported_arrow_cast(&DataType::Timestamp(TimeUnit::Microsecond, None), &timestamp_tz));
-    assert!(!is_supported_arrow_cast(&timestamp_tz, &DataType::Timestamp(TimeUnit::Microsecond, None)));
+    assert!(is_supported_arrow_implicit_cast(&timestamp_tz, &timestamp_tz, ctx));
+    assert!(!is_supported_arrow_cast(&DataType::Timestamp(TimeUnit::Microsecond, None), &timestamp_tz, ctx));
+    assert!(!is_supported_arrow_cast(&timestamp_tz, &DataType::Timestamp(TimeUnit::Microsecond, None), ctx));
 }
 
 #[test]
 fn temporal_type_support_policy_accepts_date64_and_time_types() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     let cases = [
         (DataType::Date64, TypeId::TimestampMilliseconds),
         (DataType::Time32(TimeUnit::Second), TypeId::DurationSeconds),
@@ -105,12 +108,13 @@ fn temporal_type_support_policy_accepts_date64_and_time_types() {
     for (arrow_type, cudf_type_id) in cases {
         assert!(is_supported_arrow_type(&arrow_type), "{arrow_type:?}");
         assert_eq!(cudf_dtype_from_arrow_type(&arrow_type), Some(CudfDataType::new(cudf_type_id)));
-        assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type), "{arrow_type:?}");
+        assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type, ctx), "{arrow_type:?}");
     }
 }
 
 #[test]
 fn basic_list_type_support_policy_is_exact_and_carry_only() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     let supported_children = [
         DataType::Boolean,
         DataType::Int8,
@@ -135,7 +139,7 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
             assert!(is_supported_arrow_type(&list), "{list:?}");
             assert!(is_supported_list_carry_type(&list), "{list:?}");
             assert_eq!(cudf_dtype_from_arrow_type(&list), Some(CudfDataType::new(TypeId::List)));
-            assert!(is_supported_arrow_implicit_cast(&list, &list), "{list:?}");
+            assert!(is_supported_arrow_implicit_cast(&list, &list, ctx), "{list:?}");
         }
     }
 
@@ -170,11 +174,12 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
 
     let list_utf8 = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
     let large_list_large_utf8 = DataType::LargeList(Arc::new(Field::new("element", DataType::LargeUtf8, true)));
-    assert!(!is_supported_arrow_cast(&list_utf8, &large_list_large_utf8));
+    assert!(!is_supported_arrow_cast(&list_utf8, &large_list_large_utf8, ctx));
 }
 
 #[test]
 fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     for child in [
         DataType::Int8,
         DataType::Int16,
@@ -191,7 +196,7 @@ fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
         assert!(is_supported_arrow_type(&list), "{list:?}");
         assert!(is_supported_list_carry_type(&list), "{list:?}");
         assert_eq!(cudf_dtype_from_arrow_type(&list), Some(CudfDataType::new(TypeId::List)));
-        assert!(is_supported_arrow_implicit_cast(&list, &list), "{list:?}");
+        assert!(is_supported_arrow_implicit_cast(&list, &list, ctx), "{list:?}");
     }
 
     for child in [
@@ -606,6 +611,7 @@ fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilde
 
 #[test]
 fn decimal128_cast_support_uses_type_support_policy() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     let valid_source = DataType::Decimal128(20, -1);
     let valid_target = DataType::Decimal128(38, 2);
     let float64_target = DataType::Float64;
@@ -616,33 +622,34 @@ fn decimal128_cast_support_uses_type_support_policy() {
     let fractional_decimal = DataType::Decimal128(21, 6);
     let invalid_decimal = DataType::Decimal128(39, 2);
 
-    assert!(is_supported_arrow_cast(&valid_source, &valid_target));
-    assert!(is_supported_arrow_cast(&valid_source, &float64_target));
-    assert!(is_supported_arrow_cast(&float64_source, &valid_target));
-    assert!(is_supported_arrow_cast(&int32_source, &valid_target));
-    assert!(is_supported_arrow_cast(&scale_zero_decimal, &int32_target));
-    assert!(is_supported_arrow_implicit_cast(&valid_source, &valid_target));
-    assert!(!is_supported_arrow_implicit_cast(&valid_source, &float64_target));
-    assert!(!is_supported_arrow_implicit_cast(&float64_source, &valid_target));
-    assert!(!is_supported_arrow_implicit_cast(&scale_zero_decimal, &int32_target));
-    assert!(!is_supported_arrow_cast(&fractional_decimal, &int32_target));
-    assert!(!is_supported_arrow_cast(&invalid_decimal, &invalid_decimal));
-    assert!(!is_supported_arrow_cast(&invalid_decimal, &valid_target));
-    assert!(!is_supported_arrow_cast(&invalid_decimal, &float64_target));
-    assert!(!is_supported_arrow_implicit_cast(&invalid_decimal, &float64_target));
-    assert!(!is_supported_arrow_cast(&valid_source, &invalid_decimal));
-    assert!(!is_supported_arrow_cast(&float64_source, &invalid_decimal));
+    assert!(is_supported_arrow_cast(&valid_source, &valid_target, ctx));
+    assert!(is_supported_arrow_cast(&valid_source, &float64_target, ctx));
+    assert!(is_supported_arrow_cast(&float64_source, &valid_target, ctx));
+    assert!(is_supported_arrow_cast(&int32_source, &valid_target, ctx));
+    assert!(is_supported_arrow_cast(&scale_zero_decimal, &int32_target, ctx));
+    assert!(is_supported_arrow_implicit_cast(&valid_source, &valid_target, ctx));
+    assert!(!is_supported_arrow_implicit_cast(&valid_source, &float64_target, ctx));
+    assert!(!is_supported_arrow_implicit_cast(&float64_source, &valid_target, ctx));
+    assert!(!is_supported_arrow_implicit_cast(&scale_zero_decimal, &int32_target, ctx));
+    assert!(!is_supported_arrow_cast(&fractional_decimal, &int32_target, ctx));
+    assert!(!is_supported_arrow_cast(&invalid_decimal, &invalid_decimal, ctx));
+    assert!(!is_supported_arrow_cast(&invalid_decimal, &valid_target, ctx));
+    assert!(!is_supported_arrow_cast(&invalid_decimal, &float64_target, ctx));
+    assert!(!is_supported_arrow_implicit_cast(&invalid_decimal, &float64_target, ctx));
+    assert!(!is_supported_arrow_cast(&valid_source, &invalid_decimal, ctx));
+    assert!(!is_supported_arrow_cast(&float64_source, &invalid_decimal, ctx));
 }
 
 #[test]
 fn float64_to_int64_cast_support_is_explicit_and_not_implicit() {
+    let ctx = nexus_query_engine::rapids_backend::rapids_analysis_context();
     let float64_source = DataType::Float64;
     let int64_target = DataType::Int64;
     let int32_target = DataType::Int32;
     let float32_source = DataType::Float32;
 
-    assert!(is_supported_arrow_cast(&float64_source, &int64_target));
-    assert!(!is_supported_arrow_implicit_cast(&float64_source, &int64_target));
-    assert!(!is_supported_arrow_cast(&float64_source, &int32_target));
-    assert!(!is_supported_arrow_cast(&float32_source, &int64_target));
+    assert!(is_supported_arrow_cast(&float64_source, &int64_target, ctx));
+    assert!(!is_supported_arrow_implicit_cast(&float64_source, &int64_target, ctx));
+    assert!(!is_supported_arrow_cast(&float64_source, &int32_target, ctx));
+    assert!(!is_supported_arrow_cast(&float32_source, &int64_target, ctx));
 }

@@ -25,6 +25,16 @@ COMPONENT_PACKAGES = (
 )
 DATAFUSION_PACKAGE_PREFIX = "datafusion"
 
+# Packages whose presence anywhere in the planning closure means planning
+# cannot be built, tested, or packaged without CUDA/RAPIDS or DataFusion. A
+# declared-dependency check is not enough: any of these can arrive through a
+# helper crate several edges away, which is exactly how the coupling grew
+# before. `--all-features` resolution makes the union of every feature the
+# subject, so an optional dependency cannot hide behind a feature flag either.
+PLANNING_FORBIDDEN_PACKAGES = frozenset(COMPONENT_PACKAGES) | {RUNTIME_PACKAGE, EXECUTION_PACKAGE}
+NATIVE_SYS_SUFFIX = "-sys"
+NATIVE_PACKAGE_MARKERS = ("cudf", "cugraph", "cuvs", "cuda", "rmm", "nvml", "rapids")
+
 class ContractError(ValueError):
     pass
 
@@ -103,6 +113,89 @@ def resolved_workspace_edges(
             if target_name is not None:
                 edges.add((source_name, target_name))
     return edges
+
+
+def resolved_closure(
+    metadata: dict[str, object], by_name: dict[str, dict[str, object]], root_package: str
+) -> set[str]:
+    """Every package reachable from `root_package` under the resolved graph."""
+    resolve = metadata.get("resolve")
+    if not isinstance(resolve, dict) or not isinstance(resolve.get("nodes"), list):
+        raise ContractError("cargo metadata must contain resolve.nodes")
+
+    packages_value = metadata.get("packages")
+    if not isinstance(packages_value, list):
+        raise ContractError("cargo metadata must contain a packages array")
+    id_to_name: dict[str, str] = {}
+    for package in packages_value:
+        if not isinstance(package, dict) or not isinstance(package.get("id"), str):
+            raise ContractError("cargo metadata contains a package without a string id")
+        name = package.get("name")
+        if not isinstance(name, str):
+            raise ContractError(f"cargo metadata package {package['id']} has no string name")
+        id_to_name[package["id"]] = name
+
+    edges: dict[str, list[str]] = {}
+    for node in resolve["nodes"]:
+        if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+            raise ContractError("cargo metadata resolve.nodes contains a node without a string id")
+        dependencies = node.get("deps", [])
+        if not isinstance(dependencies, list):
+            raise ContractError(f"resolved dependencies for {node['id']} must be an array")
+        targets = []
+        for dependency in dependencies:
+            if not isinstance(dependency, dict) or not isinstance(dependency.get("pkg"), str):
+                raise ContractError(f"resolved dependency of {node['id']} is not an object with a pkg id")
+            targets.append(dependency["pkg"])
+        edges[node["id"]] = targets
+
+    root = by_name.get(root_package)
+    if root is None or not isinstance(root.get("id"), str):
+        raise ContractError(f"workspace package {root_package} is missing from cargo metadata")
+
+    seen: set[str] = set()
+    stack = [root["id"]]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(edges.get(current, []))
+    return {id_to_name[package_id] for package_id in seen if package_id in id_to_name}
+
+
+def looks_native(package_name: str) -> bool:
+    lowered = package_name.lower()
+    return lowered.endswith(NATIVE_SYS_SUFFIX) and any(marker in lowered for marker in NATIVE_PACKAGE_MARKERS)
+
+
+def check_planning_closure(metadata: dict[str, object]) -> list[str]:
+    """Planning must build without DataFusion, CUDA/RAPIDS, runtime, or engine.
+
+    This is the contract that keeps the crate publishable and testable on a
+    host with no GPU toolchain. It is checked against the resolved closure, not
+    the manifest, so a helper crate cannot reintroduce the coupling quietly.
+    """
+    by_name, _member_ids = workspace_packages(metadata)
+    closure = resolved_closure(metadata, by_name, PLANNING_PACKAGE) - {PLANNING_PACKAGE}
+
+    violations = []
+    for package_name in sorted(closure):
+        if package_name in PLANNING_FORBIDDEN_PACKAGES:
+            reason = "native component" if package_name in COMPONENT_PACKAGES else "query layer"
+            violations.append(
+                f"planning closure -> {reason}: {PLANNING_PACKAGE} resolves {package_name} under --all-features"
+            )
+        elif package_name == DATAFUSION_PACKAGE_PREFIX or package_name.startswith(f"{DATAFUSION_PACKAGE_PREFIX}-"):
+            violations.append(
+                f"planning closure -> DataFusion: {PLANNING_PACKAGE} resolves {package_name} under --all-features"
+            )
+        elif looks_native(package_name):
+            violations.append(
+                f"planning closure -> native sys crate: {PLANNING_PACKAGE} resolves {package_name} "
+                "under --all-features"
+            )
+    return violations
 
 
 def check_package_edges(metadata: dict[str, object]) -> list[str]:
@@ -551,8 +644,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         metadata = load_metadata(root)
         graph_violations = check_package_edges(metadata)
+        closure_violations = check_planning_closure(metadata)
         source_violations = check_sources(root, metadata)
-        violations = graph_violations + source_violations
+        violations = graph_violations + closure_violations + source_violations
         if violations:
             print("ERROR: dependency direction contracts violated:", file=sys.stderr)
             for violation in sorted(set(violations)):

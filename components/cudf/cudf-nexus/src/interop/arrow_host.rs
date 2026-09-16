@@ -44,8 +44,8 @@ use arrow::{
     array::*,
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{
-        DataType as ArrowDataType, Decimal32Type, Decimal64Type, DecimalType, Field, FieldRef, Schema, TimeUnit,
-        validate_decimal_precision_and_scale,
+        DataType as ArrowDataType, Decimal32Type, Decimal64Type, Decimal128Type, DecimalType, Field, FieldRef, Schema,
+        TimeUnit, validate_decimal_precision_and_scale,
     },
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
     record_batch::{RecordBatch, RecordBatchOptions},
@@ -1026,7 +1026,8 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Duration(TimeUnit::Millisecond) => DataType::new(TypeId::DurationMilliseconds),
         ArrowDataType::Duration(TimeUnit::Microsecond) => DataType::new(TypeId::DurationMicroseconds),
         ArrowDataType::Duration(TimeUnit::Nanosecond) => DataType::new(TypeId::DurationNanoseconds),
-        ArrowDataType::Decimal128(_, scale) => {
+        ArrowDataType::Decimal128(precision, scale) => {
+            validate_arrow_decimal::<Decimal128Type>(*precision, *scale, operation)?;
             DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))?
         },
         ArrowDataType::Decimal32(precision, scale) => {

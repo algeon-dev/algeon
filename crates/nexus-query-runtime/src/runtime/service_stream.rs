@@ -35,10 +35,13 @@ use super::{
     context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
     stream_cleanup::{ServiceStreamTestProbeSlot, StreamCleanupCompletion, StreamCleanupSupervisor},
 };
-use crate::observability::{
-    RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeResourceDomain, RuntimeResourceId,
-    RuntimeResourceRow, RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope, RuntimeTopologyRecord,
-    StreamLeaseAcquisition, StreamLeaseLifecycleState,
+use crate::{
+    native_error::cudf_query_error,
+    observability::{
+        RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeResourceDomain,
+        RuntimeResourceId, RuntimeResourceRow, RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope,
+        RuntimeTopologyRecord, StreamLeaseAcquisition, StreamLeaseLifecycleState,
+    },
 };
 
 /// Fallback and upper bound for the default service stream pool size.
@@ -729,7 +732,7 @@ impl ServiceStreamPool {
 
     fn build_runtime(&self) -> Result<cudf::Runtime> {
         cudf::Runtime::builder().with_device(self.device()).with_device_memory_manager().build().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.service_stream_pool.runtime",
                 "failed to initialize service stream pool runtime",
                 error,
@@ -997,7 +1000,7 @@ impl StreamLease {
         resource_epoch.check_open("nexus_query_engine.service_stream_pool.lease.runtime")?;
         let retained: Arc<dyn Send + Sync> = resource_epoch.clone();
         runtime.with_retained_lifetime(retained).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.service_stream_pool.lease.runtime",
                 "failed to retain query-service lifetime for leased runtime",
                 error,

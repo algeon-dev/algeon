@@ -9,7 +9,7 @@ use super::{
         prepare_bounded_join_side_input_from_shared_frame, projected_output_columns_for_retained_sizing,
         release_bounded_join_side_frame,
     },
-    *,
+    cudf_query_error, *,
 };
 use crate::{
     admission::CompiledJoinExecutionStrategy,
@@ -1045,7 +1045,7 @@ fn concatenate_streamed_hash_join_outputs(
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.streamed_hash_output_concat",
                 "failed to concatenate streamed bounded hash join output chunks",
                 error,
@@ -1176,7 +1176,7 @@ impl CompiledMixedSizeData<'_> {
             Self::LeftOnly(size_data) => size_data.device_allocated_size_bytes(),
         };
         result.map(|bytes| bytes as u64).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.mixed_size_data_bytes",
                 "failed to observe compiled bounded mixed join size-data memory",
                 error,
@@ -1255,7 +1255,7 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
     let index_bytes = match hash_indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.compiled_keyed_equality_index_bytes",
                 "failed to observe compiled bounded equality join gather-map memory",
                 error,
@@ -1322,7 +1322,7 @@ impl CompiledJoinIndices {
         match self {
             Self::Pair { left, right } => {
                 let left_bytes = left.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.bounded.join.gather_map_bytes",
                         "failed to observe compiled bounded join left gather-map memory",
                         error,
@@ -1330,7 +1330,7 @@ impl CompiledJoinIndices {
                     .with_fact("join_type", node.spec.join_type)
                 })?;
                 let right_bytes = right.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.bounded.join.gather_map_bytes",
                         "failed to observe compiled bounded join right gather-map memory",
                         error,
@@ -1341,7 +1341,7 @@ impl CompiledJoinIndices {
             },
             Self::LeftOnly(indices) => {
                 indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.bounded.join.gather_map_bytes",
                         "failed to observe compiled bounded join gather-map memory",
                         error,

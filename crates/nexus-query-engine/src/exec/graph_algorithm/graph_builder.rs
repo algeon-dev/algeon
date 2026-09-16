@@ -1,6 +1,6 @@
 use super::{
-    DataFrame, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result, graph_build_range,
-    map_cugraph_error, run_with_uncached_cugraph_graph,
+    DataFrame, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result, cudf_query_error,
+    graph_build_range, map_cugraph_error, run_with_uncached_cugraph_graph,
 };
 
 #[cfg(feature = "cugraph")]
@@ -98,7 +98,7 @@ where
             return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
         },
         Err(error) => {
-            let primary = QueryError::from_cudf(
+            let primary = cudf_query_error(
                 "nexus_query_engine.graph_algorithm.resident_cache.copy_edges",
                 "failed to copy graph edges into the resident-cache allocation domain",
                 error,
@@ -430,7 +430,7 @@ fn copy_graph_result_into_attempt(
     attempt_runtime: &cudf::Runtime,
 ) -> Result<GraphAlgorithmExecutionResult> {
     outcome.frame = outcome.frame.copy_into_runtime(attempt_runtime).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.resident_cache.copy_result",
             "failed to copy resident-cache graph output into the attempt allocation domain",
             error,

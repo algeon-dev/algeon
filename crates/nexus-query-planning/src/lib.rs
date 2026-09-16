@@ -1,6 +1,21 @@
-//! DataFusion-free native query planning, proof, and admission contracts.
+//! Backend-neutral native query planning, proof, and admission contracts.
+//!
+//! This crate depends on neither DataFusion nor any RAPIDS component: its
+//! resolved dependency closure under the union of every feature contains
+//! neither, which `scripts/ci/check_dependency_direction.py` enforces.
+//! Questions it cannot answer from Arrow and IR semantics alone — whether a
+//! backend can represent a type, bind an expression, or infer a kernel's
+//! output type — are asked through [`backend::BackendCapabilities`], which the
+//! execution engine implements and passes in explicitly as a
+//! [`backend::AnalysisContext`].
+//!
+//! Note that a native-free dependency closure is a structural property, not a
+//! demonstration: this workspace has no build or test lane that runs without a
+//! CUDA toolchain installed, so "builds on a host without RAPIDS" remains
+//! unproven here.
 
 pub mod admission;
+pub mod backend;
 pub mod capability;
 pub mod chunk;
 pub mod contract_report;
@@ -15,8 +30,6 @@ pub mod expr;
 #[doc(hidden)]
 pub mod expression_lowering_policy;
 pub mod graph_observation;
-#[doc(hidden)]
-pub mod materialization_sizing;
 pub mod mode;
 pub mod naming;
 pub mod optimizer;

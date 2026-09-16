@@ -1,5 +1,6 @@
 use nexus_query_engine::{
     admission::{BoundedPipelineDecision, bounded_pipeline_decision},
+    backend::AnalysisContext,
     capability::AggregateStrategyExecutionOptions,
     error::Result,
     expr::Expr,
@@ -44,6 +45,7 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _bounded_decision: fn(
         &QueryPlan,
         nexus_query_engine::mode::StatisticalAggregateExecutionMode,
+        AnalysisContext<'_>,
     ) -> Result<BoundedPipelineDecision> = bounded_pipeline_decision;
-    let _source_validation: fn(&LocalParquetSource) -> Result<()> = validate_local_parquet_source;
+    let _source_validation: fn(&LocalParquetSource, AnalysisContext<'_>) -> Result<()> = validate_local_parquet_source;
 }

@@ -1,7 +1,7 @@
 //! Source scan-limit application for planned chunks.
 
 use super::{
-    SourceChunk,
+    SourceChunk, SourceReadSizing,
     assembly::{exact_source_read_preflight_bytes, proportional_bytes, source_read_uncompressed_bytes},
 };
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
 pub fn apply_source_scan_limit_to_chunks(
     source: &LocalParquetSource,
     chunks: Vec<SourceChunk>,
+    sizing: SourceReadSizing<'_>,
 ) -> Result<Vec<SourceChunk>> {
     let Some(scan_limit) = source.scan_limit else {
         return Ok(chunks);
@@ -53,7 +54,7 @@ pub fn apply_source_scan_limit_to_chunks(
                 chunk.scan_limit_rows = Some(0);
                 chunk.known_row_count = Some(0);
                 chunk.exact_source_read_preflight_bytes =
-                    exact_source_read_preflight_bytes(source, chunk.known_row_count, chunk.zero_column_count);
+                    exact_source_read_preflight_bytes(source, chunk.known_row_count, chunk.zero_column_count, sizing);
                 limited.push(chunk);
             }
             break;
@@ -65,7 +66,7 @@ pub fn apply_source_scan_limit_to_chunks(
             continue;
         }
 
-        limited.push(scan_limited_chunk_prefix(source, chunk, remaining, scan_limit)?);
+        limited.push(scan_limited_chunk_prefix(source, chunk, remaining, scan_limit, sizing)?);
         break;
     }
     Ok(limited)
@@ -77,6 +78,7 @@ pub fn scan_limited_chunk_prefix(
     chunk: SourceChunk,
     keep_rows: u64,
     scan_limit: usize,
+    sizing: SourceReadSizing<'_>,
 ) -> Result<SourceChunk> {
     let keep_rows_usize = usize::try_from(keep_rows).map_err(|_error| {
         QueryError::new(
@@ -88,7 +90,7 @@ pub fn scan_limited_chunk_prefix(
         .with_fact("remaining_rows", keep_rows)
     })?;
     if keep_rows == 0 {
-        return Ok(rewrite_scan_limited_chunk_selection(source, chunk, Vec::new(), 0, 0, Some(0)));
+        return Ok(rewrite_scan_limited_chunk_selection(source, chunk, Vec::new(), 0, 0, Some(0), sizing));
     }
 
     let (selected_row_groups, selected_row_group_rows) = scan_limit_row_group_prefix(&chunk, keep_rows)?;
@@ -99,6 +101,7 @@ pub fn scan_limited_chunk_prefix(
         selected_row_group_rows,
         keep_rows,
         Some(keep_rows_usize),
+        sizing,
     ))
 }
 
@@ -166,6 +169,7 @@ pub fn rewrite_scan_limited_chunk_selection(
     selected_row_group_rows: u64,
     output_row_count: u64,
     scan_limit_rows: Option<usize>,
+    sizing: SourceReadSizing<'_>,
 ) -> SourceChunk {
     let known_row_group_bytes =
         sum_selected_row_group_values(chunk.source_file_row_group_bytes.as_ref(), &selected_row_groups);
@@ -198,7 +202,7 @@ pub fn rewrite_scan_limited_chunk_selection(
     chunk.estimated_chunk_bytes = estimated_chunk_bytes;
     chunk.estimated_source_read_bytes = estimated_source_read_bytes;
     chunk.exact_source_read_preflight_bytes =
-        exact_source_read_preflight_bytes(source, Some(selected_row_group_rows), chunk.zero_column_count);
+        exact_source_read_preflight_bytes(source, Some(selected_row_group_rows), chunk.zero_column_count, sizing);
     chunk.known_row_count = Some(output_row_count);
     chunk.scan_limit_rows = scan_limit_rows;
     chunk.size_estimate_based = chunk.known_row_group_bytes.is_none();

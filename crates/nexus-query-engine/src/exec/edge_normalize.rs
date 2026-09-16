@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::{
     CudfSortOptions, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionContext, GpuDataFrame, NodeId,
-    QueryError, QueryMetrics, Result, execution_overrides,
+    QueryMetrics, Result, cudf_query_error, execution_overrides,
 };
 use crate::plan::{EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner};
 
@@ -36,7 +36,7 @@ pub(super) fn execute_edge_normalize(
     if node.spec.add_reverse {
         let reverse = reverse_edges(&frame, &node.spec, node_id)?;
         frame = frame.with_execution(&overrides).concat_many(&[&reverse]).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.edge_normalize.reverse_concat",
                 "failed to append reverse edges for native edge normalization",
                 error,
@@ -56,7 +56,7 @@ pub(super) fn execute_edge_normalize(
             .with_execution(&overrides)
             .sort_values(sort_by, CudfSortOptions::new().with_stable(true))
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.edge_normalize.sort",
                     "failed to sort edges for native edge normalization",
                     error,
@@ -76,7 +76,7 @@ pub(super) fn execute_edge_normalize(
                     .build(),
             )
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.edge_normalize.dedup",
                     "failed to collapse duplicate edges for native edge normalization",
                     error,
@@ -103,7 +103,7 @@ fn project_edge_columns(frame: DataFrame, spec: &EdgeNormalizeSpec, node_id: Nod
         columns.push(edge_id);
     }
     frame.select(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.edge_normalize.project",
             "failed to project edge-list columns for native edge normalization",
             error,
@@ -118,7 +118,7 @@ fn project_edge_columns(frame: DataFrame, spec: &EdgeNormalizeSpec, node_id: Nod
 
 fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -> Result<DataFrame> {
     let source = frame.series(&spec.edge_columns.source).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.edge_normalize.reverse_source",
             "failed to access source column for native reverse-edge expansion",
             error,
@@ -127,7 +127,7 @@ fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -
         .with_fact("column", &spec.edge_columns.source)
     })?;
     let destination = frame.series(&spec.edge_columns.destination).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.edge_normalize.reverse_destination",
             "failed to access destination column for native reverse-edge expansion",
             error,
@@ -139,7 +139,7 @@ fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -
         vec![(spec.edge_columns.source.clone(), destination), (spec.edge_columns.destination.clone(), source)];
     if let Some(weight) = &spec.edge_columns.weight {
         let series = frame.series(weight).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.edge_normalize.reverse_weight",
                 "failed to access weight column for native reverse-edge expansion",
                 error,
@@ -151,7 +151,7 @@ fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -
     }
     if let Some(edge_id) = &spec.edge_columns.edge_id {
         let series = frame.series(edge_id).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.edge_normalize.reverse_edge_id",
                 "failed to access edge-id column for native reverse-edge expansion",
                 error,
@@ -162,7 +162,7 @@ fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -
         pairs.push((edge_id.clone(), series));
     }
     DataFrame::from_series(pairs).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.edge_normalize.reverse_frame",
             "failed to assemble reverse edges for native edge normalization",
             error,

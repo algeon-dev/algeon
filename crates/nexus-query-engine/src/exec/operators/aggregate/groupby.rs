@@ -1,7 +1,7 @@
 use super::{
     DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionOverrides,
-    GroupByOptions, LoweredAggregate, QueryError, QueryMetrics, Result, attach_budget_token_failure_facts,
-    budgeted_value,
+    GroupByOptions, LoweredAggregate, QueryMetrics, Result, attach_budget_token_failure_facts, budgeted_value,
+    cudf_query_error, cudf_query_error_with_budget_details,
 };
 
 pub(in crate::exec) fn execute_groupby_aggregate(
@@ -19,7 +19,7 @@ pub(in crate::exec) fn execute_groupby_aggregate(
         .options(GroupByOptions::builder().include_null_keys(true).build())
         .with_execution(overrides)
         .agg(&aggregate.aggregations)
-        .map_err(|error| QueryError::from_cudf(operation, "failed to execute nexus native aggregate", error))?;
+        .map_err(|error| cudf_query_error(operation, "failed to execute nexus native aggregate", error))?;
     rename_groupby_key_columns(&mut output, aggregate, "nexus_query_engine.aggregate.rename_keys")?;
     Ok(output)
 }
@@ -72,7 +72,7 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
         .options(GroupByOptions::builder().include_null_keys(true).build())
         .agg_with_budget(&aggregate.aggregations, token)
-        .map_err(|error| QueryError::from_cudf_with_budget_details(operation, message, error));
+        .map_err(|error| cudf_query_error_with_budget_details(operation, message, error));
     let mut output = match result {
         Ok(outcome) => {
             let output = budgeted_value(outcome, metrics, operation);
@@ -107,7 +107,7 @@ pub(super) fn rename_groupby_key_columns(
     if !key_renames.is_empty() {
         *output = output
             .rename_columns(key_renames)
-            .map_err(|error| QueryError::from_cudf(operation, "failed to rename nexus native aggregate keys", error))?;
+            .map_err(|error| cudf_query_error(operation, "failed to rename nexus native aggregate keys", error))?;
     }
     Ok(())
 }
@@ -124,9 +124,7 @@ fn execute_groupby_distinct(
         .drop_duplicates(
             DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
         )
-        .map_err(|error| {
-            QueryError::from_cudf(operation, "failed to execute nexus native group-only aggregate", error)
-        })?;
+        .map_err(|error| cudf_query_error(operation, "failed to execute nexus native group-only aggregate", error))?;
     select_and_rename_groupby_distinct_keys(output, aggregate)
 }
 
@@ -145,14 +143,14 @@ fn execute_groupby_distinct_with_budget(
         .drop_duplicates(
             DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
         )
-        .map_err(|error| attach_budget_token_failure_facts(QueryError::from_cudf(operation, message, error), token))?;
+        .map_err(|error| attach_budget_token_failure_facts(cudf_query_error(operation, message, error), token))?;
     select_and_rename_groupby_distinct_keys(output, aggregate)
 }
 
 fn select_and_rename_groupby_distinct_keys(output: DataFrame, aggregate: &LoweredAggregate) -> Result<DataFrame> {
     let mut output =
         output.select(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.select_group_only_keys",
                 "failed to select native group-only aggregate keys",
                 error,
@@ -167,7 +165,7 @@ fn select_and_rename_groupby_distinct_keys(output: DataFrame, aggregate: &Lowere
         .collect::<Vec<_>>();
     if !key_renames.is_empty() {
         output = output.rename_columns(key_renames).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.rename_group_only_keys",
                 "failed to rename native group-only aggregate keys",
                 error,

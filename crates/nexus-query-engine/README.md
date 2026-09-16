@@ -17,7 +17,14 @@ DataFusion-specific recognition, lowering, table-format integration, and
 
 - `exec/` owns bounded relational, graph, vector, and source execution plus
   host/GPU-resident result handling.
-- `chunk/` composes planning chunk contracts with execution behavior.
+- `rapids_backend.rs` implements planning's backend capability contract. The
+  checks *are* the lowering, so capability and execution binding cannot drift.
+- `prepared/` and `datatypes.rs` bind query IR to cuDF expressions, aggregates,
+  and dtypes; the dtype conversion table itself belongs to `cudf-nexus`.
+- `parquet_metadata.rs`, `source_chunk/`, and `chunk/` own source preparation:
+  footer fetch, parsing, sidecars, the footer metadata cache, and chunk plans.
+- `native_error.rs` is the native error facade: cuVS projection lives here, the
+  shared cuDF projection is re-exported from the runtime's native boundary.
 - `lib.rs` is the compatible facade over planning and runtime owners.
 - `execution_integration_tests/` covers planning/runtime/execution composition.
 

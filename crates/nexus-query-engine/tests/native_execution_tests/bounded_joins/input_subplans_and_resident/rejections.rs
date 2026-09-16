@@ -55,7 +55,9 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         aggregate_schema,
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(
+        !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join()
+    );
 
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -128,7 +130,13 @@ fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
         join_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none());
+    assert!(
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+            &plan,
+            nexus_query_engine::rapids_backend::rapids_analysis_context()
+        )
+        .is_none()
+    );
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).expect("grouped aggregate join-build input should execute");

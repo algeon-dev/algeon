@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 pub use nexus_query_engine::{
-    admission, attempt, error, exec, expr, metrics, observability, parquet_stats, plan, runtime, source,
+    admission, attempt, error, exec, expr, metrics, native_error, observability, parquet_stats, plan, runtime, source,
 };
 
 use crate::{

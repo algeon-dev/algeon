@@ -2,7 +2,7 @@
 fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {
     let plan = single_source_plan();
 
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -28,7 +28,7 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
     let plan = single_source_plan();
     let options = NativeOptimizerOptions::disabled();
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert!(!options.projection_simplification.enabled);
     assert!(!options.semijoin_reduction.enabled);
@@ -45,7 +45,7 @@ fn native_optimizer_captures_keyed_hash_join_strategy_options_in_plan() {
         KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
     let options = NativeOptimizerOptions { keyed_hash_join_strategy, ..NativeOptimizerOptions::disabled() };
 
-    let result = optimize_query_plan(single_source_plan(), &options);
+    let result = optimize_query_plan(single_source_plan(), &options, rapids_analysis_context());
 
     assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
 }
@@ -66,7 +66,7 @@ fn native_optimizer_preserves_keyed_hash_join_strategy_options_through_projectio
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.projection_simplification.applied_count, 1);

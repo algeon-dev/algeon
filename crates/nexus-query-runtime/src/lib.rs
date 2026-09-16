@@ -2,9 +2,8 @@
 
 pub mod attempt;
 pub mod metrics;
+pub mod native_error;
 pub mod observability;
 pub mod runtime;
 
-#[doc(hidden)]
-pub mod parquet_metadata;
 mod triage_metrics;

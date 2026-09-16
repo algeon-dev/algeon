@@ -4,15 +4,15 @@ use super::{
     BoundedExecutionAttempt, BoundedPlan, ExecutionBudgetToken, ExecutionContext, FilterNode, GpuDataFrame,
     GpuResidentInputMap, GpuResidentSource, GpuResultHandle, LocalParquetSource, NodeId, PlanNode, ProjectionNode,
     QueryError, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlan, ResidentGpuFrame, Result, ResultSink,
-    SourceChunk, SourceChunkPlanningPolicy, concatenate_source_read_outputs, execute_bounded_aggregate_to_frame,
-    execute_compiled_bounded_aggregate_from_frame, execute_edge_normalize, execute_filter_with_budget, execute_limit,
-    execute_projection_with_budget, execute_projection_with_budget_and_prepared, execute_sort,
-    execute_source_adjacent_chunk_projection, execute_source_adjacent_chunk_unary, execute_window,
-    execution_budget_token_for_boundary, execution_overrides, materialize_bounded_to_host, observe_device_memory_bytes,
-    plan_local_parquet_source_chunks_with_execution_context, projection_regexp_replace_prepare,
-    read_gpu_resident_source, read_literal_batch_source, read_local_parquet_chunks_required_only,
-    reject_bounded_join_plan, release_source_read_outputs_reverse, unsupported_bounded_shape,
-    validate_local_parquet_source,
+    SourceChunk, SourceChunkPlanningPolicy, concatenate_source_read_outputs, cudf_query_error,
+    execute_bounded_aggregate_to_frame, execute_compiled_bounded_aggregate_from_frame, execute_edge_normalize,
+    execute_filter_with_budget, execute_limit, execute_projection_with_budget,
+    execute_projection_with_budget_and_prepared, execute_sort, execute_source_adjacent_chunk_projection,
+    execute_source_adjacent_chunk_unary, execute_window, execution_budget_token_for_boundary, execution_overrides,
+    materialize_bounded_to_host, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
+    projection_regexp_replace_prepare, read_gpu_resident_source, read_literal_batch_source,
+    read_local_parquet_chunks_required_only, reject_bounded_join_plan, release_source_read_outputs_reverse,
+    unsupported_bounded_shape, validate_local_parquet_source,
 };
 #[cfg(feature = "cugraph")]
 use super::{DataFrame, execute_graph_algorithm_sanitized, graph_preparation_bypass_input};
@@ -266,7 +266,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
         let overrides = overrides_lease.overrides();
         let timer = Instant::now();
         let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.union.concat",
                 "failed to concatenate bounded native union inputs",
                 error,
@@ -526,7 +526,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     source: &LocalParquetSource,
     node_id: NodeId,
 ) -> Result<ResidentGpuFrame> {
-    validate_local_parquet_source(source)?;
+    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,
@@ -571,7 +571,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     node_id: NodeId,
     stages: &[BoundedGenericSourceAdjacentStage<'_>],
 ) -> Result<ResidentGpuFrame> {
-    validate_local_parquet_source(source)?;
+    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
     let planning_policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
         source,
         execution.context().memory_control_policy(),

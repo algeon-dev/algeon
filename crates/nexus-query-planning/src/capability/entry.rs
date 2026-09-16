@@ -20,19 +20,20 @@ use super::{
     model::CapabilityAnalysis,
     node::analyze_node,
 };
+use crate::backend::AnalysisContext;
 
 impl QueryPlan {
     /// Runs bounded capability analysis for diagnostics, report projection, and
     /// native bounded-join admission.
-    pub fn capability_analysis(&self) -> CapabilityAnalysis {
-        analyze_query_capabilities(self)
+    pub fn capability_analysis(&self, ctx: AnalysisContext<'_>) -> CapabilityAnalysis {
+        analyze_query_capabilities(self, ctx)
     }
 }
 
 /// Runs bounded capability analysis for diagnostics, report projection, and
 /// native bounded-join admission.
-pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
-    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+pub fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> CapabilityAnalysis {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node, ctx)).collect::<Vec<_>>();
     let mut edges =
         plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
     edges.push(analyze_sink_edge(plan));

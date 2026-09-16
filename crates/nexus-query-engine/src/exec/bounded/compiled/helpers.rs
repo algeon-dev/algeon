@@ -10,6 +10,7 @@ use crate::{
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::{attach_budget_token_failure_facts, bounded::BoundedExecutionAttempt, execution_budget_token_for_boundary},
+    native_error::cudf_query_error,
     pipeline::{PipelineTask, ResidentResourceId},
     plan::{JoinNode, JoinSide, LimitNode, NodeId, PlanNode, QueryPlan, SortNode},
     runtime::resident::GpuDataFrame,
@@ -174,7 +175,7 @@ pub(super) fn measure_join_build_key_unique(
         Ok(keys) => keys,
         Err(error) => {
             execution.metrics_mut().operator_time += timer.elapsed();
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.build_key_uniqueness_probe.input",
                 "failed to project join build-key uniqueness probe columns",
                 error,
@@ -188,7 +189,7 @@ pub(super) fn measure_join_build_key_unique(
         Err(error) => {
             execution.metrics_mut().operator_time += timer.elapsed();
             return Err(attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.build_key_uniqueness_probe.distinct_keys",
                     "failed to compute join build-key uniqueness",
                     error,

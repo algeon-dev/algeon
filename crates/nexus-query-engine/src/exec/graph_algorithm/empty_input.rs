@@ -2,7 +2,7 @@
 
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionResult, NodeId, QueryError, QueryErrorCode,
-    Result, traversal,
+    Result, cudf_query_error, traversal,
 };
 
 pub(super) fn resolve_empty_graph_input(
@@ -243,7 +243,7 @@ pub(super) fn empty_graph_result_frame(
                 .with_fact("data_type", format!("{:?}", field.data_type()))
             })?;
             let series = runtime.empty_series(dtype).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.empty_input",
                     "failed to build empty graph result column",
                     error,
@@ -255,7 +255,7 @@ pub(super) fn empty_graph_result_frame(
         })
         .collect::<Result<Vec<_>>>()?;
     DataFrame::from_series(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.empty_input",
             "failed to build empty graph result frame",
             error,

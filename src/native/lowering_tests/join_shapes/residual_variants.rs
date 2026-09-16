@@ -736,7 +736,9 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
         &[(NativeJoinSide::Left, "input0.key", "__nexus_native_join_row_presence")],
     );
     assert!(
-        !native_plan.capability_analysis().has_rejections(),
+        !native_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .has_rejections(),
         "capability analysis should accept hidden preserved-side semi/anti output"
     );
 

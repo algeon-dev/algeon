@@ -1,6 +1,8 @@
 use arrow::datatypes::SchemaRef;
 
-use super::{DataFrame, NodeId, QueryError, QueryErrorCode, QueryMetrics, Result, cudf_dtype_from_arrow_type};
+use super::{
+    DataFrame, NodeId, QueryError, QueryErrorCode, QueryMetrics, Result, cudf_dtype_from_arrow_type, cudf_query_error,
+};
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_algorithm_metadata_with_null_drops(metadata: String, null_edge_rows_dropped: u64) -> String {
@@ -198,7 +200,7 @@ pub(super) fn normalize_graph_result_schema(mut frame: DataFrame, schema: &Schem
             .with_fact("expected_type", format!("{:?}", field.data_type()))
         })?;
         let actual_type = frame.series(field_name).and_then(|series| series.dtype()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.schema_normalize",
                 "failed to inspect cuGraph result column",
                 error,
@@ -207,7 +209,7 @@ pub(super) fn normalize_graph_result_schema(mut frame: DataFrame, schema: &Schem
         })?;
         if actual_type != target_type {
             frame = frame.cast_column(field_name, target_type).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.schema_normalize",
                     "failed to cast cuGraph result column to the stable SQL schema",
                     error,
@@ -220,7 +222,7 @@ pub(super) fn normalize_graph_result_schema(mut frame: DataFrame, schema: &Schem
     }
     let columns = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     frame.select(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.schema_normalize",
             "failed to order cuGraph result columns according to the stable SQL schema",
             error,

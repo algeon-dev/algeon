@@ -337,12 +337,16 @@ def assert_manifest_contract() -> None:
         "nexus-query-planning/cugraph",
         "nexus-query-runtime/cugraph",
     ]
-    assert engine["features"]["cuvs"] == [
-        "dep:cuvs",
-        "dep:cuvs-sys",
-        "nexus-query-planning/cuvs",
-        "nexus-query-runtime/cuvs",
-    ]
+    # cuVS is used by the engine alone. Neither planning nor runtime has a
+    # `cuvs` feature to forward to any more: planning's only cuVS code was the
+    # error projection, which now lives in the engine, and runtime's feature
+    # never did anything but forward planning's.
+    assert engine["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys"]
+    planning = load_manifest("crates/nexus-query-planning/Cargo.toml")
+    assert "cuvs" not in planning["features"]
+    assert "cuvs" not in planning.get("dependencies", {})
+    runtime = load_manifest("crates/nexus-query-runtime/Cargo.toml")
+    assert "cuvs" not in runtime["features"]
     assert engine["dependencies"]["cuvs"]["optional"] is True
     assert engine["dependencies"]["cuvs-sys"]["optional"] is True
 

@@ -232,7 +232,8 @@ async fn process_query(
     let frontend_outputs = nexus_query_engine::shadow::frontend_output_records(&gpu_plan);
     let frontend_coverage = frontend_output_coverage(&gpu_plan);
 
-    let decision = bounded_pipeline_decision(&gpu_plan, mode)?;
+    let decision =
+        bounded_pipeline_decision(&gpu_plan, mode, nexus_query_engine::rapids_backend::rapids_analysis_context())?;
     let rejection_reason = decision.rejection_projection().map(|projection| projection.reason.to_string());
     let admission = decision.into_execution_admission()?;
     let pipeline = match &admission {

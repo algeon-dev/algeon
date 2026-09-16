@@ -10,13 +10,14 @@ use super::{
     LimitSpec, LiteralValue, LoweredAggregate, NodeId, ProjectionNode, QueryError, QueryErrorCode, QueryMetrics,
     RecordBatch, ReduceAgg, Result, ScanAgg, Schema, SortNode, WindowFrame, WindowNode,
     aggregate_expr_is_exact_nunique, aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
-    aggregate_spec_has_floating_statistical_aggregate, col, cudf_dtype_from_arrow_type, datafusion_order_columns,
-    execution_overrides, global_count_star_expr, global_valid_count_state_alias, is_supported_arrow_implicit_cast,
-    limit_slice, lit, lit_null, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr,
-    lower_filter_predicate_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
-    lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec, lower_sort_spec,
-    projection_schema_mismatch_error, schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
-    validate_avg_output_fields, validate_global_aggregate_capability, when,
+    aggregate_spec_has_floating_statistical_aggregate, col, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_query_error_with_budget_details, datafusion_order_columns, execution_overrides, global_count_star_expr,
+    global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit, lit_null,
+    lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_filter_predicate_expr,
+    lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec, lower_projection_output_expr,
+    lower_single_stage_grouped_aggregate_spec, lower_sort_spec, projection_schema_mismatch_error,
+    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
+    validate_global_aggregate_capability, when,
 };
 use crate::expression_lowering_policy::ExpressionLoweringPolicy;
 
@@ -97,7 +98,7 @@ pub(super) fn execute_filter(
     let timer = Instant::now();
     let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
         frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.filter.execute",
                 "failed to execute nexus native IN-list filter",
                 error,
@@ -106,7 +107,7 @@ pub(super) fn execute_filter(
     } else {
         let predicate = lower_filter_predicate_expr(&node.predicate)?;
         frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
-            QueryError::from_cudf("nexus_query_engine.filter.execute", "failed to execute nexus native filter", error)
+            cudf_query_error("nexus_query_engine.filter.execute", "failed to execute nexus native filter", error)
         })?
     };
     metrics.operator_time += timer.elapsed();
@@ -126,7 +127,7 @@ pub(super) fn execute_filter_with_budget(
     let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
         frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.filter.execute",
                     "failed to execute nexus native IN-list filter",
                     error,
@@ -138,11 +139,7 @@ pub(super) fn execute_filter_with_budget(
         let predicate = lower_filter_predicate_expr(&node.predicate)?;
         frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
-                    "nexus_query_engine.filter.execute",
-                    "failed to execute nexus native filter",
-                    error,
-                ),
+                cudf_query_error("nexus_query_engine.filter.execute", "failed to execute nexus native filter", error),
                 token,
             )
         })?
@@ -211,7 +208,7 @@ fn literal_in_list_filter_series(
         _ => return Ok(None),
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.filter.literal_in_list_values",
             "failed to upload native filter IN-list values",
             error,
@@ -254,7 +251,7 @@ pub(super) fn execute_sort_on_frame(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).sort_values(sort.columns, options).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.sort.execute", "failed to execute nexus native sort", error)
+        cudf_query_error("nexus_query_engine.sort.execute", "failed to execute nexus native sort", error)
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
@@ -301,7 +298,7 @@ pub(super) fn execute_union(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.union.concat", "failed to concatenate native union inputs", error)
+        cudf_query_error("nexus_query_engine.union.concat", "failed to concatenate native union inputs", error)
             .with_fact("node_id", node_id)
             .with_fact("input_count", input_count)
     })?;
@@ -368,11 +365,7 @@ pub(super) fn execute_window(
 
     let output_names = output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let output = frame.select(output_names).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.window.select",
-            "failed to select native window output columns",
-            error,
-        )
+        cudf_query_error("nexus_query_engine.window.select", "failed to select native window output columns", error)
     })?;
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
@@ -451,7 +444,7 @@ fn execute_partition_window_aggregate(
             cudf::MergeOptions::new().how(cudf::JoinType::Left).on(keys.iter().map(String::as_str)),
         )
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.aggregate.merge",
                 "failed to align native partition aggregate window outputs",
                 error,
@@ -513,14 +506,14 @@ fn execute_cumulative_window_aggregate(
     let mut temp_columns = Vec::new();
     let row_index_name = unique_temp_column_name(&frame, "__nexus_native_window_input_row_index");
     let row_index_series = frame.row_positions().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.cumulative.row_index",
             "failed to create cumulative window row index",
             error,
         )
     })?;
     let mut working = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.cumulative.row_index",
             "failed to append cumulative window row index",
             error,
@@ -542,11 +535,7 @@ fn execute_cumulative_window_aggregate(
     }
     let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
     working = working.with_execution(&overrides).sort_values(sort_columns, sort_options).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.window.cumulative.sort",
-            "failed to sort cumulative window input",
-            error,
-        )
+        cudf_query_error("nexus_query_engine.window.cumulative.sort", "failed to sort cumulative window input", error)
     })?;
 
     for (function_index, function) in node.spec.functions.iter().enumerate() {
@@ -564,7 +553,7 @@ fn execute_cumulative_window_aggregate(
             unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_value_{function_index}"));
         let value_expr = lower_expr(expr)?.alias(value_name.as_str());
         working = working.with_execution(&overrides).with_columns([value_expr]).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.value",
                 "failed to materialize cumulative window input expression",
                 error,
@@ -577,7 +566,7 @@ fn execute_cumulative_window_aggregate(
         let scanned = working
             .group_scan_sorted(partition_keys.iter().map(String::as_str), value_name.as_str(), scan_agg)
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.window.cumulative.scan",
                     "failed to execute grouped cumulative window scan",
                     error,
@@ -585,7 +574,7 @@ fn execute_cumulative_window_aggregate(
                 .with_fact("function", format!("{function:?}"))
             })?;
         working = working.with_column(scan_name.as_str(), scanned).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.output",
                 "failed to append cumulative window scan output",
                 error,
@@ -598,7 +587,7 @@ fn execute_cumulative_window_aggregate(
             unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_valid_{function_index}"));
         let valid_expr = when(col(value_name.as_str()).is_null()).then(0i32).otherwise(1i32).alias(valid_name.as_str());
         working = working.with_columns([valid_expr]).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.validity",
                 "failed to append cumulative window validity indicator",
                 error,
@@ -611,14 +600,14 @@ fn execute_cumulative_window_aggregate(
         let seen = working
             .group_scan_sorted(partition_keys.iter().map(String::as_str), valid_name.as_str(), ScanAgg::Sum)
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.window.cumulative.validity_scan",
                     "failed to execute grouped cumulative window validity scan",
                     error,
                 )
             })?;
         working = working.with_column(seen_name.as_str(), seen).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.validity_scan",
                 "failed to append cumulative window validity scan output",
                 error,
@@ -630,7 +619,7 @@ fn execute_cumulative_window_aggregate(
         let filled_name =
             unique_temp_column_name(&working, &format!("__nexus_native_window_cumulative_filled_{function_index}"));
         let filled = working.series(scan_name.as_str()).and_then(|series| series.ffill()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.fill",
                 "failed to forward-fill cumulative window scan output",
                 error,
@@ -638,7 +627,7 @@ fn execute_cumulative_window_aggregate(
             .with_fact("scan_column", scan_name.as_str())
         })?;
         working = working.with_column(filled_name.as_str(), filled).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.fill",
                 "failed to append forward-filled cumulative window scan output",
                 error,
@@ -652,7 +641,7 @@ fn execute_cumulative_window_aggregate(
             .otherwise(col(scan_name.as_str()))
             .alias(alias.as_str());
         working = working.with_columns([output_expr]).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.output",
                 "failed to append cumulative window output",
                 error,
@@ -665,7 +654,7 @@ fn execute_cumulative_window_aggregate(
         .sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
         .and_then(|frame| frame.without_columns(temp_columns.iter().map(String::as_str)))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.cumulative.cleanup",
                 "failed to restore cumulative window input order",
                 error,
@@ -719,20 +708,16 @@ fn execute_rank_window(
     let partition_rank_name = unique_temp_column_name(&output, "__nexus_native_window_partition_rank");
     let peer_rank_name = unique_temp_column_name(&output, "__nexus_native_window_peer_rank");
     let partition_rank = output.group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.window.rank.partition",
-            "failed to compute partition row numbers",
-            error,
-        )
+        cudf_query_error("nexus_query_engine.window.rank.partition", "failed to compute partition row numbers", error)
     })?;
     let peer_rank = output.group_cumcount(peer_keys.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.window.rank.peer", "failed to compute rank peer offsets", error)
+        cudf_query_error("nexus_query_engine.window.rank.peer", "failed to compute rank peer offsets", error)
     })?;
     output = output
         .with_column(partition_rank_name.as_str(), partition_rank)
         .and_then(|frame| frame.with_column(peer_rank_name.as_str(), peer_rank))
         .map_err(|error| {
-            QueryError::from_cudf("nexus_query_engine.window.rank.columns", "failed to append rank work columns", error)
+            cudf_query_error("nexus_query_engine.window.rank.columns", "failed to append rank work columns", error)
         })?;
 
     let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
@@ -740,12 +725,12 @@ fn execute_rank_window(
         - col(peer_rank_name.as_str()).cast(uint64))
     .alias(alias);
     output = output.with_execution(&overrides).with_columns([rank_expr]).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.window.rank.output", "failed to append rank output column", error)
+        cudf_query_error("nexus_query_engine.window.rank.output", "failed to append rank output column", error)
     })?;
     temp_columns.push(partition_rank_name);
     temp_columns.push(peer_rank_name);
     output = output.without_columns(temp_columns.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.window.rank.cleanup", "failed to remove rank work columns", error)
+        cudf_query_error("nexus_query_engine.window.rank.cleanup", "failed to remove rank work columns", error)
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(output)
@@ -781,7 +766,7 @@ fn execute_row_number_window(
             _ => unreachable!("row_number output type validated before execution"),
         }
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.row_number.output",
                 "failed to append global row_number output column",
                 error,
@@ -798,14 +783,14 @@ fn execute_row_number_window(
 
     let partition_rank_name = unique_temp_column_name(&output, "__nexus_native_window_row_number_partition_rank");
     let partition_rank = output.group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.row_number.partition",
             "failed to compute partition row numbers",
             error,
         )
     })?;
     output = output.with_column(partition_rank_name.as_str(), partition_rank).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.row_number.columns",
             "failed to append row_number work column",
             error,
@@ -834,7 +819,7 @@ fn execute_row_number_window(
         _ => unreachable!("row_number output type validated before execution"),
     };
     output = output.with_execution(&overrides).with_columns([row_number_expr]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.row_number.output",
             "failed to append row_number output column",
             error,
@@ -842,7 +827,7 @@ fn execute_row_number_window(
     })?;
     temp_columns.push(partition_rank_name);
     output = output.without_columns(temp_columns.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.row_number.cleanup",
             "failed to remove row_number work columns",
             error,
@@ -884,14 +869,14 @@ fn execute_lag_lead_window(
     //    after libcudf's group-defined output order.
     let row_index_name = unique_temp_column_name(&frame, "__nexus_native_window_lag_lead_row_index");
     let row_index_series = frame.row_positions().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.lag_lead.row_index",
             "failed to construct LAG / LEAD row index column",
             error,
         )
     })?;
     let working = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.lag_lead.row_index",
             "failed to append LAG / LEAD row index column",
             error,
@@ -913,18 +898,14 @@ fn execute_lag_lead_window(
     }
     let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
     let sorted = working.with_execution(&overrides).sort_values(sort_columns, sort_options).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.window.lag_lead.sort",
-            "failed to sort LAG / LEAD window input",
-            error,
-        )
+        cudf_query_error("nexus_query_engine.window.lag_lead.sort", "failed to sort LAG / LEAD window input", error)
     })?;
 
     // 4. Materialize the shifted value column on the sorted frame.
     let value_name = unique_temp_column_name(&sorted, "__nexus_native_window_lag_lead_value");
     let value_expr_cudf = lower_expr(value_expr)?.alias(value_name.as_str());
     let sorted = sorted.with_execution(&overrides).with_columns([value_expr_cudf]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.lag_lead.value",
             "failed to materialize LAG / LEAD value column",
             error,
@@ -937,7 +918,7 @@ fn execute_lag_lead_window(
     //    matching Int32 scalar so libcudf sees a well-typed pair.
     let value_fill = build_lag_lead_value_fill_scalar(context, default, &output_arrow_dtype)?;
     let row_index_fill = context.runtime()?.scalar(0i32).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.lag_lead.row_index_fill",
             "failed to construct LAG / LEAD row index fill scalar",
             error,
@@ -990,7 +971,7 @@ fn execute_lag_lead_window(
         .options(groupby_options)
         .shift_sorted(&shift_specs)
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.lag_lead.shift",
                 "failed to execute grouped LAG / LEAD shift",
                 error,
@@ -1009,14 +990,14 @@ fn execute_lag_lead_window(
             CudfSortOptions::new().with_descending(vec![false]).with_nulls_first(vec![false]).with_stable(true),
         )
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.lag_lead.restore_order",
                 "failed to restore LAG / LEAD row order",
                 error,
             )
         })?;
     let shifted_series = restored.series(shifted_value_column.as_str()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.lag_lead.extract",
             "failed to extract shifted LAG / LEAD column",
             error,
@@ -1024,7 +1005,7 @@ fn execute_lag_lead_window(
     })?;
 
     let result = frame.with_column(alias, shifted_series).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.window.lag_lead.attach",
             "failed to attach LAG / LEAD output column to input frame",
             error,
@@ -1054,7 +1035,7 @@ fn build_lag_lead_value_fill_scalar(
             .with_fact("dtype", format!("{output_arrow_dtype:?}"))
         })?;
         runtime.null_scalar_with_data_type(cudf_dtype).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.lag_lead.fill_null",
                 "failed to construct LAG / LEAD null fill scalar",
                 error,
@@ -1095,7 +1076,7 @@ fn build_lag_lead_value_fill_scalar(
             },
         }
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.window.lag_lead.fill_value",
                 "failed to construct LAG / LEAD fill scalar",
                 error,
@@ -1120,7 +1101,7 @@ fn rank_partition_keys(
     }
     let key = unique_temp_column_name(&frame, "__nexus_native_window_global_partition");
     let with_key = frame.with_columns([lit(0i32).alias(key.as_str())]).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.window.rank.global_key", "failed to append rank partition key", error)
+        cudf_query_error("nexus_query_engine.window.rank.global_key", "failed to append rank partition key", error)
     })?;
     temp_columns.push(key.clone());
     Ok((with_key, vec![key]))
@@ -1157,7 +1138,7 @@ pub(super) fn execute_limit_spec_on_frame(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).slice(offset, length).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.limit.execute", "failed to execute nexus native limit", error)
+        cudf_query_error("nexus_query_engine.limit.execute", "failed to execute nexus native limit", error)
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))

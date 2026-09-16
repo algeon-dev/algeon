@@ -15,7 +15,7 @@ use arrow::{
 use cudf::hash::{FastHashMap, fast_hash_map_with_capacity};
 
 use super::{
-    add_floating_statistical_aggregate_contract_facts,
+    add_floating_statistical_aggregate_contract_facts, cudf_query_error,
     partial_strategy::{
         add_aggregate_strategy_execution_option_facts, add_partial_aggregate_input_evidence_facts, reduction_ratio_ppm,
     },
@@ -504,7 +504,7 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
     output: &RecordBatch,
 ) -> Result<DataFrame> {
     DataFrame::from_record_batch(&context.runtime()?, output).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.floating_statistical_exact.output",
             "failed to upload DataFusion-exact stddev aggregate output",
             error,

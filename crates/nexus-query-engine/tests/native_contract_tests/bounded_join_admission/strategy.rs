@@ -1,10 +1,10 @@
 #[test]
 fn large_keyed_inner_build_selects_partitioned_strategy() {
     let plan = large_keyed_join_strategy_plan(JoinType::Inner);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections());
-    let facts = modeled_facts(&plan).expect("large partitioned join should still be admitted");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("large partitioned join should still be admitted");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:100000000"));
@@ -24,11 +24,10 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
         .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024);
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         large_keyed_join_strategy_plan(JoinType::Inner),
-        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() },
-    );
+        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() }, nexus_query_engine::rapids_backend::rapids_analysis_context(),);
     let plan = optimized.plan;
 
-    let facts = modeled_facts(&plan).expect("custom strategy thresholds should keep the join admitted");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("custom strategy thresholds should keep the join admitted");
 
     assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
@@ -38,10 +37,10 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
 fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(!analysis.has_rejections(), "{join_type} large partitioned join should be admitted");
-        let facts = modeled_facts(&plan).expect("large partitioned join should report modeled bounded facts");
+        let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("large partitioned join should report modeled bounded facts");
         assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
         assert_eq!(
             facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -58,10 +57,10 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
 #[test]
 fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(10, 1024);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "large probe reusable join with small build should be admitted");
-    let facts = modeled_facts(&plan).expect("large probe reusable join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("large probe reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -72,10 +71,10 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
 #[test]
 fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Inner, None);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "small single-use inner join should be admitted");
-    let facts = modeled_facts(&plan).expect("small single-use inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("small single-use inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -91,10 +90,10 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
 #[test]
 fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Inner, Some("small-reusable-build"));
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "small join with build artifact should be admitted");
-    let facts = modeled_facts(&plan).expect("small join with build artifact should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("small join with build artifact should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -103,10 +102,10 @@ fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
 #[test]
 fn small_keyed_left_join_keeps_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Left, None);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "small left join should be admitted");
-    let facts = modeled_facts(&plan).expect("small left join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("small left join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -115,10 +114,10 @@ fn small_keyed_left_join_keeps_reusable_strategy() {
 #[test]
 fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let plan = byte_small_row_non_small_keyed_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "byte-small row-non-small inner join should be admitted");
-    let facts = modeled_facts(&plan).expect("byte-small row-non-small inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("byte-small row-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -130,10 +129,10 @@ fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
 #[test]
 fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let plan = row_small_byte_non_small_keyed_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "row-small byte-non-small inner join should be admitted");
-    let facts = modeled_facts(&plan).expect("row-small byte-non-small inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("row-small byte-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -145,10 +144,10 @@ fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
 #[test]
 fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
     let plan = unknown_probe_small_left_build_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "unknown probe reusable join with small build should be admitted");
-    let facts = modeled_facts(&plan).expect("small-build reusable join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("small-build reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -159,10 +158,10 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
 #[test]
 fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild() {
     let plan = string_keyed_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
-    let facts = modeled_facts(&plan).expect("flat string-key hash join should report a modeled bounded contract");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("flat string-key hash join should report a modeled bounded contract");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
 }
@@ -170,10 +169,10 @@ fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild
 #[test]
 fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
     let plan = string_keyed_join_strategy_plan_with_probe(10_000_000, 3 * 1024 * 1024 * 1024, 10, 1024);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
-    let facts = modeled_facts(&plan).expect("small flat string build should report a modeled bounded contract");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("small flat string build should report a modeled bounded contract");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
@@ -182,10 +181,10 @@ fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
 #[test]
 fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(2_000_000, 128 * 1024 * 1024);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "large probe partitioned join should be admitted");
-    let facts = modeled_facts(&plan).expect("large probe partitioned join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("large probe partitioned join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:probe_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
@@ -195,10 +194,10 @@ fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
 #[test]
 fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     let plan = medium_single_use_keyed_build_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "single-use non-small build should remain admitted");
-    let facts = modeled_facts(&plan).expect("single-use non-small build should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("single-use non-small build should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -215,10 +214,10 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
 #[test]
 fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
     let plan = large_keyed_residual_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "large keyed inner residual partitioned join should be admitted");
-    let facts = modeled_facts(&plan).expect("large partitioned residual join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("large partitioned residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:9663676416"));
@@ -232,10 +231,10 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
 #[test]
 fn keyed_inner_residual_or_selects_mixed_join_strategy() {
     let plan = large_keyed_residual_or_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through mixed join");
-    let facts = modeled_facts(&plan).expect("keyed residual OR join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("keyed residual OR join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -366,13 +365,13 @@ fn keyed_residual_semi_anti_join_strategy_plan(
 #[test]
 fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
     let plan = decimal_division_residual_join_strategy_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         !analysis.has_rejections(),
         "keyed decimal-division residual join should be admitted through post-join filtering"
     );
-    let facts = modeled_facts(&plan).expect("keyed decimal-division residual join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("keyed decimal-division residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),

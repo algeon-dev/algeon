@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    backend::AnalysisContext,
     capability::{CapabilityRejectionOwner, CapabilityRejectionProjection},
     error::QueryError,
     mode::StatisticalAggregateExecutionMode,
@@ -11,17 +12,20 @@ use crate::{
 ///
 /// These facts are explanatory planning/execution diagnostics. They do not
 /// toggle executor behavior and should not be treated as optimizer hints.
-pub fn bounded_join_unsupported_shape_facts(plan: &QueryPlan) -> Option<BTreeMap<&'static str, String>> {
+pub fn bounded_join_unsupported_shape_facts(
+    plan: &QueryPlan,
+    ctx: AnalysisContext<'_>,
+) -> Option<BTreeMap<&'static str, String>> {
     if !plan.contains_join() {
         return None;
     }
 
-    match super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default()) {
+    match super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx) {
         Ok(decision) => decision
             .rejection_projection()
-            .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, Some(projection))),
+            .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, Some(projection), ctx)),
         Err(error) => {
-            let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None);
+            let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None, ctx);
             insert_bounded_join_rejection_projection_error_facts(&mut facts, &error);
             Some(facts)
         },
@@ -29,12 +33,15 @@ pub fn bounded_join_unsupported_shape_facts(plan: &QueryPlan) -> Option<BTreeMap
 }
 
 /// Returns modeled bounded-join facts for plans accepted by bounded admission.
-pub fn bounded_join_modeled_facts(plan: &QueryPlan) -> Option<BTreeMap<&'static str, String>> {
+pub fn bounded_join_modeled_facts(
+    plan: &QueryPlan,
+    ctx: AnalysisContext<'_>,
+) -> Option<BTreeMap<&'static str, String>> {
     if !plan.contains_join() {
         return None;
     }
     matches!(
-        super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default()),
+        super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx),
         Ok(decision) if decision.admission().is_some()
     )
     .then(|| bounded_join_modeled_facts_unchecked(plan))
@@ -44,10 +51,11 @@ pub fn bounded_join_modeled_facts(plan: &QueryPlan) -> Option<BTreeMap<&'static 
 pub fn bounded_join_unsupported_shape_facts_with_projection(
     plan: &QueryPlan,
     rejection_projection: Option<&CapabilityRejectionProjection>,
+    ctx: AnalysisContext<'_>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::new();
     insert_join_strategy_facts(&mut facts, plan);
-    insert_local_rejection_facts(&mut facts, plan, rejection_projection);
+    insert_local_rejection_facts(&mut facts, plan, rejection_projection, ctx);
     facts
 }
 
@@ -147,9 +155,10 @@ fn insert_local_rejection_facts(
     facts: &mut BTreeMap<&'static str, String>,
     plan: &QueryPlan,
     rejection_projection: Option<&CapabilityRejectionProjection>,
+    ctx: AnalysisContext<'_>,
 ) {
     let analysis_projection =
-        rejection_projection.is_none().then(|| plan.capability_analysis().first_rejection_projection()).flatten();
+        rejection_projection.is_none().then(|| plan.capability_analysis(ctx).first_rejection_projection()).flatten();
     if let Some(rejection) = rejection_projection.or(analysis_projection.as_ref()) {
         facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
         facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));

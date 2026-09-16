@@ -3,8 +3,8 @@ use std::time::Instant;
 use super::{
     BoundedCompiledFilteredJoinBuildState, BoundedCompiledFilteredJoinProbeState, BoundedExecutionAttempt,
     BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionOverrides, GpuDataFrame,
-    GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, QueryError, QueryMetrics, ResidentGpuFrame,
-    Result, attach_budget_token_failure_facts, execution_budget_token_for_boundary, execution_overrides,
+    GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, QueryMetrics, ResidentGpuFrame, Result,
+    attach_budget_token_failure_facts, cudf_query_error, execution_budget_token_for_boundary, execution_overrides,
     join_index_error, join_side_output_upper_bound_bytes, keyed_filtered_semi_anti_join_capable, lower_null_equality,
     materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
     null_aware_anti_probe_input, observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
@@ -85,7 +85,7 @@ fn build_filtered_join_artifact(
     let timer = Instant::now();
     let filtered_join =
         build.frame.with_execution(&overrides).build_filtered_join(&right_keys, filtered_options).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.build_filtered_join",
                 "failed to build compiled bounded filtered join",
                 error,
@@ -161,7 +161,7 @@ fn deduplicate_filtered_join_build_keys(
         Err(error) => {
             release_bounded_join_side_frame(build);
             return Err(attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.filtered_build_key_deduplicate",
                     "failed to deduplicate compiled filtered join build keys",
                     error,
@@ -246,13 +246,9 @@ fn begin_filtered_join_probe_state(
     }
     .map_err(|error| join_index_error(error, node))?;
     let probe_state_bytes = probe_state.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.filtered_probe_state_bytes",
-            probe_state_bytes_message,
-            error,
-        )
-        .with_fact("join_type", node.spec.join_type)
-        .with_fact("build_side", JoinSide::Right)
+        cudf_query_error("nexus_query_engine.bounded.join.filtered_probe_state_bytes", probe_state_bytes_message, error)
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", JoinSide::Right)
     })?;
     execution.metrics_mut().record_filtered_join_probe_state_bytes(probe_state_bytes);
     Ok((probe_state, probe_state_bytes))
@@ -286,7 +282,7 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         },
     };
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.filtered_gather_map_bytes",
             "failed to observe compiled streamed filtered join gather-map memory",
             error,
@@ -366,7 +362,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
     let overrides = overrides_lease.overrides();
     let indices = probe_state.materialize_indices_in(&overrides).map_err(|error| join_index_error(error, node))?;
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.filtered_gather_map_bytes",
             "failed to observe compiled bounded filtered join gather-map memory",
             error,

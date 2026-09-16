@@ -24,7 +24,7 @@ features = ["cugraph", "cuvs", "nvml"]
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-planning/cugraph", "nexus-query-runtime/cugraph"]
-cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-planning/cuvs", "nexus-query-runtime/cuvs"]
+cuvs = ["dep:cuvs", "dep:cuvs-sys"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["nexus-query-runtime/nvml"]
 # Forwards the controlled device-quarantine qualification capability the root adapter exposes.

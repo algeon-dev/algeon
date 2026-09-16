@@ -21,7 +21,7 @@ use nexus_query_planning::{
 use super::{
     CacheExecutionReservation, CacheGraphActivity, CacheResidency, CacheResidencyChargeTransaction, CacheResidencyPin,
 };
-use crate::runtime::gpu::DeviceLedger;
+use crate::{native_error::cudf_query_error, runtime::gpu::DeviceLedger};
 
 const OPERATION: &str = "nexus_query_engine.runtime.cache.resident_graph";
 
@@ -340,7 +340,7 @@ impl GpuResidentGraphCache {
             return Ok(None);
         };
         let allocation_scope = self.inner.allocation_domain.allocation_scope().map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to create a graph-specific cache allocation scope", error)
+            cudf_query_error(OPERATION, "failed to create a graph-specific cache allocation scope", error)
                 .with_fact("device_ordinal", self.inner.ledger.device_ordinal())
                 .with_fact("cache_allocation_domain_id", self.cache_allocation_domain_id())
         })?;
@@ -752,7 +752,7 @@ impl GpuResidentGraphInsertTransaction {
 
     fn scope_usage(&self) -> Result<cudf::DeviceMemoryResourceUsage> {
         self.allocation_scope.usage().map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to read resident graph allocation-scope usage", error)
+            cudf_query_error(OPERATION, "failed to read resident graph allocation-scope usage", error)
                 .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id())
         })
     }
@@ -762,13 +762,9 @@ impl GpuResidentGraphInsertTransaction {
     /// precharge; accounting counters alone are not a CUDA completion proof.
     fn synchronize_scope(&self) -> Result<()> {
         self.allocation_scope.synchronize().map_err(|error| {
-            QueryError::from_cudf(
-                OPERATION,
-                "failed to fence resident graph allocation scope before reconciliation",
-                error,
-            )
-            .with_fact("reason", "resident_graph_scope_retirement_fence_failed")
-            .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id())
+            cudf_query_error(OPERATION, "failed to fence resident graph allocation scope before reconciliation", error)
+                .with_fact("reason", "resident_graph_scope_retirement_fence_failed")
+                .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id())
         })
     }
 
@@ -924,7 +920,7 @@ where T: GpuResidentGraphTransposition
     #[doc(hidden)]
     pub fn scope_peak_bytes(&self) -> Result<u64> {
         self.entry.allocation_scope.usage().map(|usage| usage.peak_bytes).map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to read checked-out resident graph allocation-scope peak", error)
+            cudf_query_error(OPERATION, "failed to read checked-out resident graph allocation-scope peak", error)
                 .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())
         })
     }
@@ -934,7 +930,7 @@ where T: GpuResidentGraphTransposition
     #[doc(hidden)]
     pub fn synchronize_scope(&self) -> Result<()> {
         self.entry.allocation_scope.synchronize().map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to fence checked-out resident graph allocation scope", error)
+            cudf_query_error(OPERATION, "failed to fence checked-out resident graph allocation scope", error)
                 .with_fact("reason", "resident_graph_scope_retirement_fence_failed")
                 .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())
         })
@@ -946,7 +942,7 @@ where T: GpuResidentGraphTransposition
     #[doc(hidden)]
     pub fn verify_retained_scope_usage(&self) -> Result<()> {
         let current = self.entry.allocation_scope.usage().map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to read checked-out resident graph allocation-scope usage", error)
+            cudf_query_error(OPERATION, "failed to read checked-out resident graph allocation-scope usage", error)
                 .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())
         })?;
         let retained = self.entry.retained_scope_usage;

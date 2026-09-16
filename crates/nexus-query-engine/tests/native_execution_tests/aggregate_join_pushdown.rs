@@ -13,7 +13,11 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     let left_schema = write_aggregate_join_pushdown_left_parquet(&runtime, &left_path);
     let right_schema = write_aggregate_join_pushdown_right_parquet(&runtime, &right_path);
     let plan = aggregate_join_pushdown_execution_plan(&left_path, &left_schema, &right_path, &right_schema);
-    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
@@ -52,7 +56,11 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     let left_schema = write_left_count_customer_parquet(&runtime, &left_path);
     let right_schema = write_left_count_orders_parquet(&runtime, &right_path);
     let plan = aggregate_join_pushdown_left_count_plan(&left_path, &left_schema, &right_path, &right_schema);
-    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
@@ -385,7 +393,11 @@ fn bounded_native_query_filters_left_semi_groups_before_the_final_aggregate() {
         write_semi_group_filter_keyset_parquet(&keyset_path, &[1_500_003, 7, 7, SEMI_GROUP_FILTER_ROWS + 5, 42]);
 
     let plan = left_semi_group_filter_aggregate_plan(&detail_path, &detail_schema, &keyset_path, &keyset_schema, None);
-    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     let pushdown = &optimizer_result.diagnostics.aggregate_join_pushdown;
     assert_eq!(pushdown.applied_count, 0, "{pushdown:?}");
     assert_eq!(

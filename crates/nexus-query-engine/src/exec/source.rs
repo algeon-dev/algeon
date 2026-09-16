@@ -9,7 +9,8 @@ use super::{
     LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError, QueryErrorCode,
     QueryMetrics, Result, Schema, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode,
     SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN, append_source_order_columns, budgeted_value, col,
-    comma_separated_usize, cudf_dtype_from_arrow_type, execution_overrides, lit,
+    comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
+    cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, execution_overrides, lit,
     plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
@@ -69,7 +70,7 @@ pub(in crate::exec) fn read_local_parquet_source(
     source: &LocalParquetSource,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    validate_local_parquet_source(source)?;
+    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
 
     // The DataFusion exact-statistical-order implementation carries hidden
     // order columns whose presence depends on a thread-local execution scope.
@@ -145,11 +146,11 @@ pub(in crate::exec) fn read_literal_batch_source(
     source: &crate::source::LiteralBatchSource,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    crate::source::validate_literal_batch_source(source)?;
+    crate::source::validate_literal_batch_source(source, crate::rapids_backend::rapids_analysis_context())?;
     context.check_cancellation("nexus_query_engine.literal_batch_source.read")?;
     let timer = Instant::now();
     let frame = DataFrame::from_record_batches(&context.runtime()?, &source.batches).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.literal_batch_source.read",
             "failed to import literal Arrow batches into nexus native",
             error,
@@ -273,7 +274,7 @@ fn read_local_parquet_source_uncached(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.concat",
             "failed to concatenate native local parquet files",
             error,
@@ -578,14 +579,14 @@ fn count_star_probe_weight_frame(
     })?;
     let timer = Instant::now();
     let series = context.runtime()?.series(&[count]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.count_star_probe",
             "failed to construct native count-star probe weight input",
             error,
         )
     })?;
     let frame = DataFrame::from_series([(crate::source::ZERO_COLUMN_COUNT_COLUMN, series)]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.count_star_probe",
             "failed to construct native count-star probe weight frame",
             error,
@@ -800,7 +801,9 @@ fn validate_local_parquet_chunk_batch(
     source: &LocalParquetSource,
     batch: &crate::chunk::SourceChunkBatch,
 ) -> Result<()> {
-    if source.reader_predicate.as_ref().is_some_and(|predicate| !source.reader_predicate_is_supported(predicate)) {
+    if source.reader_predicate.as_ref().is_some_and(|predicate| {
+        !source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
+    }) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.local_parquet_chunk_batch",
@@ -860,9 +863,9 @@ fn cudf_error_for_chunk_with_budget_details(
     chunk: &SourceChunk,
 ) -> QueryError {
     if chunk.location.is_local_path() {
-        QueryError::from_cudf_with_budget_details(operation, message, error)
+        cudf_query_error_with_budget_details(operation, message, error)
     } else {
-        QueryError::from_cudf_without_source_with_budget_details(operation, message, &error)
+        cudf_query_error_without_source_with_budget_details(operation, message, &error)
     }
 }
 
@@ -873,9 +876,9 @@ fn cudf_error_for_chunk_read(
     chunk: &SourceChunk,
 ) -> QueryError {
     if chunk.location.is_local_path() {
-        QueryError::from_cudf(operation, message, error)
+        cudf_query_error(operation, message, error)
     } else {
-        QueryError::from_cudf_without_source(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     }
 }
 
@@ -886,9 +889,9 @@ fn cudf_error_for_chunk_batch_with_budget_details(
     chunks: &[SourceChunk],
 ) -> QueryError {
     if chunks.iter().any(|chunk| !chunk.location.is_local_path()) {
-        QueryError::from_cudf_without_source_with_budget_details(operation, message, &error)
+        cudf_query_error_without_source_with_budget_details(operation, message, &error)
     } else {
-        QueryError::from_cudf_with_budget_details(operation, message, error)
+        cudf_query_error_with_budget_details(operation, message, error)
     }
 }
 
@@ -1062,7 +1065,8 @@ mod tests {
         let mut source = test_source(vec![file], Vec::new());
         source.missing_columns.push(MissingColumn::new("missing", ArrowDataType::Int32, true));
 
-        let error = validate_local_parquet_source(&source).unwrap_err();
+        let error =
+            validate_local_parquet_source(&source, crate::rapids_backend::rapids_analysis_context()).unwrap_err();
         let rendered = format!("{error:?}");
 
         assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));

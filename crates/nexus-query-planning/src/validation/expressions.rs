@@ -1,10 +1,9 @@
 use std::collections::BTreeSet;
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
-use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
 
 use super::{
-    BinaryOp, Expr, LiteralValue, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type,
+    BinaryOp, Expr, LiteralValue, QueryError, QueryErrorCode, Result,
     types::{
         is_decimal_type, is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
@@ -13,7 +12,8 @@ use super::{
     },
 };
 use crate::{
-    datatypes::{is_supported_arrow_cast, is_supported_arrow_type},
+    backend::AnalysisContext,
+    datatypes::is_supported_arrow_cast,
     expr::{CaseWhen, DatePart},
     plan::ProjectionOutput,
 };
@@ -22,29 +22,30 @@ pub fn validate_expr(
     expr: &Expr,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     match expr {
-        Expr::Column(column) => validate_column(column.name(), input_schema, available_columns),
-        Expr::Literal(value) => validate_literal(value),
+        Expr::Column(column) => validate_column(column.name(), input_schema, available_columns, ctx),
+        Expr::Literal(value) => validate_literal(value, ctx),
         Expr::Not(expr) => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_boolean(&data_type, "NOT argument")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_scalar_operator_value(&data_type, "IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
-        Expr::Cast { expr, target_type } => validate_cast_expr(expr, target_type, input_schema, available_columns),
+        Expr::Cast { expr, target_type } => validate_cast_expr(expr, target_type, input_schema, available_columns, ctx),
         Expr::TryCast { expr, target_type } => {
-            validate_try_cast_expr(expr, target_type, input_schema, available_columns)
+            validate_try_cast_expr(expr, target_type, input_schema, available_columns, ctx)
         },
         Expr::Binary { left, op, right, output_type } => {
-            validate_binary_expr(left, *op, right, output_type.as_ref(), input_schema, available_columns)
+            validate_binary_expr(left, *op, right, output_type.as_ref(), input_schema, available_columns, ctx)
         },
         Expr::Like { expr, escape, .. } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "LIKE input")?;
             if let Some(escape) = escape {
                 validate_like_escape_contract(escape)?;
@@ -52,7 +53,7 @@ pub fn validate_expr(
             Ok(ArrowDataType::Boolean)
         },
         Expr::Substring { expr, start, length } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "SUBSTRING input")?;
             validate_substring_bounds(*start, *length)?;
             Ok(ArrowDataType::Utf8)
@@ -62,35 +63,35 @@ pub fn validate_expr(
         | Expr::Trim { expr, .. }
         | Expr::LTrim { expr, .. }
         | Expr::RTrim { expr, .. } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "string case input")?;
             Ok(data_type)
         },
         Expr::StringContains { expr, .. } | Expr::StartsWith { expr, .. } | Expr::EndsWith { expr, .. } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "string predicate input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::StringLength { expr, output_type } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "string length input")?;
             require_integral_type(output_type, "string length output")?;
             Ok(output_type.clone())
         },
         Expr::RegexpReplace { expr, output_type, .. } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_string(&data_type, "REGEXP_REPLACE input")?;
             require_string(output_type, "REGEXP_REPLACE output")?;
             Ok(output_type.clone())
         },
-        Expr::Concat(exprs) => validate_concat_expr(exprs, input_schema, available_columns),
+        Expr::Concat(exprs) => validate_concat_expr(exprs, input_schema, available_columns, ctx),
         Expr::Abs(expr) => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_arithmetic_type(&data_type, "ABS input")?;
             Ok(data_type)
         },
         Expr::Sqrt { expr, output_type } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_arithmetic_type(&data_type, "SQRT input")?;
             require_arithmetic_type(output_type, "SQRT output")?;
             if is_decimal_type(&data_type) != is_decimal_type(output_type) {
@@ -105,7 +106,7 @@ pub fn validate_expr(
             Ok(output_type.clone())
         },
         Expr::Round { expr, output_type, .. } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             require_arithmetic_type(&data_type, "ROUND input")?;
             require_arithmetic_type(output_type, "ROUND output")?;
             if is_decimal_type(&data_type) != is_decimal_type(output_type) {
@@ -119,21 +120,25 @@ pub fn validate_expr(
             }
             Ok(output_type.clone())
         },
-        Expr::InList { expr, list, .. } => validate_in_list_expr(expr, list, input_schema, available_columns),
+        Expr::InList { expr, list, .. } => validate_in_list_expr(expr, list, input_schema, available_columns, ctx),
         Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
-            let left_type = validate_expr(left, input_schema, available_columns)?;
-            let right_type = validate_expr(right, input_schema, available_columns)?;
+            let left_type = validate_expr(left, input_schema, available_columns, ctx)?;
+            let right_type = validate_expr(right, input_schema, available_columns, ctx)?;
             require_comparable_types(&left_type, &right_type)?;
             Ok(ArrowDataType::Boolean)
         },
-        Expr::Case { branches, else_expr } => validate_case_expr(branches, else_expr, input_schema, available_columns),
+        Expr::Case { branches, else_expr } => {
+            validate_case_expr(branches, else_expr, input_schema, available_columns, ctx)
+        },
         Expr::Extract { field, expr } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             match field {
                 DatePart::Year | DatePart::Month | DatePart::Day => {
                     require_date_or_timestamp(&data_type, "EXTRACT input")?
                 },
-                DatePart::Minute => validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns)?,
+                DatePart::Minute => {
+                    validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns, ctx)?
+                },
                 DatePart::Hour
                 | DatePart::Second
                 | DatePart::Millisecond
@@ -150,7 +155,7 @@ pub fn validate_expr(
             Ok(ArrowDataType::Int32)
         },
         Expr::DateTrunc { field, expr, output_type } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
             match field {
                 DatePart::Day
                 | DatePart::Hour
@@ -170,7 +175,7 @@ pub fn validate_expr(
                 .with_fact("field", field.to_string())),
             }
         },
-        Expr::Alias { expr, .. } => validate_expr(expr, input_schema, available_columns),
+        Expr::Alias { expr, .. } => validate_expr(expr, input_schema, available_columns, ctx),
     }
 }
 
@@ -179,8 +184,9 @@ fn validate_try_cast_expr(
     target_type: &ArrowDataType,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
-    let source_type = validate_expr(input, input_schema, available_columns)?;
+    let source_type = validate_expr(input, input_schema, available_columns, ctx)?;
     if !is_string_arrow_type(&source_type) || !is_integral_type(target_type) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -202,9 +208,10 @@ fn validate_cast_expr(
     target_type: &ArrowDataType,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
-    let source_type = validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
-    if !is_supported_arrow_cast(&source_type, target_type)
+    let source_type = validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns, ctx)?;
+    if !is_supported_arrow_cast(&source_type, target_type, ctx)
         && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
     {
         return Err(QueryError::new(
@@ -222,6 +229,7 @@ fn validate_timestamp_second_integer_cast_expr(
     expr: &Expr,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<()> {
     let Expr::Cast { expr, target_type } = expr else {
         return Err(QueryError::new(
@@ -232,7 +240,7 @@ fn validate_timestamp_second_integer_cast_expr(
         .with_fact("expression", expr));
     };
     require_timestamp_second(target_type, "timestamp cast target")?;
-    let source_type = validate_expr(expr, input_schema, available_columns)?;
+    let source_type = validate_expr(expr, input_schema, available_columns, ctx)?;
     require_integral_type(&source_type, "timestamp cast source")
 }
 
@@ -240,8 +248,9 @@ pub fn validate_projection_output_expr(
     output: &ProjectionOutput,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
-    validate_expr_with_expected_type(&output.expr, Some(output.field.data_type()), input_schema, available_columns)
+    validate_expr_with_expected_type(&output.expr, Some(output.field.data_type()), input_schema, available_columns, ctx)
 }
 
 fn validate_expr_with_expected_type(
@@ -249,11 +258,12 @@ fn validate_expr_with_expected_type(
     expected_type: Option<&ArrowDataType>,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     match expr {
-        Expr::Cast { expr, target_type } => validate_cast_expr(expr, target_type, input_schema, available_columns),
+        Expr::Cast { expr, target_type } => validate_cast_expr(expr, target_type, input_schema, available_columns, ctx),
         Expr::TryCast { expr, target_type } => {
-            validate_try_cast_expr(expr, target_type, input_schema, available_columns)
+            validate_try_cast_expr(expr, target_type, input_schema, available_columns, ctx)
         },
         Expr::Binary { left, op, right, output_type } => validate_binary_expr_with_expected_type(
             left,
@@ -263,11 +273,12 @@ fn validate_expr_with_expected_type(
             expected_type,
             input_schema,
             available_columns,
+            ctx,
         ),
         Expr::Alias { expr, .. } => {
-            validate_expr_with_expected_type(expr, expected_type, input_schema, available_columns)
+            validate_expr_with_expected_type(expr, expected_type, input_schema, available_columns, ctx)
         },
-        _ => validate_expr(expr, input_schema, available_columns),
+        _ => validate_expr(expr, input_schema, available_columns, ctx),
     }
 }
 
@@ -275,6 +286,7 @@ pub fn validate_column(
     name: &str,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     if !available_columns.contains(name) {
         return Err(QueryError::new(
@@ -294,7 +306,7 @@ pub fn validate_column(
         .with_fact("column", name)
         .with_fact("arrow_error", error.to_string())
     })?;
-    if !is_supported_arrow_type(field.data_type()) {
+    if !ctx.backend().supports_type(field.data_type()) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "nexus_query_engine.plan.validate_expr",
@@ -306,7 +318,7 @@ pub fn validate_column(
     Ok(field.data_type().clone())
 }
 
-pub fn validate_literal(value: &LiteralValue) -> Result<ArrowDataType> {
+pub fn validate_literal(value: &LiteralValue, ctx: AnalysisContext<'_>) -> Result<ArrowDataType> {
     if matches!(value, LiteralValue::IntervalMonthDayNano { .. }) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -316,7 +328,7 @@ pub fn validate_literal(value: &LiteralValue) -> Result<ArrowDataType> {
         .with_fact("literal", value));
     }
     let data_type = value.data_type();
-    if !is_supported_arrow_type(&data_type) {
+    if !ctx.backend().supports_type(&data_type) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "nexus_query_engine.plan.validate_expr",
@@ -335,10 +347,15 @@ fn validate_binary_expr(
     output_type: Option<&ArrowDataType>,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
-    validate_binary_expr_with_expected_type(left, op, right, output_type, None, input_schema, available_columns)
+    validate_binary_expr_with_expected_type(left, op, right, output_type, None, input_schema, available_columns, ctx)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "expression/join residual validation threads the shared schema pair plus the backend context"
+)]
 fn validate_binary_expr_with_expected_type(
     left: &Expr,
     op: BinaryOp,
@@ -347,6 +364,7 @@ fn validate_binary_expr_with_expected_type(
     expected_type: Option<&ArrowDataType>,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     let declared_type = output_type.or(expected_type);
     let left_interval = interval_literal(left);
@@ -360,14 +378,15 @@ fn validate_binary_expr_with_expected_type(
             right_interval,
             input_schema,
             available_columns,
+            ctx,
         );
     }
     if matches!(op, BinaryOp::And | BinaryOp::Or) && output_type.is_none() {
-        return validate_logical_binary_expr(left, op, right, input_schema, available_columns);
+        return validate_logical_binary_expr(left, op, right, input_schema, available_columns, ctx);
     }
 
-    let left_type = validate_expr(left, input_schema, available_columns)?;
-    let right_type = validate_expr(right, input_schema, available_columns)?;
+    let left_type = validate_expr(left, input_schema, available_columns, ctx)?;
+    let right_type = validate_expr(right, input_schema, available_columns, ctx)?;
     if let Some(output_type) = temporal_duration_binary_output_type(op, &left_type, &right_type)? {
         return Ok(output_type);
     }
@@ -387,9 +406,9 @@ fn validate_binary_expr_with_expected_type(
         BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
             require_arithmetic_type(&left_type, "binary arithmetic left operand")?;
             require_arithmetic_type(&right_type, "binary arithmetic right operand")?;
-            require_compatible_types(&left_type, &right_type, "binary arithmetic operands")?;
+            require_compatible_types(&left_type, &right_type, "binary arithmetic operands", ctx)?;
             if is_decimal_type(&left_type) || is_decimal_type(&right_type) {
-                decimal_arithmetic_output_type(op, &left_type, &right_type, declared_type)
+                decimal_arithmetic_output_type(op, &left_type, &right_type, declared_type, ctx)
             } else {
                 Ok(left_type)
             }
@@ -397,7 +416,7 @@ fn validate_binary_expr_with_expected_type(
         BinaryOp::Modulo => {
             require_integral_type(&left_type, "modulo left operand")?;
             require_integral_type(&right_type, "modulo right operand")?;
-            require_compatible_types(&left_type, &right_type, "modulo operands")?;
+            require_compatible_types(&left_type, &right_type, "modulo operands", ctx)?;
             Ok(left_type)
         },
         BinaryOp::BitwiseAnd
@@ -407,7 +426,7 @@ fn validate_binary_expr_with_expected_type(
         | BinaryOp::ShiftRight => {
             require_integral_type(&left_type, "bitwise left operand")?;
             require_integral_type(&right_type, "bitwise right operand")?;
-            require_compatible_types(&left_type, &right_type, "bitwise operands")?;
+            require_compatible_types(&left_type, &right_type, "bitwise operands", ctx)?;
             Ok(left_type)
         },
         BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
@@ -428,6 +447,7 @@ fn validate_logical_binary_expr(
     right: &Expr,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     let mut stack = vec![right, left];
     while let Some(expr) = stack.pop() {
@@ -437,7 +457,7 @@ fn validate_logical_binary_expr(
                 stack.push(left);
             },
             _ => {
-                let data_type = validate_expr(expr, input_schema, available_columns)?;
+                let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
                 require_boolean(&data_type, "boolean binary operand")?;
             },
         }
@@ -450,6 +470,7 @@ fn decimal_arithmetic_output_type(
     left_type: &ArrowDataType,
     right_type: &ArrowDataType,
     expected_type: Option<&ArrowDataType>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     if !is_decimal_type(left_type) && !is_decimal_type(right_type) {
         return Err(QueryError::new(
@@ -469,7 +490,7 @@ fn decimal_arithmetic_output_type(
             .with_fact("right_type", format!("{right_type:?}"))
             .with_fact("operator", op.to_string()));
         };
-        if !is_supported_arrow_type(expected_type) {
+        if !ctx.backend().supports_type(expected_type) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "nexus_query_engine.plan.validate_expr",
@@ -480,60 +501,29 @@ fn decimal_arithmetic_output_type(
         return Ok(expected_type.clone());
     }
 
-    let left_dtype = cudf_dtype_from_arrow_type(left_type).ok_or_else(|| {
-        QueryError::new(
+    if !ctx.backend().supports_type(left_type) {
+        return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "nexus_query_engine.plan.validate_expr",
             "native decimal arithmetic left operand type is not supported",
         )
-        .with_fact("left_type", format!("{left_type:?}"))
-    })?;
-    let right_dtype = cudf_dtype_from_arrow_type(right_type).ok_or_else(|| {
-        QueryError::new(
+        .with_fact("left_type", format!("{left_type:?}")));
+    }
+    if !ctx.backend().supports_type(right_type) {
+        return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "nexus_query_engine.plan.validate_expr",
             "native decimal arithmetic right operand type is not supported",
         )
-        .with_fact("right_type", format!("{right_type:?}"))
-    })?;
-    let output_dtype =
-        infer_binary_output_dtype(left_dtype, right_dtype, cudf_binary_operator(op)?).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.plan.validate_expr",
-                "failed to infer native decimal arithmetic output type",
-                error,
-            )
-            .with_fact("left_type", format!("{left_type:?}"))
-            .with_fact("right_type", format!("{right_type:?}"))
-            .with_fact("operator", op.to_string())
-        })?;
-    cudf::interop::arrow_host::arrow_type_from_cudf_dtype(output_dtype).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.plan.validate_expr",
-            "failed to map inferred native decimal arithmetic output type to Arrow",
-            error,
-        )
-        .with_fact("left_type", format!("{left_type:?}"))
-        .with_fact("right_type", format!("{right_type:?}"))
-        .with_fact("operator", op.to_string())
-    })
-}
-
-fn cudf_binary_operator(op: BinaryOp) -> Result<BinaryOperator> {
-    match op {
-        BinaryOp::Add => Ok(BinaryOperator::Add),
-        BinaryOp::Subtract => Ok(BinaryOperator::Sub),
-        BinaryOp::Multiply => Ok(BinaryOperator::Mul),
-        BinaryOp::Divide => Ok(BinaryOperator::Div),
-        _ => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "nexus_query_engine.plan.validate_expr",
-            "native decimal arithmetic cannot infer output type for this operator",
-        )
-        .with_fact("operator", op.to_string())),
+        .with_fact("right_type", format!("{right_type:?}")));
     }
+    ctx.backend().binary_output_type(op, left_type, right_type)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "expression/join residual validation threads the shared schema pair plus the backend context"
+)]
 fn validate_interval_binary_expr(
     left: &Expr,
     op: BinaryOp,
@@ -542,6 +532,7 @@ fn validate_interval_binary_expr(
     right_interval: Option<(i32, i32, i64)>,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     if left_interval.is_some() == right_interval.is_some() {
         return Err(QueryError::new(
@@ -570,7 +561,7 @@ fn validate_interval_binary_expr(
         right_interval.expect("right interval was checked above");
         left
     };
-    let operand_type = validate_expr(operand, input_schema, available_columns)?;
+    let operand_type = validate_expr(operand, input_schema, available_columns, ctx)?;
     require_date_or_timestamp(&operand_type, "interval arithmetic datetime operand")?;
     Ok(operand_type)
 }
@@ -580,6 +571,7 @@ fn validate_in_list_expr(
     list: &[Expr],
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     if list.is_empty() {
         return Err(QueryError::new(
@@ -588,7 +580,7 @@ fn validate_in_list_expr(
             "native IN list must not be empty",
         ));
     }
-    let expr_type = validate_expr(expr, input_schema, available_columns)?;
+    let expr_type = validate_expr(expr, input_schema, available_columns, ctx)?;
     for item in list {
         let Expr::Literal(value) = item else {
             return Err(QueryError::new(
@@ -604,8 +596,8 @@ fn validate_in_list_expr(
                 "native IN list does not yet model SQL null-containing list semantics",
             ));
         }
-        let item_type = validate_literal(value)?;
-        require_compatible_types(&expr_type, &item_type, "IN list value")?;
+        let item_type = validate_literal(value, ctx)?;
+        require_compatible_types(&expr_type, &item_type, "IN list value", ctx)?;
     }
     Ok(ArrowDataType::Boolean)
 }
@@ -614,6 +606,7 @@ fn validate_concat_expr(
     exprs: &[Expr],
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     if exprs.is_empty() {
         return Err(QueryError::new(
@@ -624,7 +617,7 @@ fn validate_concat_expr(
     }
     let mut output_type = ArrowDataType::Utf8;
     for expr in exprs {
-        let data_type = validate_expr(expr, input_schema, available_columns)?;
+        let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
         require_string(&data_type, "CONCAT input")?;
         if data_type == ArrowDataType::Utf8View {
             output_type = ArrowDataType::Utf8View;
@@ -714,6 +707,7 @@ fn validate_case_expr(
     else_expr: &Expr,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     if branches.is_empty() {
         return Err(QueryError::new(
@@ -722,12 +716,12 @@ fn validate_case_expr(
             "native CASE requires at least one WHEN branch",
         ));
     }
-    let else_type = validate_expr(else_expr, input_schema, available_columns)?;
+    let else_type = validate_expr(else_expr, input_schema, available_columns, ctx)?;
     for branch in branches {
-        let when_type = validate_expr(&branch.when, input_schema, available_columns)?;
+        let when_type = validate_expr(&branch.when, input_schema, available_columns, ctx)?;
         require_boolean(&when_type, "CASE WHEN predicate")?;
-        let then_type = validate_expr(&branch.then, input_schema, available_columns)?;
-        require_compatible_types(&else_type, &then_type, "CASE branch result")?;
+        let then_type = validate_expr(&branch.then, input_schema, available_columns, ctx)?;
+        require_compatible_types(&else_type, &then_type, "CASE branch result", ctx)?;
     }
     Ok(else_type)
 }

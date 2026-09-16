@@ -246,21 +246,22 @@ impl<'a> BoundedPlan<'a> {
     }
 
     pub(in crate::exec::bounded) fn validate_capabilities(&self) -> Result<()> {
+        let ctx = crate::rapids_backend::rapids_analysis_context();
         if let Some(filter) = self.filter {
             lower_expr(&filter.predicate)?;
         }
 
         for (projection, output_schema) in &self.pre_filter_projections {
-            validate_projection_capability(projection, output_schema)?;
+            validate_projection_capability(projection, output_schema, ctx)?;
         }
 
         for (projection, output_schema) in &self.post_filter_projections {
-            validate_projection_capability(projection, output_schema)?;
+            validate_projection_capability(projection, output_schema, ctx)?;
         }
 
-        validate_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
+        validate_aggregate_capability(self.aggregate.0, self.aggregate.1, ctx)?;
         if !aggregate_spec_requires_whole_input(&self.aggregate.0.spec) {
-            validate_final_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
+            validate_final_aggregate_capability(self.aggregate.0, self.aggregate.1, ctx)?;
         }
 
         for stage in &self.post_aggregate_stages {
@@ -303,7 +304,7 @@ fn validate_bounded_unary_stage_capability(stage: &BoundedUnaryStage<'_>) -> Res
             lower_expr(&node.predicate)?;
         },
         BoundedUnaryStage::Projection { node, output_schema, .. } => {
-            validate_projection_capability(node, output_schema)?;
+            validate_projection_capability(node, output_schema, crate::rapids_backend::rapids_analysis_context())?;
         },
     }
     Ok(())

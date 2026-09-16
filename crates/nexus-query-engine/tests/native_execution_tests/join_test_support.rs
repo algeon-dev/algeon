@@ -81,7 +81,7 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -113,7 +113,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -435,7 +435,7 @@ pub(super) fn execute_bounded_left_only_residual_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }

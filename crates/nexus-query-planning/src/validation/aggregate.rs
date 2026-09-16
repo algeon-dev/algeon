@@ -2,10 +2,10 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, Expr, LiteralValue,
-    LoweredAggregate, QueryError, QueryErrorCode, Result, aggregate_spec_has_avg, aggregate_spec_has_distinct,
-    aggregate_spec_has_floating_statistical_aggregate, lower_aggregate_spec, lower_column_expr,
-    lower_final_aggregate_spec, lower_named_column_expr,
+    QueryError, QueryErrorCode, Result, aggregate_spec_has_avg, aggregate_spec_has_distinct,
+    aggregate_spec_has_floating_statistical_aggregate, lower_column_expr, lower_named_column_expr,
 };
+use crate::backend::{AggregateBinding, AnalysisContext};
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__nexus_native_global_valid_count_";
 
@@ -128,7 +128,11 @@ fn validate_reserved_aggregate_aliases(
     Ok(())
 }
 
-pub fn validate_aggregate_capability(node: &AggregateNode, output_schema: &ArrowSchemaRef) -> Result<()> {
+pub fn validate_aggregate_capability(
+    node: &AggregateNode,
+    output_schema: &ArrowSchemaRef,
+    ctx: AnalysisContext<'_>,
+) -> Result<()> {
     if node.spec.group_exprs.is_empty() {
         validate_global_valid_count_state_alias_collisions(
             &node.spec,
@@ -164,9 +168,9 @@ pub fn validate_aggregate_capability(node: &AggregateNode, output_schema: &Arrow
         return Ok(());
     }
     let validation_spec = aggregate_validation_spec(&node.spec);
-    let aggregate = lower_aggregate_spec(&validation_spec)?;
+    let output_names = ctx.backend().aggregate_output_names(&validation_spec, AggregateBinding::SingleStage)?;
     validate_aggregate_output_names(
-        &aggregate,
+        &output_names,
         output_schema,
         "nexus_query_engine.aggregate.validate",
         "aggregate output names must match output schema fields",
@@ -191,7 +195,11 @@ fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
     validation
 }
 
-pub fn validate_final_aggregate_capability(node: &AggregateNode, output_schema: &ArrowSchemaRef) -> Result<()> {
+pub fn validate_final_aggregate_capability(
+    node: &AggregateNode,
+    output_schema: &ArrowSchemaRef,
+    ctx: AnalysisContext<'_>,
+) -> Result<()> {
     if node.spec.group_exprs.is_empty() {
         validate_global_valid_count_state_alias_collisions(
             &node.spec,
@@ -207,16 +215,16 @@ pub fn validate_final_aggregate_capability(node: &AggregateNode, output_schema: 
                 "DataFusion-exact statistical aggregate path does not support distinct aggregate expressions",
             ));
         }
-        return validate_aggregate_capability(node, output_schema);
+        return validate_aggregate_capability(node, output_schema, ctx);
     }
-    let aggregate = lower_final_aggregate_spec(&node.spec)?;
+    let output_names = ctx.backend().aggregate_output_names(&node.spec, AggregateBinding::FinalMerge)?;
     if aggregate_spec_has_avg(&node.spec) {
         validate_avg_state_alias_collisions(&node.spec, "nexus_query_engine.final_merge.validate_avg_state_alias")?;
         validate_avg_output_fields(&node.spec, output_schema)?;
         return Ok(());
     }
     validate_aggregate_output_names(
-        &aggregate,
+        &output_names,
         output_schema,
         "nexus_query_engine.final_merge.validate",
         "final aggregate output names must match output schema fields",
@@ -283,15 +291,15 @@ fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Result<()> {
 }
 
 pub fn validate_aggregate_output_names(
-    aggregate: &LoweredAggregate,
+    output_names: &[String],
     output_schema: &ArrowSchemaRef,
     operation: &'static str,
     message: &'static str,
 ) -> Result<()> {
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
-    if aggregate.output_names != expected_output_names {
+    if output_names != expected_output_names.as_slice() {
         return Err(QueryError::new(QueryErrorCode::InvalidPlan, operation, message)
-            .with_fact("aggregate_output_names", aggregate.output_names.join(","))
+            .with_fact("aggregate_output_names", output_names.join(","))
             .with_fact("schema_output_names", expected_output_names.join(",")));
     }
 

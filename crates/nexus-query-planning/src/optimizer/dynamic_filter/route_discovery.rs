@@ -1,5 +1,5 @@
 use super::{
-    AggregateGroupKeyLineage, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterConsumer,
+    AggregateGroupKeyLineage, AnalysisContext, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterConsumer,
     DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     DynamicFilterRouteCandidateDiagnostics, DynamicFilterRouteDiscoveryDiagnostics, DynamicFilterRouteDiscoveryOptions,
     DynamicFilterRouteRejectedReason, PlanNode, QueryPlan, consumer_column_type_is_supported, consumer_lowering,
@@ -24,6 +24,7 @@ pub struct DynamicFilterRouteDiscoveryResult {
 pub fn optimize_dynamic_filter_route_discovery(
     plan: QueryPlan,
     options: &DynamicFilterRouteDiscoveryOptions,
+    ctx: AnalysisContext<'_>,
 ) -> DynamicFilterRouteDiscoveryResult {
     if !options.enabled {
         return DynamicFilterRouteDiscoveryResult {
@@ -111,7 +112,7 @@ pub fn optimize_dynamic_filter_route_discovery(
             ));
             if consumer_lineages.is_empty() {
                 let Some((consumer, consumer_column)) =
-                    post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
+                    post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true, ctx)
                 else {
                     candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerKeyLineageUnavailable);
                     diagnostics.candidates.push(candidate);
@@ -180,7 +181,7 @@ pub fn optimize_dynamic_filter_route_discovery(
                         && (input_reference_count(&plan, consumer_lineage.source_node_id) > 1
                             || consumer_lineage.has_shared_path)
                 })
-                && post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
+                && post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true, ctx)
                     .is_some_and(|(consumer, _)| {
                         !post_decode_consumer_feeds_scalar_decimal_sum(&plan, &parent_counts, &consumer)
                     });
@@ -226,7 +227,8 @@ pub fn optimize_dynamic_filter_route_discovery(
                                 diagnostics.candidates.push(candidate);
                                 continue;
                             }
-                            if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column) {
+                            if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column, ctx)
+                            {
                                 candidate.rejected_reason =
                                     Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
                                 diagnostics.candidates.push(candidate);
@@ -254,6 +256,7 @@ pub fn optimize_dynamic_filter_route_discovery(
                                 &orientation,
                                 true,
                                 false,
+                                ctx,
                             ) else {
                                 candidate.rejected_reason =
                                     Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
@@ -282,7 +285,7 @@ pub fn optimize_dynamic_filter_route_discovery(
                             diagnostics.candidates.push(candidate);
                             continue;
                         }
-                        if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column) {
+                        if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column, ctx) {
                             candidate.rejected_reason =
                                 Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
                             diagnostics.candidates.push(candidate);
@@ -312,7 +315,7 @@ pub fn optimize_dynamic_filter_route_discovery(
                                 source_node_id: consumer_lineage.source_node_id,
                             },
                             consumer_lineage.source_column.clone(),
-                            consumer_lowering(consumer_source),
+                            consumer_lowering(consumer_source, ctx),
                         )
                     }
                 } else if multiple_consumer_lineages {
@@ -320,9 +323,15 @@ pub fn optimize_dynamic_filter_route_discovery(
                     diagnostics.candidates.push(candidate);
                     continue;
                 } else {
-                    let Some((consumer, consumer_column)) =
-                        post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
-                    else {
+                    let Some((consumer, consumer_column)) = post_decode_consumer_for_orientation(
+                        &plan,
+                        &parent_counts,
+                        node.id,
+                        &orientation,
+                        true,
+                        true,
+                        ctx,
+                    ) else {
                         candidate.rejected_reason =
                             Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
                         diagnostics.candidates.push(candidate);
@@ -386,7 +395,7 @@ pub fn optimize_dynamic_filter_route_discovery(
             }
             if needs_mixed_lineage_join_probe_route {
                 let Some((consumer, consumer_column)) =
-                    post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
+                    post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true, ctx)
                 else {
                     continue;
                 };
@@ -520,7 +529,11 @@ pub fn optimize_dynamic_filter_route_discovery(
                 diagnostics.candidates.push(candidate);
                 continue;
             }
-            if !consumer_column_type_is_supported(consumer_source, &residual_candidate.consumer_lineage.source_column) {
+            if !consumer_column_type_is_supported(
+                consumer_source,
+                &residual_candidate.consumer_lineage.source_column,
+                ctx,
+            ) {
                 candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
                 diagnostics.candidates.push(candidate);
                 continue;
@@ -545,7 +558,7 @@ pub fn optimize_dynamic_filter_route_discovery(
 
             let filter_kinds =
                 vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList, DynamicFilterKind::HashSetContains];
-            let consumer_lowering = consumer_lowering(consumer_source);
+            let consumer_lowering = consumer_lowering(consumer_source, ctx);
             let id = DynamicFilterId::new(routes.len());
             let route = DynamicFilterRoute::new(
                 id,

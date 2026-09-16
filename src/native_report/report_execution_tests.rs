@@ -759,8 +759,11 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
 
 #[test]
 fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
-    let optimizer_result =
-        nexus_query_engine::optimizer::optimize_query_plan(semijoin_reduction_projection_plan(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        semijoin_reduction_projection_plan(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let mut report = PlanningReport::new();
@@ -809,6 +812,7 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
     let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
         projection_simplification_identity_plan(),
         &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
     );
     assert_eq!(optimizer_result.diagnostics.projection_simplification.considered_count, 1);
     assert_eq!(optimizer_result.diagnostics.projection_simplification.applied_count, 1);
@@ -852,8 +856,11 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
 
 #[test]
 fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics() {
-    let optimizer_result =
-        nexus_query_engine::optimizer::optimize_query_plan(dynamic_filter_route_plan(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        dynamic_filter_route_plan(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
 
     let mut report = PlanningReport::new();

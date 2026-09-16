@@ -253,7 +253,9 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         final_schema,
     );
     let plan = builder.finish_with_host_sink(sort);
-    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(
+        !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join()
+    );
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -401,7 +403,7 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     );
     let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
     let plan = builder.finish_with_host_sink(limit);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     assert!(
         analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
         "rollup/rank/top-k optimized shape should select the bounded capability envelope; first_rejection={:?}",

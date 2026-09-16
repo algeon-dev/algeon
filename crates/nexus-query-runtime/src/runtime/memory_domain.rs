@@ -12,6 +12,7 @@ use std::sync::Arc;
 use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::MemoryGrant;
+use crate::native_error::cudf_query_error;
 
 /// Creates the authoritative hard allocation domain for one admitted attempt.
 ///
@@ -25,7 +26,7 @@ pub(super) fn create_grant_memory_domain(
 ) -> Result<Arc<cudf::QueryMemoryDomain>> {
     let grant_bytes = grant_budget_usize(grant, "nexus_query_engine.runtime.grant_memory_domain")?;
     let manager = runtime.device_memory_manager().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.runtime.grant_memory_domain",
             "failed to resolve device memory manager for grant query memory domain",
             error,
@@ -36,7 +37,7 @@ pub(super) fn create_grant_memory_domain(
     let domain = manager
         .query_memory_domain(grant.grant_id(), cudf::QueryMemoryDomainOptions::new(grant_bytes))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.runtime.grant_memory_domain",
                 "failed to create grant query memory domain",
                 error,

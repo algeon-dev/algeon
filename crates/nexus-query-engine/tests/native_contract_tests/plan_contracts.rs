@@ -258,7 +258,7 @@ fn aggregate_node_capability_rejects_mixed_median_and_floating_statistical_funct
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
     let aggregate_id = builder.add_aggregate(source, aggregate, output_schema);
     let plan = builder.finish_gpu_resident(aggregate_id);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
     let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
@@ -282,7 +282,7 @@ fn aggregate_node_capability_rejects_decimal_median_input_type() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
     let aggregate_id = builder.add_aggregate(source, aggregate, output_schema);
     let plan = builder.finish_gpu_resident(aggregate_id);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
     let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
@@ -375,7 +375,10 @@ fn native_plan_can_represent_offset_only_limit() {
     assert!(plan.to_string().contains("LiteralBatchSource batches=1 rows=3 schema_fields=1"));
     assert!(plan.to_string().contains("Limit input=n0 skip=2 fetch=none"));
     assert!(
-        plan.capability_analysis().nodes.iter().all(|node| matches!(node.executable, CapabilityDecision::Satisfied))
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .nodes
+            .iter()
+            .all(|node| matches!(node.executable, CapabilityDecision::Satisfied))
     );
 }
 
@@ -395,7 +398,7 @@ fn native_plan_can_represent_literal_batch_source() {
         PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(source) if source.row_count() == 2)
     ));
     assert_eq!(
-        plan.capability_analysis().nodes[0].operator,
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).nodes[0].operator,
         NodeOperator::Source { format: SourceFormatCapability::LiteralBatch }
     );
 }

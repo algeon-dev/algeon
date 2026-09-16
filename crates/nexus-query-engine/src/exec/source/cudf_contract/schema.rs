@@ -29,7 +29,7 @@ pub(in crate::exec::source) fn cudf_reader_decimal_type(
         crate::source::ParquetReaderDecimalTypeId::Decimal128 => cudf::TypeId::Decimal128,
     };
     let dtype = cudf::DataType::fixed_point(type_id, reader_type.cudf_scale).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.reader_decimal_type_cudf",
             "failed to convert native reader decimal dtype into cudf source contract",
             error,
@@ -38,7 +38,7 @@ pub(in crate::exec::source) fn cudf_reader_decimal_type(
         .with_fact("reader_type", reader_type.type_id.as_str())
     })?;
     cudf::io::source::ParquetReaderDecimalType::new(reader_type.column_name.as_str(), dtype).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.reader_decimal_type_cudf",
             "failed to convert native reader decimal type into cudf source contract",
             error,
@@ -75,7 +75,7 @@ pub(in crate::exec::source) fn cudf_source_schema(
                 cudf::io::source::SourceColumn::new(field.name().as_str(), dtype, field.is_nullable())
             };
             column.map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_chunk.schema_cudf",
                     "failed to convert native local parquet source schema into cudf source schema",
                     error,
@@ -85,7 +85,7 @@ pub(in crate::exec::source) fn cudf_source_schema(
         })
         .collect::<Result<Vec<_>>>()?;
     cudf::io::source::SourceSchema::new(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_chunk.schema_cudf",
             "failed to build cudf local parquet source schema",
             error,
@@ -103,7 +103,7 @@ pub(in crate::exec::source) fn cudf_source_output_columns(
         .map(|(column, source_ref)| {
             let source_ref = cudf_source_column_ref(source, column, *source_ref)?;
             cudf::io::source::SourceOutputColumn::new(column.as_str(), source_ref).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_chunk.output_cudf",
                     "failed to convert native local parquet output column into cudf source output column",
                     error,
@@ -129,7 +129,7 @@ pub(in crate::exec::source) fn cudf_source_required_columns(
                 cudf::io::source::SourceColumnRole::PureFilter,
             )
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_chunk.required_cudf",
                     "failed to convert native local parquet pure-filter column into cudf source required column",
                     error,
@@ -182,7 +182,7 @@ pub(in crate::exec::source) fn cudf_partition_columns(
                 .with_fact("data_type", format!("{:?}", column.data_type))
             })?;
             cudf::io::source::PartitionColumn::new(column.name.as_str(), dtype, column.nullable).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_chunk.partition_cudf",
                     "failed to convert native local parquet partition column into cudf source partition column",
                     error,

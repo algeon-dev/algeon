@@ -334,7 +334,7 @@ fn record_batches_to_gpu(
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.native_multi_child.host_input",
             "failed to import staged Arrow input into cuDF",
-            nexus_query_engine::error::QueryError::from_cudf(
+            nexus_query_engine::native_error::cudf_query_error(
                 "datafusion_nexus.native_multi_child.host_input",
                 "failed to import staged Arrow input into cuDF",
                 error,

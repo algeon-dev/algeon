@@ -14,9 +14,26 @@ impl nexus_query_planning::admission::BoundedPipelineDecision
 pub fn nexus_query_planning::admission::BoundedPipelineDecision::admission(&self) -> core::option::Option<&nexus_query_planning::admission::BoundedPipelineAdmission>
 pub fn nexus_query_planning::admission::BoundedPipelineDecision::into_execution_admission(self) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::BoundedPipelineAdmission>>
 pub fn nexus_query_planning::admission::BoundedPipelineDecision::rejection_projection(&self) -> core::option::Option<&nexus_query_planning::capability::CapabilityRejectionProjection>
-pub fn nexus_query_planning::admission::bounded_join_modeled_facts(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
-pub fn nexus_query_planning::admission::bounded_join_unsupported_shape_facts(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
-pub fn nexus_query_planning::admission::bounded_pipeline_decision(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<nexus_query_planning::admission::BoundedPipelineDecision>
+pub fn nexus_query_planning::admission::bounded_join_modeled_facts(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
+pub fn nexus_query_planning::admission::bounded_join_unsupported_shape_facts(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
+pub fn nexus_query_planning::admission::bounded_pipeline_decision(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::error::Result<nexus_query_planning::admission::BoundedPipelineDecision>
+pub mod nexus_query_planning::backend
+pub enum nexus_query_planning::backend::AggregateBinding
+pub nexus_query_planning::backend::AggregateBinding::FinalMerge
+pub nexus_query_planning::backend::AggregateBinding::SingleStage
+pub enum nexus_query_planning::backend::ExpressionUse
+pub nexus_query_planning::backend::ExpressionUse::FilterPredicate
+pub nexus_query_planning::backend::ExpressionUse::Value
+pub struct nexus_query_planning::backend::AnalysisContext<'a>
+impl<'a> nexus_query_planning::backend::AnalysisContext<'a>
+pub const fn nexus_query_planning::backend::AnalysisContext<'a>::backend(&self) -> &'a dyn nexus_query_planning::backend::BackendCapabilities
+pub const fn nexus_query_planning::backend::AnalysisContext<'a>::new(&'a dyn nexus_query_planning::backend::BackendCapabilities) -> Self
+pub trait nexus_query_planning::backend::BackendCapabilities: core::fmt::Debug + core::marker::Send + core::marker::Sync
+pub fn nexus_query_planning::backend::BackendCapabilities::aggregate_output_names(&self, &nexus_query_planning::expr::AggregateSpec, nexus_query_planning::backend::AggregateBinding) -> nexus_query_planning::error::Result<alloc::vec::Vec<alloc::string::String>>
+pub fn nexus_query_planning::backend::BackendCapabilities::binary_output_type(&self, nexus_query_planning::expr::BinaryOp, &arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> nexus_query_planning::error::Result<arrow_schema::datatype::DataType>
+pub fn nexus_query_planning::backend::BackendCapabilities::check_expression(&self, &nexus_query_planning::expr::Expr, nexus_query_planning::backend::ExpressionUse) -> nexus_query_planning::error::Result<()>
+pub fn nexus_query_planning::backend::BackendCapabilities::check_projection_output(&self, &nexus_query_planning::plan::ProjectionOutput) -> nexus_query_planning::error::Result<()>
+pub fn nexus_query_planning::backend::BackendCapabilities::supports_type(&self, &arrow_schema::datatype::DataType) -> bool
 pub mod nexus_query_planning::capability
 pub enum nexus_query_planning::capability::AggregateExecutionStage
 pub nexus_query_planning::capability::AggregateExecutionStage::FinalMerge
@@ -396,7 +413,7 @@ pub nexus_query_planning::capability::SubgraphInvariant::required_schedule: nexu
 pub const nexus_query_planning::capability::STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS: &str
 pub fn nexus_query_planning::capability::aggregate_state_contract(&nexus_query_planning::expr::AggregateSpec) -> core::option::Option<nexus_query_planning::capability::AggregateStateContract>
 pub fn nexus_query_planning::capability::aggregate_strategy_capability_decision(&nexus_query_planning::expr::AggregateSpec, &arrow_schema::schema::Schema, nexus_query_planning::capability::AggregateExecutionStage) -> nexus_query_planning::capability::AggregateStrategyCapabilityDecision
-pub fn nexus_query_planning::capability::analyze_query_capabilities(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::capability::CapabilityAnalysis
+pub fn nexus_query_planning::capability::analyze_query_capabilities(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::capability::CapabilityAnalysis
 pub mod nexus_query_planning::chunk
 pub struct nexus_query_planning::chunk::SourceChunk
 pub nexus_query_planning::chunk::SourceChunk::chunk_index: usize
@@ -491,6 +508,11 @@ pub fn nexus_query_planning::chunk::SourceChunkPlanningPolicy::default() -> Self
 pub struct nexus_query_planning::chunk::SourceChunkRowPositionRange
 pub nexus_query_planning::chunk::SourceChunkRowPositionRange::end: u64
 pub nexus_query_planning::chunk::SourceChunkRowPositionRange::start: u64
+pub struct nexus_query_planning::chunk::SourceReadSizing<'a>
+impl<'a> nexus_query_planning::chunk::SourceReadSizing<'a>
+pub const fn nexus_query_planning::chunk::SourceReadSizing<'a>::minimum_read_budget_bytes(&self) -> u64
+pub const fn nexus_query_planning::chunk::SourceReadSizing<'a>::new(nexus_query_planning::backend::AnalysisContext<'a>, u64) -> Self
+pub fn nexus_query_planning::chunk::SourceReadSizing<'a>::supports_type(&self, &arrow_schema::datatype::DataType) -> bool
 pub struct nexus_query_planning::chunk::SourceTaskMemoryModel
 impl nexus_query_planning::chunk::SourceTaskMemoryModel
 pub const fn nexus_query_planning::chunk::SourceTaskMemoryModel::aggregate_pipeline(bool) -> Self
@@ -505,7 +527,7 @@ pub const fn nexus_query_planning::chunk::SourceTaskMemoryModel::source_read_slo
 pub const nexus_query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub const nexus_query_planning::chunk::LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64
 pub fn nexus_query_planning::chunk::annotate_source_chunk_batching_reasons(&mut [nexus_query_planning::chunk::SourceChunk], core::option::Option<&'static str>, core::option::Option<u64>)
-pub fn nexus_query_planning::chunk::local_parquet_source_has_exact_read_preflight(&nexus_query_planning::source::LocalParquetSource) -> bool
+pub fn nexus_query_planning::chunk::local_parquet_source_has_exact_read_preflight(&nexus_query_planning::source::LocalParquetSource, nexus_query_planning::chunk::SourceReadSizing<'_>) -> bool
 pub fn nexus_query_planning::chunk::plan_source_chunk_batches(&[nexus_query_planning::chunk::SourceChunk], core::option::Option<u64>) -> alloc::vec::Vec<nexus_query_planning::chunk::SourceChunkBatch>
 pub fn nexus_query_planning::chunk::plan_source_chunk_batches_with_row_cap(&[nexus_query_planning::chunk::SourceChunk], core::option::Option<u64>, core::option::Option<u64>) -> alloc::vec::Vec<nexus_query_planning::chunk::SourceChunkBatch>
 pub mod nexus_query_planning::contract_report
@@ -566,17 +588,14 @@ pub mod nexus_query_planning::datatypes
 pub fn nexus_query_planning::datatypes::arrow_decimal_scale_to_cudf_scale(i8) -> i32
 pub fn nexus_query_planning::datatypes::arrow_field_metadata_matches_except_parquet_field_id(&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, &std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> bool
 pub fn nexus_query_planning::datatypes::arrow_fixed_width_byte_size(&arrow_schema::datatype::DataType) -> core::option::Option<u64>
-pub fn nexus_query_planning::datatypes::cudf_dtype_from_arrow_type(&arrow_schema::datatype::DataType) -> core::option::Option<cudf::core::types::DataType>
 pub fn nexus_query_planning::datatypes::diagnostic_arrow_type(&arrow_schema::datatype::DataType) -> alloc::string::String
 pub fn nexus_query_planning::datatypes::is_arrow_fixed_width(&arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_planning::datatypes::is_narrow_decimal_carry_type(&arrow_schema::datatype::DataType) -> bool
-pub fn nexus_query_planning::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
-pub fn nexus_query_planning::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
-pub fn nexus_query_planning::datatypes::is_supported_arrow_type(&arrow_schema::datatype::DataType) -> bool
+pub fn nexus_query_planning::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, nexus_query_planning::backend::AnalysisContext<'_>) -> bool
+pub fn nexus_query_planning::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, nexus_query_planning::backend::AnalysisContext<'_>) -> bool
 pub fn nexus_query_planning::datatypes::is_supported_list_carry_type(&arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_planning::datatypes::is_supported_numeric_widening_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_planning::datatypes::is_timestamp_with_timezone(&arrow_schema::datatype::DataType) -> bool
-pub fn nexus_query_planning::datatypes::timestamp_unit_to_cudf_resolution(&arrow_schema::datatype::TimeUnit) -> cudf::core::types::TimestampResolution
 pub mod nexus_query_planning::dynamic_filter
 pub enum nexus_query_planning::dynamic_filter::DynamicFilter
 pub nexus_query_planning::dynamic_filter::DynamicFilter::Empty
@@ -713,7 +732,7 @@ pub fn nexus_query_planning::dynamic_filter::DynamicFilterSet::produced(&self, n
 pub fn nexus_query_planning::dynamic_filter::DynamicFilterSet::skipped_reason(&self, nexus_query_planning::dynamic_filter::DynamicFilterId) -> core::option::Option<&'static str>
 pub const nexus_query_planning::dynamic_filter::DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize
 pub const nexus_query_planning::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON: &str
-pub fn nexus_query_planning::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&nexus_query_planning::source::LocalParquetSource, &[&nexus_query_planning::dynamic_filter::DynamicFilterRoute], &nexus_query_planning::dynamic_filter::DynamicFilterSet) -> nexus_query_planning::error::Result<nexus_query_planning::source::LocalParquetSource>
+pub fn nexus_query_planning::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&nexus_query_planning::source::LocalParquetSource, &[&nexus_query_planning::dynamic_filter::DynamicFilterRoute], &nexus_query_planning::dynamic_filter::DynamicFilterSet, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::error::Result<nexus_query_planning::source::LocalParquetSource>
 pub fn nexus_query_planning::dynamic_filter::dynamic_filter_i64_values(&dyn arrow_array::array::Array) -> core::option::Option<alloc::vec::Vec<core::option::Option<i64>>>
 pub fn nexus_query_planning::dynamic_filter::dynamic_filter_predicate_for_schema(&arrow_schema::schema::Schema, &str, &nexus_query_planning::dynamic_filter::DynamicFilter) -> core::option::Option<nexus_query_planning::expr::Expr>
 pub mod nexus_query_planning::error
@@ -795,13 +814,9 @@ pub fn nexus_query_planning::error::Facts::new() -> Self
 pub struct nexus_query_planning::error::QueryError(_)
 impl nexus_query_planning::error::QueryError
 pub fn nexus_query_planning::error::QueryError::code(&self) -> nexus_query_planning::error::QueryErrorCode
-pub fn nexus_query_planning::error::QueryError::cudf_budget_exhaustion(&self) -> core::option::Option<&cudf::core::error::BudgetExhaustionDetail>
 pub const fn nexus_query_planning::error::QueryError::cugraph_allocation_source(&self) -> core::option::Option<nexus_query_planning::error::CugraphAllocationSource>
 pub fn nexus_query_planning::error::QueryError::fact_value(&self, &str) -> core::option::Option<&str>
 pub fn nexus_query_planning::error::QueryError::facts(&self) -> &nexus_query_planning::error::Facts
-pub fn nexus_query_planning::error::QueryError::from_cudf(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> Self
-pub fn nexus_query_planning::error::QueryError::from_cudf_with_budget_details(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> Self
-pub fn nexus_query_planning::error::QueryError::from_cuvs(&'static str, impl core::convert::Into<alloc::string::String>, cuvs::error::Error) -> Self
 pub fn nexus_query_planning::error::QueryError::kind(&self) -> nexus_query_planning::error::QueryErrorKind
 pub fn nexus_query_planning::error::QueryError::message(&self) -> &str
 pub fn nexus_query_planning::error::QueryError::new(nexus_query_planning::error::QueryErrorCode, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
@@ -826,6 +841,7 @@ pub fn nexus_query_planning::error::QueryError::fmt(&self, &mut core::fmt::Forma
 pub const nexus_query_planning::error::EMPTY_FACT_KEY: &str
 pub const nexus_query_planning::error::FACT_COLLISION_KEYS: &str
 pub const fn nexus_query_planning::error::kind_for_code(nexus_query_planning::error::QueryErrorCode) -> nexus_query_planning::error::QueryErrorKind
+pub fn nexus_query_planning::error::redact_uri_tokens(&str) -> alloc::string::String
 pub const fn nexus_query_planning::error::status_for_code(nexus_query_planning::error::QueryErrorCode) -> nexus_query_planning::error::QueryErrorStatus
 pub type nexus_query_planning::error::Result<T> = core::result::Result<T, nexus_query_planning::error::QueryError>
 pub mod nexus_query_planning::expr
@@ -1767,12 +1783,12 @@ pub fn nexus_query_planning::optimizer::apply_local_parquet_row_group_selections
 pub fn nexus_query_planning::optimizer::dimension_key_filter_from_batch(&arrow_array::record_batch::RecordBatch, &str, &nexus_query_planning::expr::Expr) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::DimensionKeyFilter>>
 pub fn nexus_query_planning::optimizer::discover_dimension_derived_pruning_requests(&nexus_query_planning::plan::QueryPlan) -> alloc::vec::Vec<nexus_query_planning::optimizer::DimensionDerivedPruningRequest>
 pub fn nexus_query_planning::optimizer::local_parquet_source(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::plan::NodeId) -> core::option::Option<&nexus_query_planning::source::LocalParquetSource>
-pub async fn nexus_query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(nexus_query_planning::plan::QueryPlan, nexus_query_planning::optimizer::LakehouseFooterPruningOptions, &mut R) -> nexus_query_planning::optimizer::LakehouseFooterPruningResult where R: nexus_query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
-pub fn nexus_query_planning::optimizer::optimize_query_plan(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::NativeOptimizerOptions) -> nexus_query_planning::optimizer::NativeOptimizerResult
-pub fn nexus_query_planning::optimizer::optimize_semijoin_reduction(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::SemijoinReductionOptions) -> nexus_query_planning::optimizer::SemijoinReductionResult
+pub async fn nexus_query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(nexus_query_planning::plan::QueryPlan, nexus_query_planning::optimizer::LakehouseFooterPruningOptions, &mut R, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::optimizer::LakehouseFooterPruningResult where R: nexus_query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
+pub fn nexus_query_planning::optimizer::optimize_query_plan(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::NativeOptimizerOptions, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::optimizer::NativeOptimizerResult
+pub fn nexus_query_planning::optimizer::optimize_semijoin_reduction(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::SemijoinReductionOptions, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::optimizer::SemijoinReductionResult
 pub fn nexus_query_planning::optimizer::predicate_columns(&nexus_query_planning::expr::Expr) -> alloc::vec::Vec<alloc::string::String>
 pub fn nexus_query_planning::optimizer::reader_projection_indices(&nexus_query_planning::source::LocalParquetSource, &str, &nexus_query_planning::expr::Expr) -> core::option::Option<alloc::collections::btree::set::BTreeSet<usize>>
-pub fn nexus_query_planning::optimizer::seed_dimension_derived_reader_predicates(nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::plan::QueryPlan
+pub fn nexus_query_planning::optimizer::seed_dimension_derived_reader_predicates(nexus_query_planning::plan::QueryPlan, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::plan::QueryPlan
 pub fn nexus_query_planning::optimizer::select_overlapping_row_groups(&[core::option::Option<nexus_query_planning::optimizer::KeyRange>], &nexus_query_planning::optimizer::DimensionKeyFilter) -> nexus_query_planning::optimizer::RowGroupOverlapSelection
 pub mod nexus_query_planning::parquet_stats
 pub enum nexus_query_planning::parquet_stats::ColumnByteKind
@@ -2928,7 +2944,7 @@ pub fn nexus_query_planning::plan::QueryPlan::unreachable_node_ids(&self) -> all
 pub fn nexus_query_planning::plan::QueryPlan::with_appended_sort(self, nexus_query_planning::expr::SortSpec) -> Self
 pub fn nexus_query_planning::plan::QueryPlan::with_host_sink_schema(self, arrow_schema::schema::SchemaRef) -> Self
 impl nexus_query_planning::plan::QueryPlan
-pub fn nexus_query_planning::plan::QueryPlan::capability_analysis(&self) -> nexus_query_planning::capability::CapabilityAnalysis
+pub fn nexus_query_planning::plan::QueryPlan::capability_analysis(&self, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::capability::CapabilityAnalysis
 impl core::fmt::Display for nexus_query_planning::plan::QueryPlan
 pub fn nexus_query_planning::plan::QueryPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_planning::plan::QueryPlanBuilder
@@ -3310,9 +3326,9 @@ pub fn nexus_query_planning::source::LocalParquetSource::projected_output_column
 pub fn nexus_query_planning::source::LocalParquetSource::pure_filter_column_count(&self) -> usize
 pub fn nexus_query_planning::source::LocalParquetSource::ranged_file_count(&self) -> usize
 pub fn nexus_query_planning::source::LocalParquetSource::read_column_count(&self) -> usize
-pub fn nexus_query_planning::source::LocalParquetSource::reader_predicate_is_supported(&self, &nexus_query_planning::expr::Expr) -> bool
+pub fn nexus_query_planning::source::LocalParquetSource::reader_predicate_is_supported(&self, &nexus_query_planning::expr::Expr, nexus_query_planning::backend::AnalysisContext<'_>) -> bool
 pub fn nexus_query_planning::source::LocalParquetSource::reader_predicate_requires_source_contract(&self, &nexus_query_planning::expr::Expr) -> bool
-pub fn nexus_query_planning::source::LocalParquetSource::reader_predicate_supported_expression(&self, &nexus_query_planning::expr::Expr) -> core::option::Option<nexus_query_planning::expr::Expr>
+pub fn nexus_query_planning::source::LocalParquetSource::reader_predicate_supported_expression(&self, &nexus_query_planning::expr::Expr, nexus_query_planning::backend::AnalysisContext<'_>) -> core::option::Option<nexus_query_planning::expr::Expr>
 pub fn nexus_query_planning::source::LocalParquetSource::refresh_diagnostics(&mut self)
 pub fn nexus_query_planning::source::LocalParquetSource::selected_file_column_has_no_nulls(&self, usize) -> bool
 pub fn nexus_query_planning::source::LocalParquetSource::selected_row_group_count(&self) -> usize
@@ -3463,7 +3479,7 @@ pub nexus_query_planning::source::SourceDiagnostics::zero_column_count_dispositi
 pub const nexus_query_planning::source::GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str
 pub const nexus_query_planning::source::GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY: &str
 pub const nexus_query_planning::source::ZERO_COLUMN_COUNT_COLUMN: &str
-pub fn nexus_query_planning::source::validate_local_parquet_source(&nexus_query_planning::source::LocalParquetSource) -> nexus_query_planning::error::Result<()>
+pub fn nexus_query_planning::source::validate_local_parquet_source(&nexus_query_planning::source::LocalParquetSource, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::error::Result<()>
 pub mod nexus_query_planning::triage
 #[non_exhaustive] pub enum nexus_query_planning::triage::TriageCode
 pub nexus_query_planning::triage::TriageCode::Cancelled

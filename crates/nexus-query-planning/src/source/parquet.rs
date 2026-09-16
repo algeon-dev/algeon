@@ -28,6 +28,7 @@ use super::{
     read_policy::{CredentialMode, ResolvedParquetSource},
 };
 use crate::{
+    backend::AnalysisContext,
     expr::{Expr, LiteralValue},
     parquet_stats::ParquetVariableWidthPayloadEvidence,
 };
@@ -496,9 +497,9 @@ impl LocalParquetSource {
 
     /// Returns true if `predicate` can be lowered to the cuDF Parquet reader AST
     /// using this source's read-column projection.
-    pub fn reader_predicate_is_supported(&self, predicate: &Expr) -> bool {
+    pub fn reader_predicate_is_supported(&self, predicate: &Expr, ctx: AnalysisContext<'_>) -> bool {
         reader_predicate_root_is_supported(predicate)
-            && reader_predicate_expr_is_supported(self, predicate)
+            && reader_predicate_expr_is_supported(self, predicate, ctx)
             && (!reader_predicate_references_decimal_column(self, predicate)
                 || reader_predicate_source_contract_shape_is_supported(self, predicate))
     }
@@ -510,12 +511,12 @@ impl LocalParquetSource {
     /// predicates of the form `SUBSTRING(column FROM 1 FOR n) IN (...)` are
     /// rewritten to equivalent lexicographic string ranges because the cuDF
     /// reader AST can express string comparisons but not string slicing.
-    pub fn reader_predicate_supported_expression(&self, predicate: &Expr) -> Option<Expr> {
-        if self.reader_predicate_is_supported(predicate) {
+    pub fn reader_predicate_supported_expression(&self, predicate: &Expr, ctx: AnalysisContext<'_>) -> Option<Expr> {
+        if self.reader_predicate_is_supported(predicate, ctx) {
             return Some(predicate.clone());
         }
         let rewritten = rewrite_fixed_prefix_substring_reader_predicate(predicate)?;
-        self.reader_predicate_is_supported(&rewritten).then_some(rewritten)
+        self.reader_predicate_is_supported(&rewritten, ctx).then_some(rewritten)
     }
 
     /// Returns true when the reader predicate needs per-source-chunk metadata

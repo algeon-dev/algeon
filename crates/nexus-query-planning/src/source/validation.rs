@@ -2,7 +2,7 @@
 
 use super::LiteralBatchSource;
 use crate::{
-    datatypes::is_supported_arrow_type,
+    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -12,7 +12,7 @@ pub use local_parquet::validate_local_parquet_source;
 
 /// Validate the structural contract of an in-memory literal-batch source.
 #[doc(hidden)]
-pub fn validate_literal_batch_source(source: &LiteralBatchSource) -> Result<()> {
+pub fn validate_literal_batch_source(source: &LiteralBatchSource, ctx: AnalysisContext<'_>) -> Result<()> {
     if source.batches.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -22,7 +22,7 @@ pub fn validate_literal_batch_source(source: &LiteralBatchSource) -> Result<()> 
         .with_fact("reason", "empty_batches"));
     }
     for field in source.schema.fields() {
-        if !is_supported_arrow_type(field.data_type()) {
+        if !ctx.backend().supports_type(field.data_type()) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "nexus_query_engine.literal_batch_source.validate_schema",

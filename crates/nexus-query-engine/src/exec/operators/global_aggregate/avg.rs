@@ -3,7 +3,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
     ExecutionContext, Expr, LiteralValue, QueryError, QueryErrorCode, QueryMetrics, Result, aggregate_spec_has_avg,
-    budgeted_value, execution_overrides, frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
+    budgeted_value, cudf_query_error, cudf_query_error_with_budget_details, execution_overrides,
+    frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
 };
 
 pub(in crate::exec) fn finalize_avg_output_columns(
@@ -76,7 +77,7 @@ fn finalize_avg_output_columns_impl(
         Some((token, metrics)) => frame
             .with_columns_with_budget(avg_exprs, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.aggregate.finalize_avg",
                     "failed to finalize bounded native avg aggregate output columns",
                     error,
@@ -87,7 +88,7 @@ fn finalize_avg_output_columns_impl(
             let overrides_lease = execution_overrides(context)?;
             let overrides = overrides_lease.overrides();
             frame.with_execution(&overrides).with_columns(avg_exprs).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.aggregate.finalize_avg",
                     "failed to finalize native avg aggregate output columns",
                     error,

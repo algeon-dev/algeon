@@ -40,6 +40,7 @@ use super::{
 };
 use crate::{
     metrics::{QueryId, TraceId},
+    native_error::cudf_query_error,
     observability::{
         AttemptComposedScheduleProjection, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle,
         RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeStreamLeaseScope, RuntimeTaskId,
@@ -2220,7 +2221,7 @@ impl ExecutionContext {
         if let Some(domain) = self.grant_memory_domain.as_ref() {
             return cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&runtime, request, domain.as_ref())
                 .map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.runtime.context.execution_budget_token",
                         "failed to create query-domain execution budget token",
                         error,
@@ -2228,7 +2229,7 @@ impl ExecutionContext {
                 });
         }
         runtime.execution_budget_token(request).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.runtime.context.execution_budget_token",
                 "failed to create execution budget token",
                 error,

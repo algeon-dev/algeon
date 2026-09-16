@@ -47,7 +47,8 @@ pub use dimension_pruning::{
     LocalParquetRowGroupSelection, LocalParquetRowGroupSelectionApplyResult, RowGroupOverlapSelection,
     apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
     dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests,
-    seed_dimension_derived_reader_predicates, select_overlapping_row_groups,
+    optimize_dimension_derived_row_group_pruning, seed_dimension_derived_reader_predicates,
+    select_overlapping_row_groups,
 };
 pub use dynamic_filter::{
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterRouteCandidateDiagnostics,
@@ -102,7 +103,7 @@ pub use stream_fanout_replay::{
     StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason,
 };
 
-use crate::{capability::KeyedHashJoinStrategyOptions, error::Result, plan::QueryPlan};
+use crate::{backend::AnalysisContext, capability::KeyedHashJoinStrategyOptions, error::Result, plan::QueryPlan};
 
 /// Native optimizer pass configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -272,12 +273,16 @@ impl NativeOptimizerDiagnostics {
 }
 
 /// Runs the native optimizer pass list over a DataFusion-free query plan.
-pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) -> NativeOptimizerResult {
+pub fn optimize_query_plan(
+    plan: QueryPlan,
+    options: &NativeOptimizerOptions,
+    ctx: AnalysisContext<'_>,
+) -> NativeOptimizerResult {
     let plan = plan.with_keyed_hash_join_strategy_options(options.keyed_hash_join_strategy);
     let projection_simplification_result =
         projection_simplification::optimize_projection_simplification(plan, &options.projection_simplification);
     let semijoin_result =
-        optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction);
+        optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction, ctx);
     let join_filter_reassociation_result =
         optimize_join_filter_reassociation_fixpoint(semijoin_result.plan, &options.join_filter_reassociation);
     let join_build_side_result = join_build_side::optimize_join_build_side_selection(
@@ -321,6 +326,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
     let dimension_pruning_result = dimension_pruning::optimize_dimension_derived_row_group_pruning(
         post_aggregate_null_rejection_result.plan,
         &options.dimension_derived_row_group_pruning,
+        ctx,
     );
     let dimension_pruning_change = dimension_pruning_result.change;
     let post_dimension_join_build_side_result = rerun_optimizer_pass_if_changed(
@@ -350,6 +356,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         shared_subplan_materialization_result.plan,
         &options.local_parquet_source_reuse,
         &options.dynamic_filter_route_discovery,
+        ctx,
     );
     let final_projection_simplification_result = projection_simplification::optimize_projection_simplification(
         local_parquet_source_reuse_result.plan,
@@ -358,6 +365,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
     let dynamic_filter_route_result = dynamic_filter::optimize_dynamic_filter_route_discovery(
         final_projection_simplification_result.plan,
         &options.dynamic_filter_route_discovery,
+        ctx,
     );
     let shared_resident_result = optimize_shared_resident_extraction(dynamic_filter_route_result.plan);
     let change = if projection_simplification_result.change.changed()

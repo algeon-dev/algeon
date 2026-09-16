@@ -30,12 +30,14 @@ mod runtime_observability_integration_tests;
 mod yielded_frame;
 
 pub use nexus_query_planning::admission;
+/// Backend capability contract plan validation asks the execution owner.
+pub use nexus_query_planning::backend;
 /// Capability-analysis model and admission helpers for native execution.
 pub use nexus_query_planning::capability;
 pub use nexus_query_runtime::attempt;
 pub mod chunk;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
-pub use nexus_query_planning::datatypes;
+pub mod datatypes;
 /// DataFusion-free dynamic-filter producer/consumer route IR.
 pub use nexus_query_planning::dynamic_filter;
 pub use nexus_query_planning::{contract_report, error};
@@ -49,13 +51,23 @@ pub(crate) use nexus_query_planning::{execution_contracts, expression_lowering_p
 pub mod harness;
 /// Stable name-generation helpers shared across native planning code.
 pub use nexus_query_planning::naming;
+/// Native error projection: cuDF from the runtime boundary, cuVS from here.
+pub mod native_error;
+/// RAPIDS implementation of the planning backend capability contract.
+pub mod rapids_backend;
 /// Shared Parquet footer/statistics helpers for native pruning and sizing.
 pub use nexus_query_planning::parquet_stats;
 /// DataFusion-free query plan IR and graph operators.
 pub use nexus_query_planning::plan;
-pub(crate) use nexus_query_planning::{materialization_sizing, prepared, util, validation};
-pub use nexus_query_planning::{mode, optimizer, pipeline, source, triage};
-pub(crate) use nexus_query_runtime::parquet_metadata;
+/// Backend materialized-output sizing, applying the component's formula.
+#[doc(hidden)]
+pub mod materialization_sizing;
+pub use nexus_query_planning::{mode, optimizer, pipeline, source, triage, validate_query_plan};
+/// Native cuDF expression, aggregate, and sort lowering.
+pub(crate) mod prepared;
+pub(crate) use nexus_query_planning::{util, validation};
+pub(crate) mod parquet_metadata;
 pub use nexus_query_runtime::{metrics, observability, runtime};
 
 pub mod shadow;
+pub(crate) mod source_chunk;

@@ -5,7 +5,10 @@
 //! planning estimates unless explicitly named as compressed Parquet bytes or
 //! exact source-read preflight bytes.
 
+use arrow::datatypes::DataType as ArrowDataType;
+
 use crate::{
+    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode, Result},
     source::{LocalParquetFile, LocalParquetSource},
 };
@@ -35,10 +38,42 @@ pub use policy::{
     SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
 };
 
+/// What the execution backend contributes to exact source-read sizing.
+///
+/// Chunk planning consumes these; it never derives a backend memory model of
+/// its own. The minimum read budget is the backend reader's floor, and type
+/// support decides whether a column has an exact fixed-width bound at all.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceReadSizing<'a> {
+    ctx: AnalysisContext<'a>,
+    minimum_read_budget_bytes: u64,
+}
+
+impl<'a> SourceReadSizing<'a> {
+    /// Binds chunk sizing to one backend's reader floor and type support.
+    pub const fn new(ctx: AnalysisContext<'a>, minimum_read_budget_bytes: u64) -> Self {
+        Self { ctx, minimum_read_budget_bytes }
+    }
+
+    /// The backend reader's minimum source-read budget in bytes.
+    pub const fn minimum_read_budget_bytes(&self) -> u64 {
+        self.minimum_read_budget_bytes
+    }
+
+    /// Whether the backend can represent this Arrow type.
+    pub fn supports_type(&self, data_type: &ArrowDataType) -> bool {
+        self.ctx.backend().supports_type(data_type)
+    }
+}
+
 /// Returns true when the source can compute exact fixed-width source-read budgets.
-pub fn local_parquet_source_has_exact_read_preflight(source: &LocalParquetSource) -> bool {
+pub fn local_parquet_source_has_exact_read_preflight(
+    source: &LocalParquetSource,
+    sizing: SourceReadSizing<'_>,
+) -> bool {
     source.files.iter().all(assembly::source_file_has_row_count_metadata)
-        && assembly::exact_source_read_preflight_bytes(source, Some(1), source.is_zero_column_count_source()).is_some()
+        && assembly::exact_source_read_preflight_bytes(source, Some(1), source.is_zero_column_count_source(), sizing)
+            .is_some()
 }
 
 /// Returns the source file referenced by `chunk` after validating that the

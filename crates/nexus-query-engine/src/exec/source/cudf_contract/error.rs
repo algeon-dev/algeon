@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::super::*;
+use super::super::{cudf_query_error, cudf_query_error_without_source, *};
 
 pub(in crate::exec::source) fn path_fact(path: &Path) -> String {
     crate::source::redacted_path_diagnostic(path)
@@ -17,9 +17,9 @@ pub(in crate::exec::source) fn cudf_error_for_source(
     error: cudf::Error,
 ) -> QueryError {
     if source_has_object_store_location(source) {
-        QueryError::from_cudf_without_source(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     } else {
-        QueryError::from_cudf(operation, message, error)
+        cudf_query_error(operation, message, error)
     }
 }
 
@@ -30,9 +30,9 @@ pub(in crate::exec::source) fn cudf_error_for_location(
     error: cudf::Error,
 ) -> QueryError {
     if location.is_local_path() {
-        QueryError::from_cudf(operation, message, error)
+        cudf_query_error(operation, message, error)
     } else {
-        QueryError::from_cudf_without_source(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     }
 }
 

@@ -1,6 +1,6 @@
 use super::{
     Array, ExecutionContext, ExecutionOverrides, GpuDataFrame, InfoDetail, LimitSpec, NodeId, QueryError,
-    QueryErrorCode, QueryMetrics, RecordBatch, Result,
+    QueryErrorCode, QueryMetrics, RecordBatch, Result, cudf_query_error,
 };
 pub(super) use crate::util::comma_separated_usize;
 
@@ -22,7 +22,7 @@ pub(super) fn execution_overrides(context: &ExecutionContext) -> Result<Executio
 
 pub(super) fn observe_device_memory_bytes(frame: &GpuDataFrame, metrics: &mut QueryMetrics) -> Result<u64> {
     let info = frame.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.metrics.device_memory",
             "failed to record native device memory diagnostics",
             error,

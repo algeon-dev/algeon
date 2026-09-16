@@ -34,8 +34,12 @@ pub(in crate::exec) fn try_execute_bounded_pipeline(
         return execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics, observation_scope)
             .map(Some);
     }
-    let admission =
-        bounded_pipeline_decision(plan, context.statistical_aggregate_execution_mode())?.into_execution_admission()?;
+    let admission = bounded_pipeline_decision(
+        plan,
+        context.statistical_aggregate_execution_mode(),
+        crate::rapids_backend::rapids_analysis_context(),
+    )?
+    .into_execution_admission()?;
     let Some(admission) = admission else {
         return Ok(None);
     };

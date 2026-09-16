@@ -8,16 +8,25 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
 
-    assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
-    assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(unsupported_facts(&plan).is_none());
+    assert!(
+        !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join()
+    );
+    assert!(
+        !plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_input_subplan_pipeline()
+    );
+    assert!(
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+    );
+    assert!(unsupported_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_none());
     let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
     );
     assert!(
         preaggregate_leaf_plan
-            .capability_analysis()
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
 
@@ -41,13 +50,26 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         // itself.
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
-        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
-            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join(),
             "{variant:?}"
         );
-        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
+        assert!(
+            !plan
+                .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+                .admits_keyless_conditional_join_input_subplan_pipeline(),
+            "{variant:?}"
+        );
+        assert!(
+            !plan
+                .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+                .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            "{variant:?}"
+        );
+        assert!(
+            unsupported_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_none(),
+            "{variant:?}"
+        );
     }
 
     // A fetch limit after the root turns the tail into sort+fetch, which is the
@@ -59,28 +81,41 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     let limit_after_root_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
     );
-    assert!(!limit_after_root_plan.capability_analysis().admits_root_join());
-    assert!(!limit_after_root_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(
         !limit_after_root_plan
-            .capability_analysis()
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_root_join()
+    );
+    assert!(
+        !limit_after_root_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_input_subplan_pipeline()
+    );
+    assert!(
+        !limit_after_root_plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
     let admission = bounded_pipeline_admission(&limit_after_root_plan)
         .expect("bounded admission should not fail")
         .expect("LimitAfterRoot should be admitted through the root TopK join/aggregate envelope");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
-    assert!(unsupported_facts(&limit_after_root_plan).is_none(), "LimitAfterRoot is admitted, not a support gap");
+    assert!(
+        unsupported_facts(&limit_after_root_plan, nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .is_none(),
+        "LimitAfterRoot is admitted, not a support gap"
+    );
 }
 
 #[test]
 fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_uses_capability_evidence() {
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert_eq!(
-        plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         analysis.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
     assert_eq!(
@@ -109,12 +144,13 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         plan,
         &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
     );
 
     assert!(
         optimized
             .plan
-            .capability_analysis()
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         "projection simplification must preserve bounded aggregate-over-join input wrappers"
     );
@@ -132,9 +168,13 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_rejects_b
     let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,
     );
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(
+        !plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+    );
     let CapabilityDecision::Rejected { reason, facts } =
         &analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
     else {

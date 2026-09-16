@@ -1,7 +1,7 @@
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
-    QueryError, QueryErrorCode, Result, force_atlas2_params, map_cugraph_error, normalize_graph_result_schema,
-    project_edge_list, run_with_cugraph_graph, table_graph_options,
+    QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params, map_cugraph_error,
+    normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
 
 pub(super) fn execute_force_atlas2(
@@ -164,7 +164,7 @@ fn force_atlas2_side_input_column(
     expected_dtype: Option<cudf::TypeId>,
 ) -> Result<cudf::Series> {
     let series = frame.series(column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.force_atlas2_side_input",
             "failed to resolve ForceAtlas2 side-input column",
             error,
@@ -173,7 +173,7 @@ fn force_atlas2_side_input_column(
         .with_fact("column", column)
     })?;
     let dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.force_atlas2_side_input",
             "failed to inspect ForceAtlas2 side-input column dtype",
             error,
@@ -283,7 +283,7 @@ where
 
 fn validate_force_atlas2_vertex_series<V: cudf::CudfType>(series: &cudf::Series, role: &'static str) -> Result<()> {
     let dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.force_atlas2_side_input",
             "failed to inspect ForceAtlas2 vertex side-input dtype",
             error,
@@ -291,7 +291,7 @@ fn validate_force_atlas2_vertex_series<V: cudf::CudfType>(series: &cudf::Series,
     })?;
     if dtype.id() != V::TYPE_ID
         || series.nunique().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.force_atlas2_side_input",
                 "failed to validate ForceAtlas2 side-input vertex uniqueness",
                 error,
@@ -315,7 +315,7 @@ fn force_atlas2_device_slice<'a, T: cudf::CudfType>(
     role: &'static str,
 ) -> Result<cudf::core::DeviceSlice<'a>> {
     series.as_column().device_slice::<T>().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.force_atlas2_side_input",
             "failed to borrow ForceAtlas2 side-input device slice",
             error,

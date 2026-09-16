@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result,
-    dataframe_cross_join_options, execution_overrides, materialize_compiled_indices_output,
+    cudf_query_error, dataframe_cross_join_options, execution_overrides, materialize_compiled_indices_output,
     observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
     unsupported_bounded_shape,
 };
@@ -38,7 +38,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let plan = left.frame.projected_cross_join_plan(&right.frame, options).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.projected_cross_plan",
             "failed to create compiled bounded projected cross join plan",
             error,
@@ -48,7 +48,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     let expected_output_rows = plan.output_rows() as u64;
     let output_reservation_bytes =
         plan.reservation_size_bytes_in(&overrides).map(|bytes| bytes as u64).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.projected_cross_output_reservation",
                 "failed to size compiled bounded projected cross join output",
                 error,
@@ -56,7 +56,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             .with_fact("join_type", node.spec.join_type)
         })?;
     let output = plan.materialize_in(&overrides).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.projected_cross_materialize",
             "failed to materialize compiled bounded projected cross join output",
             error,
@@ -240,7 +240,7 @@ fn keyless_outer_cross_join_indices(
     let sequence = || {
         context.runtime()?.sequence(0i32, 1i32, output_size).map(cudf::DataFrameJoinIndices::from_series).map_err(
             |error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.keyless_outer_cross_sequence",
                     "failed to create preserved-side keyless outer cross gather map",
                     error,
@@ -251,7 +251,7 @@ fn keyless_outer_cross_join_indices(
     };
     let null_supplier = || {
         let sentinel = context.runtime()?.scalar(-1i32).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.keyless_outer_cross_null_supplier_scalar",
                 "failed to create keyless outer cross null-supplier gather sentinel",
                 error,
@@ -263,7 +263,7 @@ fn keyless_outer_cross_join_indices(
             .series_from_scalar(&sentinel, output_size)
             .map(cudf::DataFrameJoinIndices::from_series)
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.keyless_outer_cross_null_supplier",
                     "failed to create null-supplying keyless outer cross gather map",
                     error,

@@ -8,7 +8,7 @@ use cudf::{
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, ExecutionOverrides, ExecutionScratch, Expr, GpuDataFrame,
     GpuHashJoinBuildHandle, HashJoinCacheKey, JoinNode, LiteralValue, NodeId, QueryError, QueryErrorCode, QueryMetrics,
-    Result, col, execution_overrides, observe_device_memory_bytes, timestamp_unit_to_cudf_resolution,
+    Result, col, cudf_query_error, execution_overrides, observe_device_memory_bytes, timestamp_unit_to_cudf_resolution,
 };
 use crate::{
     metrics::{JoinOperatorMetrics, OperatorMetrics},
@@ -44,14 +44,14 @@ impl EquiJoinIndices {
         match self {
             Self::Pair { left, right } => {
                 let left_bytes = left.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.join.gather_map_bytes",
                         "failed to observe nexus native join left gather-map memory",
                         error,
                     )
                 })?;
                 let right_bytes = right.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.join.gather_map_bytes",
                         "failed to observe nexus native join right gather-map memory",
                         error,
@@ -61,7 +61,7 @@ impl EquiJoinIndices {
             },
             Self::LeftOnly(indices) => {
                 indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.join.gather_map_bytes",
                         "failed to observe nexus native join gather-map memory",
                         error,
@@ -284,7 +284,7 @@ fn execute_cross_join(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = left.with_execution(&overrides).cross_join_projected(&right, options).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.join.cross", "failed to execute nexus native cross join", error)
+        cudf_query_error("nexus_query_engine.join.cross", "failed to execute nexus native cross join", error)
     })?;
     let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
     metrics.operator_time += timer.elapsed();
@@ -412,7 +412,7 @@ pub(super) fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryErro
 }
 
 pub(super) fn join_index_error_base(error: cudf::Error, node: &JoinNode) -> QueryError {
-    QueryError::from_cudf("nexus_query_engine.join.execute", "failed to execute nexus native join indices", error)
+    cudf_query_error("nexus_query_engine.join.execute", "failed to execute nexus native join indices", error)
         .with_fact("join_type", node.spec.join_type)
         .with_fact("key_count", node.spec.keys.len())
         .with_fact("null_equality", node.spec.null_equality)
@@ -470,7 +470,7 @@ pub(super) fn null_aware_anti_probe_input(
             .filter_all(left_keys.iter().map(|key| col(key.as_str()).is_not_null()).collect::<Vec<_>>()),
     };
     output.map(Some).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.null_aware_anti_probe",
             "failed to restrict the null-aware anti join probe input",
             error,
@@ -481,7 +481,7 @@ pub(super) fn null_aware_anti_probe_input(
 fn frame_has_null_key(frame: &DataFrame, keys: &[String]) -> Result<bool> {
     for key in keys {
         let series = frame.series(key).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.null_aware_anti_probe",
                 "failed to inspect null-aware anti join key nulls",
                 error,

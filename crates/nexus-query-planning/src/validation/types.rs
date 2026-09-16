@@ -1,9 +1,12 @@
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 
 use super::{BinaryOp, QueryError, QueryErrorCode, Result};
-use crate::datatypes::{
-    is_narrow_decimal_carry_type, is_supported_arrow_implicit_cast, is_supported_list_carry_type,
-    is_timestamp_with_timezone,
+use crate::{
+    backend::AnalysisContext,
+    datatypes::{
+        is_narrow_decimal_carry_type, is_supported_arrow_implicit_cast, is_supported_list_carry_type,
+        is_timestamp_with_timezone,
+    },
 };
 
 pub fn require_boolean(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
@@ -99,7 +102,12 @@ pub fn require_arithmetic_type(data_type: &ArrowDataType, context: &'static str)
     }
 }
 
-pub fn require_compatible_types(left: &ArrowDataType, right: &ArrowDataType, context: &'static str) -> Result<()> {
+pub fn require_compatible_types(
+    left: &ArrowDataType,
+    right: &ArrowDataType,
+    context: &'static str,
+    ctx: AnalysisContext<'_>,
+) -> Result<()> {
     if is_timestamp_with_timezone(left)
         || is_timestamp_with_timezone(right)
         || carry_only_operand(left)
@@ -115,7 +123,10 @@ pub fn require_compatible_types(left: &ArrowDataType, right: &ArrowDataType, con
         .with_fact("right_type", format!("{right:?}"))
         .with_fact("reason", carry_operand_rejection_reason(left, right, "operator")));
     }
-    if left == right || is_supported_arrow_implicit_cast(right, left) || is_supported_arrow_implicit_cast(left, right) {
+    if left == right
+        || is_supported_arrow_implicit_cast(right, left, ctx)
+        || is_supported_arrow_implicit_cast(left, right, ctx)
+    {
         Ok(())
     } else {
         Err(QueryError::new(

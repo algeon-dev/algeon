@@ -1,7 +1,7 @@
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
-    degree_type_to_cugraph, k_core_params, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
-    run_with_cugraph_graph, table_graph_options,
+    cudf_query_error, degree_type_to_cugraph, k_core_params, map_cugraph_error, normalize_graph_result_schema,
+    project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
 
 pub(super) fn execute_degrees_all(
@@ -342,7 +342,7 @@ pub(super) fn execute_k_core(
             ))?;
             // cudf_interop produces "source" / "destination"; stable schema uses "src" / "dst".
             let frame = frame.rename_columns([("source", "src"), ("destination", "dst")]).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.k_core_result",
                     "failed to rename k-core edge columns to the stable SQL schema",
                     error,
@@ -393,7 +393,7 @@ pub(super) fn execute_minimum_spanning_tree(
             ))?;
             // cudf_interop produces "source" / "destination"; stable schema uses "src" / "dst".
             let frame = frame.rename_columns([("source", "src"), ("destination", "dst")]).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.minimum_spanning_tree_result",
                     "failed to rename MST edge columns to the stable SQL schema",
                     error,

@@ -8,7 +8,7 @@ use super::{
     MemoryControlPolicy, NodeId, NullAwareAntiProbe, ProjectionNode, QueryError, QueryErrorCode, QueryMetrics,
     ResidentGpuFrame, Result, RetryFacts, SourceAdjacentAggregateChunkCapHints, SourceChunk, SourceChunkBatch,
     SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
-    apply_source_adjacent_aggregate_chunk_caps, attach_budget_token_failure_facts, chunk_retry_facts,
+    apply_source_adjacent_aggregate_chunk_caps, attach_budget_token_failure_facts, chunk_retry_facts, cudf_query_error,
     dataframe_cross_join_options, dataframe_mixed_join_options, dataframe_predicate_join_options,
     datafusion_order_columns, execute_bounded_generic_local_parquet_source, execute_filter_with_budget,
     execute_projection_with_budget, execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,

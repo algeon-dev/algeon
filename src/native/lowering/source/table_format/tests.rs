@@ -163,7 +163,11 @@ fn table_format_local_footer_missing_field_id_uses_name_mapping_alias() {
     assert_eq!(native_source.read_columns, vec!["old_status"]);
     assert_eq!(native_source.projected_output_columns, vec!["status"]);
     assert_eq!(native_source.files[0].field_id_read_bindings[0].physical_name, "old_status");
-    source::validate_local_parquet_source(&native_source).unwrap();
+    source::validate_local_parquet_source(
+        &native_source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     fs::remove_dir_all(dir).ok();
 }
 
@@ -428,7 +432,11 @@ fn table_format_timestamp_partition_source_contract_keeps_logical_timezone() {
             .unwrap();
 
     assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
-    source::validate_local_parquet_source(&native_source).unwrap();
+    source::validate_local_parquet_source(
+        &native_source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -476,7 +484,11 @@ fn table_format_timestamp_missing_source_contract_keeps_logical_timezone() {
             .unwrap();
 
     assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
-    source::validate_local_parquet_source(&native_source).unwrap();
+    source::validate_local_parquet_source(
+        &native_source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -605,7 +617,11 @@ fn table_format_attached_remote_footer_same_name_signed_integer_widening_admits(
     assert_eq!(groups[0].field_id_bindings[0][0].data_type, DataType::Int16);
     assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
     assert!(groups[0].has_read_coercions());
-    source::validate_local_parquet_source(&native_source).unwrap();
+    source::validate_local_parquet_source(
+        &native_source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -754,7 +770,11 @@ fn table_format_filter_only_same_name_signed_integer_widening_admits() {
     assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
     assert!(groups[0].has_read_coercions());
     assert!(native_source.reader_predicate.is_none());
-    source::validate_local_parquet_source(&native_source).unwrap();
+    source::validate_local_parquet_source(
+        &native_source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1865,7 +1885,11 @@ fn table_format_empty_required_fields_uses_field_id_carrier_without_projecting_i
     assert_eq!(native_source.read_columns, vec!["old_status"]);
     assert!(native_source.projected_output_columns.is_empty());
     assert_eq!(native_source.pure_filter_columns, vec!["status"]);
-    source::validate_local_parquet_source(&native_source).unwrap();
+    source::validate_local_parquet_source(
+        &native_source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     fs::remove_dir_all(dir).ok();
 }
 

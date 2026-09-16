@@ -1,9 +1,10 @@
 use super::{
     CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode, LimitSpec, QueryError,
     QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, TopKLevelItem, commit_topk_merge_level,
-    concat_committed_frames_with_token, estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes,
-    execute_limit_on_frame_with_token, execute_limit_spec_with_token, execute_limit_with_token, final_sort_retry_facts,
-    final_sort_rows_per_chunk, final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
+    concat_committed_frames_with_token, cudf_query_error_with_budget_details, estimate_rows_bytes,
+    estimated_bytes_per_row, estimated_limited_output_bytes, execute_limit_on_frame_with_token,
+    execute_limit_spec_with_token, execute_limit_with_token, final_sort_retry_facts, final_sort_rows_per_chunk,
+    final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
     record_final_sort_retry_error, reduce_merge_fan_in, sort_topk_candidate_with_budget, topk_candidate_rows,
 };
 
@@ -389,7 +390,7 @@ impl FinalSortExecutor<'_, '_> {
                     .slice(slice.offset, slice.length)
                     .map(GpuDataFrame::new)
                     .map_err(|error| {
-                        QueryError::from_cudf_with_budget_details(
+                        cudf_query_error_with_budget_details(
                             "nexus_query_engine.final_sort.topk_slice",
                             "failed to slice bounded native final sort input",
                             error,

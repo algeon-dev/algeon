@@ -809,7 +809,7 @@ fn composed_pipeline_keeps_scalar_fanout_cardinality_as_node_facts() {
         ("max-rows-driver", projection_root_scalar_fanout_max_rows_driver_plan()),
         ("limit-driver", projection_root_scalar_fanout_limit_driver_plan()),
     ] {
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
         assert!(
             analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)),
             "{label} should keep a one-row node fact"
@@ -827,7 +827,7 @@ fn composed_pipeline_rejects_scalar_fanout_anti_join_at_node() {
     // variant; now the join node capability owns the rejection while the
     // scalar aggregates keep their one-row facts.
     let plan = projection_root_scalar_fanout_unsupported_join_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     assert!(analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)));
     let projection = bounded_pipeline_rejection_projection(&plan)
         .unwrap()

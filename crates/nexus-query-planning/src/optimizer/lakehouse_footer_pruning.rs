@@ -12,6 +12,7 @@ use super::{
     seed_dimension_derived_reader_predicates,
 };
 use crate::{
+    backend::AnalysisContext,
     expr::Expr,
     plan::{NodeId, PlanNode, QueryPlan},
     source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
@@ -125,12 +126,13 @@ pub async fn optimize_lakehouse_footer_pruning<R>(
     plan: QueryPlan,
     options: LakehouseFooterPruningOptions,
     resolver: &mut R,
+    ctx: AnalysisContext<'_>,
 ) -> LakehouseFooterPruningResult
 where
     R: LakehouseFooterPruningResolver + ?Sized,
 {
     let original_plan = plan.clone();
-    let mut plan = seed_dimension_derived_reader_predicates(plan);
+    let mut plan = seed_dimension_derived_reader_predicates(plan, ctx);
     let mut any_applied = false;
     let mut events = Vec::new();
 

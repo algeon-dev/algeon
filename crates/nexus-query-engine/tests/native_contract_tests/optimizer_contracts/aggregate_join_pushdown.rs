@@ -35,7 +35,7 @@ fn aggregate_join_pushdown_reuses_physical_group_identity_and_preserves_output_a
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("measure"), "sum_value")],
         ), schema(&final_names));
         let plan = builder.finish_with_host_sink(aggregate);
-        let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options());
+        let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context());
         assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
         assert_eq!(optimized.plan.root_node().output_schema(), &schema(&final_names));
         let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else { panic!("final aggregate") };
@@ -122,7 +122,7 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert!(optimized.changed(), "plain q08-class aggregate-over-join should be pre-aggregated");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -206,7 +206,7 @@ fn aggregate_join_pushdown_rejects_large_fixed_width_detail_key_preaggregate_wit
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan.clone(), &options);
+    let optimized = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
     assert_eq!(optimized.plan, plan);
@@ -261,7 +261,7 @@ fn aggregate_join_pushdown_rejects_large_single_join_key_detail_preaggregate_wit
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan.clone(), &options);
+    let optimized = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
     assert_eq!(optimized.plan, plan);
@@ -316,7 +316,7 @@ fn aggregate_join_pushdown_admits_fixed_width_detail_key_below_reduction_evidenc
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options);
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -377,7 +377,7 @@ fn aggregate_join_pushdown_admits_large_variable_width_group_key_preaggregate() 
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options);
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -432,7 +432,7 @@ fn aggregate_join_pushdown_preserves_grouping_id_output_schema_for_grouping_sets
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert!(optimized.changed(), "grouping-set aggregate-over-join should still be eligible for pre-aggregation");
     assert_all_node_inputs_exist(&optimized.plan);
@@ -498,7 +498,7 @@ fn aggregate_join_pushdown_avg_grouping_sets_final_projection_facts_match_typed_
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert!(optimized.changed(), "AVG grouping-set aggregate-over-join should be pre-aggregated");
     let root = optimized.plan.root_node();
@@ -574,7 +574,7 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert!(optimized.changed(), "left count-over-join aggregate should be pre-aggregated");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -674,7 +674,7 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert!(optimized.changed(), "AVG aggregate-over-join should be pre-aggregated as sum/count state");
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -793,7 +793,7 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options);
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -931,7 +931,7 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
 
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    let optimized = optimize_query_plan(plan, &options);
+    let optimized = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -1023,7 +1023,7 @@ fn aggregate_join_pushdown_only_options() -> NativeOptimizerOptions {
 fn aggregate_join_pushdown_keeps_left_semi_on_final_group_keys_below_the_aggregate() {
     let plan = left_semi_keyset_aggregate_plan(&["order_key", "category"], None);
 
-    let optimized = optimize_query_plan(plan.clone(), &aggregate_join_pushdown_only_options());
+    let optimized = optimize_query_plan(plan.clone(), &aggregate_join_pushdown_only_options(), rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
     assert_eq!(optimized.plan, plan);
@@ -1039,7 +1039,7 @@ fn aggregate_join_pushdown_keeps_left_semi_on_final_group_keys_below_the_aggrega
 fn aggregate_join_pushdown_still_preaggregates_below_left_semi_whose_key_is_not_a_group_key() {
     let plan = left_semi_keyset_aggregate_plan(&["category"], None);
 
-    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options());
+    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
@@ -1071,7 +1071,7 @@ fn aggregate_join_pushdown_still_preaggregates_grouping_sets_below_left_semi_on_
         )),
     );
 
-    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options());
+    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options(), rapids_analysis_context());
 
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);

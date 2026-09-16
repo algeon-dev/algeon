@@ -164,7 +164,7 @@ fn registry_native_and_sql_inventories_have_matching_lengths() {
 fn registry_algorithms_admit_under_execution_capability_without_a_memory_veto() {
     for entry in GRAPH_OPERATION_REGISTRY {
         let plan = graph_plan(entry.algorithm);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
         let node = analysis
             .nodes
             .iter()

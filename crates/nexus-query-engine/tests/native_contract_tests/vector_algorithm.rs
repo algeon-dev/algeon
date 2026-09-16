@@ -131,7 +131,12 @@ fn vector_optimizer_rewrite_remaps_relation_bindings_and_ordered_inputs() {
     let root = builder.add_vector_algorithm(spec);
     let plan = builder.finish_with_host_sink(root);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default()).plan;
+    let optimized = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .plan;
     preflight_query_plan(&optimized).expect("rewritten vector bindings should remain valid");
     let PlanNode::VectorAlgorithm(vector) = &optimized.root_node().kind else {
         panic!("rewritten root should remain a vector algorithm");
@@ -410,7 +415,12 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
         1,
         vector_pca_output_schema(DataType::Int64, 1),
     );
-    let capability = plan.capability_analysis().nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
+    let capability = plan
+        .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == plan.root_id())
+        .unwrap();
     let CapabilityDecision::Rejected { reason, facts } = capability.executable else {
         panic!("invalid vector dtype should be rejected locally");
     };
@@ -423,8 +433,12 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
 fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker() {
     for plan in [knn_plan(false), knn_plan(true)] {
         assert!(plan.contains_vector_algorithm());
-        let decision = bounded_pipeline_decision(&plan, Default::default())
-            .expect("bounded admission should classify vector plan");
+        let decision = bounded_pipeline_decision(
+            &plan,
+            Default::default(),
+            nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        )
+        .expect("bounded admission should classify vector plan");
         assert!(decision.admission().is_none());
         let projection = decision.rejection_projection().expect("vector plan should have a bounded rejection");
         // The compiler owns vector coverage: it reports the structural

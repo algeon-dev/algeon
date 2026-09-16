@@ -877,7 +877,7 @@ pub(super) fn record_batches_to_gpu(
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.cugraph_sql.edge_source_host_import",
                 "failed to import empty host Arrow edge-source batch into cudf",
-                nexus_query_engine::error::QueryError::from_cudf(
+                nexus_query_engine::native_error::cudf_query_error(
                     "datafusion_nexus.cugraph_sql.edge_source_host_import",
                     "failed to import empty host Arrow edge-source batch into cudf",
                     error,
@@ -889,7 +889,7 @@ pub(super) fn record_batches_to_gpu(
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "failed to import host Arrow edge-source batches into cudf",
-            nexus_query_engine::error::QueryError::from_cudf(
+            nexus_query_engine::native_error::cudf_query_error(
                 "datafusion_nexus.cugraph_sql.edge_source_host_import",
                 "failed to import host Arrow edge-source batches into cudf",
                 error,

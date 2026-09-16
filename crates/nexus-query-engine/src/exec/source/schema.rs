@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, LocalParquetSource, QueryError, QueryErrorCode,
-    QueryMetrics, Result, budgeted_value, cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution,
+    QueryMetrics, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_query_error_with_budget_details, timestamp_unit_to_cudf_resolution,
 };
 use crate::datatypes::is_supported_list_carry_type;
 
@@ -27,7 +28,7 @@ pub(super) fn materialize_missing_columns(
             error.with_fact("missing_index", missing_index).with_fact("missing_column", missing_column.name.as_str())
         })?;
         frame = frame.with_column(missing_column.name.as_str(), series).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.local_parquet_source.missing_column",
                 "failed to materialize native parquet missing nullable column",
                 error,
@@ -59,7 +60,7 @@ fn missing_column_series(
     if is_supported_list_carry_type(&missing_column.data_type) {
         return cudf::interop::arrow_host::all_null_list_series(&context.runtime()?, &missing_column.data_type, rows)
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_source.missing_column",
                     "failed to construct native parquet missing nullable list column",
                     error,
@@ -113,7 +114,7 @@ fn missing_column_series(
         },
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.missing_column",
             "failed to construct native parquet missing nullable scalar",
             error,
@@ -121,7 +122,7 @@ fn missing_column_series(
     })?;
 
     context.runtime()?.series_from_scalar(&scalar, rows).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.missing_column",
             "failed to construct native parquet missing nullable column",
             error,
@@ -152,7 +153,7 @@ pub(super) fn coerce_local_parquet_source_schema(
             .with_fact("expected_type", format!("{:?}", field.data_type()))
         })?;
         let actual_dtype = frame.series(field_name.as_str()).and_then(|series| series.dtype()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.local_parquet_source.schema_coerce",
                 "failed to inspect native local parquet source column type",
                 error,
@@ -166,7 +167,7 @@ pub(super) fn coerce_local_parquet_source_schema(
         frame = match token {
             Some(token) => budgeted_value(
                 frame.cast_column_with_budget(field_name.as_str(), expected_dtype, token).map_err(|error| {
-                    QueryError::from_cudf_with_budget_details(
+                    cudf_query_error_with_budget_details(
                         "nexus_query_engine.local_parquet_source.schema_coerce",
                         "failed to cast bounded native local parquet source column to declared schema type",
                         error,
@@ -181,7 +182,7 @@ pub(super) fn coerce_local_parquet_source_schema(
                 "nexus_query_engine.local_parquet_source.schema_coerce",
             ),
             None => frame.cast_column(field_name.as_str(), expected_dtype).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_source.schema_coerce",
                     "failed to cast native local parquet source column to declared schema type",
                     error,

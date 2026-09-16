@@ -3,6 +3,7 @@ use arrow::datatypes::DataType as ArrowDataType;
 use crate::{
     datatypes::cudf_dtype_from_arrow_type,
     error::{QueryError, QueryErrorCode, Result},
+    native_error::cudf_query_error,
 };
 
 pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = cudf::ops::materialization::STRING_OFFSET_BYTES_CONSERVATIVE as u64;
@@ -85,7 +86,7 @@ fn materialization_preflight_error(error: cudf::Error) -> QueryError {
         (cudf::ErrorCode::UnsupportedDtype, _) => QueryErrorCode::UnsupportedPlanShape,
         (cudf::ErrorCode::UnsupportedOperation, Some("string_payload_evidence_missing")) => QueryErrorCode::InvalidPlan,
         _ => {
-            return QueryError::from_cudf(
+            return cudf_query_error(
                 "nexus_query_engine.bounded.join.sizing",
                 "cuDF materialized-table size preflight rejected the output contract",
                 error,

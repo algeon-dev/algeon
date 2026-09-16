@@ -4,8 +4,8 @@ use parquet::file::reader::FileReader;
 
 use super::{
     DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryMetrics, Result,
-    SourceReadMode, local_parquet_file_row_group_metadata_count, parquet_file_path_fact,
-    record_source_file_read_runtime,
+    SourceReadMode, cudf_query_error_with_budget_details, cudf_query_error_without_source_with_budget_details,
+    local_parquet_file_row_group_metadata_count, parquet_file_path_fact, record_source_file_read_runtime,
 };
 
 #[expect(
@@ -75,9 +75,9 @@ fn read_cudf_error_for_file(
     file: &LocalParquetFile,
 ) -> QueryError {
     if file.location.is_local_path() {
-        QueryError::from_cudf_with_budget_details(operation, message, error)
+        cudf_query_error_with_budget_details(operation, message, error)
     } else {
-        QueryError::from_cudf_without_source_with_budget_details(operation, message, &error)
+        cudf_query_error_without_source_with_budget_details(operation, message, &error)
     }
 }
 
