@@ -214,6 +214,10 @@ impl DatafusionNexusFlightSqlService {
 
     pub(super) fn expire_stale_tickets(&self, now: Instant) {
         self.coordinator.maintenance_at(now);
+        // Ownership outlives neither the query record nor the prepared
+        // statement it guards, so it is swept against both on the pass that
+        // just evicted them.
+        self.ownership.retain_live(|id| self.coordinator.knows_query(id) || self.prepared_statements.get(id).is_some());
     }
 
     pub(super) async fn execute_ticket(
@@ -775,7 +779,7 @@ impl DatafusionNexusFlightSqlService {
         Ok(response)
     }
 
-    pub(super) fn cancel_from_flight_info(&self, raw_info: &[u8]) -> Result<bool, Status> {
+    pub(super) fn cancel_from_flight_info(&self, raw_info: &[u8], caller: &Owner) -> Result<bool, Status> {
         let info = FlightInfo::decode(raw_info).map_err(|error| {
             cancel_invalid_argument_status(
                 "Flight SQL cancel action contained malformed FlightInfo bytes",
@@ -827,6 +831,7 @@ impl DatafusionNexusFlightSqlService {
                 error,
             )
         })?;
+        self.ownership.authorize(query_id, caller)?;
         let error = cancellation_error(&self.shutdown_token);
         if self.coordinator.cancel_ticket(query_id, CapturedError::from_adapter_error(&error)) {
             tracing::info!(query_id, outcome = "cancelled", stage = "ticket", "cancelled Flight SQL statement ticket");

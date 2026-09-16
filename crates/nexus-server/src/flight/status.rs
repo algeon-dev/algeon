@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use super::*;
+use crate::observability::RedactedSql;
 
 pub(super) fn datafusion_error_to_flight_error(
     error: DataFusionError,
@@ -312,7 +313,7 @@ pub(super) fn log_statement_status(
     if let Some(sql) = sql {
         tracing::warn!(
             query_id,
-            sql = %StableValue(sql),
+            sql = %RedactedSql(sql),
             outcome,
             stage,
             grpc_code = ?status.code(),
