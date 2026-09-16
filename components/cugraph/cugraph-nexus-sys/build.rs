@@ -126,6 +126,33 @@ fn main() {
         if !contract.runtime_lib_dirs.iter().any(|path| path == &cudf_runtime_dir) {
             contract.runtime_lib_dirs.push(cudf_runtime_dir);
         }
+        // The downstream cuGraph shim includes RMM headers that
+        // `cugraph-install/include` does not vendor; they ship with the cuDF
+        // prefix, so the prebuilt contract must carry its include dir just
+        // like it carries the cuDF runtime dir above.
+        let cudf_include_dir = cudf_install_dir.join("include");
+        if !cudf_include_dir.join("rmm/aligned.hpp").is_file() {
+            panic!(
+                "NEXUS_NATIVE_DIR selected cuGraph, but the matching cuDF prefix {} does not contain include/rmm/aligned.hpp",
+                cudf_install_dir.display()
+            );
+        }
+        // RMM itself requires CCCL 3.3+, which the CUDA toolkit include dirs
+        // below cannot satisfy; the cuDF prefix vendors the matching CCCL
+        // under `include/rapids`, and the downstream shim build prioritizes
+        // that layout ahead of the toolkit.
+        let cudf_rapids_include_dir = cudf_include_dir.join("rapids");
+        if !cudf_rapids_include_dir.join("cuda/std/version").is_file() {
+            panic!(
+                "NEXUS_NATIVE_DIR selected cuGraph, but the matching cuDF prefix {} does not contain include/rapids/cuda/std/version",
+                cudf_install_dir.display()
+            );
+        }
+        for include_dir in [cudf_include_dir, cudf_rapids_include_dir] {
+            if !contract.native_include_dirs.iter().any(|path| path == &include_dir) {
+                contract.native_include_dirs.push(include_dir);
+            }
+        }
     }
     let cuvs_install_dir = env::var_os("CUVS_INSTALL_DIR").or_else(|| {
         env::var_os("NEXUS_NATIVE_DIR").map(|root| PathBuf::from(root).join("cuvs-install").into_os_string())
