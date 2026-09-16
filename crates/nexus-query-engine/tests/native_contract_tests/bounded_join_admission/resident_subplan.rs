@@ -21,10 +21,15 @@ fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_evidence()
         matches!(invariant.kind, SubgraphInvariantKind::AggregateDerivesFromSharedProducer)
             && invariant.decision == CapabilityDecision::Satisfied
     }));
-    assert!(analysis.invariants.iter().any(|invariant| {
-        matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
-            && invariant.decision == CapabilityDecision::Satisfied
-    }));
+    // Sort acyclicity is no longer a plan invariant: the compiled schedule's
+    // barrier dominance check owns it, so no FinalBarrierOrder evidence is
+    // produced here.
+    assert!(
+        !analysis
+            .invariants
+            .iter()
+            .any(|invariant| { matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder) })
+    );
 }
 
 #[test]
@@ -84,10 +89,19 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
         assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
+        // S3 admits the structurally equivalent aggregate through the compiled
+        // contracts: without shared identity it simply compiles to two
+        // separate aggregate tasks, so only the residual variants below stay
+        // rejected.
+        if matches!(
+            variant,
+            KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate
+        ) {
+            assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
+            continue;
+        }
         let facts = unsupported_facts(&plan)
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
@@ -147,10 +161,12 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_preserves_node_failure_lo
 
 #[test]
 fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays_narrow() {
+    // S3 admits these variants through the compiled task contracts once they
+    // compile; what stays narrow is the aggregate-over-join TopK envelope
+    // itself.
     for variant in [
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit,
         AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan,
-        AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression,
     ] {
         let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
 
@@ -158,14 +174,24 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays
             !plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
             "{variant:?} must not satisfy the aggregate-over-join TopK capability evidence"
         );
-        assert!(
-            unsupported_facts(&plan).is_some(),
-            "{variant:?} should remain rejected with bounded unsupported-shape facts"
-        );
-        let facts = unsupported_facts(&plan).expect("rejected aggregate-over-join TopK variant should produce facts");
-        assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
-        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
+        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
     }
+
+    let plan = aggregate_over_join_subplan_topk_variant_plan(
+        AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression,
+    );
+
+    assert!(
+        !plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "unsupported projection expression must not satisfy the aggregate-over-join TopK capability evidence"
+    );
+    assert!(
+        unsupported_facts(&plan).is_some(),
+        "unsupported projection expression should remain rejected with bounded unsupported-shape facts"
+    );
+    let facts = unsupported_facts(&plan).expect("rejected aggregate-over-join TopK variant should produce facts");
+    assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
+    assert!(facts.contains_key("bounded_join_rejection_reason"));
 
     // A side too shallow for the multi-join proof stays outside this envelope,
     // but the shape itself (keyed joins, a grouped aggregate over a join subplan,
@@ -194,10 +220,15 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_
         analysis.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
     );
     assert_eq!(analysis.multi_join_resident_grouped_aggregate_subquery_filter_admission, CapabilityDecision::Satisfied);
-    assert!(analysis.invariants.iter().any(|invariant| {
-        matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
-            && invariant.decision == CapabilityDecision::Satisfied
-    }));
+    // Sort acyclicity is no longer a plan invariant: the compiled schedule's
+    // barrier dominance check owns it, so no FinalBarrierOrder evidence is
+    // produced here.
+    assert!(
+        !analysis
+            .invariants
+            .iter()
+            .any(|invariant| { matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder) })
+    );
     assert!(analysis.invariants.iter().any(|invariant| {
         matches!(invariant.kind, SubgraphInvariantKind::ResidualUsesBothInputs { .. })
             && invariant.decision == CapabilityDecision::Satisfied

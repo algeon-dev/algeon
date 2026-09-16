@@ -75,13 +75,20 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
     );
     let plan = builder.finish_with_host_sink(second_join);
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     let analysis = plan.capability_analysis();
-    let nexus_query_engine::capability::CapabilityDecision::Rejected { reason, facts } =
-        &analysis.closed_multi_join_subgraph_admission
+    // The LIKE residual is a node-local expression rejection on the second
+    // join; no plan-family admission carries it anymore.
+    let rejected_node = analysis
+        .nodes
+        .iter()
+        .find(|node| {
+            node.node_id == second_join
+                && matches!(&node.executable, nexus_query_engine::capability::CapabilityDecision::Rejected { .. })
+        })
+        .expect("unsupported residual expression should reject the second join node");
+    let nexus_query_engine::capability::CapabilityDecision::Rejected { reason, facts } = &rejected_node.executable
     else {
-        panic!("unsupported residual expression should reject multi-join capability admission");
+        unreachable!("rejected node carries a rejection");
     };
     assert_eq!(*reason, "unsupported_join_residual_expression_capability");
     assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));

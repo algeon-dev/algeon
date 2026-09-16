@@ -39,9 +39,17 @@ pub enum AggregateExecutionStage {
     FinalMerge,
 }
 
+fn aggregate_expr_is_exact_distinct_count(expr: &crate::expr::AggregateExpr) -> bool {
+    expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
+}
+
 /// Native aggregate state shape relevant to bounded admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::capability) enum AggregateStateContract {
+///
+/// Grouping sets, non-count distinct functions, and non-mergeable functions
+/// have no contract here (`None`): node capability already rejects those
+/// specs, so no edge may rely on their state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateStateContract {
     /// No distinct or group-only dedup state is required.
     Plain,
     /// SQL setop-style dedup: grouped keys with no aggregate expressions.
@@ -51,54 +59,41 @@ pub(in crate::capability) enum AggregateStateContract {
     ExactDistinctCount,
 }
 
-/// Aggregate state forms that need a more specific contract before admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::capability) enum UnsupportedAggregateStateContract {
-    GroupingSets,
-    UnsupportedDistinctFunction,
-    NonMergeableAggregateFunction,
-}
-
-impl UnsupportedAggregateStateContract {
-    pub(in crate::capability) const fn as_str(self) -> &'static str {
+impl AggregateStateContract {
+    /// Stable diagnostic label for this aggregate state contract.
+    pub const fn as_str(self) -> &'static str {
         match self {
-            Self::GroupingSets => "grouping_sets",
-            Self::UnsupportedDistinctFunction => "unsupported_distinct_function",
-            Self::NonMergeableAggregateFunction => "non_mergeable_aggregate_function",
+            Self::Plain => "plain",
+            Self::DedupGroupOnly => "dedup_group_only",
+            Self::ExactDistinctCount => "exact_distinct_count",
         }
     }
 }
 
-pub(in crate::capability) fn aggregate_state_contract(
-    spec: &AggregateSpec,
-) -> Result<AggregateStateContract, UnsupportedAggregateStateContract> {
+pub fn aggregate_state_contract(spec: &AggregateSpec) -> Option<AggregateStateContract> {
     if spec.grouping_sets.is_some() {
-        return Err(UnsupportedAggregateStateContract::GroupingSets);
+        return None;
     }
     if spec.aggr_exprs.is_empty() && !spec.group_exprs.is_empty() {
-        return Ok(AggregateStateContract::DedupGroupOnly);
+        return Some(AggregateStateContract::DedupGroupOnly);
     }
 
     let mut has_exact_distinct_count = false;
     for expr in &spec.aggr_exprs {
         if aggregate_expr_is_exact_distinct_count(expr) {
             has_exact_distinct_count = true;
-        } else if expr.function == AggregateFunction::Median {
-            return Err(UnsupportedAggregateStateContract::NonMergeableAggregateFunction);
-        } else if expr.distinct {
-            return Err(UnsupportedAggregateStateContract::UnsupportedDistinctFunction);
+        } else if expr.function == AggregateFunction::Median || expr.distinct {
+            // Non-mergeable functions and non-count distincts have no edge
+            // contract here; node capability already rejects those specs.
+            return None;
         }
     }
 
     if has_exact_distinct_count {
-        Ok(AggregateStateContract::ExactDistinctCount)
+        Some(AggregateStateContract::ExactDistinctCount)
     } else {
-        Ok(AggregateStateContract::Plain)
+        Some(AggregateStateContract::Plain)
     }
-}
-
-fn aggregate_expr_is_exact_distinct_count(expr: &crate::expr::AggregateExpr) -> bool {
-    expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
 }
 
 impl AggregateExecutionStage {
@@ -568,7 +563,11 @@ pub fn analyze_aggregate_strategies(plan: &QueryPlan) -> Vec<AggregateStrategyCa
                 return None;
             }
             let input_schema = plan.node(aggregate.input)?.output_schema();
-            let stage = AggregateExecutionStage::Partial;
+            // Compiled aggregate tasks run single-shot: partial/final state
+            // never crosses a compiled edge (it is merged inside the task),
+            // so strategies that require a partial stage are unavailable here.
+            // The executor re-derives its own internal staging at runtime.
+            let stage = AggregateExecutionStage::Single;
             Some(AggregateStrategyCapability {
                 node_id: node.id,
                 stage,

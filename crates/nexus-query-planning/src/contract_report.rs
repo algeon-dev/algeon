@@ -43,10 +43,12 @@ impl CapabilityContractReport {
 
     /// Builds a report from an admitted artifact.
     ///
-    /// The artifact is the single decided source: the report reads its
-    /// analysis instead of re-validating or re-deriving a decision.
-    pub fn from_admission(admission: &BoundedPipelineAdmission) -> Result<Self> {
-        Self::from_capability_analysis(admission.analysis())
+    /// The artifact is admitted by construction: the report projects that
+    /// status directly instead of re-deriving an envelope verdict. A pipeline
+    /// admitted through the composed contracts selects no named envelope, so
+    /// re-deriving would misreport its admission as a rejection.
+    pub fn from_admission(_admission: &BoundedPipelineAdmission) -> Result<Self> {
+        Self::new(CapabilityEnvelopeStatus::Admitted, Vec::new())
     }
 
     /// Builds a report from capability analysis.

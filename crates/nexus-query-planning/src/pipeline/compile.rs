@@ -8,9 +8,9 @@ use super::{
 };
 use crate::{
     capability::{
-        CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
-        ResultSinkKind, SubgraphInvariantKind,
+        AggregateExecutionStage, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory,
+        CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract,
+        EdgeContractKind, InputRole, ResultSinkKind, SubgraphInvariantKind,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterReadiness},
     error::{QueryError, QueryErrorCode},
@@ -63,7 +63,7 @@ pub(crate) fn compile_pipeline_outcome(
         Ok(GraphCompilation::Rejected(projection)) => return Ok(PipelineCompilation::Rejected(projection)),
         Err(error) if error.code() == QueryErrorCode::InvalidPlan => {
             return Ok(PipelineCompilation::Rejected(compile_rejection_projection(
-                "compiled_pipeline_graph_not_constructible",
+                COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE,
                 &error,
             )));
         },
@@ -76,6 +76,14 @@ pub(crate) fn compile_pipeline_outcome(
         },
     }
 }
+
+/// Reason reported when the pipeline graph cannot be constructed at all.
+///
+/// This covers both operator kinds the compiler never implemented (today:
+/// vector algorithms, which the generic executor owns) and structurally
+/// invalid graphs; callers consult the plan shape to tell a coverage gap from
+/// a broken plan.
+pub(crate) const COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE: &str = "compiled_pipeline_graph_not_constructible";
 
 fn compile_rejection_projection(reason: &'static str, error: &QueryError) -> CapabilityRejectionProjection {
     let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
@@ -131,14 +139,30 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> cr
 }
 
 fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::error::Result<()> {
-    if let Some(node) =
-        analysis.nodes.iter().find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
+    // Only sink-reachable rejections refuse compilation: the task graph below
+    // covers exactly the reachable subgraph, so a detached node, edge, or
+    // invariant can neither execute nor break the schedule.
+    if let Some(node) = analysis
+        .nodes
+        .iter()
+        .filter(|node| analysis.reachable_node_ids.contains(&node.node_id))
+        .find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &node.executable
     {
         return Err(capability_rejection_error("node", reason).with_fact("node_id", node.node_id));
     }
 
-    if let Some(edge) = analysis.edges.iter().find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
+    if let Some(edge) = analysis
+        .edges
+        .iter()
+        .filter(|edge| {
+            analysis.reachable_node_ids.contains(&edge.producer)
+                && match edge.consumer {
+                    crate::capability::EdgeConsumer::Node(consumer) => analysis.reachable_node_ids.contains(&consumer),
+                    crate::capability::EdgeConsumer::Sink(_) => true,
+                }
+        })
+        .find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &edge.decision
     {
         return Err(capability_rejection_error("edge", reason)
@@ -146,8 +170,11 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::e
             .with_fact("consumer", edge_consumer_label(edge.consumer)));
     }
 
-    if let Some(invariant) =
-        analysis.invariants.iter().find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
+    if let Some(invariant) = analysis
+        .invariants
+        .iter()
+        .filter(|invariant| invariant.nodes.iter().all(|node| analysis.reachable_node_ids.contains(node)))
+        .find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &invariant.decision
     {
         return Err(capability_rejection_error("invariant", reason)
@@ -400,7 +427,8 @@ fn build_tasks(
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Aggregate, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output]),
+                        .with_output_resources(vec![output])
+                        .with_aggregate_stage(AggregateExecutionStage::Single),
                 );
             },
             PlanNode::Window(_) => {

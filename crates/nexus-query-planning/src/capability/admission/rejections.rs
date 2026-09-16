@@ -21,7 +21,6 @@ pub(in crate::capability::admission) enum InvariantSelector {
     /// Mirrors `SubgraphInvariantKind::ResidentLifetimeDominatesConsumers`: all
     /// reachable resident producers must outlive every admitted consumer edge.
     ResidentLifetimeDominatesConsumers,
-    ClosedJoinSubtree,
     SharedResidentSubplan {
         producer: NodeId,
     },
@@ -30,9 +29,6 @@ pub(in crate::capability::admission) enum InvariantSelector {
     AggregateDerivesFromSharedProducer {
         shared_producer: NodeId,
         aggregate_id: NodeId,
-    },
-    FinalBarrierOrder {
-        sort_id: NodeId,
     },
     PostRootStageOrder {
         root_join_id: NodeId,
@@ -52,10 +48,6 @@ pub(in crate::capability::admission) enum InvariantSelector {
     ResidualUsesBothInputs {
         join_id: NodeId,
     },
-    LimitBoundedProjection {
-        limit_id: NodeId,
-        projection_id: NodeId,
-    },
 }
 
 impl InvariantSelector {
@@ -64,15 +56,12 @@ impl InvariantSelector {
             Self::BuildBeforeProbe { .. } => "build_before_probe",
             Self::TopologicalBuildProbeSchedule => "topological_build_probe_schedule",
             Self::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
-            Self::ClosedJoinSubtree => "closed_join_subtree",
             Self::SharedResidentSubplan { .. } => "shared_resident_subplan",
             Self::AggregateDerivesFromSharedProducer { .. } => "aggregate_derives_from_shared_producer",
-            Self::FinalBarrierOrder { .. } => "final_barrier_order",
             Self::PostRootStageOrder { .. } => "post_root_stage_order",
             Self::ProjectionTransparentResidency { .. } => "projection_transparent_residency",
             Self::ResidentUnaryChainPreservesResidency { .. } => "resident_unary_chain_preserves_residency",
             Self::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
-            Self::LimitBoundedProjection { .. } => "limit_bounded_projection",
         }
     }
 }
@@ -96,7 +85,6 @@ pub(in crate::capability::admission) fn solved_invariant_decision(
                 SubgraphInvariantKind::ResidentLifetimeDominatesConsumers,
                 InvariantSelector::ResidentLifetimeDominatesConsumers,
             ) => true,
-            (SubgraphInvariantKind::ClosedJoinSubtree { .. }, InvariantSelector::ClosedJoinSubtree) => true,
             (SubgraphInvariantKind::SharedResidentSubplan, InvariantSelector::SharedResidentSubplan { producer }) => {
                 invariant.nodes.first().is_some_and(|node| *node == producer)
             },
@@ -106,9 +94,6 @@ pub(in crate::capability::admission) fn solved_invariant_decision(
             ) => {
                 invariant.nodes.first().is_some_and(|node| *node == shared_producer)
                     && invariant.nodes.last().is_some_and(|node| *node == aggregate_id)
-            },
-            (SubgraphInvariantKind::FinalBarrierOrder, InvariantSelector::FinalBarrierOrder { sort_id }) => {
-                invariant.nodes.last().is_some_and(|node| *node == sort_id)
             },
             (
                 SubgraphInvariantKind::PostRootStageOrder { root_join_id: left },
@@ -129,10 +114,6 @@ pub(in crate::capability::admission) fn solved_invariant_decision(
                 SubgraphInvariantKind::ResidualUsesBothInputs { join_id: left },
                 InvariantSelector::ResidualUsesBothInputs { join_id: right },
             ) => *left == right,
-            (
-                SubgraphInvariantKind::LimitBoundedProjection,
-                InvariantSelector::LimitBoundedProjection { limit_id, projection_id },
-            ) => invariant.nodes.as_slice() == [limit_id, projection_id],
             _ => false,
         })
         .map(|invariant| &invariant.decision)

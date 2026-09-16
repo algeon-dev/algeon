@@ -292,10 +292,29 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         let plan = QueryPlan::from_rewritten_parts(nodes, optimized.plan.root_id(), optimized.plan.sink().clone())
             .with_rewrite_state_from(&optimized.plan);
         let analysis = plan.capability_analysis();
-        assert!(
-            analysis.admits_bounded_join(),
-            "the complete optimized q21 pipeline must admit {build_side:?}-build residual semi/anti joins: {analysis:?}\n{plan}"
-        );
+        if matches!(build_side, NativeJoinSide::Right) {
+            assert!(
+                analysis.admits_bounded_join(),
+                "the complete optimized q21 pipeline must admit right-build residual semi/anti joins: {analysis:?}\n{plan}"
+            );
+        } else {
+            // S3 retired the build-side-agnostic closed-multi-join envelope.
+            // The left-build variant's join kernels stay node-executable, but
+            // its computed-shared unary chain has no sharing contract until
+            // S5, and no remaining envelope covers left-build residual
+            // semi/anti tails — so it stays rejected with the nearest
+            // envelope reason instead of silently passing.
+            assert!(
+                !analysis.admits_bounded_join(),
+                "left-build q21 must not admit before S5 sharing contracts: {analysis:?}\n{plan}"
+            );
+            let facts = nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan)
+                .expect("rejected left-build q21 should produce facts");
+            assert_eq!(
+                facts.get("bounded_join_rejection_reason").map(String::as_str),
+                Some("root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join")
+            );
+        }
     }
 
     fs::remove_dir_all(dir).unwrap();
@@ -441,7 +460,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        native_plan.capability_analysis().admits_closed_multi_join_subgraph(),
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(native_plan).is_none(),
         "q07 should use the bounded multi-join native path:\n{native_plan}"
     );
     let nation_projection = native_plan
@@ -542,11 +561,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let plan = &result.plans[0];
-    assert_q11_keyless_proof_selected_as(
-        plan,
-        "lowered q11",
-        nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate,
-    );
+    assert_q11_keyless_proof_admitted(plan, "lowered q11");
     assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(plan).is_none());
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
@@ -617,11 +632,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
-    assert_q11_keyless_proof_selected_as(
-        &optimized.plan,
-        "optimized q11",
-        nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate,
-    );
+    assert_q11_keyless_proof_admitted(&optimized.plan, "optimized q11");
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(aggregate_join_pushdown.applied_count, 1, "optimizer diagnostics={aggregate_join_pushdown:?}");
     assert!(
@@ -687,23 +698,39 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_q11_keyless_proof_selected_as(
-    plan: &QueryPlan,
-    context: &str,
-    expected: nexus_query_engine::capability::CapabilityEnvelope,
-) {
+fn assert_q11_keyless_proof_admitted(plan: &QueryPlan, context: &str) {
     let analysis = plan.capability_analysis();
     assert_eq!(
         analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
         nexus_query_engine::capability::CapabilityDecision::Satisfied,
         "{context} should retain the keyless aggregate-over-join proof:\n{plan}"
     );
-    let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } =
+    let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { .. } =
         analysis.capability_envelope_admission()
     else {
         panic!("{context} should be bounded executable: {:?}\n{plan}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, expected, "{context} should select the expected bounded envelope");
+    // The keyless scalar-fanout cardinality proof survives as a node fact, not
+    // a plan-family reason: q11's scalar threshold aggregate emits at most one
+    // row by its operator alone.
+    let scalar_aggregate_id = plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => Some(node.id),
+            _ => None,
+        })
+        .expect("q11 should keep a scalar threshold aggregate");
+    let scalar_capability = analysis
+        .nodes
+        .iter()
+        .find(|node| node.node_id == scalar_aggregate_id)
+        .expect("scalar threshold aggregate should have a node capability");
+    assert_eq!(
+        scalar_capability.max_output_rows,
+        Some(1),
+        "{context} scalar threshold aggregate should prove at most one row"
+    );
 }
 
 #[tokio::test]

@@ -13,12 +13,12 @@ mod shadow;
 mod validate;
 
 pub use compile::compile_pipeline;
-pub(crate) use compile::{PipelineCompilation, compile_pipeline_outcome};
+pub(crate) use compile::{COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE, PipelineCompilation, compile_pipeline_outcome};
 pub use model::{
-    AcceptedInputForm, CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge,
-    PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentDataForm,
-    ResidentLifetime, ResidentResource, ResidentResourceId, ResourceSharing, SinkBoundary, SinkBoundaryKind,
-    SortStrategy,
+    AcceptedInputForm, AggregateExecutionStage, CompiledPipeline, OrderingScope, PipelineBarrier, PipelineBarrierId,
+    PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
+    PipelineTaskKind, ResidentDataForm, ResidentLifetime, ResidentResource, ResidentResourceId, ResourceOrdering,
+    ResourceSharing, SinkBoundary, SinkBoundaryKind, SortStrategy,
 };
 pub use shadow::{
     ShadowBytes, ShadowMemoryModels, ShadowPipelineEstimate, ShadowResourceLifetime, ShadowResourceModel,

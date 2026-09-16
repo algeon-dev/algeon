@@ -1099,7 +1099,7 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
 }
 
 #[test]
-fn native_optimizer_rule_retains_distinct_aggregate_over_anti_join_as_datafusion() {
+fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-distinct-anti-composition");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -1115,24 +1115,19 @@ fn native_optimizer_rule_retains_distinct_aggregate_over_anti_join_as_datafusion
 
     let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
+    // S3 admits scalar distinct aggregation over a keyed anti join through the
+    // composed pipeline: the anti join executes with null-aware semantics and
+    // the scalar distinct count is exact.
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
-        Arc::ptr_eq(&optimized, &plan),
-        "an unsupported relational parent must preserve its original DataFusion plan"
-    );
-    assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::DataFusion);
-    assert!(
-        !optimized_tree.contains("NexusNativeExec"),
-        "relational DataFusion baseline must not retain a native fragment"
-    );
-    assert!(
-        !optimized_tree.contains("NexusNativeGpuProducerExec"),
-        "relational DataFusion baseline must not create a GPU producer"
+        optimized.downcast_ref::<NexusNativeExec>().is_some(),
+        "distinct aggregate over anti join should execute natively:\n{optimized_tree}"
     );
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.selected_count(), 0);
-    assert_eq!(report.not_selected_count(), 1);
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
 
+    // Row parity with the DataFusion baseline: no key survives the NOT IN.
     let batches =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);

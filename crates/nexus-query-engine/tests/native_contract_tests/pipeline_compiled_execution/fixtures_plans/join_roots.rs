@@ -568,6 +568,58 @@ pub(super) fn root_join_sort_limit_filter_data_plan(left_path: &Path, right_path
     builder.finish_with_host_sink(filter)
 }
 
+/// Join → Sort → Limit with skip and fetch over the same fixtures as
+/// [`root_join_sort_limit_data_plan`]. Descending sort plus skip 1 fetch 1
+/// keeps `(2, 200)`, which pins that the fused top-k applies the offset
+/// exactly once instead of dropping it or applying it twice.
+pub(super) fn root_join_sort_limit_offset_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        left_path,
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        right_path,
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
+        Arc::clone(&output_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::new(1, 1), output_schema);
+    builder.finish_with_host_sink(limit)
+}
+
 pub(super) fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path) -> QueryPlan {
     let a_schema = Arc::new(Schema::new(vec![
         Field::new("a_id", DataType::Int32, false),

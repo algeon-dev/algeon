@@ -17,14 +17,13 @@ use super::{
     },
     node::produced_properties,
     shape::{
-        OutputLineage, closed_multi_join_subgraph_structure_decision, expression_lineage_for_input,
+        OutputLineage, expression_lineage_for_input,
         hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
         keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision,
         mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision,
         multi_join_aggregate_over_join_subplan_topk_shape_decision, output_lineage,
-        peel_resident_unary_chain_for_capability, post_root_join_id,
-        rollup_rank_topk_after_aggregate_join_pushdown_shape_decision, root_full_sort_join_aggregate_shape_decision,
-        root_topk_join_aggregate_shape_decision,
+        peel_resident_unary_chain_for_capability, rollup_rank_topk_after_aggregate_join_pushdown_shape_decision,
+        root_full_sort_join_aggregate_shape_decision, root_topk_join_aggregate_shape_decision,
     },
 };
 
@@ -86,8 +85,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_aggregate_derivation_invariants(plan, &mut invariants);
     append_projection_transparent_residency_invariants(plan, &mut invariants);
     append_resident_unary_chain_preserves_residency_invariants(plan, &mut invariants);
-    append_final_barrier_order_invariants(plan, &mut invariants);
-    append_limit_bounded_projection_invariants(plan, &mut invariants);
     append_mixed_residual_post_root_stage_order_invariant(plan, &mut invariants);
     append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(plan, &mut invariants);
     append_rollup_rank_topk_after_aggregate_join_pushdown_post_root_stage_order_invariant(plan, &mut invariants);
@@ -122,20 +119,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
         });
     }
 
-    if matches!(closed_multi_join_subgraph_structure_decision(plan), CapabilityDecision::Satisfied)
-        && let Ok(root_join_id) = post_root_join_id(plan)
-    {
-        let invariant_id = InvariantId(invariants.len());
-        invariants.push(shape_derived_invariant(
-            invariant_id,
-            SubgraphInvariantKind::ClosedJoinSubtree { root_join_id },
-            collect_reachable_node_ids_from(plan, root_join_id)
-                .map(|nodes| nodes.into_iter().collect())
-                .unwrap_or_else(|_| vec![root_join_id]),
-            ScheduleConstraint::Topological,
-            Vec::new(),
-        ));
-    }
     invariants
 }
 
@@ -310,109 +293,6 @@ pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
             decision: solve_resident_unary_chain_preserves_residency_invariant(plan, peeled_producer, &chain_ids),
         });
     }
-}
-
-pub(super) fn append_final_barrier_order_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
-    for node in plan.nodes() {
-        let PlanNode::Sort(sort) = &node.kind else {
-            continue;
-        };
-        let invariant_id = InvariantId(invariants.len());
-        invariants.push(SubgraphInvariant {
-            invariant_id,
-            kind: SubgraphInvariantKind::FinalBarrierOrder,
-            nodes: vec![sort.input, node.id],
-            required_schedule: ScheduleConstraint::Barrier,
-            required_resources: vec![ResidentResource::NodeOutput(sort.input)],
-            decision: solve_final_barrier_order_invariant(plan, node.id, sort.input),
-        });
-    }
-}
-
-pub(super) fn append_limit_bounded_projection_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
-    for projection_node in plan.nodes() {
-        let PlanNode::Projection(projection) = &projection_node.kind else {
-            continue;
-        };
-        let Some(limit_node) = plan.node(projection.input) else {
-            continue;
-        };
-        let PlanNode::Limit(limit) = &limit_node.kind else {
-            continue;
-        };
-        if limit.spec.fetch.is_none() {
-            continue;
-        }
-        let invariant_id = InvariantId(invariants.len());
-        invariants.push(SubgraphInvariant {
-            invariant_id,
-            kind: SubgraphInvariantKind::LimitBoundedProjection,
-            nodes: vec![projection.input, projection_node.id],
-            required_schedule: ScheduleConstraint::None,
-            required_resources: vec![ResidentResource::NodeOutput(projection.input)],
-            decision: solve_limit_bounded_projection_invariant(plan, projection.input, projection_node.id),
-        });
-    }
-}
-
-fn solve_limit_bounded_projection_invariant(
-    plan: &QueryPlan,
-    limit_id: NodeId,
-    projection_id: NodeId,
-) -> CapabilityDecision {
-    let Some(limit_node) = plan.node(limit_id) else {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_missing_limit",
-            [("limit_id", limit_id.to_string()), ("projection_id", projection_id.to_string())],
-        );
-    };
-    let Some(projection_node) = plan.node(projection_id) else {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_missing_projection",
-            [("limit_id", limit_id.to_string()), ("projection_id", projection_id.to_string())],
-        );
-    };
-    let PlanNode::Limit(limit) = &limit_node.kind else {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_requires_limit_input",
-            [("limit_id", limit_id.to_string()), ("operator", node_operator_fact(&limit_node.kind).to_string())],
-        );
-    };
-    if limit.spec.fetch.is_none() {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_requires_fetch_limit",
-            [("limit_id", limit_id.to_string()), ("skip", limit.spec.skip.to_string())],
-        );
-    }
-    let PlanNode::Projection(projection) = &projection_node.kind else {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_requires_projection_consumer",
-            [
-                ("projection_id", projection_id.to_string()),
-                ("operator", node_operator_fact(&projection_node.kind).to_string()),
-            ],
-        );
-    };
-    if projection.input != limit_id {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_requires_direct_limit_input",
-            [("limit_id", limit_id.to_string()), ("projection_input", projection.input.to_string())],
-        );
-    }
-    let limit_resident = produced_properties(limit_node).contains(&ProducedProperty::ResidentFrame);
-    let projection_resident = produced_properties(projection_node).contains(&ProducedProperty::ResidentFrame);
-    if !limit_resident || !projection_resident {
-        return CapabilityDecision::rejected(
-            "limit_bounded_projection_requires_resident_frames",
-            [
-                ("limit_id", limit_id.to_string()),
-                ("projection_id", projection_id.to_string()),
-                ("limit_resident", limit_resident.to_string()),
-                ("projection_resident", projection_resident.to_string()),
-            ],
-        );
-    }
-    CapabilityDecision::Satisfied
 }
 
 pub(super) fn append_mixed_residual_post_root_stage_order_invariant(
@@ -880,24 +760,6 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
             );
         }
         expected_input = *chain_id;
-    }
-    CapabilityDecision::Satisfied
-}
-
-pub(super) fn solve_final_barrier_order_invariant(
-    plan: &QueryPlan,
-    sort_id: NodeId,
-    sort_input: NodeId,
-) -> CapabilityDecision {
-    let input_nodes = match collect_reachable_node_ids_from(plan, sort_input) {
-        Ok(nodes) => nodes,
-        Err(decision) => return decision,
-    };
-    if input_nodes.contains(&sort_id) {
-        return CapabilityDecision::rejected(
-            "final_barrier_order_cycle",
-            [("sort_id", sort_id.to_string()), ("sort_input", sort_input.to_string())],
-        );
     }
     CapabilityDecision::Satisfied
 }

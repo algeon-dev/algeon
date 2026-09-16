@@ -27,23 +27,20 @@ mod keyed_hash_resident;
 mod keyless_conditional;
 mod mixed_residual;
 mod post_join_topk;
-mod projection_global_limit;
-mod projection_scalar_setop;
 mod rollup_rank_topk;
 mod root_full_sort_join_aggregate;
 mod root_join;
 mod root_topk_join_aggregate;
-mod single_join_post_root;
 mod subquery_filter;
 mod types;
 
 pub(in crate::capability) use access::{
-    closed_multi_join_subgraph_structure_decision, column_expr_lineage, expression_lineage_for_input,
-    generic_join_node, grouped_aggregate_input, join_key_lineage_for_side, join_node_with_missing_reason,
-    join_side_index, limit_input, limit_input_with_missing_reason, node_kind_for_fact, opposite_join_side,
-    output_lineage, output_projection_single_side, peel_projection_chain_ids_for_shape,
-    peel_resident_unary_chain_for_capability, post_root_join_id, projected_output_side, projection_input,
-    projection_input_with_missing_reason, projection_or_filter_wrapped_grouped_local_parquet_aggregate_root,
+    column_expr_lineage, expression_lineage_for_input, generic_join_node, grouped_aggregate_input,
+    join_key_lineage_for_side, join_node_with_missing_reason, join_side_index, limit_input,
+    limit_input_with_missing_reason, node_kind_for_fact, opposite_join_side, output_lineage,
+    output_projection_single_side, peel_projection_chain_ids_for_shape, peel_resident_unary_chain_for_capability,
+    projected_output_side, projection_input, projection_input_with_missing_reason,
+    projection_or_filter_wrapped_grouped_local_parquet_aggregate_root,
     projection_wrapped_grouped_aggregate_over_join_subplan_root,
     projection_wrapped_grouped_local_parquet_aggregate_root,
     projection_wrapped_grouped_sum_local_parquet_aggregate_root, projection_wrapped_join_subtree_root,
@@ -67,8 +64,6 @@ pub(in crate::capability) use post_join_topk::{
     hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
     multi_join_aggregate_over_join_subplan_topk_shape_decision,
 };
-pub(in crate::capability) use projection_global_limit::projection_global_limit_shape_decision;
-pub(in crate::capability) use projection_scalar_setop::projection_scalar_setop_shape_decision;
 pub(in crate::capability) use rollup_rank_topk::rollup_rank_topk_after_aggregate_join_pushdown_shape_decision;
 pub(in crate::capability) use root_full_sort_join_aggregate::{
     root_full_sort_join_aggregate_shape_decision, root_full_sort_window_allows_sink_path_grouped_aggregate_search,
@@ -77,16 +72,14 @@ pub(in crate::capability) use root_join::{
     root_join_shape_decision, root_join_with_post_root_stages, validate_optional_projection_then_sort_post_root_stages,
 };
 pub(in crate::capability) use root_topk_join_aggregate::root_topk_join_aggregate_shape_decision;
-pub(in crate::capability) use single_join_post_root::single_join_post_root_pipeline_shape_decision;
 pub(in crate::capability) use subquery_filter::multi_join_resident_grouped_aggregate_subquery_filter_shape_decision;
 pub(in crate::capability) use types::{
     HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape, KeyedHashJoinResidentSubplanShape,
     KeylessConditionalJoinAggregateOverJoinSubplanInputsShape, KeylessConditionalJoinInputSubplanShape,
     MixedResidualResidentGroupedAggregateInputShape, MultiJoinAggregateOverJoinSubplanTopKShape,
-    MultiJoinResidentGroupedAggregateSubqueryFilterShape, OutputLineage, PostRootStage, ProjectionGlobalLimitShape,
-    ProjectionScalarSetopKind, ProjectionScalarSetopShape, ResidentGroupedAggregateSubqueryFilterStats,
-    RollupRankTopKAfterAggregateJoinPushdownShape, RootFullSortJoinAggregateShape,
-    RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
+    MultiJoinResidentGroupedAggregateSubqueryFilterShape, OutputLineage, PostRootStage,
+    ResidentGroupedAggregateSubqueryFilterStats, RollupRankTopKAfterAggregateJoinPushdownShape,
+    RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
 };
 
 #[doc(hidden)]
@@ -105,11 +98,9 @@ pub fn capability_shape_contract_projection_ids(plan: &QueryPlan) -> BTreeSet<No
     }
     if let Ok(shape) = root_topk_join_aggregate_shape_decision(plan) {
         ids.insert(shape.aggregate_projection_id);
-        ids.extend(shape.post_root_projection_ids);
     }
     if let Ok(shape) = root_full_sort_join_aggregate_shape_decision(plan) {
         ids.insert(shape.aggregate_projection_id);
-        ids.extend(shape.post_root_projection_ids);
     }
     if let Ok(shape) = keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan) {
         ids.insert(shape.grouped_aggregate_projection_id);

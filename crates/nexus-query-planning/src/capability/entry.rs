@@ -1,7 +1,7 @@
 use super::{
     QueryPlan,
     admission::{
-        analyze_closed_multi_join_subgraph_admission, analyze_exact_statistical_join_final_full_sort_admission,
+        analyze_exact_statistical_join_final_full_sort_admission,
         analyze_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
         analyze_keyed_hash_join_resident_subplan_admission,
         analyze_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
@@ -9,14 +9,13 @@ use super::{
         analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
         analyze_multi_join_aggregate_over_join_subplan_topk_admission,
         analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission,
-        analyze_projection_global_limit_admission, analyze_projection_scalar_setop_admission,
         analyze_rollup_rank_topk_after_aggregate_join_pushdown_admission,
         analyze_root_full_sort_join_aggregate_admission, analyze_root_join_admission,
-        analyze_root_topk_join_aggregate_admission, analyze_single_join_post_root_pipeline_admission,
-        analyze_union_pipeline_admission,
+        analyze_root_topk_join_aggregate_admission, analyze_union_pipeline_admission,
     },
     analyze_aggregate_strategies,
     edge::{analyze_input_edges, analyze_sink_edge, mark_shared_producer_edge_contracts},
+    graph::collect_reachable_node_ids,
     invariant::analyze_invariants,
     model::CapabilityAnalysis,
     node::analyze_node,
@@ -42,10 +41,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     let invariants = analyze_invariants(plan, &edges);
     let aggregate_strategies = analyze_aggregate_strategies(plan);
     let root_join_admission = analyze_root_join_admission(plan, &nodes, &edges);
-    let single_join_post_root_pipeline_admission =
-        analyze_single_join_post_root_pipeline_admission(plan, &nodes, &edges);
-    let closed_multi_join_subgraph_admission =
-        analyze_closed_multi_join_subgraph_admission(plan, &nodes, &edges, &invariants);
     let multi_join_aggregate_over_join_subplan_topk_admission =
         analyze_multi_join_aggregate_over_join_subplan_topk_admission(plan, &nodes, &edges, &invariants);
     let root_topk_join_aggregate_admission =
@@ -54,10 +49,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         analyze_root_full_sort_join_aggregate_admission(plan, &nodes, &edges, &invariants);
     let exact_statistical_join_final_full_sort_admission =
         analyze_exact_statistical_join_final_full_sort_admission(plan, &nodes, &edges, &invariants);
-    let projection_global_limit_admission =
-        analyze_projection_global_limit_admission(plan, &nodes, &edges, &invariants);
-    let projection_scalar_setop_admission =
-        analyze_projection_scalar_setop_admission(plan, &nodes, &edges, &invariants);
     let mixed_keyed_residual_join_resident_grouped_aggregate_input_admission =
         analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input_admission(plan, &nodes, &edges, &invariants);
     let hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission =
@@ -83,20 +74,21 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     let multi_join_resident_grouped_aggregate_subquery_filter_admission =
         analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(plan, &nodes, &edges, &invariants);
     let union_pipeline_admission = analyze_union_pipeline_admission(plan, &nodes, &edges);
+    // A malformed plan whose reachability walk fails keeps every node, so the
+    // local-rejection projection stays unfiltered exactly as before.
+    let reachable_node_ids =
+        collect_reachable_node_ids(plan).unwrap_or_else(|_| plan.nodes().iter().map(|node| node.id).collect());
     CapabilityAnalysis {
         nodes,
         edges,
         invariants,
         aggregate_strategies,
+        reachable_node_ids,
         root_join_admission,
-        single_join_post_root_pipeline_admission,
-        closed_multi_join_subgraph_admission,
         multi_join_aggregate_over_join_subplan_topk_admission,
         root_topk_join_aggregate_admission,
         root_full_sort_join_aggregate_admission,
         exact_statistical_join_final_full_sort_admission,
-        projection_global_limit_admission,
-        projection_scalar_setop_admission,
         mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
         hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
         rollup_rank_topk_after_aggregate_join_pushdown_admission,

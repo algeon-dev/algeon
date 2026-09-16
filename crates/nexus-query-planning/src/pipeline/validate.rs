@@ -12,8 +12,9 @@ use crate::{
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
-        PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundaryKind,
+        PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundaryKind, SortStrategy,
     },
+    plan::NodeId,
 };
 
 const OPERATION: &str = "nexus_query_engine.pipeline.validate";
@@ -62,6 +63,7 @@ pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> Result<(), Sched
     named("compiled_pipeline_task_resource_arity_invalid", validate_task_resource_arity(pipeline))?;
     named("compiled_pipeline_stage_boundary_incomplete", validate_stage_boundary_coverage(pipeline))?;
     named("compiled_pipeline_join_build_before_probe_missing", validate_join_build_before_probe(pipeline))?;
+    named("compiled_pipeline_fused_topk_limit_binding_invalid", validate_fused_topk_limit_binding(pipeline))?;
 
     if !task_ids.contains(&pipeline.sink().input()) {
         return Err(ScheduleRejection {
@@ -576,6 +578,55 @@ fn validate_task_resource_arity(pipeline: &CompiledPipeline) -> crate::error::Re
                 .with_fact("task_kind", task.kind().as_str())
                 .with_fact("input_resource_count", inputs)
                 .with_fact("output_resource_count", outputs));
+        }
+    }
+    Ok(())
+}
+
+/// A fused top-k claim names the one limit task that consumes the sort output
+/// and drops the fused marker: `applied_limit` is set by exactly one producer
+/// and consumed by exactly one limit pass-through, so two producers claiming
+/// the same limit, or a claim whose limit task does not consume the sort
+/// output, would apply the fetch/skip twice or not at all.
+fn validate_fused_topk_limit_binding(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+    let mut claimed_limits = BTreeMap::<(PipelineTaskId, NodeId), PipelineTaskId>::new();
+    for task in pipeline.tasks() {
+        let Some(SortStrategy::FusedTopK { limit_task, limit_node }) = task.sort_strategy() else {
+            continue;
+        };
+        if let Some(first_claimant) = claimed_limits.insert((limit_task, limit_node), task.id()) {
+            return Err(invalid("two fused top-k producers claim the same limit")
+                .with_fact("first_sort_task", first_claimant)
+                .with_fact("second_sort_task", task.id())
+                .with_fact("limit_task", limit_task)
+                .with_fact("limit_node", limit_node));
+        }
+        let Some(limit) = pipeline.tasks().iter().find(|candidate| candidate.id() == limit_task) else {
+            return Err(invalid("fused top-k limit task does not exist")
+                .with_fact("sort_task", task.id())
+                .with_fact("limit_task", limit_task)
+                .with_fact("limit_node", limit_node));
+        };
+        if limit.kind() != PipelineTaskKind::Limit {
+            return Err(invalid("fused top-k limit task is not a limit")
+                .with_fact("sort_task", task.id())
+                .with_fact("limit_task", limit_task)
+                .with_fact("limit_task_kind", limit.kind().as_str())
+                .with_fact("limit_node", limit_node));
+        }
+        if limit.plan_node() != Some(limit_node) {
+            return Err(invalid("fused top-k limit task serves a different plan node")
+                .with_fact("sort_task", task.id())
+                .with_fact("limit_task", limit_task)
+                .with_fact("limit_node", limit_node));
+        }
+        let consumes_sort_output =
+            task.output_resources().iter().any(|resource| limit.input_resources().contains(resource));
+        if !consumes_sort_output {
+            return Err(invalid("fused top-k limit task does not consume the sort output")
+                .with_fact("sort_task", task.id())
+                .with_fact("limit_task", limit_task)
+                .with_fact("limit_node", limit_node));
         }
     }
     Ok(())

@@ -39,59 +39,6 @@ pub(in crate::capability) struct HashJoinResidentGroupedAggregateInputPostJoinAg
     pub(in crate::capability) final_limit_id: NodeId,
 }
 
-/// Global limit with projection/aggregate/join work in its bounded input.
-///
-/// A projection may sit either above the limit as a deterministic post-limit
-/// reshaping step or below the limit as part of the bounded input. Distinct/dedup
-/// aggregate state under the limit is admitted only when the generic
-/// aggregate-state contract can model it.
-#[derive(Debug, Clone)]
-pub(in crate::capability) struct ProjectionGlobalLimitShape {
-    pub(in crate::capability) post_limit_projection_id: Option<NodeId>,
-    pub(in crate::capability) global_limit_id: NodeId,
-    pub(in crate::capability) join_ids: Vec<NodeId>,
-}
-
-/// Projection root over scalar fanout or SQL setop/dedup join work.
-#[derive(Debug, Clone)]
-pub(in crate::capability) struct ProjectionScalarSetopShape {
-    pub(in crate::capability) final_projection_id: NodeId,
-    pub(in crate::capability) join_ids: Vec<NodeId>,
-    pub(in crate::capability) aggregate_ids: Vec<NodeId>,
-    pub(in crate::capability) kind: ProjectionScalarSetopKind,
-}
-
-/// The cardinality proof used by a projection scalar/setop envelope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::capability) enum ProjectionScalarSetopKind {
-    /// Cross joins combine only scalar aggregate outputs before the final projection.
-    ScalarFanout,
-    /// Grouped dedup aggregates and left-anti joins feed a final scalar aggregate.
-    SetopDedupScalar,
-    /// A scalar aggregate over a multi-join input is present, but child cardinality is not yet modeled.
-    ScalarJoinAggregateInput,
-    /// A scalar aggregate consumes a keyed join with a grouped aggregate input.
-    ScalarJoinGroupedAggregateInput,
-    /// Keyless/cross join work is present, but its scalar output proof is not yet modeled.
-    KeylessOrCrossJoinInput,
-    /// Setop/dedup input work is present, but its final scalar proof is not yet modeled.
-    SetopDedupInput,
-}
-
-impl ProjectionScalarSetopKind {
-    pub(in crate::capability) const fn as_str(self) -> &'static str {
-        match self {
-            Self::ScalarFanout => "scalar_fanout",
-            Self::SetopDedupScalar => "setop_dedup_scalar",
-            Self::ScalarJoinAggregateInput => "scalar_join_aggregate_input",
-            Self::ScalarJoinGroupedAggregateInput => "scalar_join_grouped_aggregate_input",
-            Self::KeylessOrCrossJoinInput => "keyless_or_cross_join_input",
-            Self::SetopDedupInput => "setop_dedup_input",
-        }
-    }
-}
-
-/// Rollup/rank/top-k query whose fact-side source has first been reduced by a
 /// detail-level aggregate below the final grouping-set aggregate's join input.
 ///
 /// The stored ids pin the pushed-down detail aggregate, the rebuilt root join,
@@ -198,12 +145,11 @@ impl RootFullSortJoinAggregateSubcontract {
 /// Final-sort query where a keyed hash join matches a joined grouped branch
 /// against a scalar aggregate derived from the same grouped aggregate producer.
 ///
-/// The stored ids record the final sort, the root join, the branch join, the
-/// shared grouped aggregate node that must be common after CSE, and the scalar
-/// aggregate consuming that shared producer.
+/// The stored ids record the root join, the branch join, the shared grouped
+/// aggregate node that must be common after CSE, and the scalar aggregate
+/// consuming that shared producer.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::capability) struct KeyedHashJoinResidentSubplanShape {
-    pub(in crate::capability) final_sort_id: NodeId,
     pub(in crate::capability) root_join_id: NodeId,
     pub(in crate::capability) joined_grouped_branch_join_id: NodeId,
     pub(in crate::capability) shared_grouped_aggregate_id: NodeId,
@@ -242,12 +188,11 @@ pub(in crate::capability) struct KeylessConditionalJoinAggregateOverJoinSubplanI
 /// Final-sort query whose left-semi root join filters a resident multi-join
 /// output using a subquery side containing one grouped aggregate comparison.
 ///
-/// The stored ids identify the sort and root join, the grouped aggregate and
+/// The stored ids identify the root join, the grouped aggregate and
 /// projection used by the residual comparison, and the residual join that
 /// compares the aggregate branch against the rest of the subquery side.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::capability) struct MultiJoinResidentGroupedAggregateSubqueryFilterShape {
-    pub(in crate::capability) final_sort_id: NodeId,
     pub(in crate::capability) root_join_id: NodeId,
     pub(in crate::capability) grouped_aggregate_id: NodeId,
     pub(in crate::capability) grouped_aggregate_projection_id: NodeId,

@@ -8,7 +8,10 @@ mod root;
 use builders::*;
 
 #[test]
-fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti() {
+fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_left_semi_and_left_anti() {
+    // A pure multi-join pipeline is admitted through the compiled task
+    // contracts once every join group compiles; the retired closed-multi-join
+    // envelope no longer vetoes join types the join kernels execute directly.
     for (join_type, projection) in [
         (
             JoinType::Inner,
@@ -30,12 +33,11 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
             let plan = mixed_residual_multi_join_plan(join_type, build_side, projection.clone());
 
             assert!(!plan.capability_analysis().admits_root_join());
-            assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-            assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
             assert!(unsupported_facts(&plan).is_none());
         }
     }
 
+    // A mixed Left join with a right build is admitted the same way.
     let plan = mixed_residual_multi_join_plan(
         JoinType::Left,
         JoinSide::Right,
@@ -45,14 +47,25 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
         ],
     );
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    let facts = unsupported_facts(&plan).expect("unsupported mixed left multi-join shape should produce facts");
-    assert_rejection_facts_are_family_free(&facts, "mixed_left_multi_join");
-    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("subgraph"));
-    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("missing_subgraph_invariant"));
-    assert!(facts.contains_key("bounded_join_rejection_reason"));
-    assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
+    assert!(unsupported_facts(&plan).is_none());
+
+    // A mixed Left join building on the left is not a supported kernel shape:
+    // the join node capability rejects it before any pipeline compiles.
+    let plan = mixed_residual_multi_join_plan(
+        JoinType::Left,
+        JoinSide::Left,
+        vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
+        ],
+    );
+    assert!(!plan.capability_analysis().admits_root_join());
+    let facts = unsupported_facts(&plan).expect("left-build mixed left should produce facts");
+    assert_rejection_facts_are_family_free(&facts, "left_build_mixed_left");
+    assert_eq!(
+        facts.get("bounded_join_rejection_reason").map(String::as_str),
+        Some("unsupported_join_node_capability")
+    );
 
     let plan = mixed_residual_multi_join_plan(
         JoinType::Full,
@@ -63,31 +76,17 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
         ],
     );
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
 }
 
 #[test]
-fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_anti() {
-    for (valid_join_type, invalid_join_type) in
-        [(JoinType::LeftSemi, JoinType::Left), (JoinType::LeftAnti, JoinType::Full)]
-    {
-        let plan =
-            valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(valid_join_type, invalid_join_type);
+fn bounded_multi_join_admits_full_tail_after_valid_mixed_residual_semi_anti() {
+    // The retired closed-multi-join envelope no longer vetoes the Full tail:
+    // `Full` is a supported join-kernel shape, so the composed pipeline admits
+    // the whole multi-join once it compiles.
+    let plan = valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(JoinType::LeftAnti, JoinType::Full);
 
-        assert!(!plan.capability_analysis().admits_root_join());
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-        let facts =
-            unsupported_facts(&plan).expect("unsupported mixed left/full multi-join shape should produce facts");
-        assert_rejection_facts_are_family_free(&facts, "mixed_left_full_multi_join");
-        assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("subgraph"));
-        assert_eq!(
-            facts.get("bounded_join_rejection_category").map(String::as_str),
-            Some("missing_subgraph_invariant")
-        );
-        assert!(facts.contains_key("bounded_join_rejection_reason"));
-    }
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(unsupported_facts(&plan).is_none());
 }
 
 #[test]
@@ -109,8 +108,6 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
         let plan = mixed_residual_multi_join_plan(join_type, build_side, projection);
 
         assert!(!plan.capability_analysis().admits_root_join());
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
         let facts =
             unsupported_facts(&plan).expect("unsupported mixed semi/anti multi-join shape should produce facts");
         assert_rejection_facts_are_family_free(&facts, "invalid_mixed_semi_anti_multi_join");
@@ -135,12 +132,14 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
 }
 
 #[test]
-fn bounded_multi_join_keeps_aggregate_inputs_out_of_join_subtrees() {
+fn bounded_multi_join_admits_aggregate_inputs_below_join_subtrees() {
+    // S3 widened the migrated scope to aggregate stages below multi-joins: a
+    // grouped aggregate feeding a join input compiles to ordinary frame tasks,
+    // so the retired closed-multi-join veto no longer rejects these shapes.
     let plan = mixed_residual_multi_join_with_aggregate_leaf_plan();
 
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(unsupported_facts(&plan).is_none());
 
     for aggregate_leaf in
         [MultiJoinAggregateLeaf::FirstLeft, MultiJoinAggregateLeaf::FirstRight, MultiJoinAggregateLeaf::SecondRight]
@@ -148,11 +147,6 @@ fn bounded_multi_join_keeps_aggregate_inputs_out_of_join_subtrees() {
         let plan = hash_multi_join_with_aggregate_leaf_plan(aggregate_leaf);
 
         assert!(!plan.capability_analysis().admits_root_join());
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-        assert!(
-            !plan.capability_analysis().admits_closed_multi_join_subgraph(),
-            "aggregate {aggregate_leaf:?} leaf must not be accepted below a bounded multi-join"
-        );
-        assert!(unsupported_facts(&plan).is_some());
+        assert!(unsupported_facts(&plan).is_none(), "{aggregate_leaf:?}");
     }
 }

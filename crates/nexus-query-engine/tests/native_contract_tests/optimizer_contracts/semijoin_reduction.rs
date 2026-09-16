@@ -238,8 +238,11 @@ fn semijoin_reduction_bounded_admission_gate_keeps_rewrite_when_original_is_not_
         candidate.admission_decision,
         Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::BoundedKept)
     );
-    assert_eq!(candidate.original_admitted, Some(false));
-    assert_eq!(candidate.rewritten_admitted, Some(false));
+    // S3 admits multi-join aggregate pipelines through the compiled task
+    // contracts, so both the original and the rewritten semijoin-over-join
+    // plans are executable now; the gate still keeps the rewrite.
+    assert_eq!(candidate.original_admitted, Some(true));
+    assert_eq!(candidate.rewritten_admitted, Some(true));
 }
 
 #[test]

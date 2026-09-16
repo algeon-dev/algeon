@@ -94,7 +94,6 @@ pub(in crate::capability) fn keyed_hash_join_resident_subplan_shape_decision(
     }
 
     Ok(KeyedHashJoinResidentSubplanShape {
-        final_sort_id,
         root_join_id,
         joined_grouped_branch_join_id: joined_grouped_branch.join_id,
         shared_grouped_aggregate_id: joined_grouped_branch.grouped_aggregate_id,

@@ -304,13 +304,7 @@ fn stage_task_outside_sink_path<'a>(
     sink_path: &BTreeSet<PipelineTaskId>,
 ) -> Option<&'a PipelineTask> {
     pipeline.tasks().iter().find(|task| {
-        if !matches!(
-            task.kind(),
-            PipelineTaskKind::Aggregate
-                | PipelineTaskKind::Window
-                | PipelineTaskKind::Union
-                | PipelineTaskKind::FinalSort
-        ) {
+        if !matches!(task.kind(), PipelineTaskKind::Window | PipelineTaskKind::Union | PipelineTaskKind::FinalSort) {
             return false;
         }
 

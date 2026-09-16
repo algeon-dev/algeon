@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use super::*;
 
 #[test]
-fn native_semijoin_reduction_preserves_bounded_rejection_for_unsupported_subcontract() {
+fn native_semijoin_reduction_keeps_row_parity_once_both_candidates_execute() {
     let dir = unique_temp_dir("nexus-query-engine-unbounded-semijoin-reduction-parity");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
@@ -39,20 +39,33 @@ fn native_semijoin_reduction_preserves_bounded_rejection_for_unsupported_subcont
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
+    // S3 admits both the original and the rewritten candidate through the
+    // composed pipeline, so the gate keeps the rewrite and this test pins row
+    // parity between the two executable candidates instead of a rejection.
     let context = backend_context();
+    let mut outputs = Vec::new();
     for candidate in [&plan, &optimizer_result.plan] {
-        let error = match execute_query_plan(&context, candidate) {
-            Ok(_) => panic!("the root full-sort grouped-aggregate subcontract remains unsupported"),
-            Err(error) => error,
+        let result =
+            execute_query_plan(&context, candidate).expect("semijoin reduction candidate should execute natively");
+        let QueryOutput::HostArrow(batch) = result.output() else {
+            panic!("semijoin reduction should materialize host output");
         };
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.operation(), "nexus_query_engine.bounded.plan");
-        assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-        assert_eq!(
-            error.fact_value("bounded_join_rejection_reason"),
-            Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract")
+        assert_eq!(batch.num_rows(), 1);
+        outputs.push(
+            (0..batch.num_columns())
+                .map(|column| {
+                    batch
+                        .column(column)
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap_or_else(|| panic!("column {column} should be Int32"))
+                        .iter()
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
         );
     }
+    assert_eq!(outputs[0], outputs[1], "the rewrite must preserve rows");
 
     fs::remove_dir_all(dir).unwrap();
 }

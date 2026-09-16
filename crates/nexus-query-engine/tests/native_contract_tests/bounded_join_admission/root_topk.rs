@@ -431,7 +431,7 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
 }
 
 #[test]
-fn bounded_root_topk_join_aggregate_shape_miss_does_not_mask_general_rejection() {
+fn bounded_root_topk_join_aggregate_shape_miss_reports_at_admission_level() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::MissingGroupedAggregateFragment);
     let analysis = plan.capability_analysis();
 
@@ -440,18 +440,21 @@ fn bounded_root_topk_join_aggregate_shape_miss_does_not_mask_general_rejection()
         panic!("missing aggregate fragment should reject root TopK join/aggregate admission");
     };
     assert_eq!(*reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
-    if let Some(projection) = analysis.first_rejection_projection() {
-        assert_ne!(projection.reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
-    }
-    let admission =
-        bounded_pipeline_admission(&plan).expect("bounded admission should not fail");
-    if let Some(admission) = admission {
-        assert_ne!(
-            admission.envelope(),
-            nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate,
-            "generic root TopK shape miss must not select the canonical root TopK envelope"
-        );
-    }
+    // The retired closed-join-subtree invariant no longer reports a separate
+    // general rejection: with no local rejection left, the envelope projects
+    // the admission-level shape miss itself...
+    let projection =
+        analysis.first_rejection_projection().expect("shape miss should still project a rejection");
+    assert_eq!(projection.reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
+    // ...and the composed pipeline admits the executable join/sort/limit tail.
+    let admission = bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("missing-fragment tail stays executable through the composed pipeline");
+    assert_ne!(
+        admission.envelope(),
+        nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate,
+        "generic root TopK shape miss must not select the canonical root TopK envelope"
+    );
 }
 
 #[test]

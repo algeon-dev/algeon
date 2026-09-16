@@ -31,13 +31,7 @@ pub(in crate::capability) fn analyze_root_topk_join_aggregate_admission(
             consumer_id: shape.aggregate_projection_id,
         });
     }
-    required.extend(
-        shape.window_input_sort_ids.iter().copied().map(|sort_id| InvariantSelector::FinalBarrierOrder { sort_id }),
-    );
-    required.extend([
-        InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
-        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
-    ]);
+    required.push(InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id });
     if shape.join_ids.len() > 1 {
         required.extend([
             InvariantSelector::TopologicalBuildProbeSchedule,

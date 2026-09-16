@@ -35,6 +35,12 @@ pub enum nexus_query_planning::capability::AggregateGrouping
 pub nexus_query_planning::capability::AggregateGrouping::Grouped
 pub nexus_query_planning::capability::AggregateGrouping::GroupingSets
 pub nexus_query_planning::capability::AggregateGrouping::Scalar
+pub enum nexus_query_planning::capability::AggregateStateContract
+pub nexus_query_planning::capability::AggregateStateContract::DedupGroupOnly
+pub nexus_query_planning::capability::AggregateStateContract::ExactDistinctCount
+pub nexus_query_planning::capability::AggregateStateContract::Plain
+impl nexus_query_planning::capability::AggregateStateContract
+pub const fn nexus_query_planning::capability::AggregateStateContract::as_str(self) -> &'static str
 pub enum nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityDecision::Conditional
 pub nexus_query_planning::capability::CapabilityDecision::Conditional::waiting_on: alloc::vec::Vec<nexus_query_planning::capability::ConstraintRef>
@@ -287,7 +293,6 @@ impl core::default::Default for nexus_query_planning::capability::AggregateStrat
 pub fn nexus_query_planning::capability::AggregateStrategyExecutionOptions::default() -> Self
 pub struct nexus_query_planning::capability::CapabilityAnalysis
 pub nexus_query_planning::capability::CapabilityAnalysis::aggregate_strategies: alloc::vec::Vec<nexus_query_planning::capability::AggregateStrategyCapability>
-pub nexus_query_planning::capability::CapabilityAnalysis::closed_multi_join_subgraph_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::edges: alloc::vec::Vec<nexus_query_planning::capability::EdgeContract>
 pub nexus_query_planning::capability::CapabilityAnalysis::exact_statistical_join_final_full_sort_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: nexus_query_planning::capability::CapabilityDecision
@@ -299,17 +304,13 @@ pub nexus_query_planning::capability::CapabilityAnalysis::mixed_keyed_residual_j
 pub nexus_query_planning::capability::CapabilityAnalysis::multi_join_aggregate_over_join_subplan_topk_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::multi_join_resident_grouped_aggregate_subquery_filter_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::nodes: alloc::vec::Vec<nexus_query_planning::capability::NodeCapability>
-pub nexus_query_planning::capability::CapabilityAnalysis::projection_global_limit_admission: nexus_query_planning::capability::CapabilityDecision
-pub nexus_query_planning::capability::CapabilityAnalysis::projection_scalar_setop_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::rollup_rank_topk_after_aggregate_join_pushdown_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::root_full_sort_join_aggregate_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::root_join_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::root_topk_join_aggregate_admission: nexus_query_planning::capability::CapabilityDecision
-pub nexus_query_planning::capability::CapabilityAnalysis::single_join_post_root_pipeline_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::union_pipeline_admission: nexus_query_planning::capability::CapabilityDecision
 impl nexus_query_planning::capability::CapabilityAnalysis
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_bounded_join(&self) -> bool
-pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_closed_multi_join_subgraph(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool
@@ -317,13 +318,10 @@ pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_keyless_cond
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool
-pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_projection_global_limit_pipeline(&self) -> bool
-pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_projection_scalar_setop_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_root_full_sort_join_aggregate_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_root_join(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_root_topk_join_aggregate_pipeline(&self) -> bool
-pub fn nexus_query_planning::capability::CapabilityAnalysis::admits_single_join_post_root_pipeline(&self) -> bool
 pub fn nexus_query_planning::capability::CapabilityAnalysis::capability_envelope_admission(&self) -> nexus_query_planning::capability::CapabilityEnvelopeAdmission
 pub fn nexus_query_planning::capability::CapabilityAnalysis::capability_envelope_label(&self) -> nexus_query_planning::capability::CapabilityEnvelope
 pub fn nexus_query_planning::capability::CapabilityAnalysis::first_rejection_projection(&self) -> core::option::Option<nexus_query_planning::capability::CapabilityRejectionProjection>
@@ -382,7 +380,9 @@ pub fn nexus_query_planning::capability::KeyedHashJoinStrategyOptions::with_smal
 impl core::default::Default for nexus_query_planning::capability::KeyedHashJoinStrategyOptions
 pub fn nexus_query_planning::capability::KeyedHashJoinStrategyOptions::default() -> Self
 pub struct nexus_query_planning::capability::NodeCapability
+pub nexus_query_planning::capability::NodeCapability::aggregate_state: core::option::Option<nexus_query_planning::capability::AggregateStateContract>
 pub nexus_query_planning::capability::NodeCapability::executable: nexus_query_planning::capability::CapabilityDecision
+pub nexus_query_planning::capability::NodeCapability::max_output_rows: core::option::Option<u64>
 pub nexus_query_planning::capability::NodeCapability::node_id: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::capability::NodeCapability::operator: nexus_query_planning::capability::NodeOperator
 pub nexus_query_planning::capability::NodeCapability::produced_properties: alloc::vec::Vec<nexus_query_planning::capability::ProducedProperty>
@@ -394,6 +394,7 @@ pub nexus_query_planning::capability::SubgraphInvariant::nodes: alloc::vec::Vec<
 pub nexus_query_planning::capability::SubgraphInvariant::required_resources: alloc::vec::Vec<nexus_query_planning::capability::ResidentResource>
 pub nexus_query_planning::capability::SubgraphInvariant::required_schedule: nexus_query_planning::capability::ScheduleConstraint
 pub const nexus_query_planning::capability::STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS: &str
+pub fn nexus_query_planning::capability::aggregate_state_contract(&nexus_query_planning::expr::AggregateSpec) -> core::option::Option<nexus_query_planning::capability::AggregateStateContract>
 pub fn nexus_query_planning::capability::aggregate_strategy_capability_decision(&nexus_query_planning::expr::AggregateSpec, &arrow_schema::schema::Schema, nexus_query_planning::capability::AggregateExecutionStage) -> nexus_query_planning::capability::AggregateStrategyCapabilityDecision
 pub fn nexus_query_planning::capability::analyze_query_capabilities(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::capability::CapabilityAnalysis
 pub mod nexus_query_planning::chunk
@@ -1814,6 +1815,17 @@ pub nexus_query_planning::pipeline::AcceptedInputForm::FrameOrStream
 pub nexus_query_planning::pipeline::AcceptedInputForm::FrameStreamOrSourceStream
 impl nexus_query_planning::pipeline::AcceptedInputForm
 pub const fn nexus_query_planning::pipeline::AcceptedInputForm::as_str(self) -> &'static str
+pub enum nexus_query_planning::pipeline::AggregateExecutionStage
+pub nexus_query_planning::pipeline::AggregateExecutionStage::FinalMerge
+pub nexus_query_planning::pipeline::AggregateExecutionStage::Partial
+pub nexus_query_planning::pipeline::AggregateExecutionStage::Single
+impl nexus_query_planning::capability::AggregateExecutionStage
+pub const fn nexus_query_planning::capability::AggregateExecutionStage::as_str(self) -> &'static str
+pub enum nexus_query_planning::pipeline::OrderingScope
+pub nexus_query_planning::pipeline::OrderingScope::Global
+pub nexus_query_planning::pipeline::OrderingScope::PerChunk
+impl nexus_query_planning::pipeline::OrderingScope
+pub const fn nexus_query_planning::pipeline::OrderingScope::as_str(self) -> &'static str
 pub enum nexus_query_planning::pipeline::PipelineBarrierKind
 pub nexus_query_planning::pipeline::PipelineBarrierKind::AggregateBoundary
 pub nexus_query_planning::pipeline::PipelineBarrierKind::JoinBuildBeforeProbe
@@ -1941,6 +1953,7 @@ pub fn nexus_query_planning::pipeline::PipelineEdgeId::fmt(&self, &mut core::fmt
 pub struct nexus_query_planning::pipeline::PipelineTask
 impl nexus_query_planning::pipeline::PipelineTask
 pub fn nexus_query_planning::pipeline::PipelineTask::accepted_input_form(&self) -> nexus_query_planning::pipeline::AcceptedInputForm
+pub fn nexus_query_planning::pipeline::PipelineTask::aggregate_stage(&self) -> core::option::Option<nexus_query_planning::capability::AggregateExecutionStage>
 pub fn nexus_query_planning::pipeline::PipelineTask::for_plan_node(nexus_query_planning::pipeline::PipelineTaskId, nexus_query_planning::pipeline::PipelineTaskKind, nexus_query_planning::plan::NodeId) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::id(&self) -> nexus_query_planning::pipeline::PipelineTaskId
 pub fn nexus_query_planning::pipeline::PipelineTask::input_resources(&self) -> &[nexus_query_planning::pipeline::ResidentResourceId]
@@ -1951,6 +1964,7 @@ pub fn nexus_query_planning::pipeline::PipelineTask::plan_join_strategy(&self) -
 pub fn nexus_query_planning::pipeline::PipelineTask::plan_node(&self) -> core::option::Option<nexus_query_planning::plan::NodeId>
 pub fn nexus_query_planning::pipeline::PipelineTask::sort_strategy(&self) -> core::option::Option<nexus_query_planning::pipeline::SortStrategy>
 pub fn nexus_query_planning::pipeline::PipelineTask::with_accepted_input_form(self, nexus_query_planning::pipeline::AcceptedInputForm) -> Self
+pub fn nexus_query_planning::pipeline::PipelineTask::with_aggregate_stage(self, nexus_query_planning::capability::AggregateExecutionStage) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::with_input_resources(self, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResourceId>) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::with_output_resources(self, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResourceId>) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::with_plan_join_strategy(self, CompiledJoinExecutionStrategy) -> Self
@@ -1968,15 +1982,23 @@ pub fn nexus_query_planning::pipeline::ResidentResource::data_form(&self) -> nex
 pub fn nexus_query_planning::pipeline::ResidentResource::id(&self) -> nexus_query_planning::pipeline::ResidentResourceId
 pub fn nexus_query_planning::pipeline::ResidentResource::lifetime(&self) -> nexus_query_planning::pipeline::ResidentLifetime
 pub fn nexus_query_planning::pipeline::ResidentResource::new(nexus_query_planning::pipeline::ResidentResourceId, nexus_query_planning::pipeline::PipelineTaskId, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineTaskId>, nexus_query_planning::pipeline::ResidentLifetime) -> Self
+pub fn nexus_query_planning::pipeline::ResidentResource::ordering(&self) -> core::option::Option<&nexus_query_planning::pipeline::ResourceOrdering>
 pub fn nexus_query_planning::pipeline::ResidentResource::producer(&self) -> nexus_query_planning::pipeline::PipelineTaskId
 pub fn nexus_query_planning::pipeline::ResidentResource::sharing(&self) -> nexus_query_planning::pipeline::ResourceSharing
 pub fn nexus_query_planning::pipeline::ResidentResource::with_consumption(self, nexus_query_planning::pipeline::ResidentDataForm, nexus_query_planning::pipeline::ResourceSharing) -> Self
+pub fn nexus_query_planning::pipeline::ResidentResource::with_ordering(self, core::option::Option<nexus_query_planning::pipeline::ResourceOrdering>) -> Self
 pub struct nexus_query_planning::pipeline::ResidentResourceId(_)
 impl nexus_query_planning::pipeline::ResidentResourceId
 pub const fn nexus_query_planning::pipeline::ResidentResourceId::index(self) -> usize
 pub const fn nexus_query_planning::pipeline::ResidentResourceId::new(usize) -> Self
 impl core::fmt::Display for nexus_query_planning::pipeline::ResidentResourceId
 pub fn nexus_query_planning::pipeline::ResidentResourceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct nexus_query_planning::pipeline::ResourceOrdering
+impl nexus_query_planning::pipeline::ResourceOrdering
+pub fn nexus_query_planning::pipeline::ResourceOrdering::global(alloc::vec::Vec<nexus_query_planning::expr::SortExpr>) -> Self
+pub fn nexus_query_planning::pipeline::ResourceOrdering::keys(&self) -> &[nexus_query_planning::expr::SortExpr]
+pub fn nexus_query_planning::pipeline::ResourceOrdering::per_chunk(alloc::vec::Vec<nexus_query_planning::expr::SortExpr>) -> Self
+pub fn nexus_query_planning::pipeline::ResourceOrdering::scope(&self) -> nexus_query_planning::pipeline::OrderingScope
 pub struct nexus_query_planning::pipeline::ShadowMemoryModels
 pub nexus_query_planning::pipeline::ShadowMemoryModels::resources: alloc::vec::Vec<nexus_query_planning::pipeline::ShadowResourceModel>
 pub nexus_query_planning::pipeline::ShadowMemoryModels::task_workspace: alloc::vec::Vec<nexus_query_planning::pipeline::ShadowBytes>

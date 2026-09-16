@@ -56,7 +56,6 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
     );
     let plan = builder.finish_with_host_sink(aggregate);
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
 
     let context = backend_context_with_grant(1024 * 1024);
 

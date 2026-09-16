@@ -74,7 +74,6 @@ pub(in crate::capability) fn analyze_hash_join_resident_grouped_aggregate_input_
             consumer_id: shape.grouped_aggregate_projection_id,
         },
         InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
-        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
         InvariantSelector::TopologicalBuildProbeSchedule,
         InvariantSelector::ResidentLifetimeDominatesConsumers,
     ] {
@@ -112,7 +111,6 @@ pub(in crate::capability) fn analyze_rollup_rank_topk_after_aggregate_join_pushd
     };
     let mut required = vec![
         InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
-        InvariantSelector::FinalBarrierOrder { sort_id: shape.rank_sort_id },
         InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
     ];
     if let Some(consumer_id) = shape.rank_output_residency_consumer_id {
@@ -120,9 +118,6 @@ pub(in crate::capability) fn analyze_rollup_rank_topk_after_aggregate_join_pushd
             peeled_producer: shape.rank_window_id,
             consumer_id,
         });
-    }
-    if let Some(final_sort_id) = shape.final_sort_id {
-        required.push(InvariantSelector::FinalBarrierOrder { sort_id: final_sort_id });
     }
     for kind in required {
         match solved_invariant_decision(invariants, kind) {
@@ -165,7 +160,6 @@ pub(in crate::capability) fn analyze_keyed_hash_join_resident_subplan_admission(
             shared_producer: shape.shared_grouped_aggregate_id,
             aggregate_id: shape.scalar_aggregate_id,
         },
-        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
         InvariantSelector::ResidentLifetimeDominatesConsumers,
     ] {
         match solved_invariant_decision(invariants, kind) {
@@ -258,9 +252,6 @@ pub(in crate::capability) fn analyze_keyless_conditional_join_aggregate_over_joi
         InvariantSelector::TopologicalBuildProbeSchedule,
         InvariantSelector::ResidentLifetimeDominatesConsumers,
     ];
-    if let Some(final_sort_id) = shape.final_sort_id {
-        required.push(InvariantSelector::FinalBarrierOrder { sort_id: final_sort_id });
-    }
     if let Some(shared_producer) = shape.scalar_aggregate_shared_producer_id {
         required.push(InvariantSelector::AggregateDerivesFromSharedProducer {
             shared_producer,
@@ -309,7 +300,6 @@ pub(in crate::capability) fn analyze_multi_join_resident_grouped_aggregate_subqu
             peeled_producer: shape.grouped_aggregate_id,
             consumer_id: shape.grouped_aggregate_projection_id,
         },
-        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
         InvariantSelector::TopologicalBuildProbeSchedule,
         InvariantSelector::ResidentLifetimeDominatesConsumers,
     ] {

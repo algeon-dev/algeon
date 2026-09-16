@@ -3,16 +3,14 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_admits_only_aggregate_over_join_subplan_bounded_shapes()
- {
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_admits_variants_through_composed_path()
+{
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
 
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(unsupported_facts(&plan).is_none());
     let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
@@ -38,21 +36,18 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight,
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum,
     ] {
+        // S3 admits these variants through the compiled task contracts once
+        // they compile; what stays narrow is the aggregate-over-join envelope
+        // itself.
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
         assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
             !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        let facts = unsupported_facts(&plan).expect(
-            "unsupported aggregate-over-join-subplan aggregate-over-join subplan inputs shape should produce facts",
-        );
-        assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_subplan_inputs");
-        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
+        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
     }
 
     // A fetch limit after the root turns the tail into sort+fetch, which is the
@@ -65,14 +60,12 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
     );
     assert!(!limit_after_root_plan.capability_analysis().admits_root_join());
-    assert!(!limit_after_root_plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(!limit_after_root_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(
         !limit_after_root_plan
             .capability_analysis()
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
-    assert!(!limit_after_root_plan.capability_analysis().admits_closed_multi_join_subgraph());
     let admission = bounded_pipeline_admission(&limit_after_root_plan)
         .expect("bounded admission should not fail")
         .expect("LimitAfterRoot should be admitted through the root TopK join/aggregate envelope");
@@ -98,10 +91,15 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
         matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. })
             && invariant.decision == CapabilityDecision::Satisfied
     }));
-    assert!(analysis.invariants.iter().any(|invariant| {
-        matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
-            && invariant.decision == CapabilityDecision::Satisfied
-    }));
+    // Sort acyclicity is no longer a plan invariant: the compiled schedule's
+    // barrier dominance check owns it, so no FinalBarrierOrder evidence is
+    // produced here.
+    assert!(
+        !analysis
+            .invariants
+            .iter()
+            .any(|invariant| { matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder) })
+    );
 }
 
 #[test]

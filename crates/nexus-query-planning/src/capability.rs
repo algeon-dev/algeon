@@ -36,9 +36,9 @@ mod shape;
 #[doc(hidden)]
 pub use aggregate::analyze_aggregate_strategies;
 pub use aggregate::{
-    AggregateExecutionStage, AggregateExecutionStrategy, AggregateStrategyCandidateRejection,
+    AggregateExecutionStage, AggregateExecutionStrategy, AggregateStateContract, AggregateStrategyCandidateRejection,
     AggregateStrategyCapability, AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions,
-    aggregate_strategy_capability_decision,
+    aggregate_state_contract, aggregate_strategy_capability_decision,
 };
 pub use entry::analyze_query_capabilities;
 pub use join::KeyedHashJoinStrategyOptions;

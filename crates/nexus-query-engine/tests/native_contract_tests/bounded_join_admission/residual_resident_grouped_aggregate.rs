@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability_evidence_stays_narrow() {
+    // S3 admits multi-join aggregate pipelines through the compiled task
+    // contracts, so these variants are executable now; what stays narrow is
+    // the mixed keyed/residual envelope itself — none of them matches it.
     for variant in [
         ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
         ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,
@@ -16,21 +19,16 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
         assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
             !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         assert!(
             !plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
-        let facts = unsupported_facts(&plan)
-            .expect("unsupported resident grouped aggregate input variant should produce facts");
-        assert_rejection_facts_are_family_free(&facts, "unsupported_residual_resident_grouped_aggregate_input");
-        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
+        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
     }
 }
 

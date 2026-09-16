@@ -22,10 +22,8 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
         &dim_schema,
     );
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none());
 

@@ -11,11 +11,12 @@ use crate::{
         CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
         CompiledJoinExecutionStrategy, EdgeConsumer, keyed_hash_join_capable, keyed_residual_left_match_join_capable,
     },
+    expr::{Expr, SortExpr},
     pipeline::model::{
         AcceptedInputForm, PipelineEdge, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
-        ResidentDataForm, ResidentResource, ResidentResourceId, ResourceSharing, SortStrategy,
+        ResidentDataForm, ResidentResource, ResidentResourceId, ResourceOrdering, ResourceSharing, SortStrategy,
     },
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
+    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, ProjectionNode, QueryPlan},
     source::SourceNode,
 };
 
@@ -88,10 +89,53 @@ impl ContractGraph<'_> {
         for index in 0..self.resources.len() {
             let data_form = self.resource_data_form(&self.resources[index]);
             let sharing = self.resource_sharing(&self.resources[index]);
-            let resolved = self.resources[index].clone().with_consumption(data_form, sharing);
+            let ordering = self.resource_ordering(&self.resources[index]);
+            let resolved = self.resources[index].clone().with_consumption(data_form, sharing).with_ordering(ordering);
             self.resources[index] = resolved;
         }
         self
+    }
+
+    /// Row ordering a resource's rows are known to carry.
+    ///
+    /// A final sort establishes the global order of its sort keys either by
+    /// sorting the whole input or by fusing the downstream limit into a
+    /// global top-k. Filters and limits preserve their input ordering; a
+    /// projection preserves it only when every key column passes through
+    /// under its own name. Every other producer makes no ordering promise.
+    fn resource_ordering(&self, resource: &ResidentResource) -> Option<ResourceOrdering> {
+        let producer = self.task(resource.producer())?;
+        match producer.kind() {
+            PipelineTaskKind::FinalSort => {
+                let node_id = producer.plan_node()?;
+                let PlanNode::Sort(sort) = self.plan.node(node_id).map(|node| &node.kind)? else {
+                    return None;
+                };
+                Some(ResourceOrdering::global(sort.spec.expressions.clone()))
+            },
+            PipelineTaskKind::Unary => {
+                let ordering = self.single_input_ordering(producer)?.clone();
+                let node_id = producer.plan_node()?;
+                match self.plan.node(node_id).map(|node| &node.kind)? {
+                    PlanNode::Filter(_) => Some(ordering),
+                    PlanNode::Projection(projection)
+                        if projection_preserves_ordering_keys(projection, ordering.keys()) =>
+                    {
+                        Some(ordering)
+                    },
+                    _ => None,
+                }
+            },
+            PipelineTaskKind::Limit => self.single_input_ordering(producer).cloned(),
+            _ => None,
+        }
+    }
+
+    fn single_input_ordering(&self, task: &PipelineTask) -> Option<&ResourceOrdering> {
+        match task.input_resources() {
+            [input] => self.resource(*input).and_then(ResidentResource::ordering),
+            _ => None,
+        }
     }
 
     fn into_parts(self) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), CapabilityRejectionProjection> {
@@ -332,6 +376,12 @@ impl ContractGraph<'_> {
         let Some(PlanNode::Sort(sort)) = self.plan.node(sort_node_id).map(|node| &node.kind) else {
             return SortStrategy::FullSort;
         };
+        // Finite top-k planning needs a fetch bound (`topk_candidate_rows`
+        // rejects an offset-only limit as unbounded): without one the limit
+        // runs as an ordinary frame limit below a full sort.
+        if limit.spec.fetch.is_none() {
+            return SortStrategy::FullSort;
+        }
         if limit.input != sort_node_id || !self.sort_input_allows_limit_fusion(sort.input) {
             return SortStrategy::FullSort;
         }
@@ -400,4 +450,24 @@ impl ContractGraph<'_> {
 
 fn task_consumes_input_exclusively(task: &PipelineTask) -> bool {
     task.kind() == PipelineTaskKind::EdgeNormalize
+}
+
+/// Whether a projection carries every ordering key through under its own
+/// name, so a globally ordered input stays globally ordered above it.
+fn projection_preserves_ordering_keys(projection: &ProjectionNode, keys: &[SortExpr]) -> bool {
+    keys.iter().all(|key| match &key.expr {
+        Expr::Column(column) => projection.outputs.iter().any(|output| {
+            output.field.name() == column.name()
+                && passthrough_column_name(&output.expr).is_some_and(|name| name == column.name())
+        }),
+        _ => false,
+    })
+}
+
+fn passthrough_column_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Column(column) => Some(column.name()),
+        Expr::Alias { expr, .. } => passthrough_column_name(expr),
+        _ => None,
+    }
 }

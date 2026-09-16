@@ -215,6 +215,18 @@ impl BoundedPipelineDecision {
     }
 }
 
+/// Reports whether a graph-construction rejection is a compiler coverage gap
+/// rather than a broken plan: the compiler never implemented vector-algorithm
+/// nodes, and the generic executor owns them, so such a plan falls back
+/// instead of failing with a structured execution error. Graph plans keep the
+/// explicit graph trigger above: the generic executor must not silently
+/// absorb them.
+fn compiled_pipeline_coverage_gap(plan: &QueryPlan, rejection_projection: &CapabilityRejectionProjection) -> bool {
+    rejection_projection.reason == crate::pipeline::COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE
+        && plan.contains_vector_algorithm()
+        && !plan.contains_graph_algorithm()
+}
+
 /// Produces the canonical bounded-pipeline decision for a plan and execution mode.
 pub fn bounded_pipeline_decision(
     plan: &QueryPlan,
@@ -267,12 +279,17 @@ pub fn bounded_pipeline_decision(
             // A compiled-pipeline or sink-boundary rejection means the plan
             // reached the compiled runtime and that runtime refused it, so the
             // caller gets a structured error instead of a silent fallback.
-            let execution_error = (plan.contains_graph_algorithm()
+            // The one exception is a compiler coverage gap: operator kinds the
+            // compiler never implemented (vector algorithms, owned by the
+            // generic executor) are not a refusal, so those plans still fall
+            // back instead of hard-erroring here.
+            let execution_error = ((plan.contains_graph_algorithm()
                 || matches!(
                     rejection_projection.category,
                     CapabilityRejectionCategory::UnsupportedSinkBoundary
                         | CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
                 ))
+                && !compiled_pipeline_coverage_gap(plan, &rejection_projection))
             .then(|| compiled_bounded_pipeline_required_error(plan, admission.pipeline(), &rejection_projection));
             Ok(BoundedPipelineDecision {
                 admission: None,

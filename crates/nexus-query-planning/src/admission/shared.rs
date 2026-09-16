@@ -4,7 +4,7 @@ use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support}
 use crate::{
     capability::{CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionProjection},
     error::Result,
-    pipeline::{CompiledPipeline, PipelineCompilation, PipelineTaskKind, compile_pipeline_outcome},
+    pipeline::{CompiledPipeline, PipelineCompilation, PipelineTaskKind, ResidentDataForm, compile_pipeline_outcome},
     plan::QueryPlan,
 };
 
@@ -89,14 +89,11 @@ fn capability_first_bounded_pipeline_admission_impl(
     let envelope_admission = analysis.capability_envelope_admission();
     let pipeline = match compile_pipeline_outcome(plan, &analysis)? {
         PipelineCompilation::Compiled(pipeline) => pipeline,
-        // A plan the compiler cannot construct never reaches the migrated
-        // contracts, so a plan family that already refused it keeps reporting
-        // the refusal it found first.
+        // The compiler is the authority on constructability: when it cannot
+        // build a pipeline, its structural reason (e.g. a dependency cycle)
+        // reports the failure, not a plan-family envelope verdict about a
+        // pipeline that does not exist.
         PipelineCompilation::Rejected(projection) => {
-            let projection = match envelope_admission {
-                CapabilityEnvelopeAdmission::Rejected { projection } => projection,
-                CapabilityEnvelopeAdmission::Admitted { .. } => projection,
-            };
             return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
         },
     };
@@ -123,16 +120,22 @@ fn capability_first_bounded_pipeline_admission_impl(
 /// Execution capabilities the compiled task and resource contracts already
 /// decide on their own.
 ///
-/// One join task group, unary and limit stages, and a resource shared only
-/// from a source read are admitted by those contracts alone: the named
-/// plan-family recognisers keep no veto over such a pipeline and only supply
-/// its compatibility label. Everything else still needs a capability no
-/// compiled contract carries yet — blocking stage composition, computed shared
-/// producers, and which join kernels accept another join's retained output —
-/// so it keeps the recogniser gate until those contracts exist. Delete this
-/// function, and the branch that calls it, once they do.
+/// Join task groups with unary, limit, final-sort, and aggregate stages are
+/// admitted by those contracts alone: the named plan-family recognisers keep
+/// no veto over such a pipeline and only supply its compatibility label. A
+/// resource fanned out to several consumers is covered when it is produced by
+/// a source read or is a complete immutable frame: frames are refcounted
+/// snapshots, so every consumer borrows and releases them through the same
+/// path as shared source reads, with no cursor to alias (dynamic-filter
+/// application is a no-op for non-source frames, and the contract graph still
+/// refuses unresolvable sharing at compile time). Everything else still needs
+/// a capability no compiled contract carries yet — windowed and union
+/// composition, shared frame streams, and which join kernels accept another
+/// join's retained output — so it keeps the recogniser gate until those
+/// contracts exist. Delete this function, and the branch that calls it, once
+/// they do.
 fn pipeline_is_within_migrated_execution_scope(pipeline: &CompiledPipeline) -> bool {
-    pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinMaterialize).count() == 1
+    pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinMaterialize).count() >= 1
         && pipeline.tasks().iter().all(|task| {
             matches!(
                 task.kind(),
@@ -141,6 +144,8 @@ fn pipeline_is_within_migrated_execution_scope(pipeline: &CompiledPipeline) -> b
                     | PipelineTaskKind::LiteralBatchSource
                     | PipelineTaskKind::Unary
                     | PipelineTaskKind::Limit
+                    | PipelineTaskKind::FinalSort
+                    | PipelineTaskKind::Aggregate
                     | PipelineTaskKind::JoinBuild
                     | PipelineTaskKind::JoinProbe
                     | PipelineTaskKind::JoinMaterialize
@@ -149,6 +154,7 @@ fn pipeline_is_within_migrated_execution_scope(pipeline: &CompiledPipeline) -> b
         })
         && pipeline.resources().iter().all(|resource| {
             resource.consumers().len() <= 1
+                || matches!(resource.data_form(), ResidentDataForm::Frame)
                 || pipeline.tasks().iter().any(|task| {
                     task.id() == resource.producer()
                         && matches!(
