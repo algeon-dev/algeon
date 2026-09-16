@@ -5,7 +5,13 @@ readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly package_target="${repo_root}/target/component-package-check"
 readonly extract_root="$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-component-packages.XXXXXX")"
 trap 'rm -rf -- "${extract_root}"' EXIT
-readonly packages=(
+# Far below the 10 MiB crates.io limit: the leak this guards grows an archive by
+# orders of magnitude, so a tight ceiling costs nothing and catches it sooner.
+readonly max_archive_bytes=$((2 * 1024 * 1024))
+# Only these rebuild from their extracted archive below. The other publishable
+# crates would each drag the full FFI graph through a from-scratch build, which
+# costs more than the leak it would catch.
+readonly components=(
   rapids-interop
   nexus-build-support
   cudf-nexus-sys
@@ -20,50 +26,75 @@ mkdir -p "${package_target}"
 
 metadata="$(cargo metadata --format-version 1 --no-deps --locked --all-features)"
 
+# Derived rather than hand-listed so adding a crate or moving a dependency needs
+# no matching edit here.
+readonly workspace_query='
+import json, os, sys
+
+data = json.load(sys.stdin)
+packages = {item["name"]: item for item in data["packages"]}
+
+
+def closure(name):
+    seen, stack = set(), [name]
+    while stack:
+        for dependency in packages[stack.pop()]["dependencies"]:
+            other = dependency["name"]
+            # A dev-dependency on a workspace path is stripped from the archive,
+            # so it never needs a patch entry.
+            if other in packages and dependency["kind"] in (None, "build") and other not in seen and other != name:
+                seen.add(other)
+                stack.append(other)
+    return sorted(seen)
+
+
+mode, args = sys.argv[1], sys.argv[2:]
+if mode == "publishable":
+    print("\n".join(sorted(name for name, item in packages.items() if item["publish"] is None)))
+elif mode == "version":
+    print(packages[args[0]]["version"])
+elif mode == "manifest-dir":
+    print(os.path.dirname(packages[args[0]]["manifest_path"]))
+elif mode == "closure":
+    print("\n".join(closure(args[0])))
+'
+
+workspace_fact() {
+  python3 -c "${workspace_query}" "$@" <<<"${metadata}"
+}
+
 package_version() {
-  python3 -c \
-    'import json,sys; package=sys.argv[1]; data=json.load(sys.stdin); print(next(item["version"] for item in data["packages"] if item["name"] == package))' \
-    "$1" <<<"${metadata}"
+  workspace_fact version "$1"
 }
 
-add_patch() {
-  local name=$1
-  local path=$2
-  patch_args+=(--config "patch.crates-io.${name}.path='${path}'")
-}
+readarray -t publishable < <(workspace_fact publishable)
+# `readarray` from a process substitution keeps the enclosing command's exit
+# status, so a failed query would leave an empty list and pass the gate
+# vacuously rather than fail it.
+if ((${#publishable[@]} < ${#components[@]})); then
+  printf 'error: cargo metadata reported %s publishable packages, fewer than the %s known components\n' \
+    "${#publishable[@]}" "${#components[@]}" >&2
+  exit 1
+fi
 
+# Callers set `${patch_root}`; `set -u` turns forgetting it into a failure rather
+# than a silent patch against the wrong copy of a dependency.
 package_patches() {
+  local package=$1 dependency version
   patch_args=()
-  case "$1" in
-    cudf-nexus-sys | cugraph-nexus-sys | cuvs-nexus-sys)
-      add_patch nexus-build-support "${repo_root}/components/cudf/nexus-build-support"
-      ;;
-    cudf-nexus)
-      add_patch cudf-nexus-sys "${repo_root}/components/cudf/cudf-nexus-sys"
-      add_patch rapids-interop "${repo_root}/components/cudf/rapids-interop"
-      ;;
-    cugraph-nexus)
-      add_patch cudf-nexus "${repo_root}/components/cudf/cudf-nexus"
-      add_patch cudf-nexus-sys "${repo_root}/components/cudf/cudf-nexus-sys"
-      add_patch cugraph-nexus-sys "${repo_root}/components/cugraph/cugraph-nexus-sys"
-      add_patch rapids-interop "${repo_root}/components/cudf/rapids-interop"
-      ;;
-    cuvs-nexus)
-      add_patch cudf-nexus "${repo_root}/components/cudf/cudf-nexus"
-      add_patch cudf-nexus-sys "${repo_root}/components/cudf/cudf-nexus-sys"
-      add_patch cuvs-nexus-sys "${repo_root}/components/cuvs/cuvs-nexus-sys"
-      add_patch rapids-interop "${repo_root}/components/cudf/rapids-interop"
-      ;;
-  esac
+  while read -r dependency; do
+    [[ -n "${dependency}" ]] || continue
+    if [[ "${patch_root}" == worktree ]]; then
+      patch_args+=(--config "patch.crates-io.${dependency}.path='$(workspace_fact manifest-dir "${dependency}")'")
+    else
+      version="$(package_version "${dependency}")"
+      patch_args+=(--config "patch.crates-io.${dependency}.path='${extract_root}/${dependency}-${version}'")
+    fi
+  done < <(workspace_fact closure "${package}")
 }
 
-for package in "${packages[@]}"; do
-  listing="$(cargo package --locked --allow-dirty -p "${package}" --all-features --list)"
-  grep -qx LICENSE <<<"${listing}" || {
-    printf 'error: %s package list omits the root LICENSE\n' "${package}" >&2
-    exit 1
-  }
-
+for package in "${publishable[@]}"; do
+  patch_root=worktree
   package_patches "${package}"
   cargo package \
     --locked \
@@ -80,48 +111,30 @@ for package in "${packages[@]}"; do
     printf 'error: cargo package did not create %s\n' "${archive}" >&2
     exit 1
   }
+
+  archive_bytes="$(stat -c %s "${archive}")"
+  if ((archive_bytes > max_archive_bytes)); then
+    printf 'error: %s archive is %s bytes, over the %s byte ceiling.\n' \
+      "${package}" "${archive_bytes}" "${max_archive_bytes}" >&2
+    printf 'a package that shares its directory with the workspace needs `include`; its largest entries are:\n' >&2
+    tar -tzvf "${archive}" | sort -k3 -n -r | head -20 >&2
+    exit 1
+  fi
+done
+
+for package in "${components[@]}"; do
+  version="$(package_version "${package}")"
+  archive="${package_target}/package/${package}-${version}.crate"
   archive_listing="$(tar -tzf "${archive}")"
+  # The components carry the license as a file because they set `license-file`
+  # rather than the SPDX `license` key.
   grep -qx "${package}-${version}/LICENSE" <<<"${archive_listing}" || {
     printf 'error: %s archive omits LICENSE\n' "${package}" >&2
     exit 1
   }
-  package_extract="${extract_root}/${package}-${version}"
-  rm -rf -- "${package_extract}"
+  rm -rf -- "${extract_root:?}/${package}-${version}"
   tar -xzf "${archive}" -C "${extract_root}"
 done
-
-add_extracted_patch() {
-  local package=$1
-  add_patch "${package}" "${extract_root}/${package}-$(package_version "${package}")"
-}
-
-extracted_patches() {
-  patch_args=()
-  case "$1" in
-    cudf-nexus-sys | cugraph-nexus-sys | cuvs-nexus-sys)
-      add_extracted_patch nexus-build-support
-      ;;
-    cudf-nexus)
-      add_extracted_patch cudf-nexus-sys
-      add_extracted_patch nexus-build-support
-      add_extracted_patch rapids-interop
-      ;;
-    cugraph-nexus)
-      add_extracted_patch cudf-nexus
-      add_extracted_patch cudf-nexus-sys
-      add_extracted_patch cugraph-nexus-sys
-      add_extracted_patch nexus-build-support
-      add_extracted_patch rapids-interop
-      ;;
-    cuvs-nexus)
-      add_extracted_patch cudf-nexus
-      add_extracted_patch cudf-nexus-sys
-      add_extracted_patch cuvs-nexus-sys
-      add_extracted_patch nexus-build-support
-      add_extracted_patch rapids-interop
-      ;;
-  esac
-}
 
 registry_env=(
   env -i
@@ -138,10 +151,11 @@ for name in CUDAToolkit_ROOT CUDA_HOME CUDA_PATH CC CXX CUDACXX CUDAHOSTCXX; do
   fi
 done
 
-for package in "${packages[@]}"; do
+for package in "${components[@]}"; do
   version="$(package_version "${package}")"
   manifest="${extract_root}/${package}-${version}/Cargo.toml"
-  extracted_patches "${package}"
+  patch_root=extracted
+  package_patches "${package}"
   "${registry_env[@]}" cargo generate-lockfile --manifest-path "${manifest}" "${patch_args[@]}"
   "${registry_env[@]}" cargo build --manifest-path "${manifest}" --locked "${patch_args[@]}"
 
@@ -176,7 +190,8 @@ check_missing_native_diagnostic() {
   version="$(package_version "${package}")"
   local manifest="${extract_root}/${package}-${version}/Cargo.toml"
   local log="${extract_root}/${package}-missing-native.log"
-  extracted_patches "${package}"
+  patch_root=extracted
+  package_patches "${package}"
   if env -i \
     PATH="${PATH}" \
     HOME="${HOME}" \
