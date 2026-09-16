@@ -1123,6 +1123,7 @@ mod tests {
             ResolvedParquetSource::remote_kvikio("s3://bucket/a.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.display().to_string(), None)
                 .with_lakehouse_cache_path(cache_path.display().to_string())
+                .with_content_identity("test-content-identity")
                 .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/a.parquet")
             .unwrap()

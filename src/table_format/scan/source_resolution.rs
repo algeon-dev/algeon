@@ -42,7 +42,11 @@ pub struct TableFormatParquetSourceMetadata {
     pub size_bytes: Option<u64>,
     /// File row count from table-format metadata, when known.
     pub row_count: Option<u64>,
-    /// Optional caller-provided content identity such as an object ETag.
+    /// Optional caller-provided content identity such as an object ETag or version.
+    ///
+    /// The lakehouse byte cache only serves or fills entries for sources with a
+    /// non-empty identity here. Size and row count alone never identify an entry:
+    /// an object rewritten in place with the same size must not read back stale bytes.
     pub content_identity: Option<String>,
     /// Optional caller-provided storage domain such as an endpoint/bucket scope.
     pub storage_domain: Option<String>,
@@ -217,6 +221,11 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
     cache_root: &Path,
 ) -> Result<ResolvedParquetSource> {
     let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
+    // Without a caller-provided content identity (object ETag/version) the cached
+    // bytes cannot be attributed to the current object, so the cache is neither
+    // served nor filled: the foreground read goes remote.
+    let cache_identity_allowed = strong_content_identity(metadata).is_some();
+    let fill_mode_for_unidentified = LakehouseCacheFillMode::Disabled;
     if !config.lakehouse_cache_read_policy.is_enabled() {
         let resolved = remote_kvikio_source(location, config)?;
         return Ok(resolved
@@ -224,7 +233,11 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
             .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
             .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
             .with_lakehouse_cache_path(cache_path.display().to_string())
-            .with_lakehouse_cache_fill_mode(background_fill_mode(config)));
+            .with_lakehouse_cache_fill_mode(if cache_identity_allowed {
+                background_fill_mode(config)
+            } else {
+                fill_mode_for_unidentified
+            }));
     }
     if complete_cache_hit_matches_metadata(&cache_path, metadata) {
         return Ok(ResolvedParquetSource::local_cache_kvikio(
@@ -236,7 +249,7 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
         .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
         .with_lakehouse_cache_path(cache_path.display().to_string()));
     }
-    if config.lakehouse_cache_policy.fills_before_read() {
+    if cache_identity_allowed && config.lakehouse_cache_policy.fills_before_read() {
         return Ok(ResolvedParquetSource::local_cache_kvikio(
             location,
             cache_path.display().to_string(),
@@ -247,7 +260,7 @@ fn resolve_s3_table_format_parquet_source_with_cache_root(
         .with_lakehouse_cache_path(cache_path.display().to_string())
         .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Blocking));
     }
-    let fill_mode = background_fill_mode(config);
+    let fill_mode = if cache_identity_allowed { background_fill_mode(config) } else { fill_mode_for_unidentified };
     let resolved = remote_kvikio_source(location, config)?
         .with_cache_status(LakehouseCacheStatus::Miss)
         .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
@@ -328,10 +341,13 @@ fn attach_remote_source_identity(
     config: &TableFormatParquetReadStrategyConfig,
     metadata: &TableFormatParquetSourceMetadata,
 ) -> ResolvedParquetSource {
-    resolved
+    let resolved = resolved
         .with_storage_domain(storage_domain_identity(location, config, metadata))
-        .with_content_identity(content_identity(metadata))
-        .with_optional_storage_profile_id(config.storage_profile_id.clone())
+        .with_optional_storage_profile_id(config.storage_profile_id.clone());
+    if let Some(content_identity) = content_identity(metadata) {
+        return resolved.with_content_identity(content_identity);
+    }
+    resolved
 }
 
 fn cache_relative_path(
@@ -343,7 +359,7 @@ fn cache_relative_path(
     PathBuf::from("v1")
         .join(sanitize_cache_component(scheme))
         .join(sanitize_cache_component(&storage_domain_identity(location, config, metadata)))
-        .join(sanitize_cache_component(&content_identity(metadata)))
+        .join(sanitize_cache_component(content_identity(metadata).as_deref().unwrap_or("content_unidentified")))
         .join(location_fingerprint(location))
 }
 
@@ -383,19 +399,23 @@ pub fn credential_free_endpoint_identity(endpoint: &str) -> String {
     }
 }
 
-fn content_identity(metadata: &TableFormatParquetSourceMetadata) -> String {
-    if let Some(content_identity) = metadata.content_identity.as_ref().filter(|value| !value.is_empty()) {
-        return content_identity.clone();
-    }
-    match (metadata.size_bytes, metadata.row_count) {
-        (Some(size_bytes), Some(row_count)) => format!("weak_size_{size_bytes}_rows_{row_count}"),
-        (Some(size_bytes), None) => format!("weak_size_{size_bytes}"),
-        (None, Some(row_count)) => format!("weak_rows_{row_count}"),
-        (None, None) => "weak_content_unknown".to_string(),
-    }
+/// Caller-provided content identity (object ETag/version) used for cache scoping.
+///
+/// Returns `None` when the caller supplied no usable identity. Size and row
+/// count are deliberately not a fallback: same-size rewrites must map to no
+/// servable entry rather than to a stale hit.
+fn content_identity(metadata: &TableFormatParquetSourceMetadata) -> Option<String> {
+    strong_content_identity(metadata).map(str::to_string)
+}
+
+fn strong_content_identity(metadata: &TableFormatParquetSourceMetadata) -> Option<&str> {
+    metadata.content_identity.as_deref().filter(|value| !value.is_empty())
 }
 
 fn complete_cache_hit_matches_metadata(cache_path: &Path, metadata: &TableFormatParquetSourceMetadata) -> bool {
+    if strong_content_identity(metadata).is_none() {
+        return false;
+    }
     let Ok(file_metadata) = cache_path.metadata() else {
         return false;
     };
@@ -528,20 +548,18 @@ mod tests {
     }
 
     #[test]
-    fn fallback_content_identity_is_marked_weak() {
+    fn content_identity_requires_caller_provided_identity() {
         assert_eq!(
             content_identity(&TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10))),
-            "weak_size_4096_rows_10",
+            None,
         );
-        assert_eq!(
-            content_identity(&TableFormatParquetSourceMetadata::default().with_size_bytes(4096)),
-            "weak_size_4096",
-        );
-        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default().with_row_count(10)), "weak_rows_10",);
-        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default()), "weak_content_unknown");
+        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default().with_size_bytes(4096)), None,);
+        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default().with_row_count(10)), None,);
+        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default()), None);
+        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default().with_content_identity("")), None);
         assert_eq!(
             content_identity(&TableFormatParquetSourceMetadata::default().with_content_identity("etag:abc123")),
-            "etag:abc123",
+            Some("etag:abc123".to_string()),
         );
     }
 
@@ -745,7 +763,7 @@ mod tests {
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             ..Default::default()
         };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let metadata = metadata_with_identity("etag:abc123");
         let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
@@ -773,7 +791,7 @@ mod tests {
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             ..Default::default()
         };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let metadata = metadata_with_identity("etag:abc123");
         let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         fs::write(&cache_path, b"incomplete").unwrap();
@@ -798,7 +816,8 @@ mod tests {
             lakehouse_cache_root: Some(root.path().to_path_buf()),
             ..Default::default()
         };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(None, Some(10));
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(None, Some(10))
+            .with_content_identity("etag:abc123");
         let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
@@ -825,7 +844,7 @@ mod tests {
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
             ..Default::default()
         };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let metadata = metadata_with_identity("etag:abc123");
         let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
@@ -855,7 +874,7 @@ mod tests {
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
             ..Default::default()
         };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let metadata = metadata_with_identity("etag:abc123");
         let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
@@ -884,7 +903,7 @@ mod tests {
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
             ..Default::default()
         };
-        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let metadata = metadata_with_identity("etag:abc123");
         let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
 
         let result = resolve_table_format_parquet_source_with_metadata(
@@ -900,5 +919,72 @@ mod tests {
         assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    fn metadata_with_identity(identity: &str) -> TableFormatParquetSourceMetadata {
+        TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10)).with_content_identity(identity)
+    }
+
+    #[test]
+    fn s3_same_size_rewrite_with_new_identity_is_not_a_hit() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+        let old_metadata = metadata_with_identity("etag:old");
+        let old_cache_path =
+            root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &old_metadata));
+        fs::create_dir_all(old_cache_path.parent().unwrap()).unwrap();
+        fs::write(&old_cache_path, vec![0_u8; 4096]).unwrap();
+
+        // Same size, new ETag after an in-place rewrite: the old bytes must not be served.
+        let new_metadata = metadata_with_identity("etag:new");
+        let new_cache_path =
+            root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &new_metadata));
+        assert_ne!(new_cache_path, old_cache_path);
+        let result = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &new_metadata,
+        );
+        let Some(source) = assert_expected_remote_foreground_source(result) else {
+            return;
+        };
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(new_cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn s3_without_content_identity_neither_serves_nor_fills() {
+        for policy in [TableFormatLakehouseCachePolicy::ReadThrough, TableFormatLakehouseCachePolicy::FillBeforeRead] {
+            let root = tempfile::tempdir().unwrap();
+            let config = TableFormatParquetReadStrategyConfig {
+                lakehouse_cache_root: Some(root.path().to_path_buf()),
+                lakehouse_cache_policy: policy,
+                ..Default::default()
+            };
+            let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+            // Even with bytes planted at the unidentified path, they must not be served.
+            let cache_path =
+                root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+            assert!(cache_path.display().to_string().contains("content_unidentified"));
+            fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+            fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
+
+            let result = resolve_table_format_parquet_source_with_metadata(
+                "s3://bucket/table/part-0.parquet",
+                &TableFormatReadCapability::object_store("s3"),
+                &config,
+                &metadata,
+            );
+            let Some(source) = assert_expected_remote_foreground_source(result) else {
+                return;
+            };
+            assert_eq!(source.cache_status, LakehouseCacheStatus::Miss, "policy={policy:?}");
+            assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Disabled, "policy={policy:?}");
+            assert_eq!(source.content_identity, None, "policy={policy:?}");
+        }
     }
 }

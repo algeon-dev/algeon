@@ -524,14 +524,14 @@ fn iceberg_equality_delete_files_without_key_ids_remain_structured_rejections() 
 }
 
 #[test]
-fn iceberg_task_conversion_uses_weak_identity_without_snapshot() {
+fn iceberg_task_conversion_skips_cache_identity_without_snapshot() {
     let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![]);
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
     let resolved = plan.data_files[0].resolved_parquet_source.as_ref().unwrap();
 
-    assert_eq!(resolved.content_identity.as_deref(), Some("weak_size_4096_rows_17"));
+    assert_eq!(resolved.content_identity.as_deref(), None);
 }
 
 #[test]

@@ -67,6 +67,77 @@ mod tests {
         let _ = fs::remove_dir(&dir);
     }
 
+    #[test]
+    fn lakehouse_cache_hit_without_content_identity_is_rejected() {
+        let root = unique_temp_cache_root("cache-hit-without-identity");
+        let cache_path = write_cache_entry(&root, "v1/s3/bucket/etagless/part-0.parquet", 16);
+        let context = ExecutionContext::builder().build().unwrap();
+        let unidentified = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(
+                ResolvedParquetSource::local_cache_kvikio(
+                    "s3://bucket/table/part-0.parquet",
+                    cache_path.to_str().unwrap(),
+                    CredentialMode::SharedProcessEnv,
+                    LakehouseCacheStatus::Hit,
+                )
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap()),
+            )
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(16);
+
+        // Size matches, but without a content identity the bytes cannot be
+        // attributed to the current object: the hit must not be served.
+        let error = ensure_local_cache_parquet_file(&context, &unidentified).unwrap_err();
+        assert_eq!(error.operation(), "nexus_query_engine.lakehouse_cache.content_identity");
+
+        // Control: the same entry with a caller-provided identity is served.
+        let identified = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(
+                ResolvedParquetSource::local_cache_kvikio(
+                    "s3://bucket/table/part-0.parquet",
+                    cache_path.to_str().unwrap(),
+                    CredentialMode::SharedProcessEnv,
+                    LakehouseCacheStatus::Hit,
+                )
+                .with_content_identity("etag:abc123")
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap()),
+            )
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(16);
+        ensure_local_cache_parquet_file(&context, &identified).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_fill_without_content_identity_is_skipped() {
+        let root = unique_temp_cache_root("background-fill-without-identity");
+        let cache_path = root.join("v1/s3/bucket/etagless/part-0.parquet");
+        let context = ExecutionContext::builder().build().unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("missing_content_identity"));
+        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn optimized_cache_source() -> LocalParquetSource {
         LocalParquetSource::from_files(
             vec![LocalParquetFile::new("/tmp/source.parquet")],
@@ -235,6 +306,7 @@ mod tests {
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
                 .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_content_identity("test-content-identity")
                 .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
@@ -269,6 +341,7 @@ mod tests {
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
                 .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_content_identity("test-content-identity")
                 .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
@@ -304,6 +377,7 @@ mod tests {
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
                 .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_content_identity("test-content-identity")
                 .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
@@ -328,6 +402,7 @@ mod tests {
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
                 .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_content_identity("test-content-identity")
                 .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
@@ -359,6 +434,7 @@ mod tests {
             ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_config(root.to_str().unwrap(), None)
                 .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_content_identity("test-content-identity")
                 .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
         let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
