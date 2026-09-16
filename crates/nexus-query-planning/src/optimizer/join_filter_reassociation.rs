@@ -129,6 +129,7 @@ pub struct JoinFilterReassociationResult {
 pub fn optimize_join_filter_reassociation(
     plan: QueryPlan,
     options: &JoinFilterReassociationOptions,
+    resolver: &dyn dimension_pruning::LocalParquetPruningResolver,
 ) -> JoinFilterReassociationResult {
     if !options.enabled {
         return JoinFilterReassociationResult {
@@ -138,7 +139,7 @@ pub fn optimize_join_filter_reassociation(
         };
     }
 
-    let mut rewriter = JoinFilterReassociationRewriter::new(&plan, options);
+    let mut rewriter = JoinFilterReassociationRewriter::new(&plan, options, resolver);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     if !rewriter.changed {
         let diagnostics = rewriter.diagnostics;
@@ -156,6 +157,7 @@ pub fn optimize_join_filter_reassociation(
 struct JoinFilterReassociationRewriter<'a> {
     original: &'a QueryPlan,
     options: &'a JoinFilterReassociationOptions,
+    resolver: &'a dyn dimension_pruning::LocalParquetPruningResolver,
     consumer_counts: Vec<usize>,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
@@ -164,10 +166,15 @@ struct JoinFilterReassociationRewriter<'a> {
 }
 
 impl<'a> JoinFilterReassociationRewriter<'a> {
-    fn new(original: &'a QueryPlan, options: &'a JoinFilterReassociationOptions) -> Self {
+    fn new(
+        original: &'a QueryPlan,
+        options: &'a JoinFilterReassociationOptions,
+        resolver: &'a dyn dimension_pruning::LocalParquetPruningResolver,
+    ) -> Self {
         Self {
             original,
             options,
+            resolver,
             consumer_counts: node_consumer_counts(original),
             nodes: Vec::new(),
             memo: BTreeMap::new(),
@@ -343,8 +350,8 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             .residual_predicate
             .as_ref()
             .ok_or(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate)?;
-        let left_filter = derive_side_necessary_filter(self.original, join, residual, JoinSide::Left);
-        let right_filter = derive_side_necessary_filter(self.original, join, residual, JoinSide::Right);
+        let left_filter = derive_side_necessary_filter(self.original, join, residual, JoinSide::Left, self.resolver);
+        let right_filter = derive_side_necessary_filter(self.original, join, residual, JoinSide::Right, self.resolver);
         if left_filter.is_none() && right_filter.is_none() {
             return Err(JoinFilterReassociationRejectedReason::NoPushableResidualPredicate);
         }
@@ -730,23 +737,29 @@ fn input_has_top_filter(plan: &QueryPlan, node_id: NodeId, predicate: &Expr) -> 
     matches!(&node.kind, PlanNode::Filter(filter) if filter.predicate == *predicate)
 }
 
-fn derive_side_necessary_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, side: JoinSide) -> Option<Expr> {
+fn derive_side_necessary_filter(
+    plan: &QueryPlan,
+    join: &JoinNode,
+    expr: &Expr,
+    side: JoinSide,
+    resolver: &dyn dimension_pruning::LocalParquetPruningResolver,
+) -> Option<Expr> {
     if expression_scope(plan, join, expr) == ExpressionScope::Side(side) {
         return Some(strip_input_qualifiers(expr));
     }
-    if let Some(filter) = derive_side_scalar_range_filter(plan, join, expr, side) {
+    if let Some(filter) = derive_side_scalar_range_filter(plan, join, expr, side, resolver) {
         return Some(filter);
     }
 
     match expr {
         Expr::Binary { left, op: BinaryOp::And, right, output_type } => {
-            let left_filter = derive_side_necessary_filter(plan, join, left, side);
-            let right_filter = derive_side_necessary_filter(plan, join, right, side);
+            let left_filter = derive_side_necessary_filter(plan, join, left, side, resolver);
+            let right_filter = derive_side_necessary_filter(plan, join, right, side, resolver);
             combine_optional_filters(left_filter, BinaryOp::And, right_filter, output_type.clone())
         },
         Expr::Binary { left, op: BinaryOp::Or, right, output_type } => {
-            let left_filter = derive_side_necessary_filter(plan, join, left, side)?;
-            let right_filter = derive_side_necessary_filter(plan, join, right, side)?;
+            let left_filter = derive_side_necessary_filter(plan, join, left, side, resolver)?;
+            let right_filter = derive_side_necessary_filter(plan, join, right, side, resolver)?;
             Some(Expr::Binary {
                 left: Box::new(left_filter),
                 op: BinaryOp::Or,
@@ -758,7 +771,13 @@ fn derive_side_necessary_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, 
     }
 }
 
-fn derive_side_scalar_range_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, side: JoinSide) -> Option<Expr> {
+fn derive_side_scalar_range_filter(
+    plan: &QueryPlan,
+    join: &JoinNode,
+    expr: &Expr,
+    side: JoinSide,
+    resolver: &dyn dimension_pruning::LocalParquetPruningResolver,
+) -> Option<Expr> {
     let Expr::Binary { left, op, right, .. } = expr else {
         return None;
     };
@@ -791,6 +810,7 @@ fn derive_side_scalar_range_filter(plan: &QueryPlan, join: &JoinNode, expr: &Exp
         scalar_input,
         &scalar_expr,
         OptimizerSourceTargetPolicy::default().residual_scalar_range_max_rows(),
+        resolver,
     )??;
     scalar_range_necessary_filter(target_expr, *op, target_on_left, scalar_range, &target_type)
 }
@@ -1358,7 +1378,11 @@ mod tests {
             and(left_eq("l_flag", 2), right_lt("r_price", 5)),
         ));
 
-        let result = optimize_join_filter_reassociation(plan, &residual_pushdown_options());
+        let result = optimize_join_filter_reassociation(
+            plan,
+            &residual_pushdown_options(),
+            &dimension_pruning::NoDimensionPruningFacts,
+        );
 
         assert!(result.change.changed());
         assert_eq!(result.diagnostics.applied_count, 1);
@@ -1375,7 +1399,11 @@ mod tests {
         let residual = or(and(left_eq("l_flag", 1), right_gt("r_price", 10)), right_lt("r_price", 5));
         let plan = residual_join_plan(residual);
 
-        let result = optimize_join_filter_reassociation(plan, &residual_pushdown_options());
+        let result = optimize_join_filter_reassociation(
+            plan,
+            &residual_pushdown_options(),
+            &dimension_pruning::NoDimensionPruningFacts,
+        );
 
         assert!(result.change.changed());
         let join = root_join(&result.plan);
@@ -1391,9 +1419,17 @@ mod tests {
     fn residual_pushdown_is_not_reapplied_when_filter_is_already_present() {
         let plan = residual_join_plan(and(left_eq("l_flag", 1), right_gt("r_price", 10)));
 
-        let first = optimize_join_filter_reassociation(plan, &residual_pushdown_options());
+        let first = optimize_join_filter_reassociation(
+            plan,
+            &residual_pushdown_options(),
+            &dimension_pruning::NoDimensionPruningFacts,
+        );
         assert!(first.change.changed());
-        let second = optimize_join_filter_reassociation(first.plan, &residual_pushdown_options());
+        let second = optimize_join_filter_reassociation(
+            first.plan,
+            &residual_pushdown_options(),
+            &dimension_pruning::NoDimensionPruningFacts,
+        );
 
         assert!(!second.change.changed());
         assert_eq!(second.diagnostics.applied_count, 0);

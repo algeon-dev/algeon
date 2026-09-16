@@ -9,6 +9,10 @@
 //! execution engine implements and passes in explicitly as a
 //! [`backend::AnalysisContext`].
 //!
+//! It also performs no file or network I/O. Footers and decoded rows reach it
+//! from whoever read them, through [`source::SourceFooterFacts`] and the
+//! pruning resolvers in [`optimizer`].
+//!
 //! Note that a native-free dependency closure is a structural property, not a
 //! demonstration: this workspace has no build or test lane that runs without a
 //! CUDA toolchain installed, so "builds on a host without RAPIDS" remains

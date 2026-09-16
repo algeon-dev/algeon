@@ -1,7 +1,7 @@
 #[test]
 fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     let plan = compatible_small_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -81,7 +81,7 @@ fn native_optimizer_rejects_source_reuse_with_branch_specific_dynamic_filter_rou
     let union = builder.add_union(vec![date_join, other_branch], branch_schema);
     let plan = builder.finish_gpu_resident(union);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
@@ -105,7 +105,7 @@ fn native_optimizer_keeps_local_parquet_source_reuse_contract_isolated() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -125,7 +125,7 @@ fn native_optimizer_local_parquet_source_reuse_diagnostics_redact_stable_file_id
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 1);
     let stable_file_ids = &result.diagnostics.local_parquet_source_reuse.candidates[0].stable_file_ids;
@@ -148,7 +148,7 @@ fn native_optimizer_keeps_decimal_contract_source_reuse_isolated() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -167,7 +167,7 @@ fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -188,7 +188,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_name
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -209,7 +209,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -230,7 +230,7 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -252,7 +252,7 @@ fn native_optimizer_rejects_position_delete_source_reuse_contract() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -273,7 +273,7 @@ fn native_optimizer_rejects_field_id_output_schema_override_source_reuse_contrac
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -289,7 +289,7 @@ fn native_optimizer_rejects_field_id_output_schema_override_source_reuse_contrac
 #[test]
 fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_source() {
     let plan = compatible_small_local_parquet_source_variants_with_max_rows_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -307,7 +307,7 @@ fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_sourc
 #[test]
 fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_source_reuse() {
     let plan = graph_bfs_local_source_reuse_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -334,7 +334,7 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
 #[test]
 fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants() {
     let plan = large_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -350,7 +350,7 @@ fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants()
 #[test]
 fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_source_variant() {
     let plan = large_superset_with_smaller_local_parquet_source_variant_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -365,7 +365,7 @@ fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_so
 #[test]
 fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggregate() {
     let plan = large_superset_with_grouped_aggregate_source_variant_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -389,7 +389,7 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
         },
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -403,7 +403,7 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
 #[test]
 fn native_optimizer_reuses_large_superset_when_grouped_aggregate_variant_is_not_widened() {
     let plan = large_grouped_aggregate_superset_with_smaller_source_variant_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -420,7 +420,7 @@ fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjac
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;

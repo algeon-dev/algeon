@@ -43,8 +43,9 @@ pub use dimension_pruning::{
     DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, DIMENSION_KEY_FILTER_MAX_RUNS, DimensionDerivedApplyResult,
     DimensionDerivedPruningRequest, DimensionDerivedRowGroupPruningCandidateDiagnostics,
     DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
-    DimensionDerivedRowGroupPruningRejectedReason, DimensionKeyAccumulator, DimensionKeyFilter, KeyRange,
-    LocalParquetRowGroupSelection, LocalParquetRowGroupSelectionApplyResult, RowGroupOverlapSelection,
+    DimensionDerivedRowGroupPruningRejectedReason, DimensionKeyAccumulator, DimensionKeyFilter,
+    I64ExprRangeAccumulator, KeyRange, LocalParquetPruningResolver, LocalParquetRowGroupSelection,
+    LocalParquetRowGroupSelectionApplyResult, NoDimensionPruningFacts, RowGroupOverlapSelection,
     apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
     dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests,
     optimize_dimension_derived_row_group_pruning, seed_dimension_derived_reader_predicates,
@@ -277,6 +278,7 @@ pub fn optimize_query_plan(
     plan: QueryPlan,
     options: &NativeOptimizerOptions,
     ctx: AnalysisContext<'_>,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> NativeOptimizerResult {
     let plan = plan.with_keyed_hash_join_strategy_options(options.keyed_hash_join_strategy);
     let projection_simplification_result =
@@ -284,7 +286,7 @@ pub fn optimize_query_plan(
     let semijoin_result =
         optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction, ctx);
     let join_filter_reassociation_result =
-        optimize_join_filter_reassociation_fixpoint(semijoin_result.plan, &options.join_filter_reassociation);
+        optimize_join_filter_reassociation_fixpoint(semijoin_result.plan, &options.join_filter_reassociation, resolver);
     let join_build_side_result = join_build_side::optimize_join_build_side_selection(
         join_filter_reassociation_result.plan,
         &options.join_build_side_selection,
@@ -327,6 +329,7 @@ pub fn optimize_query_plan(
         post_aggregate_null_rejection_result.plan,
         &options.dimension_derived_row_group_pruning,
         ctx,
+        resolver,
     );
     let dimension_pruning_change = dimension_pruning_result.change;
     let post_dimension_join_build_side_result = rerun_optimizer_pass_if_changed(
@@ -449,6 +452,7 @@ fn rerun_optimizer_pass_if_changed<T>(
 fn optimize_join_filter_reassociation_fixpoint(
     plan: QueryPlan,
     options: &JoinFilterReassociationOptions,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> join_filter_reassociation::JoinFilterReassociationResult {
     let max_iterations = plan.node_count().max(1);
     let mut current = plan;
@@ -456,7 +460,7 @@ fn optimize_join_filter_reassociation_fixpoint(
     let mut changed = NativeOptimizerChange::Unchanged;
 
     for _ in 0..max_iterations {
-        let result = join_filter_reassociation::optimize_join_filter_reassociation(current, options);
+        let result = join_filter_reassociation::optimize_join_filter_reassociation(current, options, resolver);
         diagnostics.merge(result.diagnostics);
         if !result.change.changed() {
             return join_filter_reassociation::JoinFilterReassociationResult {

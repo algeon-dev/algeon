@@ -44,7 +44,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
     let plan = builder.finish_with_host_sink(join);
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         plan,
-        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),);
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -194,7 +194,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::disabled()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
         route.consumer_columns == ["ps_partkey".to_string()]
             && route.consumer_lowering
@@ -316,7 +316,7 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -512,7 +512,7 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     let residual_route = optimized
         .plan
         .dynamic_filter_routes()
@@ -613,7 +613,7 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -744,7 +744,7 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -861,7 +861,7 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -962,7 +962,7 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1061,7 +1061,7 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1152,7 +1152,7 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1272,7 +1272,7 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1386,7 +1386,7 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
     let plan = builder.finish_with_host_sink(join);
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         plan,
-        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),);
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1455,7 +1455,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
@@ -1547,7 +1547,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
@@ -1649,7 +1649,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert_eq!(optimized.plan.dynamic_filter_routes()[0].consumer_columns, ["raw_order_id".to_string()]);
     assert!(matches!(
@@ -1740,7 +1740,7 @@ fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1806,7 +1806,7 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
         join_build_side_selection: nexus_query_engine::optimizer::JoinBuildSideSelectionOptions::disabled(),
         ..nexus_query_engine::optimizer::NativeOptimizerOptions::default()
     };
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options, nexus_query_engine::rapids_backend::rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,

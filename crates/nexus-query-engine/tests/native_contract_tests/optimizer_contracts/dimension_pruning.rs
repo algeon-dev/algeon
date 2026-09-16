@@ -6,7 +6,7 @@ fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_gr
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -37,7 +37,7 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -169,7 +169,7 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -296,7 +296,7 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -429,7 +429,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -502,7 +502,7 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
@@ -653,7 +653,7 @@ fn dimension_pruning_does_not_seed_right_side_left_join_group_key_filter() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -678,7 +678,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -1131,6 +1131,7 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
         plan,
         &DimensionDerivedRowGroupPruningOptions::default(),
         rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);

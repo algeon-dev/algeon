@@ -35,6 +35,7 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
         plan,
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
 
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);

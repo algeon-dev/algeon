@@ -52,6 +52,14 @@ pub use nexus_query_engine::datatypes::is_timestamp_with_timezone
 pub fn nexus_query_engine::datatypes::cudf_dtype_from_arrow_type(&arrow_schema::datatype::DataType) -> core::option::Option<cudf::core::types::DataType>
 pub fn nexus_query_engine::datatypes::is_supported_arrow_type(&arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_engine::datatypes::timestamp_unit_to_cudf_resolution(&arrow_schema::datatype::TimeUnit) -> cudf::core::types::TimestampResolution
+pub mod nexus_query_engine::dimension_pruning
+pub struct nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver
+impl nexus_query_planning::optimizer::dimension_pruning::resolver::LocalParquetPruningResolver for nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver
+pub fn nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver::dimension_key_filter(&self, &nexus_query_planning::source::parquet::LocalParquetSource, &str, &nexus_query_planning::expr::Expr, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::dimension_pruning::key_filter::DimensionKeyFilter>>
+pub fn nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver::dimension_scan_admitted(&self, &nexus_query_planning::source::parquet::LocalParquetSource, u64) -> bool
+pub fn nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver::filtered_i64_expr_range(&self, &nexus_query_planning::source::parquet::LocalParquetSource, &nexus_query_planning::expr::Expr, core::option::Option<&nexus_query_planning::expr::Expr>, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::dimension_pruning::key_filter::KeyRange>>
+pub fn nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver::target_row_group_key_ranges(&self, &nexus_query_planning::source::parquet::LocalParquetSource, usize) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<nexus_query_planning::optimizer::dimension_pruning::key_filter::KeyRange>>>>
+pub const fn nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver() -> &'static nexus_query_engine::dimension_pruning::LocalDimensionPruningResolver
 pub mod nexus_query_engine::exec
 pub mod nexus_query_engine::exec::output
 pub enum nexus_query_engine::exec::output::QueryOutput

@@ -11,7 +11,6 @@ use arrow::{
     array::{Array, Date32Array, Int32Array, Int64Array, UInt32Array, UInt64Array},
     datatypes::DataType,
 };
-use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use crate::{
     backend::AnalysisContext,
@@ -20,7 +19,7 @@ use crate::{
     optimizer::{DimensionKeyFilter, KeyRange, parent_counts},
     parquet_stats::{I64StatisticsRange as I64Range, row_group_i64_range_for_root_column},
     plan::{JoinSide, NodeId, PlanNode, QueryPlan},
-    source::{LocalParquetSource, SourceColumnRef},
+    source::{LocalParquetSource, SourceColumnRef, SourceFooterFacts},
 };
 
 /// Stable identifier for a dynamic-filter route inside one native plan.
@@ -786,6 +785,7 @@ pub fn apply_dynamic_filters_to_local_parquet_source(
     routes: &[&DynamicFilterRoute],
     filter_set: &DynamicFilterSet,
     ctx: AnalysisContext<'_>,
+    footers: SourceFooterFacts<'_>,
 ) -> Result<LocalParquetSource> {
     apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter(
         source,
@@ -793,6 +793,7 @@ pub fn apply_dynamic_filters_to_local_parquet_source(
         filter_set,
         |_, _| true,
         ctx,
+        footers,
     )
 }
 
@@ -803,6 +804,7 @@ pub fn apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filte
     filter_set: &DynamicFilterSet,
     mut should_merge_reader_predicate: impl FnMut(&DynamicFilterRoute, &DynamicFilter) -> bool,
     ctx: AnalysisContext<'_>,
+    footers: SourceFooterFacts<'_>,
 ) -> Result<LocalParquetSource> {
     let mut source = source.clone();
     for route in routes {
@@ -813,7 +815,7 @@ pub fn apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filte
             continue;
         };
         let merge_reader_predicate = should_merge_reader_predicate(route, filter);
-        apply_dynamic_filter_to_source(&mut source, route, column, filter, merge_reader_predicate, ctx)?;
+        apply_dynamic_filter_to_source(&mut source, route, column, filter, merge_reader_predicate, ctx, footers)?;
     }
     Ok(source)
 }
@@ -825,6 +827,7 @@ fn apply_dynamic_filter_to_source(
     filter: &DynamicFilter,
     merge_reader_predicate: bool,
     ctx: AnalysisContext<'_>,
+    footers: SourceFooterFacts<'_>,
 ) -> Result<()> {
     if matches!(filter, DynamicFilter::Empty) {
         mark_source_row_groups_empty(source);
@@ -833,7 +836,7 @@ fn apply_dynamic_filter_to_source(
         return Ok(());
     }
     if let Some(key_filter) = dynamic_filter_row_group_key_filter(filter) {
-        prune_source_row_groups_by_key_filter(source, column, &key_filter)?;
+        prune_source_row_groups_by_key_filter(source, column, &key_filter, footers)?;
     }
     if merge_reader_predicate
         && matches!(
@@ -869,6 +872,7 @@ fn prune_source_row_groups_by_key_filter(
     source: &mut LocalParquetSource,
     column: &str,
     key_filter: &DimensionKeyFilter,
+    footers: SourceFooterFacts<'_>,
 ) -> Result<()> {
     let SourceColumnRef::File(column_index) = source.source_column_ref(column).ok_or_else(|| {
         QueryError::new(
@@ -887,22 +891,11 @@ fn prune_source_row_groups_by_key_filter(
     let mut retained_total = 0usize;
     let mut selections = Vec::with_capacity(source.files.len());
 
-    for file in &source.files {
-        let Some(path) = file.location.as_local_path() else {
+    for (file_index, file) in source.files.iter().enumerate() {
+        let Some(metadata) = footers.footer(file_index) else {
             selections.push(file.row_groups.clone());
             continue;
         };
-        let reader = SerializedFileReader::try_from(path).map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.dynamic_filter.source_pruning",
-                "failed to read parquet footer for dynamic-filter row-group pruning",
-            )
-            .with_source(error)
-            .with_fact("path", path.display())
-            .with_fact("column", column)
-        })?;
-        let metadata = reader.metadata();
         let selected = selected_or_all_row_groups(file.row_groups.as_ref(), metadata.num_row_groups());
         selected_total = selected_total.saturating_add(selected.len());
         let mut retained = Vec::new();
@@ -981,6 +974,7 @@ pub fn dynamic_filter_reader_predicate_should_merge(
     filter: &DynamicFilter,
     options: DynamicFilterExecutionOptions,
     ctx: AnalysisContext<'_>,
+    footers: SourceFooterFacts<'_>,
 ) -> Result<bool> {
     let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter, ctx) else {
         return Ok(false);
@@ -991,7 +985,7 @@ pub fn dynamic_filter_reader_predicate_should_merge(
     let DynamicFilter::RangeI64 { min, max } = filter else {
         return Ok(true);
     };
-    let Some(source_range) = selected_source_i64_range(source, column)? else {
+    let Some(source_range) = selected_source_i64_range(source, column, footers)? else {
         return Ok(true);
     };
     let Some(overlap) = range_overlap_width(source_range, I64Range { min: *min, max: *max }) else {
@@ -1004,7 +998,11 @@ pub fn dynamic_filter_reader_predicate_should_merge(
         <= source_width.saturating_mul(u128::from(options.max_range_reader_predicate_selectivity_ppm)))
 }
 
-fn selected_source_i64_range(source: &LocalParquetSource, column: &str) -> Result<Option<I64Range>> {
+fn selected_source_i64_range(
+    source: &LocalParquetSource,
+    column: &str,
+    footers: SourceFooterFacts<'_>,
+) -> Result<Option<I64Range>> {
     let SourceColumnRef::File(column_index) = source.source_column_ref(column).ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -1018,21 +1016,10 @@ fn selected_source_i64_range(source: &LocalParquetSource, column: &str) -> Resul
     };
 
     let mut selected_range = None;
-    for file in &source.files {
-        let Some(path) = file.location.as_local_path() else {
+    for (file_index, file) in source.files.iter().enumerate() {
+        let Some(metadata) = footers.footer(file_index) else {
             return Ok(None);
         };
-        let reader = SerializedFileReader::try_from(path).map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.dynamic_filter.reader_predicate_selectivity",
-                "failed to read parquet footer for dynamic-filter reader-predicate selectivity",
-            )
-            .with_source(error)
-            .with_fact("path", path.display())
-            .with_fact("column", column)
-        })?;
-        let metadata = reader.metadata();
         for row_group_index in selected_or_all_row_groups(file.row_groups.as_ref(), metadata.num_row_groups()) {
             let row_group = metadata.row_group(row_group_index);
             let Some(row_group_range) =

@@ -663,11 +663,14 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
         nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 },
     );
 
+    let footer = local_parquet_footer(&path);
+    let footer_refs = vec![Some(&footer)];
     let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -706,11 +709,14 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
         nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 },
     );
 
+    let footer = local_parquet_footer(&path);
+    let footer_refs = vec![Some(&footer)];
     let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -756,11 +762,14 @@ fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predic
         nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 },
     );
 
+    let footer = local_parquet_footer(&path);
+    let footer_refs = vec![Some(&footer)];
     let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -798,11 +807,14 @@ fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
         nexus_query_engine::dynamic_filter::DynamicFilter::Empty,
     );
 
+    let footer = local_parquet_footer(&path);
+    let footer_refs = vec![Some(&footer)];
     let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -871,11 +883,14 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
         nexus_query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
     );
 
+    let footer = local_parquet_footer(&path);
+    let footer_refs = vec![Some(&footer)];
     let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -926,6 +941,7 @@ fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::none(),
     )
     .unwrap();
 
@@ -958,11 +974,14 @@ fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering()
         nexus_query_engine::dynamic_filter::DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 },
     );
 
+    let footer = local_parquet_footer(&path);
+    let footer_refs = vec![Some(&footer)];
     let rewritten = nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(
         &source,
         &[&route],
         &filters,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::source::SourceFooterFacts::new(&footer_refs),
     )
     .unwrap();
     let plan =
@@ -1080,6 +1099,14 @@ fn source_chunk_planning_rejects_selected_row_groups_outside_metadata() {
     assert_eq!(error.fact_value("max_row_group"), Some("1"));
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+// Reads a fixture's real footer the same way source preparation does, so
+// dynamic-filter tests exercise real row-group pruning against
+// `SourceFooterFacts` rather than the conservative "no footer supplied" path.
+fn local_parquet_footer(path: &Path) -> parquet::file::metadata::ParquetMetaData {
+    use parquet::file::reader::FileReader;
+    parquet::file::reader::SerializedFileReader::try_from(path).unwrap().metadata().clone()
 }
 
 fn write_row_grouped_parquet(path: &Path, row_count: usize, rows_per_group: usize) -> Arc<Schema> {

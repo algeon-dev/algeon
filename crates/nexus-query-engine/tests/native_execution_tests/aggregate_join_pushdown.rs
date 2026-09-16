@@ -17,6 +17,7 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
         plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
@@ -60,6 +61,7 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
         plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
@@ -397,6 +399,7 @@ fn bounded_native_query_filters_left_semi_groups_before_the_final_aggregate() {
         plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     let pushdown = &optimizer_result.diagnostics.aggregate_join_pushdown;
     assert_eq!(pushdown.applied_count, 0, "{pushdown:?}");

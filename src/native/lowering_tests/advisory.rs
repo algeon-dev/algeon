@@ -66,6 +66,7 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
         lowered.plans[0].clone(),
         &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     )
     .plan;
     assert!(!native.advisory_outputs().is_empty(), "optimizer rewrites carry frontend statistics forward");

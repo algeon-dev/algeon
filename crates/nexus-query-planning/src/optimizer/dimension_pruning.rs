@@ -8,13 +8,6 @@ use arrow::{
     datatypes::DataType,
     record_batch::RecordBatch,
 };
-use parquet::{
-    arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder},
-    file::{
-        metadata::RowGroupMetaData,
-        reader::{FileReader, SerializedFileReader},
-    },
-};
 
 use super::{
     access::{
@@ -30,23 +23,25 @@ use crate::{
     backend::AnalysisContext,
     error::{QueryError, QueryErrorCode},
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
-    parquet_stats::{row_group_i64_range, single_leaf_primitive_root_column_index},
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan},
     source::{LocalParquetFile, LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
 mod eval;
 mod key_filter;
+mod resolver;
 mod seed;
 
+pub use eval::I64ExprRangeAccumulator;
 #[doc(hidden)]
 pub use eval::derive_i64_expr_range_from_filtered_subtree;
-use eval::{array_i64_value, derive_dimension_key_filter, dimension_scan_admitted, eval_bool};
+use eval::{array_i64_value, derive_dimension_key_filter, eval_bool};
+use key_filter::selected_or_all_row_groups;
 pub use key_filter::{
     DIMENSION_KEY_FILTER_MAX_RUNS, DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, RowGroupOverlapSelection,
     dimension_key_filter_from_batch, select_overlapping_row_groups,
 };
-use key_filter::{row_group_key_range, selected_or_all_row_groups};
+pub use resolver::{LocalParquetPruningResolver, NoDimensionPruningFacts};
 pub use seed::seed_dimension_derived_reader_predicates;
 use seed::{aggregate_group_output_name, remap_unqualified_columns, seed_reader_predicates_from_group_key_filters};
 
@@ -198,6 +193,7 @@ pub fn optimize_dimension_derived_row_group_pruning(
     plan: QueryPlan,
     options: &DimensionDerivedRowGroupPruningOptions,
     ctx: AnalysisContext<'_>,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> DimensionDerivedRowGroupPruningResult {
     if !options.enabled {
         return DimensionDerivedRowGroupPruningResult {
@@ -303,7 +299,7 @@ pub fn optimize_dimension_derived_row_group_pruning(
                 }
                 continue;
             }
-            if !dimension_scan_admitted(dimension_source, options.max_dimension_rows) {
+            if !resolver.dimension_scan_admitted(dimension_source, options.max_dimension_rows) {
                 for (mut candidate, _) in target_candidates {
                     candidate.rejected_reason =
                         Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionScanNotAdmitted);
@@ -312,7 +308,8 @@ pub fn optimize_dimension_derived_row_group_pruning(
                 continue;
             }
 
-            let Some(key_filter) = derive_dimension_key_filter(dimension_source, &dimension_lineage.source_column)
+            let Some(key_filter) =
+                derive_dimension_key_filter(dimension_source, &dimension_lineage.source_column, resolver)
             else {
                 for (mut candidate, _) in target_candidates {
                     candidate.rejected_reason =
@@ -342,7 +339,8 @@ pub fn optimize_dimension_derived_row_group_pruning(
                     record_dimension_pruning_candidate(&mut diagnostics, candidate);
                     continue;
                 };
-                let Some(prune_result) = prune_target_source(target_source, &target_lineage.source_column, &key_filter)
+                let Some(prune_result) =
+                    prune_target_source(target_source, &target_lineage.source_column, &key_filter, resolver)
                 else {
                     candidate.rejected_reason =
                         Some(DimensionDerivedRowGroupPruningRejectedReason::TargetStatisticsUnavailable);
@@ -501,38 +499,34 @@ fn prune_target_source(
     source: &mut LocalParquetSource,
     key_column: &str,
     key_filter: &DimensionKeyFilter,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> Option<TargetPruneResult> {
     let SourceColumnRef::File(key_file_index) = source.source_column_ref(key_column)? else {
         return None;
     };
+    let per_file_row_group_key_ranges = resolver.target_row_group_key_ranges(source, key_file_index)?;
+    if per_file_row_group_key_ranges.len() != source.files.len() {
+        return None;
+    }
+
     let mut before = 0usize;
     let mut after = 0usize;
     let mut saw_statistics = false;
     let mut new_row_groups_by_file = Vec::with_capacity(source.files.len());
 
-    for file in &source.files {
-        let path = file.location.as_local_path()?;
-        let reader = SerializedFileReader::try_from(path).ok()?;
-        let metadata = reader.metadata();
-        let key_leaf_index =
-            single_leaf_primitive_root_column_index(metadata.file_metadata().schema_descr(), key_file_index);
-        let selected = selected_or_all_row_groups(file, metadata.num_row_groups());
-        before += selected.len();
-        let mut kept = Vec::new();
-        for row_group_index in selected {
-            let row_group = metadata.row_group(row_group_index);
-            match key_leaf_index.and_then(|index| row_group_key_range(row_group, index)) {
-                Some(row_group_range) => {
-                    saw_statistics = true;
-                    if key_filter.overlaps(row_group_range) {
-                        kept.push(row_group_index);
-                    }
-                },
-                None => kept.push(row_group_index),
-            }
+    // Reuses the same pure per-row-group selection `apply_dimension_derived_pruning_with_stats`
+    // applies to resolver-supplied stats, so the local and resolver-supplied
+    // (e.g. object-store) pruning paths never diverge on selection logic.
+    for (file, row_group_key_ranges) in source.files.iter().zip(&per_file_row_group_key_ranges) {
+        let candidates = selected_or_all_row_groups(file, row_group_key_ranges.len());
+        if candidates.len() != row_group_key_ranges.len() {
+            return None;
         }
-        after += kept.len();
-        new_row_groups_by_file.push(kept);
+        let selection = select_overlapping_row_groups(row_group_key_ranges, key_filter);
+        before += selection.before;
+        after += selection.kept.len();
+        saw_statistics |= selection.saw_statistics;
+        new_row_groups_by_file.push(selection.kept.iter().map(|position| candidates[*position]).collect::<Vec<_>>());
     }
 
     if !saw_statistics {

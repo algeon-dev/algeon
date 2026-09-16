@@ -45,6 +45,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
         direct_plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{Expr, LocalParquetFile, RecordBatch, RowGroupMetaData, array_i64_value, eval_bool, row_group_i64_range};
+use super::{Expr, LocalParquetFile, RecordBatch, array_i64_value, eval_bool};
 
 pub(super) fn selected_or_all_row_groups(file: &LocalParquetFile, row_group_count: usize) -> Vec<usize> {
     if let Some(row_groups) = &file.row_groups
@@ -200,10 +200,6 @@ pub struct RowGroupOverlapSelection {
     pub saw_statistics: bool,
     /// Whether pruning strictly narrowed a non-empty selection.
     pub applied: bool,
-}
-
-pub(super) fn row_group_key_range(row_group: &RowGroupMetaData, column_index: usize) -> Option<KeyRange> {
-    row_group_i64_range(row_group, column_index).map(|range| KeyRange { min: range.min, max: range.max })
 }
 
 fn ranges_overlap(left: KeyRange, right: KeyRange) -> bool {

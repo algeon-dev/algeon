@@ -732,7 +732,7 @@ pub fn nexus_query_planning::dynamic_filter::DynamicFilterSet::produced(&self, n
 pub fn nexus_query_planning::dynamic_filter::DynamicFilterSet::skipped_reason(&self, nexus_query_planning::dynamic_filter::DynamicFilterId) -> core::option::Option<&'static str>
 pub const nexus_query_planning::dynamic_filter::DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize
 pub const nexus_query_planning::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON: &str
-pub fn nexus_query_planning::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&nexus_query_planning::source::LocalParquetSource, &[&nexus_query_planning::dynamic_filter::DynamicFilterRoute], &nexus_query_planning::dynamic_filter::DynamicFilterSet, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::error::Result<nexus_query_planning::source::LocalParquetSource>
+pub fn nexus_query_planning::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&nexus_query_planning::source::LocalParquetSource, &[&nexus_query_planning::dynamic_filter::DynamicFilterRoute], &nexus_query_planning::dynamic_filter::DynamicFilterSet, nexus_query_planning::backend::AnalysisContext<'_>, nexus_query_planning::source::SourceFooterFacts<'_>) -> nexus_query_planning::error::Result<nexus_query_planning::source::LocalParquetSource>
 pub fn nexus_query_planning::dynamic_filter::dynamic_filter_i64_values(&dyn arrow_array::array::Array) -> core::option::Option<alloc::vec::Vec<core::option::Option<i64>>>
 pub fn nexus_query_planning::dynamic_filter::dynamic_filter_predicate_for_schema(&arrow_schema::schema::Schema, &str, &nexus_query_planning::dynamic_filter::DynamicFilter) -> core::option::Option<nexus_query_planning::expr::Expr>
 pub mod nexus_query_planning::error
@@ -1469,6 +1469,10 @@ impl nexus_query_planning::optimizer::DynamicFilterRouteDiscoveryOptions
 pub fn nexus_query_planning::optimizer::DynamicFilterRouteDiscoveryOptions::disabled() -> Self
 impl core::default::Default for nexus_query_planning::optimizer::DynamicFilterRouteDiscoveryOptions
 pub fn nexus_query_planning::optimizer::DynamicFilterRouteDiscoveryOptions::default() -> Self
+pub struct nexus_query_planning::optimizer::I64ExprRangeAccumulator
+impl nexus_query_planning::optimizer::I64ExprRangeAccumulator
+pub fn nexus_query_planning::optimizer::I64ExprRangeAccumulator::finish(&self) -> core::option::Option<nexus_query_planning::optimizer::KeyRange>
+pub fn nexus_query_planning::optimizer::I64ExprRangeAccumulator::observe_batch(&mut self, &arrow_array::record_batch::RecordBatch, &nexus_query_planning::expr::Expr, core::option::Option<&nexus_query_planning::expr::Expr>) -> core::option::Option<()>
 pub struct nexus_query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics
 pub nexus_query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::after_build_side: core::option::Option<nexus_query_planning::plan::JoinSide>
 pub nexus_query_planning::optimizer::JoinBuildSideSelectionCandidateDiagnostics::applied: bool
@@ -1615,6 +1619,12 @@ pub nexus_query_planning::optimizer::NativeOptimizerResult::diagnostics: nexus_q
 pub nexus_query_planning::optimizer::NativeOptimizerResult::plan: nexus_query_planning::plan::QueryPlan
 impl nexus_query_planning::optimizer::NativeOptimizerResult
 pub fn nexus_query_planning::optimizer::NativeOptimizerResult::changed(&self) -> bool
+pub struct nexus_query_planning::optimizer::NoDimensionPruningFacts
+impl nexus_query_planning::optimizer::LocalParquetPruningResolver for nexus_query_planning::optimizer::NoDimensionPruningFacts
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::dimension_key_filter(&self, &nexus_query_planning::source::LocalParquetSource, &str, &nexus_query_planning::expr::Expr, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::DimensionKeyFilter>>
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::dimension_scan_admitted(&self, &nexus_query_planning::source::LocalParquetSource, u64) -> bool
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::filtered_i64_expr_range(&self, &nexus_query_planning::source::LocalParquetSource, &nexus_query_planning::expr::Expr, core::option::Option<&nexus_query_planning::expr::Expr>, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::KeyRange>>
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::target_row_group_key_ranges(&self, &nexus_query_planning::source::LocalParquetSource, usize) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<nexus_query_planning::optimizer::KeyRange>>>>
 pub struct nexus_query_planning::optimizer::OuterJoinNullRejectionCandidateDiagnostics
 pub nexus_query_planning::optimizer::OuterJoinNullRejectionCandidateDiagnostics::applied: bool
 pub nexus_query_planning::optimizer::OuterJoinNullRejectionCandidateDiagnostics::candidate_node_id: nexus_query_planning::plan::NodeId
@@ -1778,13 +1788,23 @@ pub trait nexus_query_planning::optimizer::LakehouseFooterPruningResolver
 pub async fn nexus_query_planning::optimizer::LakehouseFooterPruningResolver::dimension_key_filter(&mut self, nexus_query_planning::plan::NodeId, &nexus_query_planning::source::LocalParquetSource, &str, &nexus_query_planning::expr::Expr, &[usize]) -> core::result::Result<core::option::Option<nexus_query_planning::optimizer::DimensionKeyFilter>, alloc::string::String>
 pub async fn nexus_query_planning::optimizer::LakehouseFooterPruningResolver::static_row_group_selections(&mut self, nexus_query_planning::plan::NodeId, &nexus_query_planning::source::LocalParquetSource, &nexus_query_planning::expr::Expr) -> core::result::Result<core::option::Option<alloc::vec::Vec<nexus_query_planning::optimizer::LocalParquetRowGroupSelection>>, alloc::string::String>
 pub async fn nexus_query_planning::optimizer::LakehouseFooterPruningResolver::target_row_group_key_ranges(&mut self, nexus_query_planning::plan::NodeId, &nexus_query_planning::source::LocalParquetSource, usize) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<nexus_query_planning::optimizer::KeyRange>>>, alloc::string::String>
+pub trait nexus_query_planning::optimizer::LocalParquetPruningResolver
+pub fn nexus_query_planning::optimizer::LocalParquetPruningResolver::dimension_key_filter(&self, &nexus_query_planning::source::LocalParquetSource, &str, &nexus_query_planning::expr::Expr, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::DimensionKeyFilter>>
+pub fn nexus_query_planning::optimizer::LocalParquetPruningResolver::dimension_scan_admitted(&self, &nexus_query_planning::source::LocalParquetSource, u64) -> bool
+pub fn nexus_query_planning::optimizer::LocalParquetPruningResolver::filtered_i64_expr_range(&self, &nexus_query_planning::source::LocalParquetSource, &nexus_query_planning::expr::Expr, core::option::Option<&nexus_query_planning::expr::Expr>, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::KeyRange>>
+pub fn nexus_query_planning::optimizer::LocalParquetPruningResolver::target_row_group_key_ranges(&self, &nexus_query_planning::source::LocalParquetSource, usize) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<nexus_query_planning::optimizer::KeyRange>>>>
+impl nexus_query_planning::optimizer::LocalParquetPruningResolver for nexus_query_planning::optimizer::NoDimensionPruningFacts
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::dimension_key_filter(&self, &nexus_query_planning::source::LocalParquetSource, &str, &nexus_query_planning::expr::Expr, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::DimensionKeyFilter>>
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::dimension_scan_admitted(&self, &nexus_query_planning::source::LocalParquetSource, u64) -> bool
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::filtered_i64_expr_range(&self, &nexus_query_planning::source::LocalParquetSource, &nexus_query_planning::expr::Expr, core::option::Option<&nexus_query_planning::expr::Expr>, &[usize]) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::KeyRange>>
+pub fn nexus_query_planning::optimizer::NoDimensionPruningFacts::target_row_group_key_ranges(&self, &nexus_query_planning::source::LocalParquetSource, usize) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<nexus_query_planning::optimizer::KeyRange>>>>
 pub fn nexus_query_planning::optimizer::apply_dimension_derived_pruning_with_stats(nexus_query_planning::plan::QueryPlan, nexus_query_planning::plan::NodeId, &[alloc::vec::Vec<core::option::Option<nexus_query_planning::optimizer::KeyRange>>], &nexus_query_planning::optimizer::DimensionKeyFilter) -> nexus_query_planning::optimizer::DimensionDerivedApplyResult
 pub fn nexus_query_planning::optimizer::apply_local_parquet_row_group_selections(nexus_query_planning::plan::QueryPlan, nexus_query_planning::plan::NodeId, &[nexus_query_planning::optimizer::LocalParquetRowGroupSelection]) -> nexus_query_planning::optimizer::LocalParquetRowGroupSelectionApplyResult
 pub fn nexus_query_planning::optimizer::dimension_key_filter_from_batch(&arrow_array::record_batch::RecordBatch, &str, &nexus_query_planning::expr::Expr) -> core::option::Option<core::option::Option<nexus_query_planning::optimizer::DimensionKeyFilter>>
 pub fn nexus_query_planning::optimizer::discover_dimension_derived_pruning_requests(&nexus_query_planning::plan::QueryPlan) -> alloc::vec::Vec<nexus_query_planning::optimizer::DimensionDerivedPruningRequest>
 pub fn nexus_query_planning::optimizer::local_parquet_source(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::plan::NodeId) -> core::option::Option<&nexus_query_planning::source::LocalParquetSource>
 pub async fn nexus_query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(nexus_query_planning::plan::QueryPlan, nexus_query_planning::optimizer::LakehouseFooterPruningOptions, &mut R, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::optimizer::LakehouseFooterPruningResult where R: nexus_query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
-pub fn nexus_query_planning::optimizer::optimize_query_plan(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::NativeOptimizerOptions, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::optimizer::NativeOptimizerResult
+pub fn nexus_query_planning::optimizer::optimize_query_plan(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::NativeOptimizerOptions, nexus_query_planning::backend::AnalysisContext<'_>, &dyn nexus_query_planning::optimizer::LocalParquetPruningResolver) -> nexus_query_planning::optimizer::NativeOptimizerResult
 pub fn nexus_query_planning::optimizer::optimize_semijoin_reduction(nexus_query_planning::plan::QueryPlan, &nexus_query_planning::optimizer::SemijoinReductionOptions, nexus_query_planning::backend::AnalysisContext<'_>) -> nexus_query_planning::optimizer::SemijoinReductionResult
 pub fn nexus_query_planning::optimizer::predicate_columns(&nexus_query_planning::expr::Expr) -> alloc::vec::Vec<alloc::string::String>
 pub fn nexus_query_planning::optimizer::reader_projection_indices(&nexus_query_planning::source::LocalParquetSource, &str, &nexus_query_planning::expr::Expr) -> core::option::Option<alloc::collections::btree::set::BTreeSet<usize>>
@@ -3476,6 +3496,11 @@ pub nexus_query_planning::source::SourceDiagnostics::selected_row_group_stats: c
 pub nexus_query_planning::source::SourceDiagnostics::selected_row_groups: core::option::Option<usize>
 pub nexus_query_planning::source::SourceDiagnostics::source_read_strategy: alloc::string::String
 pub nexus_query_planning::source::SourceDiagnostics::zero_column_count_disposition: nexus_query_planning::source::ZeroColumnCountDisposition
+pub struct nexus_query_planning::source::SourceFooterFacts<'a>
+impl<'a> nexus_query_planning::source::SourceFooterFacts<'a>
+pub fn nexus_query_planning::source::SourceFooterFacts<'a>::footer(&self, usize) -> core::option::Option<&'a parquet::file::metadata::ParquetMetaData>
+pub const fn nexus_query_planning::source::SourceFooterFacts<'a>::new(&'a [core::option::Option<&'a parquet::file::metadata::ParquetMetaData>]) -> Self
+pub const fn nexus_query_planning::source::SourceFooterFacts<'a>::none() -> Self
 pub const nexus_query_planning::source::GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str
 pub const nexus_query_planning::source::GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY: &str
 pub const nexus_query_planning::source::ZERO_COLUMN_COUNT_COLUMN: &str

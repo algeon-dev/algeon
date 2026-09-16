@@ -14,6 +14,10 @@ use super::{
     unsupported_bounded_shape, validate_local_parquet_source,
 };
 use crate::{
+    chunk::{
+        SourceMetadataCache, SourceMetadataLoadContext,
+        plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
+    },
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
         DynamicFilterRoute, DynamicFilterSet,
@@ -28,6 +32,7 @@ use crate::{
         },
     },
     metrics::DynamicFilterSourceSnapshot,
+    source::SourceFooterFacts,
 };
 
 mod batching;
@@ -188,12 +193,24 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         if routes.is_empty() {
             return Ok(self);
         }
+        // One cache, one footer load for `self.source`: the same per-file
+        // footer slots serve the merge check, the source rewrite, and the
+        // re-plan below, because dynamic filtering only narrows each file's
+        // `row_groups` selection and never changes `source.files` itself.
+        let mut metadata_cache = SourceMetadataCache::default();
+        let metadata_load_context = Some(SourceMetadataLoadContext { execution_context: context });
+        let footer_metadata =
+            source_footer_metadata(&self.source, &mut metadata_cache, metadata_load_context.as_ref())?;
+        let footer_refs = footer_metadata.iter().map(|metadata| metadata.as_deref()).collect::<Vec<_>>();
+        let footers = SourceFooterFacts::new(&footer_refs);
+
         let merged_reader_predicate_routes = merged_reader_predicate_route_ids(
             &self.source,
             routes,
             filter_set,
             deferred_reader_predicate_routes,
             options,
+            footers,
         )?;
         let before = self.dynamic_filter_source_snapshot();
         let source = apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter(
@@ -202,12 +219,14 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             filter_set,
             |route, _filter| merged_reader_predicate_routes.contains(&route.id),
             crate::rapids_backend::rapids_analysis_context(),
+            footers,
         )?;
-        let mut chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
+        let mut chunk_plan = plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             self.node_id,
             &source,
             self.planning_policy,
-            context,
+            &mut metadata_cache,
+            metadata_load_context,
         )?;
         annotate_join_leaf_source_chunk_batching_reasons(
             &source,

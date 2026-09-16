@@ -135,6 +135,7 @@ fn vector_optimizer_rewrite_remaps_relation_bindings_and_ordered_inputs() {
         plan,
         &NativeOptimizerOptions::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     )
     .plan;
     preflight_query_plan(&optimized).expect("rewritten vector bindings should remain valid");

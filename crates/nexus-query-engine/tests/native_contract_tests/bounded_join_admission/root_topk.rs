@@ -331,7 +331,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
     ] {
         let plan = nexus_query_engine::optimizer::optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),)
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver())
         .plan;
         let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
@@ -416,7 +416,7 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
     ] {
         let plan = nexus_query_engine::optimizer::optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),)
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver())
         .plan;
         let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 

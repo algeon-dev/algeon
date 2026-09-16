@@ -129,6 +129,7 @@ fn replace_lowered_root_or_keep_plan(
         lowering.plans[0].clone(),
         &optimizer_options,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     let native_optimizer = optimizer_result.diagnostics;
     let shared_resident_producers = optimizer_result.shared_resident_producers;
