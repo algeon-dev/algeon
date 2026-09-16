@@ -3,6 +3,7 @@
 mod decomposition;
 mod device;
 mod error;
+mod forest_inference;
 mod hdbscan;
 mod labels;
 mod logistic;
@@ -16,6 +17,10 @@ pub use device::{DeviceBuffer, DeviceElement, DeviceMatrix, MatrixLayout, OwnedF
 pub use error::{
     CumlErrorDetail, CumlErrorFailureSource, Error, ErrorCode, ErrorKind, ErrorStatus, FailurePhase, Result,
     allocation_attribution,
+};
+pub use forest_inference::{
+    ForestInferenceModel, ForestModelFormat, ForestModelInfo, ForestOutput, ForestOutputKind, ForestPrecision,
+    ForestPrediction, forest_inference_version, inspect as inspect_forest_model,
 };
 pub use hdbscan::{ClusterSelectionMethod, HdbscanFit, HdbscanOutputBuffers, HdbscanParams};
 pub use logistic::{LogisticRegressionFit, LogisticRegressionModel, LogisticRegressionParams};

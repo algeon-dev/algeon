@@ -1,0 +1,10 @@
+name,model_file,format,rows,features,expected_columns,notes
+xgb_binary_logistic,xgb_binary_logistic.json,xgboost_json,16,4,1,binary:logistic probability; 1 column
+xgb_multiclass_softmax,xgb_multiclass_softmax.json,xgboost_json,16,4,1,expected = xgboost class index (1 column); treelite assigns this XGBoost multi:softmax model postprocessor=softmax (not max_index); so gtil.csv holds 3 softmax probability columns; and argmax(gtil row) reproduces the expected class index
+xgb_multiclass_softprob,xgb_multiclass_softprob.json,xgboost_json,16,4,3,3 class-probability columns per row
+xgb_multiclass_softprob_ubj,xgb_multiclass_softprob_ubj.ubj,xgboost_ubjson,16,4,3,same trained booster as xgb_multiclass_softprob; saved as XGBoost UBJSON instead of JSON; reuses xgb_multiclass_softprob.input.csv/.expected.csv/.gtil.csv verbatim; no separate CSVs for this row
+lgb_regression_double,lgb_regression_double.txt,lightgbm,16,4,1,regression output; 1 column; model trained on float64 data (double thresholds)
+xgb_multiclass_tie,xgb_multiclass_tie.json,xgboost_json,16,4,1,handcrafted: 3 leaf-only (no-split) trees; class 0 leaf -1.0; classes 1 and 2 leaf 0.5 on every row; base_score 0 for all classes; xgboost predict picks the lowest tied index (class 1) on every row. gtil.csv holds 3 softmax probability columns (same postprocessor note as xgb_multiclass_softmax); argmax matches.
+lgb_threshold_boundary,lgb_threshold_boundary.txt,lightgbm,4,1,1,handcrafted single-split tree; 1 feature; threshold = 1 - 2**-26 = 0.99999998509883881 written with 17 significant digits; np.float32(threshold) == 1.0; so a float32 cast of the threshold flips the branch decision for input 1.0. Rows: 1.0; 0.99999994 (float32 just below 1); 0.5; 2.0
+xgb_multi_target,xgb_multi_target.json,xgboost_json,16,4,0,multi-target model (num_target=2); rejection-path fixture; no expected/gtil files
+corrupt,corrupt.json,xgboost_json,0,0,0,first half of xgb_binary_logistic.json bytes; for parse-error tests

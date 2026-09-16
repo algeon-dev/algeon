@@ -10,7 +10,8 @@ bindgen.
 - `algeon-cuml-sys` (`cuml_sys`) declares the C ABI and builds/links the native
   shim in `algeon-cuml-sys/native`.
 - `algeon-cuml` (`cuml`) provides resource-bound APIs for HDBSCAN, PCA, TSVD,
-  QN logistic regression, random-forest classification/regression, and UMAP.
+  QN logistic regression, random-forest classification/regression, UMAP, and
+  nvForest inference over imported XGBoost, LightGBM, and Treelite models.
   The Rust crate exposes only these algorithms, not the full cuML upstream API.
 - `cuml/` is the root-registered upstream source submodule.
 
@@ -19,8 +20,17 @@ logistic regression, and UMAP. `scripts/build/build_libcuml.sh` builds
 `libcuml.so` against the canonical workspace cuDF/RMM and cuVS installs, then
 builds and installs the Rust shim. The build checks the configured and linked
 RMM/cuVS identities, loader dependencies, OpenMP imports, and production shim
-contents. OpenMP is disabled for cuML. RF parameters explicitly use
-`n_streams=1`; the RF Rust API separately owns a RAFT stream pool for fit.
+contents. OpenMP is disabled for cuML and for the Treelite build that nvForest
+and the shim load. RF parameters explicitly use `n_streams=1`; the RF Rust API
+separately owns a RAFT stream pool for fit.
+
+nvForest and Treelite come from cuML's CPM build and are always compiled from
+their pinned sources. The shim instantiates nvForest's header-only importer, so
+two build rules protect query-domain accounting: the shim's version script
+keeps RMM's per-device resource map shared with the rest of the process, and
+`scripts/build/patches/nvforest-196-move-buffers.patch` backports upstream
+nvForest #196 so imported buffers are not copied on the legacy default stream.
+Remove that backport when cuML moves to 26.10.
 
 ## Runtime and memory ownership
 
