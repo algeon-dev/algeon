@@ -135,10 +135,18 @@ pub struct Graph<T = Forward> {
     has_weights: bool,
     edge_id_dtype: Option<DataType>,
     pending_input_completion: Option<DeferredInputCompletion>,
-    // Runtime-bound resource handles used to build or operate on the graph
-    // can own native state referenced during cugraph_graph_free. Keep these
-    // leases alive until after Graph::drop runs.
+    // Runtime-bound resource handles of the binding that owns the graph's
+    // native allocations can own state referenced during cugraph_graph_free.
+    // Keep those leases alive until after Graph::drop runs. Handles of a
+    // borrowed execution binding are not retained here: their allocations
+    // are call-scoped and must retire with the borrowing attempt.
     resource_handle_leases: RefCell<Vec<ResourceHandleLease>>,
+    // Binding whose stream is ordered after every tracked graph operation.
+    // Established by construction or resume; every runtime-bound use must
+    // enter under it so one park event keeps proving full stream ordering.
+    // `None` until the first runtime-bound use of a graph built outside a
+    // runtime binding.
+    ordered_binding: Cell<Option<cudf::runtime::ExecutionBindingId>>,
     // A graph touched through local or external handles has work whose stream
     // is not represented by the runtime-bound lease ledger. Such a graph
     // cannot be parked because one runtime event cannot fence those uses.
@@ -153,8 +161,11 @@ pub struct Graph<T = Forward> {
 /// require a thread-local entered execution context. `ParkedGraph<T>` is the
 /// transfer state for an idle graph: it owns the native graph pointer, retains
 /// runtime-bound handle leases needed for teardown, and carries a CUDA event
-/// recorded after tracked work on the graph's runtime stream. Resume requires
-/// an entered context for the same cudf execution binding that parked the graph.
+/// recorded after tracked work on the parking binding's stream, plus that
+/// binding's identity. Exact [`resume`](ParkedGraph::resume) requires an
+/// entered context for the binding that parked the graph;
+/// [`resume_under`](ParkedGraph::resume_under) executes under a different
+/// same-device binding after ordering it behind the park event.
 pub struct ParkedGraph<T = Forward> {
     raw: *mut cugraph_graph_t,
     device: i32,
@@ -164,6 +175,10 @@ pub struct ParkedGraph<T = Forward> {
     has_weights: bool,
     edge_id_dtype: Option<DataType>,
     park_event: cudf::runtime::CudaEvent,
+    // Binding whose stream the park event was recorded on. Exact resume
+    // requires this binding; `resume_under` orders another same-device
+    // binding behind the event instead.
+    park_binding: cudf::runtime::ExecutionBindingId,
     resource_handle_leases: Vec<ResourceHandleLease>,
     _not_sync: PhantomData<Cell<()>>,
     _transposition: PhantomData<T>,
@@ -463,6 +478,63 @@ impl<T> Graph<T> {
         }
         drop(self.pending_input_completion.take());
 
+        self.park_recorded(handle, operation)
+    }
+
+    /// Park this graph under the ordered execution binding without requiring
+    /// it to match the construction binding (storage/execution split).
+    ///
+    /// The entering binding must be the ordered binding: every tracked use
+    /// ran on its stream, so the park event recorded below stays ordered
+    /// after all of them. Teardown still runs under the retained creation
+    /// leases. Use this after [`resume_under`](ParkedGraph::resume_under);
+    /// parking a graph that ran only under its construction binding must keep
+    /// using [`park`](Graph::park).
+    ///
+    /// If this method returns an error, the consumed graph is dropped.
+    pub fn park_under(mut self, handle: &EnteredContext<'_>) -> Result<ParkedGraph<T>>
+    where T: Send {
+        let operation = "Graph::park_under";
+        if handle.device() != self.device {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("graph and resource handle must be on the same CUDA device")
+                .with_context("graph_device", self.device.to_string())
+                .with_context("handle_device", handle.device().to_string()));
+        }
+        let Some(handle_lease) = handle.runtime_bound_lease() else {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("park_under requires a runtime-bound resource handle"));
+        };
+        if self.untracked_resource_handle_use.get() {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph was used with a non-runtime-bound resource handle and cannot be parked"));
+        }
+        if self.resource_handle_leases.get_mut().is_empty() {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph has no runtime-bound handle leases to prove park stream ownership"));
+        }
+        let entering = handle_lease.runtime().binding_id();
+        if self.ordered_binding.get() != Some(entering) {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("park handle binding does not match the ordered graph execution binding")
+                .with_context(
+                    "graph_binding_id",
+                    self.ordered_binding.get().map(|id| id.to_string()).as_deref().unwrap_or("none"),
+                )
+                .with_context("handle_binding_id", entering.to_string()));
+        }
+        let mut this = self;
+        if let Some(pending) = this.pending_input_completion.as_ref() {
+            pending.synchronize_witnesses(operation)?;
+        }
+        // Release the witnesses before the park event is recorded: a parked
+        // graph outlives this call, so retaining them would keep its input
+        // column owners alive for the whole cached lifetime.
+        drop(this.pending_input_completion.take());
+        this.park_recorded(handle, operation)
+    }
+
+    fn park_recorded(self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<ParkedGraph<T>> {
         let _guard = DeviceGuard::enter_owner_device(self.device, operation)?;
         let event = cudf::runtime::CudaEvent::new()
             .map_err(|error| map_cudf_runtime_error(error, operation, "failed to create graph park CUDA event"))?;
@@ -470,6 +542,7 @@ impl<T> Graph<T> {
         event
             .record(runtime.stream())
             .map_err(|error| map_cudf_runtime_error(error, operation, "failed to record graph park CUDA event"))?;
+        let park_binding = runtime.binding_id();
 
         let this = ManuallyDrop::new(self);
         // SAFETY: `this` will not run `Graph::drop`, so moving the lease
@@ -485,6 +558,7 @@ impl<T> Graph<T> {
             has_weights: this.has_weights,
             edge_id_dtype: this.edge_id_dtype,
             park_event: event,
+            park_binding,
             resource_handle_leases,
             _not_sync: PhantomData,
             _transposition: PhantomData,
@@ -518,6 +592,19 @@ impl<T> Graph<T> {
                 .with_message("graph execution binding does not match the park handle")
                 .with_context("lease_count", leases.len().to_string()));
         }
+        // Matching the storage leases is not enough once a graph can execute
+        // under a borrowed binding: the park event has to be recorded on the
+        // stream every tracked use actually ran on.
+        let entering = handle_lease.runtime().binding_id();
+        if self.ordered_binding.get().is_some_and(|ordered| ordered != entering) {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("park handle binding does not match the ordered graph execution binding")
+                .with_context(
+                    "graph_binding_id",
+                    self.ordered_binding.get().map(|id| id.to_string()).as_deref().unwrap_or("none"),
+                )
+                .with_context("handle_binding_id", entering.to_string()));
+        }
 
         Ok(())
     }
@@ -537,16 +624,30 @@ impl<T> Graph<T> {
 
         let mut leases = self.resource_handle_leases.borrow_mut();
 
-        if let Some(existing) = leases.first()
-            && !existing.same_binding(&lease)
-        {
-            return Err(Error::new(ErrorKind::InvalidState, operation)
-                .with_message("graph execution binding does not match the resource handle")
-                .with_context("graph_binding_id", existing.runtime().binding_id().to_string())
-                .with_context("handle_binding_id", lease.runtime().binding_id().to_string()));
+        // Every runtime-bound use must enter under the ordered binding, so
+        // the park event recorded later is ordered after all tracked work.
+        // The first runtime-bound use of a graph built outside a runtime
+        // binding establishes the order.
+        let entering = lease.runtime().binding_id();
+        match self.ordered_binding.get() {
+            Some(ordered) if ordered != entering => {
+                return Err(Error::new(ErrorKind::InvalidState, operation)
+                    .with_message("graph execution binding does not match the resource handle")
+                    .with_context("graph_binding_id", ordered.to_string())
+                    .with_context("handle_binding_id", entering.to_string()));
+            },
+            None => self.ordered_binding.set(Some(entering)),
+            Some(_) => {},
         }
 
-        if !leases.iter().any(|existing| existing.same_native_owner(&lease)) {
+        // Only the binding that owns the graph's native allocations is
+        // retained for teardown. A borrowed execution binding allocates just
+        // call-scoped workspace, so retaining its lease would keep its
+        // current-resource stream route — and the query domain behind it —
+        // attached for as long as the parked graph lives, long after the
+        // borrowing attempt released that stream.
+        let owns_teardown = leases.first().is_none_or(|existing| existing.same_binding(&lease));
+        if owns_teardown && !leases.iter().any(|existing| existing.same_native_owner(&lease)) {
             leases.push(lease);
         }
 
@@ -727,21 +828,57 @@ impl<T> ParkedGraph<T> {
 
     /// Resume this parked graph under a runtime-bound entered context.
     ///
-    /// Resume is exact-binding by construction: `handle` must use the same
-    /// cudf runtime stream/MR binding as every retained lease. The
-    /// runtime stream waits on the park event before the live [`Graph`] is
-    /// returned to the caller.
+    /// Resume is exact-binding by construction: `handle` must use the cudf
+    /// runtime stream/MR binding that parked the graph. The runtime stream
+    /// waits on the park event before the live [`Graph`] is returned to the
+    /// caller. Retained creation leases stay untouched for teardown; use
+    /// [`resume_under`](ParkedGraph::resume_under) to execute under a
+    /// different same-device binding.
     ///
     /// If this method returns an error, the consumed parked graph is dropped.
     pub fn resume(self, handle: &EnteredContext<'_>) -> Result<Graph<T>> {
         let operation = "ParkedGraph::resume";
         self.validate_resume_handle(handle, operation)?;
+        self.resume_ordered(handle, operation)
+    }
 
+    /// Resume this parked graph under a different runtime-bound execution
+    /// binding on the same device (storage/execution split).
+    ///
+    /// The resume stream waits on the park event, so every storage write that
+    /// produced the parked state happens before any borrower kernel reads it.
+    /// Algorithm temporaries allocate through the entering handle, so
+    /// workspace, auxiliary streams, and outputs charge to the borrower's
+    /// domain — never to the parking domain. cuGraph algorithms observe the
+    /// graph through a const view: the borrower must not mutate shared
+    /// storage, and the exclusive checkout guard that owns this parked graph
+    /// must outlive every kernel launched under the borrower binding.
+    /// Teardown still runs under the retained creation leases. Re-park with
+    /// [`park_under`](Graph::park_under) under the same borrower binding.
+    ///
+    /// If this method returns an error, the consumed parked graph is dropped.
+    pub fn resume_under(self, handle: &EnteredContext<'_>) -> Result<Graph<T>> {
+        let operation = "ParkedGraph::resume_under";
+        if handle.device() != self.device {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("parked graph and resource handle must be on the same CUDA device")
+                .with_context("graph_device", self.device.to_string())
+                .with_context("handle_device", handle.device().to_string()));
+        }
+        if handle.runtime().is_none() {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("parked graph resume requires a runtime-bound resource handle"));
+        }
+        self.resume_ordered(handle, operation)
+    }
+
+    fn resume_ordered(self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<Graph<T>> {
         let runtime = handle.runtime().expect("validated runtime-bound handle");
         runtime
             .stream()
             .wait_event(&self.park_event)
             .map_err(|error| map_cudf_runtime_error(error, operation, "failed to wait on graph park CUDA event"))?;
+        let ordered_binding = runtime.binding_id();
 
         let this = ManuallyDrop::new(self);
         // SAFETY: `this` will not run `ParkedGraph::drop`, so moving fields
@@ -762,6 +899,7 @@ impl<T> ParkedGraph<T> {
             edge_id_dtype: this.edge_id_dtype,
             pending_input_completion: None,
             resource_handle_leases: RefCell::new(resource_handle_leases),
+            ordered_binding: Cell::new(Some(ordered_binding)),
             untracked_resource_handle_use: Cell::new(false),
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,
@@ -776,14 +914,15 @@ impl<T> ParkedGraph<T> {
                 .with_context("handle_device", handle.device().to_string()));
         }
 
-        let Some(handle_lease) = handle.runtime_bound_lease() else {
+        let Some(runtime) = handle.runtime() else {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("parked graph resume requires a runtime-bound resource handle"));
         };
-        if !self.resource_handle_leases.iter().all(|lease| lease.same_binding(&handle_lease)) {
+        if runtime.binding_id() != self.park_binding {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("parked graph execution binding does not match the resume handle")
-                .with_context("lease_count", self.resource_handle_leases.len().to_string()));
+                .with_context("graph_binding_id", self.park_binding.to_string())
+                .with_context("handle_binding_id", runtime.binding_id().to_string()));
         }
 
         Ok(())
@@ -1087,6 +1226,7 @@ impl<'a> GraphBuilder<'a> {
             edge_id_dtype,
             pending_input_completion: None,
             resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
+            ordered_binding: Cell::new(handle.runtime_bound_lease().map(|lease| lease.runtime().binding_id())),
             untracked_resource_handle_use: Cell::new(false),
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,

@@ -254,12 +254,12 @@ impl GpuBackendDeviceProfile {
     /// One auxiliary source-work slot is reserved for each active attempt by
     /// default.
     pub const DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize = 1;
-    /// Device admission begins with one active attempt unless the installer
+    /// Device admission begins with two active attempts unless the installer
     /// explicitly freezes a different per-device limit.
-    pub const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 1;
+    pub const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 2;
 
-    /// Starts a profile with automatic capacity discovery and one active
-    /// attempt. Callers may override any device-local bound below.
+    /// Starts a profile with automatic capacity discovery and two active
+    /// attempts. Callers may override any device-local bound below.
     pub fn new(device_ordinal: usize) -> Self {
         Self {
             device_ordinal,
@@ -2106,7 +2106,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_global_limit_is_checked_and_defaults_to_one_per_device() {
+    fn derived_global_limit_is_checked_and_defaults_to_two_per_device() {
         let config = GpuBackendCoreDraft::new(
             vec![
                 GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive),
@@ -2115,7 +2115,7 @@ mod tests {
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
-        assert_eq!(config.derived_global_max_active_attempts().unwrap(), 2);
+        assert_eq!(config.derived_global_max_active_attempts().unwrap(), 4);
     }
 
     #[test]

@@ -675,14 +675,18 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     );
     let ctx = native_context(&backend).await;
 
-    // Hold the single admission slot with a live suspended execution so the
+    // Hold both admission slots with live suspended executions so the
     // attempt's admission must queue and time out instead of being placed.
-    // The holder stream is polled once to admit, then left suspended: the
-    // slot stays occupied until the stream is dropped, never reaching EOF.
+    // Each holder stream is polled once to admit, then left suspended: the
+    // slots stay occupied until the streams are dropped, never reaching EOF.
     let holder = backend.begin_attempt(AttemptOptions::default()).expect("slot holder admits");
     let mut holder_stream = holder.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     holder_stream.next().await.expect("holder admits on first poll").expect("holder batch");
-    let _held = (holder, holder_stream);
+    let second_holder = backend.begin_attempt(AttemptOptions::default()).expect("second slot holder admits");
+    let mut second_holder_stream =
+        second_holder.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
+    second_holder_stream.next().await.expect("second holder admits on first poll").expect("holder batch");
+    let _held = (holder, holder_stream, second_holder, second_holder_stream);
     let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let mut stream = attempt.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();

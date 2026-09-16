@@ -186,6 +186,7 @@ impl QueryService {
             Some(probe),
             Some(construction_journal),
             Some(backend_metrics),
+            &NexusGpuInventory,
         )?;
         let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();
         let gpu_execution_pools = devices

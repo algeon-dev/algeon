@@ -1059,6 +1059,8 @@ mod tests {
                 device_ordinal: 3,
                 sequence,
                 managed_capacity_bytes: 10_000,
+                cache_cap_bytes: 0,
+                query_share_bytes: 10_000,
                 default_query_limit_bytes: 10,
                 max_active_attempts: 8,
                 active_attempts,

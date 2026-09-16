@@ -169,7 +169,12 @@ query_domain_resource::query_domain_resource(
 [[nodiscard]] query_domain_resource::operation_guard
 query_domain_resource::begin_operation() noexcept
 {
-  in_flight_operations_.fetch_add(1, std::memory_order_acq_rel);
+  // Sequential consistency with the seal-flag protocol below: this increment
+  // must be visible to any freeze that starts after it, and the flag read in
+  // allocate_impl must observe any seal that precedes it. One of the two
+  // racing sides always observes the other, so seal and allocation never
+  // both succeed.
+  in_flight_operations_.fetch_add(1, std::memory_order_seq_cst);
   return operation_guard{this};
 }
 
@@ -186,10 +191,10 @@ bool query_domain_resource::resize_grant(std::size_t grant_bytes, std::string& e
 bool query_domain_resource::freeze(std::string& error)
 {
   bool expected = true;
-  if (!allocation_open_.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+  if (!allocation_open_.compare_exchange_strong(expected, false, std::memory_order_seq_cst)) {
     return true;
   }
-  if (in_flight_operations_.load(std::memory_order_acquire) != 0) {
+  if (in_flight_operations_.load(std::memory_order_seq_cst) != 0) {
     allocation_open_.store(true, std::memory_order_release);
     error = "query memory domain has in-flight allocation operations";
     return false;
@@ -209,6 +214,14 @@ void* query_domain_resource::allocate_for_member(
   std::size_t alignment,
   bool require_attached)
 {
+  // Direct member allocations share the seal linearisation boundary with
+  // routed allocations: holding the in-flight guard across the seal-flag
+  // check and the reservation below forces a racing freeze to observe this
+  // operation and fail closed instead of sealing underneath it. Routed
+  // callers already hold a guard through their route; nesting only deepens
+  // the same counter. Deallocation intentionally takes no guard so post-seal
+  // resident teardown stays legal.
+  auto operation = begin_operation();
   return allocate_impl(member, stream, bytes, alignment, require_attached);
 }
 
@@ -277,7 +290,9 @@ void* query_domain_resource::allocate_impl(
   bool require_attached)
 {
   if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
-  if (!allocation_open_.load(std::memory_order_acquire)) {
+  // Sequentially consistent with freeze: paired with the in-flight guard
+  // held by every caller, a racing seal is always observed on one side.
+  if (!allocation_open_.load(std::memory_order_seq_cst)) {
     // A frozen domain rejecting new work is a routing/lifetime invariant
     // violation, not caller input: the attempt was supposed to stop
     // allocating before its output was published.

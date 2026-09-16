@@ -575,6 +575,7 @@ impl<T> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
 pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
 pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
@@ -607,6 +608,7 @@ impl<T> cugraph::graph::ParkedGraph<T>
 pub fn cugraph::graph::ParkedGraph<T>::device(&self) -> i32
 pub fn cugraph::graph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::graph::ParkedGraph<T>::resume_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
 pub fn cugraph::graph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
 pub fn cugraph::graph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
 impl<T: core::marker::Send> core::marker::Send for cugraph::graph::ParkedGraph<T>
@@ -1606,6 +1608,7 @@ impl<T> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::park_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
 pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
 pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
@@ -1638,6 +1641,7 @@ impl<T> cugraph::graph::ParkedGraph<T>
 pub fn cugraph::graph::ParkedGraph<T>::device(&self) -> i32
 pub fn cugraph::graph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
 pub fn cugraph::graph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::graph::ParkedGraph<T>::resume_under(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
 pub fn cugraph::graph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
 pub fn cugraph::graph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
 impl<T: core::marker::Send> core::marker::Send for cugraph::graph::ParkedGraph<T>

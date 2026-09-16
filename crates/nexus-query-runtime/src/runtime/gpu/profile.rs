@@ -101,8 +101,10 @@ impl DeviceCapabilities {
 
 /// Frozen capacity and execution-slot bounds for one CUDA device.
 ///
-/// `cache_cap_bytes` reserves a bounded per-device cache share alongside the
-/// default query limit within managed capacity.
+/// `cache_cap_bytes` (`K`) reserves a bounded per-device cache share carved
+/// out of the managed capacity (`M`). Query grants and frozen residents share
+/// only the remaining query share (`Q = M - K`); query admission never
+/// promises the same bytes that back the cache share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceResourceProfile {
     pub device_ordinal: usize,
@@ -158,6 +160,51 @@ pub struct DeviceResourceEnvelope {
 }
 
 impl DeviceResourceProfile {
+    /// Query share (`Q = M - K`) promisable to grants plus frozen residents.
+    ///
+    /// Cache charges (`C <= K`) never participate in this share, so query
+    /// admission and cache eviction cannot promise the same bytes.
+    pub fn query_share_bytes(&self) -> u64 {
+        self.managed_capacity_bytes.saturating_sub(self.cache_cap_bytes)
+    }
+
+    /// Derives the default per-query grant from the service parallelism
+    /// target: `floor((M - K) / N)` with checked arithmetic.
+    ///
+    /// This is a capacity-allocation policy, not a per-query estimate: with
+    /// no frozen residents the profile admits `N` default grants. An
+    /// explicitly configured default keeps its value after validation.
+    pub fn derive_default_query_limit_bytes(
+        device_ordinal: usize,
+        managed_capacity_bytes: u64,
+        cache_cap_bytes: u64,
+        max_active_attempts: usize,
+    ) -> Result<u64> {
+        if max_active_attempts == 0 {
+            return Err(
+                invalid(device_ordinal, "max_active_attempts", "must be greater than zero").with_fact("reason", "zero")
+            );
+        }
+        let query_share_bytes =
+            managed_capacity_bytes.checked_sub(cache_cap_bytes).filter(|share| *share > 0).ok_or_else(|| {
+                invalid(device_ordinal, "cache_cap_bytes", "cache cap must leave a non-zero query share")
+                    .with_fact("reason", "cache_cap_exceeds_managed_capacity")
+                    .with_fact("cache_cap_bytes", cache_cap_bytes)
+                    .with_fact("managed_capacity_bytes", managed_capacity_bytes)
+            })?;
+        let divisor = u64::try_from(max_active_attempts).map_err(|_| {
+            invalid(device_ordinal, "max_active_attempts", "parallelism target exceeds the capacity integer range")
+                .with_fact("reason", "max_active_attempts_overflow")
+        })?;
+        let derived = query_share_bytes.checked_div(divisor).filter(|cap| *cap > 0).ok_or_else(|| {
+            invalid(device_ordinal, "default_query_limit_bytes", "derived default query limit is zero")
+                .with_fact("reason", "derived_default_query_limit_is_zero")
+                .with_fact("query_share_bytes", query_share_bytes)
+                .with_fact("max_active_attempts", max_active_attempts)
+        })?;
+        Ok(derived)
+    }
+
     /// Resolves all resource-controller arithmetic for one device from its
     /// immutable resource envelope.
     pub fn resolve(envelope: DeviceResourceEnvelope) -> Result<Self> {
@@ -194,6 +241,16 @@ impl DeviceResourceProfile {
             )
             .with_fact("reason", "zero_managed_capacity"));
         }
+        if cache_cap_bytes >= managed_capacity_bytes {
+            return Err(invalid(
+                device_ordinal,
+                "cache_cap_bytes",
+                "cache cap must leave a non-zero query share of managed capacity",
+            )
+            .with_fact("reason", "cache_cap_exceeds_managed_capacity")
+            .with_fact("cache_cap_bytes", cache_cap_bytes)
+            .with_fact("managed_capacity_bytes", managed_capacity_bytes));
+        }
         if max_active_attempts == 0 {
             return Err(
                 invalid(device_ordinal, "max_active_attempts", "must be greater than zero").with_fact("reason", "zero")
@@ -203,29 +260,19 @@ impl DeviceResourceProfile {
             return Err(invalid(device_ordinal, "default_query_limit_bytes", "must be greater than zero")
                 .with_fact("reason", "zero"));
         }
-        if default_query_limit_bytes > managed_capacity_bytes {
+        let query_share_bytes = managed_capacity_bytes.checked_sub(cache_cap_bytes).ok_or_else(|| {
+            invalid(device_ordinal, "cache_cap_bytes", "cache cap and query share overflow capacity arithmetic")
+                .with_fact("reason", "cache_cap_overflow")
+        })?;
+        if default_query_limit_bytes > query_share_bytes {
             return Err(invalid(
                 device_ordinal,
                 "default_query_limit_bytes",
-                "default query limit exceeds managed capacity",
+                "default query limit exceeds the query share of managed capacity",
             )
             .with_fact("reason", "default_query_limit_exceeds_managed_capacity")
             .with_fact("default_query_limit_bytes", default_query_limit_bytes)
-            .with_fact("managed_capacity_bytes", managed_capacity_bytes));
-        }
-        let cache_query_limit = cache_cap_bytes.checked_add(default_query_limit_bytes).ok_or_else(|| {
-            invalid(device_ordinal, "cache_cap_bytes", "cache cap and default query limit overflow capacity arithmetic")
-                .with_fact("reason", "cache_cap_overflow")
-        })?;
-        if cache_query_limit > managed_capacity_bytes {
-            return Err(invalid(
-                device_ordinal,
-                "cache_cap_bytes",
-                "cache cap plus default query limit exceed managed capacity",
-            )
-            .with_fact("reason", "cache_cap_exceeds_managed_capacity")
-            .with_fact("cache_cap_bytes", cache_cap_bytes)
-            .with_fact("default_query_limit_bytes", default_query_limit_bytes)
+            .with_fact("query_share_bytes", query_share_bytes)
             .with_fact("managed_capacity_bytes", managed_capacity_bytes));
         }
         let source_work_per_attempt = source_work_per_attempt.max(1);
@@ -450,5 +497,48 @@ mod tests {
         assert!(restricted.supports(&required));
         assert!(!restricted.supports(&other));
         assert!(!DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()).supports(&required));
+    }
+
+    #[test]
+    fn derives_default_query_limit_from_parallelism_target_and_cache_share() {
+        // `floor((M - K) / N)`: the plan's `M = 24, K = 8, N = 2` fixture
+        // yields 8, so two defaults exactly fill the query share.
+        assert_eq!(DeviceResourceProfile::derive_default_query_limit_bytes(0, 24, 8, 2).unwrap(), 8);
+        assert_eq!(DeviceResourceProfile::derive_default_query_limit_bytes(0, 10, 0, 3).unwrap(), 3);
+        assert_eq!(DeviceResourceProfile::derive_default_query_limit_bytes(0, 1_000, 0, 1).unwrap(), 1_000);
+
+        let zero_share = DeviceResourceProfile::derive_default_query_limit_bytes(0, 10, 9, 3).unwrap_err();
+        assert_eq!(zero_share.fact_value("reason"), Some("derived_default_query_limit_is_zero"));
+
+        let no_share = DeviceResourceProfile::derive_default_query_limit_bytes(0, 8, 8, 2).unwrap_err();
+        assert_eq!(no_share.fact_value("reason"), Some("cache_cap_exceeds_managed_capacity"));
+
+        let no_parallelism = DeviceResourceProfile::derive_default_query_limit_bytes(0, 24, 8, 0).unwrap_err();
+        assert_eq!(no_parallelism.fact_value("reason"), Some("zero"));
+    }
+
+    #[test]
+    fn query_share_subtracts_the_cache_share() {
+        let envelope = |cache_cap_bytes, default_query_limit_bytes| DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 1_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            default_query_limit_bytes,
+            max_active_attempts: 2,
+            source_work_per_attempt: 1,
+            stream_pool_size: 4,
+            worker_job_capacity: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes,
+        };
+        let profile = DeviceResourceProfile::resolve(envelope(300, 700)).unwrap();
+        assert_eq!(profile.query_share_bytes(), 700);
+
+        let beyond_share = DeviceResourceProfile::resolve(envelope(300, 701)).unwrap_err();
+        assert_eq!(beyond_share.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
+
+        let no_share = DeviceResourceProfile::resolve(envelope(1_000, 1)).unwrap_err();
+        assert_eq!(no_share.fact_value("reason"), Some("cache_cap_exceeds_managed_capacity"));
     }
 }

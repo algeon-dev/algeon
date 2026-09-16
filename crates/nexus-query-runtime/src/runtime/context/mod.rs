@@ -775,6 +775,29 @@ impl QueryServiceResourceEpoch {
         }
         Ok(())
     }
+
+    /// Whether this lease also retains its query anchor.
+    #[doc(hidden)]
+    pub fn has_query_anchor(&self) -> bool {
+        self.query_anchor.is_some()
+    }
+
+    /// Shares only the backend service generation with a resident owner.
+    ///
+    /// Frozen residents outlive their attempt, so they must not retain the
+    /// query anchor: keeping the query epoch alive would stall report
+    /// publication and the frozen-resident handoff. The returned lease keeps
+    /// the device generation alive until the retained GPU bytes release.
+    #[doc(hidden)]
+    pub fn service_generation_only(&self, operation: &'static str) -> Result<Arc<Self>> {
+        self.epoch.check_open(operation)?;
+        let user = self.epoch.retain_existing_user();
+        // Re-check after retaining: a close that began between the two checks
+        // must not hand back a lease that would keep the generation alive
+        // past its own teardown. Failing here drops `user` and releases it.
+        self.epoch.check_open(operation)?;
+        Ok(Arc::new(Self { epoch: self.epoch.clone(), _user: user, query_anchor: None }))
+    }
 }
 
 impl Drop for QueryServiceEpochUser {

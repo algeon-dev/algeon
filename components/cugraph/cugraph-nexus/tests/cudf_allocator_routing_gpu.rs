@@ -156,3 +156,46 @@ fn runtime_bound_parked_graph_retains_bytes_in_its_cache_allocation_domain() {
         "cache graph teardown must leave cuDF's permanent current RMM resource unchanged"
     );
 }
+
+#[test]
+fn borrowed_graph_execution_releases_the_borrower_stream_route_on_repark() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let device = cudf::DeviceId::current().expect("current CUDA device");
+    let manager = cudf::DeviceMemoryManager::for_device(device).expect("permanent device memory manager");
+    let cache_domain = cudf::CacheAllocationDomain::new(device, 64 * 1024 * 1024).expect("cache allocation domain");
+    let cache_lease = cache_domain.lease_runtime().expect("cache runtime lease");
+    let cache_runtime = Arc::new(cache_lease.runtime().clone());
+    let cache_handle = ResourceHandle::for_runtime(Arc::clone(&cache_runtime)).expect("cache-bound resource handle");
+
+    let parked = {
+        let entered = cache_handle.enter("borrowed_graph_execution_storage_build").expect("entered cache context");
+        let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 2]).expect("source vertices");
+        let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0, 1]).expect("destination vertices");
+        let src_view = src.view().expect("source view");
+        let dst_view = dst.view().expect("destination view");
+        let graph =
+            GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("cache graph");
+        graph.park(&entered).expect("park cache-bound graph")
+    };
+
+    // Borrow the cached storage under a query-like binding, exactly as the
+    // resident-cache hit path does, then return it to the cache.
+    let borrower_runtime = Arc::new(explicit_runtime());
+    let reparked = {
+        let borrower_handle = ResourceHandle::for_runtime(Arc::clone(&borrower_runtime)).expect("borrower handle");
+        let entered = borrower_handle.enter("borrowed_graph_execution_borrow").expect("entered borrower context");
+        let mut graph = parked.resume_under(&entered).expect("resume_under the borrower binding");
+        assert_eq!(graph.edge_count(&entered).expect("borrower-domain edgelist"), 4);
+        graph.park_under(&entered).expect("park_under the borrower binding")
+    };
+
+    // The borrow ended, so the parked graph must not still hold the
+    // borrower's cuGraph handle: that lease owns a current-resource route on
+    // the borrower stream, and a query domain reusing that stream for its own
+    // member resource would be rejected for the rest of the graph's life.
+    let route = manager
+        .route_current_resource(borrower_runtime.stream(), cache_runtime.memory_resource())
+        .expect("a returned graph must leave the borrower stream free to route elsewhere");
+    drop(route);
+    drop(reparked);
+}

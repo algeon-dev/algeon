@@ -66,6 +66,7 @@ fn backend_device_config_preserves_static_partitions_and_installation_bounds() {
         NexusGpuDeviceConfig::new(
             NexusGpuDeviceProfile::new(2)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 })
+                .with_max_active_attempts(1)
                 .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(2, 1, 1)),
             GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 },
         ),
@@ -141,7 +142,7 @@ fn backend_validation_projection_keeps_device_configs_independent() {
 fn backend_queue_policy_defaults_to_canonical_bounds() {
     let backend = validated(bounded_backend_builder(&[0, 1])).unwrap();
     assert_eq!(backend.queue_policy, NexusGpuQueuePolicy::default());
-    assert!(backend.devices.iter().all(|device| device.profile().max_active_attempts() == 1));
+    assert!(backend.devices.iter().all(|device| device.profile().max_active_attempts() == 2));
 }
 
 #[test]
@@ -151,7 +152,7 @@ fn backend_default_device_profile_needs_no_ownership_for_defaults() {
     assert_eq!(profile.device_ordinal(), 3);
     assert_eq!(profile.default_query_limit_bytes(), None);
     assert_eq!(profile.source_work_per_attempt(), 1);
-    assert_eq!(profile.max_active_attempts(), 1);
+    assert_eq!(profile.max_active_attempts(), 2);
     assert_eq!(profile.installation_bounds(), None);
 }
 

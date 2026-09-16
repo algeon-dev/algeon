@@ -916,6 +916,32 @@ pub(super) fn is_null_value(batch: &RecordBatch, column: usize, row: usize) -> b
     batch.column(column).is_null(row)
 }
 
+pub(super) fn write_overlap_cycle_chord_edges(path: &Path, vertices: i64) {
+    assert!(vertices > 1, "overlap fixture needs at least two vertices");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let mut sources = Vec::with_capacity(2 * vertices as usize);
+    let mut destinations = Vec::with_capacity(2 * vertices as usize);
+    for vertex in 0..vertices {
+        sources.push(vertex);
+        destinations.push((vertex + 1) % vertices);
+        sources.push(vertex);
+        destinations.push((vertex + vertices / 2) % vertices);
+    }
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(sources)) as ArrayRef, Arc::new(Int64Array::from(destinations)) as ArrayRef],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(16_384)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("{prefix}-{stamp}"));

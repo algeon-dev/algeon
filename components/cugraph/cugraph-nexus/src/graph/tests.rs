@@ -48,6 +48,7 @@ fn dummy_runtime_bound_graph(
         edge_id_dtype: None,
         pending_input_completion,
         resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
+        ordered_binding: Cell::new(handle.runtime_bound_lease().map(|lease| lease.runtime().binding_id())),
         untracked_resource_handle_use: Cell::new(false),
         _nosend_nosync: PhantomData,
         _transposition: PhantomData,
@@ -111,6 +112,86 @@ fn test_graph_park_surfaces_pending_input_completion_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidState);
     assert_eq!(err.operation(), "Graph::park");
     assert_eq!(Arc::strong_count(&owner), 1, "failed park should drop graph and retained input owner");
+}
+
+fn triangle_parked_graph(handle: &EnteredContext<'_>) -> ParkedGraph<Forward> {
+    let src = DeviceArray::from_slice(handle, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(handle, &[1i32, 2, 0]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(handle).expect("graph");
+    graph.park(handle).expect("park")
+}
+
+#[test]
+fn resume_under_executes_on_borrower_binding_and_reparks_there() {
+    let storage_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    let borrower_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    assert_ne!(
+        storage_runtime.binding_id(),
+        borrower_runtime.binding_id(),
+        "borrower and storage runtimes must use different bindings"
+    );
+    let storage_handle = ResourceHandle::for_runtime(Arc::clone(&storage_runtime)).expect("handle");
+    let borrower_handle = ResourceHandle::for_runtime(Arc::clone(&borrower_runtime)).expect("handle");
+
+    let parked = {
+        let entered = storage_handle.enter("resume_under_build").expect("entered");
+        triangle_parked_graph(&entered)
+    };
+    let reparked = {
+        let entered = borrower_handle.enter("resume_under_borrow").expect("entered");
+        let mut graph = parked.resume_under(&entered).expect("resume_under");
+        assert_eq!(graph.edge_count(&entered).expect("borrower-domain edgelist"), 3);
+        graph.park_under(&entered).expect("park_under")
+    };
+    // Exact resume follows the park binding, which the borrower move updated.
+    {
+        let entered = borrower_handle.enter("resume_under_exact").expect("entered");
+        let _graph = reparked.resume(&entered).expect("exact resume under the parking binding");
+    }
+}
+
+#[test]
+fn exact_resume_rejects_a_stale_binding_after_borrower_repark() {
+    let storage_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    let borrower_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    let storage_handle = ResourceHandle::for_runtime(Arc::clone(&storage_runtime)).expect("handle");
+    let borrower_handle = ResourceHandle::for_runtime(Arc::clone(&borrower_runtime)).expect("handle");
+
+    let parked = {
+        let entered = storage_handle.enter("stale_resume_build").expect("entered");
+        triangle_parked_graph(&entered)
+    };
+    let reparked = {
+        let entered = borrower_handle.enter("stale_resume_borrow").expect("entered");
+        let graph = parked.resume_under(&entered).expect("resume_under");
+        graph.park_under(&entered).expect("park_under")
+    };
+    {
+        let entered = storage_handle.enter("stale_resume_exact").expect("entered");
+        let err = reparked.resume(&entered).expect_err("exact resume must reject the stale binding");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "ParkedGraph::resume");
+    }
+}
+
+#[test]
+fn resume_under_rejects_non_runtime_bound_handles() {
+    let storage_runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+    let storage_handle = ResourceHandle::for_runtime(Arc::clone(&storage_runtime)).expect("handle");
+    let local_handle = ResourceHandle::new().expect("local handle");
+
+    let parked = {
+        let entered = storage_handle.enter("non_runtime_resume_build").expect("entered");
+        triangle_parked_graph(&entered)
+    };
+    {
+        let entered = local_handle.enter("non_runtime_resume_borrow").expect("entered");
+        let err = parked.resume_under(&entered).expect_err("resume_under must reject non-runtime handles");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "ParkedGraph::resume_under");
+    }
 }
 
 #[test]
@@ -183,6 +264,7 @@ fn test_graph_drop_quarantines_native_pointer_when_device_entry_fails() {
         edge_id_dtype: None,
         pending_input_completion: None,
         resource_handle_leases: RefCell::new(Vec::new()),
+        ordered_binding: Cell::new(None),
         untracked_resource_handle_use: Cell::new(false),
         _nosend_nosync: PhantomData,
         _transposition: PhantomData,
