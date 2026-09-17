@@ -5,7 +5,10 @@ use crate::{
     backend::AnalysisContext,
     capability::{CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionProjection},
     error::Result,
-    pipeline::{CompiledPipeline, PipelineCompilation, PipelineTaskKind, ResidentDataForm, compile_pipeline_outcome},
+    pipeline::{
+        CompiledPipeline, PipelineCompilation, PipelineTaskKind, ResidentDataForm, ResidentResource,
+        compile_pipeline_outcome,
+    },
     plan::QueryPlan,
 };
 
@@ -126,8 +129,8 @@ fn capability_first_bounded_pipeline_admission_impl(
 /// Join task groups with unary, limit, final-sort, and aggregate stages are
 /// admitted by those contracts alone: the named plan-family recognisers keep
 /// no veto over such a pipeline and only supply its compatibility label. A
-/// resource fanned out to several consumers is covered when it is produced by
-/// a source read or is a complete immutable frame: frames are refcounted
+/// resource fanned out to several consumers is covered when it originates in a
+/// source read or is a complete immutable frame: frames are refcounted
 /// snapshots, so every consumer borrows and releases them through the same
 /// path as shared source reads, with no cursor to alias (dynamic-filter
 /// application is a no-op for non-source frames, and the contract graph still
@@ -158,14 +161,37 @@ fn pipeline_is_within_migrated_execution_scope(pipeline: &CompiledPipeline) -> b
         && pipeline.resources().iter().all(|resource| {
             resource.consumers().len() <= 1
                 || matches!(resource.data_form(), ResidentDataForm::Frame)
-                || pipeline.tasks().iter().any(|task| {
-                    task.id() == resource.producer()
-                        && matches!(
-                            task.kind(),
-                            PipelineTaskKind::SourceRead
-                                | PipelineTaskKind::GpuResidentSource
-                                | PipelineTaskKind::LiteralBatchSource
-                        )
-                })
+                || resource_originates_in_source_read(pipeline, resource)
         })
+}
+
+/// Whether a shared resource's payload originates in a source read, looking
+/// through the unary stages that re-stage it.
+///
+/// A unary stage inherits its input's data form rather than producing one, so a
+/// filtered or projected scan is still the scan's stream. Testing only the
+/// immediate producer would cover a bare shared scan while rejecting the same
+/// scan with a filter above it.
+fn resource_originates_in_source_read(pipeline: &CompiledPipeline, resource: &ResidentResource) -> bool {
+    let mut producer_id = resource.producer();
+    loop {
+        let Some(task) = pipeline.tasks().iter().find(|task| task.id() == producer_id) else {
+            return false;
+        };
+        match task.kind() {
+            PipelineTaskKind::SourceRead
+            | PipelineTaskKind::GpuResidentSource
+            | PipelineTaskKind::LiteralBatchSource => return true,
+            // `unary_input_form` re-stages a single input, so only that shape
+            // can carry a source stream forward.
+            PipelineTaskKind::Unary => match task.input_resources() {
+                [input] => match pipeline.resources().iter().find(|candidate| candidate.id() == *input) {
+                    Some(input) => producer_id = input.producer(),
+                    None => return false,
+                },
+                _ => return false,
+            },
+            _ => return false,
+        }
+    }
 }

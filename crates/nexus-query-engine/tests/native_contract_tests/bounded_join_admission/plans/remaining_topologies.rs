@@ -621,6 +621,26 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
             .with_build_side(JoinSide::Left),
             key_value_schema(),
         )
+    } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput) {
+        // A disjunctive EXISTS (`EXISTS a OR EXISTS b`) cannot decorrelate to a
+        // semi join, so the frontend emits a mark join per branch and filters on
+        // the boolean columns. The executor synthesizes the mark column, so it
+        // never appears in the output projection.
+        builder.add_join(
+            grouped_projection,
+            customer,
+            JoinSpec::new(
+                JoinType::LeftMark,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_mark_column_name("mark")
+            .with_build_side(JoinSide::Right),
+            key_value_schema(),
+        )
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput) {
         builder.add_join(
             grouped_projection,
@@ -754,6 +774,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput
+            | RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput
             | RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput
             | RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput
@@ -865,6 +886,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         | RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput
+        | RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput
         | RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput
         | RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput
@@ -995,6 +1017,7 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     SortFetchLeftSemiResidualJoinInput,
     SortFetchLeftSemiWrongBuildSideJoinInput,
     SortFetchLeftSemiRightOutputJoinInput,
+    SortFetchLeftMarkJoinInput,
     SortFetchLeftAntiJoinInput,
     SortFetchKeylessJoinInput,
     SortFetchProjectedCrossJoinInput,

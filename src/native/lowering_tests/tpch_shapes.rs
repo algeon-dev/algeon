@@ -352,24 +352,29 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
                 "the complete optimized q21 pipeline must admit right-build residual semi/anti joins: {analysis:?}\n{plan}"
             );
         } else {
-            // S3 retired the build-side-agnostic closed-multi-join envelope.
-            // The left-build variant's join kernels stay node-executable, but
-            // its computed-shared unary chain has no sharing contract until
-            // S5, and no remaining envelope covers left-build residual
-            // semi/anti tails — so it stays rejected with the nearest
-            // envelope reason instead of silently passing.
+            // S3 retired the build-side-agnostic closed-multi-join envelope, so
+            // no named envelope covers a left-build residual semi/anti tail.
+            // The sharing contract its computed-shared unary chain was waiting
+            // on now exists, so the composed pipeline admits it on the compiled
+            // task and resource contracts alone.
             assert!(
                 !analysis.admits_bounded_join(),
-                "left-build q21 must not admit before S5 sharing contracts: {analysis:?}\n{plan}"
+                "no named envelope should cover left-build q21: {analysis:?}\n{plan}"
             );
-            let facts = nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+            let decision = nexus_query_engine::admission::bounded_pipeline_decision(
                 &plan,
+                Default::default(),
                 nexus_query_engine::rapids_backend::rapids_analysis_context(),
             )
-            .expect("rejected left-build q21 should produce facts");
+            .expect("left-build q21 bounded admission should not fail");
+            assert!(
+                decision.admission().is_some(),
+                "left-build q21 should admit through the composed pipeline: {:?}\n{plan}",
+                decision.rejection_projection()
+            );
             assert_eq!(
-                facts.get("bounded_join_rejection_reason").map(String::as_str),
-                Some("root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join")
+                analysis.capability_envelope_label(),
+                nexus_query_engine::capability::CapabilityEnvelope::ComposedPipeline
             );
         }
     }
