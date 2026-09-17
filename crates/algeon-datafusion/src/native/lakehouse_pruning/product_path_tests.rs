@@ -43,7 +43,7 @@ use tokio::{task::yield_now, time::timeout};
 
 use super::prune_native_query_plan;
 use crate::{
-    backend::InstalledTestGpuBackend,
+    backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit, InstalledTestGpuBackend},
     error::DataFusionErrorExt,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
@@ -231,9 +231,40 @@ fn prunable_object_store_source(
     ))
 }
 
+const UNREACHABLE_ENGINE_PROFILE_ID: &str = "unreachable-engine-profile";
+
+// Engine-side S3 access for these fixtures must stay on loopback. Without a
+// profile the engine falls back to the default AWS chain and public endpoint,
+// and a host that reaches S3 turns the fixture's footer fetch into a
+// `NoSuchBucket` failure before the chunk read these tests assert.
+fn unreachable_storage_profile(id: &str) -> SourceStorageProfile {
+    SourceStorageProfile::s3(
+        id,
+        S3SourceStorageProfile::default_chain()
+            .with_region("us-east-1")
+            .with_endpoint("http://127.0.0.1:9")
+            .with_path_style_access(true)
+            .with_unsigned_requests(),
+    )
+}
+
+fn hermetic_backend() -> InstalledTestGpuBackend {
+    InstalledTestGpuBackend::with_config(
+        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
+            .with_source_storage_profile(unreachable_storage_profile(UNREACHABLE_ENGINE_PROFILE_ID)),
+        AlgeonGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
+        AlgeonGpuQueuePolicy::default(),
+    )
+}
+
 fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: bool) -> (QueryPlan, NodeId) {
     let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(uri, file_size_bytes, None)));
+    let source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(
+        uri,
+        file_size_bytes,
+        Some(UNREACHABLE_ENGINE_PROFILE_ID),
+    )));
     let plan =
         if gpu_resident_sink { builder.finish_gpu_resident(source) } else { builder.finish_with_host_sink(source) };
     (plan, source)
@@ -327,14 +358,7 @@ async fn product_pruning_prefers_runtime_object_store_over_source_storage_profil
     let mut builder = QueryPlanBuilder::new();
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node_id);
-    let unreachable_profile = SourceStorageProfile::s3(
-        "unreachable-profile",
-        S3SourceStorageProfile::default_chain()
-            .with_region("us-east-1")
-            .with_endpoint("http://127.0.0.1:9")
-            .with_path_style_access(true)
-            .with_unsigned_requests(),
-    );
+    let unreachable_profile = unreachable_storage_profile("unreachable-profile");
 
     let pruned = prune_native_query_plan(plan, &runtime_env, &[unreachable_profile]).await;
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
@@ -368,7 +392,7 @@ async fn product_pruning_falls_back_to_source_storage_profile() {
 
 #[tokio::test]
 async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
-    let backend = InstalledTestGpuBackend::new();
+    let backend = hermetic_backend();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-before-admission");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
@@ -395,7 +419,7 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
 
 #[tokio::test]
 async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evidence() {
-    let backend = InstalledTestGpuBackend::new();
+    let backend = hermetic_backend();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-combined-ticket");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-combined", &bytes).await;
@@ -451,7 +475,7 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
 
 #[tokio::test]
 async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
-    let backend = InstalledTestGpuBackend::new();
+    let backend = hermetic_backend();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-unrelated-ticket");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-unrelated", &bytes).await;
@@ -489,7 +513,7 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
 
 #[tokio::test]
 async fn native_composed_resolves_consumer_and_producer_metadata_before_admission_context() {
-    let backend = InstalledTestGpuBackend::new();
+    let backend = hermetic_backend();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-composed-before-admission");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let consumer_gets = register_tracking_parquet_store(&runtime_env, "s3://consumer-source", &bytes).await;
@@ -511,7 +535,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let consumer_source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(
         "s3://consumer-source/table/data.parquet",
         bytes.len(),
-        None,
+        Some(UNREACHABLE_ENGINE_PROFILE_ID),
     )));
     let producer_source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer", Arc::clone(&schema))));
