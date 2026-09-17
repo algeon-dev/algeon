@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -49,6 +50,28 @@ std::shared_ptr<void> make_exec_mr_lifetime(
   lifetime->resource_owner_lifetime = std::move(resource_owner_lifetime);
   lifetime->resource_ref_lifetime   = std::move(resource_ref_lifetime);
   return lifetime;
+}
+
+/// Validates the flag bits and the `reserved` tail shared by both resolvers.
+cudf_status_t validate_exec_options_flags_and_reserved(cudf_exec_options_t const* options)
+{
+  if ((options->flags & ~(CUDF_EXEC_FLAG_DEVICE_EXPLICIT | CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT)) != 0) {
+    set_error("exec options flags contains unknown bits");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  bool const pass_read_limit_set = (options->flags & CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT) != 0;
+  if (pass_read_limit_set && options->reserved[0] == 0) {
+    set_error("exec options pass read limit flag requires a non-zero reserved[0]");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  for (size_t index = 0; index < std::size(options->reserved); ++index) {
+    if (index == 0 && pass_read_limit_set) { continue; }
+    if (options->reserved[index] != 0) {
+      set_error("exec options reserved fields must be zero");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+  }
+  return CUDF_SUCCESS;
 }
 }  // namespace
 
@@ -157,16 +180,8 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
     set_error("exec options struct_size is smaller than cudf_exec_options_t");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  // Only CUDF_EXEC_FLAG_DEVICE_EXPLICIT is defined; reject unknown bits.
-  if ((options->flags & ~CUDF_EXEC_FLAG_DEVICE_EXPLICIT) != 0) {
-    set_error("exec options flags contains unknown bits");
-    return CUDF_ERROR_INVALID_OPERATION;
-  }
-  for (auto const reserved : options->reserved) {
-    if (reserved != 0) {
-      set_error("exec options reserved fields must be zero");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
+  if (cudf_status_t const status = validate_exec_options_flags_and_reserved(options); status != CUDF_SUCCESS) {
+    return status;
   }
 
   // Step 3: Resolve device.  If options carries CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
@@ -224,19 +239,12 @@ cudf_status_t cudf_resolve_required_exec_options(cudf_exec_options_t const* opti
     set_error("exec options struct_size is smaller than cudf_exec_options_t");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  if ((options->flags & ~CUDF_EXEC_FLAG_DEVICE_EXPLICIT) != 0) {
-    set_error("exec options flags contains unknown bits");
-    return CUDF_ERROR_INVALID_OPERATION;
+  if (cudf_status_t const status = validate_exec_options_flags_and_reserved(options); status != CUDF_SUCCESS) {
+    return status;
   }
   if ((options->flags & CUDF_EXEC_FLAG_DEVICE_EXPLICIT) == 0) {
     set_error("exec options must carry an explicit device");
     return CUDF_ERROR_INVALID_OPERATION;
-  }
-  for (auto const reserved : options->reserved) {
-    if (reserved != 0) {
-      set_error("exec options reserved fields must be zero");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
   }
   if (options->device < 0) {
     set_error("exec options device must be >= 0");
@@ -280,6 +288,9 @@ cudf_status_t cudf_resolve_required_exec_options(cudf_exec_options_t const* opti
                                              std::move(mr_lifetime),
                                              options->device,
                                              std::move(guard));
+  if ((options->flags & CUDF_EXEC_FLAG_PARQUET_PASS_READ_LIMIT) != 0) {
+    (*out)->parquet_pass_read_limit = static_cast<std::size_t>(options->reserved[0]);
+  }
 
   cudf_memory_manager_handle manager = nullptr;
   cudf_status_t const manager_status =

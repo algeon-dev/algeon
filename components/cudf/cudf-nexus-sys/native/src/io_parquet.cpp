@@ -4,6 +4,7 @@
 #include "io_test_hooks.hpp"
 #include "shim_common.h"
 
+#include <cudf/concatenate.hpp>
 #include <cudf/io/datasource.hpp>
 #include <cudf/io/parquet.hpp>
 #include <cudf/io/types.hpp>
@@ -100,6 +101,83 @@ cudf_status_t configure_parquet_reader_builder(Builder& builder,
   }
 
   return CUDF_SUCCESS;
+}
+
+/// Drains a chunked Parquet reader into one table.
+///
+/// Metadata comes from the first chunk: every chunk of one read describes the
+/// same schema.
+cudf::io::table_with_metadata collect_chunked_parquet_reader(cudf::io::chunked_parquet_reader& reader,
+                                                             cudf_exec_context const& exec)
+{
+  std::vector<std::unique_ptr<cudf::table>> chunks;
+  cudf::io::table_metadata metadata;
+  bool metadata_captured = false;
+  while (reader.has_next()) {
+    auto chunk = reader.read_chunk();
+    if (!metadata_captured) {
+      metadata          = std::move(chunk.metadata);
+      metadata_captured = true;
+    }
+    chunks.push_back(std::move(chunk.tbl));
+  }
+
+  if (chunks.empty()) {
+    return cudf::io::table_with_metadata{std::make_unique<cudf::table>(), std::move(metadata)};
+  }
+  if (chunks.size() == 1) {
+    return cudf::io::table_with_metadata{std::move(chunks.front()), std::move(metadata)};
+  }
+
+  std::vector<cudf::table_view> views;
+  views.reserve(chunks.size());
+  for (auto const& chunk : chunks) {
+    views.push_back(chunk->view());
+  }
+  auto combined = cudf::concatenate(views, exec.stream, *exec.mr);
+  return cudf::io::table_with_metadata{std::move(combined), std::move(metadata)};
+}
+
+/// Reads one Parquet table, bounding read and decompression scratch when the
+/// execution context carries a pass read limit.
+///
+/// Row-group selection bounds decoded output but not the scratch needed to read
+/// and decompress those row groups, so a single large row group can exceed a
+/// grant that fewer row groups cannot shrink further.
+///
+/// `chunk_read_limit` stays 0: only scratch needs bounding here, and capping
+/// output chunk size too would add concatenation work for nothing.
+cudf::io::table_with_metadata read_parquet_bounded(cudf::io::parquet_reader_options const& options,
+                                                   cudf_exec_context const& exec)
+{
+  if (exec.parquet_pass_read_limit == 0) {
+    return cudf::io::read_parquet(options, exec.stream, *exec.mr);
+  }
+
+  cudf::io::chunked_parquet_reader reader(
+    /*chunk_read_limit=*/0, exec.parquet_pass_read_limit, options, exec.stream, *exec.mr);
+  return collect_chunked_parquet_reader(reader, exec);
+}
+
+/// `read_parquet_bounded` for the pre-built datasource paths (remote and mixed
+/// local/remote reads), which own their `datasource` objects.
+cudf::io::table_with_metadata read_parquet_bounded(
+  std::vector<std::unique_ptr<cudf::io::datasource>>&& sources,
+  cudf::io::parquet_reader_options const& options,
+  cudf_exec_context const& exec)
+{
+  if (exec.parquet_pass_read_limit == 0) {
+    return cudf::io::read_parquet(std::move(sources), {}, options, exec.stream, *exec.mr);
+  }
+
+  cudf::io::chunked_parquet_reader reader(/*chunk_read_limit=*/0,
+                                          exec.parquet_pass_read_limit,
+                                          std::move(sources),
+                                          {},
+                                          options,
+                                          exec.stream,
+                                          *exec.mr);
+  return collect_chunked_parquet_reader(reader, exec);
 }
 
 cudf_status_t validate_parquet_reader_args(char const** columns,
@@ -704,7 +782,7 @@ cudf_status_t cudf_io_read_parquet_ex(char const* filepath,
 
     {
       auto options         = builder.build();
-      auto [tbl, metadata] = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+      auto [tbl, metadata] = read_parquet_bounded(options, *exec);
 
       *out = cudf_release_table_handle(std::move(tbl), cudf_capture_exec_provenance(*exec));
     }
@@ -748,7 +826,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(void const* host_buffer,
 
     {
       auto options         = builder.build();
-      auto [tbl, metadata] = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+      auto [tbl, metadata] = read_parquet_bounded(options, *exec);
 
       *out = cudf_release_table_handle(std::move(tbl), cudf_capture_exec_provenance(*exec));
     }
@@ -857,7 +935,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(char const* filepath,
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+      result       = read_parquet_bounded(options, *exec);
     }
 
     auto const fault = cudf::rust::test_support::take_io_metadata_fault();
@@ -927,7 +1005,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+      result       = read_parquet_bounded(options, *exec);
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
@@ -1009,7 +1087,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
+      result = read_parquet_bounded(std::move(sources), options, *exec);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
@@ -1114,7 +1192,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+      result       = read_parquet_bounded(options, *exec);
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
@@ -1264,7 +1342,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
+      result = read_parquet_bounded(std::move(sources), options, *exec);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
@@ -1340,7 +1418,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
+      result       = read_parquet_bounded(options, *exec);
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 

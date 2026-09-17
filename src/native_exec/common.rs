@@ -151,6 +151,7 @@ impl NativeHostOutputCursor {
         task_context: Arc<TaskContext>,
         account_memory_pool: bool,
         consumer_name: &'static str,
+        publication: NativeOutputPublication,
     ) -> BoxedNativeHostOutputStepFuture {
         Box::pin(async move {
             let Self { cursor, executor, observation, metrics, _context_lease } = self;
@@ -163,10 +164,11 @@ impl NativeHostOutputCursor {
                 move |_gpu_stream_scope| async move {
                     let mut cursor = cursor;
                     let Some(prepared) = cursor.prepare_next_batch().map_err(|error| {
-                        DataFusionError::from(native_query_runtime_error(
+                        DataFusionError::from(native_query_runtime_error_with_publication(
                             "datafusion_nexus.native_exec.host_batch_cursor",
                             "bounded native host-output cursor failed to size its next chunk",
                             error,
+                            publication,
                         ))
                     })?
                     else {
@@ -184,10 +186,11 @@ impl NativeHostOutputCursor {
                         prepared.estimated_materialization_bytes(),
                     )?;
                     let batch = cursor.materialize_prepared_batch(prepared).map_err(|error| {
-                        DataFusionError::from(native_query_runtime_error(
+                        DataFusionError::from(native_query_runtime_error_with_publication(
                             "datafusion_nexus.native_exec.host_batch_cursor",
                             "bounded native host-output cursor failed to materialize its reserved chunk",
                             error,
+                            publication,
                         ))
                     })?;
                     reservation.reconcile(get_record_batch_memory_size(&batch))?;
@@ -234,6 +237,7 @@ struct NativeHostOutputStream {
     task_context: Arc<TaskContext>,
     account_memory_pool: bool,
     consumer_name: &'static str,
+    publication: NativeOutputPublication,
 }
 
 impl Stream for NativeHostOutputStream {
@@ -249,10 +253,12 @@ impl Stream for NativeHostOutputStream {
                         return Poll::Pending;
                     },
                     Poll::Ready(Ok(cursor)) => {
+                        let publication = self.publication;
                         self.state = NativeHostOutputState::LoadingNext(cursor.next(
                             Arc::clone(&self.task_context),
                             self.account_memory_pool,
                             self.consumer_name,
+                            publication,
                         ));
                     },
                     Poll::Ready(Err(error)) => {
@@ -282,6 +288,7 @@ impl Stream for NativeHostOutputStream {
                 NativeHostOutputState::Ready(mut output) => {
                     if let Some(batch) = output.batch.take() {
                         self.state = NativeHostOutputState::Ready(output);
+                        self.publication = NativeOutputPublication::Started;
                         return Poll::Ready(Some(Ok(batch)));
                     }
                     self.reservation = None;
@@ -289,10 +296,12 @@ impl Stream for NativeHostOutputStream {
                         self.state = NativeHostOutputState::Done;
                         continue;
                     };
+                    let publication = self.publication;
                     self.state = NativeHostOutputState::LoadingNext(cursor.next(
                         Arc::clone(&self.task_context),
                         self.account_memory_pool,
                         self.consumer_name,
+                        publication,
                     ));
                 },
                 NativeHostOutputState::Done => {
@@ -329,6 +338,7 @@ where
         task_context,
         account_memory_pool,
         consumer_name,
+        publication: NativeOutputPublication::None,
     })
 }
 
@@ -396,7 +406,19 @@ pub(super) fn native_query_runtime_error(
     message: impl Into<String>,
     source: nexus_query_engine::error::QueryError,
 ) -> Error {
+    native_query_runtime_error_with_publication(operation, message, source, NativeOutputPublication::None)
+}
+
+/// [`native_query_runtime_error`] that also records whether the attempt had
+/// already published output rows when it failed.
+pub(super) fn native_query_runtime_error_with_publication(
+    operation: &'static str,
+    message: impl Into<String>,
+    source: nexus_query_engine::error::QueryError,
+    publication: NativeOutputPublication,
+) -> Error {
     mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
+        .with_log_safe_fact("native_output_published", publication.as_bool())
 }
 
 /// Tags an error with `native_datafusion_stage=<stage>` and
@@ -411,6 +433,24 @@ pub(super) fn mark_native_runtime_error(error: Error, stage: &'static str) -> Er
         .with_log_safe_fact("cpu_fallback_after_native_start", false)
 }
 
+/// Whether a native attempt had published output when it failed.
+///
+/// The host path materializes the whole native result on the device before the
+/// output cursor yields its first chunk, so a failure before the first chunk
+/// has published nothing and could be re-run by a query retry contract. This
+/// adapter does not replay, so the distinction is reported, not acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeOutputPublication {
+    None,
+    Started,
+}
+
+impl NativeOutputPublication {
+    pub(super) const fn as_bool(self) -> bool {
+        matches!(self, Self::Started)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -420,7 +460,10 @@ mod tests {
 
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
 
-    use super::{HostOutputReservation, mark_native_runtime_error};
+    use super::{
+        HostOutputReservation, NativeOutputPublication, mark_native_runtime_error,
+        native_query_runtime_error_with_publication,
+    };
     use crate::error::{DataFusionErrorExt, Error, ErrorCode};
 
     const TEST_CONSUMER: &str = "NativeHostOutputReservation[test]";
@@ -437,6 +480,30 @@ mod tests {
             error.fact_value("cpu_fallback_after_native_start"),
             Some("false"),
             "a started native attempt must be terminal rather than replayed through DataFusion"
+        );
+    }
+
+    #[test]
+    fn native_runtime_errors_report_whether_the_attempt_had_published_output() {
+        let native = |publication| {
+            native_query_runtime_error_with_publication(
+                "datafusion_nexus.test",
+                "native query execution failed",
+                nexus_query_engine::error::QueryError::new(
+                    nexus_query_engine::error::QueryErrorCode::QueryMemoryLimitExceeded,
+                    "nexus_query_engine.test",
+                    "query memory limit exceeded",
+                ),
+                publication,
+            )
+        };
+
+        assert_eq!(native(NativeOutputPublication::None).fact_value("native_output_published"), Some("false"));
+        assert_eq!(native(NativeOutputPublication::Started).fact_value("native_output_published"), Some("true"));
+        assert_eq!(
+            native(NativeOutputPublication::Started).fact_value("cpu_fallback_after_native_start"),
+            Some("false"),
+            "publishing output must not change the terminal contract"
         );
     }
 

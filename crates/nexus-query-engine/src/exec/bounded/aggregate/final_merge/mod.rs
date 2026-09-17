@@ -290,7 +290,7 @@ pub(super) fn apply_partitioned_final_merge_topk(
     Ok(output_frame)
 }
 
-pub(super) fn concatenate_partitioned_final_merge_outputs(
+pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_outputs(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     mut inputs: Vec<CommittedPartial>,
