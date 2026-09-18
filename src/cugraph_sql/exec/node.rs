@@ -492,7 +492,7 @@ impl CugraphAlgoExec {
                                     // The download completes the leader's device work before the follower
                                     // re-uploads. The scope claim travels with the copy; the follower's
                                     // own admission evidence re-verifies it before use.
-                                    let producer_scope = published.producer_execution_scope().map(str::to_owned);
+                                    let producer_execution_identity = published.producer_execution_identity();
                                     let metrics = NexusNativeMetrics::new_with_capture(
                                         &self.metrics,
                                         partition,
@@ -511,10 +511,7 @@ impl CugraphAlgoExec {
                                     let (batches, _) = output.shared_parts();
                                     let (handle, _) =
                                         self.upload_follower_output(native_context, batches.as_slice())?;
-                                    let handle = match producer_scope {
-                                        Some(scope) => handle.with_producer_execution_scope(scope),
-                                        None => handle,
-                                    };
+                                    let handle = handle.with_producer_execution_identity(producer_execution_identity);
                                     follower.record_copy();
                                     self.record_bfs_singleflight_gpu_result_follower_metrics(
                                         partition,
@@ -929,7 +926,15 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 
     fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
-        cugraph_execution_capability_evidence(&self.plan_definition()).map(|(_, evidence)| evidence)
+        cugraph_deferred_execution_capability_evidence(&self.plan_definition())
+    }
+
+    fn host_result_query_plan(&self) -> Result<Option<nexus_query_engine::plan::QueryPlan>> {
+        cugraph_schema_query_plan(&self.plan_definition()).map(Some)
+    }
+
+    fn host_result_has_deferred_graph_facts(&self) -> bool {
+        true
     }
 
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
@@ -1099,7 +1104,7 @@ impl CugraphAlgoExec {
 
 impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
-        cugraph_execution_capability_evidence(&self.plan_definition()).map(|(_, evidence)| evidence)
+        cugraph_deferred_execution_capability_evidence(&self.plan_definition())
     }
 
     fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
@@ -1116,6 +1121,14 @@ impl GraphExecutionPlan for CugraphAlgoExec {
         }
         None
     }
+}
+
+fn cugraph_deferred_execution_capability_evidence(
+    definition: &CugraphPlanDefinition,
+) -> Result<AttemptCapabilityEvidence> {
+    let (plan, mut evidence) = cugraph_execution_capability_evidence(definition)?;
+    evidence.attest_deferred_cugraph_graph_execution_scope(&plan);
+    Ok(evidence)
 }
 
 impl DisplayAs for CugraphAlgoExec {
@@ -1227,6 +1240,22 @@ impl ExecutionPlan for CugraphAlgoExec {
             let (exec, staged_inputs) = exec.prepare_staged_attempt(Arc::clone(&task_context)).await?;
             let execution_config = exec.native_execution_config.clone();
             let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
+            let host_occurrence = match execution_config.query_admission_ticket_for_task_context(&task_context) {
+                Some(ticket) => {
+                    let occurrence_id = crate::native_exec::gpu_function_occurrence_from_task_context(
+                        &task_context,
+                        &exec.gpu_result_input_name,
+                    )?
+                    .unwrap_or_else(|| exec.gpu_result_input_name.clone());
+                    ticket.begin_host_occurrence(
+                        &task_context,
+                        &occurrence_id,
+                        &exec.gpu_result_input_name,
+                        &cugraph_schema_query_plan(&exec.plan_definition())?,
+                    )?
+                },
+                None => None,
+            };
             let context_lease =
                 execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {
                     DataFusionError::from(
@@ -1248,7 +1277,7 @@ impl ExecutionPlan for CugraphAlgoExec {
                 ))
             })?;
             let observation = context_lease.context().runtime_observation().clone();
-            run_gpu_execution_task(
+            let output = run_gpu_execution_task(
                 gpu_executor,
                 observation,
                 "datafusion_nexus.cugraph_sql.gpu_execution_pool",
@@ -1268,7 +1297,11 @@ impl ExecutionPlan for CugraphAlgoExec {
                     Ok::<EagerCugraphHostOutput, DataFusionError>(output)
                 },
             )
-            .await
+            .await?;
+            if let Some(host_occurrence) = host_occurrence {
+                host_occurrence.complete();
+            }
+            Ok::<EagerCugraphHostOutput, DataFusionError>(output)
         })
         .try_flatten();
 

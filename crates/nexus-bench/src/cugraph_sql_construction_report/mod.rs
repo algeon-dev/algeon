@@ -4,7 +4,7 @@ use std::{
     io,
     path::Path,
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{
@@ -20,14 +20,16 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     cugraph_sql::CugraphSqlConfig,
     native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
-    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    planner::NexusGpuExecutionMode,
     session::NexusSessionStateBuilderExt,
 };
 
 const ROWS_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_ROWS";
+const EXECUTION_MODE_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_EXECUTION_MODE";
 const REMOVED_MEMORY_POLICY_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
 const DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_DEVICE_BUDGET_BYTES";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_CUGRAPH_CONSTRUCTION_MAX_SOURCE_CHUNK_BYTES";
@@ -65,14 +67,16 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     let path = dir.join("edges.parquet");
     write_synthetic_edges(&path, rows)?;
 
+    let execution_mode = env_execution_mode()?;
     let config = direct_friendly_session_config();
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(
-        NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config()),
-    ));
-    let state = SessionStateBuilder::new()
-        .with_config(config)
-        .with_default_features()
-        .with_nexus_native_rule(native_rule)
+    let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = NexusGpuBackend::builder()
+        .with_execution_mode(execution_mode)
+        .with_native_execution_config(native_execution_config())
+        .devices([device])
+        .build()?;
+    let state = backend
+        .install_on(SessionStateBuilder::new().with_config(config).with_default_features())?
         .try_with_cugraph_sql(CugraphSqlConfig::default())?
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -80,15 +84,19 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     register_views(&ctx).await?;
 
     println!(
-        "# rows={rows}\tmemory_policy=bounded\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
+        "# rows={rows}\texecution_mode={}\tmemory_policy=bounded\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
+        execution_mode_label(execution_mode),
         env_u64(DEVICE_BUDGET_BYTES_ENV, NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,),
         env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
     );
     println!("{}", COLUMNS.join("\t"));
 
-    for variant in variants() {
+    for variant in variants(execution_mode) {
         println!("{}", collect_variant(&ctx, rows, variant).await.to_tsv());
     }
+    // Release the session's backend handle before waiting for backend shutdown.
+    drop(ctx);
+    backend.close_and_wait_async(Duration::from_secs(30)).await?;
     Ok(())
 }
 
@@ -115,15 +123,31 @@ struct Variant {
     label: &'static str,
     sql_construction_policy: &'static str,
     expected_edge_normalize_inserted: bool,
+    expected_graph_occurrences: usize,
+    validate_construction_markers: bool,
     sql: &'static str,
 }
 
-fn variants() -> [Variant; 3] {
+fn variants(execution_mode: NexusGpuExecutionMode) -> [Variant; 5] {
     [
+        Variant {
+            label: "ordinary_sql_cpu_aggregate",
+            sql_construction_policy: "none",
+            expected_edge_normalize_inserted: false,
+            expected_graph_occurrences: 0,
+            validate_construction_markers: false,
+            sql: "SELECT src % 8 AS bucket, COUNT(*) AS edge_count \
+                  FROM synthetic_edges \
+                  WHERE weight >= 1.0 \
+                  GROUP BY src % 8 \
+                  ORDER BY bucket",
+        },
         Variant {
             label: "default_edge_normalize",
             sql_construction_policy: "python_cugraph",
             expected_edge_normalize_inserted: true,
+            expected_graph_occurrences: 1,
+            validate_construction_markers: true,
             sql: "SELECT vertex, partition \
                   FROM cugraph_louvain('graph_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
                   ORDER BY vertex",
@@ -131,7 +155,9 @@ fn variants() -> [Variant; 3] {
         Variant {
             label: "precanonical_default",
             sql_construction_policy: "python_cugraph",
-            expected_edge_normalize_inserted: false,
+            expected_edge_normalize_inserted: matches!(execution_mode, NexusGpuExecutionMode::FunctionsOnly),
+            expected_graph_occurrences: 1,
+            validate_construction_markers: true,
             sql: "SELECT vertex, partition \
                   FROM cugraph_louvain('canonical_undirected_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
                   ORDER BY vertex",
@@ -140,10 +166,34 @@ fn variants() -> [Variant; 3] {
             label: "precanonical_raw",
             sql_construction_policy: "raw_libcugraph",
             expected_edge_normalize_inserted: false,
+            expected_graph_occurrences: 1,
+            validate_construction_markers: true,
             sql: "SELECT vertex, partition \
                   FROM cugraph_louvain('canonical_undirected_edges', 'src', 'dst', NULL, \
                                        '{\"directed\":false,\"construction_policy\":\"raw_libcugraph\"}') \
                   ORDER BY vertex",
+        },
+        Variant {
+            label: "two_gpu_functions_cpu_join",
+            sql_construction_policy: "python_cugraph",
+            expected_edge_normalize_inserted: false,
+            expected_graph_occurrences: 2,
+            validate_construction_markers: false,
+            sql: "WITH pagerank AS ( \
+                  SELECT vertex, value AS pagerank_value \
+                      FROM cugraph_pagerank( \
+                          'graph_edges', 'src', 'dst', NULL, \
+                          '{\"construction_policy\":\"python_cugraph\"}') \
+                  ), layout AS ( \
+                      SELECT vertex, x, y \
+                      FROM cugraph_force_atlas2( \
+                          'graph_edges', 'src', 'dst', NULL, \
+                          '{\"max_iter\":5,\"seed\":42,\"construction_policy\":\"python_cugraph\"}') \
+                  ) \
+                  SELECT p.vertex, p.pagerank_value, l.x, l.y \
+                  FROM layout l JOIN pagerank p ON p.vertex = l.vertex \
+                  WHERE p.pagerank_value > 0 \
+                  ORDER BY p.vertex",
         },
     ]
 }
@@ -164,7 +214,10 @@ async fn collect_variant(ctx: &SessionContext, input_rows: usize, variant: Varia
     let plan_display = displayable(plan.as_ref()).indent(false).to_string();
     let policy_marker = format!("construction_policy={}", variant.sql_construction_policy);
     let normalize_marker = format!("edge_normalize_inserted={}", variant.expected_edge_normalize_inserted);
-    if !plan_display.contains(&policy_marker) || !plan_display.contains(&normalize_marker) {
+    let edge_normalize_inserted = plan_display.contains("edge_normalize_inserted=true");
+    if variant.validate_construction_markers
+        && (!plan_display.contains(&policy_marker) || !plan_display.contains(&normalize_marker))
+    {
         return ReportRow::failed(
             variant,
             input_rows,
@@ -182,7 +235,26 @@ async fn collect_variant(ctx: &SessionContext, input_rows: usize, variant: Varia
             let output_rows = batches.iter().map(RecordBatch::num_rows).sum();
             let output_bytes = batches.iter().map(get_record_batch_memory_size).sum();
             let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
-            ReportRow::succeeded(variant, input_rows, output_rows, output_bytes, wall.as_nanos(), metrics)
+            if metrics.graph_runtime_rows.len() != variant.expected_graph_occurrences {
+                return ReportRow::failed(
+                    variant,
+                    input_rows,
+                    format!(
+                        "graph_occurrence_count_mismatch: expected {}, observed {}",
+                        variant.expected_graph_occurrences,
+                        metrics.graph_runtime_rows.len()
+                    ),
+                );
+            }
+            ReportRow::succeeded(
+                variant,
+                edge_normalize_inserted,
+                input_rows,
+                output_rows,
+                output_bytes,
+                wall.as_nanos(),
+                metrics,
+            )
         },
         Err(error) => ReportRow::failed(variant, input_rows, error.to_string()),
     }
@@ -229,29 +301,49 @@ struct ReportRow {
 impl ReportRow {
     fn succeeded(
         variant: Variant,
+        edge_normalize_inserted: bool,
         input_rows: usize,
         output_rows: usize,
         output_bytes: usize,
         wall_ns: u128,
         metrics: NativeDataFusionExecutionMetrics,
     ) -> Self {
-        let graph = metrics.graph_runtime_rows.first();
+        let graph_input_rows =
+            metrics.graph_runtime_rows.iter().map(|row| row.input_rows).reduce(usize::saturating_add);
+        let graph_output_rows =
+            metrics.graph_runtime_rows.iter().map(|row| row.output_rows).reduce(usize::saturating_add);
+        let graph_elapsed_ns =
+            metrics.graph_runtime_rows.iter().map(|row| row.elapsed_ns).reduce(usize::saturating_add);
+        let graph_output_device_bytes = metrics
+            .graph_runtime_rows
+            .iter()
+            .map(|row| row.output_device_bytes)
+            .try_fold(0_usize, |total, value| value.map(|value| total.saturating_add(value)));
+        let runtime_construction_policy = if metrics.graph_runtime_rows.is_empty() {
+            "none".to_string()
+        } else if metrics
+            .graph_runtime_rows
+            .iter()
+            .all(|row| row.construction_policy == metrics.graph_runtime_rows[0].construction_policy)
+        {
+            metrics.graph_runtime_rows[0].construction_policy.clone()
+        } else {
+            "mixed".to_string()
+        };
         Self {
             variant: variant.label,
             sql_construction_policy: variant.sql_construction_policy,
-            edge_normalize_inserted: variant.expected_edge_normalize_inserted,
-            runtime_construction_policy: graph
-                .map(|row| row.construction_policy.clone())
-                .unwrap_or_else(|| "none".to_string()),
+            edge_normalize_inserted,
+            runtime_construction_policy,
             runtime_outcome: "succeeded",
             input_rows,
-            graph_input_rows: graph.map(|row| row.input_rows),
-            graph_output_rows: graph.map(|row| row.output_rows),
+            graph_input_rows,
+            graph_output_rows,
             output_rows: Some(output_rows),
             output_bytes: Some(output_bytes),
             wall_ns: Some(wall_ns),
-            graph_elapsed_ns: graph.map(|row| row.elapsed_ns),
-            graph_output_device_bytes: graph.and_then(|row| row.output_device_bytes),
+            graph_elapsed_ns,
+            graph_output_device_bytes,
             gpu_resident_input_handoffs: metrics.gpu_resident_input_handoffs,
             host_to_device_uploads: metrics.host_to_device_uploads,
             device_to_host_materializations: metrics.device_to_host_materializations,
@@ -378,6 +470,28 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default)
 }
 
+fn env_execution_mode() -> Result<NexusGpuExecutionMode, Box<dyn Error>> {
+    match std::env::var(EXECUTION_MODE_ENV).unwrap_or_else(|_| "native_preferred".to_string()).as_str() {
+        "functions_only" => Ok(NexusGpuExecutionMode::FunctionsOnly),
+        "native_preferred" => Ok(NexusGpuExecutionMode::NativePreferred),
+        "native_required" => Ok(NexusGpuExecutionMode::NativeRequired),
+        value => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{EXECUTION_MODE_ENV} must be functions_only, native_preferred, or native_required; got {value}"),
+        )
+        .into()),
+    }
+}
+
+fn execution_mode_label(mode: NexusGpuExecutionMode) -> &'static str {
+    match mode {
+        NexusGpuExecutionMode::FunctionsOnly => "functions_only",
+        NexusGpuExecutionMode::NativePreferred => "native_preferred",
+        NexusGpuExecutionMode::NativeRequired => "native_required",
+        _ => "unknown",
+    }
+}
+
 fn format_optional_usize(value: Option<usize>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
@@ -409,7 +523,8 @@ mod tests {
 
     #[test]
     fn report_tsv_row_contract_matches_columns() {
-        let row = ReportRow::failed(variants()[0], 10, "bad\tfailure".to_string());
+        let row =
+            ReportRow::failed(variants(NexusGpuExecutionMode::NativePreferred)[0], 10, "bad\tfailure".to_string());
         assert_eq!(COLUMNS.first(), Some(&"variant"));
         assert_eq!(COLUMNS.last(), Some(&"failure"));
         assert_eq!(row.to_tsv().split('\t').count(), COLUMNS.len());

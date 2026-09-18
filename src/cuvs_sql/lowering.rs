@@ -18,6 +18,7 @@ use crate::{error::Error, native_exec::child_inputs::NativeChildBinding};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CuvsPlanSink {
     HostArrow,
+    DeferredHostArrow,
     GpuResident,
 }
 
@@ -148,6 +149,9 @@ pub(super) fn lower_cuvs_query_plan(
         })?;
     Ok(match sink {
         CuvsPlanSink::HostArrow => builder.finish_with_host_sink_schema(root, output_schema),
+        CuvsPlanSink::DeferredHostArrow => {
+            builder.finish_with_host_sink_schema(root, output_schema).clone_with_deferred_host_materialization_sink()
+        },
         CuvsPlanSink::GpuResident => builder.finish_gpu_resident(root),
     })
 }

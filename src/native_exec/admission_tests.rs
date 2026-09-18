@@ -21,7 +21,7 @@ use datafusion::{
 };
 use futures::StreamExt;
 use nexus_query_engine::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence},
     error::QueryErrorCode,
     observability::{
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
@@ -196,6 +196,84 @@ fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let plan = builder.finish_with_host_sink(source);
     AttemptCapabilityEvidence::for_query_plan(&plan)
+}
+
+fn resident_host_plan(input_name: &str) -> nexus_query_engine::plan::QueryPlan {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
+    builder.finish_with_host_sink(source)
+}
+
+#[test]
+fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
+    let backend = InstalledTestGpuBackend::new();
+    let first_plan = resident_host_plan("first");
+    let second_plan = resident_host_plan("second");
+    let manifest = AttemptExecutionManifest::new(vec![
+        AttemptExecutionOccurrence::host_arrow("gpu-first", &first_plan, vec![], false),
+        AttemptExecutionOccurrence::host_arrow("gpu-second", &second_plan, vec!["gpu-first".to_string()], false),
+    ])
+    .unwrap();
+    let evidence = AttemptCapabilityEvidence::empty().with_execution_manifest(manifest).unwrap();
+    let ticket = QueryAdmissionTicket::new(admission_source(&backend), Some(evidence));
+    let task_context = Arc::new(TaskContext::default());
+    let _round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
+
+    let error = ticket
+        .begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan)
+        .expect_err("a dependent occurrence cannot begin first");
+    assert_eq!(error.find_nexus_error().unwrap().fact_value("reason"), Some("host_occurrence_predecessor_incomplete"));
+
+    drop(ticket.begin_host_occurrence(&task_context, "gpu-first", "gpu-first", &first_plan).unwrap().unwrap());
+    assert!(
+        ticket.begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan).is_err(),
+        "dropping an unfinished occurrence must not satisfy its dependents"
+    );
+
+    ticket.begin_host_occurrence(&task_context, "gpu-first", "gpu-first", &first_plan).unwrap().unwrap().complete();
+    ticket.begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan).unwrap().unwrap().complete();
+    let duplicate = ticket
+        .begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan)
+        .expect_err("one final-plan occurrence cannot execute twice");
+    assert_eq!(duplicate.find_nexus_error().unwrap().fact_value("reason"), Some("host_occurrence_duplicate_execution"));
+
+    drop(_round);
+    let next_task_context = Arc::new(TaskContext::default());
+    let _next_round = ticket.begin_execution_round(Arc::clone(&next_task_context)).unwrap();
+    ticket
+        .begin_host_occurrence(&next_task_context, "gpu-first", "gpu-first", &first_plan)
+        .expect("a new invocation round has independent occurrence state")
+        .unwrap()
+        .complete();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
+    let backend = InstalledTestGpuBackend::new();
+    let first_plan = resident_host_plan("first-fragment");
+    let second_plan = resident_host_plan("second-fragment");
+    let ticket = QueryAdmissionTicket::new(admission_source(&backend), Some(AttemptCapabilityEvidence::empty()));
+
+    ticket
+        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
+        .unwrap();
+    ticket
+        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&second_plan)])
+        .unwrap();
+    let evidence = ticket.attempt_capability_evidence().unwrap();
+    assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&first_plan)));
+    assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&second_plan)));
+
+    let context = ticket
+        .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
+        .await
+        .expect("the combined evidence admits");
+    let error = ticket
+        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
+        .expect_err("evidence is immutable after admission starts");
+    assert_eq!(error.fact_value("reason"), Some("capability_evidence_extension_after_admission"));
+    drop(context);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -395,7 +473,7 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
         .expect("fragment requirements aggregate into a ticket")
         .expect("configured admission source creates a ticket");
 
-    assert_eq!(ticket.attempt_capability_evidence(), Some(&unavailable));
+    assert_eq!(ticket.attempt_capability_evidence(), Some(unavailable));
     let error = ticket
         .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
         .await

@@ -10,7 +10,7 @@ Nexus has three configuration owners. Keep them separate:
 | Surface | Configure with | Owns |
 | --- | --- | --- |
 | Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, source catalogs, and retention |
-| Embedded GPU backend | `NexusGpuBackend::builder()` | Device ownership, capacity, queues, and final-plan requirements |
+| Embedded GPU backend | `NexusGpuBackend::builder()` | Device ownership, capacity, queues, and execution mode |
 | DataFusion session | `SessionConfig` | Standard DataFusion behavior (catalogs, batch size, target partitions) |
 
 This page covers the Flight SQL process. For an embedded Rust service, use [DataFusion Session](./datafusion-session.mdx).
@@ -88,10 +88,36 @@ custom embedders must make that declaration through the Rust API.
 
 ## Native execution
 
+### Execution mode
+
+The default is `native_preferred`. To keep ordinary SQL on DataFusion CPU and
+use the GPU only for explicit cuGraph and cuVS functions, add this to the server
+TOML alongside its device profiles:
+
+```toml
+[native]
+execution_mode = "functions_only"
+```
+
+Or override it through the environment:
+
+```bash
+export NEXUS_SERVER_EXECUTION_MODE=functions_only
+```
+
+Accepted values are `native_preferred`, `functions_only`, and `native_required`.
+See [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode)
+for their behavior, composition boundaries, host staging limits, and embedded
+Rust configuration. This is backend policy, not a SQL `SET` option. Function
+features, registration, device profiles, and GPU admission are still required.
+
+### Native settings
+
 Native settings are accepted both under `[native]` and through the environment:
 
 | TOML field | Environment variable | Default |
 | --- | --- | --- |
+| `execution_mode` | `NEXUS_SERVER_EXECUTION_MODE` | `native_preferred` |
 | `max_source_chunk_bytes` | `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | 64 MiB |
 | `max_row_groups_per_chunk` | `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | `1` |
 | `max_retry_attempts` | `NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
@@ -111,7 +137,10 @@ DataFusion. That mode copies the aggregate input to host memory, and a query
 whose group keys or other aggregates in the same `GROUP BY` it cannot evaluate
 exactly is not rewritten to native execution.
 
-The only final-plan requirement is `no_datafusion_cpu`.
+The only final-plan requirement is `no_datafusion_cpu`. Used alone, it has the
+same effect as `execution_mode = "native_required"`. If both fields are set,
+they must agree: combining it with `native_preferred` or `functions_only`
+fails startup.
 
 Native settings carry no device-budget planning placeholder. Device capacity
 is owned solely by the ordinal-keyed [`[[admission.device_profiles]]`](#admission)

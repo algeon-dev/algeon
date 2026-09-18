@@ -53,6 +53,11 @@ column and request schemas are in the
 
 ## Execution
 
+Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
+to keep input subqueries and surrounding SQL on DataFusion CPU while vector
+operations run on GPU. That mode retains the prerequisites below and uses
+bounded, non-spilling host staging for CPU inputs.
+
 A `cuvs_*` call runs on the GPU when all of the following hold:
 
 1. the binary was built with the `cuvs` feature (otherwise every call returns a

@@ -711,7 +711,8 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
     let root_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
     let passthrough_evidence = AttemptCapabilityEvidence::for_query_plan(&passthrough_plan);
-    let composed_evidence = AttemptCapabilityEvidence::aggregate([root_evidence, passthrough_evidence]);
+    let composed_evidence = AttemptCapabilityEvidence::aggregate([root_evidence, passthrough_evidence])
+        .expect("test evidence has one manifest");
     let context = bounded_context_for_evidence_items(shared_runtime(runtime), [composed_evidence]);
     let result = execute_query_plan(&context, &plan).expect("compiled GPU sink join should execute");
     let QueryOutput::GpuResident(handle) = result.output() else {

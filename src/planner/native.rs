@@ -1,11 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use datafusion::{
-    common::{Result as DataFusionResult, config::ConfigOptions},
+    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
     physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::ExecutionPlan,
+    physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
-use nexus_query_engine::{admission::AttemptCapabilityEvidence, metrics::QueryId};
+use nexus_query_engine::{
+    admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence},
+    metrics::QueryId,
+};
 
 use super::{DataFusionCpuExecutionPolicy, FinalPlanDisposition, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
@@ -13,8 +16,8 @@ use crate::{
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
     native_exec::{
-        NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeExecutionConfig,
-        NexusNativeGpuProducerExec,
+        GpuFunctionHostOccurrenceExec, NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec,
+        NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
         admission::QueryAdmissionTicket,
         graph::{GraphExecutionPlan, graph_execution_plan},
         plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
@@ -333,19 +336,19 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        self.config.validate().map_err(datafusion::common::DataFusionError::from)?;
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok(plan);
         }
-        if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        let already_selected = if plan.downcast_ref::<NexusNativeExec>().is_some()
+            || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+            || is_certified_mixed_execution_plan(plan.as_ref())
         {
-            return Ok(plan);
-        }
-        if let Some(native_plan) = peel_cooperative_native_exec(&plan) {
-            return Ok(native_plan);
-        }
-        if is_certified_mixed_execution_plan(plan.as_ref()) {
-            return Ok(plan);
-        }
+            Some(Arc::clone(&plan))
+        } else {
+            peel_cooperative_native_exec(&plan)
+        };
+        let retains_prior_selection_report = already_selected.is_some();
 
         *self.state.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
             plan.name().to_string();
@@ -371,28 +374,41 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         let native_optimizer_options = effective_config.native_optimizer_options();
         let native_plan_cost_options = effective_config.native_plan_cost_options();
 
-        let optimized = match self.stage {
-            NativeOptimizerStage::CountOnlyProbe => optimize_count_only_native_plan(
-                Arc::clone(&plan),
-                native_execution_config,
-                native_optimizer_options,
-                native_plan_cost_options,
-            )?,
-            NativeOptimizerStage::Final => optimize_final_native_plan(
-                Arc::clone(&plan),
-                native_execution_config,
-                native_optimizer_options,
-                native_plan_cost_options,
-            )?,
+        let optimized = match (already_selected, self.config.relational_native_rewrite_policy(), self.stage) {
+            (Some(plan), _, _) => NativeOptimizationAttempt::retained(plan),
+            (None, super::RelationalNativeRewritePolicy::Disabled, _) => {
+                NativeOptimizationAttempt::retained(Arc::clone(&plan))
+            },
+            (None, super::RelationalNativeRewritePolicy::Enabled, NativeOptimizerStage::CountOnlyProbe) => {
+                optimize_count_only_native_plan(
+                    Arc::clone(&plan),
+                    native_execution_config,
+                    native_optimizer_options,
+                    native_plan_cost_options,
+                )?
+            },
+            (None, super::RelationalNativeRewritePolicy::Enabled, NativeOptimizerStage::Final) => {
+                optimize_final_native_plan(
+                    Arc::clone(&plan),
+                    native_execution_config,
+                    native_optimizer_options,
+                    native_plan_cost_options,
+                )?
+            },
         };
         let mut optimized = optimized;
-        if optimized.rewritten
-            && self.mints_plan_ticket
+        let binds_final_plan = self.stage == NativeOptimizerStage::Final && self.mints_plan_ticket;
+        if binds_final_plan {
+            let mut next_occurrence = 0_u64;
+            optimized.plan = bind_gpu_function_host_occurrences(optimized.plan, true, &mut next_occurrence)?;
+        }
+        if binds_final_plan
+            && plan_contains_gpu_execution(optimized.plan.as_ref())
             && let Some(extension) = &attempt_extension
         {
             extension.native_admission_planned(optimized.plan.as_ref());
         }
-        let query_admission_ticket = if optimized.rewritten && self.mints_plan_ticket {
+        let query_admission_ticket = if binds_final_plan {
             plan_query_admission_ticket_for_optimized_plan(
                 optimized.plan.as_ref(),
                 native_execution_config,
@@ -404,12 +420,14 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         if self.mints_plan_ticket
             && let (Some(extension), Some(ticket)) = (&attempt_extension, &query_admission_ticket)
         {
-            extension.bind_ticket(Arc::clone(ticket));
+            extension.bind_ticket(Arc::clone(ticket)).map_err(DataFusionError::from)?;
         }
         if self.mints_plan_ticket {
             apply_execution_admission_wrappers(&mut optimized, query_admission_ticket);
         }
-        self.store_optimization_attempt(&optimized)?;
+        if !retains_prior_selection_report {
+            self.store_optimization_attempt(&optimized)?;
+        }
         Ok(optimized.plan)
     }
 
@@ -448,9 +466,7 @@ fn apply_execution_admission_wrappers(
     optimized: &mut NativeOptimizationAttempt,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
 ) {
-    if optimized.rewritten
-        && let Some(ticket) = query_admission_ticket
-    {
+    if let Some(ticket) = query_admission_ticket {
         optimized.plan = wrap_plan_with_query_admission_ticket(Arc::clone(&optimized.plan), ticket);
     }
 }
@@ -475,13 +491,6 @@ fn plan_query_admission_ticket_for_optimized_plan(
     native_execution_config: &NexusNativeExecutionConfig,
     attempt: Option<&NexusAttemptExtension>,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
-    // Frontend graph roots may resolve lakehouse footer metadata asynchronously
-    // before admission.  A planner-time ticket would freeze the incomplete
-    // cardinality evidence, so that root mints its sole immutable ticket only
-    // after the metadata is bound to the exact execution plan.
-    if plan_contains_deferred_graph_admission(plan) {
-        return Ok(None);
-    }
     let fragment_evidence_items = native_fragment_capability_evidences(plan)?;
     let ticket = native_execution_config
         .new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)
@@ -507,34 +516,237 @@ fn plan_query_admission_ticket_for_optimized_plan(
     Ok(Some(ticket))
 }
 
-fn plan_contains_deferred_graph_admission(plan: &dyn ExecutionPlan) -> bool {
-    graph_execution_plan(plan).is_some()
-        || plan.children().iter().any(|child| plan_contains_deferred_graph_admission(child.as_ref()))
-}
-
 fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<AttemptCapabilityEvidence>> {
     let mut evidence_items = Vec::new();
-    collect_native_fragment_capability_evidences(plan, false, &mut evidence_items)?;
+    collect_native_fragment_capability_evidences(plan, false, true, &mut evidence_items)?;
+    if let Some(manifest) = gpu_function_execution_manifest(plan)? {
+        evidence_items.push(AttemptCapabilityEvidence::empty().with_execution_manifest(manifest).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_optimizer.execution_manifest",
+                "failed to bind the final GPU function occurrence manifest",
+                error,
+            ))
+        })?);
+    }
     Ok(evidence_items)
+}
+
+fn gpu_function_execution_manifest(plan: &dyn ExecutionPlan) -> DataFusionResult<Option<AttemptExecutionManifest>> {
+    let mut occurrences = Vec::new();
+    let _ = collect_gpu_function_occurrences(plan, true, &mut occurrences)?;
+    if occurrences.is_empty() {
+        return Ok(None);
+    }
+    AttemptExecutionManifest::new(occurrences).map(Some).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.native_optimizer.execution_manifest",
+            "the final GPU function occurrence graph is invalid",
+            error,
+        ))
+    })
+}
+
+fn bind_gpu_function_host_occurrences(
+    plan: Arc<dyn ExecutionPlan>,
+    materializes_host_result: bool,
+    next_occurrence: &mut u64,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    if plan.downcast_ref::<GpuFunctionHostOccurrenceExec>().is_some() {
+        return Ok(plan);
+    }
+    if plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
+        let children = plan.children().into_iter().cloned().collect::<Vec<_>>();
+        let mut rewritten_children = Vec::with_capacity(children.len());
+        let mut children_changed = false;
+        for child in children {
+            let rewritten = bind_gpu_function_host_occurrences(Arc::clone(&child), false, next_occurrence)?;
+            children_changed |= !Arc::ptr_eq(&child, &rewritten);
+            rewritten_children.push(rewritten);
+        }
+        return if children_changed {
+            plan.replace_children(rewritten_children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        } else {
+            Ok(plan)
+        };
+    }
+    let producer = crate::native_exec::gpu_resident_producer(plan.as_ref());
+    let children = plan.children().into_iter().cloned().collect::<Vec<_>>();
+    let mut rewritten_children = Vec::with_capacity(children.len());
+    let mut children_changed = false;
+    for child in children {
+        let child_materializes_host_result =
+            producer.is_none() || crate::native_exec::gpu_resident_producer(child.as_ref()).is_none();
+        let rewritten =
+            bind_gpu_function_host_occurrences(Arc::clone(&child), child_materializes_host_result, next_occurrence)?;
+        children_changed |= !Arc::ptr_eq(&child, &rewritten);
+        rewritten_children.push(rewritten);
+    }
+    let plan = if !children_changed {
+        plan
+    } else {
+        plan.replace_children(rewritten_children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))?
+    };
+    let Some(producer) = crate::native_exec::gpu_resident_producer(plan.as_ref()) else {
+        return Ok(plan);
+    };
+    if !materializes_host_result || producer.host_result_query_plan()?.is_none() {
+        return Ok(plan);
+    }
+    let producer_identity = producer.gpu_result_input_name().to_string();
+    let occurrence_id = format!("{producer_identity}#{}", *next_occurrence);
+    *next_occurrence = next_occurrence.saturating_add(1);
+    Ok(Arc::new(GpuFunctionHostOccurrenceExec::new(plan, occurrence_id, producer_identity)))
+}
+
+fn collect_gpu_function_occurrences(
+    plan: &dyn ExecutionPlan,
+    materializes_host_result: bool,
+    occurrences: &mut Vec<AttemptExecutionOccurrence>,
+) -> DataFusionResult<Vec<String>> {
+    if plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
+        let mut predecessors = Vec::new();
+        for child in plan.children() {
+            for occurrence in collect_gpu_function_occurrences(child.as_ref(), false, occurrences)? {
+                if !predecessors.contains(&occurrence) {
+                    predecessors.push(occurrence);
+                }
+            }
+        }
+        return Ok(predecessors);
+    }
+    if let Some(bound) = plan.downcast_ref::<GpuFunctionHostOccurrenceExec>() {
+        let predecessors = collect_gpu_function_occurrences(bound.input().as_ref(), false, occurrences)?;
+        let producer = crate::native_exec::gpu_resident_producer(bound.input().as_ref()).ok_or_else(|| {
+            DataFusionError::from(
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_optimizer.execution_manifest",
+                    "a bound GPU function occurrence no longer wraps a typed producer",
+                )
+                .with_log_safe_fact("reason", "bound_gpu_occurrence_producer_missing")
+                .with_log_safe_fact("occurrence_id", bound.occurrence_id()),
+            )
+        })?;
+        let host_plan = producer.host_result_query_plan()?.ok_or_else(|| {
+            DataFusionError::from(
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_optimizer.execution_manifest",
+                    "a bound GPU function occurrence no longer exposes a host plan",
+                )
+                .with_log_safe_fact("reason", "bound_gpu_occurrence_host_plan_missing")
+                .with_log_safe_fact("occurrence_id", bound.occurrence_id()),
+            )
+        })?;
+        occurrences.push(AttemptExecutionOccurrence::host_arrow_for_producer(
+            bound.occurrence_id(),
+            bound.producer_identity(),
+            &host_plan,
+            predecessors,
+            producer.host_result_has_deferred_graph_facts(),
+        ));
+        return Ok(vec![bound.occurrence_id().to_string()]);
+    }
+    let producer = crate::native_exec::gpu_resident_producer(plan);
+    let mut predecessors = Vec::new();
+    for child in plan.children() {
+        let child_materializes_host_result =
+            producer.is_none() || crate::native_exec::gpu_resident_producer(child.as_ref()).is_none();
+        for occurrence in collect_gpu_function_occurrences(child.as_ref(), child_materializes_host_result, occurrences)?
+        {
+            if !predecessors.contains(&occurrence) {
+                predecessors.push(occurrence);
+            }
+        }
+    }
+    let Some(producer) = producer else {
+        return Ok(predecessors);
+    };
+    if !materializes_host_result {
+        return Ok(predecessors);
+    }
+    if producer.host_result_query_plan()?.is_none() {
+        return Ok(predecessors);
+    }
+    Err(DataFusionError::from(
+        Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_optimizer.execution_manifest",
+            "a host-materializing GPU function lacks final-plan occurrence lineage",
+        )
+        .with_log_safe_fact("reason", "gpu_function_occurrence_lineage_missing")
+        .with_log_safe_fact("producer_identity", producer.gpu_result_input_name()),
+    ))
+}
+
+fn plan_contains_gpu_execution(plan: &dyn ExecutionPlan) -> bool {
+    graph_execution_plan(plan).is_some()
+        || crate::native_exec::gpu_resident_producer(plan).is_some()
+        || lowered_native_plan(plan).is_some()
+        || plan.children().iter().any(|child| plan_contains_gpu_execution(child.as_ref()))
 }
 
 fn collect_native_fragment_capability_evidences(
     plan: &dyn ExecutionPlan,
     executes_as_cugraph_input: bool,
+    materializes_host_result: bool,
     evidence_items: &mut Vec<AttemptCapabilityEvidence>,
 ) -> DataFusionResult<()> {
+    #[cfg(feature = "cugraph")]
+    let is_composed = if let Some(composed) = plan.downcast_ref::<NexusNativeComposedExec>() {
+        let gpu_plan;
+        let composed_plan = if executes_as_cugraph_input {
+            gpu_plan = composed.native_plan().clone_with_gpu_resident_sink();
+            &gpu_plan
+        } else {
+            composed.native_plan()
+        };
+        evidence_items
+            .push(crate::native_exec::composed_admission_capability_evidence(composed_plan, composed.gpu_inputs())?);
+        true
+    } else {
+        false
+    };
+    #[cfg(not(feature = "cugraph"))]
+    let is_composed = false;
+    if is_composed {
+        for child in plan.children() {
+            let child_is_cugraph = graph_execution_plan(child.as_ref()).is_some();
+            for descendant in child.children() {
+                collect_native_fragment_capability_evidences(
+                    descendant.as_ref(),
+                    executes_as_cugraph_input || child_is_cugraph,
+                    false,
+                    evidence_items,
+                )?;
+            }
+        }
+        return Ok(());
+    }
     let graph_execution_evidence =
         graph_execution_plan(plan).map(GraphExecutionPlan::graph_execution_capability_evidence).transpose()?;
     let is_cugraph_execution = graph_execution_evidence.is_some();
+    let producer = crate::native_exec::gpu_resident_producer(plan);
     for child in plan.children() {
+        let child_materializes_host_result =
+            producer.is_none() || crate::native_exec::gpu_resident_producer(child.as_ref()).is_none();
         collect_native_fragment_capability_evidences(
             child.as_ref(),
             executes_as_cugraph_input || is_cugraph_execution,
+            child_materializes_host_result,
             evidence_items,
         )?;
     }
     if let Some(evidence) = graph_execution_evidence {
         evidence_items.push(evidence);
+        return Ok(());
+    }
+    if let Some(producer) = producer {
+        evidence_items.push(if materializes_host_result {
+            producer.host_result_capability_evidence()?
+        } else {
+            producer.gpu_result_capability_evidence()?
+        });
         return Ok(());
     }
     if let Some(native_plan) = lowered_native_plan(plan) {
@@ -760,20 +972,18 @@ mod tests {
         let union = builder.add_union(vec![left_source, right_source], Arc::clone(&schema));
         let consumer_plan = builder.finish_with_host_sink_schema(union, schema);
 
-        let left_evidence =
-            native_plan_capability_evidence(left.native_plan()).expect("producer has capability evidence");
-        let right_evidence =
-            native_plan_capability_evidence(right.native_plan()).expect("producer has capability evidence");
-        let consumer_evidence =
-            native_plan_capability_evidence(&consumer_plan).expect("consumer has capability evidence");
+        let expected = crate::native_exec::composed_admission_capability_evidence(
+            &consumer_plan,
+            &[Arc::new(left.clone()), Arc::new(right.clone())],
+        )
+        .expect("composed evidence binds both producer occurrences");
         let composed =
             NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
                 .unwrap();
-        let expected = AttemptCapabilityEvidence::aggregate([left_evidence, right_evidence, consumer_evidence]);
 
         let ticket = plan_query_admission_ticket_for_optimized_plan(&composed, &config, None).unwrap().unwrap();
 
-        assert_eq!(ticket.attempt_capability_evidence(), Some(&expected));
+        assert_eq!(ticket.attempt_capability_evidence(), Some(expected));
         let evidence = ticket.attempt_capability_evidence().expect("planner ticket retains its evidence");
         assert!(evidence.required_capabilities().is_empty());
         assert_eq!(evidence.execution_scopes().len(), 3);
@@ -781,18 +991,19 @@ mod tests {
 
     #[cfg(feature = "cugraph")]
     #[test]
-    fn planner_defers_outer_ticket_for_registered_graph_descendant() {
+    fn planner_binds_outer_ticket_for_registered_graph_descendant() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let graph = deferred_cugraph_exec(&config);
         let plan = Arc::new(CooperativeExec::new(graph)) as Arc<dyn ExecutionPlan>;
+        let mut next_occurrence = 0;
+        let plan = bind_gpu_function_host_occurrences(plan, true, &mut next_occurrence)
+            .expect("final-plan binding should assign graph occurrence lineage");
 
-        assert!(plan_contains_deferred_graph_admission(plan.as_ref()));
-        assert!(
-            plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None)
-                .expect("registered cuGraph discovery should not fail")
-                .is_none(),
-            "the planner must not wrap a graph descendant before footer metadata is hydrated",
-        );
+        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None)
+            .expect("registered cuGraph discovery should not fail")
+            .expect("the final plan must own one ticket before deferred graph preparation");
+        let evidence = ticket.attempt_capability_evidence().expect("graph ticket retains initial evidence");
+        assert_eq!(evidence.execution_manifest().unwrap().occurrences().len(), 1);
     }
 
     #[test]
@@ -808,6 +1019,21 @@ mod tests {
         assert!(
             plan_is_query_admission_wrapped(wrapped.as_ref()),
             "deferring cuGraph admission must not suppress ordinary native admission wrappers",
+        );
+    }
+
+    #[test]
+    fn final_rule_binds_a_ticket_to_a_plan_selected_by_the_count_probe() {
+        let (backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let optimizer_config = backend.optimizer_config().clone().with_native_execution_config(config);
+        let rule = NexusNativePhysicalOptimizerRule::new(optimizer_config);
+        let selected_by_count_probe = native_exec_leaf();
+
+        let final_plan = rule.optimize(selected_by_count_probe, &ConfigOptions::default()).unwrap();
+
+        assert!(
+            plan_is_query_admission_wrapped(final_plan.as_ref()),
+            "the final pass must bind admission even when relational selection already happened"
         );
     }
 }

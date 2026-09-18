@@ -32,11 +32,12 @@ pub(crate) mod graph;
 mod host;
 pub(crate) mod lakehouse;
 mod metrics;
+mod occurrence;
 mod producer;
 
-pub(crate) use common::run_gpu_execution_task;
+pub(crate) use common::{NativeHostOutputCursor, native_host_output_stream, run_gpu_execution_task};
 
-#[cfg(all(test, feature = "cugraph"))]
+#[cfg(feature = "cugraph")]
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::composed::composed_admission_capability_evidence;
@@ -53,6 +54,7 @@ pub(crate) use self::{
     metrics::{
         NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics, SealedAttemptMetricsTarget,
     },
+    occurrence::{GpuFunctionHostOccurrenceExec, gpu_function_occurrence_from_task_context},
     producer::{
         GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer,
         gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
@@ -79,7 +81,82 @@ pub use self::{
 /// inputs, so callers that need to inspect the actual root must not infer the
 /// wrapped input from `children()`.
 pub(crate) fn transparent_root_wrapper_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
-    admission::query_admission_wrapped_input(plan)
+    admission::query_admission_wrapped_input(plan).or_else(|| occurrence::gpu_function_occurrence_wrapped_input(plan))
+}
+
+/// Validates every host-materializing GPU descendant against the outer
+/// final-plan occurrence manifest.
+pub(crate) fn validate_host_wrapped_gpu_execution(
+    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+    task_context: &datafusion::execution::context::TaskContext,
+) -> datafusion::common::Result<()> {
+    let ticket = admission::query_admission_ticket_from_task_context(task_context)
+        .or_else(|| {
+            task_context
+                .session_config()
+                .options()
+                .extensions
+                .get::<crate::attempt::NexusAttemptExtension>()
+                .and_then(crate::attempt::NexusAttemptExtension::bound_ticket)
+        })
+        .filter(|ticket| ticket.has_execution_manifest())
+        .ok_or_else(|| {
+            datafusion::common::DataFusionError::from(
+                crate::error::Error::new(
+                    crate::error::ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_exec.host_input_staging",
+                    "host staging cannot execute a GPU descendant without a final-plan occurrence manifest",
+                )
+                .with_log_safe_fact("reason", "host_wrapped_gpu_occurrence_manifest_missing"),
+            )
+        })?;
+
+    fn validate(
+        plan: &dyn datafusion::physical_plan::ExecutionPlan,
+        ticket: &std::sync::Arc<admission::QueryAdmissionTicket>,
+    ) -> datafusion::common::Result<bool> {
+        if let Some(producer) = gpu_resident_producer(plan) {
+            let host_plan = producer.host_result_query_plan()?.ok_or_else(|| {
+                datafusion::common::DataFusionError::from(
+                    crate::error::Error::new(
+                        crate::error::ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.native_exec.host_input_staging",
+                        "a host-wrapped GPU producer does not expose its host execution identity",
+                    )
+                    .with_log_safe_fact("reason", "host_wrapped_gpu_occurrence_identity_missing")
+                    .with_log_safe_fact("occurrence_id", producer.gpu_result_input_name()),
+                )
+            })?;
+            ticket.validate_host_occurrence(producer.gpu_result_input_name(), &host_plan)?.ok_or_else(|| {
+                datafusion::common::DataFusionError::from(
+                    crate::error::Error::new(
+                        crate::error::ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.native_exec.host_input_staging",
+                        "a host-wrapped GPU producer is not covered by the final-plan occurrence manifest",
+                    )
+                    .with_log_safe_fact("reason", "host_wrapped_gpu_occurrence_not_admitted")
+                    .with_log_safe_fact("occurrence_id", producer.gpu_result_input_name()),
+                )
+            })?;
+            return Ok(true);
+        }
+        let mut found = false;
+        for child in plan.children() {
+            found |= validate(child.as_ref(), ticket)?;
+        }
+        Ok(found)
+    }
+
+    if !validate(plan, &ticket)? {
+        return Err(crate::error::Error::new(
+            crate::error::ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_exec.host_input_staging",
+            "a host-wrapped native subtree has no admitted GPU function occurrence",
+        )
+        .with_log_safe_fact("reason", "host_wrapped_gpu_occurrence_identity_missing")
+        .into());
+    }
+    Ok(())
 }
 
 /// Finds the single native execution wrapper closest to an invocation root

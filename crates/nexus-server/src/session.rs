@@ -265,4 +265,29 @@ mod tests {
 
         assert_eq!(sql.default_graph_options, cugraph.default_graph_options);
     }
+
+    #[test]
+    fn execution_mode_env_maps_to_functions_only_and_preserves_partitions() {
+        let env = BTreeMap::from([(crate::config::NEXUS_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string())]);
+        let server = server_config_with_test_device_profile(env);
+        assert_eq!(
+            server.native_optimizer_config.execution_mode().unwrap(),
+            crate::planner::NexusGpuExecutionMode::FunctionsOnly
+        );
+        let session = build_session_config(&server).expect("session config");
+        let baseline = SessionConfig::from_env().expect("baseline session config");
+        assert_eq!(
+            session.options().execution.target_partitions,
+            baseline.options().execution.target_partitions,
+            "functions-only must preserve DataFusion's configured parallelism"
+        );
+    }
+
+    #[test]
+    fn execution_mode_env_maps_native_required_to_single_partition() {
+        let env = BTreeMap::from([(crate::config::NEXUS_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
+        let server = server_config_with_test_device_profile(env);
+        let session = build_session_config(&server).expect("session config");
+        assert_eq!(session.options().execution.target_partitions, 1);
+    }
 }

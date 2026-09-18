@@ -65,6 +65,28 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
         )))
     }
 
+    /// Capability evidence for this function when its result crosses the
+    /// ordinary Arrow boundary back into DataFusion. Most producers execute
+    /// the same native fragment for resident and host results; frontends whose
+    /// sink changes the executable plan override this method.
+    fn host_result_capability_evidence(
+        &self,
+    ) -> DataFusionResult<nexus_query_engine::admission::AttemptCapabilityEvidence> {
+        self.gpu_result_capability_evidence()
+    }
+
+    /// Exact native plan submitted when this frontend node materializes a host
+    /// Arrow result. Resident-only internal producers return `None`.
+    fn host_result_query_plan(&self) -> DataFusionResult<Option<QueryPlan>> {
+        Ok(None)
+    }
+
+    /// Whether this host plan completes explicit graph cardinality fact slots
+    /// after Arrow staging under the same admitted occurrence.
+    fn host_result_has_deferred_graph_facts(&self) -> bool {
+        false
+    }
+
     /// Guaranteed upper bound on output rows, or `None` when no bound is known.
     ///
     /// `Some(n)` must hold for every execution because consumers treat it as

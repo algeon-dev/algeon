@@ -267,20 +267,22 @@ impl ExecutionPlan for NexusNativeExec {
                 {
                     let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
                     if let Some(existing) = ticket.attempt_capability_evidence_for_rebind()
-                        && existing != unresolved_capability_evidence
-                        && existing != evidence
+                        && unresolved_capability_evidence
+                            .execution_scopes()
+                            .iter()
+                            .any(|scope| !existing.execution_scopes().iter().any(|bound| bound == scope))
                     {
                         return Err(DataFusionError::from(
                             Error::new(
                                 ErrorCode::InvalidExecutionPlan,
                                 "datafusion_nexus.native_exec.admission_evidence",
-                                "the active native host admission ticket does not attest to this single host plan",
+                                "the active native host admission ticket does not attest to this unresolved fragment",
                             )
                             .with_fact("reason", "native_host_admission_evidence_scope_mismatch")
-                            .with_fact("ticket_evidence_scope", "combined_or_different_native_plan"),
+                            .with_fact("ticket_evidence_scope", "different_native_plan"),
                         ));
                     }
-                    ticket.rebind_capability_evidence_before_admission(evidence).map_err(|error| {
+                    ticket.extend_capability_evidence_before_admission([evidence]).map_err(|error| {
                         DataFusionError::from(Error::from_native(
                             "datafusion_nexus.native_exec.admission_evidence",
                             "failed to rebind the native host admission ticket before query-service admission",

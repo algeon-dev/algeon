@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     panic::{AssertUnwindSafe, catch_unwind},
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -31,7 +31,9 @@ use futures::Stream;
 use nexus_query_engine::metrics::QueryId;
 use nexus_query_engine::{
     admission::AttemptCapabilityEvidence,
-    attempt::{AttemptAdmissionBinding, AttemptCancellation, AttemptHandle},
+    attempt::{
+        AttemptAdmissionBinding, AttemptCancellation, AttemptExecutionRound, AttemptHandle, AttemptHostOccurrence,
+    },
     observability::{
         AttemptAdmissionFact, AttemptComposedScheduleProjection, RuntimeObservationConfig, RuntimeObservationOwner,
         RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
@@ -141,11 +143,9 @@ pub(crate) struct QueryAdmissionTicket {
     /// services may admit it for resource-only use, while exact profiles
     /// reject it and execution cannot use it to authorize a native plan.
     attempt_capability_evidence: Option<AttemptCapabilityEvidence>,
-    /// A composed root can resolve footer-bound child evidence only after its
-    /// outer DataFusion stream has already selected this ticket. That one
-    /// pre-admission replacement preserves the active stream's lifecycle
-    /// ownership instead of admitting a second ticket for the same attempt.
-    rebound_capability_evidence: OnceLock<AttemptCapabilityEvidence>,
+    /// Prepared fragments may refine evidence while the outer DataFusion
+    /// stream already owns this ticket but before admission starts.
+    rebound_capability_evidence: Mutex<Option<AttemptCapabilityEvidence>>,
     observation_query_id: Option<RuntimeQueryId>,
     observation_trace_id: Option<RuntimeTraceId>,
     observation_config: RuntimeObservationConfig,
@@ -220,6 +220,7 @@ struct TicketRound {
     active_streams: usize,
     epoch: u64,
     admission_facts_recorded: bool,
+    execution_round: AttemptExecutionRound,
     terminal_outcome: Option<RuntimeTerminalOutcome>,
     observation: NativeRuntimeObservation,
 }
@@ -328,7 +329,7 @@ impl QueryAdmissionTicket {
             #[cfg(not(test))]
             source,
             attempt_capability_evidence,
-            rebound_capability_evidence: OnceLock::new(),
+            rebound_capability_evidence: Mutex::new(None),
             observation_query_id,
             observation_trace_id,
             observation_config,
@@ -359,7 +360,7 @@ impl QueryAdmissionTicket {
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
             source: None,
             attempt_capability_evidence: None,
-            rebound_capability_evidence: OnceLock::new(),
+            rebound_capability_evidence: Mutex::new(None),
             observation_query_id,
             observation_trace_id,
             observation_config,
@@ -416,47 +417,111 @@ impl QueryAdmissionTicket {
     }
 
     pub(crate) fn attempt_capability_evidence_for_rebind(&self) -> Option<AttemptCapabilityEvidence> {
-        self.current_capability_evidence().cloned()
+        self.current_capability_evidence()
     }
 
-    fn current_capability_evidence(&self) -> Option<&AttemptCapabilityEvidence> {
-        self.rebound_capability_evidence.get().or(self.attempt_capability_evidence.as_ref())
+    pub(crate) fn has_execution_manifest(&self) -> bool {
+        self.current_capability_evidence().as_ref().and_then(AttemptCapabilityEvidence::execution_manifest).is_some()
     }
 
-    /// Replaces this ticket's evidence exactly once before any admission request
-    /// has started. The outer admission stream may already be alive, but it
-    /// has not acquired a query-service handle yet; preserving that ticket is
-    /// what keeps the eventual host-output cursor's resources alive to EOF.
-    pub(crate) fn rebind_capability_evidence_before_admission(
+    pub(crate) fn begin_host_occurrence(
+        self: &Arc<Self>,
+        task_context: &Arc<TaskContext>,
+        occurrence_id: &str,
+        producer_identity: &str,
+        plan: &nexus_query_engine::plan::QueryPlan,
+    ) -> DataFusionResult<Option<AttemptHostOccurrence>> {
+        if !self.has_execution_manifest() {
+            return Ok(None);
+        }
+        let task_key = Self::task_key(task_context);
+        let execution_round = {
+            let state = self.lock_state().map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.native_exec.host_occurrence",
+                    "failed to inspect the invocation occurrence state",
+                    error,
+                ))
+            })?;
+            state.rounds.get(&task_key).map(|round| round.execution_round.clone()).ok_or_else(|| {
+                DataFusionError::from(
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.native_exec.host_occurrence",
+                        "a GPU function occurrence began outside its invocation execution round",
+                    )
+                    .with_log_safe_fact("reason", "host_occurrence_execution_round_missing")
+                    .with_log_safe_fact("occurrence_id", occurrence_id)
+                    .with_log_safe_fact("producer_identity", producer_identity),
+                )
+            })?
+        };
+        execution_round.begin_host_occurrence(occurrence_id, producer_identity, plan).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_exec.host_occurrence",
+                "the GPU function cannot begin in its admitted execution schedule",
+                error,
+            ))
+        })
+    }
+
+    pub(crate) fn validate_host_occurrence(
         &self,
-        evidence: AttemptCapabilityEvidence,
+        producer_identity: &str,
+        plan: &nexus_query_engine::plan::QueryPlan,
+    ) -> DataFusionResult<Option<()>> {
+        let Some(evidence) = self.current_capability_evidence() else {
+            return Ok(None);
+        };
+        let Some(manifest) = evidence.execution_manifest() else {
+            return Ok(None);
+        };
+        manifest.validate_host_producer(producer_identity, plan).map(Some).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_exec.host_occurrence",
+                "the executing GPU function does not match an admitted host producer",
+                error,
+            ))
+        })
+    }
+
+    fn current_capability_evidence(&self) -> Option<AttemptCapabilityEvidence> {
+        self.rebound_capability_evidence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .or_else(|| self.attempt_capability_evidence.clone())
+    }
+
+    /// Atomically extends this ticket's evidence before admission starts.
+    /// Prepared fragments contribute deltas so one preparation cannot replace
+    /// another fragment's scope or the final invocation manifest.
+    pub(crate) fn extend_capability_evidence_before_admission(
+        &self,
+        fragments: impl IntoIterator<Item = AttemptCapabilityEvidence>,
     ) -> nexus_query_engine::error::Result<()> {
         let state = self.lock_state()?;
         if !state.admitting.is_empty() || state.rounds.values().any(|round| round.handle.is_some()) {
             return Err(nexus_query_engine::error::QueryError::new(
                 nexus_query_engine::error::QueryErrorCode::InvalidPlan,
                 "datafusion_nexus.native_exec.admission_ticket",
-                "cannot replace a query admission capability evidence after admission has started",
+                "cannot extend query admission capability evidence after admission has started",
             )
-            .with_fact("reason", "capability_evidence_rebind_after_admission"));
+            .with_fact("reason", "capability_evidence_extension_after_admission"));
         }
-        match self.rebound_capability_evidence.get() {
-            Some(existing) if existing == &evidence => Ok(()),
-            Some(_) => Err(nexus_query_engine::error::QueryError::new(
-                nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+        let mut rebound = self.rebound_capability_evidence.lock().map_err(|_| {
+            nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::Internal,
                 "datafusion_nexus.native_exec.admission_ticket",
-                "one query admission ticket cannot carry conflicting composed capability evidence_items",
+                "query admission capability evidence lock was poisoned",
             )
-            .with_fact("reason", "conflicting_capability_evidence_rebind")),
-            None => self.rebound_capability_evidence.set(evidence).map_err(|_| {
-                nexus_query_engine::error::QueryError::new(
-                    nexus_query_engine::error::QueryErrorCode::Internal,
-                    "datafusion_nexus.native_exec.admission_ticket",
-                    "query admission capability evidence changed while rebinding the composed root",
-                )
-                .with_fact("reason", "capability_evidence_rebind_race")
-            }),
-        }
+            .with_fact("reason", "capability_evidence_rebind_lock_poisoned")
+        })?;
+        let evidence = AttemptCapabilityEvidence::aggregate(
+            rebound.as_ref().or(self.attempt_capability_evidence.as_ref()).cloned().into_iter().chain(fragments),
+        )?;
+        *rebound = Some(evidence);
+        Ok(())
     }
 
     /// Reissues an unused ticket with the complete post-preparation evidence.
@@ -555,7 +620,7 @@ impl QueryAdmissionTicket {
     }
 
     #[cfg(test)]
-    pub(crate) fn attempt_capability_evidence(&self) -> Option<&AttemptCapabilityEvidence> {
+    pub(crate) fn attempt_capability_evidence(&self) -> Option<AttemptCapabilityEvidence> {
         self.current_capability_evidence()
     }
 
@@ -586,6 +651,8 @@ impl QueryAdmissionTicket {
         task_context: Arc<TaskContext>,
     ) -> nexus_query_engine::error::Result<QueryAdmissionExecutionRoundGuard> {
         let task_key = Self::task_key(&task_context);
+        let execution_manifest =
+            self.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned());
         let mut state = self.lock_state()?;
         let stale_rounds = Self::remove_stale_rounds_locked(&mut state);
         let epoch = if let Some(round) = state.rounds.get_mut(&task_key) {
@@ -604,6 +671,7 @@ impl QueryAdmissionTicket {
                     active_streams: 1,
                     epoch,
                     admission_facts_recorded: false,
+                    execution_round: AttemptExecutionRound::new(execution_manifest),
                     terminal_outcome: None,
                     observation,
                 },
@@ -627,6 +695,8 @@ impl QueryAdmissionTicket {
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::error::Result<TicketAdmissionContext> {
         let task_key = Self::task_key(&task_context);
+        let execution_manifest =
+            self.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned());
         loop {
             let notify = Arc::clone(&self.notify);
             let notified = notify.notified_owned();
@@ -659,6 +729,7 @@ impl QueryAdmissionTicket {
                                     active_streams: 0,
                                     epoch,
                                     admission_facts_recorded: false,
+                                    execution_round: AttemptExecutionRound::new(execution_manifest.clone()),
                                     terminal_outcome: None,
                                     observation,
                                 },

@@ -64,6 +64,11 @@ path = "src/bin/embedded_backend.rs"
 test = false
 
 [[bin]]
+name = "functions_only_modes"
+path = "src/bin/functions_only_modes.rs"
+test = false
+
+[[bin]]
 name = "otlp_metrics_exporter"
 path = "src/bin/otlp_metrics_exporter.rs"
 test = false

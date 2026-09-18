@@ -147,7 +147,10 @@ fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_t
 
 #[tokio::test]
 async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
+        datafusion::execution::SessionStateBuilder::new_with_default_features(),
+        datafusion_nexus::planner::NexusGpuExecutionMode::FunctionsOnly,
+    );
     register_edges_with_upstream_only_list(&ctx, "raw_edges");
     ctx.sql(
         "CREATE VIEW filtered_edges AS \
@@ -214,6 +217,82 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     let observation = &metrics.graph_runtime_rows[0];
     assert_eq!(observation.algorithm, "degrees_all");
     assert_eq!(observation.runtime_outcome, "succeeded");
+}
+
+#[tokio::test]
+async fn functions_only_keeps_sql_limit_outside_the_cugraph_function() {
+    let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
+        datafusion::execution::SessionStateBuilder::new_with_default_features(),
+        datafusion_nexus::planner::NexusGpuExecutionMode::FunctionsOnly,
+    );
+    register_edge_memtable(&ctx, "limit_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    let plan = ctx
+        .sql("SELECT vertex, value FROM cugraph_pagerank('limit_edges', 'src', 'dst', 'weight') LIMIT 2")
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+
+    assert!(
+        plan_contains_named_node(plan.as_ref(), "GlobalLimitExec")
+            || plan_contains_named_node(plan.as_ref(), "LocalLimitExec"),
+        "the SQL LIMIT must remain a DataFusion operator outside the cuGraph function"
+    );
+    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+}
+
+async fn assert_repeated_cugraph_cte_executes(
+    mode: datafusion_nexus::planner::NexusGpuExecutionMode,
+    expected_gpu_executions: usize,
+) {
+    let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
+        datafusion::execution::SessionStateBuilder::new_with_default_features(),
+        mode,
+    );
+    register_edge_memtable(&ctx, "shared_cte_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    let plan = ctx
+        .sql(
+            "WITH graph_result AS (\
+                 SELECT vertex, in_degree, out_degree \
+                 FROM cugraph_degrees_all('shared_cte_edges', 'src', 'dst', 'weight')\
+             ) \
+             SELECT a.vertex, a.out_degree, b.in_degree \
+             FROM graph_result a JOIN graph_result b ON a.vertex = b.vertex \
+             ORDER BY a.vertex",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
+    assert_eq!(
+        rendered.matches("CugraphAlgoExec: algorithm=DegreesAll").count(),
+        expected_gpu_executions,
+        "the execution policy must preserve its declared CTE sharing behavior:\n{rendered}"
+    );
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx())
+        .await
+        .expect("both references to one cuGraph table provider must execute");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    assert_eq!(
+        metrics.graph_runtime_rows.len(),
+        expected_gpu_executions,
+        "each unshared graph occurrence must execute once"
+    );
+}
+
+#[tokio::test]
+async fn functions_only_executes_repeated_cugraph_cte_occurrences() {
+    assert_repeated_cugraph_cte_executes(datafusion_nexus::planner::NexusGpuExecutionMode::FunctionsOnly, 2).await;
+}
+
+#[tokio::test]
+async fn native_preferred_executes_repeated_cugraph_cte_occurrences() {
+    assert_repeated_cugraph_cte_executes(datafusion_nexus::planner::NexusGpuExecutionMode::NativePreferred, 1).await;
 }
 
 #[tokio::test]

@@ -40,6 +40,14 @@ Runtime admission and device-memory accounting begin later. See
 
 ## Session wiring
 
+The backend's `NexusGpuExecutionMode` controls relational selection.
+`NativePreferred` (the default) enables it and permits DataFusion CPU execution;
+`NativeRequired` enables it and rejects a completed plan containing DataFusion
+CPU operators. `FunctionsOnly` disables relational rewrites while retaining
+explicit cuGraph/cuVS execution and the same backend admission authority. See
+[Choose an execution mode](../integration/datafusion-session.mdx#choose-an-execution-mode)
+for configuration and CPU/GPU composition limits.
+
 `with_nexus_native` installs three physical optimizer rules around DataFusion's
 own rules:
 
@@ -130,8 +138,10 @@ attempt and exposes it through `last_planning_diagnostics`. The bundle pairs
 the report with native optimizer, source, and capability evidence; it is
 diagnostic state, not a planning history.
 
-Relational selection is whole-candidate by default. There is one narrow mixed
-exception in `src/planner/native/mixed.rs`: when whole-plan lowering misses on
+When enabled, relational selection is whole-candidate by default. Explicit GPU
+functions can separately compose with DataFusion CPU operators, including in
+`FunctionsOnly` mode. The narrow relational rewrite exception lives in
+`src/planner/native/mixed.rs`: when whole-plan lowering misses on
 an unsupported expression, Nexus may certify a final CPU `ILIKE` filter over a
 single local-Parquet source and replace only that source with a native
 host-output leaf. The certificate checks the exact shape, source, schema, and

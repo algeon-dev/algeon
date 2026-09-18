@@ -52,6 +52,35 @@ pub enum FinalPlanDisposition {
     Mixed,
 }
 
+#[cfg(test)]
+mod execution_mode_tests {
+    use super::*;
+
+    #[test]
+    fn execution_modes_map_to_one_canonical_policy_pair() {
+        for mode in [
+            NexusGpuExecutionMode::NativePreferred,
+            NexusGpuExecutionMode::FunctionsOnly,
+            NexusGpuExecutionMode::NativeRequired,
+        ] {
+            let config = NexusNativeOptimizerConfig::default().with_execution_mode(mode);
+            assert_eq!(config.execution_mode().unwrap(), mode);
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn disabled_relational_rewrite_cannot_reject_datafusion_cpu_execution() {
+        let config = NexusNativeOptimizerConfig::default()
+            .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Disabled)
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+
+        let error = config.validate().expect_err("contradictory policies must reject before planning");
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("reason"), Some("relational_native_rewrite_disabled_with_cpu_reject"));
+    }
+}
+
 impl FinalPlanDisposition {
     /// Stable label for diagnostics and typed requirement errors.
     pub const fn as_str(self) -> &'static str {
@@ -80,6 +109,32 @@ pub enum DataFusionCpuExecutionPolicy {
     Reject,
 }
 
+/// Whether ordinary relational DataFusion plans are candidates for native
+/// lowering. Explicit GPU function nodes remain eligible in both policies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum RelationalNativeRewritePolicy {
+    /// Run the existing native relational selection rules.
+    #[default]
+    Enabled,
+    /// Preserve ordinary relational operators for DataFusion CPU execution.
+    Disabled,
+}
+
+/// Product-level mapping of relational selection and final CPU policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum NexusGpuExecutionMode {
+    /// Prefer native relational execution and allow a DataFusion CPU result.
+    #[default]
+    NativePreferred,
+    /// Keep ordinary SQL in DataFusion and execute only explicit GPU functions
+    /// on the GPU.
+    FunctionsOnly,
+    /// Require the completed plan to contain no DataFusion CPU execution.
+    NativeRequired,
+}
+
 /// Classify the exact completed physical plan without invoking planning.
 ///
 /// The classifier intentionally recognizes only runtime nodes whose execution
@@ -104,6 +159,7 @@ pub struct NexusNativeOptimizerConfig {
     native_optimizer_options: NativeOptimizerOptions,
     native_plan_cost_options: NativePlanCostOptions,
     datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
+    relational_native_rewrite_policy: RelationalNativeRewritePolicy,
 }
 
 impl Default for NexusNativeOptimizerConfig {
@@ -113,6 +169,7 @@ impl Default for NexusNativeOptimizerConfig {
             native_optimizer_options: NativeOptimizerOptions::default(),
             native_plan_cost_options: NativePlanCostOptions::disabled(),
             datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy::Allow,
+            relational_native_rewrite_policy: RelationalNativeRewritePolicy::Enabled,
         }
     }
 }
@@ -147,6 +204,58 @@ impl NexusNativeOptimizerConfig {
     pub fn with_datafusion_cpu_execution_policy(mut self, policy: DataFusionCpuExecutionPolicy) -> Self {
         self.datafusion_cpu_execution_policy = policy;
         self
+    }
+
+    /// Return whether ordinary relational SQL participates in native lowering.
+    pub fn relational_native_rewrite_policy(&self) -> RelationalNativeRewritePolicy {
+        self.relational_native_rewrite_policy
+    }
+    /// Set whether ordinary relational SQL participates in native lowering.
+    pub fn with_relational_native_rewrite_policy(mut self, policy: RelationalNativeRewritePolicy) -> Self {
+        self.relational_native_rewrite_policy = policy;
+        self
+    }
+    /// Return the canonical product mode represented by this configuration.
+    ///
+    /// A disabled relational rewrite combined with CPU rejection is invalid.
+    pub fn execution_mode(&self) -> crate::error::Result<NexusGpuExecutionMode> {
+        match (self.relational_native_rewrite_policy, self.datafusion_cpu_execution_policy) {
+            (RelationalNativeRewritePolicy::Enabled, DataFusionCpuExecutionPolicy::Allow) => {
+                Ok(NexusGpuExecutionMode::NativePreferred)
+            },
+            (RelationalNativeRewritePolicy::Disabled, DataFusionCpuExecutionPolicy::Allow) => {
+                Ok(NexusGpuExecutionMode::FunctionsOnly)
+            },
+            (RelationalNativeRewritePolicy::Enabled, DataFusionCpuExecutionPolicy::Reject) => {
+                Ok(NexusGpuExecutionMode::NativeRequired)
+            },
+            (RelationalNativeRewritePolicy::Disabled, DataFusionCpuExecutionPolicy::Reject) => {
+                Err(crate::error::Error::new(
+                    crate::error::ErrorCode::InvalidRequest,
+                    "datafusion_nexus.planner.config",
+                    "relational native rewrite cannot be disabled when DataFusion CPU execution is rejected",
+                )
+                .with_fact("reason", "relational_native_rewrite_disabled_with_cpu_reject"))
+            },
+        }
+    }
+    /// Apply one canonical product mode without storing parallel mode state.
+    pub fn with_execution_mode(self, mode: NexusGpuExecutionMode) -> Self {
+        match mode {
+            NexusGpuExecutionMode::NativePreferred => self
+                .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Enabled)
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Allow),
+            NexusGpuExecutionMode::FunctionsOnly => self
+                .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Disabled)
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Allow),
+            NexusGpuExecutionMode::NativeRequired => self
+                .with_relational_native_rewrite_policy(RelationalNativeRewritePolicy::Enabled)
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+        }
+    }
+    /// Reject contradictory optimizer policies before planning begins.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.execution_mode().map(|_| ())
     }
 
     /// Floating statistical aggregate execution contract used by native execution.

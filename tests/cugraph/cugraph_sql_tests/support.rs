@@ -108,11 +108,18 @@ fn append_plan_metrics(
 }
 
 pub(super) fn backend_cugraph_sql_context(builder: SessionStateBuilder) -> (NexusGpuBackend, SessionContext) {
+    backend_cugraph_sql_context_with_mode(builder, datafusion_nexus::planner::NexusGpuExecutionMode::NativePreferred)
+}
+
+pub(super) fn backend_cugraph_sql_context_with_mode(
+    builder: SessionStateBuilder,
+    mode: datafusion_nexus::planner::NexusGpuExecutionMode,
+) -> (NexusGpuBackend, SessionContext) {
     let device = NexusGpuDeviceConfig::new(
         datafusion_nexus::backend::NexusGpuDeviceProfile::new(0),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
+    let backend = NexusGpuBackend::builder().with_execution_mode(mode).devices([device]).build().unwrap();
     let state = backend.install_on(builder).unwrap().try_with_cugraph_sql(CugraphSqlConfig::default()).unwrap().build();
     (backend, SessionContext::new_with_state(state))
 }

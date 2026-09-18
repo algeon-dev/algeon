@@ -107,10 +107,14 @@ impl TableProvider for CugraphAlgoTableProvider {
         let native_execution_config = crate::session::installed_nexus_native_optimizer_config(session_state)
             .map(|optimizer_config| optimizer_config.native_execution_config().clone())
             .unwrap_or_else(NexusNativeExecutionConfig::bounded_default);
-        // This nested state lowers the edge/predicate relations only.  The
-        // outer cuGraph root owns admission after footer metadata is hydrated;
-        // subplan planning uses subplan optimizer rules so that lowered child
-        // relations do not bind a ticket to the parent attempt.
+        let relational_rewrite_enabled = crate::session::installed_nexus_native_optimizer_config(session_state)
+            .is_none_or(|optimizer_config| {
+                optimizer_config.relational_native_rewrite_policy()
+                    == crate::planner::RelationalNativeRewritePolicy::Enabled
+            });
+        // This nested state lowers the edge/predicate relations only. The
+        // final outer plan owns the invocation ticket and manifest; subplan
+        // rules must not bind a competing ticket to the parent attempt.
         let planning_state = session_state_with_native_execution_config(session_state, native_execution_config.clone())
             .unwrap_or_else(|| session_state.clone());
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
@@ -121,7 +125,7 @@ impl TableProvider for CugraphAlgoTableProvider {
             .result_input_names
             .lock()
             .expect("cuGraph result input name registry mutex cannot be poisoned")
-            .entry(limit)
+            .entry(relational_rewrite_enabled.then_some(limit).flatten())
             .or_insert_with(CugraphAlgoExec::next_gpu_result_input_name)
             .clone();
         let producer = Arc::new(CugraphAlgoExec::try_new_with_reserved_gpu_result_input_name(
@@ -129,7 +133,7 @@ impl TableProvider for CugraphAlgoTableProvider {
             edge_source,
             predicate_sources,
             None,
-            limit,
+            relational_rewrite_enabled.then_some(limit).flatten(),
             native_execution_config,
             gpu_result_input_name,
         )?) as Arc<dyn ExecutionPlan>;

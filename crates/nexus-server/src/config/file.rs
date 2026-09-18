@@ -65,6 +65,7 @@ pub(super) struct ServerNativeFileConfig {
     pub(super) source_chunk_planning_mode: Option<String>,
     pub(super) statistical_aggregate_execution_mode: Option<String>,
     pub(super) final_plan_requirement: Option<String>,
+    pub(super) execution_mode: Option<String>,
 }
 pub(super) fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
     let raw = fs::read_to_string(path).map_err(|error| {

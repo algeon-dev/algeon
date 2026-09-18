@@ -184,7 +184,7 @@ fn composed_provenance_evidence(
         evidence.push(producer_evidence);
     }
     evidence.push(consumer_evidence);
-    crate::admission::AttemptCapabilityEvidence::aggregate(evidence)
+    crate::admission::AttemptCapabilityEvidence::aggregate(evidence).expect("fixture evidence has one manifest")
 }
 
 fn same_schema_provenance_fixture()

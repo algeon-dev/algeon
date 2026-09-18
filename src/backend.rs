@@ -469,6 +469,7 @@ fn validated_backend_construction(
     configured_devices: Vec<NexusGpuDeviceConfig>,
     queue_policy: NexusGpuQueuePolicy,
 ) -> Result<ValidatedBackendConstruction> {
+    optimizer_config.validate()?;
     let devices = resolve_device_configs(configured_devices)?;
     validate_queue_policy(&queue_policy)?;
     let execution_config = optimizer_config.native_execution_config().clone();
@@ -613,6 +614,11 @@ impl NexusGpuBackendBuilder {
     /// rewriting for every backend-installed physical plan.
     pub fn with_datafusion_cpu_execution_policy(mut self, policy: DataFusionCpuExecutionPolicy) -> Self {
         self.optimizer_config = self.optimizer_config.with_datafusion_cpu_execution_policy(policy);
+        self
+    }
+
+    pub fn with_execution_mode(mut self, mode: crate::planner::NexusGpuExecutionMode) -> Self {
+        self.optimizer_config = self.optimizer_config.with_execution_mode(mode);
         self
     }
 

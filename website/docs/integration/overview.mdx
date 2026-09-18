@@ -17,7 +17,13 @@ surface that matches the service boundary you own. Throughout these docs,
 | Flight SQL server | You want a remote Arrow Flight SQL endpoint for non-Rust clients, notebooks, agents, or service-to-service calls. | [Flight SQL server](./flight-sql-server.mdx) |
 | Embedded backend example | You want one Rust process that serves product-owned REST workflows and an additional Flight SQL endpoint from one shared GPU backend. | [Embedded Backend Example](./embedded-backend-example.mdx) |
 
-All three surfaces use the same cuDF relational execution path. The `cugraph`
+All three surfaces share one GPU backend. By default, Nexus selects supported
+relational SQL for cuDF execution. Choose `functions_only` to keep ordinary SQL
+on DataFusion CPU while explicit GPU functions run on GPU, or `native_required`
+to reject plans containing DataFusion CPU execution. See
+[Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode).
+
+The `cugraph`
 feature makes the `cugraph_*` table functions executable. The `cuvs` feature
 makes the three documented `cuvs_*` functions executable once the session
 installs cuVS SQL and a backend is configured; see
@@ -49,8 +55,8 @@ Iceberg/Glue/REST/S3 source integration.
    its planned execution path, and the reason for any part that stays on the
    CPU, with [GPU coverage validation](./gpu-coverage-validation.mdx):
    `nexus_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
-   or `validate_query` in Rust. Plans not selected for GPU execution stay in
-   DataFusion and still return results.
+   or `validate_query` in Rust. With the default `native_preferred` mode,
+   relational candidates not selected for GPU execution stay in DataFusion.
 5. **Handle failures.** A GPU execution failure is not replayed on CPU; it
    comes back as an error with a stable code, kind, and status. At your
    application boundary, act on errors that carry a typed Nexus identity and

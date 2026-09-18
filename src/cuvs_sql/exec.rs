@@ -7,6 +7,7 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef;
+use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
     common::{DataFusionError, Result, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
@@ -15,7 +16,6 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
-        stream::RecordBatchStreamAdapter,
     },
 };
 use futures::future::BoxFuture;
@@ -34,16 +34,18 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        GpuResidentProducer, NativeExecutionMetricsCapture, NexusNativeExecutionConfig, NexusNativeMetrics,
+        GpuResidentProducer, NativeExecutionMetricsCapture, NativeHostOutputCursor, NexusNativeExecutionConfig,
+        NexusNativeMetrics,
         child_inputs::{
             DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES, NativeChildBinding, NativeChildInputSpec, StagedNativeChildren,
             stage_native_children,
         },
-        register_gpu_resident_producer_discovery, run_gpu_execution_task,
+        native_host_output_stream, register_gpu_resident_producer_discovery, run_gpu_execution_task,
     },
 };
 
 static NEXT_CUVS_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
+const CUVS_HOST_OUTPUT_MEMORY_CONSUMER: &str = "CuvsAlgoExec[host-output-staging]";
 
 /// Physical cuVS operator over real DataFusion children.
 ///
@@ -153,22 +155,36 @@ impl CuvsAlgoExec {
         lower_cuvs_query_plan(
             self.operation,
             &self.options,
-            &self
-                .inputs
-                .iter()
-                .zip(&self.input_names)
-                .zip(&self.input_projections)
-                .zip(self.operation.descriptor().relation_roles.iter())
-                .map(|(((input, input_name), projection), role)| NativeChildBinding {
-                    input_name: input_name.clone(),
-                    role: role.as_str(),
-                    schema: input.schema(),
-                    projection: projection.clone(),
-                })
-                .collect::<Vec<_>>(),
+            &self.planned_bindings()?,
             Arc::clone(&self.output_schema),
             sink,
         )
+    }
+
+    fn planned_bindings(&self) -> Result<Vec<NativeChildBinding>> {
+        self.inputs
+            .iter()
+            .zip(&self.input_names)
+            .zip(&self.input_projections)
+            .zip(self.operation.descriptor().relation_roles.iter())
+            .map(|(((input, input_name), projection), role)| {
+                if crate::native_exec::gpu_resident_producer(input.as_ref()).is_some() {
+                    return Ok(NativeChildBinding {
+                        input_name: input_name.clone(),
+                        role: role.as_str(),
+                        schema: input.schema(),
+                        projection: projection.clone(),
+                    });
+                }
+                let schema = Arc::new(input.schema().project(projection).map_err(DataFusionError::from)?);
+                Ok(NativeChildBinding {
+                    input_name: input_name.clone(),
+                    role: role.as_str(),
+                    projection: (0..schema.fields().len()).collect(),
+                    schema,
+                })
+            })
+            .collect()
     }
 
     fn child_specs(&self) -> Vec<NativeChildInputSpec> {
@@ -301,6 +317,15 @@ impl GpuResidentProducer for CuvsAlgoExec {
     fn gpu_result_capability_evidence(&self) -> Result<nexus_query_engine::admission::AttemptCapabilityEvidence> {
         let plan = self.native_plan_for_sink(CuvsPlanSink::GpuResident)?;
         Ok(nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan))
+    }
+
+    fn host_result_capability_evidence(&self) -> Result<nexus_query_engine::admission::AttemptCapabilityEvidence> {
+        let plan = self.native_plan_for_sink(CuvsPlanSink::HostArrow)?;
+        Ok(nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan))
+    }
+
+    fn host_result_query_plan(&self) -> Result<Option<QueryPlan>> {
+        self.native_plan_for_sink(CuvsPlanSink::HostArrow).map(Some)
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
@@ -438,56 +463,116 @@ impl ExecutionPlan for CuvsAlgoExec {
         self.reject_unavailable_execution()?;
 
         let schema = Arc::clone(&self.output_schema);
+        let output_schema = Arc::clone(&schema);
         let exec = self.clone();
         let execution_config = self.native_execution_config.clone();
+        let account_memory_pool = execution_config.host_output_memory_pool_accounting();
         let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
-        let stream = futures::stream::once(async move {
-            let staged = stage_native_children(
-                exec.child_specs(),
-                Arc::clone(&task_context),
-                execution_config.cancellation(),
-                DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
-            )
-            .await?;
-            let context_lease = execution_config
-                .execution_context_async(Arc::clone(&task_context))
-                .await
-                .map_err(DataFusionError::from)?;
-            let gpu_executor = context_lease.context().gpu_executor().map_err(|error| {
-                DataFusionError::from(Error::from_native(
+        let stream = native_host_output_stream(
+            CUVS_HOST_OUTPUT_MEMORY_CONSUMER,
+            schema,
+            Arc::clone(&task_context),
+            account_memory_pool,
+            async move {
+                let staged = stage_native_children(
+                    exec.child_specs(),
+                    Arc::clone(&task_context),
+                    execution_config.cancellation(),
+                    DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
+                )
+                .await?;
+                let host_occurrence = match execution_config.query_admission_ticket_for_task_context(&task_context) {
+                    Some(ticket) => {
+                        let occurrence_id = crate::native_exec::gpu_function_occurrence_from_task_context(
+                            &task_context,
+                            &exec.gpu_result_input_name,
+                        )?
+                        .unwrap_or_else(|| exec.gpu_result_input_name.clone());
+                        ticket.begin_host_occurrence(
+                            &task_context,
+                            &occurrence_id,
+                            &exec.gpu_result_input_name,
+                            &exec.native_plan_for_sink(CuvsPlanSink::HostArrow)?,
+                        )?
+                    },
+                    None => None,
+                };
+                let context_lease = execution_config
+                    .execution_context_async(Arc::clone(&task_context))
+                    .await
+                    .map_err(DataFusionError::from)?;
+                let gpu_executor = context_lease.context().gpu_executor().map_err(|error| {
+                    DataFusionError::from(Error::from_native(
+                        "datafusion_nexus.cuvs_sql.gpu_execution_pool",
+                        "query service closed before cuVS acquired its GPU execution pool",
+                        error,
+                    ))
+                })?;
+                let observation = context_lease.context().runtime_observation().clone();
+                let cursor_executor = gpu_executor.clone();
+                let cursor_observation = observation.clone();
+                let cursor_metrics = metrics.clone();
+                run_gpu_execution_task(
+                    gpu_executor,
+                    observation,
                     "datafusion_nexus.cuvs_sql.gpu_execution_pool",
-                    "query service closed before cuVS acquired its GPU execution pool",
-                    error,
-                ))
-            })?;
-            let observation = context_lease.context().runtime_observation().clone();
-            run_gpu_execution_task(
-                gpu_executor,
-                observation,
-                "datafusion_nexus.cuvs_sql.gpu_execution_pool",
-                move |gpu_stream_scope| async move {
-                    let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
-                    let execution_task_context =
-                        context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
-                    let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-                    let output = exec
-                        .execute_staged(&context, execution_task_context, staged, CuvsPlanSink::HostArrow, &metrics)
-                        .await?;
-                    match output {
-                        QueryOutput::HostArrow(batch) => Ok(batch),
-                        QueryOutput::GpuResident(_) => Err(Error::new(
-                            ErrorCode::InvalidExecutionPlan,
-                            "datafusion_nexus.cuvs_sql.execute",
-                            "native cuVS host execution returned a GPU-resident result",
-                        )
-                        .with_log_safe_fact("result_sink", "gpu_resident")
-                        .into()),
-                    }
-                },
-            )
-            .await
-        });
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+                    move |gpu_stream_scope| async move {
+                        let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
+                        let execution_task_context =
+                            context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
+                        let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+                        let output = exec
+                            .execute_staged(
+                                &context,
+                                execution_task_context,
+                                staged,
+                                CuvsPlanSink::DeferredHostArrow,
+                                &metrics,
+                            )
+                            .await?;
+                        let QueryOutput::GpuResident(handle) = output else {
+                            return Err(Error::new(
+                                ErrorCode::InvalidExecutionPlan,
+                                "datafusion_nexus.cuvs_sql.execute",
+                                "deferred cuVS host execution did not produce a GPU-resident cursor input",
+                            )
+                            .with_log_safe_fact("result_sink", "host_arrow")
+                            .into());
+                        };
+                        let cursor = handle
+                            .into_host_batch_cursor_with_host_schema(
+                                output_schema,
+                                context.cancellation().clone(),
+                                HostBatchCursorConfig::default(),
+                            )
+                            .map_err(|error| {
+                                DataFusionError::from(Error::from_native(
+                                    "datafusion_nexus.cuvs_sql.host_batch_cursor",
+                                    "failed to bind the deferred cuVS host-output cursor",
+                                    error,
+                                ))
+                            })?;
+                        let cursor = NativeHostOutputCursor::new(
+                            cursor,
+                            cursor_executor,
+                            cursor_observation,
+                            cursor_metrics,
+                            context_lease,
+                        );
+                        if let Some(host_occurrence) = host_occurrence {
+                            // The GPU result is now complete and owned by the
+                            // host cursor. DataFusion may validly stop polling
+                            // that cursor after LIMIT without invalidating the
+                            // producer occurrence.
+                            host_occurrence.complete();
+                        }
+                        Ok::<NativeHostOutputCursor, DataFusionError>(cursor)
+                    },
+                )
+                .await
+            },
+        );
+        Ok(stream)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

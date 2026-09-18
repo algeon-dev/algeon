@@ -19,10 +19,12 @@ use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     cuvs_sql::CuvsAlgoExec,
-    error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::{FinalPlanDisposition, NexusGpuExecutionMode, classify_final_plan},
     session::NexusSessionStateBuilderExt,
 };
+use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
 
 const KNN_OPTIONS: &str = r#"{
@@ -45,8 +47,71 @@ const PCA_OPTIONS: &str = r#"{
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
-async fn cuvs_sql_rejects_host_wrapped_cugraph_input_before_admission() {
-    let backend = cuvs_test_backend();
+async fn native_required_accepts_a_raw_cugraph_function_root() {
+    let backend = cuvs_test_backend_with_mode(NexusGpuExecutionMode::NativeRequired);
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install strict backend")
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tables(&ctx);
+
+    let graph = ctx
+        .sql("SELECT * FROM cugraph_degrees_all('edges', 'src', 'dst', 'weight')")
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .expect("strict mode accepts a raw cuGraph function root");
+    assert_eq!(classify_final_plan(graph.as_ref()), FinalPlanDisposition::Native);
+    assert_eq!(collect(graph, ctx.task_ctx()).await.unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn functions_only_keeps_native_supported_sql_on_cpu_without_gpu_activity() {
+    let backend = cuvs_test_backend_with_mode(NexusGpuExecutionMode::FunctionsOnly);
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install functions-only backend")
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tables(&ctx);
+
+    let plan = ctx
+        .sql("SELECT SUM(item_id) AS total FROM dataset_vectors")
+        .await
+        .expect("plan ordinary SQL")
+        .create_physical_plan()
+        .await
+        .expect("physical ordinary SQL plan");
+    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    assert!(rendered.contains("AggregateExec"), "ordinary SQL must remain in DataFusion:\n{rendered}");
+    assert!(!rendered.contains("NexusNative"), "ordinary SQL must not be rewritten in functions-only:\n{rendered}");
+
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let batches = collect(plan, ctx.task_ctx()).await.expect("ordinary CPU SQL executes");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    let admission = backend.admission_snapshot().expect("post-query admission snapshot");
+    assert_eq!(admission.active_queries, 0);
+    let device = backend.backend_metrics_snapshot().device(0).expect("device metrics");
+    assert_eq!(device.admission.active_attempts, 0);
+    assert_eq!(device.admission.live_grant_bytes, 0);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_admission() {
+    let backend = cuvs_test_backend_with_mode(NexusGpuExecutionMode::FunctionsOnly);
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
         .expect("install backend")
@@ -88,15 +153,211 @@ async fn cuvs_sql_rejects_host_wrapped_cugraph_input_before_admission() {
         "the cuVS relation must retain its planned cuGraph producer:\n{rendered_plan}"
     );
     assert!(
-        rendered_plan.starts_with("NexusNativeComposedExec:"),
-        "relational operators above cuVS must still form the native outer consumer:\n{rendered_plan}"
+        rendered_plan.contains("HashJoinExec"),
+        "the SQL join must remain a DataFusion CPU operator:\n{rendered_plan}"
+    );
+    assert!(
+        !rendered_plan.contains("NexusNativeComposedExec:"),
+        "functions-only must not absorb ordinary relational SQL into a native consumer:\n{rendered_plan}"
     );
 
-    let error = collect(plan, ctx.task_ctx()).await.expect_err("host-wrapped GPU producer must be rejected");
-    let typed = error.find_nexus_error().expect("structured GPU producer boundary rejection");
-    assert_eq!(typed.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(typed.operation(), "datafusion_nexus.native_multi_child.prepare");
-    assert_eq!(typed.facts().get("reason"), Some("gpu_producer_below_host_wrapper"));
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.expect("GPU -> CPU -> GPU composition must execute");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(plan.as_ref()));
+    assert!(metrics.admission_sequence.is_some(), "both GPU functions must retain one admission sequence");
+    assert_eq!(metrics.graph_runtime_rows.len(), 1, "the graph occurrence must execute exactly once");
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[cfg(feature = "cugraph")]
+async fn assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(mode: NexusGpuExecutionMode) {
+    let backend = cuvs_test_backend_with_mode(mode);
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install backend")
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .try_with_cuvs_sql()
+        .expect("install cuGraph and cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tables(&ctx);
+    let sql = format!(
+        "WITH graph_result AS (\
+             SELECT vertex, x, y FROM cugraph_force_atlas2(\
+                 'edges', 'src', 'dst', 'weight', '{{\"max_iter\":5,\"seed\":42}}'\
+             )\
+         ), left_queries AS (\
+             SELECT d.item_id AS query_id, d.d0, d.d1 \
+             FROM graph_result g JOIN dataset_vectors d ON d.item_id = g.vertex \
+             WHERE g.x IS NOT NULL\
+         ), right_queries AS (\
+             SELECT d.item_id AS query_id, d.d0, d.d1 \
+             FROM graph_result g JOIN dataset_vectors d ON d.item_id = g.vertex \
+             WHERE g.y IS NOT NULL\
+         ), left_knn AS (\
+             SELECT query_id, neighbor_id FROM cuvs_brute_force_knn(\
+                 (SELECT item_id, d0, d1 FROM dataset_vectors), \
+                 (SELECT * FROM left_queries), '{}')\
+         ), right_knn AS (\
+             SELECT query_id, neighbor_id FROM cuvs_brute_force_knn(\
+                 (SELECT item_id, d0, d1 FROM dataset_vectors), \
+                 (SELECT * FROM right_queries), '{}')\
+         ) \
+         SELECT query_id, neighbor_id FROM left_knn \
+         UNION ALL \
+         SELECT query_id, neighbor_id FROM right_knn",
+        sql_literal(KNN_OPTIONS),
+        sql_literal(KNN_OPTIONS),
+    );
+    let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
+    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    assert_eq!(rendered.matches("CugraphAlgoExec: algorithm=ForceAtlas2").count(), 2, "{rendered}");
+    assert_eq!(rendered.matches("CuvsAlgoExec").count(), 2, "{rendered}");
+
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx())
+        .await
+        .expect("both shared-producer branches must satisfy their own downstream occurrence");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 8);
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(plan.as_ref()));
+    assert_eq!(metrics.graph_runtime_rows.len(), 2, "each unshared CTE occurrence executes once");
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn functions_only_binds_shared_cugraph_cte_lineage_to_two_cuvs_consumers() {
+    assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(NexusGpuExecutionMode::FunctionsOnly).await;
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn native_preferred_binds_nested_host_lineage_inside_composed_consumers() {
+    assert_shared_cugraph_cte_lineage_to_two_cuvs_consumers(NexusGpuExecutionMode::NativePreferred).await;
+}
+
+#[tokio::test]
+async fn functions_only_executes_cuvs_through_cpu_limit_into_cuvs() {
+    let (backend, ctx) = cuvs_bounded_context_with_mode(NexusGpuExecutionMode::FunctionsOnly);
+    register_tables(&ctx);
+    let sql = format!(
+        "WITH first_neighbors AS (\
+             SELECT neighbor_id \
+             FROM cuvs_brute_force_knn(\
+                 (SELECT item_id, d0, d1 FROM dataset_vectors), \
+                 (SELECT * FROM query_vectors), \
+                 '{}') \
+             LIMIT 1\
+         ), second_queries AS (\
+             SELECT d.item_id AS query_id, d.d0, d.d1 \
+             FROM first_neighbors n \
+             JOIN dataset_vectors d ON d.item_id = n.neighbor_id\
+         ) \
+         SELECT * FROM cuvs_brute_force_knn(\
+             (SELECT item_id, d0, d1 FROM dataset_vectors), \
+             (SELECT query_id, d0, d1 FROM second_queries), \
+             '{}')",
+        sql_literal(KNN_OPTIONS),
+        sql_literal(KNN_OPTIONS),
+    );
+    let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
+    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    assert_eq!(
+        rendered.matches("CuvsAlgoExec").count(),
+        2,
+        "both cuVS function occurrences must remain explicit:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("GlobalLimitExec") || rendered.contains("LocalLimitExec"),
+        "the intermediate LIMIT must remain a DataFusion CPU boundary:\n{rendered}"
+    );
+
+    let batches = collect(plan, ctx.task_ctx())
+        .await
+        .expect("a CPU LIMIT may stop the first host cursor before EOF and still feed the second cuVS occurrence");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn functions_only_executes_two_gpu_branches_through_a_cpu_join_under_one_admission() {
+    let backend = cuvs_test_backend_with_mode(NexusGpuExecutionMode::FunctionsOnly);
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install backend")
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tables(&ctx);
+
+    let sql = "WITH left_layout AS (\
+                   SELECT vertex, x FROM cugraph_force_atlas2(\
+                       'edges', 'src', 'dst', 'weight', '{\"max_iter\":5,\"seed\":42}')\
+               ), right_layout AS (\
+                   SELECT vertex, y FROM cugraph_force_atlas2(\
+                       'edges', 'src', 'dst', 'weight', '{\"max_iter\":5,\"seed\":43}')\
+               ) \
+               SELECT l.vertex, l.x, r.y \
+               FROM left_layout l JOIN right_layout r ON l.vertex = r.vertex \
+               ORDER BY l.vertex";
+    let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
+    let rendered = datafusion::physical_plan::displayable(plan.as_ref()).indent(false).to_string();
+    assert!(rendered.contains("HashJoinExec"), "the branch join must remain on DataFusion CPU:\n{rendered}");
+
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.expect("two GPU branches must execute");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(plan.as_ref()));
+    assert!(metrics.admission_sequence.is_some());
+    assert_eq!(metrics.graph_runtime_rows.len(), 2, "each graph occurrence must execute once");
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn functions_only_stream_drop_releases_admission_and_the_plan_can_run_again() {
+    let backend = cuvs_test_backend_with_mode(NexusGpuExecutionMode::FunctionsOnly);
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install backend")
+        .try_with_cuvs_sql()
+        .expect("install cuVS SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_tables(&ctx);
+    let sql = format!(
+        "SELECT * FROM cuvs_brute_force_knn(\
+             (SELECT item_id, d0, d1 FROM dataset_vectors), \
+             (SELECT * FROM query_vectors), \
+             '{}')",
+        sql_literal(KNN_OPTIONS)
+    );
+    let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
+
+    let mut stream = datafusion::physical_plan::execute_stream(Arc::clone(&plan), ctx.task_ctx()).unwrap();
+    assert!(stream.next().await.transpose().unwrap().is_some());
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while backend.admission_snapshot().unwrap().active_queries != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropping the stream must release query admission");
+    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0);
+
+    let batches =
+        collect(plan, ctx.task_ctx()).await.expect("the same physical plan must start a fresh invocation round");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while backend.admission_snapshot().unwrap().active_queries != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed reuse must release query admission");
+    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0);
     close_cuvs_test_backend(backend, ctx);
 }
 
@@ -233,7 +494,7 @@ async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_b
 
 #[tokio::test]
 async fn cuvs_sql_executes_parquet_relations_with_bounded_memory() {
-    let (backend, ctx) = cuvs_bounded_context();
+    let (backend, ctx) = cuvs_bounded_context_with_mode(NexusGpuExecutionMode::FunctionsOnly);
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let dataset_path = temp_dir.path().join("dataset.parquet");
     let dataset_schema = wide_vector_schema("item_id");
@@ -418,11 +679,12 @@ async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
     close_cuvs_test_backend(backend, ctx);
 }
 
-fn cuvs_test_backend() -> NexusGpuBackend {
+fn cuvs_test_backend_with_mode(mode: NexusGpuExecutionMode) -> NexusGpuBackend {
     let profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 });
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     NexusGpuBackend::builder()
+        .with_execution_mode(mode)
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             512 * 1024 * 1024,
             256 * 1024 * 1024,
@@ -436,7 +698,11 @@ fn cuvs_test_backend() -> NexusGpuBackend {
 }
 
 fn cuvs_bounded_context() -> (NexusGpuBackend, SessionContext) {
-    let backend = cuvs_test_backend();
+    cuvs_bounded_context_with_mode(NexusGpuExecutionMode::NativePreferred)
+}
+
+fn cuvs_bounded_context_with_mode(mode: NexusGpuExecutionMode) -> (NexusGpuBackend, SessionContext) {
+    let backend = cuvs_test_backend_with_mode(mode);
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
         .expect("install backend admission on the cuVS SQL session")
@@ -563,6 +829,23 @@ fn find_cuvs_exec(plan: &dyn ExecutionPlan) -> Option<&CuvsAlgoExec> {
         return Some(exec);
     }
     plan.children().into_iter().find_map(|child| find_cuvs_exec(child.as_ref()))
+}
+
+fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> datafusion::physical_plan::metrics::MetricsSet {
+    fn append(metrics: &mut datafusion::physical_plan::metrics::MetricsSet, plan: &dyn ExecutionPlan) {
+        if let Some(plan_metrics) = plan.metrics() {
+            for metric in plan_metrics.iter() {
+                metrics.push(Arc::clone(metric));
+            }
+        }
+        for child in plan.children() {
+            append(metrics, child.as_ref());
+        }
+    }
+
+    let mut metrics = datafusion::physical_plan::metrics::MetricsSet::new();
+    append(&mut metrics, plan);
+    metrics
 }
 
 fn sql_literal(json: &str) -> String {

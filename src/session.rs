@@ -162,14 +162,20 @@ pub(crate) fn session_state_with_native_execution_config(
 ) -> Option<SessionState> {
     let optimizer_config =
         installed_nexus_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
+    let relational_rewrite_enabled =
+        optimizer_config.relational_native_rewrite_policy() == crate::planner::RelationalNativeRewritePolicy::Enabled;
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
     insert_nexus_native_rules_for_cugraph_subplan(&mut rules, rule);
-    Some(build_cugraph_subplan_state(state, rules))
+    Some(build_cugraph_subplan_state(state, rules, relational_rewrite_enabled))
 }
 
 #[cfg(feature = "cugraph")]
-fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRules) -> SessionState {
+fn build_cugraph_subplan_state(
+    state: &SessionState,
+    rules: PhysicalOptimizerRules,
+    relational_rewrite_enabled: bool,
+) -> SessionState {
     // Graph edge and predicate sources feed graph construction or host-side
     // staging, so each nested scan must present one ordered run: a declared
     // fixture ordering (the source-sorted DBLP layout) only survives from a
@@ -178,7 +184,12 @@ fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRul
     // planner shares the parent catalog list. Preserve that property after
     // changing subplan parallelism: recreating the default catalog would
     // overwrite the parent's registered relation providers.
-    let subplan_config = state.config().clone().with_target_partitions(1).with_create_default_catalog_and_schema(false);
+    let subplan_config = if relational_rewrite_enabled {
+        state.config().clone().with_target_partitions(1)
+    } else {
+        state.config().clone()
+    }
+    .with_create_default_catalog_and_schema(false);
     SessionStateBuilder::new_from_existing(state.clone())
         .with_config(subplan_config)
         .with_physical_optimizer_rules(rules)
@@ -342,6 +353,21 @@ mod tests {
         assert_eq!(nested.config().target_partitions(), 1);
         // The caller's own session keeps whatever parallelism it configured.
         assert!(state.config().target_partitions() >= 1);
+    }
+
+    #[test]
+    fn functions_only_cugraph_subplanning_preserves_parent_parallelism() {
+        let optimizer_config = NexusNativeOptimizerConfig::default()
+            .with_execution_mode(crate::planner::NexusGpuExecutionMode::FunctionsOnly);
+        let state = SessionStateBuilder::new()
+            .with_config(datafusion::prelude::SessionConfig::new().with_target_partitions(4))
+            .with_nexus_native(optimizer_config.clone())
+            .build();
+        let nested =
+            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
+                .expect("nested cuGraph planning requires installed native selection");
+
+        assert_eq!(nested.config().target_partitions(), 4);
     }
 
     #[test]

@@ -262,14 +262,7 @@ async fn stage_cugraph_source(
         return Ok(StagedCugraphSource::Native { schema, plan });
     }
     if plan_contains_nexus_native(plan.as_ref()) {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.cugraph_sql.host_input_staging",
-            "cuGraph host staging cannot hide a native GPU child below a CPU execution wrapper",
-        )
-        .with_fact("source_kind", source_kind)
-        .with_fact("source_plan", plan.name())
-        .into());
+        crate::native_exec::validate_host_wrapped_gpu_execution(plan.as_ref(), task_context.as_ref())?;
     }
 
     let partition_count = plan.properties().output_partitioning().partition_count();
