@@ -8,7 +8,8 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::{
         CumlOperation, GpuOptionKind, MlAlgorithmNode, MlAlgorithmParams, NodeId, QueryPlan, VectorElementType,
-        ml_embedding_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema,
+        vector_pca_output_schema,
     },
     vector_validation::validate_dense_relation_binding,
 };
@@ -100,6 +101,7 @@ pub fn validate_ml_algorithm_node(
             ],
             None,
         ),
+        MlAlgorithmParams::ForestPredict(_) => (CumlOperation::ForestPredict, vec![], vec![], None),
         MlAlgorithmParams::Umap(p) => (
             CumlOperation::Umap,
             vec![
@@ -202,6 +204,17 @@ pub fn validate_ml_algorithm_node(
                 .with_fact("n_components", n_components.expect("decomposition components"))
                 .with_fact("feature_count", dimension));
         }
+        if let MlAlgorithmParams::ForestPredict(p) = &ml.spec.params
+            && dimension != p.model.num_features()
+        {
+            return Err(invalid(
+                "forest feature count differs from the model",
+                "forest_feature_count_mismatch",
+                node_id,
+            )
+            .with_fact("expected", p.model.num_features())
+            .with_fact("actual", dimension));
+        }
     }
     let expected_schema = if supervised {
         let (training, predict_binding) = match &ml.spec.params {
@@ -274,6 +287,8 @@ pub fn validate_ml_algorithm_node(
             predict.id_type,
             if operation == CumlOperation::RandomForestRegressor { DataType::Float32 } else { DataType::Int32 },
         )
+    } else if let MlAlgorithmParams::ForestPredict(p) = &ml.spec.params {
+        ml_forest_output_schema(relation.id_type, p.model.output())
     } else {
         match n_components {
             Some(count) if operation == CumlOperation::Umap => ml_embedding_output_schema(relation.id_type, count),

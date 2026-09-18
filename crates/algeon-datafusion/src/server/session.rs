@@ -13,6 +13,7 @@ use crate::server::{
     backend::AlgeonGpuBackend,
     config::{CugraphServerConfig, ServerConfig},
     cugraph_sql::CugraphSqlConfig,
+    cuml_sql::CumlSqlConfig,
     error::{Result as ServerResult, ServerError},
     planner::DataFusionCpuExecutionPolicy,
     workspace::{install_workspace_overlay, warn_if_default_schema_is_read_only},
@@ -37,7 +38,7 @@ pub async fn build_session_context_with_backend(
     let builder = builder
         .try_with_cuvs_sql()
         .map_err(|error| ServerError::session("failed to install cuVS SQL family", error))?
-        .try_with_cuml_sql()
+        .try_with_cuml_sql_config(CumlSqlConfig { model_store: effective_config.models.clone() })
         .map_err(|error| ServerError::session("failed to install cuML SQL family", error))?;
     let builder = match &effective_config.cugraph {
         Some(cugraph) => builder

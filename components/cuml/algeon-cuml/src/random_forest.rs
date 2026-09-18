@@ -1,10 +1,11 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, ptr, sync::Arc};
 
-use cudf::{DataType, Runtime, Series, TypeId, runtime::ExecutionBindingId};
+use cudf::{Runtime, Series, runtime::ExecutionBindingId};
 
 use crate::{
-    DeviceBuffer, DeviceMatrix, MatrixLayout, Result,
+    DeviceMatrix, ForestInferenceModel, ForestOutput, ForestOutputKind, MatrixLayout, Result,
     error::{ErrorCode, FailurePhase, check_status, error, from_cudf, invalid_input},
+    forest_inference::empty_metadata,
     labels::{adopt_labels, validate_class_labels, validate_finite_targets},
     resources::{CumlResources, TrainingStreams},
 };
@@ -56,22 +57,6 @@ unsafe extern "C" {
         split_criterion: i32,
         input_row_major: i32,
         out_forest: *mut cuml_sys::cuml_rf_forest_t,
-    ) -> cuml_sys::cuml_status_t;
-    fn cuml_rf_classifier_predict(
-        handle: cuml_sys::cuml_handle_t,
-        forest: cuml_sys::cuml_rf_forest_t,
-        input: *const f32,
-        rows: i32,
-        columns: i32,
-        predictions: *mut i64,
-    ) -> cuml_sys::cuml_status_t;
-    fn cuml_rf_regressor_predict(
-        handle: cuml_sys::cuml_handle_t,
-        forest: cuml_sys::cuml_rf_forest_t,
-        input: *const f32,
-        rows: i32,
-        columns: i32,
-        predictions: *mut f32,
     ) -> cuml_sys::cuml_status_t;
     fn cuml_rf_forest_destroy(forest: cuml_sys::cuml_rf_forest_t) -> cuml_sys::cuml_status_t;
 }
@@ -185,6 +170,45 @@ struct Forest {
 }
 
 impl Forest {
+    fn forest_model(
+        &self,
+        resources: &CumlResources,
+        output: ForestOutput,
+        expected: ForestOutputKind,
+        op: &'static str,
+    ) -> Result<ForestInferenceModel> {
+        let raw =
+            self.raw.ok_or_else(|| error(ErrorCode::ModelClosed, FailurePhase::Preflight, op, "forest is closed"))?;
+        if resources.binding_id() != self.binding_id {
+            return Err(error(
+                ErrorCode::RuntimeBindingMismatch,
+                FailurePhase::Preflight,
+                op,
+                "model and resources must share an execution binding",
+            ));
+        }
+        resources.validate_exact_binding(op)?;
+        let mut model = ptr::null_mut();
+        let mut metadata = empty_metadata();
+        resources.with_native(op, |handle| {
+            // SAFETY: the forest is live and bound to this handle; import copies its
+            // trees to the handle's device before returning.
+            check_status(unsafe { cuml_sys::cuml_rf_forest_import(handle, raw, &mut model, &mut metadata) }, op)
+        })?;
+        let model = ForestInferenceModel::from_native(resources, model, metadata, output, op)?;
+        if model.info().num_features != self.n_features || model.output_kind() != expected {
+            return Err(error(
+                ErrorCode::InvariantViolation,
+                FailurePhase::NativeCall,
+                op,
+                "nvForest import disagrees with the fitted forest shape",
+            )
+            .with_detail("features", model.info().num_features)
+            .with_detail("output", format!("{:?}", model.output_kind())));
+        }
+        Ok(model)
+    }
+
     fn close(&mut self) -> Result<()> {
         let Some(raw) = self.raw else { return Ok(()) };
         // SAFETY: this wrapper uniquely owns the opaque native forest.
@@ -272,36 +296,20 @@ impl RandomForestClassifier {
         }))
     }
 
-    /// Predicts from row-major features. Pinned cuML copies the matrix to host
-    /// and synchronizes the CUDA stream before traversing the host-resident trees.
-    pub fn predict(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<Series> {
-        const OP: &str = "RandomForestClassifier::predict";
-        validate_predict(&self.0, resources, input, OP)?;
-        if input.layout() != MatrixLayout::RowMajor {
-            return Err(error(
-                ErrorCode::UnsupportedLayout,
-                FailurePhase::Preflight,
-                OP,
-                "random forest prediction requires row-major input",
-            ));
-        }
-        resources.validate_exact_binding(OP)?;
-        let raw =
-            self.0.raw.ok_or_else(|| error(ErrorCode::ModelClosed, FailurePhase::Preflight, OP, "forest is closed"))?;
-        let mut predictions = DeviceBuffer::<i64>::new(resources, input.rows())?;
-        let ptr = predictions.as_mut_ptr()?.cast();
-        let rows = as_i32(input.rows(), OP, "row count")?;
-        let columns = as_i32(input.columns(), OP, "feature count")?;
-        resources.with_native(OP, |handle| {
-            // SAFETY: model and row-major input are bound to the current cuML runtime.
-            check_status(
-                unsafe { cuml_rf_classifier_predict(handle, raw, input.as_ptr().cast(), rows, columns, ptr) },
-                OP,
-            )
-        })?;
-        predictions.validate_range(0, self.0.n_classes.expect("classifier class count") as i64, OP)?;
-        let output = Series::from_column(predictions.into_column()?).map_err(|e| from_cudf(OP, e))?;
-        output.astype(DataType::new(TypeId::Int32)).map_err(|e| from_cudf(OP, e))
+    /// Imports the fitted forest into nvForest on the resources' device,
+    /// allocating through their query-domain route. The model predicts
+    /// row-major Float32 features into one Int32 series whose value is the
+    /// training label with the highest averaged class probability; ties
+    /// resolve to the lowest label. Close the model before releasing the
+    /// execution grant.
+    pub fn forest_model(&self, resources: &CumlResources) -> Result<ForestInferenceModel> {
+        let classes = self.0.n_classes.expect("classifier class count");
+        self.0.forest_model(
+            resources,
+            ForestOutput::ClassIndex,
+            ForestOutputKind::ClassIndex { classes },
+            "RandomForestClassifier::forest_model",
+        )
     }
 
     pub fn close(&mut self) -> Result<()> {
@@ -371,35 +379,17 @@ impl RandomForestRegressor {
         }))
     }
 
-    /// Predicts from row-major features. Pinned cuML copies the matrix to host
-    /// and synchronizes the CUDA stream before traversing the host-resident trees.
-    pub fn predict(&self, resources: &CumlResources, input: &DeviceMatrix<'_>) -> Result<Series> {
-        const OP: &str = "RandomForestRegressor::predict";
-        validate_predict(&self.0, resources, input, OP)?;
-        if input.layout() != MatrixLayout::RowMajor {
-            return Err(error(
-                ErrorCode::UnsupportedLayout,
-                FailurePhase::Preflight,
-                OP,
-                "random forest prediction requires row-major input",
-            ));
-        }
-        resources.validate_exact_binding(OP)?;
-        let raw =
-            self.0.raw.ok_or_else(|| error(ErrorCode::ModelClosed, FailurePhase::Preflight, OP, "forest is closed"))?;
-        let mut predictions = DeviceBuffer::<f32>::new(resources, input.rows())?;
-        let ptr = predictions.as_mut_ptr()?.cast();
-        let rows = as_i32(input.rows(), OP, "row count")?;
-        let columns = as_i32(input.columns(), OP, "feature count")?;
-        resources.with_native(OP, |handle| {
-            // SAFETY: model and row-major input are bound to the current cuML runtime.
-            check_status(
-                unsafe { cuml_rf_regressor_predict(handle, raw, input.as_ptr().cast(), rows, columns, ptr) },
-                OP,
-            )
-        })?;
-        predictions.validate_finite(OP)?;
-        Series::from_column(predictions.into_column()?).map_err(|e| from_cudf(OP, e))
+    /// Imports the fitted forest into nvForest on the resources' device,
+    /// allocating through their query-domain route. The model predicts
+    /// row-major Float32 features into one Float32 series of tree-averaged
+    /// targets. Close the model before releasing the execution grant.
+    pub fn forest_model(&self, resources: &CumlResources) -> Result<ForestInferenceModel> {
+        self.0.forest_model(
+            resources,
+            ForestOutput::Scores,
+            ForestOutputKind::Score,
+            "RandomForestRegressor::forest_model",
+        )
     }
 
     pub fn close(&mut self) -> Result<()> {
@@ -432,29 +422,6 @@ fn validate_fit(
     Ok((rows, columns))
 }
 
-fn validate_predict(
-    forest: &Forest,
-    resources: &CumlResources,
-    input: &DeviceMatrix<'_>,
-    op: &'static str,
-) -> Result<()> {
-    if input.columns() != forest.n_features
-        || input.binding_id() != forest.binding_id
-        || resources.binding_id() != forest.binding_id
-    {
-        return Err(error(
-            ErrorCode::RuntimeBindingMismatch,
-            FailurePhase::Preflight,
-            op,
-            "model, input, and resources must share a binding and feature shape",
-        ));
-    }
-    if input.rows() == 0 {
-        return Err(invalid_input(op, "prediction input must contain rows"));
-    }
-    Ok(())
-}
-
 fn non_null_forest(raw: cuml_sys::cuml_rf_forest_t, op: &'static str) -> Result<cuml_sys::cuml_rf_forest_t> {
     if raw.is_null() {
         Err(error(
@@ -474,4 +441,140 @@ fn as_i32(value: usize, op: &'static str, name: &'static str) -> Result<i32> {
 
 fn size_error(op: &'static str, what: &'static str) -> crate::Error {
     error(ErrorCode::SizeOverflow, FailurePhase::Preflight, op, format!("{what} exceeds i32"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{num::NonZeroUsize, ptr, sync::Arc};
+
+    use cudf::{DenseMatrixLayout, PackedMatrix, Runtime, Series};
+    use cuml_sys::{
+        CUML_SUCCESS,
+        test_support::{cuml_test_forest_gtil_predict, cuml_test_rf_treelite_checkpoint},
+    };
+
+    use super::{Forest, RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion};
+    use crate::{
+        DeviceMatrix, ForestInferenceModel, ForestOutputKind, ForestPrecision,
+        resources::{CumlResources, TrainingStreams},
+    };
+
+    fn pack(runtime: &Runtime, rows: &[Vec<f32>]) -> PackedMatrix {
+        let flat = rows.iter().flatten().copied().collect::<Vec<_>>();
+        let column = runtime.column_from_slice(&flat).unwrap();
+        runtime.pack_flat_column(&column, rows.len(), rows[0].len(), DenseMatrixLayout::RowMajor).unwrap()
+    }
+
+    fn predict(resources: &CumlResources, mut forest: ForestInferenceModel, rows: &[Vec<f32>]) -> Series {
+        let packed = pack(resources.runtime(), rows);
+        let validated = packed.validate().unwrap();
+        let input = DeviceMatrix::from_validated(&validated).unwrap();
+        let series = forest.predict(resources, &input).unwrap().into_series().unwrap();
+        forest.close().unwrap();
+        let [series]: [Series; 1] = series.try_into().unwrap();
+        series
+    }
+
+    /// Host GTIL over the Treelite model that nvForest imports.
+    fn gtil(forest: &Forest, rows: &[Vec<f32>]) -> Vec<Vec<f64>> {
+        let (mut checkpoint, mut len) = (ptr::null_mut(), 0);
+        let status = unsafe { cuml_test_rf_treelite_checkpoint(forest.raw.unwrap(), &mut checkpoint, &mut len) };
+        assert_eq!(status, CUML_SUCCESS);
+        let flat = rows.iter().flatten().map(|v| f64::from(*v)).collect::<Vec<_>>();
+        let mut output = vec![0.0; rows.len() * 8];
+        let mut written = 0;
+        let status = unsafe {
+            cuml_test_forest_gtil_predict(
+                checkpoint,
+                len,
+                flat.as_ptr(),
+                rows.len() as i32,
+                rows[0].len() as i32,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written,
+            )
+        };
+        unsafe { cuml_sys::cuml_forest_bytes_free(checkpoint) };
+        assert_eq!(status, CUML_SUCCESS);
+        output[..written].chunks(written / rows.len()).map(<[f64]>::to_vec).collect()
+    }
+
+    fn lowest_argmax(scores: &[f64]) -> i32 {
+        let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        scores.iter().position(|score| *score == max).unwrap() as i32
+    }
+
+    fn setup() -> (CumlResources, TrainingStreams) {
+        let runtime = Arc::new(Runtime::new().unwrap());
+        let resources = CumlResources::for_runtime(runtime).unwrap();
+        let streams = resources.training_streams(NonZeroUsize::new(1).unwrap(), None).unwrap();
+        (resources, streams)
+    }
+
+    #[test]
+    fn nvforest_import_matches_treelite_oracle_for_classifiers_and_regressors() {
+        let (resources, streams) = setup();
+        let runtime = Arc::clone(resources.runtime());
+        let training = (0..48).map(|i| vec![(i % 8) as f32 - 3.5, (i / 8) as f32 - 2.5]).collect::<Vec<Vec<f32>>>();
+        let held_out =
+            (0..25).map(|i| vec![(i % 5) as f32 * 1.7 - 3.9, (i / 5) as f32 * 1.3 - 2.9]).collect::<Vec<Vec<f32>>>();
+        let packed = pack(&runtime, &training);
+        let validated = packed.validate().unwrap();
+        let input = DeviceMatrix::from_validated(&validated).unwrap();
+        let params = RandomForestParams { n_trees: 8, max_depth: 8, ..Default::default() };
+        let binary = training.iter().map(|x| i32::from(x[0] + x[1] > 0.0)).collect::<Vec<_>>();
+        let three = training.iter().map(|x| i32::from(x[0] > 0.0) + i32::from(x[1] > 0.0)).collect::<Vec<_>>();
+        for (labels, classes) in [(binary, 2), (three, 3)] {
+            let labels = runtime.series(&labels).unwrap();
+            let classifier = RandomForestClassifier::fit(&resources, &streams, &input, &labels, params).unwrap();
+            let forest = classifier.forest_model(&resources).unwrap();
+            let info = forest.info();
+            assert_eq!((info.precision, info.num_features, info.num_trees), (ForestPrecision::Single, 2, 8));
+            assert_eq!(forest.output_kind(), ForestOutputKind::ClassIndex { classes });
+            let predicted = predict(&resources, forest, &held_out).to_vec_strict::<i32>().unwrap();
+            let expected = gtil(&classifier.0, &held_out).iter().map(|row| lowest_argmax(row)).collect::<Vec<_>>();
+            assert_eq!(predicted, expected, "{classes} classes");
+        }
+
+        let targets = runtime.series(&training.iter().map(|x| 2.0 * x[0] + x[1]).collect::<Vec<f32>>()).unwrap();
+        let params = RandomForestParams { split_criterion: SplitCriterion::Mse, ..params };
+        let regressor = RandomForestRegressor::fit(&resources, &streams, &input, &targets, params).unwrap();
+        let forest = regressor.forest_model(&resources).unwrap();
+        assert_eq!(forest.output_kind(), ForestOutputKind::Score);
+        assert_eq!(forest.info().precision, ForestPrecision::Single);
+        let predicted = predict(&resources, forest, &held_out).to_vec_strict::<f32>().unwrap();
+        for (actual, expected) in predicted.iter().zip(gtil(&regressor.0, &held_out)) {
+            let (actual, expected) = (f64::from(*actual), expected[0]);
+            assert!((actual - expected).abs() <= 1e-5 * expected.abs().max(1.0), "{actual} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn classifier_ties_resolve_to_the_lowest_label() {
+        let (resources, streams) = setup();
+        let runtime = Arc::clone(resources.runtime());
+        // Every tree sees all rows, so the x = 0 leaf holds classes 0 and 1 at
+        // probability 0.5 each.
+        let training = (0..24).map(|i| vec![if i < 16 { 0.0 } else { 1.0 }]).collect::<Vec<Vec<f32>>>();
+        let labels = runtime.series(&(0..24).map(|i| i / 8).collect::<Vec<i32>>()).unwrap();
+        let packed = pack(&runtime, &training);
+        let validated = packed.validate().unwrap();
+        let input = DeviceMatrix::from_validated(&validated).unwrap();
+        let params = RandomForestParams {
+            n_trees: 3,
+            bootstrap: false,
+            max_samples: 1.0,
+            max_features: 1.0,
+            max_depth: 4,
+            ..Default::default()
+        };
+        let classifier = RandomForestClassifier::fit(&resources, &streams, &input, &labels, params).unwrap();
+        let rows = vec![vec![0.0], vec![1.0]];
+        let scores = gtil(&classifier.0, &rows);
+        assert_eq!(scores[0][0], scores[0][1]);
+        assert!(scores[0][0] > scores[0][2]);
+        let predicted = predict(&resources, classifier.forest_model(&resources).unwrap(), &rows);
+        assert_eq!(predicted.to_vec_strict::<i32>().unwrap(), [0, 2]);
+    }
 }

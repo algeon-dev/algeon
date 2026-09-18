@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -18,15 +18,15 @@ use super::{
         CuvsOperation, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
         error::{feature_disabled, invalid_call},
     },
-    lowering::{CuvsPlanSink, lower_cuvs_query_plan},
+    lowering::lower_cuvs_query_plan,
 };
 use crate::native_exec::{
     AlgeonNativeExecutionConfig, GpuResidentProducer,
     child_inputs::NativeChildBinding,
     register_gpu_resident_producer_discovery,
     relation_function::{
-        RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSink,
-        RelationFunctionSpec, RelationFunctionText,
+        RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSpec,
+        RelationFunctionText,
     },
 };
 
@@ -91,18 +91,8 @@ impl RelationFunctionSpec for CuvsRelationFunctionSpec {
     fn required_projection(&self, index: usize, schema: SchemaRef) -> Result<Vec<usize>> {
         required_projection(self.operation, schema, &self.options.bindings()[index])
     }
-    fn lower(
-        &self,
-        bindings: &[NativeChildBinding],
-        schema: SchemaRef,
-        sink: RelationFunctionSink,
-    ) -> Result<QueryPlan> {
-        let sink = match sink {
-            RelationFunctionSink::HostArrow => CuvsPlanSink::HostArrow,
-            RelationFunctionSink::DeferredHostArrow => CuvsPlanSink::DeferredHostArrow,
-            RelationFunctionSink::GpuResident => CuvsPlanSink::GpuResident,
-        };
-        lower_cuvs_query_plan(self.operation, &self.options, bindings, schema, sink)
+    fn lower(&self, bindings: &[NativeChildBinding], schema: SchemaRef) -> Result<QueryPlan> {
+        lower_cuvs_query_plan(self.operation, &self.options, bindings, schema)
     }
     fn feature_available(&self) -> bool {
         cfg!(feature = "cuvs")
@@ -154,12 +144,16 @@ fn required_projection(
         DenseVectorBinding::Columns(columns) => names.extend(columns.iter().map(String::as_str)),
         DenseVectorBinding::VectorColumn(column) => names.push(column),
     }
+    let mut field_indexes = HashMap::with_capacity(schema.fields().len());
+    for (index, field) in schema.fields().iter().enumerate() {
+        field_indexes.entry(field.name().as_str()).or_insert(index);
+    }
     let mut seen = HashSet::new();
     names
         .into_iter()
-        .filter(|name| seen.insert((*name).to_string()))
+        .filter(|name| seen.insert(*name))
         .map(|name| {
-            schema.index_of(name).map_err(|_| {
+            field_indexes.get(name).copied().ok_or_else(|| {
                 invalid_call(
                     operation,
                     "physical_projection_field_missing",

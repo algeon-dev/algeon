@@ -1,6 +1,7 @@
 #ifndef CUML_RUST_RANDOM_FOREST_H
 #define CUML_RUST_RANDOM_FOREST_H
 
+#include "cuml_rust/forest_inference.h"
 #include "cuml_rust/handle.h"
 
 #include <stdint.h>
@@ -65,18 +66,14 @@ cuml_status_t cuml_rf_regressor_fit(cuml_handle_t handle,
                                     int32_t split_criterion,
                                     int32_t input_row_major,
                                     cuml_rf_forest_t* out_forest);
-cuml_status_t cuml_rf_classifier_predict(cuml_handle_t handle,
-                                         cuml_rf_forest_t forest,
-                                         const float* input,
-                                         int32_t rows,
-                                         int32_t columns,
-                                         int64_t* predictions);
-cuml_status_t cuml_rf_regressor_predict(cuml_handle_t handle,
-                                        cuml_rf_forest_t forest,
-                                        const float* input,
-                                        int32_t rows,
-                                        int32_t columns,
-                                        float* predictions);
+// Imports the fitted forest into nvForest on the handle's device and stream
+// without a checkpoint round trip. A classifier imports with class-index
+// output, where ties resolve to the lowest index; a regressor imports with
+// score output. The intermediate Treelite model is freed before returning.
+cuml_status_t cuml_rf_forest_import(cuml_handle_t handle,
+                                    cuml_rf_forest_t forest,
+                                    cuml_forest_model_t* out_model,
+                                    cuml_forest_metadata_t* out_metadata);
 cuml_status_t cuml_rf_forest_destroy(cuml_rf_forest_t forest);
 
 #ifdef __cplusplus

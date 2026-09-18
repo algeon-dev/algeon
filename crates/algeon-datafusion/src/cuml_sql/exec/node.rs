@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -11,7 +11,7 @@ use datafusion::{
     common::{DataFusionError, Result},
     physical_plan::ExecutionPlan,
 };
-use query_engine::plan::QueryPlan;
+use query_engine::plan::{MlForestModelSnapshot, QueryPlan};
 
 use super::{
     super::{
@@ -25,8 +25,8 @@ use crate::native_exec::{
     child_inputs::NativeChildBinding,
     register_gpu_resident_producer_discovery,
     relation_function::{
-        RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSink,
-        RelationFunctionSpec, RelationFunctionText,
+        RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSpec,
+        RelationFunctionText,
     },
 };
 
@@ -36,6 +36,7 @@ static NEXT_CUML_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
 pub struct CumlRelationFunctionSpec {
     operation: CumlOperation,
     options: CumlValidatedOptions,
+    model: Option<Arc<MlForestModelSnapshot>>,
 }
 
 pub type CumlAlgoExec = RelationFunctionExec<CumlRelationFunctionSpec>;
@@ -44,6 +45,7 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
     pub(crate) fn try_new(
         operation: CumlOperation,
         options: CumlValidatedOptions,
+        model: Option<Arc<MlForestModelSnapshot>>,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
         output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
@@ -53,7 +55,7 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
         let input_names =
             (0..inputs.len()).map(|index| format!("__algeon_datafusion_cuml_input_{id}_{index}")).collect();
         Self::try_new_with_names(
-            CumlRelationFunctionSpec { operation, options },
+            CumlRelationFunctionSpec { operation, options, model },
             inputs,
             output_schema,
             native_execution_config,
@@ -91,13 +93,8 @@ impl RelationFunctionSpec for CumlRelationFunctionSpec {
     fn required_projection(&self, index: usize, schema: SchemaRef) -> Result<Vec<usize>> {
         required_projection(self.operation, schema, &self.options.bindings()[index])
     }
-    fn lower(
-        &self,
-        bindings: &[NativeChildBinding],
-        schema: SchemaRef,
-        sink: RelationFunctionSink,
-    ) -> Result<QueryPlan> {
-        lower_cuml_query_plan(self.operation, &self.options, bindings, schema, sink)
+    fn lower(&self, bindings: &[NativeChildBinding], schema: SchemaRef) -> Result<QueryPlan> {
+        lower_cuml_query_plan(self.operation, &self.options, self.model.as_deref(), bindings, schema)
     }
     fn feature_available(&self) -> bool {
         cfg!(feature = "cuml")
@@ -151,12 +148,16 @@ fn required_projection(
     if let Some(label) = binding.label() {
         names.push(label);
     }
+    let mut field_indexes = HashMap::with_capacity(schema.fields().len());
+    for (index, field) in schema.fields().iter().enumerate() {
+        field_indexes.entry(field.name().as_str()).or_insert(index);
+    }
     let mut seen = HashSet::new();
     names
         .into_iter()
-        .filter(|name| seen.insert((*name).to_string()))
+        .filter(|name| seen.insert(*name))
         .map(|name| {
-            schema.index_of(name).map_err(|_| {
+            field_indexes.get(name).copied().ok_or_else(|| {
                 invalid_call(
                     operation,
                     "physical_projection_field_missing",

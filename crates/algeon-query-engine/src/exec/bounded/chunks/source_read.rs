@@ -405,10 +405,12 @@ fn generic_source_chunk_batches(
     plan_source_chunk_batches(chunks, target_bytes)
 }
 
+// A scan limit needs no gate here: planning trims the chunk list to the limit, the batch planner
+// isolates the trimmed prefix chunk as `ineligible_scan_limit`, and batch validation rejects any
+// chunk carrying `scan_limit_rows`.
 fn generic_source_chunk_batching_supported(source: &LocalParquetSource) -> bool {
     source.partition_columns.is_empty()
         && !source.files.iter().any(LocalParquetFile::has_row_delete_files)
-        && source.scan_limit.is_none()
         && source
             .reader_predicate
             .as_ref()
@@ -481,6 +483,34 @@ mod tests {
         let predicate_batches = generic_source_chunk_batches(&context, &test_source(true), &scratch_risk_chunks);
         assert_eq!(predicate_batches.len(), 2);
         assert!(predicate_batches.iter().all(SourceChunkBatch::is_singleton));
+    }
+
+    #[test]
+    fn generic_source_chunk_batches_batch_whole_row_groups_ahead_of_scan_limit_prefix() {
+        let context = ExecutionContext::builder()
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 64 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .build()
+            .expect("valid bounded context");
+        let source = test_source(false).with_scan_limit(Some(8));
+        let mut chunks = (0..4).map(|index| test_chunk(index, 1024, false)).collect::<Vec<_>>();
+        chunks[3].scan_limit_rows = Some(5);
+
+        let batches = generic_source_chunk_batches(&context, &source, &chunks);
+
+        let shape = batches
+            .iter()
+            .map(|batch| {
+                let indexes = batch.chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>();
+                (indexes, batch.source_batching_reason.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(shape, vec![(vec![0, 1, 2], "batched"), (vec![3], "ineligible_scan_limit")]);
     }
 
     #[test]

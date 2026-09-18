@@ -85,13 +85,35 @@ impl VectorElementType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GpuOptionKind {
     RelationBinding,
-    Integer { minimum: u64, maximum: u64, default: Option<u64> },
-    NonnegativeNumber { default: f64 },
-    PositiveNumber { default: f64 },
-    UnitInterval { default: f64 },
-    Fraction { default: f64 },
-    Boolean { default: Option<bool> },
-    Enum { values: &'static [&'static str], default: Option<&'static str> },
+    Integer {
+        minimum: u64,
+        maximum: u64,
+        default: Option<u64>,
+    },
+    NonnegativeNumber {
+        default: f64,
+    },
+    PositiveNumber {
+        default: f64,
+    },
+    UnitInterval {
+        default: f64,
+    },
+    Fraction {
+        default: f64,
+    },
+    Boolean {
+        default: Option<bool>,
+    },
+    Enum {
+        values: &'static [&'static str],
+        default: Option<&'static str>,
+    },
+    /// Non-empty string of at most `max_chars` Unicode scalar values, the unit
+    /// JSON Schema `maxLength` counts.
+    Text {
+        max_chars: usize,
+    },
 }
 
 impl GpuOptionKind {
@@ -327,6 +349,7 @@ pub(crate) fn option_schema(kind: GpuOptionKind, relation_schema: &Value) -> Val
             }
             value
         },
+        GpuOptionKind::Text { max_chars } => json!({"type": "string", "minLength": 1, "maxLength": max_chars}),
     }
 }
 
@@ -416,6 +439,11 @@ pub(crate) fn validate_option_value(
         },
         GpuOptionKind::Enum { values, .. } => {
             if value.as_str().is_none_or(|value| !values.contains(&value)) {
+                return Err(invalid());
+            }
+        },
+        GpuOptionKind::Text { max_chars } => {
+            if value.as_str().is_none_or(|value| value.is_empty() || value.chars().count() > max_chars) {
                 return Err(invalid());
             }
         },

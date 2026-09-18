@@ -21,10 +21,11 @@ This page covers the Flight SQL process. For an embedded Rust service, use [Data
 named by `ALGEON_SERVER_CONFIG_FILE`, and then applies environment overrides for
 matching scalar admission, native, and observability fields.
 
-The TOML file accepts only `[auth]`, `[admission]`, `[native]`, and
-`[observability]`. Unknown fields fail startup. cuGraph, Iceberg, and workspace
-settings use the environment; standard DataFusion settings come from its
-environment mapping or the embedded `SessionConfig` API.
+The TOML file accepts only `[auth]`, `[admission]`, `[native]`,
+`[observability]`, and `[models]`. Unknown fields fail startup. cuGraph,
+Iceberg, and workspace settings use the environment; standard DataFusion
+settings come from its environment mapping or the embedded `SessionConfig`
+API.
 
 ## Minimal GPU server
 
@@ -205,6 +206,56 @@ cuVS has no enable variable. The server installs cuVS SQL on every session it
 builds; the `cuvs` feature decides whether the functions execute or return a
 structured `required_feature_disabled` error. See
 [cuVS execution](../cuvs/overview.mdx#execution).
+
+## Models and forest inference
+
+`cuml_forest_predict` reads its model file from a server-configured models
+root. Without a `[models]` table, the function is listed by
+`gpu_list_functions()` but unavailable with `model_root_unconfigured`:
+
+```toml
+[models]
+root = "/srv/models"
+max_model_bytes = 268435456
+```
+
+| TOML field under `[models]` | Required | Default |
+| --- | --- | --- |
+| `root` | yes, to enable `cuml_forest_predict` | unset |
+| `max_model_bytes` | no; requires `root` | 256 MiB |
+
+`root` must exist and be a directory at startup; a missing or non-directory
+path fails startup. The server opens that directory once at startup and
+resolves every `model` beneath the opened directory, so renaming `root` or
+replacing it (or a symlink among its ancestors) later does not redirect
+lookups; restart the server to point at a new directory. Model lookup uses
+`openat2(2)`, which requires Linux 5.6 or newer. `max_model_bytes` must be
+positive when set. There is no environment override for either field.
+Embedded sessions pass the same settings as `CumlModelStoreConfig` through
+`try_with_cuml_sql_config`.
+
+A `model` option passed to `cuml_forest_predict` is a path relative to
+`root`; absolute paths and `..` components are rejected with
+`model_path_rejected`. Relative symlinks that stay beneath `root` are
+followed; an absolute symlink, or one whose target leaves `root`, is rejected
+as `outside_root` without looking up the target. Only regular files are
+accepted (FIFOs, directories, and other special files are rejected). A file larger than
+`max_model_bytes` is rejected with `model_too_large`; a file nvForest cannot
+parse, or a multi-target model, is rejected with `model_rejected`. A lookup
+that keeps racing concurrent renames or mounts under `root` is rejected with
+`model_path_rejected` and rejection `resolution_retry_exhausted`. The
+statement reads and binds the model once at planning, and its SHA-256 digest
+appears in `EXPLAIN` output as `model=sha256:<first 12 hex>`. Over Flight
+SQL, a model file that changes on disk between `GetFlightInfo` and `DoGet`,
+or between preparing and executing a prepared statement, fails the statement
+with `model_changed`; the statement must be planned again.
+
+Every file reachable beneath `root`, including hard links and bind mounts
+placed there, is trusted as a model source, so `root` and its subdirectories
+must not be writable by untrusted users. The model file is read and parsed
+synchronously on each planning pass (`GetFlightInfo`, `DoGet`, and prepared
+statement creation), so a large model adds its read and parse time to the
+planning latency of every statement that names it.
 
 ## Iceberg and workspace
 

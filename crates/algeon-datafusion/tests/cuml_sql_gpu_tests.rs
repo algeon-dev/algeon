@@ -1,27 +1,31 @@
-use std::{fs::File, sync::Arc, time::Duration};
+use std::{
+    fs::{self, File},
+    iter,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
-#[cfg(feature = "cuvs")]
-use algeon_datafusion::native_report::NativeDataFusionExecutionMetrics;
 use algeon_datafusion::{
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
-    cuml_sql::CumlAlgoExec,
+    cuml_sql::{CumlAlgoExec, CumlModelStoreConfig, CumlSqlConfig},
     native_exec::AlgeonNativeExecutionConfig,
+    native_report::NativeDataFusionExecutionMetrics,
     planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, classify_final_plan},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
-    array::{ArrayRef, FixedSizeListArray, Float32Array, Int32Array, Int64Array, StringArray, UInt64Array},
+    array::{Array, ArrayRef, FixedSizeListArray, Float32Array, Int32Array, Int64Array, StringArray, UInt64Array},
+    compute::concat_batches,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-#[cfg(feature = "cuvs")]
-use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::{
     datasource::MemTable,
     execution::SessionStateBuilder,
-    physical_plan::{ExecutionPlan, collect, execute_stream},
+    physical_plan::{ExecutionPlan, collect, execute_stream, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionContext},
 };
 use futures::StreamExt;
@@ -46,13 +50,17 @@ fn backend() -> AlgeonGpuBackend {
 }
 
 fn context() -> (AlgeonGpuBackend, SessionContext) {
+    context_with(CumlSqlConfig::default())
+}
+
+fn context_with(config: CumlSqlConfig) -> (AlgeonGpuBackend, SessionContext) {
     let backend = backend();
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
         .unwrap()
         .try_with_cuvs_sql()
         .unwrap()
-        .try_with_cuml_sql()
+        .try_with_cuml_sql_config(config)
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -87,7 +95,6 @@ async fn plan(ctx: &SessionContext, sql: &str) -> Arc<dyn ExecutionPlan> {
     ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap()
 }
 
-#[cfg(feature = "cuvs")]
 fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> MetricsSet {
     fn append(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
         if let Some(plan_metrics) = plan.metrics() {
@@ -124,12 +131,12 @@ fn check_oracle(batches: &[RecordBatch]) {
 }
 
 #[tokio::test]
-async fn tsvd_wide_sql_matches_host_oracle_with_host_input_boundary() {
+async fn tsvd_wide_sql_matches_host_oracle_with_gpu_resident_input() {
     let (backend, ctx) = context();
     let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM t), n_components => 2)";
     let physical = plan(&ctx, sql).await;
     assert!(find_exec(physical.as_ref()).is_some());
-    assert_eq!(classify_final_plan(physical.as_ref()), FinalPlanDisposition::Mixed);
+    assert_eq!(classify_final_plan(physical.as_ref()), FinalPlanDisposition::Native);
     check_oracle(&collect(physical, ctx.task_ctx()).await.unwrap());
     close(backend, ctx);
 }
@@ -392,7 +399,10 @@ async fn fixed_size_list_and_parquet_sources_execute() {
     .unwrap();
     ctx.register_table("lists", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
     let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, vector FROM lists), n_components => 2)";
-    check_oracle(&collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap());
+    let physical = plan(&ctx, sql).await;
+    check_oracle(&collect(Arc::clone(&physical), ctx.task_ctx()).await.unwrap());
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(physical.as_ref()));
+    assert!(metrics.host_to_device_uploaded_bytes > 0, "an in-memory input is uploaded by its literal source");
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("vectors.parquet");
@@ -402,7 +412,11 @@ async fn fixed_size_list_and_parquet_sources_execute() {
     writer.close().unwrap();
     ctx.register_parquet("parquet_vectors", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let sql = "SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1, d2 FROM parquet_vectors), n_components => 2)";
-    check_oracle(&collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap());
+    let physical = plan(&ctx, sql).await;
+    check_oracle(&collect(Arc::clone(&physical), ctx.task_ctx()).await.unwrap());
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(physical.as_ref()));
+    assert_eq!(metrics.host_to_device_uploaded_bytes, 0, "a Parquet input is read on the GPU, not host-staged");
+    assert!(metrics.admission_sequence.is_some());
     close(backend, ctx);
 }
 
@@ -459,5 +473,171 @@ async fn dropping_result_stream_releases_admission_and_plan_can_run_again() {
     })
     .await
     .unwrap();
+    close(backend, ctx);
+}
+
+fn forest_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../components/cuml/algeon-cuml/tests/fixtures/forest").join(name)
+}
+
+fn forest_csv(name: &str) -> Vec<Vec<f64>> {
+    fs::read_to_string(forest_fixture(name))
+        .unwrap()
+        .lines()
+        .map(|line| line.split(',').map(|value| value.parse().unwrap()).collect())
+        .collect()
+}
+
+/// Registers `<fixture>.input.csv` as table `<fixture>` with `id` 0..rows and
+/// Float32 features `d0..`.
+fn register_forest_input(ctx: &SessionContext, fixture: &str) {
+    let rows = forest_csv(&format!("{fixture}.input.csv"));
+    let features = rows[0].len();
+    let schema = Arc::new(Schema::new(
+        iter::once(Field::new("id", DataType::Int64, false))
+            .chain((0..features).map(|index| Field::new(format!("d{index}"), DataType::Float32, false)))
+            .collect::<Vec<_>>(),
+    ));
+    let columns = iter::once(Arc::new(Int64Array::from_iter_values(0..rows.len() as i64)) as ArrayRef)
+        .chain((0..features).map(|index| {
+            Arc::new(Float32Array::from(rows.iter().map(|row| row[index] as f32).collect::<Vec<_>>())) as ArrayRef
+        }))
+        .collect();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+    ctx.register_table(fixture, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
+#[tokio::test]
+async fn forest_predict_sql_matches_reference_scores_and_class_indices() {
+    let models = tempfile::tempdir().unwrap();
+    for name in [
+        "xgb_binary_logistic.json",
+        "xgb_multiclass_softprob.json",
+        "xgb_multiclass_softprob_ubj.ubj",
+        "xgb_multiclass_softmax.json",
+        "xgb_multiclass_tie.json",
+        "lgb_regression_double.txt",
+        "lgb_threshold_boundary.txt",
+    ] {
+        fs::copy(forest_fixture(name), models.path().join(name)).unwrap();
+    }
+    let (backend, ctx) = context_with(CumlSqlConfig { model_store: Some(CumlModelStoreConfig::new(models.path())) });
+    for input in [
+        "xgb_binary_logistic",
+        "xgb_multiclass_softprob",
+        "xgb_multiclass_softmax",
+        "xgb_multiclass_tie",
+        "lgb_regression_double",
+        "lgb_threshold_boundary",
+    ] {
+        register_forest_input(&ctx, input);
+    }
+    // (input fixture, model file, format, output option, reference file, class index output)
+    for (input, model, format, output, reference, class_index) in [
+        (
+            "xgb_binary_logistic",
+            "xgb_binary_logistic.json",
+            "xgboost_json",
+            "scores",
+            "xgb_binary_logistic.gtil.csv",
+            false,
+        ),
+        (
+            "xgb_multiclass_softprob",
+            "xgb_multiclass_softprob.json",
+            "xgboost_json",
+            "scores",
+            "xgb_multiclass_softprob.gtil.csv",
+            false,
+        ),
+        (
+            "xgb_multiclass_softprob",
+            "xgb_multiclass_softprob_ubj.ubj",
+            "xgboost_ubjson",
+            "scores",
+            "xgb_multiclass_softprob.gtil.csv",
+            false,
+        ),
+        (
+            "lgb_regression_double",
+            "lgb_regression_double.txt",
+            "lightgbm",
+            "scores",
+            "lgb_regression_double.gtil.csv",
+            false,
+        ),
+        (
+            "lgb_threshold_boundary",
+            "lgb_threshold_boundary.txt",
+            "lightgbm",
+            "scores",
+            "lgb_threshold_boundary.gtil.csv",
+            false,
+        ),
+        (
+            "xgb_multiclass_softmax",
+            "xgb_multiclass_softmax.json",
+            "xgboost_json",
+            "class_index",
+            "xgb_multiclass_softmax.expected.csv",
+            true,
+        ),
+        (
+            "xgb_multiclass_tie",
+            "xgb_multiclass_tie.json",
+            "xgboost_json",
+            "class_index",
+            "xgb_multiclass_tie.expected.csv",
+            true,
+        ),
+    ] {
+        let features = (0..forest_csv(&format!("{input}.input.csv"))[0].len())
+            .map(|index| format!("d{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let expected = forest_csv(reference);
+        let sql = format!(
+            "SELECT * FROM cuml_forest_predict(input => (SELECT id, {features} FROM {input}), model => '{model}', model_format => '{format}', output => '{output}')"
+        );
+        let physical = plan(&ctx, &sql).await;
+        assert!(find_exec(physical.as_ref()).is_some(), "{model}");
+        let batches = collect(physical, ctx.task_ctx()).await.unwrap();
+        let result = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(result.num_rows(), expected.len(), "{model}");
+        let ids = result.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(ids.values().as_ref(), &(0..expected.len() as i64).collect::<Vec<_>>(), "{model}");
+        if class_index {
+            assert_eq!(result.schema().field(2).name(), "prediction");
+            let predicted = result.column(2).as_any().downcast_ref::<Int32Array>().unwrap();
+            let expected = expected.iter().map(|row| row[0] as i32).collect::<Vec<_>>();
+            assert_eq!(predicted.values().as_ref(), expected.as_slice(), "{model}");
+            continue;
+        }
+        let width = expected[0].len();
+        let names = if width == 1 {
+            vec!["prediction".to_string()]
+        } else {
+            (0..width).map(|index| format!("output_{index}")).collect()
+        };
+        for (column, name) in names.iter().enumerate() {
+            assert_eq!(result.schema().field(column + 2).name(), name, "{model}");
+            let values = result.column(column + 2).as_any().downcast_ref::<Float32Array>().unwrap();
+            for (row, expected) in expected.iter().enumerate() {
+                assert!(
+                    (f64::from(values.value(row)) - expected[column]).abs() <= 1e-5,
+                    "{model} row {row} {name}: {} vs {}",
+                    values.value(row),
+                    expected[column]
+                );
+            }
+        }
+    }
+    let sql = "SELECT * FROM cuml_forest_predict(input => (SELECT id, d0, d1, d2, d3 FROM xgb_binary_logistic WHERE false), model => 'xgb_binary_logistic.json', model_format => 'xgboost_json')";
+    let batches = collect(plan(&ctx, sql).await, ctx.task_ctx()).await.unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    assert_eq!(
+        batches[0].schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        ["row_ordinal", "id", "prediction"]
+    );
     close(backend, ctx);
 }

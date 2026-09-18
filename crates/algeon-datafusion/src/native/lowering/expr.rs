@@ -26,8 +26,8 @@ use crate::{
     native::{
         expression_contract::{
             ResolvedColumn, ScalarFunctionKind, SupportedBinaryOperator, ValidatedPhysicalExpr,
-            declared_decimal_divide_output_type, is_list_carry_type, physical_expr_data_type, resolve_column,
-            validate_physical_expr_contract,
+            declared_decimal_divide_output_type, is_decimal128_to_float32_cast_via_float64, is_list_carry_type,
+            physical_expr_data_type, resolve_column, validate_physical_expr_contract,
         },
         literal::{NativeLiteralContext, literal_i32, literal_string, native_literal_value, parse_yyyy_mm_dd_date32},
         lowering::FieldBinding,
@@ -136,6 +136,13 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
         }
         if source_type == *cast.cast_type() && is_list_carry_type(&source_type) {
             return lower_validated_child_expr_with_bindings(cast.expr(), validated, bindings);
+        }
+        if is_decimal128_to_float32_cast_via_float64(&source_type, cast.cast_type()) {
+            let as_float64 = NativeExpr::cast(
+                lower_validated_child_expr_with_bindings(cast.expr(), validated, bindings)?,
+                ArrowDataType::Float64,
+            );
+            return Ok(NativeExpr::cast(as_float64, ArrowDataType::Float32));
         }
         return Ok(NativeExpr::cast(
             lower_validated_child_expr_with_bindings(cast.expr(), validated, bindings)?,

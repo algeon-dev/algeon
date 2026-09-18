@@ -2,6 +2,7 @@
 #define CUML_RUST_TEST_SUPPORT_H
 
 #include "error.h"
+#include "random_forest.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -29,6 +30,10 @@ cuml_status_t cuml_test_raise_exception(cuml_test_exception_kind_t kind);
 cuml_status_t cuml_test_forest_gtil_predict(const uint8_t* checkpoint, size_t len, const double* input,
                                             int32_t rows, int32_t columns, double* output,
                                             size_t output_capacity, size_t* out_written);
+// Serializes the Treelite model that cuml_rf_forest_import builds from
+// `forest`. Free the checkpoint with cuml_forest_bytes_free.
+cuml_status_t cuml_test_rf_treelite_checkpoint(cuml_rf_forest_t forest, uint8_t** out_checkpoint,
+                                               size_t* out_len);
 
 #ifdef __cplusplus
 }

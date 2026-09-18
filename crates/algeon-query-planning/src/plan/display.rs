@@ -428,6 +428,22 @@ fn format_ml_algorithm_params(params: &super::MlAlgorithmParams) -> String {
                 p.predict.features.display_label()
             );
         },
+        super::MlAlgorithmParams::ForestPredict(p) => {
+            let facts = p.model.facts();
+            return format!(
+                "input=({};row_id:{};features:{}) model=sha256:{} format={} features={} trees={} stride={} precision={} output={}",
+                p.input.input,
+                p.input.row_id.diagnostic_label(),
+                p.input.features.display_label(),
+                p.model.digest().short_hex(),
+                p.model.format(),
+                facts.num_features,
+                facts.num_trees,
+                facts.native_output_stride,
+                facts.precision,
+                p.model.output()
+            );
+        },
         super::MlAlgorithmParams::Umap(p) => {
             return format!(
                 "input=({};row_id:{};features:{}) n_components={} n_neighbors={} init={}",

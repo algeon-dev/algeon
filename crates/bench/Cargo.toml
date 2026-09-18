@@ -62,6 +62,11 @@ name = "cugraph_admission_stress"
 required-features = ["cugraph"]
 test = false
 
+[[bin]]
+name = "forest_predict"
+required-features = ["cuml"]
+test = false
+
 # Report/stress/bench binaries keep useful unit tests in the package lib harness.
 # They remain normal build/clippy targets, but do not create nextest bin harnesses.
 [[bin]]

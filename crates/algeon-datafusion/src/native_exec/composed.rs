@@ -346,8 +346,7 @@ fn resolve_composed_admission_capability_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
 ) -> QueryEngineResult<AttemptCapabilityEvidence> {
-    let mut consumer_evidence = AttemptCapabilityEvidence::for_query_plan(consumer_plan);
-    let mut evidence = Vec::with_capacity(prepared_gpu_inputs.len());
+    let mut producer_inputs = Vec::with_capacity(prepared_gpu_inputs.len());
     for input in prepared_gpu_inputs {
         let input_name = gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
             QueryError::new(
@@ -357,8 +356,26 @@ fn resolve_composed_admission_capability_evidence(
             )
             .with_fact("reason", "composed_admission_occurrence_missing")
         })?;
-        let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
-        let producer_evidence = prepared_producer_capability_evidence(input.as_ref(), &tickets)?;
+        producer_inputs.push((input_name, input.as_ref()));
+    }
+    producer_bound_capability_evidence(consumer_plan, producer_inputs)
+}
+
+/// Aggregates a consumer plan's evidence with the evidence of every
+/// GPU-resident producer it binds, and records each producer output as an
+/// occurrence on the consumer scope.
+///
+/// Each occurrence id is the key under which the consumer's
+/// `GpuResidentInputMap` holds that producer's output.
+pub(crate) fn producer_bound_capability_evidence<'a>(
+    consumer_plan: &QueryPlan,
+    producer_inputs: impl IntoIterator<Item = (String, &'a dyn ExecutionPlan)>,
+) -> QueryEngineResult<AttemptCapabilityEvidence> {
+    let mut consumer_evidence = AttemptCapabilityEvidence::for_query_plan(consumer_plan);
+    let mut evidence = Vec::new();
+    for (input_name, input) in producer_inputs {
+        let tickets = prepared_gpu_resident_producer_admission_tickets(input);
+        let producer_evidence = prepared_producer_capability_evidence(input, &tickets)?;
         consumer_evidence.push_producer_occurrence(
             AttemptProducerOccurrence::new(
                 input_name,
@@ -873,6 +890,17 @@ pub struct AlgeonNativeComposedGpuProducerExec {
 }
 
 impl AlgeonNativeComposedGpuProducerExec {
+    pub(crate) fn try_new_with_equivalence_properties(
+        input_name: impl Into<String>,
+        plan: QueryPlan,
+        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+        execution_config: AlgeonNativeExecutionConfig,
+        eq_properties: EquivalenceProperties,
+    ) -> Result<Self> {
+        let metrics_capture = execution_config.new_metrics_capture();
+        Self::try_new(input_name, plan, gpu_inputs, execution_config, metrics_capture, eq_properties)
+    }
+
     fn try_new(
         input_name: impl Into<String>,
         plan: QueryPlan,

@@ -6,6 +6,7 @@
 //! | [`AlgeonSessionStateBuilderExt::with_algeon_native`] | optimizer, coverage | [`AlgeonNativeOptimizerConfig`] | replaces existing Algeon rules | no |
 //! | [`AlgeonSessionStateBuilderExt::try_with_cuvs_sql`] | cuVS planner, metadata, function family | none | identical installation is a no-op | no |
 //! | [`AlgeonSessionStateBuilderExt::try_with_cuml_sql`] | cuML planner, metadata, function family | none | identical installation is a no-op | no |
+//! | [`AlgeonSessionStateBuilderExt::try_with_cuml_sql_config`] | cuML planner, metadata, function family, models root | [`CumlSqlConfig`] | equal config is a no-op; conflicts error | no |
 //! | [`AlgeonSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph planner, metadata, function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no |
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
@@ -35,7 +36,10 @@ use crate::planner::AlgeonGpuExecutionMode;
 use crate::planner::RelationalNativeRewritePolicy;
 use crate::{
     cugraph_sql::{CugraphExtensionPlanner, CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_relation_planner},
-    cuml_sql::{CumlExtensionPlanner, CumlGpuFunctionFamily, cuml_gpu_function_availability, cuml_relation_planner},
+    cuml_sql::{
+        CumlExtensionPlanner, CumlGpuFunctionFamily, CumlModelStore, CumlSqlConfig, cuml_gpu_function_availability,
+        cuml_relation_planner_with_store,
+    },
     cuvs_sql::{CuvsExtensionPlanner, CuvsGpuFunctionFamily, cuvs_gpu_function_availability, cuvs_relation_planner},
     error::{Error, ErrorCode},
     gpu_coverage::gpu_coverage_table_function,
@@ -75,9 +79,22 @@ pub trait AlgeonSessionStateBuilderExt {
     fn try_with_cuvs_sql(self) -> DataFusionResult<Self>
     where Self: Sized;
 
-    /// Install relation-aware cuML SQL, metadata, and typed physical planning.
-    /// Existing opaque query planners are rejected. Installation is idempotent.
+    /// Install relation-aware cuML SQL, metadata, and typed physical planning
+    /// without a models root, equivalent to
+    /// [`Self::try_with_cuml_sql_config`] with [`CumlSqlConfig::default`];
+    /// `cuml_forest_predict` then reports `model_root_unconfigured`.
     fn try_with_cuml_sql(self) -> DataFusionResult<Self>
+    where Self: Sized;
+
+    /// Install relation-aware cuML SQL, metadata, and typed physical planning.
+    /// Existing opaque query planners are rejected.
+    ///
+    /// `config.model_store` names the models root for `cuml_forest_predict`;
+    /// a configured root that does not resolve to a directory is rejected.
+    /// Reinstalling an equal configuration is idempotent; reinstalling with a
+    /// different model store (root or `max_model_bytes`) is rejected with a
+    /// structured setup error.
+    fn try_with_cuml_sql_config(self, config: CumlSqlConfig) -> DataFusionResult<Self>
     where Self: Sized;
 
     /// Install relation-aware cuGraph SQL, metadata, and typed physical planning.
@@ -117,8 +134,13 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
         )
     }
 
-    fn try_with_cuml_sql(mut self) -> DataFusionResult<Self> {
+    fn try_with_cuml_sql(self) -> DataFusionResult<Self> {
+        self.try_with_cuml_sql_config(CumlSqlConfig::default())
+    }
+
+    fn try_with_cuml_sql_config(mut self, config: CumlSqlConfig) -> DataFusionResult<Self> {
         let availability = cuml_gpu_function_availability(self.config().as_ref());
+        let model_store = config.model_store.map(CumlModelStore::try_new).transpose()?.map(Arc::new);
         install_gpu_sql_family(
             self,
             GpuSqlFamilyInstall {
@@ -127,8 +149,8 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 install_operation: "algeon_datafusion.cuml_sql.install",
                 relation_planner_name: "CumlRelationPlanner",
                 extension_planner: Arc::new(CumlExtensionPlanner),
-                relation_planner: cuml_relation_planner(),
-                gpu_family: Arc::new(CumlGpuFunctionFamily::new(availability)),
+                relation_planner: cuml_relation_planner_with_store(model_store.clone()),
+                gpu_family: Arc::new(CumlGpuFunctionFamily::new(availability, model_store)),
             },
         )
     }

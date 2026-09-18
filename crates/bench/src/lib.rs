@@ -23,3 +23,5 @@ pub mod stress_harness;
 pub mod cugraph_admission_stress;
 #[cfg(feature = "cugraph")]
 pub mod cugraph_sql_construction_report;
+#[cfg(feature = "cuml")]
+pub mod forest_predict;

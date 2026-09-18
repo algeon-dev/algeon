@@ -10,7 +10,12 @@ use datafusion::{
 };
 use serde_json::{Map, Value};
 
-use super::{CumlLogicalNode, CumlOperation, GpuOptionKind, error::invalid_call, options::options_from_named_values};
+use super::{
+    CumlLogicalNode, CumlOperation, GpuOptionKind,
+    error::invalid_call,
+    model_store::{CumlModelStore, bind_operation_model},
+    options::{options_from_named_values, validate_options},
+};
 use crate::gpu_functions::{
     bind_named_arguments,
     dense_relation::dense_relation_argument_definitions,
@@ -18,10 +23,18 @@ use crate::gpu_functions::{
 };
 
 #[derive(Debug, Default)]
-pub struct CumlRelationPlanner;
+pub struct CumlRelationPlanner {
+    model_store: Option<Arc<CumlModelStore>>,
+}
 
+/// Planner without a models root; `cuml_forest_predict` reports
+/// `model_root_unconfigured`.
 pub fn cuml_relation_planner() -> Arc<dyn RelationPlanner> {
-    Arc::new(CumlRelationPlanner)
+    cuml_relation_planner_with_store(None)
+}
+
+pub(crate) fn cuml_relation_planner_with_store(model_store: Option<Arc<CumlModelStore>>) -> Arc<dyn RelationPlanner> {
+    Arc::new(CumlRelationPlanner { model_store })
 }
 
 impl RelationPlanner for CumlRelationPlanner {
@@ -91,7 +104,9 @@ impl RelationPlanner for CumlRelationPlanner {
         }
         debug_assert!(arguments.is_empty());
         let options_json = options_from_named_values(operation, &inputs, values)?;
-        let node = CumlLogicalNode::try_new(operation, inputs, &options_json)?;
+        let model =
+            bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &options_json)?)?;
+        let node = CumlLogicalNode::try_new_with_model(operation, inputs, &options_json, model)?;
         let plan = LogicalPlan::Extension(Extension { node: Arc::new(node) });
         Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(plan, alias))))
     }

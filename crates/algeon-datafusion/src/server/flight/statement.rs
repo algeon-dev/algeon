@@ -260,6 +260,7 @@ impl DatafusionAlgeonFlightSqlService {
         prepared_handle: Option<String>,
         parsed_statement: ParsedFlightStatement,
         execution_domain: StatementExecutionDomain,
+        expected_forest_model_digests: Option<Vec<MlForestModelDigest>>,
     ) -> Result<FlightInfo, Status> {
         self.expire_stale_tickets(Instant::now());
         // Before ticket issuance there is no per-query token, so planning
@@ -377,6 +378,22 @@ impl DatafusionAlgeonFlightSqlService {
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
+        let forest_model_digests = forest_model_digests(&logical_plan);
+        if let Some(expected) = &expected_forest_model_digests
+            && let Err(error) = verify_forest_model_identity(
+                expected,
+                &forest_model_digests,
+                ticket_kind.create_logical_plan_operation(),
+            )
+        {
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.planning_failed_adapter(&error);
+            }
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
         let schema = flight_info_result_schema(&logical_plan);
 
         // Both ticket variants carry the per-execution `query_id` bytes. For
@@ -431,6 +448,7 @@ impl DatafusionAlgeonFlightSqlService {
                 attempt: attempt.take(),
                 started_at,
                 deadline,
+                forest_model_digests,
             })
             .map_err(|error| {
                 status_with_query_id_and_correlation_id(
@@ -518,6 +536,7 @@ impl DatafusionAlgeonFlightSqlService {
                 attempt: attempt.take(),
                 started_at,
                 deadline,
+                forest_model_digests: Vec::new(),
             })
             .map_err(|error| {
                 status_with_query_id_and_correlation_id(
@@ -612,4 +631,22 @@ fn table_reference_is_information_schema(reference: &TableReference) -> bool {
         },
         TableReference::Bare { .. } => false,
     }
+}
+
+/// Rejects a replanned statement whose bound forest models differ from the
+/// ones planned earlier for the same statement.
+pub(super) fn verify_forest_model_identity(
+    expected: &[MlForestModelDigest],
+    actual: &[MlForestModelDigest],
+    operation: &'static str,
+) -> AdapterResult<()> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorCode::InvalidRequest,
+        operation,
+        "forest model bytes changed between planning and execution; plan the statement again",
+    )
+    .with_log_safe_fact("reason", "model_changed"))
 }

@@ -152,6 +152,7 @@ pub(in crate::native) enum CastCapability {
     Native,
     BoundedNonnegativeIntegral,
     LiteralStringDate32,
+    Decimal128ToFloat32ViaFloat64,
 }
 
 pub(in crate::native) fn is_list_carry_type(data_type: &DataType) -> bool {
@@ -180,7 +181,23 @@ pub(in crate::native) fn cast_capability(
     if literal_string_date32_cast_is_supported(expr, target_type) {
         return Ok(CastCapability::LiteralStringDate32);
     }
+    if is_decimal128_to_float32_cast_via_float64(source_type, target_type) {
+        return Ok(CastCapability::Decimal128ToFloat32ViaFloat64);
+    }
     Err(ExpressionRejection::unsupported_type(ExpressionCapability::CastPair))
+}
+
+/// Arrow casts `Decimal128` to `Float32` by dividing in `Float64` and then
+/// rounding to `Float32`. A direct libcudf fixed-point cast divides in
+/// `Float32`, which can round differently, so the lowered expression composes
+/// the two supported casts.
+pub(in crate::native) fn is_decimal128_to_float32_cast_via_float64(
+    source_type: &DataType,
+    target_type: &DataType,
+) -> bool {
+    matches!((source_type, target_type), (DataType::Decimal128(_, _), DataType::Float32))
+        && is_supported_native_cast(source_type, &DataType::Float64)
+        && is_supported_native_cast(&DataType::Float64, target_type)
 }
 
 pub(in crate::native) fn is_supported_try_cast_pair(source_type: &DataType, target_type: &DataType) -> bool {

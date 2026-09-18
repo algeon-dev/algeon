@@ -648,6 +648,7 @@ fn ticket_payload(started_at: Instant, deadline: Instant) -> CoordinatorTicketPa
         attempt: None,
         started_at,
         deadline,
+        forest_model_digests: Vec::new(),
     }
 }
 

@@ -58,6 +58,7 @@ fn base_config() -> ServerConfig {
         #[cfg(feature = "iceberg")]
         iceberg: None,
         cugraph: None,
+        models: None,
     }
 }
 

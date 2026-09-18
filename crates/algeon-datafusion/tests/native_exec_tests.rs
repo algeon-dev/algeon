@@ -21,7 +21,7 @@ use algeon_datafusion::{
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
-    array::{Array, Decimal128Array, Int32Array, ListArray, StringArray, StringViewArray},
+    array::{Array, Decimal128Array, Float32Array, Float64Array, Int32Array, ListArray, StringArray, StringViewArray},
     buffer::{OffsetBuffer, ScalarBuffer},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
@@ -44,6 +44,7 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use futures::executor::block_on;
 use parquet::arrow::ArrowWriter;
@@ -1288,6 +1289,83 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
     // Row 1 parses ("42"), row 2 fails ("abc" → null), row 3 parses ("-7"),
     // row 4 is null input (stays null), row 5 overflows Int32 ("999999999999" → null).
     assert_eq!(values, vec![Some(42), None, Some(-7), None, None]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Native `CAST(Decimal128 AS REAL)` and `CAST(DOUBLE AS REAL)` must equal
+/// Arrow's CPU casts bit for bit. Arrow rounds a decimal to `Float64` and then
+/// to `Float32`; the first two decimals sit within half a `Float64` ulp of a
+/// `Float32` midpoint, so a single correctly rounded cast to `Float32` picks
+/// the other neighbor.
+#[test]
+fn native_float32_casts_match_arrow_cpu_casts_bit_for_bit() {
+    let decimals: Vec<i128> = [16_777_217_000_000_001, 16_777_218_999_999_999, -16_777_217_000_000_001]
+        .into_iter()
+        .chain((0..512_i128).map(|i| (i * 7_919 + 1) * 1_000_003_i128.pow(2) * if i % 2 == 0 { 1 } else { -1 }))
+        .collect();
+    let doubles: Vec<f64> = [16_777_217.0, 0.1, 1e39, -1e39, 1e-40, f64::MAX, f64::MIN_POSITIVE, -0.0, f64::NAN]
+        .into_iter()
+        .chain((0..decimals.len() - 9).map(|i| (i as f64 + 0.5).powf(3.3) / 7.0 * if i % 2 == 0 { 1.0 } else { -1.0 }))
+        .collect();
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-float32-casts");
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("d", DataType::Decimal128(38, 9), false),
+            Field::new("f", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..decimals.len() as i32)),
+                Arc::new(Decimal128Array::from(decimals).with_precision_and_scale(38, 9).unwrap()),
+                Arc::new(Float64Array::from(doubles)),
+            ],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = || SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let native = SessionContext::new_with_state(
+        test_gpu_backend()
+            .install_on(SessionStateBuilder::new().with_default_features().with_config(config()))
+            .unwrap()
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    let query = "SELECT id, CAST(d AS REAL) AS d32, CAST(f AS REAL) AS f32 FROM input ORDER BY id";
+    let bits = |ctx: &SessionContext, expect_native: bool| {
+        block_on(ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+        let plan = block_on(block_on(ctx.sql(query)).unwrap().create_physical_plan()).unwrap();
+        let tree = displayable(plan.as_ref()).indent(false).to_string();
+        assert_eq!(tree.contains("AlgeonNativeExec") && !tree.contains("ProjectionExec"), expect_native, "{tree}");
+        let mut rows = Vec::new();
+        for batch in block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap() {
+            let column = |index: usize| batch.column(index).as_any().downcast_ref::<Float32Array>().unwrap().clone();
+            let (d32, f32) = (column(1), column(2));
+            rows.extend((0..batch.num_rows()).map(|row| (d32.value(row).to_bits(), f32.value(row).to_bits())));
+        }
+        rows
+    };
+    let native_bits = bits(&native, true);
+    let cpu_bits = bits(&cpu, false);
+    assert_eq!(native_bits.len(), cpu_bits.len());
+    for (row, (native, cpu)) in native_bits.iter().zip(&cpu_bits).enumerate() {
+        assert_eq!(
+            native,
+            cpu,
+            "row {row}: native (d32, f32) = ({}, {}), Arrow = ({}, {})",
+            f32::from_bits(native.0),
+            f32::from_bits(native.1),
+            f32::from_bits(cpu.0),
+            f32::from_bits(cpu.1)
+        );
+    }
+    assert_eq!(f32::from_bits(cpu_bits[0].0), 16_777_216.0, "Arrow double-rounds the first decimal");
 
     fs::remove_dir_all(dir).unwrap();
 }

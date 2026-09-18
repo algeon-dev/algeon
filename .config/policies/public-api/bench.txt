@@ -5,6 +5,9 @@ pub mod bench::cugraph_admission_stress
 pub async fn bench::cugraph_admission_stress::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod bench::cugraph_sql_construction_report
 pub async fn bench::cugraph_sql_construction_report::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod bench::forest_predict
+pub const bench::forest_predict::CPU_THREADS: usize
+pub async fn bench::forest_predict::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod bench::query_service_goodput
 pub async fn bench::query_service_goodput::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
 pub mod bench::report_metadata

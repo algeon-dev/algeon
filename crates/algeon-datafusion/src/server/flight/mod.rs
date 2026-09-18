@@ -33,6 +33,7 @@ use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use prost::Message;
 use query_engine::{
     observability::{RuntimeObservationConfig, RuntimeObservationHandle},
+    plan::MlForestModelDigest,
     runtime::ExecutionCancellation,
 };
 use tokio::sync::Notify;
@@ -67,6 +68,7 @@ use crate::{
             ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
             AlgeonSessionStateBuilderExt,
         },
+        cuml_sql::forest_model_digests,
         gpu_coverage::{ExplainGpuOutputMode, coverage_batch, coverage_schema, parse_explain_gpu, validate_query},
         native_exec::{
             NativeMetricsCapture, ServerNativeObservationActivityFactory as NativeObservationActivityFactory,
@@ -102,6 +104,7 @@ use metadata::*;
 use ownership::{Owner, QueryOwnership};
 use prepared::{PreparedStatementEntry, PreparedStatementStore};
 pub use service::DatafusionAlgeonFlightSqlService;
+use statement::verify_forest_model_identity;
 use status::*;
 use tickets::*;
 

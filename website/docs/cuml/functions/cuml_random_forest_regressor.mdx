@@ -95,7 +95,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Classifier labels must be non-null Int32 contiguous classes 0..C-1; regressor labels must be non-null finite Float32. Predict must omit label and match the training feature dimension.
-- Prediction copies the whole predict relation to host memory, synchronizes the CUDA stream, and walks the trees on the host; this is not GPU inference in the pinned native implementation.
+- Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.
 - Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.
 
 To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

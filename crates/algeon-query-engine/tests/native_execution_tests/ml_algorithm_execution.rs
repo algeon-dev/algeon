@@ -1,6 +1,6 @@
 #[cfg(feature = "cuml")]
 mod enabled {
-    use std::sync::Arc;
+    use std::{fmt::Debug, fs, iter, str::FromStr, sync::Arc};
 
     use arrow::{
         array::{
@@ -12,12 +12,16 @@ mod enabled {
     };
     use cudf::{DataFrame, DenseMatrixLayout};
     use cuml::{
-        CumlResources, DeviceMatrix, LogisticRegressionModel, LogisticRegressionParams, MatrixLayout,
-        OwnedFloat32Matrix,
+        CumlResources, DeviceMatrix, ForestModelFormat, ForestOutput, ForestOutputKind, ForestPrecision,
+        LogisticRegressionModel, LogisticRegressionParams, MatrixLayout, OwnedFloat32Matrix, forest_inference_version,
+        inspect_forest_model,
     };
     use query_engine::{
         error::{QueryError, QueryErrorCode},
-        exec::{QueryExecutionRequest, output::QueryOutput},
+        exec::{
+            QueryExecutionRequest, output::QueryOutput, set_forest_after_import_hook_for_tests,
+            set_forest_batch_element_limit_for_tests,
+        },
         metrics::QueryMetrics,
         native_error::{cuml_query_error, query_error_code_for_cuml_error},
         observability::{
@@ -25,10 +29,11 @@ mod enabled {
             RuntimeObservationPayload, RuntimeOperatorStageKind, RuntimeOperatorStageState,
         },
         plan::{
-            MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlHdbscanParams, MlLogisticRegressionParams,
-            MlRandomForestParams, MlRelationBinding, MlTsvdParams, MlUmapInit, MlUmapParams, QueryPlan,
-            QueryPlanBuilder, VectorRowIdBinding, ml_embedding_output_schema, ml_hdbscan_output_schema,
-            ml_predictions_output_schema, vector_pca_output_schema,
+            MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlForestModelFacts, MlForestModelFormat,
+            MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams, MlHdbscanParams,
+            MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlTsvdParams, MlUmapInit,
+            MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding, ml_embedding_output_schema,
+            ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
         },
         runtime::{
             ExecutionContext, MemoryControlPolicy,
@@ -92,7 +97,8 @@ mod enabled {
             },
             MlAlgorithm::LogisticRegression
             | MlAlgorithm::RandomForestClassifier
-            | MlAlgorithm::RandomForestRegressor => unreachable!("unsupervised plan helper"),
+            | MlAlgorithm::RandomForestRegressor
+            | MlAlgorithm::ForestPredict => unreachable!("unsupervised plan helper"),
         };
         let output_schema = match algorithm {
             MlAlgorithm::Tsvd => vector_pca_output_schema(DataType::Int64, components),
@@ -100,7 +106,8 @@ mod enabled {
             MlAlgorithm::Umap => ml_embedding_output_schema(DataType::Int64, components),
             MlAlgorithm::LogisticRegression
             | MlAlgorithm::RandomForestClassifier
-            | MlAlgorithm::RandomForestRegressor => unreachable!("unsupervised plan helper"),
+            | MlAlgorithm::RandomForestRegressor
+            | MlAlgorithm::ForestPredict => unreachable!("unsupervised plan helper"),
         };
         let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, output_schema));
         builder.finish_with_host_sink(root)
@@ -469,7 +476,7 @@ mod enabled {
                     "rf_regressor:mse"
                 })
             );
-            assert_eq!(stages[3].strategy_label.as_deref(), Some("predict_host_tree_walk"));
+            assert_eq!(stages[3].strategy_label.as_deref(), Some("predict_nvforest"));
             let (empty, observation) = execute_supervised(algorithm, 2, None, 0);
             let QueryOutput::HostArrow(empty) = empty.expect("empty predict") else { panic!("host output") };
             assert_eq!(empty.num_rows(), 0);
@@ -604,7 +611,8 @@ mod enabled {
                 MlAlgorithm::Umap => ml_embedding_output_schema(DataType::Int64, 2),
                 MlAlgorithm::LogisticRegression
                 | MlAlgorithm::RandomForestClassifier
-                | MlAlgorithm::RandomForestRegressor => unreachable!("unsupervised empty result"),
+                | MlAlgorithm::RandomForestRegressor
+                | MlAlgorithm::ForestPredict => unreachable!("unsupervised empty result"),
             };
             let (result, _, observation) = execute(algorithm, Shape::Wide, 0, 2);
             let QueryOutput::HostArrow(output) = result.expect("empty ML result") else { panic!("host output") };
@@ -879,6 +887,323 @@ mod enabled {
         assert_eq!(error.fact_value("reason"), Some("compiled_ml_pipeline_required"));
         assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
         assert_eq!(metrics.source_read_time, std::time::Duration::ZERO);
+    }
+
+    const FOREST_FIXTURES: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../components/cuml/algeon-cuml/tests/fixtures/forest");
+
+    fn forest_fixture(name: &str) -> Vec<u8> {
+        fs::read(format!("{FOREST_FIXTURES}/{name}")).unwrap()
+    }
+
+    fn forest_csv<T: FromStr<Err: Debug>>(name: &str) -> Vec<Vec<T>> {
+        String::from_utf8(forest_fixture(name))
+            .unwrap()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| line.split(',').map(|value| value.parse().unwrap()).collect())
+            .collect()
+    }
+
+    fn forest_snapshot(file: &str, format: MlForestModelFormat, output: ForestOutput) -> MlForestModelSnapshot {
+        let bytes = forest_fixture(file);
+        let native_format = match format {
+            MlForestModelFormat::XgboostJson => ForestModelFormat::XgboostJson,
+            MlForestModelFormat::XgboostUbjson => ForestModelFormat::XgboostUbjson,
+            MlForestModelFormat::XgboostLegacy => ForestModelFormat::XgboostLegacy,
+            MlForestModelFormat::LightGbm => ForestModelFormat::LightGbm,
+            MlForestModelFormat::TreeliteCheckpoint => ForestModelFormat::TreeliteCheckpoint,
+        };
+        let (info, checkpoint) = inspect_forest_model(&bytes, native_format).unwrap();
+        let contract = match info.output_kind(output).unwrap() {
+            ForestOutputKind::Score => MlForestOutputContract::Score,
+            ForestOutputKind::ClassIndex { classes } => MlForestOutputContract::ClassIndex { classes },
+            ForestOutputKind::Vector(width) => MlForestOutputContract::Vector(width),
+        };
+        let facts = MlForestModelFacts {
+            num_features: info.num_features,
+            num_trees: info.num_trees,
+            native_output_stride: info.native_output_stride,
+            precision: match info.precision {
+                ForestPrecision::Single => MlForestPrecision::Single,
+                ForestPrecision::Double => MlForestPrecision::Double,
+            },
+        };
+        MlForestModelSnapshot::new(&bytes, checkpoint, format, facts, contract).unwrap()
+    }
+
+    /// Scores `rows` with `model` and asserts the attempt domain holds no
+    /// allocation once the inputs are dropped, whatever the outcome.
+    fn execute_forest(
+        model: MlForestModelSnapshot,
+        rows: &[Vec<f32>],
+    ) -> (Result<QueryOutput, QueryError>, LiveRuntimeObservationSnapshot) {
+        let features = model.num_features();
+        let schema = Arc::new(Schema::new(
+            iter::once(Field::new("id", DataType::Int64, false))
+                .chain((0..features).map(|index| Field::new(format!("x{index}"), DataType::Float32, false)))
+                .collect::<Vec<_>>(),
+        ));
+        let columns = iter::once(Arc::new(Int64Array::from_iter_values(100..100 + rows.len() as i64)) as ArrayRef)
+            .chain((0..features).map(|index| {
+                Arc::new(Float32Array::from(rows.iter().map(|row| row[index]).collect::<Vec<_>>())) as ArrayRef
+            }))
+            .collect();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+        let mut builder = QueryPlanBuilder::new();
+        let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+        let output_schema = ml_forest_output_schema(DataType::Int64, model.output());
+        let binding =
+            MlRelationBinding::new(input, VectorRowIdBinding::column("id"), (0..features).map(|i| format!("x{i}")));
+        let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
+            MlAlgorithm::ForestPredict,
+            MlAlgorithmParams::ForestPredict(MlForestPredictParams { input: binding, model }),
+            output_schema,
+        ));
+        let plan = builder.finish_with_host_sink(root);
+        let context = backend_context();
+        let owner =
+            RuntimeObservationOwner::new("ml-forest", None, RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
+        let evidence = capability_evidence_for_fixture_plan(&plan).unwrap();
+        let admitted = context.admit_evidence_with_observation(evidence, Some(owner.clone())).unwrap();
+        let runtime = Arc::new(admitted.runtime().unwrap());
+        let mut inputs = GpuResidentInputMap::new();
+        inputs.insert(
+            "input".into(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+                schema,
+            )
+            .unwrap(),
+        );
+        let (result, _, _) = execute_query_plan_direct(
+            admitted.context.context(),
+            QueryExecutionRequest::new(&plan).with_gpu_inputs(&inputs),
+        )
+        .into_parts();
+        let observation = owner.live_snapshot().unwrap();
+        drop(inputs);
+        drop(runtime);
+        assert_attempt_domain_released(&admitted);
+        admitted.finish();
+        (result, observation)
+    }
+
+    /// Finished ML stages as (kind, native strategy label, chunk index).
+    fn forest_stages(
+        observation: &LiveRuntimeObservationSnapshot,
+    ) -> Vec<(RuntimeOperatorStageKind, Option<String>, Option<usize>)> {
+        observation
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::OperatorStage(stage)
+                    if stage.lifecycle == RuntimeOperatorStageState::Finished
+                        && matches!(
+                            stage.stage_kind,
+                            RuntimeOperatorStageKind::MlPack
+                                | RuntimeOperatorStageKind::MlNative
+                                | RuntimeOperatorStageKind::MlAssemble
+                        ) =>
+                {
+                    let label = (stage.stage_kind == RuntimeOperatorStageKind::MlNative)
+                        .then(|| stage.strategy_label.clone())
+                        .flatten();
+                    Some((stage.stage_kind, label, stage.chunk_index))
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn host_output(result: Result<QueryOutput, QueryError>) -> RecordBatch {
+        let QueryOutput::HostArrow(output) = result.expect("forest prediction") else { panic!("host output") };
+        output
+    }
+
+    fn float_column(output: &RecordBatch, name: &str) -> Vec<f32> {
+        output.column_by_name(name).unwrap().as_any().downcast_ref::<Float32Array>().unwrap().values().to_vec()
+    }
+
+    fn assert_close(actual: &[f32], expected: impl IntoIterator<Item = f64>, context: &str) {
+        let expected = expected.into_iter().collect::<Vec<_>>();
+        assert_eq!(actual.len(), expected.len(), "{context}");
+        for (row, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert!((f64::from(*actual) - expected).abs() <= 1e-5, "{context} row {row}: {actual} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn forest_predict_scores_fixture_models_after_one_import_stage() {
+        let snapshot =
+            forest_snapshot("xgb_binary_logistic.json", MlForestModelFormat::XgboostJson, ForestOutput::Scores);
+        let digest = snapshot.digest().short_hex();
+        let rows = forest_csv::<f32>("xgb_binary_logistic.input.csv");
+        let (result, observation) = execute_forest(snapshot, &rows);
+        let output = host_output(result);
+        assert_eq!(
+            output.schema().as_ref(),
+            ml_forest_output_schema(DataType::Int64, MlForestOutputContract::Score).as_ref()
+        );
+        let ids = output.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(ids.values().as_ref(), &(100..116).collect::<Vec<_>>());
+        let expected = forest_csv::<f64>("xgb_binary_logistic.gtil.csv");
+        assert_close(&float_column(&output, "prediction"), expected.iter().map(|row| row[0]), "binary logistic");
+        assert_eq!(
+            forest_stages(&observation),
+            [
+                (RuntimeOperatorStageKind::MlNative, Some(format!("forest_import:{digest}:single")), None),
+                (RuntimeOperatorStageKind::MlPack, None, Some(0)),
+                (RuntimeOperatorStageKind::MlNative, Some(format!("forest_predict:{digest}")), Some(0)),
+                (RuntimeOperatorStageKind::MlAssemble, None, None),
+            ]
+        );
+        let version = forest_inference_version().unwrap();
+        assert!(observation.events().iter().all(|event| match &event.payload {
+            RuntimeObservationPayload::OperatorStage(stage)
+                if stage.stage_kind == RuntimeOperatorStageKind::MlNative =>
+            {
+                stage.ml_algorithm.as_deref() == Some("forest_predict")
+                    && (stage.native_version_major, stage.native_version_minor, stage.native_version_patch)
+                        == (Some(version.0), Some(version.1), Some(version.2))
+            },
+            _ => true,
+        }));
+
+        let rows = forest_csv::<f32>("xgb_multiclass_softprob.input.csv");
+        let expected = forest_csv::<f64>("xgb_multiclass_softprob.gtil.csv");
+        for (file, format) in [
+            ("xgb_multiclass_softprob.json", MlForestModelFormat::XgboostJson),
+            ("xgb_multiclass_softprob_ubj.ubj", MlForestModelFormat::XgboostUbjson),
+        ] {
+            let (result, _) = execute_forest(forest_snapshot(file, format, ForestOutput::Scores), &rows);
+            let output = host_output(result);
+            assert_eq!(
+                output.schema().as_ref(),
+                ml_forest_output_schema(DataType::Int64, MlForestOutputContract::Vector(3)).as_ref()
+            );
+            for class in 0..3 {
+                assert_close(
+                    &float_column(&output, &format!("output_{class}")),
+                    expected.iter().map(|row| row[class]),
+                    &format!("{file} output_{class}"),
+                );
+            }
+        }
+
+        for name in ["xgb_multiclass_softmax", "xgb_multiclass_tie"] {
+            let snapshot =
+                forest_snapshot(&format!("{name}.json"), MlForestModelFormat::XgboostJson, ForestOutput::ClassIndex);
+            let (result, _) = execute_forest(snapshot, &forest_csv::<f32>(&format!("{name}.input.csv")));
+            let output = host_output(result);
+            let predictions =
+                output.column_by_name("prediction").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
+            let expected = forest_csv::<f64>(&format!("{name}.expected.csv"));
+            assert_eq!(
+                predictions.values().as_ref(),
+                expected.iter().map(|row| row[0] as i32).collect::<Vec<_>>(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_forest_widens_features_and_matches_the_reference() {
+        let snapshot =
+            forest_snapshot("lgb_regression_double.txt", MlForestModelFormat::LightGbm, ForestOutput::Scores);
+        assert_eq!(snapshot.precision(), MlForestPrecision::Double);
+        let digest = snapshot.digest().short_hex();
+        let (result, observation) = execute_forest(snapshot, &forest_csv::<f32>("lgb_regression_double.input.csv"));
+        let expected = forest_csv::<f64>("lgb_regression_double.gtil.csv");
+        assert_close(
+            &float_column(&host_output(result), "prediction"),
+            expected.iter().map(|row| row[0]),
+            "double regression",
+        );
+        assert_eq!(forest_stages(&observation)[0].1, Some(format!("forest_import:{digest}:double")));
+
+        // A Float32 copy of this model's threshold equals 1.0 and flips the branch for input 1.0.
+        let snapshot =
+            forest_snapshot("lgb_threshold_boundary.txt", MlForestModelFormat::LightGbm, ForestOutput::Scores);
+        let (result, _) = execute_forest(snapshot, &forest_csv::<f32>("lgb_threshold_boundary.input.csv"));
+        let expected = forest_csv::<f64>("lgb_threshold_boundary.expected.csv");
+        assert_close(
+            &float_column(&host_output(result), "prediction"),
+            expected.iter().map(|row| row[0]),
+            "threshold boundary",
+        );
+    }
+
+    #[test]
+    fn forest_batches_share_one_import_and_reproduce_unbatched_output() {
+        for (file, limit, columns, batches) in [
+            // 4 features and stride 1: 20 elements hold 5 rows, so 16 rows take 4 batches.
+            ("xgb_binary_logistic", 20, vec!["prediction".to_owned()], 4),
+            // 4 features and stride 3: 12 elements hold 3 rows, so 16 rows take 6 batches.
+            ("xgb_multiclass_softprob", 12, (0..3).map(|class| format!("output_{class}")).collect(), 6),
+        ] {
+            let snapshot =
+                forest_snapshot(&format!("{file}.json"), MlForestModelFormat::XgboostJson, ForestOutput::Scores);
+            let rows = forest_csv::<f32>(&format!("{file}.input.csv"));
+            let (whole, _) = execute_forest(snapshot.clone(), &rows);
+            set_forest_batch_element_limit_for_tests(Some(limit));
+            let (batched, observation) = execute_forest(snapshot, &rows);
+            set_forest_batch_element_limit_for_tests(None);
+            let (whole, batched) = (host_output(whole), host_output(batched));
+            assert_eq!(batched.schema(), whole.schema());
+            for column in &columns {
+                assert_eq!(float_column(&batched, column), float_column(&whole, column), "{file} {column}");
+            }
+            let stages = forest_stages(&observation);
+            assert_eq!(stages.len(), 2 + 2 * batches, "{file}: {stages:?}");
+            assert!(stages[0].1.as_deref().is_some_and(|label| label.starts_with("forest_import:")));
+            for batch in 0..batches {
+                assert_eq!(stages[1 + 2 * batch].0, RuntimeOperatorStageKind::MlPack);
+                assert_eq!(stages[1 + 2 * batch].2, Some(batch));
+                assert_eq!(stages[2 + 2 * batch].0, RuntimeOperatorStageKind::MlNative);
+                assert_eq!(stages[2 + 2 * batch].2, Some(batch));
+            }
+            assert_eq!(stages.last().unwrap().0, RuntimeOperatorStageKind::MlAssemble);
+        }
+    }
+
+    fn cancel_execution(context: &ExecutionContext) {
+        context.cancellation().cancel();
+    }
+
+    #[test]
+    fn cancellation_after_forest_import_skips_prediction_and_releases_the_attempt() {
+        let snapshot =
+            forest_snapshot("xgb_binary_logistic.json", MlForestModelFormat::XgboostJson, ForestOutput::Scores);
+        set_forest_after_import_hook_for_tests(Some(cancel_execution));
+        let (result, observation) = execute_forest(snapshot, &forest_csv::<f32>("xgb_binary_logistic.input.csv"));
+        set_forest_after_import_hook_for_tests(None);
+        assert_eq!(result.err().expect("cancelled forest").code(), QueryErrorCode::Cancelled);
+        let stages = forest_stages(&observation);
+        assert_eq!(stages.len(), 1, "{stages:?}");
+        assert!(stages[0].1.as_deref().is_some_and(|label| label.starts_with("forest_import:")));
+        assert!(!observation.events().iter().any(|event| matches!(&event.payload,
+            RuntimeObservationPayload::OperatorStage(stage) if stage.stage_kind == RuntimeOperatorStageKind::MlPack)));
+    }
+
+    #[test]
+    fn imported_forest_facts_that_differ_from_the_snapshot_are_an_invariant_violation() {
+        let planned =
+            forest_snapshot("xgb_binary_logistic.json", MlForestModelFormat::XgboostJson, ForestOutput::Scores);
+        let tampered = MlForestModelSnapshot::new(
+            &forest_fixture("xgb_binary_logistic.json"),
+            planned.checkpoint().to_vec(),
+            planned.format(),
+            MlForestModelFacts { num_trees: planned.facts().num_trees + 1, ..planned.facts() },
+            planned.output(),
+        )
+        .unwrap();
+        let (result, observation) = execute_forest(tampered, &forest_csv::<f32>("xgb_binary_logistic.input.csv"));
+        let error = result.err().expect("snapshot mismatch");
+        assert_eq!(error.code(), QueryErrorCode::InternalInvariantViolation);
+        assert_eq!(error.fact_value("reason"), Some("forest_snapshot_mismatch"));
+        assert!(forest_stages(&observation).is_empty());
     }
 }
 

@@ -1,0 +1,84 @@
+---
+title: Forest Predict
+sidebar_label: Forest Predict
+description: "Score Float32 rows with a pretrained XGBoost, LightGBM, or Treelite forest through nvForest."
+slug: /cuml/functions/cuml_forest_predict
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}
+
+# Forest Predict
+
+SQL function: `cuml_forest_predict`
+
+Official cuML reference: [ForestInference (nvForest)](https://docs.rapids.ai/api/cuml/stable/api/#forest-inferencing)
+
+Score Float32 rows with a pretrained XGBoost, LightGBM, or Treelite forest through nvForest.
+
+## Quickstart
+
+Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
+
+```sql
+SELECT id, prediction FROM cuml_forest_predict(input => (SELECT id, d0, d1, d2, d3 FROM t), model => 'scorer.json', model_format => 'xgboost_json') ORDER BY row_ordinal;
+```
+
+## Inputs
+
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+
+| Role | Required | Validation reference | Description |
+| --- | --- | --- | --- |
+| `input` | yes | `table` | Dense Float32 rows fitted and transformed in this statement. |
+
+### Vector element types
+
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | Not applicable |
+
+## Arguments and options
+
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `model` | `string` | yes | Model file path relative to the server-configured models root. |
+| `model_format` | `enum ("xgboost_json", "xgboost_ubjson", "xgboost_legacy", "lightgbm", "treelite")` | yes | Serialized format of the model file. |
+| `output` | `enum ("scores", "class_index")` | no | Return the model's postprocessed scores, or the index of the largest class score. |
+
+### SQL value argument schemas
+
+| Argument | Required | Literal shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `model` | yes | `string` | No default | minimum string length 1; maximum string length 1024 | Model file path relative to the server-configured models root. |
+| `model_format` | yes | `string` | No default | one of `"xgboost_json"`, `"xgboost_ubjson"`, `"xgboost_legacy"`, `"lightgbm"`, `"treelite"` | Serialized format of the model file. |
+| `output` | no | `string` | `"scores"` | one of `"scores"`, `"class_index"` | Return the model's postprocessed scores, or the index of the largest class score. |
+
+### Vector binding shapes
+
+Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+
+The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. |
+| `id` | `same_as_input.id` | no | Logical input ID. |
+| `prediction` | `Float32 or Int32` | no | Float32 score of a single-output model with output =&gt; 'scores'; Int32 class index with output =&gt; 'class_index'. |
+| `output_<index>` | `Float32` | no | Score of one model output, returned instead of prediction for a multi-output model with output =&gt; 'scores'. The output contains `model output count` such columns, `output_0` through `output_&lt;model output count - 1&gt;`. |
+
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Limits
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Scores pretrained XGBoost (JSON, UBJSON, legacy binary), LightGBM text, and Treelite checkpoint forests with nvForest. Multi-target models are rejected at planning.
+- Features must be non-null Float32 and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.
+- output =&gt; 'class_index' requires a model with at least two outputs and resolves ties to the lowest class index.
+- model resolves under the server-configured models root, and files above max_model_bytes are rejected. Each statement reads and imports the model once; there is no cross-statement model cache.
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

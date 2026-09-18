@@ -1,13 +1,11 @@
 #include "cuml_rust/random_forest.h"
+#include "random_forest_internal.hpp"
 #include "shim_common.hpp"
-#include "memory_resource_compat.hpp"
 
 #include <cuml/ensemble/randomforest.hpp>
 #include <raft/core/handle.hpp>
 #include <raft/core/resource/cuda_stream_pool.hpp>
 #include <rmm/cuda_stream_pool.hpp>
-#include <rmm/device_uvector.hpp>
-#include <rmm/mr/per_device_resource.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -15,22 +13,12 @@
 #include <exception>
 #include <memory>
 #include <stdexcept>
-#include <vector>
 
 cuml_status_t cuml_record_error(cuml_status_t status, char const* message) noexcept;
 raft::handle_t& cuml_handle_raft(cuml_handle_t handle);
-rmm::mr::device_memory_resource* cuml_handle_mr(cuml_handle_t handle);
 
 struct cuml_rf_training_streams {
   std::shared_ptr<rmm::cuda_stream_pool> pool;
-};
-
-struct cuml_rf_forest {
-  enum class kind { classifier, regressor } type;
-  union {
-    ML::RandomForestClassifierF* classifier;
-    ML::RandomForestRegressorF* regressor;
-  } model;
 };
 
 namespace {
@@ -117,6 +105,24 @@ void fit_with_sync(raft::handle_t& fit_handle, cuml_rf_training_streams_t stream
 }
 
 }  // namespace
+
+cuml_treelite_model cuml_rf_build_treelite(cuml_rf_forest const& forest)
+{
+  TreeliteModelHandle raw = nullptr;
+  // Ownership of `raw` starts when cuML writes it, so a throw after that
+  // write must free it here.
+  try {
+    if (forest.type == cuml_rf_forest::kind::classifier) {
+      ML::build_treelite_forest(&raw, forest.model.classifier, forest.model.classifier->n_features);
+    } else {
+      ML::build_treelite_forest(&raw, forest.model.regressor, forest.model.regressor->n_features);
+    }
+  } catch (...) {
+    if (raw != nullptr) TreeliteFreeModel(raw);
+    throw;
+  }
+  return cuml_treelite_model{raw};
+}
 
 extern "C" cuml_status_t cuml_rf_training_streams_create(
   cuml_handle_t handle, int32_t count, cuml_rf_training_streams_t* out_streams)
@@ -230,50 +236,22 @@ extern "C" cuml_status_t cuml_rf_regressor_fit(
   } CUML_RUST_CATCH
 }
 
-extern "C" cuml_status_t cuml_rf_classifier_predict(
-  cuml_handle_t handle, cuml_rf_forest_t forest, const float* input,
-  int32_t rows, int32_t columns, int64_t* predictions)
+extern "C" cuml_status_t cuml_rf_forest_import(cuml_handle_t handle, cuml_rf_forest_t forest,
+                                               cuml_forest_model_t* out_model, cuml_forest_metadata_t* out_metadata)
 {
   cuml_clear_error();
-  if (handle == nullptr || forest == nullptr || input == nullptr || predictions == nullptr) {
-    return cuml_record_error(CUML_ERROR_NULL, "classifier prediction received a null argument");
+  if (out_model == nullptr || out_metadata == nullptr) {
+    return cuml_record_error(CUML_ERROR_NULL, "random forest import output is null");
+  }
+  *out_model = nullptr;
+  if (handle == nullptr || forest == nullptr) {
+    return cuml_record_error(CUML_ERROR_NULL, "random forest import received a null argument");
   }
   CUML_RUST_TRY {
-    if (forest->type != cuml_rf_forest::kind::classifier || rows < 1 || columns < 1 ||
-        forest->model.classifier->n_features != columns) {
-      throw std::invalid_argument("classifier prediction model or dimensions are invalid");
-    }
-    auto& raft_handle = cuml_handle_raft(handle);
-    rmm::device_uvector<int> device_predictions(static_cast<std::size_t>(rows), raft_handle.get_stream(),
-                                                rmm::mr::any_device_resource_from_raw(cuml_handle_mr(handle)));
-    std::vector<int> host_predictions(static_cast<std::size_t>(rows));
-    ML::predict(raft_handle, forest->model.classifier, input, rows, columns,
-                device_predictions.data(), rapids_logger::level_enum::warn);
-    raft::update_host(host_predictions.data(), device_predictions.data(), static_cast<std::size_t>(rows),
-                      raft_handle.get_stream());
-    raft_handle.sync_stream();
-    std::vector<int64_t> widened(host_predictions.begin(), host_predictions.end());
-    raft::update_device(predictions, widened.data(), widened.size(), raft_handle.get_stream());
-    raft_handle.sync_stream();
-    return CUML_SUCCESS;
-  } CUML_RUST_CATCH
-}
-
-extern "C" cuml_status_t cuml_rf_regressor_predict(
-  cuml_handle_t handle, cuml_rf_forest_t forest, const float* input,
-  int32_t rows, int32_t columns, float* predictions)
-{
-  cuml_clear_error();
-  if (handle == nullptr || forest == nullptr || input == nullptr || predictions == nullptr) {
-    return cuml_record_error(CUML_ERROR_NULL, "regressor prediction received a null argument");
-  }
-  CUML_RUST_TRY {
-    if (forest->type != cuml_rf_forest::kind::regressor || rows < 1 || columns < 1 ||
-        forest->model.regressor->n_features != columns) {
-      throw std::invalid_argument("regressor prediction model or dimensions are invalid");
-    }
-    ML::predict(cuml_handle_raft(handle), forest->model.regressor, input, rows, columns,
-                predictions, rapids_logger::level_enum::warn);
+    auto const model = cuml_rf_build_treelite(*forest);
+    auto const output = forest->type == cuml_rf_forest::kind::classifier ? CUML_FOREST_OUTPUT_CLASS_INDEX
+                                                                          : CUML_FOREST_OUTPUT_SCORES;
+    *out_model = cuml_forest_import_treelite(handle, model.get(), output, out_metadata);
     return CUML_SUCCESS;
   } CUML_RUST_CATCH
 }

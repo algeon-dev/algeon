@@ -312,6 +312,56 @@ fn bounded_generic_local_parquet_source_batches_adjacent_files() {
 }
 
 #[test]
+fn bounded_generic_local_parquet_source_scan_limit_batches_whole_row_groups_ahead_of_prefix() {
+    let dir = unique_temp_dir("query-engine-bounded-source-scan-limit-batch");
+    let path = dir.join("input.parquet");
+    let context = backend_context_with_memory_and_scheduler_policy(
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        SourceSchedulerPolicy::new(3),
+    );
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        source_schema,
+        vec!["key".to_string(), "payload".to_string()],
+    )
+    .with_scan_limit(Some(5));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_committed, 3);
+    let read_chunk_counts =
+        metrics.source_read_runtime_rows.iter().map(|row| row.chunk_count).collect::<Vec<_>>();
+    assert_eq!(read_chunk_counts, vec![2, 1]);
+    assert_eq!(metrics.source_read_runtime_rows[0].source_batching_reason, "batched");
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 5);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3, 2]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 10, 20, 20, 30]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_generic_local_parquet_source_scan_limit_trims_to_required_row_group_prefix() {
     let dir = unique_temp_dir("query-engine-bounded-source-scan-limit");
     let path = dir.join("input.parquet");

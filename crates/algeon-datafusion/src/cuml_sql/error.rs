@@ -1,7 +1,7 @@
 use datafusion::common::DataFusionError;
 
 use super::CumlOperation;
-use crate::gpu_functions::dense_relation_errors::DenseRelationErrorContext;
+use crate::{error::Error, gpu_functions::dense_relation_errors::DenseRelationErrorContext};
 
 const ERRORS: DenseRelationErrorContext = DenseRelationErrorContext {
     family: "cuML",
@@ -19,6 +19,11 @@ pub(super) fn invalid_call(
     message: impl Into<String>,
 ) -> DataFusionError {
     ERRORS.invalid_call(operation.descriptor().sql_function_name, reason, message)
+}
+
+/// Structured invalid-call error for callers that attach further facts.
+pub(super) fn invalid_call_error(operation: CumlOperation, reason: &'static str, message: impl Into<String>) -> Error {
+    ERRORS.invalid_call_error(operation.descriptor().sql_function_name, reason, message)
 }
 
 pub(super) fn invalid_option(

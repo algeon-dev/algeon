@@ -6,7 +6,7 @@ use std::{
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     physical_expr::EquivalenceProperties,
-    physical_plan::ExecutionPlan,
+    physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
 use query_engine::{
     admission::statistical_aggregate_execution_mode_rejection,
@@ -41,8 +41,9 @@ use crate::{
         wrap_candidate_with_declared_output_ordering_sort,
     },
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
-        gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
+        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
+        AlgeonNativeGpuProducerExec, gpu_resident_producer, gpu_resident_producer_input_name,
+        rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
 };
@@ -98,6 +99,99 @@ pub(super) fn optimize_final_native_plan(
     native_optimizer_options: &NativeOptimizerOptions,
     native_plan_cost_options: &NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    let mut relation_inputs = LoweredRelationInputs::default();
+    let plan = lower_gpu_resident_producer_relation_inputs(
+        plan,
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_cost_options,
+        &mut relation_inputs,
+    )?;
+    let mut attempt =
+        optimize_final_native_root(plan, native_execution_config, native_optimizer_options, native_plan_cost_options)?;
+    // The root attempt selects at most one whole-plan candidate, so relation
+    // input outcomes are appended only after it has consumed its own report.
+    attempt.report.append(relation_inputs.report);
+    attempt.source_diagnostics.extend(relation_inputs.source_diagnostics);
+    Ok(attempt)
+}
+
+/// Planning outcomes and source diagnostics of relation inputs lowered into
+/// GPU-resident producers.
+#[derive(Debug, Default)]
+struct LoweredRelationInputs {
+    report: PlanningReport,
+    source_diagnostics: Vec<SourceDiagnostics>,
+}
+
+/// Lowers each DataFusion child of a GPU relation function into a
+/// GPU-resident producer bound under the function's input name.
+///
+/// Children are rewritten bottom-up, so a relation input that itself contains
+/// a relation function lowers into a composed producer over the already
+/// rewritten inner function. A child that does not lower keeps its DataFusion
+/// plan and is host-staged at execution; its planning outcome stays in the
+/// report.
+fn lower_gpu_resident_producer_relation_inputs(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &AlgeonNativeExecutionConfig,
+    native_optimizer_options: &NativeOptimizerOptions,
+    native_plan_cost_options: &NativePlanCostOptions,
+    lowered: &mut LoweredRelationInputs,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let relation_input_names = match gpu_resident_producer(plan.as_ref()) {
+        Some(producer) => match producer.native_relation_input_names() {
+            Some(names) => Some(names.to_vec()),
+            None => return Ok(plan),
+        },
+        None => None,
+    };
+    let children = plan.children().into_iter().cloned().collect::<Vec<_>>();
+    let mut rewritten_children = Vec::with_capacity(children.len());
+    let mut children_changed = false;
+    for (index, child) in children.iter().enumerate() {
+        let mut rewritten = lower_gpu_resident_producer_relation_inputs(
+            Arc::clone(child),
+            native_execution_config,
+            native_optimizer_options,
+            native_plan_cost_options,
+            lowered,
+        )?;
+        if let Some(input_name) = relation_input_names.as_ref().and_then(|names| names.get(index))
+            && gpu_resident_producer(rewritten.as_ref()).is_none()
+        {
+            let lowering = lower_physical_plan_to_native(Arc::clone(&rewritten));
+            let mut attempt = replace_lowered_root_or_keep_plan_for_sink(
+                Arc::clone(&rewritten),
+                None,
+                lowering,
+                native_execution_config,
+                native_optimizer_options,
+                native_plan_cost_options,
+                NativeReplacementSink::GpuResidentProducer { input_name: input_name.clone() },
+            )?;
+            attempt.report.wrap_selected_candidates_with_outer_operator(plan.name());
+            lowered.report.append(attempt.report);
+            lowered.source_diagnostics.extend(attempt.source_diagnostics);
+            if attempt.rewritten {
+                rewritten = attempt.plan;
+            }
+        }
+        children_changed |= !Arc::ptr_eq(child, &rewritten);
+        rewritten_children.push(rewritten);
+    }
+    if !children_changed {
+        return Ok(plan);
+    }
+    plan.replace_children(rewritten_children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+}
+
+fn optimize_final_native_root(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &AlgeonNativeExecutionConfig,
+    native_optimizer_options: &NativeOptimizerOptions,
+    native_plan_cost_options: &NativePlanCostOptions,
+) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     if whole_plan_has_unsupported_expression_miss(&lowering)
         && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
@@ -133,6 +227,16 @@ pub(super) fn optimize_final_native_plan(
     )
 }
 
+/// Result boundary of a lowered native replacement.
+#[derive(Debug, Clone)]
+enum NativeReplacementSink {
+    /// The replacement streams Arrow batches to its DataFusion parent.
+    HostArrow,
+    /// The replacement stays on the device and binds into its parent relation
+    /// function under `input_name`.
+    GpuResidentProducer { input_name: String },
+}
+
 fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
     output_equivalence_properties: Option<EquivalenceProperties>,
@@ -140,6 +244,26 @@ fn replace_lowered_root_or_keep_plan(
     native_execution_config: &AlgeonNativeExecutionConfig,
     native_optimizer_options: &NativeOptimizerOptions,
     native_plan_cost_options: &NativePlanCostOptions,
+) -> DataFusionResult<NativeOptimizationAttempt> {
+    replace_lowered_root_or_keep_plan_for_sink(
+        plan,
+        output_equivalence_properties,
+        lowering,
+        native_execution_config,
+        native_optimizer_options,
+        native_plan_cost_options,
+        NativeReplacementSink::HostArrow,
+    )
+}
+
+fn replace_lowered_root_or_keep_plan_for_sink(
+    plan: Arc<dyn ExecutionPlan>,
+    output_equivalence_properties: Option<EquivalenceProperties>,
+    lowering: NativeLoweringResult,
+    native_execution_config: &AlgeonNativeExecutionConfig,
+    native_optimizer_options: &NativeOptimizerOptions,
+    native_plan_cost_options: &NativePlanCostOptions,
+    sink: NativeReplacementSink,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let mut lowering = lowering;
     stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
@@ -290,6 +414,7 @@ fn replace_lowered_root_or_keep_plan(
         &datafusion_shape,
         output_equivalence_properties.unwrap_or_else(|| plan.properties().equivalence_properties().clone()),
         shared_resident_producers,
+        sink,
     )?;
     Ok(NativeOptimizationAttempt {
         plan,
@@ -336,17 +461,28 @@ fn native_datafusion_exec_for_plan(
     datafusion_shape: &str,
     eq_properties: EquivalenceProperties,
     shared_resident_producers: Vec<SharedResidentProducerPlan>,
+    sink: NativeReplacementSink,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let native_execution_config =
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
     let gpu_input_names = native_plan_gpu_resident_source_names(&native_plan);
     if gpu_input_names.is_empty() {
-        return AlgeonNativeExec::try_new_with_equivalence_properties(
-            native_plan,
-            native_execution_config,
-            eq_properties,
-        )
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        return match sink {
+            NativeReplacementSink::HostArrow => AlgeonNativeExec::try_new_with_equivalence_properties(
+                native_plan,
+                native_execution_config,
+                eq_properties,
+            )
+            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>),
+            NativeReplacementSink::GpuResidentProducer { input_name } => {
+                AlgeonNativeGpuProducerExec::try_new_for_shared_plan(
+                    input_name,
+                    native_plan.clone_with_gpu_resident_sink(),
+                    &native_execution_config,
+                )
+                .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+            },
+        }
         .map_err(DataFusionError::from);
     }
 
@@ -364,6 +500,17 @@ fn native_datafusion_exec_for_plan(
     gpu_inputs.sort_by(|left, right| {
         gpu_resident_producer_input_name(left.as_ref()).cmp(&gpu_resident_producer_input_name(right.as_ref()))
     });
+    if let NativeReplacementSink::GpuResidentProducer { input_name } = sink {
+        return AlgeonNativeComposedGpuProducerExec::try_new_with_equivalence_properties(
+            input_name,
+            native_plan.clone_with_gpu_resident_sink(),
+            gpu_inputs,
+            native_execution_config,
+            eq_properties,
+        )
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        .map_err(DataFusionError::from);
+    }
     let (native_plan, gpu_inputs) = remove_subsumed_composed_consumer(native_plan, gpu_inputs)?;
     AlgeonNativeComposedExec::try_new_with_equivalence_properties(
         native_plan,

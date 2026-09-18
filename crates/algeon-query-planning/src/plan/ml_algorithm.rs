@@ -6,8 +6,8 @@ use arrow::datatypes::{DataType, Field, Schema};
 use serde_json::{Value, json};
 
 use super::{
-    DenseVectorBinding, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition, NodeId,
-    SchemaRef, VectorElementType, VectorRowIdBinding,
+    DenseVectorBinding, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition,
+    MlForestModelSnapshot, NodeId, SchemaRef, VectorElementType, VectorRowIdBinding,
     gpu_function_options::{
         canonicalize_options, dense_relation_binding_schema, option_schema, validate_dense_relation_binding_value,
     },
@@ -19,6 +19,7 @@ pub const CUML_UMAP_FUNCTION: &str = "cuml_umap";
 pub const CUML_LOGISTIC_REGRESSION_FUNCTION: &str = "cuml_logistic_regression";
 pub const CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION: &str = "cuml_random_forest_classifier";
 pub const CUML_RANDOM_FOREST_REGRESSOR_FUNCTION: &str = "cuml_random_forest_regressor";
+pub const CUML_FOREST_PREDICT_FUNCTION: &str = "cuml_forest_predict";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CumlOperation {
@@ -28,6 +29,7 @@ pub enum CumlOperation {
     LogisticRegression,
     RandomForestClassifier,
     RandomForestRegressor,
+    ForestPredict,
 }
 
 impl CumlOperation {
@@ -78,6 +80,7 @@ pub enum CumlOutputContract {
     HdbscanClusters,
     Embedding,
     Predictions,
+    ForestPrediction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -452,7 +455,7 @@ const RF_CLASSIFIER_OPTIONS: &[GpuOptionDefinition] = &[
 ];
 const RF_LIMITATIONS: &[&str] = &[
     "Classifier labels must be non-null Int32 contiguous classes 0..C-1; regressor labels must be non-null finite Float32. Predict must omit label and match the training feature dimension.",
-    "Prediction copies the whole predict relation to host memory, synchronizes the CUDA stream, and walks the trees on the host; this is not GPU inference in the pinned native implementation.",
+    "Prediction imports the fitted forest into nvForest and scores the predict relation on the GPU; a classifier tie resolves to the lowest class index. Training and prediction inputs are limited to i32::MAX rows and the packed feature matrix to i32::MAX elements; the random forest path does not batch rows.",
     "Training uses one RAFT pool stream whose allocations share the query grant. The forest is query-local; an empty predict relation returns an empty result.",
 ];
 const LOGISTIC_LIMITATIONS: &[&str] = &[
@@ -521,6 +524,53 @@ const OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
         repeats: Some("n_components"),
         description: "Transformed component value, repeated n_components times.",
     },
+];
+const FOREST_MODEL_FORMATS: &[&str] = &["xgboost_json", "xgboost_ubjson", "xgboost_legacy", "lightgbm", "treelite"];
+const FOREST_OUTPUTS: &[&str] = &["scores", "class_index"];
+const FOREST_OPTIONS: &[GpuOptionDefinition] = &[
+    COMMON_OPTIONS[0],
+    GpuOptionDefinition {
+        name: "model",
+        required: true,
+        kind: GpuOptionKind::Text { max_chars: 1024 },
+        description: "Model file path relative to the server-configured models root.",
+    },
+    GpuOptionDefinition {
+        name: "model_format",
+        required: true,
+        kind: GpuOptionKind::Enum { values: FOREST_MODEL_FORMATS, default: None },
+        description: "Serialized format of the model file.",
+    },
+    GpuOptionDefinition {
+        name: "output",
+        required: false,
+        kind: GpuOptionKind::Enum { values: FOREST_OUTPUTS, default: Some("scores") },
+        description: "Return the model's postprocessed scores, or the index of the largest class score.",
+    },
+];
+const FOREST_FIELDS: &[GpuOutputFieldDefinition] = &[
+    OUTPUT_FIELDS[0],
+    OUTPUT_FIELDS[1],
+    GpuOutputFieldDefinition {
+        name: "prediction",
+        data_type: "Float32 or Int32",
+        nullable: false,
+        repeats: None,
+        description: "Float32 score of a single-output model with output => 'scores'; Int32 class index with output => 'class_index'.",
+    },
+    GpuOutputFieldDefinition {
+        name: "output_<index>",
+        data_type: "Float32",
+        nullable: false,
+        repeats: Some("model output count"),
+        description: "Score of one model output, returned instead of prediction for a multi-output model with output => 'scores'.",
+    },
+];
+const FOREST_LIMITATIONS: &[&str] = &[
+    "Scores pretrained XGBoost (JSON, UBJSON, legacy binary), LightGBM text, and Treelite checkpoint forests with nvForest. Multi-target models are rejected at planning.",
+    "Features must be non-null Float32 and match the model feature count. Forests with double-precision thresholds widen the features to Float64 on the device.",
+    "output => 'class_index' requires a model with at least two outputs and resolves ties to the lowest class index.",
+    "model resolves under the server-configured models root, and files above max_model_bytes are rejected. Each statement reads and imports the model once; there is no cross-statement model cache.",
 ];
 const TSVD_LIMITATIONS: &[&str] = &[
     "Empty input returns an empty result without a native call. Nonempty input requires at least two evaluated rows and two feature dimensions. n_components cannot exceed dimension; known dimensions are checked during planning, otherwise execution reports a structured error.",
@@ -614,6 +664,20 @@ pub const CUML_OPERATION_REGISTRY: &[CumlOperationDescriptor] = &[
         quickstart_sql: "SELECT id, prediction FROM cuml_random_forest_regressor(training => (SELECT id, d0, label FROM train), predict => (SELECT id, d0 FROM test)) ORDER BY row_ordinal;",
         limitations: RF_LIMITATIONS,
     },
+    CumlOperationDescriptor {
+        operation: CumlOperation::ForestPredict,
+        sql_function_name: CUML_FOREST_PREDICT_FUNCTION,
+        display_name: "Forest Predict",
+        summary: "Score Float32 rows with a pretrained XGBoost, LightGBM, or Treelite forest through nvForest.",
+        use_this_when: "Apply an externally trained tree-ensemble model file to rows in a query.",
+        relation_roles: ROLES,
+        vector_element_support: ELEMENTS,
+        output_contract: CumlOutputContract::ForestPrediction,
+        options: FOREST_OPTIONS,
+        output_fields: FOREST_FIELDS,
+        quickstart_sql: "SELECT id, prediction FROM cuml_forest_predict(input => (SELECT id, d0, d1, d2, d3 FROM t), model => 'scorer.json', model_format => 'xgboost_json') ORDER BY row_ordinal;",
+        limitations: FOREST_LIMITATIONS,
+    },
 ];
 
 impl CumlOperationDescriptor {
@@ -693,6 +757,7 @@ pub enum MlAlgorithm {
     LogisticRegression,
     RandomForestClassifier,
     RandomForestRegressor,
+    ForestPredict,
 }
 
 impl MlAlgorithm {
@@ -704,6 +769,7 @@ impl MlAlgorithm {
             Self::LogisticRegression => "logistic_regression",
             Self::RandomForestClassifier => "random_forest_classifier",
             Self::RandomForestRegressor => "random_forest_regressor",
+            Self::ForestPredict => "forest_predict",
         }
     }
 }
@@ -1027,6 +1093,13 @@ impl MlRandomForestParams {
     }
 }
 
+/// Scores one relation with a pretrained forest bound at planning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MlForestPredictParams {
+    pub input: MlRelationBinding,
+    pub model: MlForestModelSnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MlAlgorithmParams {
     Tsvd(MlTsvdParams),
@@ -1035,6 +1108,7 @@ pub enum MlAlgorithmParams {
     LogisticRegression(MlLogisticRegressionParams),
     RandomForestClassifier(MlRandomForestParams),
     RandomForestRegressor(MlRandomForestParams),
+    ForestPredict(MlForestPredictParams),
 }
 
 impl MlAlgorithmParams {
@@ -1047,6 +1121,7 @@ impl MlAlgorithmParams {
                 | (Self::LogisticRegression(_), MlAlgorithm::LogisticRegression)
                 | (Self::RandomForestClassifier(_), MlAlgorithm::RandomForestClassifier)
                 | (Self::RandomForestRegressor(_), MlAlgorithm::RandomForestRegressor)
+                | (Self::ForestPredict(_), MlAlgorithm::ForestPredict)
         )
     }
 
@@ -1055,6 +1130,7 @@ impl MlAlgorithmParams {
             Self::Tsvd(params) => (&params.input, None),
             Self::Hdbscan(params) => (&params.input, None),
             Self::Umap(params) => (&params.input, None),
+            Self::ForestPredict(params) => (&params.input, None),
             Self::LogisticRegression(params) => (&params.training, Some(&params.predict)),
             Self::RandomForestClassifier(params) | Self::RandomForestRegressor(params) => {
                 (&params.training, Some(&params.predict))
@@ -1083,6 +1159,7 @@ impl MlAlgorithmParams {
             Self::Tsvd(params) => params.input.input = remap(params.input.input),
             Self::Hdbscan(params) => params.input.input = remap(params.input.input),
             Self::Umap(params) => params.input.input = remap(params.input.input),
+            Self::ForestPredict(params) => params.input.input = remap(params.input.input),
             Self::LogisticRegression(params) => {
                 params.training.input = remap(params.training.input);
                 params.predict.input = remap(params.predict.input);

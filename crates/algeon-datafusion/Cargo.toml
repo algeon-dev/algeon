@@ -43,7 +43,7 @@ bench-support = []
 qualification = ["query-engine/qualification"]
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "query-engine/cugraph"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys", "query-engine/cuvs"]
-cuml = ["dep:cuml-sys", "query-engine/cuml"]
+cuml = ["dep:cuml", "dep:cuml-sys", "dep:libc", "query-engine/cuml"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["query-engine/nvml"]
 
@@ -61,12 +61,14 @@ cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
+cuml = { workspace = true, optional = true }
 cuml-sys = { workspace = true, optional = true }
 query-engine = { workspace = true }
 datafusion = { workspace = true }
 dashmap = { version = "6.2", optional = true }
 fnv = { workspace = true }
 futures = { workspace = true }
+libc = { workspace = true, optional = true }
 parquet = { workspace = true, default-features = true }
 prost = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }

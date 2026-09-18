@@ -1,9 +1,12 @@
+use std::{any::Any, sync::Arc};
+
 use datafusion::{catalog::Session, execution::context::SessionConfig};
 use serde_json::{Map, Value, json};
 
 use super::{
     CUML_OPERATION_REGISTRY, CumlLogicalNode, CumlOperation, GpuOptionKind, MlRelationRole,
-    options::options_from_named_values,
+    model_store::{CumlModelStore, bind_operation_model},
+    options::{options_from_named_values, validate_options},
 };
 use crate::gpu_functions::{
     GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
@@ -13,10 +16,18 @@ use crate::gpu_functions::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CumlGpuFunctionFamily {
     availability: GpuFunctionAvailability,
+    model_store: Option<Arc<CumlModelStore>>,
 }
 impl CumlGpuFunctionFamily {
-    pub(crate) fn new(availability: GpuFunctionAvailability) -> Self {
-        Self { availability }
+    pub(crate) fn new(availability: GpuFunctionAvailability, model_store: Option<Arc<CumlModelStore>>) -> Self {
+        Self { availability, model_store }
+    }
+
+    fn operation_availability(&self, operation: CumlOperation) -> GpuFunctionAvailability {
+        if self.availability.is_available() && operation == CumlOperation::ForestPredict && self.model_store.is_none() {
+            return GpuFunctionAvailability::Unavailable { reason: "model_root_unconfigured".to_string() };
+        }
+        self.availability.clone()
     }
 }
 
@@ -35,8 +46,14 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
     fn descriptors(&self) -> Vec<GpuFunctionDescriptor> {
         CUML_OPERATION_REGISTRY
             .iter()
-            .map(|entry| descriptor_for_operation(entry.operation, self.availability.clone()))
+            .map(|entry| descriptor_for_operation(entry.operation, self.operation_availability(entry.operation)))
             .collect()
+    }
+
+    /// The models root and size limit are not part of the descriptors, so a
+    /// reinstall with a different model store conflicts.
+    fn same_installation(&self, installed: &dyn GpuFunctionFamily) -> bool {
+        (installed as &dyn Any).downcast_ref::<Self>() == Some(self)
     }
     async fn validate(
         &self,
@@ -52,12 +69,18 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
                 request.normalized_json(),
             );
         };
-        if !self.availability.is_available() {
-            let reason = self.availability.unavailable_reason().expect("unavailable cuML functions have a reason");
+        let availability = self.operation_availability(operation);
+        if !availability.is_available() {
+            let reason = availability.unavailable_reason().expect("unavailable cuML functions have a reason");
             return GpuCallValidation {
                 valid: false,
                 error_code: Some(reason.to_string()),
-                message: "cuML execution requires the cuml Cargo feature".to_string(),
+                message: if reason == "model_root_unconfigured" {
+                    "cuml_forest_predict requires a configured models root"
+                } else {
+                    "cuML execution requires the cuml Cargo feature"
+                }
+                .to_string(),
                 function_name: function_name.to_string(),
                 relations_resolved: false,
                 normalized_call: request.normalized_json(),
@@ -96,8 +119,11 @@ impl GpuFunctionFamily for CumlGpuFunctionFamily {
             }
         }
         let values = request.options.as_object().cloned().unwrap_or_default();
-        let result = options_from_named_values(operation, &inputs, values)
-            .and_then(|json| CumlLogicalNode::try_new(operation, inputs, &json));
+        let result = options_from_named_values(operation, &inputs, values).and_then(|json| {
+            let model =
+                bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &json)?)?;
+            CumlLogicalNode::try_new_with_model(operation, inputs, &json, model)
+        });
         match result {
             Ok(node) => {
                 let canonical: Value =
@@ -189,6 +215,7 @@ fn descriptor_for_operation(operation: CumlOperation, availability: GpuFunctionA
         validation_request_schema(descriptor.relation_roles.iter().map(|role| role.as_str()), &options_schema);
     let options = match operation {
         CumlOperation::Tsvd => json!({"n_components": 2}),
+        CumlOperation::ForestPredict => json!({"model": "models/scorer.json", "model_format": "xgboost_json"}),
         CumlOperation::Hdbscan
         | CumlOperation::Umap
         | CumlOperation::LogisticRegression
@@ -232,6 +259,7 @@ fn output_contract(operation: CumlOperation) -> &'static str {
         CumlOperation::LogisticRegression
         | CumlOperation::RandomForestClassifier
         | CumlOperation::RandomForestRegressor => "predictions",
+        CumlOperation::ForestPredict => "forest_prediction",
     }
 }
 
@@ -247,6 +275,7 @@ impl CumlOperationName for CumlOperation {
             Self::LogisticRegression => "logistic_regression",
             Self::RandomForestClassifier => "random_forest_classifier",
             Self::RandomForestRegressor => "random_forest_regressor",
+            Self::ForestPredict => "forest_predict",
         }
     }
 }

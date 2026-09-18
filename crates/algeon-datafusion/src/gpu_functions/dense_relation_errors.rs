@@ -38,7 +38,12 @@ impl DenseRelationErrorContext {
         }
     }
 
-    fn invalid_call_error(&self, operation: &'static str, reason: &'static str, message: impl Into<String>) -> Error {
+    pub(crate) fn invalid_call_error(
+        &self,
+        operation: &'static str,
+        reason: &'static str,
+        message: impl Into<String>,
+    ) -> Error {
         Error::new(ErrorCode::InvalidRequest, self.validate_operation, message)
             .with_log_safe_fact(self.operation_fact, operation)
             .with_log_safe_fact("reason", reason)

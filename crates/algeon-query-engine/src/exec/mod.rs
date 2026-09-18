@@ -70,6 +70,9 @@ pub use execution_metrics::ExecutionMetrics;
 pub(crate) use execution_metrics::ExecutionMetrics;
 #[cfg(not(feature = "cuml"))]
 use ml_algorithm::ml_algorithm_execution_unavailable;
+#[cfg(all(feature = "cuml", feature = "test-hooks"))]
+#[doc(hidden)]
+pub use ml_algorithm::{set_forest_after_import_hook_for_tests, set_forest_batch_element_limit_for_tests};
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
 use query_planning::validate_query_plan;

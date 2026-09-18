@@ -36,12 +36,6 @@ struct cuml_handle {
   }
 };
 
-rmm::mr::device_memory_resource* cuml_handle_mr(cuml_handle_t handle)
-{
-  if (handle == nullptr) throw std::invalid_argument("cuML handle is null");
-  return handle->mr;
-}
-
 raft::handle_t& cuml_handle_raft(cuml_handle_t handle)
 {
   if (handle == nullptr || handle->raft == nullptr) {

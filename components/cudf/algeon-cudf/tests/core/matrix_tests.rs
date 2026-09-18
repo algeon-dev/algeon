@@ -365,6 +365,32 @@ fn unpack_dense_matrix_recovers_columns_on_device() {
     }
 }
 
+fn widen_packed_matrix_to_float64_is_exact_on_target_runtime() {
+    let input_runtime = Runtime::new().unwrap();
+    let output_runtime = Runtime::new().unwrap();
+    let values = [0.1f32, -3.5, 16_777_217.0, f32::MIN_POSITIVE, 7.25, -0.0];
+    let first = input_runtime.column_from_slice(&values[..3]).unwrap();
+    let second = input_runtime.column_from_slice(&values[3..]).unwrap();
+    for layout in [DenseMatrixLayout::RowMajor, DenseMatrixLayout::ColumnMajor] {
+        let narrow = input_runtime.pack_columns(&[&first, &second], layout).unwrap();
+        let wide = output_runtime.widen_packed_matrix_to_float64(&narrow).unwrap();
+
+        assert_eq!(wide.shape(), [3, 2]);
+        assert_eq!(wide.layout(), layout);
+        assert_eq!(wide.element(), TypeId::Float64);
+        assert_eq!(wide.binding_id(), output_runtime.binding_id());
+        let expected = narrow.as_column().to_vec::<f32>().unwrap().into_iter().map(f64::from).collect::<Vec<_>>();
+        assert_eq!(wide.as_column().to_vec::<f64>().unwrap(), expected);
+        assert_eq!(wide.validate().unwrap().element(), TypeId::Float64);
+        assert_eq!(narrow.element(), TypeId::Float32);
+        assert_eq!(narrow.as_column().to_vec::<f32>().unwrap().len(), 6);
+    }
+    let double = input_runtime.column_from_slice(&[1.5f64, -2.0]).unwrap();
+    let double = input_runtime.pack_columns(&[&double], DenseMatrixLayout::RowMajor).unwrap();
+    let error = output_runtime.widen_packed_matrix_to_float64(&double).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::TypeMismatch);
+}
+
 #[test]
 fn matrix_tests_cases() {
     run_named_cases(&[
@@ -374,6 +400,10 @@ fn matrix_tests_cases() {
         ),
         ("row_major_pack_interleaves_columns_on_target_runtime", row_major_pack_interleaves_columns_on_target_runtime),
         ("column_major_pack_concatenates_columns", column_major_pack_concatenates_columns),
+        (
+            "widen_packed_matrix_to_float64_is_exact_on_target_runtime",
+            widen_packed_matrix_to_float64_is_exact_on_target_runtime,
+        ),
         ("unpack_dense_matrix_recovers_columns_on_device", unpack_dense_matrix_recovers_columns_on_device),
         ("numeric_pack_supports_all_element_widths_and_layouts", numeric_pack_supports_all_element_widths_and_layouts),
         (

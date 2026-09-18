@@ -86,9 +86,27 @@ cuGraph SQL functions resolve the backend's admission and native execution
 configuration from session state when executed. To add the `cuvs_*` functions,
 chain `try_with_cuvs_sql()` in the same manner; it takes no configuration. The
 functions execute only when the crate was built with the `cuvs` feature. For
-`cuml_*` functions, chain `try_with_cuml_sql()` as well; it takes no
-configuration and execution requires the `cuml` feature. See
-[cuVS execution](../cuvs/overview.mdx#execution) and
+`cuml_*` functions, chain `try_with_cuml_sql()` as well; execution requires
+the `cuml` feature. It installs no models root, so `cuml_forest_predict` is
+registered but stays unavailable with `model_root_unconfigured`. To enable
+it, chain `try_with_cuml_sql_config` instead with a `CumlSqlConfig` whose
+`model_store: Option<CumlModelStoreConfig>` names the root;
+`try_with_cuml_sql()` equals `try_with_cuml_sql_config(CumlSqlConfig::default())`:
+
+```rust
+use algeon_datafusion::cuml_sql::{CumlModelStoreConfig, CumlSqlConfig};
+
+let state = backend
+    .install_on(SessionStateBuilder::new_with_default_features())?
+    .try_with_cuml_sql_config(CumlSqlConfig {
+        model_store: Some(CumlModelStoreConfig::new("/srv/models")),
+    })?
+    .build();
+```
+
+`CumlModelStoreConfig::new` defaults `max_model_bytes` to
+`CumlModelStoreConfig::DEFAULT_MAX_MODEL_BYTES` (256 MiB); set the field
+directly for a different cap. See [cuVS execution](../cuvs/overview.mdx#execution) and
 [cuML execution](../cuml/overview.mdx#execution-and-lifetime).
 
 ## Execute one attempt per query

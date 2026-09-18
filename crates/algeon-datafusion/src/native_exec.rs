@@ -57,6 +57,7 @@ pub(crate) use self::metrics::GraphClaimCalibrationCapture;
 pub(crate) use self::metrics::{NativeMetricsCapture, ServerNativeObservationActivityFactory};
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
+    composed::producer_bound_capability_evidence,
     metrics::{
         AlgeonNativeMetrics, NativeExecutionMetricsCapture, NativeRuntimeObservation, SealedAttemptMetricsTarget,
     },

@@ -10,9 +10,9 @@ mod rejection;
 mod validation;
 
 pub(in crate::native) use capability::{
-    ScalarFunctionKind, SupportedBinaryOperator, cast_capability, compatible_types, is_list_carry_type,
-    is_narrow_decimal_carry, is_numeric_or_decimal_type, is_supported_to_timestamp_seconds_cast,
-    is_supported_try_cast_pair,
+    ScalarFunctionKind, SupportedBinaryOperator, cast_capability, compatible_types,
+    is_decimal128_to_float32_cast_via_float64, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
+    is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair,
 };
 pub(in crate::native) use join_residual::{
     JoinResidualCastMode, ValidatedJoinResidual, join_residual_cast_mode, validate_join_residual,

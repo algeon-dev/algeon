@@ -354,6 +354,13 @@ impl PlanningReport {
         }
     }
 
+    /// Appends another report's outcomes, with their column details, after
+    /// this report's outcomes.
+    pub(crate) fn append(&mut self, other: PlanningReport) {
+        self.outcomes.extend(other.outcomes);
+        self.unsupported_columns.extend(other.unsupported_columns);
+    }
+
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
         self.unsupported_columns.push(None);

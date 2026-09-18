@@ -76,7 +76,11 @@ same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
 relations. The bounded server runs them inside the admitted query domain, whose
 allocator enforces the query's memory cap. A `cuml` image also serves
 `cuml_tsvd`, `cuml_hdbscan`, `cuml_umap`, `cuml_logistic_regression`,
-`cuml_random_forest_classifier`, and `cuml_random_forest_regressor`.
+`cuml_random_forest_classifier`, `cuml_random_forest_regressor`, and
+`cuml_forest_predict`. `cuml_forest_predict` scores a pretrained
+XGBoost/LightGBM/Treelite forest and needs a `[models]` root configured in
+the server TOML file; without one it is listed but unavailable with
+`model_root_unconfigured`.
 
 ## Image size
 
@@ -155,6 +159,10 @@ different repository or tag. Highlights:
   `AWS_DEFAULT_REGION` (**required** for KvikIO S3).
 - cuGraph: `ALGEON_SERVER_CUGRAPH_ENABLED=true` requires an image built with
   `cugraph`; set it to `false` for a lean image.
+- cuML forest inference: `cuml_forest_predict` has no environment variable;
+  mount a models directory into the container and set `[models].root` (and
+  optionally `max_model_bytes`) in the TOML file at
+  `ALGEON_SERVER_CONFIG_FILE`.
 
 Startup is **eager**: the server initializes CUDA/RMM before binding, so a
 missing or incompatible GPU fails fast. Readiness is signalled by the log line

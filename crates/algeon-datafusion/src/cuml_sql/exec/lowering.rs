@@ -3,26 +3,24 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use query_engine::plan::{
-    MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver, MlHdbscanParams,
-    MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlSplitCriterion, MlTsvdParams, MlUmapInit,
-    MlUmapParams, QueryPlan, QueryPlanBuilder, VectorRowIdBinding,
+    MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver,
+    MlForestModelSnapshot, MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams,
+    MlRelationBinding, MlSplitCriterion, MlTsvdParams, MlUmapInit, MlUmapParams, QueryPlan, QueryPlanBuilder,
+    VectorRowIdBinding,
 };
 
 use crate::{
     cuml_sql::{CumlOperation, CumlValidatedOptions, DenseVectorBinding, error::invalid_call},
     error::{Error, ErrorCode},
-    native_exec::{
-        child_inputs::NativeChildBinding,
-        relation_function::{RelationFunctionSink, add_projected_relation_source},
-    },
+    native_exec::{child_inputs::NativeChildBinding, relation_function::add_projected_relation_source},
 };
 
 pub(super) fn lower_cuml_query_plan(
     operation: CumlOperation,
     options: &CumlValidatedOptions,
+    model: Option<&MlForestModelSnapshot>,
     children: &[NativeChildBinding],
     output_schema: SchemaRef,
-    sink: RelationFunctionSink,
 ) -> Result<QueryPlan> {
     if children.len() != options.bindings().len() {
         return Err(invalid_call(
@@ -138,6 +136,17 @@ pub(super) fn lower_cuml_query_plan(
                 (MlAlgorithm::RandomForestClassifier, MlAlgorithmParams::RandomForestClassifier(params))
             }
         },
+        CumlOperation::ForestPredict => {
+            let Some(model) = model else {
+                return Err(invalid_call(
+                    operation,
+                    "model_unbound",
+                    "cuml_forest_predict requires a model bound during planning",
+                ));
+            };
+            let params = MlForestPredictParams { input: relations.remove(0), model: model.clone() };
+            (MlAlgorithm::ForestPredict, MlAlgorithmParams::ForestPredict(params))
+        },
         CumlOperation::Umap => {
             let mut params = MlUmapParams::new(relations.remove(0));
             params.n_components = options.n_components().expect("UMAP components");
@@ -168,11 +177,5 @@ pub(super) fn lower_cuml_query_plan(
                 error,
             ))
         })?;
-    Ok(match sink {
-        RelationFunctionSink::HostArrow => builder.finish_with_host_sink_schema(root, output_schema),
-        RelationFunctionSink::DeferredHostArrow => {
-            builder.finish_with_host_sink_schema(root, output_schema).clone_with_deferred_host_materialization_sink()
-        },
-        RelationFunctionSink::GpuResident => builder.finish_gpu_resident(root),
-    })
+    Ok(builder.finish_with_host_sink_schema(root, output_schema))
 }

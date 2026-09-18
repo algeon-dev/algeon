@@ -36,7 +36,7 @@ use crate::{
             StagedNativeChildren, stage_native_children,
         },
         gpu_function_occurrence_from_task_context, gpu_resident_producer, native_host_output_stream,
-        prepared_gpu_resident_producer_admission_tickets, run_gpu_execution_task,
+        prepared_gpu_resident_producer_admission_tickets, producer_bound_capability_evidence, run_gpu_execution_task,
     },
 };
 
@@ -83,12 +83,9 @@ pub(crate) trait RelationFunctionSpec: Clone + std::fmt::Debug + Send + Sync + '
     fn binding_count(&self) -> usize;
     fn roles(&self) -> Vec<&'static str>;
     fn required_projection(&self, index: usize, schema: SchemaRef) -> Result<Vec<usize>>;
-    fn lower(
-        &self,
-        bindings: &[NativeChildBinding],
-        schema: SchemaRef,
-        sink: RelationFunctionSink,
-    ) -> Result<QueryPlan>;
+    /// Lowers the function into a native plan with a host Arrow sink; every
+    /// other sink is derived from that plan.
+    fn lower(&self, bindings: &[NativeChildBinding], schema: SchemaRef) -> Result<QueryPlan>;
     fn feature_available(&self) -> bool;
     fn feature_disabled(&self) -> DataFusionError;
     fn invalid_child_count(&self) -> DataFusionError;
@@ -102,6 +99,7 @@ pub struct RelationFunctionExec<S> {
     input_names: Vec<String>,
     input_projections: Vec<Vec<usize>>,
     output_schema: SchemaRef,
+    native_host_plan: QueryPlan,
     native_execution_config: AlgeonNativeExecutionConfig,
     gpu_result_input_name: String,
     prepared_staged_inputs: Option<Arc<std::sync::Mutex<Option<StagedNativeChildren>>>>,
@@ -128,6 +126,15 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             .enumerate()
             .map(|(index, input)| spec.required_projection(index, input.schema()))
             .collect::<Result<Vec<_>>>()?;
+        let bindings = planned_bindings(&spec, &inputs, &input_names, &input_projections)?;
+        let native_host_plan = spec.lower(&bindings, Arc::clone(&output_schema))?;
+        preflight_query_plan(&native_host_plan).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                S::TEXT.operations.preflight,
+                S::TEXT.messages.preflight_failed,
+                error,
+            ))
+        })?;
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
             Partitioning::UnknownPartitioning(1),
@@ -135,66 +142,47 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             Boundedness::Bounded,
         ));
         let metrics_capture = native_execution_config.new_metrics_capture();
-        let exec = Self {
+        Ok(Self {
             spec,
             inputs,
             input_names,
             input_projections,
             output_schema,
+            native_host_plan,
             native_execution_config,
             gpu_result_input_name,
             prepared_staged_inputs: None,
             metrics_capture,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
-        };
-        let plan = exec.native_plan()?;
-        preflight_query_plan(&plan).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                S::TEXT.operations.preflight,
-                S::TEXT.messages.preflight_failed,
-                error,
-            ))
-        })?;
-        Ok(exec)
+        })
     }
 
     pub(crate) fn spec(&self) -> &S {
         &self.spec
     }
 
-    pub(crate) fn native_plan(&self) -> Result<QueryPlan> {
-        self.native_plan_for_sink(RelationFunctionSink::HostArrow)
+    pub(crate) fn native_plan(&self) -> &QueryPlan {
+        &self.native_host_plan
     }
 
-    fn native_plan_for_sink(&self, sink: RelationFunctionSink) -> Result<QueryPlan> {
-        self.spec.lower(&self.planned_bindings()?, Arc::clone(&self.output_schema), sink)
-    }
-
-    fn planned_bindings(&self) -> Result<Vec<NativeChildBinding>> {
-        self.inputs
+    /// Host-staged children are uploaded inside this function's own scope, so
+    /// only GPU-resident producer children contribute evidence and occurrences.
+    fn capability_evidence_for_sink(&self, sink: RelationFunctionSink) -> Result<AttemptCapabilityEvidence> {
+        let plan = plan_for_sink(&self.native_host_plan, sink);
+        let producer_inputs = self
+            .input_names
             .iter()
-            .zip(&self.input_names)
-            .zip(&self.input_projections)
-            .zip(self.spec.roles().iter())
-            .map(|(((input, input_name), projection), role)| {
-                if gpu_resident_producer(input.as_ref()).is_some() {
-                    return Ok(NativeChildBinding {
-                        input_name: input_name.clone(),
-                        role,
-                        schema: input.schema(),
-                        projection: projection.clone(),
-                    });
-                }
-                let schema = Arc::new(input.schema().project(projection).map_err(DataFusionError::from)?);
-                Ok(NativeChildBinding {
-                    input_name: input_name.clone(),
-                    role,
-                    projection: (0..schema.fields().len()).collect(),
-                    schema,
-                })
-            })
-            .collect()
+            .zip(&self.inputs)
+            .filter(|(_, input)| gpu_resident_producer(input.as_ref()).is_some())
+            .map(|(input_name, input)| (input_name.clone(), input.as_ref()));
+        producer_bound_capability_evidence(&plan, producer_inputs).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "algeon_datafusion.relation_function.admission_evidence",
+                "failed to derive capability evidence for a relation function and its GPU-resident inputs",
+                error,
+            ))
+        })
     }
 
     fn child_specs(&self) -> Vec<NativeChildInputSpec> {
@@ -265,7 +253,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         self.reject_unavailable_execution()?;
         let uploaded = staged.upload(native_context, task_context).await?;
         let host_to_device_uploads = uploaded.host_to_device_uploads.clone();
-        let plan = self.spec.lower(&uploaded.bindings, Arc::clone(&self.output_schema), sink)?;
+        let plan = plan_for_sink(&self.spec.lower(&uploaded.bindings, Arc::clone(&self.output_schema))?, sink);
         let outcome =
             execute_query_plan(native_context, QueryExecutionRequest::new(&plan).with_gpu_inputs(&uploaded.inputs));
         let (result, mut query_metrics, _observation) = outcome.into_parts();
@@ -320,17 +308,19 @@ impl<S: RelationFunctionSpec> GpuResidentProducer for RelationFunctionExec<S> {
     }
 
     fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
-        let plan = self.native_plan_for_sink(RelationFunctionSink::GpuResident)?;
-        Ok(AttemptCapabilityEvidence::for_query_plan(&plan))
+        self.capability_evidence_for_sink(RelationFunctionSink::GpuResident)
     }
 
     fn host_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
-        let plan = self.native_plan_for_sink(RelationFunctionSink::HostArrow)?;
-        Ok(AttemptCapabilityEvidence::for_query_plan(&plan))
+        self.capability_evidence_for_sink(RelationFunctionSink::HostArrow)
+    }
+
+    fn native_relation_input_names(&self) -> Option<&[String]> {
+        Some(&self.input_names)
     }
 
     fn host_result_query_plan(&self) -> Result<Option<QueryPlan>> {
-        self.native_plan_for_sink(RelationFunctionSink::HostArrow).map(Some)
+        Ok(Some(self.native_plan().clone()))
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
@@ -486,7 +476,7 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                             &task_context,
                             &occurrence_id,
                             &exec.gpu_result_input_name,
-                            &exec.native_plan_for_sink(RelationFunctionSink::HostArrow)?,
+                            exec.native_plan(),
                         )?
                     },
                     None => None,
@@ -574,6 +564,45 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
     }
 }
 
+fn planned_bindings<S: RelationFunctionSpec>(
+    spec: &S,
+    inputs: &[Arc<dyn ExecutionPlan>],
+    input_names: &[String],
+    input_projections: &[Vec<usize>],
+) -> Result<Vec<NativeChildBinding>> {
+    inputs
+        .iter()
+        .zip(input_names)
+        .zip(input_projections)
+        .zip(spec.roles().iter())
+        .map(|(((input, input_name), projection), role)| {
+            if gpu_resident_producer(input.as_ref()).is_some() {
+                return Ok(NativeChildBinding {
+                    input_name: input_name.clone(),
+                    role,
+                    schema: input.schema(),
+                    projection: projection.clone(),
+                });
+            }
+            let schema = Arc::new(input.schema().project(projection).map_err(DataFusionError::from)?);
+            Ok(NativeChildBinding {
+                input_name: input_name.clone(),
+                role,
+                projection: (0..schema.fields().len()).collect(),
+                schema,
+            })
+        })
+        .collect()
+}
+
+fn plan_for_sink(host_plan: &QueryPlan, sink: RelationFunctionSink) -> QueryPlan {
+    match sink {
+        RelationFunctionSink::HostArrow => host_plan.clone(),
+        RelationFunctionSink::DeferredHostArrow => host_plan.clone_with_deferred_host_materialization_sink(),
+        RelationFunctionSink::GpuResident => host_plan.clone_with_gpu_resident_sink(),
+    }
+}
+
 pub(crate) fn add_projected_relation_source(builder: &mut QueryPlanBuilder, child: &NativeChildBinding) -> NodeId {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
         child.input_name.clone(),
@@ -599,5 +628,107 @@ pub(crate) fn add_projected_relation_source(builder: &mut QueryPlanBuilder, chil
 fn record_relation_staging_boundaries(metrics: &mut QueryMetrics, uploads: &[HostToDeviceUpload]) {
     for upload in uploads {
         metrics.boundary.record_host_to_device_upload(upload.rows, upload.bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    struct CountingSpec {
+        lower_calls: Arc<AtomicUsize>,
+    }
+
+    impl RelationFunctionSpec for CountingSpec {
+        const EXEC_NAME: &'static str = "CountingRelationFunctionExec";
+        const HOST_OUTPUT_MEMORY_CONSUMER: &'static str = "CountingRelationFunctionExec[host-output-staging]";
+        const TEXT: RelationFunctionText = RelationFunctionText {
+            operations: RelationFunctionOperations {
+                execute: "test.execute",
+                execute_gpu: "test.execute_gpu",
+                gpu_execution_pool: "test.gpu_execution_pool",
+                host_batch_cursor: "test.host_batch_cursor",
+                preflight: "test.preflight",
+                with_new_children: "test.with_new_children",
+            },
+            messages: RelationFunctionMessages {
+                preflight_failed: "preflight failed",
+                staged_inputs_missing: "staged inputs missing",
+                staged_inputs_poisoned: "staged inputs poisoned",
+                staged_inputs_consumed: "staged inputs consumed",
+                execution_failed: "execution failed",
+                gpu_partition: "gpu partition",
+                unexpected_host_result: "unexpected host result",
+                child_count: "child count",
+                host_partition: "host partition",
+                gpu_pool_closed: "gpu pool closed",
+                deferred_result: "deferred result",
+                cursor_failed: "cursor failed",
+            },
+        };
+
+        fn operation_name(&self) -> &'static str {
+            "counting"
+        }
+
+        fn binding_count(&self) -> usize {
+            1
+        }
+
+        fn roles(&self) -> Vec<&'static str> {
+            vec!["input"]
+        }
+
+        fn required_projection(&self, _index: usize, schema: SchemaRef) -> Result<Vec<usize>> {
+            Ok((0..schema.fields().len()).collect())
+        }
+
+        fn lower(&self, bindings: &[NativeChildBinding], schema: SchemaRef) -> Result<QueryPlan> {
+            self.lower_calls.fetch_add(1, Ordering::SeqCst);
+            let mut builder = QueryPlanBuilder::new();
+            let root = add_projected_relation_source(&mut builder, &bindings[0]);
+            Ok(builder.finish_with_host_sink_schema(root, schema))
+        }
+
+        fn feature_available(&self) -> bool {
+            true
+        }
+
+        fn feature_disabled(&self) -> DataFusionError {
+            DataFusionError::Internal("feature disabled".to_string())
+        }
+
+        fn invalid_child_count(&self) -> DataFusionError {
+            DataFusionError::Internal("invalid child count".to_string())
+        }
+    }
+
+    #[test]
+    fn planning_queries_reuse_the_lowered_host_plan() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let input = MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None).expect("memory source");
+        let lower_calls = Arc::new(AtomicUsize::new(0));
+        let exec = RelationFunctionExec::try_new_with_names(
+            CountingSpec { lower_calls: Arc::clone(&lower_calls) },
+            vec![input as Arc<dyn ExecutionPlan>],
+            Arc::clone(&schema),
+            AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+            vec!["input".to_string()],
+            "counting_result".to_string(),
+        )
+        .expect("relation function exec");
+
+        exec.gpu_result_capability_evidence().expect("GPU-result evidence");
+        exec.host_result_capability_evidence().expect("host-result evidence");
+        let host_plan = exec.host_result_query_plan().expect("host plan").expect("relation host plan");
+
+        assert_eq!(&host_plan, exec.native_plan());
+        assert_eq!(lower_calls.load(Ordering::SeqCst), 1);
     }
 }

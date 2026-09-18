@@ -8,11 +8,24 @@ use std::{
 
 use cudf::{
     BoundaryKind, BoundaryObservation, CudfAllocationAttribution, DenseMatrixLayout, QueryMemoryDomainOptions, Runtime,
-    RuntimeBuilder, TypeId,
+    RuntimeBuilder, Series, TypeId,
 };
 use cuml::{
-    CumlResources, DeviceMatrix, RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion,
+    CumlResources, DeviceMatrix, ForestInferenceModel, RandomForestClassifier, RandomForestParams,
+    RandomForestRegressor, SplitCriterion,
 };
+
+fn predict(
+    forest: cuml::Result<ForestInferenceModel>,
+    resources: &CumlResources,
+    input: &DeviceMatrix<'_>,
+) -> cuml::Result<Series> {
+    let mut forest = forest?;
+    let series = forest.predict(resources, input)?.into_series()?;
+    forest.close()?;
+    let [series]: [Series; 1] = series.try_into().expect("one prediction series");
+    Ok(series)
+}
 
 #[test]
 fn random_forest_adopts_labels_and_targets_from_another_runtime() {
@@ -48,8 +61,8 @@ fn random_forest_adopts_labels_and_targets_from_another_runtime() {
         .expect("foreign classifier fit");
     assert_eq!(copies.load(Ordering::Relaxed), 1, "foreign labels require a device copy");
     assert_eq!(
-        adopted.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
-        baseline.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
+        predict(adopted.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
+        predict(baseline.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
     );
 
     let targets = features.iter().map(|value| value * 2.0 + 1.0).collect::<Vec<_>>();
@@ -64,8 +77,8 @@ fn random_forest_adopts_labels_and_targets_from_another_runtime() {
         .expect("foreign regressor fit");
     assert_eq!(copies.load(Ordering::Relaxed), 2, "foreign targets require a device copy");
     assert_eq!(
-        adopted.predict(&resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
-        baseline.predict(&resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
+        predict(adopted.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
+        predict(baseline.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
     );
 }
 
@@ -93,7 +106,10 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
         RandomForestParams { n_trees: 4, max_depth: 8, ..Default::default() },
     )
     .expect("fit on unreserved runtime");
-    assert_eq!(standalone.predict(&resources, &input).expect("predict without reservation").len(), rows);
+    assert_eq!(
+        predict(standalone.forest_model(&resources), &resources, &input).expect("predict without reservation").len(),
+        rows
+    );
     drop(standalone);
     drop(standalone_pool);
     let manager = runtime.device_memory_manager().expect("device memory manager");
@@ -118,7 +134,7 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
     let pool_usage = stream_lease.usage().expect("pool stream usage");
     assert!(pool_usage[0].total_allocations > 0, "forest training must allocate on the reserved pool stream");
     assert_eq!(pool_usage[0].current_bytes, 0, "native training must release pool allocations before returning");
-    let prediction = classifier.predict(&resources, &input).expect("classifier prediction");
+    let prediction = predict(classifier.forest_model(&resources), &resources, &input).expect("classifier prediction");
     assert_eq!(prediction.dtype().expect("dtype").id(), TypeId::Int32);
     assert_eq!(prediction.to_vec_strict::<i32>().expect("class predictions"), labels);
     for (values, reason) in [
@@ -148,7 +164,10 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
         RandomForestParams { n_trees: 4, max_depth: 8, ..Default::default() },
     )
     .expect("three-class RF fit");
-    assert_eq!(multi.predict(&resources, &input).expect("three-class prediction").len(), rows);
+    assert_eq!(
+        predict(multi.forest_model(&resources), &resources, &input).expect("three-class prediction").len(),
+        rows
+    );
     let nullable = runtime.nullable_series(&labels, &(0..rows).map(|i| i != 3).collect::<Vec<_>>()).unwrap();
     assert_eq!(
         RandomForestClassifier::fit(&resources, &stream_lease, &input, &nullable, RandomForestParams::default())
@@ -169,7 +188,7 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
         RandomForestParams { n_trees: 24, max_depth: 8, split_criterion: SplitCriterion::Mse, ..Default::default() },
     )
     .expect("regressor fit");
-    let predicted = regressor.predict(&resources, &input).expect("regression prediction");
+    let predicted = predict(regressor.forest_model(&resources), &resources, &input).expect("regression prediction");
     let values = predicted.to_vec_strict::<f32>().expect("float predictions");
     let mse =
         values.iter().zip(&targets).map(|(actual, expected)| (actual - expected).powi(2)).sum::<f32>() / rows as f32;
@@ -200,8 +219,14 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
         .expect("second row-major matrix");
     let other_packed = other_packed.validate().expect("second finite inputs");
     let other_input = DeviceMatrix::from_validated(&other_packed).expect("second device matrix");
-    let mismatch = match classifier.predict(&other_resources, &other_input) {
+    let mismatch = match classifier.forest_model(&other_resources) {
         Ok(_) => panic!("different binding must fail"),
+        Err(error) => error,
+    };
+    assert_eq!(mismatch.code(), cuml::ErrorCode::RuntimeBindingMismatch);
+    let forest = classifier.forest_model(&resources).expect("nvForest import");
+    let mismatch = match forest.predict(&resources, &other_input) {
+        Ok(_) => panic!("input from a different binding must fail"),
         Err(error) => error,
     };
     assert_eq!(mismatch.code(), cuml::ErrorCode::RuntimeBindingMismatch);
@@ -275,7 +300,8 @@ fn predict_rejects_column_major_and_fit_rejects_nonfinite_target() {
     )
     .expect("fit classifier");
     assert!(streams.usage().expect("pool usage")[0].total_allocations > 0);
-    let error = match classifier.predict(&resources, &input) {
+    let forest = classifier.forest_model(&resources).expect("nvForest import");
+    let error = match forest.predict(&resources, &input) {
         Ok(_) => panic!("predict layout is row-major only"),
         Err(error) => error,
     };

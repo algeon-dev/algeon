@@ -667,6 +667,9 @@ fn normalize_native_input(
     candidate: GpuCandidate,
     allow_ordered_multi_partition_memory_source: bool,
 ) -> Result<NormalizedNativeInput<'_>, NativePlanRejection> {
+    // A repartition above a fetch-limited coalesce redistributes the limited
+    // rows without changing them, so the limit is found after peeling it.
+    let plan = peel_repartition(plan);
     if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>()
         && let Some(fetch) = coalesce.fetch()
     {
@@ -677,7 +680,6 @@ fn normalize_native_input(
         }));
     }
 
-    let plan = peel_repartition(plan);
     if let Some(filter) = plan.downcast_ref::<FilterExec>() {
         let input = peel_repartition(filter.input().as_ref());
         let child_allows_ordered_multi_partition_memory_source =

@@ -114,6 +114,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 None,
                 parsed_statement,
                 execution_domain,
+                None,
             )
             .instrument(query_span.clone())
             .await
@@ -150,18 +151,21 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             },
         };
         self.ownership.authorize(&handle, &caller)?;
-        let (sql, execution_domain) =
-            match self.prepared_statements.get(&handle).map(|entry| (entry.sql.clone(), entry.execution_domain)) {
-                Some(entry) => entry,
-                None => {
-                    let error = Error::new(
-                        ErrorCode::ObjectNotFound,
-                        "algeon_datafusion.server.flight.get_flight_info_prepared_statement.resolve",
-                        format!("unknown prepared statement handle: {handle}"),
-                    );
-                    return Err(record_non_attempt_failure(self, &correlation_id, error)?);
-                },
-            };
+        let (sql, execution_domain, planned_forest_model_digests) = match self
+            .prepared_statements
+            .get(&handle)
+            .map(|entry| (entry.sql.clone(), entry.execution_domain, entry.forest_model_digests.clone()))
+        {
+            Some(entry) => entry,
+            None => {
+                let error = Error::new(
+                    ErrorCode::ObjectNotFound,
+                    "algeon_datafusion.server.flight.get_flight_info_prepared_statement.resolve",
+                    format!("unknown prepared statement handle: {handle}"),
+                );
+                return Err(record_non_attempt_failure(self, &correlation_id, error)?);
+            },
+        };
         if let Some(error) = explain_gpu_endpoint_error(
             &sql,
             "algeon_datafusion.server.flight.get_flight_info_prepared_statement.explain_gpu",
@@ -207,6 +211,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 Some(handle.clone()),
                 parsed_statement,
                 execution_domain,
+                Some(planned_forest_model_digests),
             )
             .instrument(query_span.clone())
             .await
@@ -592,7 +597,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
             })?;
         self.ownership.insert(query_id, caller);
-        self.execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::Statement).await
+        self.execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::Statement, None).await
     }
 
     async fn do_put_prepared_statement_update(
@@ -614,10 +619,10 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             },
         };
         self.ownership.authorize(&handle, &caller)?;
-        let (sql, already_executed) = match self
+        let (sql, already_executed, planned_forest_model_digests) = match self
             .prepared_statements
             .get(&handle)
-            .map(|entry| (entry.sql.clone(), entry.ddl_already_executed()))
+            .map(|entry| (entry.sql.clone(), entry.ddl_already_executed(), entry.forest_model_digests.clone()))
         {
             Some(entry) => entry,
             None => {
@@ -657,7 +662,13 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         }
 
         let record_count = self
-            .execute_update_sql(planning_lease, sql, correlation_id, UpdateStatementKind::PreparedStatement)
+            .execute_update_sql(
+                planning_lease,
+                sql,
+                correlation_id,
+                UpdateStatementKind::PreparedStatement,
+                Some(planned_forest_model_digests),
+            )
             .await?;
         if let Some(entry) = self.prepared_statements.get(&handle) {
             entry.mark_executed();
@@ -811,7 +822,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         if let Err(limit) = self.prepared_statements.insert(
             handle.clone(),
             caller.clone(),
-            PreparedStatementEntry::new(sql, no_result_ddl, execution_domain),
+            PreparedStatementEntry::new(sql, no_result_ddl, execution_domain, forest_model_digests(&logical_plan)),
         ) {
             let error = Error::new(
                 ErrorCode::ServiceOverloaded,

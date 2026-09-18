@@ -661,6 +661,27 @@ fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
 }
 
 #[test]
+fn decimal_to_float32_cast_lowers_through_float64() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-decimal-float32-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let decimal = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Decimal128(10, 0), None));
+    let cast = Arc::new(CastExpr::new(decimal, DataType::Float32, None));
+    let predicate = binary(cast, Operator::GtEq, lit(ScalarValue::Float32(Some(10.0))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
+    assert!(native.contains("CAST(CAST(CAST(payload AS Decimal128(10, 0)) AS Float64) AS Float32)"), "{native}");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn lossy_numeric_cast_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-lossy-cast");
     let path = dir.join("input.parquet");
