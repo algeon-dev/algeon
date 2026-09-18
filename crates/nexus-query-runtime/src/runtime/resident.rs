@@ -194,7 +194,7 @@ pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
     resident_owner: Option<ResidentOwnerLease>,
-    retained_source_owners: Vec<ResidentOwnerLease>,
+    retained_source_owners: Vec<RetainedSourceOwner>,
     retained_normalization_source: Option<ResidentOwnerLease>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
@@ -204,10 +204,25 @@ pub struct GpuDataFrame {
 struct GpuDataFrameParts {
     frame: DataFrame,
     resident_owner: Option<ResidentOwnerLease>,
-    retained_source_owners: Vec<ResidentOwnerLease>,
+    retained_source_owners: Vec<RetainedSourceOwner>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
     producer_execution_scope: Option<Arc<str>>,
+}
+
+// A transitive lease follows only aliases of the columns it protects. Keeping
+// the identity set prevents both premature release and fresh-only over-retention.
+#[derive(Clone)]
+struct RetainedSourceOwner {
+    owner: ResidentOwnerLease,
+    column_identities: HashSet<ColumnMemoryIdentity>,
+}
+
+impl RetainedSourceOwner {
+    fn retain_for(&self, output_identities: &HashSet<ColumnMemoryIdentity>) -> Option<Self> {
+        let column_identities: HashSet<_> = self.column_identities.intersection(output_identities).copied().collect();
+        (!column_identities.is_empty()).then(|| Self { owner: self.owner.clone(), column_identities })
+    }
 }
 
 impl GpuDataFrame {
@@ -217,18 +232,26 @@ impl GpuDataFrame {
     }
 
     /// Wrap a derived cuDF frame with identity-aware live-byte accounting and
-    /// the source cache's transitive eviction-safety lifetime.
+    /// the source's transitive resident and cache eviction-safety lifetimes.
     pub fn try_new_with_source_residency(frame: DataFrame, source: &Self) -> Result<Self> {
-        if source.resident_owner.is_none() && source.source_cache_pin.is_none() {
+        if source.resident_owner.is_none()
+            && source.retained_source_owners.is_empty()
+            && source.source_cache_pin.is_none()
+        {
             return Ok(Self::new(frame));
         }
         let source_identities = source_column_memory_identities(&source.frame);
         let output_identity = frame.memory_identity();
+        let output_identities = output_identity.columns.iter().map(|column| column.identity).collect::<HashSet<_>>();
         let aliased_output_columns =
             output_identity.columns.iter().filter(|column| source_identities.contains(&column.identity)).count();
         let aliases_source = aliased_output_columns > 0;
         let all_output_columns_alias_source = aliases_source && aliased_output_columns == output_identity.columns.len();
-        let mut retained_source_owners = Vec::new();
+        let mut retained_source_owners = source
+            .retained_source_owners
+            .iter()
+            .filter_map(|owner| owner.retain_for(&output_identities))
+            .collect::<Vec<_>>();
         let resident_owner = match &source.resident_owner {
             Some(source_owner) if all_output_columns_alias_source => {
                 // Pure aliases, including column subsets, keep the source
@@ -237,8 +260,10 @@ impl GpuDataFrame {
             },
             Some(source_owner) if source_owner.is_frozen_resident() => {
                 if aliases_source {
-                    retained_source_owners.push(source_owner.clone());
-                    retained_source_owners.extend(source.retained_source_owners.iter().cloned());
+                    retained_source_owners.push(RetainedSourceOwner {
+                        owner: source_owner.clone(),
+                        column_identities: output_identities.intersection(&source_identities).copied().collect(),
+                    });
                 }
                 None
             },
@@ -426,7 +451,7 @@ pub struct GpuResultHandle {
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
     resident_owner: Option<ResidentOwnerLease>,
-    retained_source_owners: Vec<ResidentOwnerLease>,
+    retained_source_owners: Vec<RetainedSourceOwner>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
     producer_execution: Option<Arc<ProducerExecutionIdentity>>,
@@ -461,7 +486,7 @@ pub struct GpuHostBatchCursor {
     _runtime: Arc<cudf::Runtime>,
     _device_placement: DevicePlacement,
     _resident_owner: Option<ResidentOwnerLease>,
-    _retained_source_owners: Vec<ResidentOwnerLease>,
+    _retained_source_owners: Vec<RetainedSourceOwner>,
     _source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     _graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
@@ -1010,6 +1035,9 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
                 error,
             )
         })?;
+        let selected_identities = source_column_memory_identities(&selected);
+        let retained_source_owners =
+            retained_source_owners.iter().filter_map(|owner| owner.retain_for(&selected_identities)).collect();
         let mut frame = GpuDataFrame::new_with_residency(selected, resident_owner, source_cache_pin);
         frame.retained_source_owners = retained_source_owners;
         frame.graph_residency = graph_residency;
@@ -1530,5 +1558,62 @@ mod tests {
         assert_eq!(grant.resident_owner_bytes(), mixed_bytes);
         drop(derived);
         assert_eq!(grant.resident_owner_bytes(), 0);
+    }
+
+    #[test]
+    fn source_residency_preserves_transitive_frozen_owner_across_alias_chain() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
+        let grant = governor
+            .admit_with_configured_floor_and_soft_working_set_hint_for_test(
+                AdmissionRequestId::new(4),
+                64 * 1024 * 1024,
+                64 * 1024 * 1024,
+            )
+            .unwrap()
+            .unwrap();
+        let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
+        source.resident_owner.as_ref().unwrap().set_completion_stream(runtime.stream().clone()).unwrap();
+        grant.freeze_resident(source_bytes).unwrap();
+
+        let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
+        let mixed = GpuDataFrame::try_new_with_source_residency(mixed, &source).unwrap();
+        let selected = mixed.frame().select(["id"]).unwrap();
+        let selected = GpuDataFrame::try_new_with_source_residency(selected, &mixed).unwrap();
+
+        drop(source);
+        drop(mixed);
+        assert_eq!(grant.resident_owner_bytes(), source_bytes);
+
+        drop(selected);
+        assert_eq!(grant.resident_owner_bytes(), 0);
+    }
+
+    #[test]
+    fn source_residency_releases_transitive_owner_when_only_fresh_columns_survive() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
+        let grant = governor
+            .admit_with_configured_floor_and_soft_working_set_hint_for_test(
+                AdmissionRequestId::new(5),
+                64 * 1024 * 1024,
+                64 * 1024 * 1024,
+            )
+            .unwrap()
+            .unwrap();
+        let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
+        source.resident_owner.as_ref().unwrap().set_completion_stream(runtime.stream().clone()).unwrap();
+        grant.freeze_resident(source_bytes).unwrap();
+
+        let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
+        let mixed = GpuDataFrame::try_new_with_source_residency(mixed, &source).unwrap();
+        let selected = mixed.frame().select(["fresh"]).unwrap();
+        let selected = GpuDataFrame::try_new_with_source_residency(selected, &mixed).unwrap();
+
+        drop(source);
+        drop(mixed);
+        assert_eq!(grant.resident_owner_bytes(), 0);
+
+        drop(selected);
     }
 }
