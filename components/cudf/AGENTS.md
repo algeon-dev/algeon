@@ -13,14 +13,15 @@
 over libcudf. Query planning and runtime ownership follow the root
 `algeon-datafusion` ownership map.
 
-- Safe APIs belong in `cudf/`; the C++ shim and raw FFI belong in
-  `cudf-sys/`; cross-library ownership and synchronization vocabulary
-  belongs in `rapids-interop/`. The public `cudf::interop::contract` entry
-  re-exports that owner crate for consumers that already depend on `cudf`.
+- Safe APIs belong in `algeon-cudf/`; the C++ shim and raw FFI belong in
+  `algeon-cudf-sys/`; cross-library ownership and synchronization vocabulary
+  belongs in `components/algeon-interop/`. The public `cudf::interop::contract`
+  entry re-exports that owner crate for consumers that already depend on `cudf`.
 - `components/cudf/cudf/` is the pinned Algeon cuDF fork used for
   native builds.
-- The three component crates are members of the root workspace; preserve their
-  dependency direction and package/import identities.
+- Both component crates and `components/algeon-interop` are members of the
+  root workspace; preserve their dependency direction and package/import
+  identities.
 - Default native output is `target/native/cudf-install`; use the explicit
   `CUDF_INSTALL_DIR` or `CUDF_CPP_BUILD_DIR` selectors when needed.
 
@@ -33,7 +34,7 @@ over libcudf. Query planning and runtime ownership follow the root
   device copies, and host materialization. Preserve prepared-read completion
   and release ordering.
 - Preserve device-aware destruction and the existing `Send`/`Sync` contract for
-  each owned, borrowed, runtime, and interop type. Re-audit `docs/SAFETY.md` when
+  each owned, borrowed, runtime, and interop type. Re-audit `algeon-cudf-sys/SAFETY.md` when
   changing unsafe code, lifetimes, raw handles, or thread traits.
 - Keep host-copy Arrow interop separate from Arrow C Device and RAPIDS
   device-resident interop paths.
@@ -41,10 +42,9 @@ over libcudf. Query planning and runtime ownership follow the root
 ## Build and test
 
 ```bash
-cargo clippy -p cudf -p cudf-sys -p rapids-interop \
-  --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cudf) | package(cudf-sys) | package(rapids-interop)'
+cargo nt -E 'package(algeon-cudf) | package(algeon-cudf-sys) | package(algeon-interop)'
 ```
 
 Run focused checks first, then broaden validation with the change's blast
@@ -66,10 +66,10 @@ native work.
 
 ## Public contracts
 
-- Preserve package/import identities: `cudf` imports as `cudf`,
-  `cudf-sys` imports as `cudf_sys`, `rapids-interop` imports as
+- Preserve package/import identities: `algeon-cudf` imports as `cudf`,
+  `algeon-cudf-sys` imports as `cudf_sys`, `algeon-interop` imports as
   `rapids_interop`, and the sys crate keeps `links = "cudf_rust"`.
-- Keep shared interop types owned by `rapids-interop`; expose them to `cudf`
+- Keep shared interop types owned by `algeon-interop`; expose them to `cudf`
   consumers through `cudf::interop::contract` without wrappers or copies.
 - Preserve `DEP_CUDF_RUST_*` native metadata and exact libcudf/RMM runtime
   identity for downstream consumers.

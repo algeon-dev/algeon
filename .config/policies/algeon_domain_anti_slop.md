@@ -2,7 +2,7 @@
 
 Unslop profile for GPU database engine, Apache DataFusion physical optimization, CUDA memory allocation.
 
-The first-order clichés are already gone from this domain's output (`delve`, `leverage`, `robust`, `crucial`, "In summary", em-dashes, exclamation marks). What is left is a second-order persona: a gruff senior engineer who never hedges, names one culprit, ends every paragraph on a quotable verdict, uses violent failure verbs, and addresses the reader as "you". That persona is the slop. Everything below is a fingerprint of it.
+First-order clichés (`delve`, `leverage`, `robust`, `crucial`, "In summary", em-dashes, exclamation marks) stay out. This profile targets a second-order persona: a gruff senior engineer who never hedges, names one culprit, ends every paragraph on a quotable verdict, uses violent failure verbs, and addresses the reader as "you". That persona is the slop. Everything below is a fingerprint of it.
 
 ## Sentence templates to never use
 
@@ -44,7 +44,7 @@ The first-order clichés are already gone from this domain's output (`delve`, `l
 - "the same X" parallelism piled up: "same pipeline", "same bookkeeping", "same event semantics", "same change", "same roadmap", "same factor", "same builder".
 - Start-small advice: "Start narrow", "Start at one partition", "Widen this as your CUDA side grows", "the safer starting point", "nothing else. Re-profile."
 - Overused domain vocabulary as filler: "in-flight" / "in flight", "per-X" compounds stacked in one paragraph ("per-batch", "per-query", "per-stream", "per-buffer", "per-slot", "per-transfer"), "side" as a locative ("your CUDA side", "input-side", "output side", "device side", "either side of the shuffle"), "the whole device", "device-wide", "pipeline" as a generic noun.
-- Hyphenated compound-adjective pileups: "stream-ordered", "device-wide", "many-thread", "mixed-size", "quasi-uniform", "odd-sized", "thread-affine", "mutex-protected", "host-located", "CPU-cache-sized", "launch-latency bound", "selectivity-dependent", "data-sized", "first-cut", "golden-file", "resources-exhausted". More than two in a sentence is the tell. "stream-ordered" in particular.
+- Hyphenated compound-adjective pileups: "stream-ordered", "device-wide", "many-thread", "mixed-size", "quasi-uniform", "odd-sized", "thread-affine", "mutex-protected", "host-located", "CPU-cache-sized", "launch-latency bound", "selectivity-dependent", "data-sized", "first-cut", "golden-file", "resources-exhausted". More than two in a sentence is the tell. A term of art keeps its hyphen when it names the thing (the CUDA stream-ordered allocator); count the modifiers stacked around it.
 
 ## Structural patterns to avoid
 
@@ -53,7 +53,7 @@ The first-order clichés are already gone from this domain's output (`delve`, `l
 - Wh-word headers: "Why each call is expensive", "Why it gets slower", "How to confirm it on your machine", "What to do instead", "What a repartition costs", "Why the GPU changes the picture", "How the pieces fit", "Where this will bite you next", "When to synchronize".
 - Every bullet shaped as `[diagnosis sentence]. [imperative fix].` "One global stream serializes every partition. Give each partition its own stream." "Launch errors surface late. Check after each launch." Twenty-four bullets in a row of this shape.
 - Every paragraph and multi-sentence bullet ending on a short quotable verdict. "Both costs get worse the more you call it." "No extra plumbing." "Bound it with a semaphore." "The shuffle is one expensive step among several." "No allocator lowers that floor." Build-up then punchline, every time.
-- Lists of exactly three items. Sections with exactly two points.
+- Triplets and pairs chosen for rhythm rather than because the material has three or two parts.
 - Two-column compact tables with `|---|---|` used to look decisive. A summary matrix whose first row reads "yes | yes | yes" on a criterion that separates nothing.
 - Verb-less fragment sentences and one-word bullets. "The driver." "RMM." "Us." "No extra plumbing." "Two subtleties." "One trap first." "Version drift." "Tolerable on uniform sizes, the classic RMM complaint on variable ones." "Device to host to disk, with the last hop owned by upstream code."
 - Repeated `**Option 1.** / **Option 2, pool.** / **Option 2, arena.** / **Option 3.**` bold labels across four consecutive subsections.
@@ -83,9 +83,9 @@ The first-order clichés are already gone from this domain's output (`delve`, `l
 - Zero hedging combined with maximal modal force. No "might", "could", "perhaps", "probably", "I think" anywhere, while "must", "mandatory", "never", "Do not", "Never call" carry every claim. Confidence should track how checked the claim is, not be uniform.
 - False precision stated without source: "~900 GB/s", "~30 to 60 GB/s", "roughly an order of magnitude", "~600M rows", "~73K batches", "roughly 500K malloc/free pairs", "roughly 24 GB", "about 0.5 s at a practical 50 GB/s", "a 70-SM part", "~300 KB copy", "~200 lines", "ratio exceeds ~1.3", "microseconds to milliseconds". The tilde "~" and "roughly" nine and five times in one response. "50-ish".
 - Relentless second person: "the join you see", "kills any overlap you had", "the columns you will never use", "your card has 16 GB", "Nothing runs after you", "your problem", "your CUDA side", "your Drop", "you race". Twenty "you/your" in one answer.
-- Uniformly clipped register with no warmth, no "Let's", no acknowledgment of the question. The battle-scarred-expert voice that sounds identical whether the claim was verified or guessed.
+- A register that sounds identical whether the claim was verified or guessed. Let the wording of a checked result differ from the wording of an inference.
 - Inconsistent contraction policy: eleven contractions in one response, zero in the next three, in the same voice. Pick one and hold it.
-- Environment leakage: "RTX 5070 Ti (16 GiB GDDR7, PCIe 5.0 x16), CUDA 13.2, driver 595.71", "a 70-SM part", "remember your card has 16 GB", name-dropping `nsys profile` and `compute-sanitizer` as the verification step because they are installed on the machine. Denied tool calls and MCP server status inside the answer.
+- Environment leakage into explanatory prose: "RTX 5070 Ti (16 GiB GDDR7, PCIe 5.0 x16), CUDA 13.2, driver 595.71", "a 70-SM part", "remember your card has 16 GB", name-dropping `nsys profile` and `compute-sanitizer` as the verification step because they happen to be installed. A report on native work still states the exact prefix, loader path, and GPU environment it ran on, and a reply still says which steps were skipped or blocked; those facts belong in the reply's status, outside any deliverable document.
 - Authority by assertion: "is documented as", "is now", "exists precisely because", "the classic complaint".
 
 ## Grammatical and syntactic crutches to drop

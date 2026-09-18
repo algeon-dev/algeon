@@ -10,15 +10,13 @@
 
 use std::fmt;
 
-use strum::EnumIter;
-
 /// Stable, machine-readable failure identity.
 ///
 /// Every variant is a leaf code. The old coarse-family variants
 /// (`InvalidInput`, `NotFound`, `Unsupported`, `ExecutionContext`,
 /// `ResourceExhausted`, `DependencyFailure`, `MissingResource`) are removed
 /// from this taxonomy. Use [`ErrorKind`] if you need coarse policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
     // -- Domestic invalid-input leaves ---------------------------------------
@@ -130,6 +128,46 @@ pub enum ErrorCode {
     /// The foreign layer reported resource exhaustion with opaque
     /// classification.
     ForeignResourceExhausted,
+}
+
+impl ErrorCode {
+    /// Every error code variant, in declaration order.
+    pub const ALL: [Self; 34] = [
+        Self::MissingColumn,
+        Self::DuplicateColumnName,
+        Self::DuplicateKey,
+        Self::ColumnLengthMismatch,
+        Self::TypeMismatch,
+        Self::ValueOutOfRange,
+        Self::IndexOutOfBounds,
+        Self::NullUnexpected,
+        Self::EmptyInput,
+        Self::PathIsDirectory,
+        Self::EmptyConstructionRequiresRuntime,
+        Self::CrossDeviceInputs,
+        Self::CrossProvenanceInputs,
+        Self::RuntimeBindingMismatch,
+        Self::ReadinessUnavailable,
+        Self::ExecutionBindingUnavailable,
+        Self::LeaseAlreadyActive,
+        Self::UnsupportedDtype,
+        Self::UnsupportedLayout,
+        Self::UnsupportedOperation,
+        Self::OutOfMemory,
+        Self::SizeOverflow,
+        Self::HostMaterializationLimitExceeded,
+        Self::CudaRuntime,
+        Self::FatalCuda,
+        Self::IoFailure,
+        Self::IoBusy,
+        Self::TransientIoFailure,
+        Self::InvariantViolation,
+        Self::ForeignInvalidArgument,
+        Self::ForeignTransientDependencyFailure,
+        Self::ForeignPersistentDependencyFailure,
+        Self::ForeignInvariantViolation,
+        Self::ForeignResourceExhausted,
+    ];
 }
 
 impl fmt::Display for ErrorCode {

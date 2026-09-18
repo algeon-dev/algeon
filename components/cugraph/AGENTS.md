@@ -28,7 +28,7 @@ SQL planning, runtime admission, and query execution follow the root
 
 ## Architecture contracts
 
-- cuDF, cuGraph, and compatible cuVS 26.06.x must resolve one RMM runtime. The
+- cuDF, cuGraph, and compatible cuVS 26.08.x must resolve one RMM runtime. The
   default root cuVS prefix requires its pinned source marker; an explicitly
   selected external prefix may omit that Algeon marker. Never accept a private
   `_deps` RMM or libcuvs copy.
@@ -36,7 +36,7 @@ SQL planning, runtime admission, and query execution follow the root
   export or all three explicit include, link, and runtime path lists.
 - Runtime-bound handles bind the exact cuDF device, stream, and memory resource
   without a second RAFT stream pool. Public active GPU wrappers preserve the
-  `!Send + !Sync` assertions in `type_threading_contract`; `ParkedGraph` remains
+  `!Send + !Sync` assertions in `type_threading_contract_cpu`; `ParkedGraph` remains
   `Send + !Sync`.
 - Preserve borrowed, prepared, shared-owner, and owned-transfer cuDF interop
   paths, including their completion ordering.
@@ -55,10 +55,9 @@ CUVS_INSTALL_DIR="$PWD/target/native/cuvs-install" \
 CUGRAPH_CMAKE_BUILD_DIR="$PWD/target/native/cugraph-build" \
 scripts/build/build_libcugraph.sh
 
-cargo clippy -p cugraph -p cugraph-sys \
-  --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cugraph) | package(cugraph-sys)'
+cargo nt -E 'package(algeon-cugraph) | package(algeon-cugraph-sys)'
 ```
 
 Run focused checks first, then broaden validation with the change's blast
@@ -81,8 +80,8 @@ native work.
 
 ## Public contracts
 
-- Preserve package/import identities: `cugraph` imports as `cugraph`,
-  `cugraph-sys` imports as `cugraph_sys`, and the sys crate keeps
+- Preserve package/import identities: `algeon-cugraph` imports as `cugraph`,
+  `algeon-cugraph-sys` imports as `cugraph_sys`, and the sys crate keeps
   `links = "cugraph"`.
 - Preserve `DEP_CUGRAPH_*` native include, link, and runtime metadata for
   downstream consumers.
