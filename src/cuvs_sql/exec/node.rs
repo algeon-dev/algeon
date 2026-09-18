@@ -27,8 +27,10 @@ use nexus_query_engine::{
 };
 
 use super::{
-    CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions,
-    error::{feature_disabled, invalid_call},
+    super::{
+        CuvsDenseVectorBinding, CuvsOperation, CuvsValidatedOptions, CuvsVectorRelationBinding,
+        error::{feature_disabled, invalid_call},
+    },
     lowering::{CuvsPlanSink, lower_cuvs_query_plan},
 };
 use crate::{
@@ -592,7 +594,7 @@ fn record_cuvs_staging_boundaries(
 fn required_projection(
     operation: CuvsOperation,
     schema: SchemaRef,
-    binding: &super::CuvsVectorRelationBinding,
+    binding: &CuvsVectorRelationBinding,
 ) -> Result<Vec<usize>> {
     let mut names = Vec::new();
     names.push(binding.id());

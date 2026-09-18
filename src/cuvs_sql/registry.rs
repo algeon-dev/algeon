@@ -1,7 +1,8 @@
 //! SQL-facing re-exports of the canonical DataFusion-free cuVS registry.
 //!
 //! Operation identity, relation roles, option metadata, and output contracts
-//! live in `nexus-query-engine`. This module intentionally contains no second
+//! are defined by `nexus-query-planning` and exposed through the compatible
+//! `nexus-query-engine` facade. This module intentionally contains no second
 //! operation map or schema definition.
 
 pub use nexus_query_engine::plan::{

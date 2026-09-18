@@ -12,8 +12,8 @@ use super::{
     super::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource,
         CugraphBfsSourceVertex, CugraphSqlConfig, CugraphVertexIdDomain, PredicateSourceColumnRole,
-        datafusion_table_reference, parse_cugraph_algorithm_spec, result_schema_for_vertex_domain,
-        validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+        parse_cugraph_algorithm_spec, result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
+        validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
     },
     ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM,
     ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_UNSUPPORTED_WEIGHT_DTYPE,
@@ -105,7 +105,7 @@ pub(super) async fn validate_graph_call(
     };
     let mut output_schema_json = schema_json(&spec.output_schema);
 
-    let table_ref = datafusion_table_reference(&spec.table_name);
+    let table_ref = spec.table_name.datafusion_reference();
     let provider = match resolve_table_provider(state, table_ref).await {
         Ok(provider) => provider,
         Err(message) => {
@@ -296,18 +296,18 @@ async fn validate_predicate_sources(
     output_schema_json: String,
 ) -> Option<ValidationRow> {
     if let CugraphAlgorithmParams::Similarity(params) = &spec.params {
-        let provider =
-            match resolve_table_provider(state, datafusion_table_reference(&params.vertex_pairs.table_name)).await {
-                Ok(provider) => provider,
-                Err(message) => {
-                    return Some(predicate_validation_error(
-                        function_name,
-                        ERROR_TABLE_NOT_FOUND,
-                        message,
-                        &output_schema_json,
-                    ));
-                },
-            };
+        let provider = match resolve_table_provider(state, params.vertex_pairs.table_name.datafusion_reference()).await
+        {
+            Ok(provider) => provider,
+            Err(message) => {
+                return Some(predicate_validation_error(
+                    function_name,
+                    ERROR_TABLE_NOT_FOUND,
+                    message,
+                    &output_schema_json,
+                ));
+            },
+        };
         if let Err(error) =
             validate_similarity_pair_table_schema(&params.vertex_pairs, &provider.schema(), vertex_domain)
         {
@@ -317,7 +317,7 @@ async fn validate_predicate_sources(
         return None;
     }
     for source in spec.predicate_source_specs() {
-        let provider = match resolve_table_provider(state, datafusion_table_reference(&source.table_name)).await {
+        let provider = match resolve_table_provider(state, source.table_name.datafusion_reference()).await {
             Ok(provider) => provider,
             Err(message) => {
                 return Some(predicate_validation_error(

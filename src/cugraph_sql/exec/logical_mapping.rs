@@ -13,7 +13,7 @@ use super::{
     PredicateSourceColumnRole, ProjectionOutput, QueryPlanBuilder, RecordBatch, Result, Schema, SchemaRef, SortExpr,
     SortSpec, SourceNode, WindowFunction, WindowSpec, plan_error, result_schema_for_params, vertex_id_domain_for_call,
 };
-use crate::cugraph_sql::types::CugraphLogicalOutputColumn;
+use crate::cugraph_sql::registry::CugraphLogicalOutputColumn;
 
 const LOGICAL_VERTEX_COLUMN: &str = "__vertex_id_str";
 const NATIVE_VERTEX_COLUMN: &str = "__vertex_id";

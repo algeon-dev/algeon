@@ -117,7 +117,6 @@ mod input;
 mod logical_mapping;
 mod lowering;
 mod node;
-mod path;
 mod residency;
 #[cfg(test)]
 mod tests;
@@ -144,7 +143,6 @@ use lowering::{
     preflight_cugraph_query_plan,
 };
 pub use node::CugraphAlgoExec;
-use path::is_bfs_path_output;
 use residency::{attach_graph_residency, cugraph_graph_residency_descriptor};
 
 pub(super) struct GraphExecutionMetrics<'a> {
