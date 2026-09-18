@@ -30,7 +30,7 @@ fn native_engine_manifest_has_no_datafusion_dependency() {
 
     assert!(
         datafusion_dependencies.is_empty(),
-        "query-engine must remain DataFusion-free; found {datafusion_dependencies:?}"
+        "query-engine must not depend on a query-engine adapter; found DataFusion dependencies {datafusion_dependencies:?}"
     );
 }
 

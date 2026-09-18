@@ -1,4 +1,4 @@
-//! DataFusion-free native query runtime, lifecycle, ledger, and observation owners.
+//! Native query runtime, lifecycle, ledger, and observation owners.
 
 pub mod attempt;
 pub mod metrics;

@@ -1,12 +1,12 @@
 //! Algeon native-rs query engine contracts.
 //!
-//! This crate deliberately does not depend on DataFusion. DataFusion-specific
+//! This crate does not depend on any query-engine adapter. DataFusion-specific
 //! matching, fallback reporting, and adapter wrappers belong in
 //! `algeon-datafusion`.
 //!
 //! Public APIs fall into four groups:
 //!
-//! - [`plan`] and [`expr`] define the DataFusion-free query IR.
+//! - [`plan`] and [`expr`] define the native query IR.
 //! - [`capability`], [`admission`], and [`pipeline`] prove and compile bounded-execution
 //!   contracts without assigning plans to named execution families.
 //! - [`runtime`] owns device, memory, boundary, and scheduler policy.
@@ -45,11 +45,11 @@ pub mod chunk;
 pub mod datatypes;
 /// Local-filesystem implementation of the planning dimension-pruning resolver contract.
 pub mod dimension_pruning;
-/// DataFusion-free dynamic-filter producer/consumer route IR.
+/// Native dynamic-filter producer/consumer route IR.
 pub use query_planning::dynamic_filter;
 pub use query_planning::{contract_report, error};
 pub mod exec;
-/// DataFusion-free expression IR used by native query plans.
+/// Expression IR used by native query plans.
 pub use query_planning::expr;
 pub(crate) use query_planning::expression_lowering_policy;
 /// Measured graph-execution observation rows.
@@ -66,7 +66,7 @@ pub mod object_store_error;
 pub mod rapids_backend;
 /// Shared Parquet footer/statistics helpers for native pruning and sizing.
 pub use query_planning::parquet_stats;
-/// DataFusion-free query plan IR and graph operators.
+/// Native query plan IR and graph operators.
 pub use query_planning::plan;
 /// Backend materialized-output sizing, applying the component's formula.
 #[doc(hidden)]

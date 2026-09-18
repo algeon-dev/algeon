@@ -1,4 +1,4 @@
-//! DataFusion-free vector algorithm IR.
+//! Native vector algorithm IR.
 //!
 //! The contracts in this module deliberately describe relational inputs,
 //! algorithm parameters, and result schemas without depending on cuVS. The
@@ -1528,7 +1528,7 @@ impl VectorAlgorithmParams {
     }
 }
 
-/// DataFusion-free vector algorithm specification.
+/// Native vector algorithm specification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorAlgorithmSpec {
     /// Algorithm to execute.

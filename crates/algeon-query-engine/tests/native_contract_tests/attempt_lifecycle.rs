@@ -1,6 +1,6 @@
 //! Public execution-attempt lifecycle contracts that need no CUDA device.
 //!
-//! These tests pin the DataFusion-independent attempt identity, correlation
+//! These tests pin the attempt identity, correlation
 //! validation, report envelope, and cancellation propagation model through the
 //! crate's public API only.
 

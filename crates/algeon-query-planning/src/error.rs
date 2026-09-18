@@ -1,4 +1,4 @@
-//! Error taxonomy for the DataFusion-free native query engine.
+//! Error taxonomy for the native query engine.
 //!
 //! Native errors stop at the `query-engine` API boundary as [`QueryError`].
 //! The DataFusion adapter wraps them in its own `algeon_datafusion::Error` so it

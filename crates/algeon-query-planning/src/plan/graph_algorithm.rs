@@ -1,4 +1,4 @@
-//! DataFusion-free graph algorithm IR.
+//! Native graph algorithm IR.
 //!
 //! This module defines stable graph algorithm names, graph construction
 //! options, edge-list normalization, parameter defaults, and result schemas.
@@ -135,7 +135,7 @@ impl GraphAlgorithmParams {
     }
 }
 
-/// DataFusion-free graph algorithm specification.
+/// Native graph algorithm specification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithmSpec {
     /// Algorithm to execute.

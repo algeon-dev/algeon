@@ -14,7 +14,7 @@ use crate::{
     dynamic_filter::{DynamicFilterExecutionOptions, DynamicFilterRoute},
 };
 
-/// DataFusion-free query plan consumed by the native cuDF execution engine.
+/// Query plan consumed by the native cuDF execution engine.
 ///
 /// A plan is an append-only DAG of [`QueryNode`]s. [`NodeId`] values are indexes
 /// into `nodes` and are stable once emitted by [`crate::plan::QueryPlanBuilder`]; callers must
@@ -232,7 +232,7 @@ impl QueryPlan {
     /// Replace the externally materialized host schema while preserving the
     /// executable root. This keeps Arrow schema metadata owned by an embedding
     /// frontend at the host boundary without injecting frontend state into the
-    /// DataFusion-independent IR nodes.
+    /// native IR nodes.
     ///
     /// The replacement must retain the exact output fields and types of the
     /// host sink schema it replaces. Only schema-level metadata may differ.
