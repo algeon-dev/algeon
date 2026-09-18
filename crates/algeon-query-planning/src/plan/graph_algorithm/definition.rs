@@ -16,69 +16,69 @@ use super::{
 /// Native graph algorithm supported by the cuGraph operator boundary.
 ///
 /// Every variant must have a matching entry in [`GRAPH_OPERATION_REGISTRY`].
-/// Ref: <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/>
+/// Ref: <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GraphAlgorithm {
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv416cugraph_pagerankPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tdd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t>
     PageRank,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv429cugraph_personalized_pagerankPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tdd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t>
     PersonalizedPageRank,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#breadth-first-search-bfs>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/traversal/#_CPPv411cugraph_bfsPK25cugraph_resource_handle_tP15cugraph_graph_tP39cugraph_type_erased_device_array_view_t6bool_t6size_t6bool_t6bool_tPP22cugraph_paths_result_tPP15cugraph_error_t>
     Bfs,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#louvain>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/community/#_CPPv415cugraph_louvainPK25cugraph_resource_handle_tP15cugraph_graph_t6size_tdd6bool_tPP40cugraph_hierarchical_clustering_result_tPP15cugraph_error_t>
     Louvain,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#eigenvector-centrality>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv430cugraph_eigenvector_centralityPK25cugraph_resource_handle_tP15cugraph_graph_td6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t>
     EigenvectorCentrality,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#katz-centrality>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv423cugraph_katz_centralityPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tddd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t>
     KatzCentrality,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#hits-centrality>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv412cugraph_hitsPK25cugraph_resource_handle_tP15cugraph_graph_td6size_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_t6bool_t6bool_tPP21cugraph_hits_result_tPP15cugraph_error_t>
     Hits,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#betweenness-centrality>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv430cugraph_betweenness_centralityPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_t6bool_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t>
     BetweennessCentrality,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#edge-betweenness-centrality>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/centrality/#_CPPv435cugraph_edge_betweenness_centralityPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_t6bool_tPP32cugraph_edge_centrality_result_tPP15cugraph_error_t>
     EdgeBetweennessCentrality,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/traversal/#_CPPv412cugraph_ssspPK25cugraph_resource_handle_tP15cugraph_graph_t6size_td6bool_t6bool_tPP22cugraph_paths_result_tPP15cugraph_error_t>
     Sssp,
     /// In-degree and out-degree for every vertex.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.degrees/>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/graph/#_CPPv415cugraph_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t>
     DegreesAll,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.in_degree/>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/graph/#_CPPv418cugraph_in_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t>
     InDegreesAll,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.structure.graph_implementation.simplegraphimpl.out_degree/>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/graph/#_CPPv419cugraph_out_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t>
     OutDegreesAll,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#weakly-connected-components>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/labeling/#_CPPv435cugraph_weakly_connected_componentsPK25cugraph_resource_handle_tP15cugraph_graph_t6bool_tPP25cugraph_labeling_result_tPP15cugraph_error_t>
     WeaklyConnectedComponents,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/labeling/#strongly-connected-components>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/labeling/#_CPPv437cugraph_strongly_connected_componentsPK25cugraph_resource_handle_tP15cugraph_graph_t6bool_tPP25cugraph_labeling_result_tPP15cugraph_error_t>
     StronglyConnectedComponents,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#triangle-counting>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/community/#_CPPv422cugraph_triangle_countPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP31cugraph_triangle_count_result_tPP15cugraph_error_t>
     TriangleCountAll,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#core-number>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/core/#_CPPv419cugraph_core_numberPK25cugraph_resource_handle_tP15cugraph_graph_t28cugraph_k_core_degree_type_t6bool_tPP21cugraph_core_result_tPP15cugraph_error_t>
     CoreNumber,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/core/#k-core>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/core/#_CPPv414cugraph_k_corePK25cugraph_resource_handle_tP15cugraph_graph_t6size_t28cugraph_k_core_degree_type_tPK21cugraph_core_result_t6bool_tPP23cugraph_k_core_result_tPP15cugraph_error_t>
     KCore,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/tree/#_CPPv429cugraph_minimum_spanning_treePK25cugraph_resource_handle_tP15cugraph_graph_t6bool_tPP33cugraph_induced_subgraph_result_tPP15cugraph_error_t>
     MinimumSpanningTree,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#leiden>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/community/#_CPPv414cugraph_leidenPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_t6size_tdd6bool_tPP40cugraph_hierarchical_clustering_result_tPP15cugraph_error_t>
     Leiden,
     /// Ensemble clustering for graphs.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#ecg>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/community/#_CPPv411cugraph_ecgPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_td6size_t6size_tdd6bool_tPP40cugraph_hierarchical_clustering_result_tPP15cugraph_error_t>
     Ecg,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/community/#_CPPv440cugraph_spectral_modularity_maximizationPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_t6size_t6size_tdidi6bool_tPP27cugraph_clustering_result_tPP15cugraph_error_t>
     SpectralModularityMaximization,
     /// Force-directed graph layout.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.layout.force_atlas2.force_atlas2/>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/layout/#_CPPv420cugraph_force_atlas2PK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_tiP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_t6bool_t6bool_t6bool_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tddd6bool_tdd6bool_tdP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_t6bool_t6bool_tPP23cugraph_layout_result_tPP15cugraph_error_t>
     ForceAtlas2,
     /// Explicit-pair Jaccard similarity coefficient.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#jaccard-coefficients>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/similarity/#_CPPv428cugraph_jaccard_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t>
     Jaccard,
     /// Explicit-pair Sorensen similarity coefficient.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#sorensen-coefficients>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/similarity/#_CPPv429cugraph_sorensen_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t>
     Sorensen,
     /// Explicit-pair overlap similarity coefficient.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#overlap-coefficients>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/similarity/#_CPPv428cugraph_overlap_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t>
     Overlap,
     /// Explicit-pair cosine similarity coefficient.
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/link_prediction/#cosine-similarity-coefficients>
+    /// <https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/similarity/#_CPPv438cugraph_cosine_similarity_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t>
     Cosine,
 }
 

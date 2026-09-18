@@ -38,7 +38,7 @@ impl fmt::Display for GraphLayoutRequirement {
 /// Parameters for ForceAtlas2 graph layout.
 ///
 /// Mirrors `cugraph::layout::ForceAtlas2Params` without the `cugraph` crate's
-/// newtype wrappers and adds the RNG seed used to create the cuGraph
+/// new type wrappers and adds the RNG seed used to create the cuGraph
 /// `RngState` for each execution. The seed fixes the initial positions only;
 /// it does not make layouts reproducible across runs.
 #[derive(Debug, Clone, PartialEq)]
