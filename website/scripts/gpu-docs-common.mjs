@@ -135,7 +135,7 @@ export function renderFunctionPage({
   parts.push(
     '---',
     '',
-    `{/* GENERATED FROM the unified GPU function catalog by ${generator}. Do not edit by hand. */}`,
+    `{/* GENERATED FROM the unified GPU UDTF catalog by ${generator}. Do not edit by hand. */}`,
     '',
     `# ${title}`,
     '',

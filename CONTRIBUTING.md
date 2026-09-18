@@ -11,6 +11,15 @@ This repository is Linux-only. Concrete toolchain requirements, system
 prerequisites, build environments, and operational specifications are
 maintained on the [documentation website](website/docs/build/overview.md).
 
+## SQL Function Terminology
+
+Call `cugraph_*`, `cuvs_*`, and `cuml_*` SQL calls GPU UDTFs (user-defined
+table functions): each appears in `FROM` and returns rows. Call
+`gpu_list_functions`, `gpu_describe_function`, `gpu_validate_call`, and
+`algeon_explain_coverage` metadata UDTFs. Use DataFusion's `TableFunction`
+name when discussing its API and UDF for scalar, aggregate, or window APIs. Keep
+existing SQL names, Rust identifiers, and catalog URLs unchanged.
+
 ## Start With an Issue
 
 Every pull request must start with an issue. Before opening a PR, open an issue
@@ -201,7 +210,7 @@ algeon/
 ├── components/cugraph/          # cugraph and cugraph-sys
 │   └── cugraph/                 # pinned cuGraph fork submodule
 ├── components/cuvs/             # cuvs and cuvs-sys
-│   └── cuvs/                    # pinned cuVS fork submodule
+│   └── cuvs/                    # pinned cuVS submodule
 ├── components/cuml/             # cuml and cuml-sys
 │   └── cuml/                    # pinned cuML submodule
 ├── crates/algeon-datafusion/    # DataFusion adapter

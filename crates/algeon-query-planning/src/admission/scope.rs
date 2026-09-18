@@ -13,7 +13,7 @@ use crate::{
     util::log_safe_fingerprint,
 };
 
-/// One GPU function occurrence in a DataFusion-owned execution graph. Every
+/// One GPU UDTF occurrence in a DataFusion-owned execution graph. Every
 /// occurrence materializes host Arrow for a DataFusion consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]

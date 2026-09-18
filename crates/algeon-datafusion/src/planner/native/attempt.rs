@@ -61,7 +61,7 @@ pub(super) struct NativeOptimizationAttempt {
 
 impl NativeOptimizationAttempt {
     /// Retains the DataFusion plan when relational native rewriting is
-    /// intentionally disabled. GPU function discovery and admission still run
+    /// intentionally disabled. GPU UDTF discovery and admission still run
     /// in the final optimizer stage after this selection result is produced.
     pub(super) fn retained(plan: Arc<dyn ExecutionPlan>) -> Self {
         Self {

@@ -4,31 +4,30 @@
 # algeon-datafusion: Arrow Flight SQL service  (GPU query engine)
 # ===========================================================================
 #
-# This image ships a Rust binary that links FORKED RAPIDS C++ libraries
-# (cuDF / cuGraph / RMM / cuVS / cuML) built from the pinned monorepo sources. Those
-# forked `.so` files are NOT in any public `rapidsai/*` or `nvidia/cuda`
-# image, so we bundle the exact libraries the binary was linked against.
+# This image ships a Rust binary that links locally built RAPIDS C++ libraries
+# (cuDF / cuGraph / RMM / cuVS / cuML) for this checkout. The
+# image bundles the exact libraries the binary was linked against.
 # The unmodified CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc,
 # ...) are harvested from an official `nvidia/cuda:*-runtime` image instead.
 #
 # BUILD FLOW (two host-side steps):
 #   1. bash docker/stage-docker-payload.sh
 #        -> stages docker/dist/{bin/algeon_server, lib/*.so}
-#           (forked libs only; stripped; RUNPATHs rehomed)
+#           (native libs only; stripped; RUNPATHs rehomed)
 #   2. bash docker/build-image.sh
 #
 # IMAGE STAGES:
-#   cuda-harvest : an nvidia/cuda:-runtime image. The staged binary + forked
+#   cuda-harvest : an nvidia/cuda:-runtime image. The staged binary + native
 #                  libs are dropped in, then `ldd` resolves exactly which CUDA
 #                  toolkit libraries this binary actually needs and copies just
 #                  those out. A cuDF-only binary pulls ~110 MB (cudart+nvrtc);
 #                  cuML adds CUDA math dependencies (cuSolver, cuBLAS,
 #                  cuBLASLt, cuSparse); image size with cuML is not measured.
-#   runtime      : a minimal nvidia/cuda:-base image + the forked libs + the
+#   runtime      : a minimal nvidia/cuda:-base image + the native libs + the
 #                  harvested CUDA subset. No conda, no RAPIDS, no build tools.
 # ===========================================================================
 
-# CUDA 13.x. The forked libs were built against the CUDA 13.2 toolkit; the
+# CUDA 13.x. The native libs were built against the CUDA 13.2 toolkit; the
 # harvested runtime libs are minor-version forward-compatible. Override these
 # to retarget a different CUDA minor / Ubuntu base / pinned digest.
 ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:13.2.1-runtime-ubuntu24.04
@@ -57,7 +56,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Drop the staged payload in at its final runtime location so the binary's
-# RUNPATH (/app/lib, set by stage-docker-payload.sh) resolves the forked libs during ldd.
+# RUNPATH (/app/lib, set by stage-docker-payload.sh) resolves the native libs during ldd.
 COPY dist/bin/algeon_server /app/algeon_server
 COPY dist/lib/                        /app/lib/
 COPY dist/payload-manifest.json       /app/payload-manifest.json
@@ -72,7 +71,7 @@ RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/algeon_server | sha256sum -c -
     grep -Fq "\"binary_sha256\": \"${CPU_BINARY_SHA256}\"" /app/payload-manifest.json
 
 # Resolve every staged ELF's dependency closure and copy only the libraries
-# that live under the CUDA toolkit prefix. The forked libs are already present
+# that live under the CUDA toolkit prefix. The native libs are already present
 # in /app/lib, so they resolve locally and are (correctly) NOT harvested here.
 # glibc ldd renders libnvtx3interop's DT_AUXILIARY [visibility=hidden] marker
 # as `visibility=hidden => not found`; it is not a DT_NEEDED dependency.
@@ -132,7 +131,7 @@ ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
 ARG CPU_MANIFEST_SHA256
 
-# Runtime system libs the forked RAPIDS libs need that are NOT in the CUDA
+# Runtime system libs the bundled RAPIDS libs need that are NOT in the CUDA
 # -base image: libgomp1 (OpenMP, cuVS/cuGraph), libbrotli1 (Arrow/Parquet in
 # libcudf), ca-certificates (TLS to S3/Glue). tini = correct PID 1 / signals.
 RUN apt-get update && \
@@ -156,7 +155,7 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} && \
 
 WORKDIR /app
 
-# Forked RAPIDS libs (bundled) + harvested CUDA toolkit subset, side by side.
+# Bundled RAPIDS libs + harvested CUDA toolkit subset, side by side.
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/lib/      /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /cuda-collect/ /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/algeon_server /app/algeon_server

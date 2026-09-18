@@ -241,7 +241,7 @@ impl CugraphOperationDefinition {
 /// Source-of-truth list of SQL-visible cuGraph algorithms.
 ///
 /// Order is preserved by [`CugraphAlgorithm::all`] and is the order in which
-/// cuGraph table functions are registered.
+/// cuGraph UDTFs are available to the relation planner.
 pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
     CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::PageRank,

@@ -7,17 +7,17 @@ SQL on `:50051`.
 
 ## Why this image is unusual
 
-algeon-datafusion links **forked, locally built** RAPIDS C++ libraries; a
-modified cuDF, cuGraph, RMM, cuVS, and cuML. The `.so` files in the public
-`rapidsai/*` and `nvidia/cuda` images are the *stock* upstream builds and are
-**ABI-incompatible** with this binary. So the image cannot install RAPIDS from a
-base layer; it must bundle the exact libraries the binary was linked against.
+algeon-datafusion links **locally built** RAPIDS C++ libraries: cuDF, cuGraph,
+RMM, cuVS, and cuML. The image bundles the exact libraries used by the source
+build, including the shared RMM and cuVS installations selected for cuGraph and
+cuML. Public `rapidsai/*` and `nvidia/cuda` images do not supply this build's
+complete native library set.
 
 The split:
 
 | Layer | Source | How it gets in |
 |---|---|---|
-| Forked cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-install` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
+| cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-install` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
 | Canonical cuVS `.so` | root `target/native/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
 | Canonical cuML `.so` | root `target/native/cuml-install` | **bundled** for `cuml`: `libcuml.so`, `libcuml_rust.so`, `libtreelite.so`, `libnvforest.so` |
 | `libcudf_rust*.so` FFI bridges | cudf-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
@@ -27,7 +27,7 @@ The split:
 ## Build
 
 ```bash
-# 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
+# 1. Stage the binary + native libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
 bash docker/stage-docker-payload.sh                         # cugraph,cuvs,cuml,nvml
 FEATURES=nvml bash docker/stage-docker-payload.sh            # lean: cuDF only, ~3x smaller image
@@ -49,7 +49,7 @@ payload includes `payload-manifest.json` with relative paths, file hashes, and t
 artifact-affecting policy fingerprint. `SKIP_CARGO_BUILD=1` succeeds only when
 the build record and canonical artifact still match the selected policy.
 
-Prerequisites: the forked libs must already be built;
+Prerequisites: the native libs must already be built;
 `target/native/cudf-install/lib/libcudf.so`,
 `target/native/cuvs-install/lib/libcuvs.so`, (for cuml)
 `target/native/cuml-install/lib/libcuml.so`, and (for cugraph)
@@ -87,7 +87,7 @@ the server TOML file; without one it is listed but unavailable with
 The figures below predate cuML staging. The full image size is not measured:
 CUDA math libraries are harvested from the runtime base during the image build.
 
-| Build | Forked libs | Harvested CUDA | ≈ Final image |
+| Build | Native libs | Harvested CUDA | ≈ Final image |
 |---|---|---|---|
 | **lean** (`nvml`, prior estimate) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
 | **full** (`+cugraph,+cuvs,+cuml`) | not measured | not measured | **not measured** |
@@ -101,8 +101,8 @@ debugging.
 
 ## GPU architecture & platform support
 
-GPU kernels are baked into the forked libs as fatbins. **Coverage differs by
-library** because of how each fork was compiled:
+GPU kernels are baked into the locally built libs as fatbins. **Coverage differs by
+library** because of the CUDA architectures selected for each build:
 
 - **cuDF**: `libcudf.so` ships cubins for **sm_75, 80, 86, 89, 90, 100, 110,
   120** plus PTX. Portable across Turing → Blackwell, and JIT-able beyond.
@@ -121,7 +121,7 @@ library** because of how each fork was compiled:
 Other axes:
 
 - **CPU arch**: the bundled libs are **x86_64 only**. arm64 (Grace/Jetson)
-  requires rebuilding the forked libs and the binary on arm64; the Dockerfile
+  requires rebuilding the native libs and the binary on arm64; the Dockerfile
   itself is arch-neutral (change the `nvidia/cuda` base tags).
 
 ### CPU instruction-set portability (x86-64-v4 default)

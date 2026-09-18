@@ -92,7 +92,7 @@ custom embedders must make that declaration through the Rust API.
 ### Execution mode
 
 The default is `native_preferred`. To keep ordinary SQL on DataFusion CPU and
-use the GPU only for explicit cuGraph and cuVS functions, add this to the server
+use the GPU only for explicit cuGraph and cuVS UDTFs, add this to the server
 TOML alongside its device profiles:
 
 ```toml
@@ -187,7 +187,9 @@ budget:
 
 All values must be greater than zero.
 
-## GPU SQL functions
+<span id="gpu-sql-functions" />
+
+## GPU SQL UDTFs
 
 cuGraph registration is controlled by these settings:
 

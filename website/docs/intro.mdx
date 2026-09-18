@@ -16,9 +16,10 @@ first integration: supported SQL operations run on
 [cuDF](https://docs.rapids.ai/api/cudf/stable/), while
 [cuGraph](https://docs.nvidia.com/cugraph/latest/) and
 [cuVS](https://docs.nvidia.com/cuvs/home) and
-[cuML](https://docs.nvidia.com/cuml/latest/) algorithms appear as SQL table
-functions that compose with joins, filters, and aggregations. You can embed the
-DataFusion adapter in a Rust application or connect through Arrow Flight SQL.
+[cuML](https://docs.nvidia.com/cuml/latest/) algorithms appear as SQL UDTFs
+(user-defined table functions) that compose with joins, filters, and
+aggregations. You can embed the DataFusion adapter in a Rust application or
+connect through Arrow Flight SQL.
 
 DuckDB is the next narrow adapter direction and Spark is a longer-term
 direction; neither is supported today.
@@ -42,7 +43,7 @@ run executes inside a fixed GPU memory
   ADBC client.
 - **See what SQL is supported.** Relational coverage is mapped in
   [Native SQL Support](./reference/native-sql-support.mdx); the table
-  functions are documented in the [cuGraph SQL API](./cugraph/overview.mdx)
+  UDTFs are documented in the [cuGraph SQL API](./cugraph/overview.mdx)
   [cuVS SQL API](./cuvs/overview.mdx), and
   [cuML SQL API](./cuml/overview.mdx).
 
@@ -63,13 +64,13 @@ To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon
 - **GPU execution behind DataFusion APIs.** Supported physical plans run on
   cuDF without changing your SQL, DataFrame code, or result format. You can
   require that a plan contain no CPU execution and have it rejected otherwise.
-- **Graph, vector, and ML algorithms in SQL.** `cugraph_*` table functions run
+- **Graph, vector, and ML algorithms in SQL.** `cugraph_*` UDTFs run
   PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over relations;
-  `cuvs_*` functions run exact kNN, KMeans, and PCA over vector columns. Both
-  return ordinary rows. Six `cuml_*` functions fit query-local models for
+  `cuvs_*` UDTFs run exact kNN, KMeans, and PCA over vector columns. Both
+  return ordinary rows. Six `cuml_*` UDTFs fit query-local models for
   dimensionality reduction, clustering, embedding, classification, and regression.
 - **Function discovery and validation.** The
-  [GPU function catalog](./guides/gpu-function-discovery.mdx) lists the
+  [GPU UDTF catalog](./guides/gpu-function-discovery.mdx) lists the
   functions installed in a session, describes each contract, validates a call
   before execution, and reports whether each function is executable.
 - **Parquet sources.** GPU scans read local and S3-compatible Parquet. Remote
@@ -105,7 +106,7 @@ To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon
 
 - [Integrating Algeon](./integration/overview.mdx): choose between an
   embedded session and the Flight SQL server, then follow the common flow.
-- [Discover & Validate GPU Functions](./guides/gpu-function-discovery.mdx):
+- [Discover & Validate GPU UDTFs](./guides/gpu-function-discovery.mdx):
   inspect the installed function families and their execution status.
 - [Design](./design/index.mdx): how Algeon fits into DataFusion, the crate
   layout, and the diagnostic contracts.

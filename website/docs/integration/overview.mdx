@@ -19,13 +19,13 @@ surface that matches the service boundary you own. Throughout these docs,
 
 All three surfaces share one GPU backend. By default, Algeon selects supported
 relational SQL for cuDF execution. Choose `functions_only` to keep ordinary SQL
-on DataFusion CPU while explicit GPU functions run on GPU, or `native_required`
+on DataFusion CPU while explicit GPU UDTFs run on GPU, or `native_required`
 to reject plans containing DataFusion CPU execution. See
 [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode).
 
 The `cugraph`
-feature makes the `cugraph_*` table functions executable. The `cuvs` feature
-makes the three documented `cuvs_*` functions executable once the session
+feature makes the `cugraph_*` UDTFs executable. The `cuvs` feature
+makes the documented `cuvs_*` UDTFs executable once the session
 installs cuVS SQL and a backend is configured; see
 [cuVS execution](../cuvs/overview.mdx#execution).
 
@@ -59,8 +59,8 @@ returns once it ships a release.
    The server reads local Parquet or Iceberg tables from a REST or Glue
    catalog configured under
    [Iceberg and workspace](./configuration.mdx#iceberg-and-workspace). If you
-   use the `cugraph_*` or `cuvs_*` functions, list and validate the installed
-   calls with [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx).
+   use the `cugraph_*` or `cuvs_*` UDTFs, list and validate the installed
+   calls with [Discover & Validate GPU UDTFs](../guides/gpu-function-discovery.mdx).
 4. **Check whether a query runs on the GPU.** Before shipping a query, ask for
    its planned execution path, and the reason for any part that stays on the
    CPU, with [GPU coverage validation](./gpu-coverage-validation.mdx):

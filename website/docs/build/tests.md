@@ -133,8 +133,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep
 | Feature | Enables |
 | --- | --- |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
-| `cuvs` | cuVS SQL functions (exact kNN, KMeans, PCA) and their GPU execution |
-| `cuml` | cuML SQL functions (truncated SVD, HDBSCAN, UMAP, logistic regression, random forests) and their GPU execution; requires the native cuML install from `scripts/build/build_libcuml.sh` |
+| `cuvs` | cuVS UDTFs (exact kNN, KMeans, PCA) and their GPU execution |
+| `cuml` | cuML UDTFs (truncated SVD, HDBSCAN, UMAP, logistic regression, random forests) and their GPU execution; requires the native cuML install from `scripts/build/build_libcuml.sh` |
 | `nvml` | Optional NVML device diagnostics |
 
 The Arrow Flight SQL server is launched by the separate `algeon-server` package; its

@@ -115,7 +115,7 @@ pub enum DataFusionCpuExecutionPolicy {
 }
 
 /// Whether ordinary relational DataFusion plans are candidates for native
-/// lowering. Explicit GPU function nodes remain eligible in both policies.
+/// lowering. Explicit GPU UDTF nodes remain eligible in both policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum RelationalNativeRewritePolicy {
@@ -133,7 +133,7 @@ pub enum AlgeonGpuExecutionMode {
     /// Prefer native relational execution and allow a DataFusion CPU result.
     #[default]
     NativePreferred,
-    /// Keep ordinary SQL in DataFusion and execute only explicit GPU functions
+    /// Keep ordinary SQL in DataFusion and execute only explicit GPU UDTFs
     /// on the GPU.
     FunctionsOnly,
     /// Require the completed plan to contain no DataFusion CPU execution.

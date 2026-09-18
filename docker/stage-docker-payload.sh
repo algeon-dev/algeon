@@ -4,17 +4,15 @@
 #
 # WHY THIS SCRIPT EXISTS
 # ----------------------
-# algeon-datafusion links against FORKED RAPIDS C++ libraries (cuDF, cuGraph,
-# RMM, cuVS, cuML) that are built from the pinned monorepo sources. They are NOT the
-# stock libraries shipped in the official `rapidsai/*` or `nvidia/cuda` images,
-# so the image cannot pull them from a base layer: we must bundle the exact
-# `.so` files this binary was linked against. This script collects them.
+# algeon-datafusion links against locally built RAPIDS C++ libraries (cuDF,
+# cuGraph, RMM, cuVS, cuML) for this checkout. The image bundles
+# the exact `.so` files this binary was linked against. This script collects them.
 #
 # It stages, into docker/dist/:
 #   bin/algeon_server        the compiled server
 #   lib/libcudf_rust*.so               cudf-sys CMake FFI bridges (OUT_DIR)
-#   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf
-#   lib/libcugraph*.so                 forked RAPIDS C++ libs from cugraph
+#   lib/libcudf.so librmm.so ...       pinned cuDF/RMM installation
+#   lib/libcugraph*.so                 pinned cuGraph installation
 #   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
 #   lib/libcuml.so* libcuml_rust.so*   canonical cuML install (for `cuml`)
 #   lib/libtreelite.so* libnvforest.so* cuML native dependencies
@@ -152,7 +150,7 @@ cp -L "$CUDF_RUST_SO" "$DIST_DIR/lib/libcudf_rust.so"
 echo "==> libcudf_rust_rmm_interop.so: $CUDF_RUST_RMM_INTEROP_SO"
 cp -L "$CUDF_RUST_RMM_INTEROP_SO" "$DIST_DIR/lib/libcudf_rust_rmm_interop.so"
 
-# ── 5. Stage forked cuDF / RMM libs ─────────────────────────────────────────
+# ── 5. Stage cuDF / RMM libs ────────────────────────────────────────────────
 # copy_lib <src-glob...> : copy each matching real file and preserve symlinks.
 copy_lib() {
     local pat found=0 f

@@ -205,7 +205,7 @@ impl NormalizedNativeLiteralSource<'_> {
 }
 
 /// GPU-resident output supplied by another DataFusion execution node, such as
-/// a cuGraph SQL table function producer.
+/// a cuGraph UDTF producer.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeGpuResidentSource<'a> {
     pub(in crate::native) source_exec: &'a dyn ExecutionPlan,

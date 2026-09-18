@@ -1,4 +1,4 @@
-//! Session-builder installation of immutable GPU function catalog snapshots.
+//! Session-builder installation of immutable GPU UDTF catalog snapshots.
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use datafusion::{
 use super::{GpuFunctionCatalog, GpuFunctionFamily, gpu_metadata_table_functions};
 use crate::error::{Error, ErrorCode};
 
-/// Install one family into the builder's immutable GPU function catalog.
+/// Install one family into the builder's immutable GPU UDTF catalog.
 ///
 /// Reinstalling the same family identity is idempotent only when it has the
 /// same descriptor projection; changing a family's session configuration after

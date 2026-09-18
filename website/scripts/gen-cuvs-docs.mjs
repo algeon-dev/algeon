@@ -217,7 +217,7 @@ function renderPage(spec) {
 
 function renderCheatsheet(specs) {
   return [
-    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
     table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const entry = presentation(spec);
@@ -235,7 +235,7 @@ function renderCheatsheet(specs) {
 function renderDtypeSupport(specs) {
   const elements = ['Float32', 'Float64', 'Int8', 'UInt8'];
   return [
-    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
     '## Vector element and metric support by function',
     '',

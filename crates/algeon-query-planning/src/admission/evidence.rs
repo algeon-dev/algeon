@@ -76,7 +76,7 @@ pub struct AttemptCapabilityEvidence {
     /// Plan-scope and output-schema identity for each admitted fragment.
     #[doc(hidden)]
     pub execution_scopes: Vec<AttemptExecutionScope>,
-    /// GPU function occurrences and CPU dependency boundaries for this
+    /// GPU UDTF occurrences and CPU dependency boundaries for this
     /// DataFusion invocation.
     #[doc(hidden)]
     pub execution_manifest: Option<AttemptExecutionManifest>,

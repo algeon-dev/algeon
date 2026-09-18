@@ -135,7 +135,7 @@ These types do not have native execution support today:
 ## cuGraph edge columns
 
 :::warning[cuGraph edge columns are stricter]
-cuGraph table functions have a narrower edge-table contract:
+cuGraph UDTFs have a narrower edge-table contract:
 
 - Source and destination vertex columns must use one of the numeric types
   declared for the function in the generated [cuGraph vertex ID support
@@ -165,7 +165,7 @@ call. The validation envelope names the edge table or view under
 ## cuVS vector elements
 
 :::warning[cuVS vector types depend on the function and metric]
-cuVS functions accept dense vectors in wide feature columns or one list column. Every wide feature column and every vector binding in a call must have the same element type. The generated [cuVS element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-function) lists the verified combinations. In particular, integer IVF-PQ does not support cosine. Pairwise `distance` matches its `Float32` or `Float64` input; ANN distance stays `Float32`, and KMeans `cluster_id` stays `Int32`.
+cuVS UDTFs accept dense vectors in wide feature columns or one list column. Every wide feature column and every vector binding in a call must have the same element type. The generated [cuVS element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-function) lists the verified combinations. In particular, integer IVF-PQ does not support cosine. Pairwise `distance` matches its `Float32` or `Float64` input; ANN distance stays `Float32`, and KMeans `cluster_id` stays `Int32`.
 
 Floating elements must be finite. Integer elements have no finite-value scan. No cuVS call implicitly casts vector elements; use `CAST` in the relation subquery. `Float16` is unsupported because cuDF has no Float16 representation.
 :::
@@ -192,5 +192,5 @@ HDBSCAN outputs `cluster_id Int64` (`-1` for noise) and `probability Float32`.
 Supervised output is `prediction Int32` for classifiers or `prediction Float32`
 for the regressor. Each output also contains `row_ordinal UInt64` and an `id`
 with the relation's input ID type. See [cuML SQL inputs](../cuml/ml-inputs.mdx)
-for relation bindings and [cuML functions](../cuml/functions/index.mdx) for
+for relation bindings and [cuML UDTFs](../cuml/functions/index.mdx) for
 function-specific output contracts.

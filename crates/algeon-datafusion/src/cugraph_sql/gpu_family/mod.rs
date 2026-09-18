@@ -1,4 +1,4 @@
-//! cuGraph adapter for the shared GPU function discovery and validation catalog.
+//! cuGraph adapter for the shared GPU UDTF discovery and validation catalog.
 //!
 //! SQL planning and dry-run validation project the same named argument
 //! definitions into logical relation children and metadata contracts.

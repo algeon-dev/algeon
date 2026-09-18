@@ -1,4 +1,4 @@
-//! Shared dense-relation bindings and GPU function option metadata.
+//! Shared dense-relation bindings and GPU UDTF option metadata.
 
 use std::collections::BTreeSet;
 

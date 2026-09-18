@@ -12,6 +12,12 @@ defined here.
 
 ## Planning and lowering
 
+- `UDTF` (user-defined table function): a SQL function used in `FROM` that
+  returns rows. Algeon's `cugraph_*`, `cuvs_*`, and `cuml_*` calls are GPU
+  execution UDTFs. The `gpu_*` catalog calls and `algeon_explain_coverage`
+  are metadata UDTFs; they do not run a GPU algorithm. Algeon's relation
+  planners bind execution UDTFs, while DataFusion registers the catalog UDTFs
+  as `TableFunction`s. See [GPU UDTF Catalog API](./gpu-function-catalog.mdx).
 - `Candidate`: a complete DataFusion physical plan (or subtree) that
   normalization recognizes as potentially executable natively. Every candidate
   receives a structured outcome in the
@@ -32,7 +38,7 @@ defined here.
   DataFusion source nodes. See
   [How a query runs](../design/index.mdx#how-a-query-runs).
 - `GPU island`: an explicit GPU execution fragment entered through a
-  specialized SQL call (`cugraph_*`, `cuvs_*`), as opposed to GPU work selected
+  specialized UDTF call (`cugraph_*`, `cuvs_*`, `cuml_*`), as opposed to GPU work selected
   from a relational candidate. Counted together with native fragments in
   [coverage results](../integration/gpu-coverage-validation.mdx#final-disposition-and-gpu-path).
 - `Certified mixed boundary`: the single supported exception to

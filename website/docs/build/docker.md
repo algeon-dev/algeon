@@ -7,7 +7,7 @@ description: Build the Algeon Flight SQL server image from locally built native 
 # Building with Docker
 
 The Docker image packages the standalone Flight SQL server plus the exact
-forked RAPIDS libraries it was linked against. It is a **packaging step after a
+locally built RAPIDS libraries it was linked against. It is a **packaging step after a
 source build**, not a replacement for building the component crates under
 `components/` and the root workspace from source.
 
@@ -26,7 +26,7 @@ The image build has two phases:
 
 1. `docker/stage-docker-payload.sh` runs on the host. It builds
    `algeon_server`, stages the binary, copies the locally built
-   forked cuDF/RMM libraries, then adds cuVS, cuGraph, and cuML libraries for the
+   cuDF/RMM libraries, then adds cuVS, cuGraph, and cuML libraries for the
    selected features. cuGraph always brings its cuVS runtime dependency.
    It also bundles optional KvikIO/nvCOMP libraries when they are present.
    It strips staged artifacts with `strip --strip-unneeded` when `strip` is

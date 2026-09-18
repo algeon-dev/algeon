@@ -16,7 +16,7 @@ terms the design pages use.
   GPU.
 - [Data Type Support](./data-type-support.md) - Arrow, cuDF, and cuGraph data
   type support boundaries.
-- [GPU Function Catalog API](./gpu-function-catalog.mdx) - the common
+- [GPU UDTF Catalog API](./gpu-function-catalog.mdx) - the common
   cuGraph/cuVS catalog, descriptor, and static-validation schema reference.
 - [Benchmarks](./benchmarks/index.mdx) - CPU and GPU benchmark results for DataFusion
   Algeon.

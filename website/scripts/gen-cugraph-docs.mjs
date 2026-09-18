@@ -708,7 +708,7 @@ function renderPage(spec) {
 
 function renderCheatsheet(specs) {
   return [
-    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
     table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = documentationFor(spec.function_name);
@@ -741,7 +741,7 @@ function renderVertexIdSupport(specs) {
     ];
   });
   return [
-    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
     '## Vertex ID support by function',
     '',
