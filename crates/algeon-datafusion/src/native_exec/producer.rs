@@ -12,7 +12,7 @@ use std::{
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
-    physical_expr::PhysicalExpr,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         coop::CooperativeExec,
@@ -33,7 +33,7 @@ use super::{
     admission::QueryAdmissionTicket,
     common::{
         comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
-        native_query_runtime_error, write_native_plan_tree,
+        native_query_runtime_error, properties_with_equivalence, write_native_plan_tree,
     },
     metrics::{AlgeonNativeMetrics, NativeExecutionMetricsCapture},
 };
@@ -132,6 +132,15 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// island. The default keeps ordinary relational producers ticket-free.
     fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
         Vec::new()
+    }
+
+    /// Live metric set this producer records its native execution into.
+    ///
+    /// Execution clones share the set, and metrics register only while the
+    /// producer executes, so the sealed attempt projection reads it after
+    /// execution. Producers that record no native metrics return `None`.
+    fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
+        None
     }
 
     /// Performs fallible async preparation before callers acquire native GPU
@@ -239,13 +248,17 @@ impl AlgeonNativeGpuProducerExec {
             plan_task_mapping_datafusion_shape,
             lakehouse_footer_pruning,
             source_storage_profiles,
+            None,
         )
     }
 
+    /// `eq_properties` are the replaced DataFusion subtree's properties, which
+    /// the native plan must already reproduce; `None` declares no ordering.
     pub(crate) fn try_new_for_shared_plan(
         input_name: impl Into<String>,
         plan: QueryPlan,
         execution_config: &super::AlgeonNativeExecutionConfig,
+        eq_properties: Option<EquivalenceProperties>,
     ) -> Result<Self> {
         Self::try_new_with_execution_capture(
             input_name,
@@ -254,6 +267,7 @@ impl AlgeonNativeGpuProducerExec {
             execution_config.plan_task_mapping_datafusion_shape(),
             execution_config.lakehouse_footer_pruning(),
             execution_config.source_storage_profiles().to_vec(),
+            eq_properties,
         )
     }
 
@@ -264,6 +278,7 @@ impl AlgeonNativeGpuProducerExec {
         plan_task_mapping_datafusion_shape: Option<&str>,
         lakehouse_footer_pruning: bool,
         source_storage_profiles: Vec<SourceStorageProfile>,
+        eq_properties: Option<EquivalenceProperties>,
     ) -> Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
@@ -292,9 +307,13 @@ impl AlgeonNativeGpuProducerExec {
             .with_fact("gpu_resident_sources", comma_separated(source_names.iter().map(String::as_str))));
         }
 
+        let cache = match eq_properties {
+            Some(eq_properties) => properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?,
+            None => conservative_properties(Arc::clone(plan.output_schema())),
+        };
         Ok(Self {
             input_name,
-            cache: conservative_properties(Arc::clone(plan.output_schema())),
+            cache,
             plan,
             metrics_capture,
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
@@ -377,6 +396,10 @@ impl GpuResidentProducer for AlgeonNativeGpuProducerExec {
 
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
         query_plan_hard_row_upper_bound(&self.plan)
+    }
+
+    fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
+        Some(&self.metrics)
     }
 
     fn prepare_execution_plan<'a>(

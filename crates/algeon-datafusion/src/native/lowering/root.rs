@@ -40,6 +40,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
+        LoweringRejection,
         expression_contract::validate_physical_expr_contract,
         normalize::{
             NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan, NormalizedNativeSortExprs,
@@ -60,7 +61,7 @@ use crate::{
 pub(super) fn lower_slice1_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<NativeQueryPlan, CapabilityReason> {
+) -> Result<NativeQueryPlan, LoweringRejection> {
     let source = normalized.single_source_input().ok_or(CapabilityReason::UnsupportedOperator)?;
     let source_exec = source.local_parquet_source_exec().ok_or_else(|| table_format_scan_rejection(source))?;
     let filter = source.filter;
@@ -284,7 +285,7 @@ pub(super) fn lower_slice1_plan(
 pub(super) fn lower_table_format_zero_column_count_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<NativeQueryPlan, CapabilityReason> {
+) -> Result<NativeQueryPlan, LoweringRejection> {
     let source = normalized.single_source_input().ok_or(CapabilityReason::UnsupportedOperator)?;
     let scan_exec = source.table_format_scan_exec().ok_or_else(|| table_format_scan_rejection(source))?;
     let scan_plan = available_table_format_scan_plan(scan_exec)?;
@@ -360,7 +361,7 @@ pub(super) fn lower_table_format_zero_column_count_plan(
 pub(super) fn lower_joined_aggregate_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<NativeQueryPlan, CapabilityReason> {
+) -> Result<NativeQueryPlan, LoweringRejection> {
     let pre_aggregate_projection = root.pre_aggregate_projection;
     let aggregate = root.aggregate;
     let post_aggregate_projection = root.post_aggregate_projection;
@@ -430,7 +431,7 @@ pub(super) fn lower_joined_aggregate_plan(
 pub(super) fn lower_input_root_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeInputRoot<'_>,
-) -> Result<NativeQueryPlan, CapabilityReason> {
+) -> Result<NativeQueryPlan, LoweringRejection> {
     if let Some(projection) = root.projection {
         validate_schema(projection.schema())?;
         for projection_expr in projection.expr() {
@@ -469,7 +470,7 @@ fn finish_with_post_projection_sort_limit(
     sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
     projection_order: PostAggregateProjectionOrder,
-) -> Result<NativeQueryPlan, CapabilityReason> {
+) -> Result<NativeQueryPlan, LoweringRejection> {
     let output = apply_post_projection_sort_limit(&mut builder, input, projection, sort, limit, projection_order)?;
     Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
 }
@@ -481,7 +482,7 @@ fn apply_post_projection_sort_limit(
     sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
     projection_order: PostAggregateProjectionOrder,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     if projection_order == PostAggregateProjectionOrder::AboveSort {
         let sorted = if let Some(sort) = sort {
             lower_sort_ordering_with_input(
@@ -533,7 +534,7 @@ fn apply_post_projection_sort_limit(
     }
 }
 
-fn required_root_projection_input_fields(projection: &ProjectionExec) -> Result<RequiredFields, CapabilityReason> {
+fn required_root_projection_input_fields(projection: &ProjectionExec) -> Result<RequiredFields, LoweringRejection> {
     let mut required = BTreeSet::new();
     for projection_expr in projection.expr() {
         collect_required_field_indices(&projection_expr.expr, &projection.input().schema(), &mut required)?;

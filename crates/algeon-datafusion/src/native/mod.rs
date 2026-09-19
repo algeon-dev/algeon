@@ -15,12 +15,50 @@ mod source;
 mod table_format_pruning_policy;
 mod validate;
 
-impl From<expression_contract::ExpressionRejection> for CapabilityReason {
-    fn from(rejection: expression_contract::ExpressionRejection) -> Self {
-        let _capability = rejection.capability();
-        match rejection.kind() {
-            expression_contract::ExpressionRejectionKind::UnsupportedExpression => Self::UnsupportedExpression,
-            expression_contract::ExpressionRejectionKind::UnsupportedType => Self::UnsupportedType,
+pub(crate) use expression_contract::{
+    ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject,
+};
+
+/// Rejection raised while lowering a normalized candidate.
+///
+/// `reason` is the public classification. `expression` is present when the
+/// shared expression contract rejected the candidate; it names the capability
+/// and types that planning reports project the unsupported category from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoweringRejection {
+    reason: CapabilityReason,
+    expression: Option<ExpressionRejection>,
+}
+
+impl LoweringRejection {
+    pub(crate) const fn reason(&self) -> CapabilityReason {
+        self.reason
+    }
+
+    pub(crate) fn into_expression(self) -> Option<ExpressionRejection> {
+        self.expression
+    }
+}
+
+impl From<CapabilityReason> for LoweringRejection {
+    fn from(reason: CapabilityReason) -> Self {
+        Self { reason, expression: None }
+    }
+}
+
+impl From<ExpressionRejection> for LoweringRejection {
+    fn from(rejection: ExpressionRejection) -> Self {
+        Self { reason: rejection.capability_reason(), expression: Some(rejection) }
+    }
+}
+
+impl ExpressionRejection {
+    /// Public classification of this rejection, for callers that report no
+    /// candidate diagnostics.
+    pub(crate) const fn capability_reason(&self) -> CapabilityReason {
+        match self.kind() {
+            ExpressionRejectionKind::UnsupportedExpression => CapabilityReason::UnsupportedExpression,
+            ExpressionRejectionKind::UnsupportedType => CapabilityReason::UnsupportedType,
         }
     }
 }
@@ -56,7 +94,7 @@ use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 
 use crate::{
     capability::CapabilityReason,
-    report::{GpuCandidate, PlanningReport, UnsupportedColumnDetail},
+    report::{GpuCandidate, NotSupportedDetail, PlanningReport, UnsupportedColumnDetail},
 };
 
 const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
@@ -137,15 +175,14 @@ fn lower_physical_plan_to_native_with_mode(
             }
         },
         Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
-            |reason| {
+            |rejection| {
+                let reason = rejection.reason();
+                let column = (reason == CapabilityReason::UnsupportedType)
+                    .then(|| unsupported_column_for_normalized_plan(&normalized, plan.schema()))
+                    .flatten();
+                let detail = NotSupportedDetail { column, expression: rejection.into_expression() };
                 let mut report = PlanningReport::new();
-                if reason == CapabilityReason::UnsupportedType
-                    && let Some(detail) = unsupported_column_for_normalized_plan(&normalized, plan.schema())
-                {
-                    report.push_not_supported_column(normalized.candidate.clone(), reason, detail);
-                } else {
-                    report.push_not_supported(normalized.candidate.clone(), reason);
-                }
+                report.push_not_supported_with_detail(normalized.candidate.clone(), reason, detail);
                 NativeLoweringResult {
                     plans: Vec::new(),
                     report,
@@ -225,14 +262,15 @@ fn lower_physical_plan_to_native_with_mode(
             },
         ),
         Err(rejection) => {
+            let column = (rejection.reason == CapabilityReason::UnsupportedType)
+                .then(|| unsupported_column_for_schema(&plan.schema(), "projected"))
+                .flatten();
             let mut report = PlanningReport::new();
-            if rejection.reason == CapabilityReason::UnsupportedType
-                && let Some(detail) = unsupported_column_for_schema(&plan.schema(), "projected")
-            {
-                report.push_not_supported_column(rejection.candidate, rejection.reason, detail);
-            } else {
-                report.push_not_supported(rejection.candidate, rejection.reason);
-            }
+            report.push_not_supported_with_detail(
+                rejection.candidate,
+                rejection.reason,
+                NotSupportedDetail { column, expression: None },
+            );
             NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },
     }
@@ -373,7 +411,7 @@ fn declared_output_ordering_sort_spec(
         return Err(CapabilityReason::NativeOrderedOutputUnsupported);
     }
     let output_schema = output_node.output_schema();
-    validate_sort_ordering(ordering, output_schema)?;
+    validate_sort_ordering(ordering, output_schema).map_err(|rejection| rejection.reason())?;
     let expressions = ordering
         .iter()
         .map(|sort_expr| declared_output_ordering_sort_expr(sort_expr, output_schema))

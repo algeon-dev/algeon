@@ -13,7 +13,7 @@ use super::{
     naming::unique_name_with_suffix,
     project_bindings_to_schema, projection_outputs,
 };
-use crate::capability::CapabilityReason;
+use crate::{capability::CapabilityReason, native::LoweringRejection};
 
 pub(super) fn lower_sort_ordering_with_input(
     builder: &mut NativeQueryPlanBuilder,
@@ -22,7 +22,7 @@ pub(super) fn lower_sort_ordering_with_input(
     sort_output_schema: &SchemaRef,
     input: LoweredNativeInput,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let sorted = lower_sort_ordering_unprojected_with_input(builder, ordering, sort_input_schema, input)?;
     project_sort_output(builder, sort_output_schema, sorted, required_output_fields)
 }
@@ -32,7 +32,7 @@ pub(super) fn lower_sort_ordering_unprojected_with_input(
     ordering: &LexOrdering,
     sort_input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let prepared = materialize_sort_expressions(builder, ordering, sort_input_schema, input)?;
     let node = builder.add_sort(
         prepared.input.node,
@@ -53,7 +53,7 @@ fn materialize_sort_expressions(
     ordering: &LexOrdering,
     sort_input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<PreparedSortInput, CapabilityReason> {
+) -> Result<PreparedSortInput, LoweringRejection> {
     let mut sort_columns = Vec::with_capacity(ordering.len());
     let mut temp_exprs = Vec::new();
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
@@ -110,7 +110,7 @@ pub(super) fn project_sort_output(
     sort_output_schema: &SchemaRef,
     sorted: LoweredNativeInput,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let (schema, bindings) = executable_schema_and_bindings(sort_output_schema, required_output_fields)?;
     if bindings.len() == sorted.bindings.len()
         && bindings
@@ -134,16 +134,16 @@ fn lower_sort_spec_with_prepared_input(
     ordering: &LexOrdering,
     input: &LoweredNativeInput,
     sort_columns: &[String],
-) -> Result<NativeSortSpec, CapabilityReason> {
+) -> Result<NativeSortSpec, LoweringRejection> {
     if ordering.len() != sort_columns.len() {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     let expressions = ordering
         .iter()
         .zip(sort_columns.iter())
         .map(|(sort_expr, column)| {
             if input.schema.field_with_name(column.as_str()).is_err() {
-                return Err(CapabilityReason::UnsupportedExpression);
+                return Err(LoweringRejection::from(CapabilityReason::UnsupportedExpression));
             }
             Ok(NativeSortExpr::new(
                 NativeExpr::column(column.as_str()),

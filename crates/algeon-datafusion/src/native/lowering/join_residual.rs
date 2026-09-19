@@ -28,6 +28,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
+        LoweringRejection,
         expression_contract::{
             JoinResidualCastMode, ScalarFunctionKind, ValidatedJoinResidual, case_expr_data_type,
             declared_decimal_divide_output_type, join_residual_cast_mode, physical_expr_data_type,
@@ -57,19 +58,19 @@ impl JoinResidualMaterializations {
     fn side_mut(
         &mut self,
         side: DataFusionJoinSide,
-    ) -> Result<&mut Vec<JoinResidualMaterialization>, CapabilityReason> {
+    ) -> Result<&mut Vec<JoinResidualMaterialization>, LoweringRejection> {
         match side {
             DataFusionJoinSide::Left => Ok(&mut self.left),
             DataFusionJoinSide::Right => Ok(&mut self.right),
-            DataFusionJoinSide::None => Err(CapabilityReason::UnsupportedExpression),
+            DataFusionJoinSide::None => Err(CapabilityReason::UnsupportedExpression.into()),
         }
     }
 
-    pub(super) fn side(&self, side: DataFusionJoinSide) -> Result<&[JoinResidualMaterialization], CapabilityReason> {
+    pub(super) fn side(&self, side: DataFusionJoinSide) -> Result<&[JoinResidualMaterialization], LoweringRejection> {
         match side {
             DataFusionJoinSide::Left => Ok(&self.left),
             DataFusionJoinSide::Right => Ok(&self.right),
-            DataFusionJoinSide::None => Err(CapabilityReason::UnsupportedExpression),
+            DataFusionJoinSide::None => Err(CapabilityReason::UnsupportedExpression.into()),
         }
     }
 }
@@ -104,7 +105,7 @@ pub(super) fn lower_join_filter(
     contract: &ValidatedJoinResidual<'_>,
     canonical: CanonicalJoin,
     bindings: Option<JoinResidualInputBindings<'_>>,
-) -> Result<LoweredJoinResidual, CapabilityReason> {
+) -> Result<LoweredJoinResidual, LoweringRejection> {
     // Supported residual vocabulary is deliberately small. Expressions the
     // cuDF join AST cannot represent directly may be materialized on one input
     // side, but a residual predicate must still reference both sides.
@@ -141,7 +142,7 @@ fn lower_join_filter_expr(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         return lower_join_filter_column(column, context, left_required, right_required);
     }
@@ -210,7 +211,7 @@ fn lower_join_filter_expr(
                 );
                 lower_join_filter_expr(item, context, left_required, right_required, materializations)
             })
-            .collect::<Result<Vec<_>, CapabilityReason>>()?;
+            .collect::<Result<Vec<_>, LoweringRejection>>()?;
         return Ok(if in_list.negated() {
             NativeExpr::not_in_list(expr, list)
         } else {
@@ -235,7 +236,7 @@ fn lower_join_filter_case_expr(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     let base_expr = case
         .expr()
         .map(|expr| lower_join_filter_expr(expr, context, left_required, right_required, materializations))
@@ -257,7 +258,7 @@ fn lower_join_filter_case_expr(
                 lower_join_filter_expr(then, context, left_required, right_required, materializations)?,
             ))
         })
-        .collect::<Result<Vec<_>, CapabilityReason>>()?;
+        .collect::<Result<Vec<_>, LoweringRejection>>()?;
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_join_filter_expr(else_expr, context, left_required, right_required, materializations)?,
         None => {
@@ -275,7 +276,7 @@ fn materialize_join_residual_expr(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     // Materializations are valid only when the whole expression belongs to one
     // DataFusion side. Cross-side expressions must remain in the residual AST.
     let side = context.contract.single_side(expr).expect("validated materialized residual must belong to one side");
@@ -309,7 +310,7 @@ fn lower_join_filter_side_expr(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let column_index = context
             .filter
@@ -384,7 +385,7 @@ fn lower_join_filter_side_expr(
                 debug_assert!(!literal.value().is_null(), "null materialized IN entry cannot carry a validation proof");
                 lower_join_filter_side_expr(item, context, side_schema, side, required)
             })
-            .collect::<Result<Vec<_>, CapabilityReason>>()?;
+            .collect::<Result<Vec<_>, LoweringRejection>>()?;
         return Ok(if in_list.negated() {
             NativeExpr::not_in_list(expr, list)
         } else {
@@ -406,7 +407,7 @@ fn lower_join_filter_side_case_expr(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     let base_expr =
         case.expr().map(|expr| lower_join_filter_side_expr(expr, context, side_schema, side, required)).transpose()?;
     let branches = case
@@ -423,7 +424,7 @@ fn lower_join_filter_side_case_expr(
             };
             Ok(NativeCaseWhen::new(when, lower_join_filter_side_expr(then, context, side_schema, side, required)?))
         })
-        .collect::<Result<Vec<_>, CapabilityReason>>()?;
+        .collect::<Result<Vec<_>, LoweringRejection>>()?;
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_join_filter_side_expr(else_expr, context, side_schema, side, required)?,
         None => {
@@ -441,7 +442,7 @@ fn lower_join_filter_side_scalar_function_expr(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     match ScalarFunctionKind::from_name(function.name()).expect("validated join residual scalar function") {
         ScalarFunctionKind::Substring => {
             lower_join_filter_side_substring_function(function, context, side_schema, side, required)
@@ -472,7 +473,7 @@ fn lower_join_filter_side_substring_function(
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     let args = function.args();
     debug_assert!((2..=3).contains(&args.len()), "invalid SUBSTRING arity cannot carry a residual proof");
     let start = literal_i32(&args[1]).expect("validated residual SUBSTRING start must be an i32 literal");
@@ -500,7 +501,7 @@ fn lower_join_filter_side_string_case_function(
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
     constructor: fn(NativeExpr) -> NativeExpr,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     let [expr] = function.args() else { unreachable!("validated residual string case must have one argument") };
     Ok(constructor(lower_join_filter_side_expr(expr, context, side_schema, side, required)?))
 }
@@ -538,7 +539,7 @@ fn lower_join_filter_column(
     context: JoinFilterLoweringContext<'_>,
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     let column_index = context
         .filter
         .column_indices()
@@ -565,7 +566,7 @@ fn side_native_name<'a>(
     side: DataFusionJoinSide,
     frontend_index: usize,
     fallback_name: &'a str,
-) -> Result<&'a str, CapabilityReason> {
+) -> Result<&'a str, LoweringRejection> {
     let Some(bindings) = context.bindings else {
         return Ok(fallback_name);
     };

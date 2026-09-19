@@ -81,7 +81,7 @@ pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
         Ok(predicate) => predicate,
         Err(_error) if filter.is_some() => return Ok(None),
         Err(_error) if filter.is_none() => return Ok(None),
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.reason()),
     };
     if let Some(predicate) = supported_reader_pushdown_predicate(&predicate, native_source, |_| true) {
         let covers_filter = if filter.is_some() {

@@ -15,7 +15,7 @@ use datafusion::{
     },
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
-use query_engine::expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr};
+use query_engine::expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr, UnaryMathOp};
 
 use super::{
     ExpressionCapability, ScalarFunctionKind, SupportedBinaryOperator,
@@ -49,7 +49,7 @@ fn binary_capability_rejection_is_structured_and_preserves_public_reason() {
     let rejection = SupportedBinaryOperator::from_datafusion(&Operator::RegexMatch).unwrap_err();
     assert_eq!(rejection.kind(), super::rejection::ExpressionRejectionKind::UnsupportedExpression);
     assert_eq!(rejection.capability(), ExpressionCapability::BinaryOperator);
-    assert_eq!(CapabilityReason::from(rejection), CapabilityReason::UnsupportedExpression);
+    assert_eq!(rejection.capability_reason(), CapabilityReason::UnsupportedExpression);
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn join_residual_rejects_a_column_index_missing_from_its_declared_side_schema() 
     let rejection = validate_join_residual(&filter, &left_schema, &right_schema).unwrap_err();
 
     assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualSideSchema);
-    assert_eq!(CapabilityReason::from(rejection), CapabilityReason::UnsupportedExpression);
+    assert_eq!(rejection.capability_reason(), CapabilityReason::UnsupportedExpression);
 }
 
 #[test]
@@ -276,7 +276,18 @@ fn every_supported_scalar_function_kind_validates_then_lowers() {
             scalar_function("concat", string::concat(), vec![text(), utf8("x")], DataType::Utf8),
         ),
         (ScalarFunctionKind::Abs, scalar_function("abs", math::abs(), vec![number()], DataType::Float64)),
-        (ScalarFunctionKind::Sqrt, scalar_function("sqrt", math::sqrt(), vec![number()], DataType::Float64)),
+        (
+            ScalarFunctionKind::UnaryMath(UnaryMathOp::Sqrt),
+            scalar_function("sqrt", math::sqrt(), vec![number()], DataType::Float64),
+        ),
+        (
+            ScalarFunctionKind::UnaryMath(UnaryMathOp::Ln),
+            scalar_function("ln", math::ln(), vec![number()], DataType::Float64),
+        ),
+        (
+            ScalarFunctionKind::UnaryMath(UnaryMathOp::Exp),
+            scalar_function("exp", math::exp(), vec![number()], DataType::Float64),
+        ),
         (
             ScalarFunctionKind::Round,
             scalar_function("round", math::round(), vec![number(), integer(2)], DataType::Float64),

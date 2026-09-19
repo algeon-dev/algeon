@@ -168,7 +168,7 @@ fn collect_expr_columns(expr: &Expr, columns: &mut BTreeSet<String>) {
         | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }

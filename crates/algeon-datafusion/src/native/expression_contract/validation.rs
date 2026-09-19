@@ -8,7 +8,7 @@ use datafusion::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNotNullExpr, IsNullExpr,
-            LikeExpr, Literal, NotExpr, TryCastExpr,
+            LikeExpr, Literal, NegativeExpr, NotExpr, TryCastExpr,
         },
     },
 };
@@ -18,8 +18,8 @@ use query_engine::{
 };
 
 use super::{
-    ExpressionCapability, ExpressionRejection, ScalarFunctionKind, SupportedBinaryOperator, cast_capability,
-    compatible_types, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
+    ExpressionCapability, ExpressionRejection, ExpressionRejectionSubject, ScalarFunctionKind, SupportedBinaryOperator,
+    cast_capability, compatible_types, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
     is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair,
 };
 use crate::native::literal::{
@@ -32,6 +32,10 @@ const fn unsupported_expression() -> ExpressionRejection {
 
 const fn unsupported_type() -> ExpressionRejection {
     ExpressionRejection::unsupported_type(ExpressionCapability::PhysicalExpression)
+}
+
+const fn scalar_function_arguments() -> ExpressionRejection {
+    ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunctionArguments)
 }
 
 /// A column identity resolved against the schema used by expression
@@ -143,7 +147,10 @@ fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef
         return validate_case_expr(case, input_schema);
     }
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
-        let current = dynamic_filter.current().map_err(|_error| unsupported_expression())?;
+        let current = dynamic_filter.current().map_err(|error| {
+            ExpressionRejection::unsupported_expression(ExpressionCapability::DynamicFilter)
+                .with_subject(ExpressionRejectionSubject::DynamicFilterError(error.to_string()))
+        })?;
         return validate_physical_expr(&current, input_schema);
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
@@ -151,6 +158,9 @@ fn validate_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef
     }
     if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         return validate_try_cast_expr(try_cast, input_schema);
+    }
+    if expr.downcast_ref::<NegativeExpr>().is_some() {
+        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::NegativeExpression));
     }
     Err(unsupported_expression())
 }
@@ -161,7 +171,9 @@ fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> R
         // Unsupported type pairs stay on the UnsupportedExpression path so the
         // planner's child-rewrite short-circuit treats TRY_CAST the same way
         // it treated it before native admission of `STRING → integer`.
-        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::TryCastPair));
+        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::TryCastPair).with_subject(
+            ExpressionRejectionSubject::Cast { source: source_type, target: try_cast.cast_type().clone() },
+        ));
     }
     validate_physical_expr(try_cast.expr(), input_schema)
 }
@@ -180,26 +192,28 @@ fn validate_null_predicate_arg(
 }
 
 fn validate_like_expr(like: &LikeExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
-    validate_literal_string(like.pattern())?;
+    validate_literal_string(like.pattern())
+        .map_err(|_| ExpressionRejection::unsupported_expression(ExpressionCapability::LikePattern))?;
     if like.case_insensitive() {
-        return Err(unsupported_expression());
+        return Err(ExpressionRejection::unsupported_expression(ExpressionCapability::LikeCaseInsensitive));
     }
     validate_physical_expr(like.expr(), input_schema)?;
     validate_string_expr(like.expr(), input_schema)
 }
 
 fn validate_in_list_expr(in_list: &InListExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
+    let unsupported_list = || ExpressionRejection::unsupported_expression(ExpressionCapability::InList);
     if in_list.is_empty() {
-        return Err(unsupported_expression());
+        return Err(unsupported_list());
     }
     validate_physical_expr(in_list.expr(), input_schema)?;
     let expr_type = physical_expr_data_type(in_list.expr(), input_schema)?;
     for expr in in_list.list() {
         let Some(literal) = expr.downcast_ref::<Literal>() else {
-            return Err(unsupported_expression());
+            return Err(unsupported_list());
         };
         if literal.value().is_null() {
-            return Err(unsupported_expression());
+            return Err(unsupported_list());
         }
         validate_physical_expr(expr, input_schema)?;
         let literal_type = physical_expr_data_type(expr, input_schema)?;
@@ -247,7 +261,17 @@ fn validate_scalar_function_expr(
     function: &ScalarFunctionExpr,
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
-    match ScalarFunctionKind::from_name(function.name())? {
+    let kind = ScalarFunctionKind::from_name(function.name())?;
+    validate_scalar_function_kind(kind, function, input_schema)
+        .map_err(|rejection| rejection.for_scalar_function(function.name()))
+}
+
+fn validate_scalar_function_kind(
+    kind: ScalarFunctionKind,
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), ExpressionRejection> {
+    match kind {
         ScalarFunctionKind::Substring => validate_substring_function(function, input_schema),
         ScalarFunctionKind::Extract => validate_extract_function(function, input_schema),
         ScalarFunctionKind::DateTrunc => validate_date_trunc_function(function, input_schema),
@@ -263,7 +287,7 @@ fn validate_scalar_function_expr(
         ScalarFunctionKind::RegexpReplace => validate_regexp_replace_function(function, input_schema),
         ScalarFunctionKind::Concat => validate_concat_function(function, input_schema),
         ScalarFunctionKind::Abs => validate_abs_function(function, input_schema),
-        ScalarFunctionKind::Sqrt => validate_sqrt_function(function, input_schema),
+        ScalarFunctionKind::UnaryMath(_) => validate_unary_math_function(function, input_schema),
         ScalarFunctionKind::Round => validate_round_function(function, input_schema),
         ScalarFunctionKind::NullIf => validate_nullif_function(function, input_schema),
     }
@@ -283,16 +307,17 @@ fn validate_extract_function(
     function: &ScalarFunctionExpr,
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
+    let unsupported_field = || ExpressionRejection::unsupported_expression(ExpressionCapability::ExtractField);
     let [field, expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
-    match literal_string_argument(field)?.to_ascii_lowercase().as_str() {
+    match literal_string(field).map_err(|_| unsupported_field())?.to_ascii_lowercase().as_str() {
         "year" | "month" | "day" => {},
         "minute" => {
             validate_physical_expr(expr, input_schema)?;
             return validate_timestamp_second_expr(expr, input_schema);
         },
-        _ => return Err(unsupported_expression()),
+        _ => return Err(unsupported_field()),
     }
     validate_physical_expr(expr, input_schema)?;
     validate_date_or_timestamp_expr(expr, input_schema)
@@ -303,7 +328,7 @@ fn validate_date_trunc_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [field, expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_date_trunc_field(&literal_string_argument(field)?.to_ascii_lowercase())?;
     validate_physical_expr(expr, input_schema)?;
@@ -322,7 +347,7 @@ fn validate_date_trunc_function(
 fn validate_date_trunc_field(field: &str) -> Result<(), ExpressionRejection> {
     match field {
         "day" | "hour" | "minute" | "second" | "millisecond" | "microsecond" => Ok(()),
-        _ => Err(unsupported_expression()),
+        _ => Err(scalar_function_arguments()),
     }
 }
 
@@ -331,7 +356,7 @@ fn validate_to_timestamp_seconds_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     let source_type = physical_expr_data_type(expr, input_schema)?;
@@ -344,7 +369,7 @@ fn validate_string_case_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     validate_string_expr(expr, input_schema)
@@ -353,7 +378,7 @@ fn validate_string_case_function(
 fn validate_trim_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let args = function.args();
     if !(1..=2).contains(&args.len()) {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     }
     validate_physical_expr(&args[0], input_schema)?;
     validate_string_expr(&args[0], input_schema)?;
@@ -369,7 +394,7 @@ fn validate_string_predicate_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [expr, pattern] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     validate_string_expr(expr, input_schema)?;
@@ -383,7 +408,7 @@ fn validate_string_length_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     validate_string_expr(expr, input_schema)?;
@@ -400,7 +425,7 @@ fn validate_regexp_replace_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [expr, pattern, replacement] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     validate_string_expr(expr, input_schema)?;
@@ -415,7 +440,7 @@ fn validate_concat_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     if function.args().is_empty() {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     }
     for expr in function.args() {
         validate_physical_expr(expr, input_schema)?;
@@ -426,7 +451,7 @@ fn validate_concat_function(
 
 fn validate_abs_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let [expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     validate_numeric_or_decimal_expr(expr, input_schema)?;
@@ -438,9 +463,12 @@ fn validate_abs_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef
     }
 }
 
-fn validate_sqrt_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
+fn validate_unary_math_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), ExpressionRejection> {
     let [expr] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(expr, input_schema)?;
     validate_numeric_or_decimal_expr(expr, input_schema)?;
@@ -455,7 +483,7 @@ fn validate_sqrt_function(function: &ScalarFunctionExpr, input_schema: &SchemaRe
 fn validate_round_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let args = function.args();
     if !(1..=2).contains(&args.len()) {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     }
     validate_physical_expr(&args[0], input_schema)?;
     validate_numeric_or_decimal_expr(&args[0], input_schema)?;
@@ -475,7 +503,7 @@ fn validate_nullif_function(
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
     let [left, right] = function.args() else {
-        return Err(unsupported_expression());
+        return Err(scalar_function_arguments());
     };
     validate_physical_expr(left, input_schema)?;
     validate_physical_expr(right, input_schema)?;
@@ -505,8 +533,10 @@ fn validate_literal(value: &ScalarValue) -> Result<(), ExpressionRejection> {
     if matches!(value, ScalarValue::IntervalMonthDayNano(Some(_))) {
         return Err(unsupported_expression());
     }
-    validate_native_literal(value, NativeLiteralContext::Expression)
-        .map_err(|_| ExpressionRejection::unsupported_expression(ExpressionCapability::Literal))
+    validate_native_literal(value, NativeLiteralContext::Expression).map_err(|_| {
+        ExpressionRejection::unsupported_expression(ExpressionCapability::Literal)
+            .with_subject(ExpressionRejectionSubject::LiteralType(value.data_type()))
+    })
 }
 
 fn literal_string_argument(expr: &Arc<dyn PhysicalExpr>) -> Result<String, ExpressionRejection> {
@@ -583,15 +613,16 @@ fn validate_interval_binary_expr(
     left_interval: bool,
     right_interval: bool,
 ) -> Result<(), ExpressionRejection> {
+    let unsupported_interval = || ExpressionRejection::unsupported_expression(ExpressionCapability::IntervalArithmetic);
     if left_interval == right_interval {
-        return Err(unsupported_expression());
+        return Err(unsupported_interval());
     }
     match (binary.op(), left_interval, right_interval) {
         (Operator::Plus, true, false) => validate_datetime_interval_operand(binary.right(), input_schema),
         (Operator::Plus | Operator::Minus, false, true) => {
             validate_datetime_interval_operand(binary.left(), input_schema)
         },
-        _ => Err(unsupported_expression()),
+        _ => Err(unsupported_interval()),
     }
 }
 
@@ -604,7 +635,7 @@ fn validate_datetime_interval_operand(
     if matches!(data_type, DataType::Date32 | DataType::Timestamp(_, None)) {
         Ok(())
     } else {
-        Err(unsupported_expression())
+        Err(ExpressionRejection::unsupported_expression(ExpressionCapability::IntervalArithmetic))
     }
 }
 
@@ -635,18 +666,20 @@ pub(super) fn validate_literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<()
 }
 
 pub(super) fn validate_substring_arguments_contract(function: &ScalarFunctionExpr) -> Result<(), ExpressionRejection> {
+    let unsupported_arguments =
+        || ExpressionRejection::unsupported_expression(ExpressionCapability::SubstringArguments);
     let args = function.args();
     if !(2..=3).contains(&args.len()) {
-        return Err(unsupported_expression());
+        return Err(unsupported_arguments());
     }
-    let start = literal_i32_argument(&args[1])?;
+    let start = literal_i32(&args[1]).map_err(|_| unsupported_arguments())?;
     if start < 1 {
-        return Err(unsupported_expression());
+        return Err(unsupported_arguments());
     }
     if args.len() == 3 {
-        let length = literal_i32_argument(&args[2])?;
+        let length = literal_i32(&args[2]).map_err(|_| unsupported_arguments())?;
         if length < 0 || substring_stop_position(start, length).is_none() {
-            return Err(unsupported_expression());
+            return Err(unsupported_arguments());
         }
     }
     Ok(())

@@ -13,11 +13,12 @@ use query_engine::{
     datatypes::{
         is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
+    expr::UnaryMathOp,
     rapids_backend::rapids_analysis_context,
     validation::{is_integral_type, is_string_type, target_integral_max},
 };
 
-use super::{ExpressionCapability, ExpressionRejection};
+use super::{ExpressionCapability, ExpressionRejection, ExpressionRejectionSubject};
 use crate::native::literal::parse_yyyy_mm_dd_date32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +116,7 @@ pub(in crate::native) enum ScalarFunctionKind {
     RegexpReplace,
     Concat,
     Abs,
-    Sqrt,
+    UnaryMath(UnaryMathOp),
     Round,
     NullIf,
 }
@@ -139,10 +140,13 @@ impl ScalarFunctionKind {
             "regexp_replace" => Ok(Self::RegexpReplace),
             "concat" => Ok(Self::Concat),
             "abs" => Ok(Self::Abs),
-            "sqrt" => Ok(Self::Sqrt),
+            "sqrt" => Ok(Self::UnaryMath(UnaryMathOp::Sqrt)),
+            "ln" => Ok(Self::UnaryMath(UnaryMathOp::Ln)),
+            "exp" => Ok(Self::UnaryMath(UnaryMathOp::Exp)),
             "round" => Ok(Self::Round),
             "nullif" => Ok(Self::NullIf),
-            _ => Err(ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunction)),
+            _ => Err(ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunction)
+                .with_subject(ExpressionRejectionSubject::ScalarFunction(name.to_string()))),
         }
     }
 }
@@ -184,7 +188,8 @@ pub(in crate::native) fn cast_capability(
     if is_decimal128_to_float32_cast_via_float64(source_type, target_type) {
         return Ok(CastCapability::Decimal128ToFloat32ViaFloat64);
     }
-    Err(ExpressionRejection::unsupported_type(ExpressionCapability::CastPair))
+    Err(ExpressionRejection::unsupported_type(ExpressionCapability::CastPair)
+        .with_subject(ExpressionRejectionSubject::Cast { source: source_type.clone(), target: target_type.clone() }))
 }
 
 /// Arrow casts `Decimal128` to `Float32` by dividing in `Float64` and then

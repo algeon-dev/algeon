@@ -4900,6 +4900,7 @@ pub fn cudf::io::source::LocalParquetFile::reader_decimal_types(&self) -> &[cudf
 pub fn cudf::io::source::LocalParquetFile::reader_path(&self) -> alloc::string::String
 pub fn cudf::io::source::LocalParquetFile::remote_source(&self) -> core::option::Option<&cudf::io::parquet::RemoteParquetSource>
 pub fn cudf::io::source::LocalParquetFile::row_group_bytes(&self) -> core::option::Option<&[u64]>
+pub fn cudf::io::source::LocalParquetFile::row_group_null_counts(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<core::option::Option<u64>>>
 pub fn cudf::io::source::LocalParquetFile::row_group_rows(&self) -> core::option::Option<&[u64]>
 pub fn cudf::io::source::LocalParquetFile::row_groups(&self) -> core::option::Option<&[usize]>
 pub fn cudf::io::source::LocalParquetFile::stable_id(&self) -> &str
@@ -4910,6 +4911,7 @@ pub fn cudf::io::source::LocalParquetFile::with_pure_filter_row_group_bytes(self
 pub fn cudf::io::source::LocalParquetFile::with_reader_decimal_types<I>(self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = cudf::io::source::ParquetReaderDecimalType>
 pub fn cudf::io::source::LocalParquetFile::with_remote_parquet_contract(self, cudf::io::parquet::RemoteParquetProfile, cudf::io::parquet::RemoteReadMode) -> cudf::core::error::Result<Self>
 pub fn cudf::io::source::LocalParquetFile::with_row_group_metadata(self, alloc::vec::Vec<u64>, alloc::vec::Vec<u64>) -> cudf::core::error::Result<Self>
+pub fn cudf::io::source::LocalParquetFile::with_row_group_null_counts(self, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<core::option::Option<u64>>>) -> Self
 pub fn cudf::io::source::LocalParquetFile::with_row_groups(self, core::option::Option<alloc::vec::Vec<usize>>) -> Self
 pub fn cudf::io::source::LocalParquetFile::with_variable_width_payload_evidence(self, alloc::collections::btree::map::BTreeMap<usize, cudf::io::source::ParquetVariableWidthPayloadEvidence>) -> Self
 pub struct cudf::io::source::LocalParquetSource
@@ -5292,6 +5294,7 @@ pub fn cudf::Expr::dt(self) -> cudf::ops::expr::ExprDatetimeNamespace
 pub fn cudf::Expr::eq(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::eval(&self, &cudf::DataFrame) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Expr::eval_in(&self, &cudf::DataFrame, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::Expr::exp(self) -> cudf::Expr
 pub fn cudf::Expr::ffill(self) -> cudf::Expr
 pub fn cudf::Expr::fillna(self, impl cudf::ops::expr::IntoLit) -> cudf::Expr
 pub fn cudf::Expr::fillna_with(self, cudf::Expr) -> cudf::Expr
@@ -6236,6 +6239,7 @@ pub fn cudf::Expr::dt(self) -> cudf::ops::expr::ExprDatetimeNamespace
 pub fn cudf::Expr::eq(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::eval(&self, &cudf::DataFrame) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Expr::eval_in(&self, &cudf::DataFrame, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::Expr::exp(self) -> cudf::Expr
 pub fn cudf::Expr::ffill(self) -> cudf::Expr
 pub fn cudf::Expr::fillna(self, impl cudf::ops::expr::IntoLit) -> cudf::Expr
 pub fn cudf::Expr::fillna_with(self, cudf::Expr) -> cudf::Expr
@@ -7222,6 +7226,7 @@ pub fn cudf::Expr::dt(self) -> cudf::ops::expr::ExprDatetimeNamespace
 pub fn cudf::Expr::eq(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::eval(&self, &cudf::DataFrame) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Expr::eval_in(&self, &cudf::DataFrame, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::Series>
+pub fn cudf::Expr::exp(self) -> cudf::Expr
 pub fn cudf::Expr::ffill(self) -> cudf::Expr
 pub fn cudf::Expr::fillna(self, impl cudf::ops::expr::IntoLit) -> cudf::Expr
 pub fn cudf::Expr::fillna_with(self, cudf::Expr) -> cudf::Expr

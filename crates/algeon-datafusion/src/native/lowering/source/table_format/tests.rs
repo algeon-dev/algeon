@@ -1477,7 +1477,7 @@ fn table_format_equality_delete_hidden_key_rejects_without_delete_footer_field_i
     )
     .unwrap_err();
 
-    assert_eq!(error, CapabilityReason::IcebergDeleteFilesUnsupported);
+    assert_eq!(error.reason(), CapabilityReason::IcebergDeleteFilesUnsupported);
     fs::remove_dir_all(dir).ok();
 }
 

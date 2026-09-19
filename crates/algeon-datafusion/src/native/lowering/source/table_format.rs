@@ -25,6 +25,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
+        LoweringRejection,
         expression_contract::validate_physical_expr_contract,
         lowering::{LoweredNativeInput, RequiredFields, expr::lower_physical_expr_with_bindings},
         normalize::NormalizedNativeSource,
@@ -83,7 +84,7 @@ pub(super) fn lower_table_format_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let scan_plan = available_table_format_scan_plan(scan_exec)?;
     if table_format_scan_plan_is_empty_admissible(scan_plan) {
         return lower_empty_table_format_source_input(scan_exec, filter, builder, required_output_fields);
@@ -94,7 +95,7 @@ pub(super) fn lower_table_format_source_input(
         validate_physical_expr_contract(filter.predicate(), &filter.input().schema())?;
     }
     if scan_plan.data_files.iter().any(TableFormatDataFile::has_equality_delete_files) {
-        return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
+        return Err(CapabilityReason::IcebergDeleteFilesUnsupported.into());
     }
 
     let file_schema = table_format_file_schema(scan_plan);
@@ -103,7 +104,7 @@ pub(super) fn lower_table_format_source_input(
     if scan_plan.data_files.iter().any(TableFormatDataFile::has_row_delete_files)
         && requirements.read_columns.is_empty()
     {
-        return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
+        return Err(CapabilityReason::IcebergDeleteFilesUnsupported.into());
     }
     let source_output_schema = table_format_source_output_schema(scan_plan, &requirements, &file_schema)?;
     validate_schema(Arc::clone(&source_output_schema))?;
@@ -189,7 +190,7 @@ fn table_format_native_source_for_group(
     frontend_schema: SchemaRef,
     source_scan_limit: Option<usize>,
     unique_key_columns: &[BTreeSet<String>],
-) -> Result<(NativeLocalParquetSource, bool), CapabilityReason> {
+) -> Result<(NativeLocalParquetSource, bool), LoweringRejection> {
     let native_files = table_format_local_parquet_files_for_group(scan_plan, group)?;
     let mut native_source = NativeLocalParquetSource::from_files(
         native_files,
@@ -246,7 +247,7 @@ fn lower_empty_table_format_source_input(
     filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let source_schema = filter.map_or_else(|| scan_exec.schema(), |filter| filter.schema());
     validate_schema(Arc::clone(&source_schema))?;
     let source_node =
@@ -279,7 +280,7 @@ fn table_format_reader_pushdown_predicate(
     source_output_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     native_source: &NativeLocalParquetSource,
-) -> Result<Option<SourceReaderPushdownPredicate>, CapabilityReason> {
+) -> Result<Option<SourceReaderPushdownPredicate>, LoweringRejection> {
     let Some(filter) = filter else {
         return Ok(None);
     };
@@ -338,7 +339,7 @@ fn table_format_reader_predicate_references_stats_filter_risky_type(expr: &Nativ
         | NativeExpr::Like { expr, .. }
         | NativeExpr::Substring { expr, .. }
         | NativeExpr::StringLength { expr, .. }
-        | NativeExpr::Sqrt { expr, .. }
+        | NativeExpr::UnaryMath { expr, .. }
         | NativeExpr::Round { expr, .. }
         | NativeExpr::Extract { expr, .. }
         | NativeExpr::DateTrunc { expr, .. }

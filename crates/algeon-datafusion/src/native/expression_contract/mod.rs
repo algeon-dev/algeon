@@ -17,7 +17,9 @@ pub(in crate::native) use capability::{
 pub(in crate::native) use join_residual::{
     JoinResidualCastMode, ValidatedJoinResidual, join_residual_cast_mode, validate_join_residual,
 };
-pub(in crate::native) use rejection::{ExpressionCapability, ExpressionRejection, ExpressionRejectionKind};
+pub(crate) use rejection::{
+    ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject,
+};
 pub(in crate::native) use validation::{
     ResolvedColumn, ValidatedPhysicalExpr, case_expr_data_type, declared_decimal_divide_output_type,
     physical_expr_data_type, resolve_column, validate_physical_expr_contract,

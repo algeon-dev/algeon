@@ -7,9 +7,10 @@ use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
     common::{DataFusionError, Result, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr},
+    physical_expr::{EquivalenceProperties, LexOrdering, OrderingRequirements, Partitioning, PhysicalExpr},
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, InputDistributionRequirements, PlanProperties,
+        SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
     },
@@ -98,6 +99,9 @@ pub struct RelationFunctionExec<S> {
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     input_names: Vec<String>,
     input_projections: Vec<Vec<usize>>,
+    /// Declared order of each input relation. `row_ordinal` numbers input
+    /// rows in arrival order, so DataFusion must deliver this order.
+    input_orderings: Vec<Option<LexOrdering>>,
     output_schema: SchemaRef,
     native_host_plan: QueryPlan,
     native_execution_config: AlgeonNativeExecutionConfig,
@@ -116,9 +120,13 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
         input_names: Vec<String>,
+        input_orderings: Vec<Option<LexOrdering>>,
         gpu_result_input_name: String,
     ) -> Result<Self> {
-        if inputs.len() != spec.binding_count() || input_names.len() != inputs.len() {
+        if inputs.len() != spec.binding_count()
+            || input_names.len() != inputs.len()
+            || input_orderings.len() != inputs.len()
+        {
             return Err(spec.invalid_child_count());
         }
         let input_projections = inputs
@@ -147,6 +155,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             inputs,
             input_names,
             input_projections,
+            input_orderings,
             output_schema,
             native_host_plan,
             native_execution_config,
@@ -260,7 +269,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         record_relation_staging_boundaries(&mut query_metrics, &host_to_device_uploads);
         metrics.record_query_metrics(&query_metrics);
         result.map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            DataFusionError::from(Error::from_native_with_blocking_diagnostics(
                 S::TEXT.operations.execute,
                 S::TEXT.messages.execution_failed,
                 error,
@@ -321,6 +330,10 @@ impl<S: RelationFunctionSpec> GpuResidentProducer for RelationFunctionExec<S> {
 
     fn host_result_query_plan(&self) -> Result<Option<QueryPlan>> {
         Ok(Some(self.native_plan().clone()))
+    }
+
+    fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
+        Some(&self.metrics)
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
@@ -415,6 +428,26 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
         vec![false; self.inputs.len()]
     }
 
+    fn required_input_ordering(&self) -> Vec<Option<OrderingRequirements>> {
+        self.input_orderings.iter().map(|ordering| ordering.clone().map(OrderingRequirements::from)).collect()
+    }
+
+    /// An ordered input must arrive as one partition to keep its order across
+    /// partitions. Unordered inputs keep the partition-order concatenation of
+    /// host staging, which is more stable than the completion-order interleave
+    /// of a coalesce.
+    fn input_distribution_requirements(&self) -> InputDistributionRequirements {
+        InputDistributionRequirements::new(
+            self.input_orderings
+                .iter()
+                .map(|ordering| match ordering {
+                    Some(_) => Distribution::SinglePartition,
+                    None => Distribution::UnspecifiedDistribution,
+                })
+                .collect(),
+        )
+    }
+
     fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() != self.inputs.len() {
             return Err(Error::new(
@@ -432,6 +465,7 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
             Arc::clone(&self.output_schema),
             self.native_execution_config.clone(),
             self.input_names.clone(),
+            self.input_orderings.clone(),
             self.gpu_result_input_name.clone(),
         )?))
     }
@@ -720,6 +754,7 @@ mod tests {
             Arc::clone(&schema),
             AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
             vec!["input".to_string()],
+            vec![None],
             "counting_result".to_string(),
         )
         .expect("relation function exec");

@@ -67,7 +67,7 @@ use crate::{
         admission::{
             AttemptTicketBinding, NativeAdmissionExec, QueryAdmissionTicket, task_context_with_query_admission_ticket,
         },
-        sealed_attempt_metrics_target, transparent_root_wrapper_input,
+        native_execution_metrics, sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
     native_report::NativeDataFusionExecutionMetrics,
     planner::{FinalPlanCoverage, FinalPlanDisposition, classify_final_plan},
@@ -145,6 +145,7 @@ struct AttemptExecutionState {
 impl AttemptExecutionState {
     fn set_sealed_metrics_target(&self, plan: &dyn ExecutionPlan) {
         let Some(target) = sealed_attempt_metrics_target(plan) else { return };
+        let target = target.with_execution_metrics(native_execution_metrics(plan));
         let mut slot = self.sealed_metrics_target.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Planning supplies a fallback for paths such as CTAS; the actual
         // execution root replaces it before terminal publication so a replan
@@ -430,7 +431,22 @@ impl AlgeonAttempt {
     /// snapshot that embeds it without a detached completion task.
     pub fn register_sealed_report_observer<F>(&self, observer: F)
     where F: Fn(Option<Arc<QueryAttemptReport>>, SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
+        self.register_sealed_execution_observer(move |report, snapshot, _native_execution| observer(report, snapshot));
+    }
+
+    /// Like [`Self::register_sealed_report_observer`], and also hands over the
+    /// native execution snapshot. It is sealed by the report sink, which runs
+    /// before the owner delivers the sealed observation.
+    pub(crate) fn register_sealed_execution_observer<F>(&self, observer: F)
+    where F: Fn(
+                Option<Arc<QueryAttemptReport>>,
+                SealedRuntimeObservationSnapshot,
+                Option<SealedAttemptNativeExecutionSnapshot>,
+            ) + Send
+            + Sync
+            + 'static {
         let factory = self.completion_factory.clone();
+        let state = Arc::clone(&self.state);
         self.state.admission_binding.register_seal_observer(move |snapshot| {
             let report = factory.try_report();
             if report.is_none() {
@@ -443,7 +459,7 @@ impl AlgeonAttempt {
                 // projection.
                 tracing::error!("attempt observation sealed before its immutable report was published");
             }
-            observer(report, snapshot);
+            observer(report, snapshot, state.sealed_native_execution_snapshot());
         });
     }
 

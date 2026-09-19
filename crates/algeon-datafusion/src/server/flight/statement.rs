@@ -214,13 +214,14 @@ impl DatafusionAlgeonFlightSqlService {
     ) {
         let coordinator = Arc::clone(&self.coordinator);
         let query_id = key.query_id().to_string();
-        attempt.register_sealed_report_observer(move |report, snapshot| {
+        attempt.register_sealed_execution_observer(move |report, snapshot, native_execution| {
             let Some(report) = report else {
                 Self::finish_missing_attempt_report_handoff(&terminal, &query_id);
                 return;
             };
             let attempt_outcome = report.outcome.clone();
-            if let Err(error) = coordinator.attach_attempt_report(&key, report, Some(snapshot)) {
+            let native_metrics = native_execution.map(|native_execution| native_execution.metrics);
+            if let Err(error) = coordinator.attach_attempt_report(&key, report, Some(snapshot), native_metrics) {
                 tracing::warn!(query_id, %error, "failed to retain sealed Flight attempt report");
                 terminal.finish_attempt_report_delivery_failed(error, Some(attempt_outcome));
                 return;

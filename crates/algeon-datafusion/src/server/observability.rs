@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fmt::{self, Write},
     mem,
     sync::Arc,
@@ -9,36 +9,24 @@ use std::{
 
 use datafusion::{
     common::DataFusionError,
-    physical_plan::{
-        ExecutionPlan, displayable,
-        metrics::{Metric, MetricsSet},
-    },
+    physical_plan::{ExecutionPlan, displayable, metrics::MetricsSet},
 };
 use query_engine::observability::{AttemptDisposition, QueryAttemptReport, RuntimeTerminalOutcome};
 use tonic::metadata::MetadataMap;
 
-#[cfg(feature = "cugraph")]
-use crate::server::cugraph_sql::CugraphAlgoExec;
-use crate::{
-    cuml_sql::CumlAlgoExec,
-    server::{
-        adapter_error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
-        cuvs_sql::CuvsAlgoExec,
-        error::{
-            ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
-            status_source_diagnostics,
-        },
-        native_exec::{
-            AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec,
-            AlgeonNativeGpuProducerExec, SERVER_CAPTURE_LOSS_METRIC_NAME,
-        },
-        native_report::{
-            NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
-            NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
-            NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-        },
-        planner::NativePlanningDiagnostics,
+use crate::server::{
+    adapter_error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
+    error::{
+        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+        status_source_diagnostics,
     },
+    native_exec::contains_native_execution_wrapper,
+    native_report::{
+        NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
+        NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+        NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
+    },
+    planner::NativePlanningDiagnostics,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -560,6 +548,9 @@ pub(super) struct CapturedQuery {
     /// Immutable attempt-completion projection. The coordinator never owns
     /// this lifecycle; it only retains the sealed report for Flight stats.
     attempt_report: Option<Arc<QueryAttemptReport>>,
+    /// Native execution metrics sealed with `attempt_report`. `None` when the
+    /// attempt elected no native execution root.
+    native_metrics: Option<Arc<NativeDataFusionExecutionMetrics>>,
 }
 
 impl CapturedQuery {
@@ -592,6 +583,7 @@ impl CapturedQuery {
             capture,
             max_metric_records: usize::try_from(max_metric_records).unwrap_or(usize::MAX),
             attempt_report: None,
+            native_metrics: None,
         }
     }
 
@@ -613,8 +605,13 @@ impl CapturedQuery {
         self.last_touched_at = Instant::now();
     }
 
-    pub(super) fn set_attempt_report(&mut self, report: Arc<QueryAttemptReport>) {
+    pub(super) fn set_attempt_report(
+        &mut self,
+        report: Arc<QueryAttemptReport>,
+        native_metrics: Option<NativeDataFusionExecutionMetrics>,
+    ) {
         self.attempt_report = Some(report);
+        self.native_metrics = native_metrics.map(Arc::new);
         self.last_touched_at = Instant::now();
     }
 
@@ -629,7 +626,8 @@ impl CapturedQuery {
         let mut physical_explain = BoundedText::new(physical_limit);
         let _ = write!(physical_explain, "{}", displayable(planned_plan.as_ref()).indent(false));
         let native_limit = max_bytes.saturating_sub(physical_limit);
-        let mut native_explain = contains_native_wrapper(planned_plan.as_ref()).then(|| BoundedText::new(native_limit));
+        let mut native_explain =
+            contains_native_execution_wrapper(planned_plan.as_ref()).then(|| BoundedText::new(native_limit));
         if let Some(native_explain) = &mut native_explain {
             let _ = write!(native_explain, "{}", displayable(planned_plan.as_ref()).indent(true));
         }
@@ -657,16 +655,9 @@ impl CapturedQuery {
                     Arc::clone(&diagnostics),
                     NativeDataFusionRuntime::NotStarted,
                 )]);
-            let candidate_count = candidate_count.max(1);
-            let metrics = project_native_execution_metrics(
-                &planned_plan,
-                max_metric_records / candidate_count,
-                max_bytes / candidate_count,
-            );
             CapturedPlanning::new(
                 CapturedTsvReport::from_tsv(planning_report.to_tsv()),
                 NativeDataFusionExecutionTsvTemplate::from_report(execution_report),
-                metrics,
             )
         });
         CapturedPlanningRender { planning, physical_explain, native_explain, diagnostics_truncated: planning_truncated }
@@ -829,14 +820,17 @@ impl CapturedQuery {
             let _ = writeln!(output, "# attempt_resource_evidence={}", labels.resource_evidence);
         }
 
-        let mut metric_projection_truncated = false;
+        let native_metrics = self.native_metrics.as_deref();
+        let metric_projection_truncated = native_metrics.is_some_and(|metrics| metrics.detail_capture_lost);
         if let Some(planning) = &self.planning {
             let planning_written =
                 output.write_atomic("\n[planning]\n") && planning.planning_report.write_atomic(&mut output);
-            metric_projection_truncated = planning.metrics.truncated;
-            let runtime = self.runtime_for_planning(planning.metrics.metrics());
             if planning_written && output.write_atomic("\n[execution]\n") {
-                let _ = write_tsv_atomic(&mut output, &planning.execution_report.to_tsv(runtime));
+                let execution = planning.execution_report.to_tsv_with_projected_metrics(
+                    self.runtime_for_planning(),
+                    native_metrics.cloned().unwrap_or_default(),
+                );
+                let _ = write_tsv_atomic(&mut output, &execution);
             }
         } else if let Some(failure) = &self.planning_failure
             && output.write_atomic("\n[planning]\n")
@@ -902,7 +896,10 @@ impl CapturedQuery {
         QueryStatsPayload { bytes: Arc::from(output.into_bytes()), incomplete }
     }
 
-    fn runtime_for_planning(&self, metrics: Option<MetricsSet>) -> NativeDataFusionRuntime {
+    /// The runtime outcome for the `[execution]` row. Its native metrics are
+    /// the sealed projection in `native_metrics`, so the metric sets here stay
+    /// empty.
+    fn runtime_for_planning(&self) -> NativeDataFusionRuntime {
         let Some(report) = self.attempt_report.as_deref() else {
             return NativeDataFusionRuntime::NotStarted;
         };
@@ -916,19 +913,21 @@ impl CapturedQuery {
                 output_batches: self.metrics.output_batches.unwrap_or(0),
                 output_rows: self.metrics.output_rows.unwrap_or(0),
                 output_bytes: self.metrics.output_bytes.unwrap_or(0),
-                metrics: metrics.unwrap_or_default(),
+                metrics: MetricsSet::new(),
             },
             RuntimeTerminalOutcome::Failed { .. } => {
-                NativeDataFusionRuntime::Failed { message: attempt_failure_message(report), metrics }
+                NativeDataFusionRuntime::Failed { message: attempt_failure_message(report), metrics: None }
             },
-            RuntimeTerminalOutcome::Cancelled => {
-                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Cancelled, metrics }
+            RuntimeTerminalOutcome::Cancelled => NativeDataFusionRuntime::Interrupted {
+                outcome: NativeDataFusionRuntimeOutcome::Cancelled,
+                metrics: None,
             },
             RuntimeTerminalOutcome::Dropped => {
-                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Dropped, metrics }
+                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Dropped, metrics: None }
             },
-            RuntimeTerminalOutcome::Panicked => {
-                NativeDataFusionRuntime::Interrupted { outcome: NativeDataFusionRuntimeOutcome::Panicked, metrics }
+            RuntimeTerminalOutcome::Panicked => NativeDataFusionRuntime::Interrupted {
+                outcome: NativeDataFusionRuntimeOutcome::Panicked,
+                metrics: None,
             },
         }
     }
@@ -1019,26 +1018,14 @@ pub(super) struct CapturedPlanningRender {
 struct CapturedPlanning {
     planning_report: CapturedTsvReport,
     execution_report: NativeDataFusionExecutionTsvTemplate,
-    metrics: CapturedMetricHandles,
     retained_capacity_bytes: u64,
 }
 
 impl CapturedPlanning {
-    fn new(
-        planning_report: CapturedTsvReport,
-        execution_report: NativeDataFusionExecutionTsvTemplate,
-        metrics: MetricsProjection,
-    ) -> Self {
-        let retained_capacity_bytes = planning_report
-            .retained_capacity_bytes
-            .saturating_add(execution_report.retained_capacity_bytes())
-            .saturating_add(metrics.handles.retained_capacity_bytes);
-        Self {
-            planning_report,
-            execution_report,
-            metrics: CapturedMetricHandles { handles: metrics.handles, truncated: metrics.truncated },
-            retained_capacity_bytes,
-        }
+    fn new(planning_report: CapturedTsvReport, execution_report: NativeDataFusionExecutionTsvTemplate) -> Self {
+        let retained_capacity_bytes =
+            planning_report.retained_capacity_bytes.saturating_add(execution_report.retained_capacity_bytes());
+        Self { planning_report, execution_report, retained_capacity_bytes }
     }
 }
 
@@ -1071,32 +1058,6 @@ impl CapturedTsvReport {
         }
         true
     }
-}
-
-#[derive(Debug)]
-struct CapturedMetricHandles {
-    handles: MetricHandles,
-    truncated: bool,
-}
-
-impl CapturedMetricHandles {
-    fn metrics(&self) -> Option<MetricsSet> {
-        if !self.handles.saw_native_wrapper {
-            return None;
-        }
-        let mut metrics = MetricsSet::new();
-        for metric in &self.handles.metrics {
-            metrics.push(Arc::clone(metric));
-        }
-        Some(metrics)
-    }
-}
-
-#[derive(Debug)]
-struct MetricHandles {
-    metrics: Box<[Arc<Metric>]>,
-    saw_native_wrapper: bool,
-    retained_capacity_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1259,139 +1220,6 @@ impl CapturedError {
             let _ = writeln!(output, "fact.{}={}", StableValue(key), StableValue(value));
         }
     }
-}
-
-/// Projects the local DataFusion metrics of every native execution wrapper in
-/// a physical plan into one query-level view. Physical plans can be DAGs, and
-/// wrapper clones can expose the same metric objects, so both plan-node and
-/// metric identities are deduplicated before projection.
-struct MetricsProjection {
-    handles: MetricHandles,
-    truncated: bool,
-}
-
-fn project_native_execution_metrics(
-    plan: &Arc<dyn ExecutionPlan>,
-    max_records: usize,
-    max_logical_bytes: usize,
-) -> MetricsProjection {
-    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
-    fn visit(
-        plan: &Arc<dyn ExecutionPlan>,
-        seen_plans: &mut HashSet<*const ()>,
-        seen_metrics: &mut HashSet<*const Metric>,
-        projected: &mut Vec<Arc<Metric>>,
-        saw_native_wrapper: &mut bool,
-        max_records: usize,
-        retained_metrics: &mut usize,
-        remaining_bytes: &mut usize,
-        truncated: &mut bool,
-    ) {
-        if seen_plans.len() >= max_records.max(1) {
-            *truncated = true;
-            return;
-        }
-        let plan_identity = Arc::as_ptr(plan) as *const ();
-        if !seen_plans.insert(plan_identity) {
-            return;
-        }
-
-        if is_native_execution_wrapper(plan.as_ref()) {
-            *saw_native_wrapper = true;
-            if let Some(metrics) = plan.metrics() {
-                for metric in metrics.iter() {
-                    if !seen_metrics.insert(Arc::as_ptr(metric)) {
-                        continue;
-                    }
-                    if metric.value().name() == SERVER_CAPTURE_LOSS_METRIC_NAME {
-                        *truncated |= metric.value().as_usize() > 0;
-                        continue;
-                    }
-                    if *retained_metrics >= max_records {
-                        *truncated = true;
-                        continue;
-                    }
-                    let logical_bytes = metric.labels().iter().fold(128usize, |total, label| {
-                        total.saturating_add(label.name().len()).saturating_add(label.value().len())
-                    });
-                    if logical_bytes > *remaining_bytes {
-                        *truncated = true;
-                        continue;
-                    }
-                    *remaining_bytes -= logical_bytes;
-                    projected.push(Arc::clone(metric));
-                    *retained_metrics += 1;
-                }
-            }
-        }
-
-        for child in plan.children() {
-            visit(
-                child,
-                seen_plans,
-                seen_metrics,
-                projected,
-                saw_native_wrapper,
-                max_records,
-                retained_metrics,
-                remaining_bytes,
-                truncated,
-            );
-        }
-    }
-
-    let mut projected = Vec::new();
-    let mut saw_native_wrapper = false;
-    let mut truncated = false;
-    let mut retained_metrics = 0;
-    let mut remaining_bytes = max_logical_bytes;
-    visit(
-        plan,
-        &mut HashSet::new(),
-        &mut HashSet::new(),
-        &mut projected,
-        &mut saw_native_wrapper,
-        max_records,
-        &mut retained_metrics,
-        &mut remaining_bytes,
-        &mut truncated,
-    );
-    let retained_capacity_bytes = projected.iter().fold(0u64, |total, metric| {
-        let labels = metric.labels().iter().fold(128u64, |bytes, label| {
-            bytes
-                .saturating_add(u64::try_from(label.name().len()).unwrap_or(u64::MAX))
-                .saturating_add(u64::try_from(label.value().len()).unwrap_or(u64::MAX))
-        });
-        total.saturating_add(labels).saturating_add(u64::try_from(mem::size_of::<Arc<Metric>>()).unwrap_or(0))
-    });
-    MetricsProjection {
-        handles: MetricHandles { metrics: projected.into_boxed_slice(), saw_native_wrapper, retained_capacity_bytes },
-        truncated,
-    }
-}
-
-fn is_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<AlgeonNativeExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
-        || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
-        || plan.downcast_ref::<CuvsAlgoExec>().is_some()
-        || plan.downcast_ref::<CumlAlgoExec>().is_some()
-    {
-        return true;
-    }
-    #[cfg(feature = "cugraph")]
-    if plan.downcast_ref::<CugraphAlgoExec>().is_some() {
-        return true;
-    }
-    false
-}
-
-fn contains_native_wrapper(plan: &dyn ExecutionPlan) -> bool {
-    if is_native_execution_wrapper(plan) {
-        return true;
-    }
-    plan.children().iter().any(|child| contains_native_wrapper(child.as_ref()))
 }
 
 fn metadata_value<'a>(metadata: &'a MetadataMap, key: &'static str) -> Option<&'a str> {
@@ -1597,7 +1425,7 @@ mod tests {
             }),
             now,
         );
-        captured.set_attempt_report(Arc::new(cancelled_attempt_report()));
+        captured.set_attempt_report(Arc::new(cancelled_attempt_report()), None);
         captured.seal(now);
 
         let payload = String::from_utf8(captured.to_query_stats_payload(4096).bytes.to_vec()).unwrap();

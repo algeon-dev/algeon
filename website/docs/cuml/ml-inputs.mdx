@@ -23,6 +23,18 @@ Each input must project a non-null column named `id`. Its Arrow type must be
 the output `row_ordinal` distinguishes rows with the same ID and records their
 position in the evaluated relation.
 
+## Input order
+
+A relation argument's top-level `ORDER BY` fixes the evaluated row order, so
+`row_ordinal` follows it and the model fits rows in that order. Each sort key
+must be an output column of the subquery, named or given by 1-based position;
+any other key is rejected with `input_ordering_key_not_projected`, except
+under `LIMIT`, `OFFSET`, or `FETCH`, where the `ORDER BY` only selects rows.
+Without a top-level `ORDER BY`, input order is unspecified and can change
+between runs. Rows that tie on every key have no stable order, so a
+reproducible fit with a fixed `random_state` needs a key that is unique per
+row, such as `ORDER BY id` over distinct IDs.
+
 The relation projects exactly one of these dense-feature shapes:
 
 - Wide features: every column other than `id` is a non-null `Float32` feature.
@@ -35,6 +47,11 @@ The relation projects exactly one of these dense-feature shapes:
   `training` also contains `label`.
   `FixedSizeList` requires positive `D`; variable-length lists must have the
   same positive length for every evaluated row.
+
+`WHERE column IS NOT NULL` filters rows but does not make a column
+non-nullable in the schema, so it cannot satisfy the feature contract above.
+Use `COALESCE(column, CAST(0 AS REAL))` or another null-free expression in
+the subquery projection instead.
 
 No implicit feature cast occurs. Apply `CAST` in the subquery to produce
 `Float32` features when source columns have a different numeric type:

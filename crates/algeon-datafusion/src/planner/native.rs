@@ -801,6 +801,7 @@ mod tests {
     use crate::{
         backend::InstalledTestGpuBackend,
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
+        report::NotSupportedDetail,
     };
 
     fn local_parquet_native_plan(path: &str) -> QueryPlan {
@@ -860,10 +861,13 @@ mod tests {
     #[test]
     fn strict_rejection_schema_detail_is_client_visible_but_not_log_safe() {
         let mut report = PlanningReport::new();
-        report.push_not_supported_column(
+        report.push_not_supported_with_detail(
             GpuCandidate::new("ParquetExec", 1),
             CapabilityReason::UnsupportedType,
-            UnsupportedColumnDetail::new("訂單明細", "List(Int64)", "projected"),
+            NotSupportedDetail {
+                column: Some(UnsupportedColumnDetail::new("訂單明細", "List(Int64)", "projected")),
+                expression: None,
+            },
         );
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let error = final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&report));

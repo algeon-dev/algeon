@@ -5,6 +5,7 @@ use datafusion::{
     catalog::Session,
     common::Result,
     logical_expr::{LogicalPlan, UserDefinedLogicalNode, physical_planning_context::PhysicalPlanningContext},
+    physical_expr::{LexOrdering, create_physical_sort_exprs},
     physical_plan::ExecutionPlan,
     physical_planner::{ExtensionPlanner, PhysicalPlanner},
 };
@@ -21,10 +22,10 @@ impl ExtensionPlanner for CumlExtensionPlanner {
         &self,
         _planner: &dyn PhysicalPlanner,
         node: &dyn UserDefinedLogicalNode,
-        _logical_inputs: &[&LogicalPlan],
+        logical_inputs: &[&LogicalPlan],
         physical_inputs: &[Arc<dyn ExecutionPlan>],
         session: &dyn Session,
-        _planning_ctx: &PhysicalPlanningContext,
+        planning_ctx: &PhysicalPlanningContext,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         let Some(node) = node.as_any().downcast_ref::<CumlLogicalNode>() else {
             return Ok(None);
@@ -32,11 +33,21 @@ impl ExtensionPlanner for CumlExtensionPlanner {
         let native_execution_config = installed_algeon_native_optimizer_config(session)
             .map(|config| config.native_execution_config().clone())
             .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
+        let input_orderings = node
+            .input_orderings()
+            .iter()
+            .zip(logical_inputs)
+            .map(|(ordering, input)| {
+                create_physical_sort_exprs(ordering, input.schema(), session.execution_props(), planning_ctx)
+                    .map(LexOrdering::new)
+            })
+            .collect::<Result<Vec<_>>>()?;
         CumlAlgoExec::try_new(
             node.operation(),
             node.validated_options().clone(),
             node.model().cloned(),
             physical_inputs.to_vec(),
+            input_orderings,
             node.output_schema(),
             native_execution_config,
         )

@@ -187,16 +187,20 @@ pub enum Expr {
     /// empty strings rather than producing a null output row.
     Concat(Vec<Expr>),
     Abs(Box<Expr>),
-    /// SQL `SQRT(expr)` numeric expression.
+    /// SQL one-argument floating-point math function such as `SQRT(expr)`,
+    /// `LN(expr)`, or `EXP(expr)`.
     ///
     /// The `output_type` is the frontend-declared result type. It is part of
     /// the native contract because cudf's expression builder can infer a
     /// physical type that still needs to be aligned with DataFusion's exposed
-    /// schema.
-    Sqrt {
-        /// Numeric expression whose square root is computed.
+    /// schema. Results follow IEEE 754: domain errors produce NaN or an
+    /// infinity instead of raising, and null inputs produce null.
+    UnaryMath {
+        /// Function applied to each row.
+        op: UnaryMathOp,
+        /// Numeric expression the function is applied to.
         expr: Box<Expr>,
-        /// Declared output type after square root evaluation.
+        /// Declared output type after evaluation.
         output_type: DataType,
     },
     /// SQL `ROUND(expr, decimal_places)` numeric expression.
@@ -413,8 +417,8 @@ impl Expr {
         Self::Abs(Box::new(expr))
     }
 
-    pub fn sqrt(expr: Self, output_type: DataType) -> Self {
-        Self::Sqrt { expr: Box::new(expr), output_type }
+    pub fn unary_math(op: UnaryMathOp, expr: Self, output_type: DataType) -> Self {
+        Self::UnaryMath { op, expr: Box::new(expr), output_type }
     }
 
     pub fn round(expr: Self, decimal_places: i32, output_type: DataType) -> Self {
@@ -485,7 +489,7 @@ impl Expr {
             | Self::EndsWith { expr, .. }
             | Self::StringLength { expr, .. }
             | Self::Abs(expr)
-            | Self::Sqrt { expr, .. }
+            | Self::UnaryMath { expr, .. }
             | Self::Round { expr, .. }
             | Self::InList { expr, .. }
             | Self::Extract { expr, .. }
@@ -568,7 +572,7 @@ impl fmt::Display for Expr {
                 f.write_str(")")
             },
             Self::Abs(expr) => write!(f, "ABS({expr})"),
-            Self::Sqrt { expr, output_type } => write!(f, "SQRT({expr})::{output_type}"),
+            Self::UnaryMath { op, expr, output_type } => write!(f, "{op}({expr})::{output_type}"),
             Self::Round { expr, decimal_places, output_type } => {
                 write!(f, "ROUND({expr}, {decimal_places})::{output_type}")
             },
@@ -643,6 +647,28 @@ impl fmt::Display for DatePart {
             Self::Millisecond => "MILLISECOND",
             Self::Microsecond => "MICROSECOND",
             Self::Nanosecond => "NANOSECOND",
+        })
+    }
+}
+
+/// One-argument floating-point math function in native expression IR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnaryMathOp {
+    /// Square root; negative inputs produce NaN.
+    Sqrt,
+    /// Natural logarithm; zero produces negative infinity and negative inputs
+    /// produce NaN.
+    Ln,
+    /// Natural exponential `e ^ x`.
+    Exp,
+}
+
+impl fmt::Display for UnaryMathOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Sqrt => "SQRT",
+            Self::Ln => "LN",
+            Self::Exp => "EXP",
         })
     }
 }

@@ -6,10 +6,8 @@
 use std::sync::Arc;
 
 use super::{
-    AggregateExec, BinaryExpr, BoundedWindowAggExec, CapabilityReason, CaseExpr, CastExpr, Column, CrossJoinExec,
-    DataSourceExec, EmptyExec, ExecutionPlan, FileSource, FilterExec, GpuCandidate, HashJoinExec, InListExpr,
-    IsNotNullExpr, IsNullExpr, LikeExpr, Literal, MemorySourceConfig,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE,
+    AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, DataSourceExec, EmptyExec, ExecutionPlan,
+    GpuCandidate, HashJoinExec, MemorySourceConfig, NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE,
     NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE,
     NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE,
@@ -21,20 +19,16 @@ use super::{
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT,
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
     NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NativeJoinDiagnosticSummary,
-    NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NegativeExpr, NestedLoopJoinExec, NotExpr, Operator,
-    ParquetSource, PhysicalExpr, PlaceholderRowExec, PlainAggregateWindowExpr, ProjectionExec, ScalarFunctionExpr,
-    ScalarValue, SlidingAggregateWindowExpr, SortExec, SortPreservingMergeExec, StandardWindowExpr, TryCastExpr,
-    WindowAggExec, WindowExpr, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowUDFExpr, is_supported_arrow_type,
+    NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NestedLoopJoinExec, PlaceholderRowExec,
+    PlainAggregateWindowExpr, ScalarValue, SlidingAggregateWindowExpr, StandardWindowExpr, WindowAggExec, WindowExpr,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowUDFExpr, is_supported_arrow_type,
 };
-use crate::{final_plan_observation::observe_final_plan, planner::FinalPlanCoverage};
+use crate::{final_plan_observation::observe_final_plan, native::ExpressionRejection, planner::FinalPlanCoverage};
 
 mod expressions;
 mod shape_family;
 
-use expressions::{
-    expression_category, expression_category_with_schema, join_residual_expression_category,
-    stable_data_type_identifier,
-};
+use expressions::{expression_rejection_category, stable_data_type_identifier};
 pub(crate) use shape_family::candidate_shape_family;
 
 pub(super) use crate::physical_plan::physical_plan_shape;
@@ -135,16 +129,18 @@ pub(super) fn unsupported_category(
     plan: &dyn ExecutionPlan,
     candidate: &GpuCandidate,
     reason: CapabilityReason,
+    expression_rejection: Option<&ExpressionRejection>,
 ) -> Option<String> {
+    if let Some(rejection) = expression_rejection {
+        return Some(expression_rejection_category(rejection));
+    }
     match reason {
-        CapabilityReason::UnsupportedExpression => first_unsupported_expression_category(plan)
-            .or_else(|| {
-                first_aggregate_category(plan).filter(|category| {
-                    matches!(
-                        category.as_str(),
-                        "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by" | "aggregate_argument_count"
-                    )
-                })
+        CapabilityReason::UnsupportedExpression => first_aggregate_category(plan)
+            .filter(|category| {
+                matches!(
+                    category.as_str(),
+                    "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by" | "aggregate_argument_count"
+                )
             })
             .or_else(|| Some("expression".to_string())),
         CapabilityReason::UnsupportedOperator => first_aggregate_category(plan)
@@ -152,9 +148,9 @@ pub(super) fn unsupported_category(
             .or_else(|| first_unsupported_operator_category(plan, candidate.shape.as_str()))
             .or_else(|| first_global_aggregate_category(plan))
             .or_else(|| Some("operator_shape".to_string())),
-        CapabilityReason::UnsupportedType => first_unsupported_expression_category(plan)
-            .or_else(|| first_literal_source_type_category(plan))
-            .or_else(|| Some("type".to_string())),
+        CapabilityReason::UnsupportedType => {
+            first_literal_source_type_category(plan).or_else(|| Some("type".to_string()))
+        },
         CapabilityReason::NativeDistributedAggregateUnsupported => {
             first_aggregate_category(plan).or_else(|| Some("aggregate_distributed".to_string()))
         },
@@ -263,11 +259,6 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
     }
 
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
-        for (expr, _alias) in aggregate.group_expr().expr() {
-            if let Some(category) = expression_category_with_schema(expr, Some(aggregate.input().schema().as_ref())) {
-                return Some(category);
-            }
-        }
         for expr in aggregate.aggr_expr() {
             let function = stable_identifier(expr.fun().name());
             if !matches!(
@@ -289,12 +280,8 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
             ) {
                 return Some(format!("aggregate_{function}"));
             }
-            let expressions = expr.expressions();
-            let [arg] = expressions.as_slice() else {
+            if expr.expressions().len() != 1 {
                 return Some("aggregate_argument_count".to_string());
-            };
-            if let Some(category) = expression_category_with_schema(arg, Some(aggregate.input().schema().as_ref())) {
-                return Some(category);
             }
         }
     }
@@ -322,10 +309,7 @@ fn first_global_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
 }
 
 fn aggregate_semantic_modifier_category(aggregate: &AggregateExec) -> Option<String> {
-    if let Some(filter) = aggregate.filter_expr().iter().flatten().next() {
-        if let Some(category) = expression_category_with_schema(filter, Some(aggregate.input().schema().as_ref())) {
-            return Some(format!("aggregate_filter_{category}"));
-        }
+    if aggregate.filter_expr().iter().flatten().next().is_some() {
         return Some("aggregate_filter".to_string());
     }
     for expr in aggregate.aggr_expr() {
@@ -499,97 +483,6 @@ fn literal_source_plan(plan: &dyn ExecutionPlan) -> bool {
         || plan
             .downcast_ref::<DataSourceExec>()
             .is_some_and(|source| source.data_source().downcast_ref::<MemorySourceConfig>().is_some())
-}
-
-fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(filter) = plan.downcast_ref::<FilterExec>()
-        && let Some(category) =
-            expression_category_with_schema(filter.predicate(), Some(filter.input().schema().as_ref()))
-    {
-        return Some(category);
-    }
-
-    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        for expr in projection.expr() {
-            if let Some(category) =
-                expression_category_with_schema(&expr.expr, Some(projection.input().schema().as_ref()))
-            {
-                return Some(category);
-            }
-        }
-    }
-
-    if let Some(sort) = plan.downcast_ref::<SortExec>() {
-        for expr in sort.expr() {
-            if let Some(category) = expression_category_with_schema(&expr.expr, Some(sort.input().schema().as_ref())) {
-                return Some(category);
-            }
-        }
-    }
-
-    if let Some(merge) = plan.downcast_ref::<SortPreservingMergeExec>() {
-        for expr in merge.expr() {
-            if let Some(category) = expression_category(&expr.expr) {
-                return Some(category);
-            }
-        }
-    }
-
-    if let Some(category) = first_aggregate_category(plan) {
-        return Some(category);
-    }
-
-    if let Some(source) = plan.downcast_ref::<DataSourceExec>()
-        && let Some((file_scan, parquet_source)) = source.downcast_to_file_source::<ParquetSource>()
-    {
-        // DataFusion projection pushdown can absorb scalar expressions such as
-        // TRY_CAST into the FileSource projection rather than leaving them in a
-        // ProjectionExec above the scan. Walk those projection expressions
-        // against the unprojected table schema so type-aware labels still
-        // resolve here.
-        let projection_input_schema = file_scan.file_source().table_schema().table_schema().as_ref();
-        if let Some(projection) = file_scan.file_source().projection() {
-            for projection_expr in projection.iter() {
-                if let Some(category) =
-                    expression_category_with_schema(&projection_expr.expr, Some(projection_input_schema))
-                {
-                    return Some(category);
-                }
-            }
-        }
-        if let Some(predicate) = parquet_source.filter()
-            && let Some(category) = expression_category_with_schema(&predicate, Some(projection_input_schema))
-        {
-            return Some(category);
-        }
-    }
-
-    if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
-        for (left, right) in hash_join.on() {
-            if let Some(category) = expression_category(left).or_else(|| expression_category(right)) {
-                return Some(category);
-            }
-        }
-        if let Some(filter) = hash_join.filter()
-            && let Some(category) = join_residual_expression_category(filter.expression(), filter.schema())
-        {
-            return Some(category);
-        }
-    }
-
-    if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>()
-        && let Some(filter) = nested_loop_join.filter()
-        && let Some(category) = join_residual_expression_category(filter.expression(), filter.schema())
-    {
-        return Some(category);
-    }
-
-    for child in plan.children() {
-        if let Some(category) = first_unsupported_expression_category(child.as_ref()) {
-            return Some(category);
-        }
-    }
-    None
 }
 
 fn stable_identifier(value: &str) -> String {

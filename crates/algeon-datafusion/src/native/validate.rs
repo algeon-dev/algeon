@@ -20,8 +20,11 @@ use query_engine::{
     datatypes::{is_supported_arrow_type, is_timestamp_with_timezone},
 };
 
-use super::expression_contract::{
-    is_list_carry_type, is_narrow_decimal_carry, resolve_column, validate_physical_expr_contract,
+use super::{
+    LoweringRejection,
+    expression_contract::{
+        is_list_carry_type, is_narrow_decimal_carry, resolve_column, validate_physical_expr_contract,
+    },
 };
 use crate::capability::CapabilityReason;
 
@@ -34,11 +37,11 @@ pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), CapabilityReason>
     Ok(())
 }
 
-pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), CapabilityReason> {
+pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), LoweringRejection> {
     if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
         || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
     {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     let group_by = aggregate.group_expr();
     if group_by.has_grouping_set() {
@@ -46,29 +49,29 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     } else if !group_by.expr().is_empty()
         && (group_by.groups().len() != 1 || group_by.groups()[0].iter().any(|is_null| *is_null))
     {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     if aggregate_has_median_and_floating_statistical(aggregate) {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     for aggregate_expr in aggregate.aggr_expr() {
         if aggregate_expr.is_distinct() && !aggregate_expr.fun().name().eq_ignore_ascii_case("count") {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
         if !aggregate_expr.order_bys().is_empty() {
-            return Err(CapabilityReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression.into());
         }
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
         if matches!(aggregate.mode(), AggregateMode::Partial)
             && aggregate_expr.fun().name().eq_ignore_ascii_case("median")
         {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
-            return Err(CapabilityReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression.into());
         };
         validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
@@ -93,7 +96,7 @@ fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> b
 pub(super) fn validate_aggregate_for_native_lowering(
     aggregate: &AggregateExec,
     allow_partial: bool,
-) -> Result<(), CapabilityReason> {
+) -> Result<(), LoweringRejection> {
     if aggregate.group_expr().has_grouping_set() {
         validate_grouping_set_aggregate(aggregate, allow_partial)
     } else {
@@ -101,11 +104,11 @@ pub(super) fn validate_aggregate_for_native_lowering(
     }
 }
 
-fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), CapabilityReason> {
+fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), LoweringRejection> {
     if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
         || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
     {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     let group_by = aggregate.group_expr();
     if !group_by.has_grouping_set()
@@ -114,21 +117,21 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         || group_by.groups().is_empty()
         || group_by.groups().iter().any(|group| group.len() != group_by.expr().len())
     {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     for aggregate_expr in aggregate.aggr_expr() {
         if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
-            return Err(CapabilityReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression.into());
         }
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
         if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
         let expressions = aggregate_expr.expressions();
         let [arg] = expressions.as_slice() else {
-            return Err(CapabilityReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression.into());
         };
         validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
@@ -143,14 +146,14 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
     Ok(())
 }
 
-fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), CapabilityReason> {
+fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), LoweringRejection> {
     for filter in aggregate.filter_expr().iter().flatten() {
         validate_physical_expr_contract(filter, &aggregate.input().schema())?;
         let data_type = filter
             .data_type(aggregate.input().schema().as_ref())
             .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         if !matches!(data_type, DataType::Boolean) {
-            return Err(CapabilityReason::UnsupportedType);
+            return Err(CapabilityReason::UnsupportedType.into());
         }
     }
     Ok(())
@@ -170,9 +173,12 @@ fn validate_grouping_sets(group_by: &PhysicalGroupBy) -> Result<(), CapabilityRe
     Ok(())
 }
 
-pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+pub(super) fn validate_sort_ordering(
+    ordering: &LexOrdering,
+    input_schema: &SchemaRef,
+) -> Result<(), LoweringRejection> {
     if ordering.is_empty() {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     for sort_expr in ordering {
         validate_operator_key_expr(&sort_expr.expr, input_schema)?;
@@ -180,7 +186,7 @@ pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &Sche
     Ok(())
 }
 
-fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
     validate_physical_expr_contract(expr, input_schema)?;
     validate_operator_value_expr(expr, input_schema)
 }
@@ -188,10 +194,10 @@ fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schem
 fn validate_operator_value_expr(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
-) -> Result<(), CapabilityReason> {
+) -> Result<(), LoweringRejection> {
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_timestamp_with_timezone(&data_type) || is_list_carry_type(&data_type) || is_narrow_decimal_carry(&data_type) {
-        Err(CapabilityReason::UnsupportedType)
+        Err(CapabilityReason::UnsupportedType.into())
     } else {
         Ok(())
     }
@@ -269,7 +275,8 @@ pub(super) fn collect_required_columns(
     required: &mut BTreeSet<String>,
 ) -> Result<(), CapabilityReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
-        required.insert(resolve_column(column, input_schema)?.field().name().to_string());
+        let column = resolve_column(column, input_schema).map_err(|rejection| rejection.capability_reason())?;
+        required.insert(column.field().name().to_string());
         return Ok(());
     }
     if expr.downcast_ref::<Literal>().is_some() {
@@ -300,18 +307,11 @@ pub(super) fn collect_required_columns(
         collect_required_columns(like.expr(), input_schema, required)?;
         return Ok(());
     }
+    // IN-list admission belongs to the expression contract, which rejects
+    // the list during lowering with its own capability.
     if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-        if in_list.is_empty() {
-            return Err(CapabilityReason::UnsupportedExpression);
-        }
         collect_required_columns(in_list.expr(), input_schema, required)?;
         for expr in in_list.list() {
-            let Some(literal) = expr.downcast_ref::<Literal>() else {
-                return Err(CapabilityReason::UnsupportedExpression);
-            };
-            if literal.value().is_null() {
-                return Err(CapabilityReason::UnsupportedExpression);
-            }
             collect_required_columns(expr, input_schema, required)?;
         }
         return Ok(());

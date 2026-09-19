@@ -762,6 +762,7 @@ pub struct LocalParquetFile {
     pub(super) pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
     pub(super) pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     pub(super) row_group_rows: Option<Vec<u64>>,
+    pub(super) row_group_null_counts: BTreeMap<String, Vec<Option<u64>>>,
     pub(super) variable_width_payload_evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
     pub(super) reader_decimal_types: Vec<ParquetReaderDecimalType>,
     pub(super) partition_values: Vec<PartitionValue>,
@@ -832,6 +833,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            row_group_null_counts: BTreeMap::new(),
             variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             partition_values: partition_values.into_iter().collect(),
@@ -870,6 +872,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            row_group_null_counts: BTreeMap::new(),
             variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             partition_values: partition_values.into_iter().collect(),
@@ -983,6 +986,18 @@ impl LocalParquetFile {
         Ok(self)
     }
 
+    /// Attach footer-proven per-row-group null counts keyed by read-column name.
+    ///
+    /// Each vector is indexed by file-local row-group ordinal. `None` means
+    /// the footer did not prove a null count for that column chunk. A local
+    /// path chunk read without a reader predicate skips decoding a nullable
+    /// read column whose selected row groups are proven all-null against the
+    /// attached row counts, and materializes it as a typed null column.
+    pub fn with_row_group_null_counts(mut self, null_counts: BTreeMap<String, Vec<Option<u64>>>) -> Self {
+        self.row_group_null_counts = null_counts;
+        self
+    }
+
     /// Attach footer-proven variable-width payload bounds keyed by physical root-column index.
     pub fn with_variable_width_payload_evidence(
         mut self,
@@ -1057,6 +1072,11 @@ impl LocalParquetFile {
     /// Row-group row-count metadata, if supplied.
     pub fn row_group_rows(&self) -> Option<&[u64]> {
         self.row_group_rows.as_deref()
+    }
+
+    /// Footer-proven per-row-group null counts keyed by read-column name.
+    pub fn row_group_null_counts(&self) -> &BTreeMap<String, Vec<Option<u64>>> {
+        &self.row_group_null_counts
     }
 
     /// Per-read-column decimal storage types proven from Parquet metadata.

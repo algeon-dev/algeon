@@ -83,7 +83,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
 | `id` | `same_as_predict.id` | no | Logical ID from the predict relation. |
 | `prediction` | `Int32` | no | Predicted zero-based class index. |
 

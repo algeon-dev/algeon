@@ -918,7 +918,7 @@ fn infer_expr_type_with_schema(expr: &Expr, schema: &SchemaRef) -> Option<ArrowD
         | Expr::Abs(expr) => infer_expr_type_with_schema(expr, schema),
         Expr::StringLength { output_type, .. }
         | Expr::RegexpReplace { output_type, .. }
-        | Expr::Sqrt { output_type, .. }
+        | Expr::UnaryMath { output_type, .. }
         | Expr::Round { output_type, .. }
         | Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
         Expr::Extract { .. } => Some(ArrowDataType::Int32),
@@ -1057,8 +1057,8 @@ fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef
             exprs.iter().map(|expr| remap_unqualified_columns(expr, map_column)).collect::<Option<Vec<_>>>()?,
         )),
         Expr::Abs(expr) => Some(Expr::abs(remap_unqualified_columns(expr, map_column)?)),
-        Expr::Sqrt { expr, output_type } => {
-            Some(Expr::sqrt(remap_unqualified_columns(expr, map_column)?, output_type.clone()))
+        Expr::UnaryMath { op, expr, output_type } => {
+            Some(Expr::unary_math(*op, remap_unqualified_columns(expr, map_column)?, output_type.clone()))
         },
         Expr::Round { expr, decimal_places, output_type } => {
             Some(Expr::round(remap_unqualified_columns(expr, map_column)?, *decimal_places, output_type.clone()))
@@ -1140,7 +1140,7 @@ fn expression_scope(plan: &QueryPlan, join: &JoinNode, expr: &Expr) -> Expressio
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
@@ -1238,7 +1238,9 @@ fn strip_input_qualifiers(expr: &Expr) -> Expr {
         ),
         Expr::Concat(exprs) => Expr::concat(exprs.iter().map(strip_input_qualifiers).collect()),
         Expr::Abs(expr) => Expr::abs(strip_input_qualifiers(expr)),
-        Expr::Sqrt { expr, output_type } => Expr::sqrt(strip_input_qualifiers(expr), output_type.clone()),
+        Expr::UnaryMath { op, expr, output_type } => {
+            Expr::unary_math(*op, strip_input_qualifiers(expr), output_type.clone())
+        },
         Expr::Round { expr, decimal_places, output_type } => {
             Expr::round(strip_input_qualifiers(expr), *decimal_places, output_type.clone())
         },

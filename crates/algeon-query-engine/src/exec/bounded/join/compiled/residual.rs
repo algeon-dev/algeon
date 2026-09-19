@@ -334,9 +334,11 @@ pub(super) fn rewrite_join_residual_for_candidate(
             output_type.clone(),
         )),
         Expr::Abs(expr) => Ok(Expr::abs(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
-        Expr::Sqrt { expr, output_type } => {
-            Ok(Expr::sqrt(rewrite_join_residual_for_candidate(expr, residual_output_names)?, output_type.clone()))
-        },
+        Expr::UnaryMath { op, expr, output_type } => Ok(Expr::unary_math(
+            *op,
+            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
+            output_type.clone(),
+        )),
         Expr::Concat(exprs) => Ok(Expr::concat(
             exprs
                 .iter()

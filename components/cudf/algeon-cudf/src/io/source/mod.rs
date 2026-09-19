@@ -375,23 +375,29 @@ fn validate_source_file_metadata_lengths(file: &LocalParquetFile, file_index: us
         return Ok(());
     };
 
-    for (field, values) in [
-        ("row_group_bytes", file.row_group_bytes.as_ref()),
-        ("projected_row_group_compressed_bytes", file.projected_row_group_compressed_bytes.as_ref()),
-        ("projected_row_group_uncompressed_bytes", file.projected_row_group_uncompressed_bytes.as_ref()),
-        ("pure_filter_row_group_compressed_bytes", file.pure_filter_row_group_compressed_bytes.as_ref()),
-        ("pure_filter_row_group_uncompressed_bytes", file.pure_filter_row_group_uncompressed_bytes.as_ref()),
-        ("row_group_rows", file.row_group_rows.as_ref()),
-    ] {
-        if let Some(values) = values
-            && values.len() != expected_count
+    for (field, len) in [
+        ("row_group_bytes", file.row_group_bytes.as_ref().map(Vec::len)),
+        ("projected_row_group_compressed_bytes", file.projected_row_group_compressed_bytes.as_ref().map(Vec::len)),
+        ("projected_row_group_uncompressed_bytes", file.projected_row_group_uncompressed_bytes.as_ref().map(Vec::len)),
+        ("pure_filter_row_group_compressed_bytes", file.pure_filter_row_group_compressed_bytes.as_ref().map(Vec::len)),
+        (
+            "pure_filter_row_group_uncompressed_bytes",
+            file.pure_filter_row_group_uncompressed_bytes.as_ref().map(Vec::len),
+        ),
+        ("row_group_rows", file.row_group_rows.as_ref().map(Vec::len)),
+    ]
+    .into_iter()
+    .chain(file.row_group_null_counts.values().map(|null_counts| ("row_group_null_counts", Some(null_counts.len()))))
+    {
+        if let Some(len) = len
+            && len != expected_count
         {
             return Err(Error::new_with(
                 ErrorCode::ColumnLengthMismatch,
                 OP_PLAN_CHUNKS,
                 "row-group metadata vectors must have matching lengths",
             )
-            .with_fact(FACT_ACTUAL_COUNT, values.len())
+            .with_fact(FACT_ACTUAL_COUNT, len)
             .with_fact(FACT_EXPECTED_COUNT, expected_count)
             .with_detail("reason", "row_group_metadata_count_mismatch")
             .with_detail("field", field.to_string())

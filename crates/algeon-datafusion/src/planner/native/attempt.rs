@@ -479,6 +479,7 @@ fn native_datafusion_exec_for_plan(
                     input_name,
                     native_plan.clone_with_gpu_resident_sink(),
                     &native_execution_config,
+                    Some(eq_properties),
                 )
                 .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
             },
@@ -495,6 +496,7 @@ fn native_datafusion_exec_for_plan(
             producer.input_name,
             producer.plan,
             &native_execution_config,
+            None,
         )?));
     }
     gpu_inputs.sort_by(|left, right| {
@@ -633,7 +635,7 @@ fn native_execution_cost_selection_report(
         },
     }))
     .with_correlation_from(report)
-    .with_unsupported_columns_from(report)
+    .with_not_supported_details_from(report)
 }
 
 fn native_execution_rejection_report_for_candidate(

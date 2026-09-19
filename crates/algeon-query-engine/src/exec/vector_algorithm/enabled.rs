@@ -1280,14 +1280,14 @@ fn with_relation_tensor<E: DeviceElement, T>(
         DenseVectorBinding::Columns(columns) => {
             let packed = (|| {
                 let selected = input.frame().select(columns.iter().map(String::as_str)).map_err(|error| {
-                    cudf_query_error(PACK_OPERATION, "failed to select the kNN feature columns", error)
+                    cudf_query_error(PACK_OPERATION, "failed to select the vector feature columns", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                 })?;
                 let export = selected.try_prepare_device_table_export().map_err(|error| {
                     cudf_interop_query_error(
                         PACK_OPERATION,
-                        "failed to prepare one atomic kNN feature-table export",
+                        "failed to prepare one atomic vector feature-table export",
                         format!("{:?}", error.kind()),
                         error,
                     )
@@ -1295,11 +1295,11 @@ fn with_relation_tensor<E: DeviceElement, T>(
                     .with_fact("relation_role", role)
                 })?;
                 let element = selected.series(&columns[0]).and_then(|series| series.dtype()).map_err(|error| {
-                    cudf_query_error(PACK_OPERATION, "failed to inspect kNN feature element type", error)
+                    cudf_query_error(PACK_OPERATION, "failed to inspect vector feature element type", error)
                 })?;
                 require_vector_element::<E>(element.id(), node_id, algorithm, role)?;
                 resources.pack_prepared_table::<E>(&export, MatrixLayout::RowMajor).map_err(|error| {
-                    cuvs_query_error(PACK_OPERATION, "failed to pack the prepared kNN feature table", error)
+                    cuvs_query_error(PACK_OPERATION, "failed to pack the prepared vector feature table", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                 })

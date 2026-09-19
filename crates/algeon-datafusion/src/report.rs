@@ -26,7 +26,7 @@ use query_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::capability::CapabilityReason;
+use crate::{capability::CapabilityReason, native::ExpressionRejection};
 
 /// Stable reason code for a candidate deferred pending resident producer
 /// output evidence. The engine no longer models missing-fact/owner-term
@@ -45,6 +45,16 @@ impl UnsupportedColumnDetail {
     pub(crate) fn new(name: impl Into<String>, data_type: impl Into<String>, role: &'static str) -> Self {
         Self { name: name.into(), data_type: data_type.into(), role }
     }
+}
+
+/// Crate-private evidence retained beside a `NotSupported` outcome.
+///
+/// The public [`CapabilityReason`] stays payload-free; these facts name the
+/// unsupported column or the expression-contract rejection that caused it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NotSupportedDetail {
+    pub(crate) column: Option<UnsupportedColumnDetail>,
+    pub(crate) expression: Option<ExpressionRejection>,
 }
 
 /// Physical-plan candidate considered for native GPU execution.
@@ -265,7 +275,7 @@ pub struct PlanningReport {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     outcomes: Vec<CandidateOutcome>,
-    unsupported_columns: Vec<Option<UnsupportedColumnDetail>>,
+    not_supported_details: Vec<NotSupportedDetail>,
 }
 
 /// Headline capability miss caused by table layout metadata rather than unsupported
@@ -285,7 +295,7 @@ impl PlanningReport {
 
     pub fn from_outcomes(outcomes: impl IntoIterator<Item = CandidateOutcome>) -> Self {
         let outcomes = outcomes.into_iter().collect::<Vec<_>>();
-        Self { unsupported_columns: vec![None; outcomes.len()], outcomes, ..Self::default() }
+        Self { not_supported_details: vec![NotSupportedDetail::default(); outcomes.len()], outcomes, ..Self::default() }
     }
 
     /// Returns the query-wide diagnostic correlation id, when assigned.
@@ -354,16 +364,16 @@ impl PlanningReport {
         }
     }
 
-    /// Appends another report's outcomes, with their column details, after
-    /// this report's outcomes.
+    /// Appends another report's outcomes, with their not-supported details,
+    /// after this report's outcomes.
     pub(crate) fn append(&mut self, other: PlanningReport) {
         self.outcomes.extend(other.outcomes);
-        self.unsupported_columns.extend(other.unsupported_columns);
+        self.not_supported_details.extend(other.not_supported_details);
     }
 
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
-        self.unsupported_columns.push(None);
+        self.not_supported_details.push(NotSupportedDetail::default());
     }
 
     pub(crate) fn mark_selected_deferred(&mut self, candidate: &GpuCandidate, planning_stage: String) -> bool {
@@ -377,18 +387,17 @@ impl PlanningReport {
     }
 
     pub fn push_not_supported(&mut self, candidate: GpuCandidate, capability_reason: CapabilityReason) {
-        self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason });
-        self.unsupported_columns.push(None);
+        self.push_not_supported_with_detail(candidate, capability_reason, NotSupportedDetail::default());
     }
 
-    pub(crate) fn push_not_supported_column(
+    pub(crate) fn push_not_supported_with_detail(
         &mut self,
         candidate: GpuCandidate,
         capability_reason: CapabilityReason,
-        detail: UnsupportedColumnDetail,
+        detail: NotSupportedDetail,
     ) {
         self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason });
-        self.unsupported_columns.push(Some(detail));
+        self.not_supported_details.push(detail);
     }
 
     pub fn push_not_selected_by_cost(
@@ -398,7 +407,7 @@ impl PlanningReport {
         evidence: NativeCandidateCostEvidence,
     ) {
         self.outcomes.push(CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence });
-        self.unsupported_columns.push(None);
+        self.not_supported_details.push(NotSupportedDetail::default());
     }
 
     /// Returns outcomes in discovery order.
@@ -407,12 +416,16 @@ impl PlanningReport {
     }
 
     pub(crate) fn unsupported_column(&self, outcome_index: usize) -> Option<&UnsupportedColumnDetail> {
-        self.unsupported_columns.get(outcome_index).and_then(Option::as_ref)
+        self.not_supported_details.get(outcome_index).and_then(|detail| detail.column.as_ref())
     }
 
-    pub(crate) fn with_unsupported_columns_from(mut self, other: &PlanningReport) -> Self {
+    pub(crate) fn expression_rejection(&self, outcome_index: usize) -> Option<&ExpressionRejection> {
+        self.not_supported_details.get(outcome_index).and_then(|detail| detail.expression.as_ref())
+    }
+
+    pub(crate) fn with_not_supported_details_from(mut self, other: &PlanningReport) -> Self {
         if self.outcomes.len() == other.outcomes.len() {
-            self.unsupported_columns.clone_from(&other.unsupported_columns);
+            self.not_supported_details.clone_from(&other.not_supported_details);
         }
         self
     }

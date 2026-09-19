@@ -697,6 +697,11 @@ impl Error {
             "schedule_reason",
             "sort_rejection_reason",
             "reason",
+            "validation_reason",
+            "relation_role",
+            "training_rows",
+            "non_finite_count",
+            "remedy",
             "occurrence_id",
             "node_id",
             "input_node_id",
@@ -1163,6 +1168,35 @@ mod tests {
         ] {
             assert!(display.contains(fact), "{display}");
         }
+
+        let native = QueryError::new(
+            QueryErrorCode::CudfInvalidInput,
+            "query_engine.vector_algorithm.pack",
+            "failed to pack the prepared vector feature table",
+        )
+        .with_fact("relation_role", "dataset")
+        .with_fact("training_rows", 0)
+        .with_fact("validation_reason", "non_finite_vector_value")
+        .with_fact("non_finite_count", 5)
+        .with_fact("remedy", "replace or reject null, NaN, and infinite values before GPU consumer execution")
+        .with_fact("cuvs_message", "/private/customer.parquet");
+        let adapter = Error::from_native_with_blocking_diagnostics(
+            "algeon_datafusion.cuvs_sql.execute",
+            "native cuVS vector query execution failed",
+            native,
+        );
+        assert_eq!(adapter.kind(), ErrorKind::InvalidInput);
+        let display = adapter.to_string();
+        for fact in [
+            "relation_role=dataset",
+            "training_rows=0",
+            "validation_reason=non_finite_vector_value",
+            "non_finite_count=5",
+            "remedy=replace or reject null, NaN, and infinite values before GPU consumer execution",
+        ] {
+            assert!(display.contains(fact), "{display}");
+        }
+        assert!(!display.contains("/private/customer.parquet"), "{display}");
     }
 
     #[test]

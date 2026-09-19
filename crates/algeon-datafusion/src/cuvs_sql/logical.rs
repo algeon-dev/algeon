@@ -3,7 +3,7 @@ use std::{cmp::Ordering, fmt, hash::Hash, sync::Arc};
 use arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
 use datafusion::{
     common::{DFSchema, DFSchemaRef, Result},
-    logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore},
+    logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
 use query_engine::plan::{
     RelationIdType, VectorElementType, vector_kmeans_output_schema, vector_knn_output_schema,
@@ -12,15 +12,20 @@ use query_engine::plan::{
 
 use super::{
     CuvsOperation, CuvsOutputContract, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
-    error::{field_not_found, invalid_call, unsupported_type},
+    error::{field_not_found, invalid_call, nullable_feature_field, unsupported_type},
     options::{options_from_named_values, validate_options},
 };
-use crate::gpu_functions::dense_relation::known_row_count;
+use crate::gpu_functions::{
+    dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions,
+};
 
 #[derive(Debug, Clone)]
 pub struct CuvsLogicalNode {
     operation: CuvsOperation,
     inputs: Vec<LogicalPlan>,
+    /// Top-level `ORDER BY` of each relation argument, in relation-role order;
+    /// empty when the input declares no order.
+    input_orderings: Vec<Vec<SortExpr>>,
     options: CuvsValidatedOptions,
     schema: DFSchemaRef,
 }
@@ -44,7 +49,26 @@ impl CuvsLogicalNode {
         let (dimensions, element) = validate_input_schemas(operation, &inputs, &options)?;
         validate_known_cardinalities(operation, &inputs, &options)?;
         let schema = derive_output_schema(operation, &inputs, &options, &dimensions, element)?;
-        Ok(Self { operation, inputs, options, schema })
+        let input_orderings = vec![Vec::new(); inputs.len()];
+        Ok(Self { operation, inputs, input_orderings, options, schema })
+    }
+
+    /// Declares each relation argument's order, which fixes its `row_ordinal`
+    /// numbering; `input_orderings` has one entry per relation role.
+    pub(crate) fn with_input_orderings(mut self, input_orderings: Vec<Vec<SortExpr>>) -> Result<Self> {
+        if input_orderings.len() != self.inputs.len() {
+            return Err(invalid_call(
+                self.operation,
+                "input_ordering_count_mismatch",
+                "cuVS input orderings do not match the relation arguments",
+            ));
+        }
+        self.input_orderings = input_orderings;
+        Ok(self)
+    }
+
+    pub(crate) fn input_orderings(&self) -> &[Vec<SortExpr>] {
+        &self.input_orderings
     }
 
     pub fn operation(&self) -> CuvsOperation {
@@ -62,7 +86,10 @@ impl CuvsLogicalNode {
 
 impl PartialEq for CuvsLogicalNode {
     fn eq(&self, other: &Self) -> bool {
-        self.operation == other.operation && self.inputs == other.inputs && self.options == other.options
+        self.operation == other.operation
+            && self.inputs == other.inputs
+            && self.input_orderings == other.input_orderings
+            && self.options == other.options
     }
 }
 
@@ -72,13 +99,19 @@ impl Hash for CuvsLogicalNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.operation.hash(state);
         self.inputs.hash(state);
+        self.input_orderings.hash(state);
         self.options.hash(state);
     }
 }
 
 impl PartialOrd for CuvsLogicalNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (&self.operation, &self.inputs, &self.options).partial_cmp(&(&other.operation, &other.inputs, &other.options))
+        (&self.operation, &self.inputs, &self.input_orderings, &self.options).partial_cmp(&(
+            &other.operation,
+            &other.inputs,
+            &other.input_orderings,
+            &other.options,
+        ))
     }
 }
 
@@ -95,8 +128,9 @@ impl UserDefinedLogicalNodeCore for CuvsLogicalNode {
         &self.schema
     }
 
+    /// The input sort keys, flattened in relation-role order.
     fn expressions(&self) -> Vec<Expr> {
-        Vec::new()
+        input_ordering_expressions(&self.input_orderings)
     }
 
     fn fmt_for_explain(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -106,20 +140,25 @@ impl UserDefinedLogicalNodeCore for CuvsLogicalNode {
             self.operation.descriptor().sql_function_name,
             self.inputs.len(),
             self.options.canonical_json()
+        )?;
+        fmt_input_orderings(
+            f,
+            self.operation.descriptor().relation_roles.iter().map(|role| role.as_str()),
+            &self.input_orderings,
         )
     }
 
     fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
-        if !exprs.is_empty() {
+        let Some(input_orderings) = input_orderings_with_expressions(&self.input_orderings, exprs) else {
             return Err(invalid_call(
                 self.operation,
                 "unexpected_logical_expressions",
-                "cuVS logical nodes do not expose optimizer expressions",
+                "cuVS logical node expressions must be its input sort keys",
             ));
-        }
+        };
         let options_json =
             options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
-        Self::try_new(self.operation, inputs, &options_json)
+        Self::try_new(self.operation, inputs, &options_json)?.with_input_orderings(input_orderings)
     }
 
     fn supports_limit_pushdown(&self) -> bool {
@@ -333,11 +372,7 @@ fn require_supported_vector_element(
     field: &FieldRef,
 ) -> Result<VectorElementType> {
     if field.is_nullable() {
-        return Err(invalid_call(
-            operation,
-            "nullable_feature_field",
-            format!("cuVS {role} feature field '{name}' must be non-nullable"),
-        ));
+        return Err(nullable_feature_field(operation, role, name));
     }
     let element = VectorElementType::from_data_type(field.data_type())
         .filter(|element| operation.descriptor().element_support(*element).is_some())

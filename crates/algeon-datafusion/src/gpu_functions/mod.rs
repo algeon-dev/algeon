@@ -10,6 +10,7 @@ pub(crate) mod dense_relation;
 pub(crate) mod dense_relation_errors;
 mod descriptor;
 mod family;
+mod input_ordering;
 mod named_args;
 mod registration;
 pub(crate) mod scalar_arguments;
@@ -19,6 +20,9 @@ mod validation;
 pub(crate) use catalog::GpuFunctionCatalog;
 pub(crate) use descriptor::{GpuFunctionAvailability, GpuFunctionDescriptor};
 pub(crate) use family::GpuFunctionFamily;
+pub(crate) use input_ordering::{
+    fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions, resolve_input_ordering,
+};
 pub(crate) use named_args::{NamedArgumentDefinition, NamedArgumentKind, bind_named_arguments};
 pub(crate) use registration::install_gpu_function_family;
 pub(crate) use table_functions::gpu_metadata_table_functions;

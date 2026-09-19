@@ -76,7 +76,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. |
+| `row_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
 | `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
 | `pc_<index>` | `Float32` | no | One transformed principal-component value; the field count is set by the literal n_components option. The output contains `n_components` such columns, `pc_0` through `pc_&lt;n_components - 1&gt;`. |
 

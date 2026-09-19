@@ -5,7 +5,7 @@ use arrow::datatypes::{DataType, FieldRef, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::{
     common::{DFSchema, DFSchemaRef, Result},
-    logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore},
+    logical_expr::{Expr, LogicalPlan, SortExpr, UserDefinedLogicalNodeCore},
 };
 #[cfg(feature = "server")]
 use query_engine::plan::MlForestModelDigest;
@@ -16,15 +16,20 @@ use query_engine::plan::{
 
 use super::{
     CumlOperation, CumlValidatedOptions, DenseVectorBinding,
-    error::{field_not_found, invalid_call, invalid_call_error, unsupported_type},
+    error::{field_not_found, invalid_call, invalid_call_error, nullable_feature_field, unsupported_type},
     options::{options_from_named_values, validate_options},
 };
-use crate::gpu_functions::dense_relation::known_row_count;
+use crate::gpu_functions::{
+    dense_relation::known_row_count, fmt_input_orderings, input_ordering_expressions, input_orderings_with_expressions,
+};
 
 #[derive(Debug, Clone)]
 pub struct CumlLogicalNode {
     operation: CumlOperation,
     inputs: Vec<LogicalPlan>,
+    /// Top-level `ORDER BY` of each relation argument, in relation-role order;
+    /// empty when the input declares no order.
+    input_orderings: Vec<Vec<SortExpr>>,
     options: CumlValidatedOptions,
     /// Model bound at planning; present exactly for `cuml_forest_predict`.
     model: Option<Arc<MlForestModelSnapshot>>,
@@ -266,7 +271,26 @@ impl CumlLogicalNode {
             },
         };
         let schema = Arc::new(DFSchema::try_from(output.as_ref().clone())?);
-        Ok(Self { operation, inputs, options, model, schema })
+        let input_orderings = vec![Vec::new(); inputs.len()];
+        Ok(Self { operation, inputs, input_orderings, options, model, schema })
+    }
+
+    /// Declares each relation argument's order, which fixes its `row_ordinal`
+    /// numbering; `input_orderings` has one entry per relation role.
+    pub(crate) fn with_input_orderings(mut self, input_orderings: Vec<Vec<SortExpr>>) -> Result<Self> {
+        if input_orderings.len() != self.inputs.len() {
+            return Err(invalid_call(
+                self.operation,
+                "input_ordering_count_mismatch",
+                "cuML input orderings do not match the relation arguments",
+            ));
+        }
+        self.input_orderings = input_orderings;
+        Ok(self)
+    }
+
+    pub(crate) fn input_orderings(&self) -> &[Vec<SortExpr>] {
+        &self.input_orderings
     }
 
     pub fn operation(&self) -> CumlOperation {
@@ -313,11 +337,7 @@ fn resolve_feature<'a>(
 
 fn require_float32(operation: CumlOperation, role: &'static str, name: &str, field: &FieldRef) -> Result<()> {
     if field.is_nullable() {
-        return Err(invalid_call(
-            operation,
-            "nullable_feature_field",
-            format!("cuML {role} feature field '{name}' must be non-nullable"),
-        ));
+        return Err(nullable_feature_field(operation, role, name));
     }
     if field.data_type() != &DataType::Float32 {
         return Err(unsupported_type(operation, role, name, field.data_type(), "Float32"));
@@ -329,6 +349,7 @@ impl PartialEq for CumlLogicalNode {
     fn eq(&self, other: &Self) -> bool {
         self.operation == other.operation
             && self.inputs == other.inputs
+            && self.input_orderings == other.input_orderings
             && self.options == other.options
             && self.model == other.model
     }
@@ -338,18 +359,21 @@ impl Hash for CumlLogicalNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.operation.hash(state);
         self.inputs.hash(state);
+        self.input_orderings.hash(state);
         self.options.hash(state);
         self.model.hash(state);
     }
 }
 impl PartialOrd for CumlLogicalNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.operation.descriptor().sql_function_name, &self.inputs, &self.options, &self.model).partial_cmp(&(
-            other.operation.descriptor().sql_function_name,
-            &other.inputs,
-            &other.options,
-            &other.model,
-        ))
+        (self.operation.descriptor().sql_function_name, &self.inputs, &self.input_orderings, &self.options, &self.model)
+            .partial_cmp(&(
+                other.operation.descriptor().sql_function_name,
+                &other.inputs,
+                &other.input_orderings,
+                &other.options,
+                &other.model,
+            ))
     }
 }
 
@@ -363,8 +387,9 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
     fn schema(&self) -> &DFSchemaRef {
         &self.schema
     }
+    /// The input sort keys, flattened in relation-role order.
     fn expressions(&self) -> Vec<Expr> {
-        Vec::new()
+        input_ordering_expressions(&self.input_orderings)
     }
     fn fmt_for_explain(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -377,19 +402,24 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
         if let Some(model) = &self.model {
             write!(f, ", model=sha256:{}", model.digest().short_hex())?;
         }
-        Ok(())
+        fmt_input_orderings(
+            f,
+            self.operation.descriptor().relation_roles.iter().map(|role| role.as_str()),
+            &self.input_orderings,
+        )
     }
     fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
-        if !exprs.is_empty() {
+        let Some(input_orderings) = input_orderings_with_expressions(&self.input_orderings, exprs) else {
             return Err(invalid_call(
                 self.operation,
                 "unexpected_logical_expressions",
-                "cuML logical nodes do not expose optimizer expressions",
+                "cuML logical node expressions must be its input sort keys",
             ));
-        }
+        };
         let options_json =
             options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
-        Self::try_new_with_model(self.operation, inputs, &options_json, self.model.clone())
+        Self::try_new_with_model(self.operation, inputs, &options_json, self.model.clone())?
+            .with_input_orderings(input_orderings)
     }
     fn supports_limit_pushdown(&self) -> bool {
         false

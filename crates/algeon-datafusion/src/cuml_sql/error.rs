@@ -35,6 +35,14 @@ pub(super) fn invalid_option(
     ERRORS.invalid_option(operation.descriptor().sql_function_name, reason, argument, message)
 }
 
+pub(super) fn input_ordering_key_not_projected(
+    operation: CumlOperation,
+    relation_role: &'static str,
+    key: String,
+) -> DataFusionError {
+    ERRORS.input_ordering_key_not_projected(operation.descriptor().sql_function_name, relation_role, key)
+}
+
 pub(super) fn field_not_found(operation: CumlOperation, relation_role: &'static str, field: &str) -> DataFusionError {
     ERRORS.field_not_found(operation.descriptor().sql_function_name, relation_role, field)
 }
@@ -47,6 +55,14 @@ pub(super) fn unsupported_type(
     expected: impl ToString,
 ) -> DataFusionError {
     ERRORS.unsupported_type(operation.descriptor().sql_function_name, relation_role, field, actual, expected)
+}
+
+pub(super) fn nullable_feature_field(
+    operation: CumlOperation,
+    relation_role: &'static str,
+    field: &str,
+) -> DataFusionError {
+    ERRORS.nullable_feature_field(operation.descriptor().sql_function_name, relation_role, field)
 }
 
 pub(super) fn feature_disabled(operation: CumlOperation) -> DataFusionError {

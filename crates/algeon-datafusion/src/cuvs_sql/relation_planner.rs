@@ -10,10 +10,15 @@ use datafusion::{
 };
 use serde_json::{Map, Value};
 
-use super::{CuvsLogicalNode, CuvsOperation, GpuOptionKind, error::invalid_call, options::options_from_named_values};
+use super::{
+    CuvsLogicalNode, CuvsOperation, GpuOptionKind,
+    error::{input_ordering_key_not_projected, invalid_call},
+    options::options_from_named_values,
+};
 use crate::gpu_functions::{
     bind_named_arguments,
     dense_relation::dense_relation_argument_definitions,
+    resolve_input_ordering,
     scalar_arguments::{scalar_json, scalar_literal},
 };
 
@@ -73,16 +78,21 @@ impl RelationPlanner for CuvsRelationPlanner {
                 context.normalize_ident(ident)
             })?;
         let mut inputs = Vec::with_capacity(operation.descriptor().relation_roles.len());
+        let mut input_orderings = Vec::with_capacity(operation.descriptor().relation_roles.len());
         for role in operation.descriptor().relation_roles {
             let query = arguments
                 .take_relation(role.as_str())
                 .expect("required cuVS relation argument was checked by the named binder");
-            inputs.push(context.plan(TableFactor::Derived {
+            let input = context.plan(TableFactor::Derived {
                 lateral: false,
-                subquery: query,
+                subquery: query.clone(),
                 alias: None,
                 sample: None,
+            })?;
+            input_orderings.push(resolve_input_ordering(&query, &input, context, |key| {
+                input_ordering_key_not_projected(operation, role.as_str(), key)
             })?);
+            inputs.push(input);
         }
 
         let mut values = Map::new();
@@ -96,7 +106,7 @@ impl RelationPlanner for CuvsRelationPlanner {
         }
         debug_assert!(arguments.is_empty());
         let options_json = options_from_named_values(operation, &inputs, values)?;
-        let node = CuvsLogicalNode::try_new(operation, inputs, &options_json)?;
+        let node = CuvsLogicalNode::try_new(operation, inputs, &options_json)?.with_input_orderings(input_orderings)?;
         let plan = LogicalPlan::Extension(Extension { node: Arc::new(node) });
         Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(plan, alias))))
     }

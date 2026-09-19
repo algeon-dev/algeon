@@ -20,7 +20,10 @@ use super::{
     record_single_grouped_aggregate_strategy_decision_with_metrics,
     select_partial_aggregate_strategy_decision_with_options,
 };
-use crate::naming::{first_available_numeric_suffix_from, unique_alias_with_suffix};
+use crate::{
+    expr::UnaryMathOp,
+    naming::{first_available_numeric_suffix_from, unique_alias_with_suffix},
+};
 
 const STATISTICAL_MOMENTS_FACT: &str = "algebraic_moments";
 
@@ -879,7 +882,7 @@ fn finalize_statistical_expr(
         Expr::case(vec![CaseWhen::new(negative_variance, Expr::literal(LiteralValue::Float64(0.0)))], variance);
     let value = match expr.function {
         AggregateFunction::StddevSamp | AggregateFunction::StddevPop => {
-            Expr::sqrt(safe_variance, ArrowDataType::Float64)
+            Expr::unary_math(UnaryMathOp::Sqrt, safe_variance, ArrowDataType::Float64)
         },
         AggregateFunction::VarSamp | AggregateFunction::VarPop => safe_variance,
         _ => unreachable!("statistical finalization only handles statistical aggregate functions"),

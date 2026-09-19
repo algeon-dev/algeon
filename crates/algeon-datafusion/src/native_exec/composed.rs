@@ -223,6 +223,10 @@ impl AlgeonNativeComposedExec {
         &self.gpu_inputs
     }
 
+    pub(crate) fn execution_metrics(&self) -> &ExecutionPlanMetricsSet {
+        &self.metrics
+    }
+
     /// Returns the one post-seal attempt projection target for this composed
     /// root. Producer fragments are intentionally not separate owners.
     pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
@@ -963,6 +967,10 @@ impl GpuResidentProducer for AlgeonNativeComposedGpuProducerExec {
                 error,
             ))
         })
+    }
+
+    fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
+        Some(&self.metrics)
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<super::admission::QueryAdmissionTicket>> {

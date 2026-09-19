@@ -14,6 +14,7 @@ use cudf::{
         error::{annotate_foreign_invariant_contract_if_absent_for_test, foreign_invariant_violation_for_test},
     },
 };
+
 use crate::common::run_named_cases;
 
 fn kind_projection_is_defined_for_every_public_error_code() {

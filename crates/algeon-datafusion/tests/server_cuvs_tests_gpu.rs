@@ -21,12 +21,15 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use arrow_flight::sql::client::FlightSqlServiceClient;
+use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
 use server_gpu_fixture::lock_async;
 use tokio::{task::JoinHandle, time::sleep};
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+    Status,
+    transport::{Channel, Endpoint},
+};
 
 fn test_server_config() -> ServerConfig {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -147,6 +150,19 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     )
     .await;
     assert_nonempty(&pca);
+
+    let status = execute_error_status(
+        &mut client,
+        "SELECT id, cluster_id \
+         FROM cuvs_kmeans(\
+             input => (SELECT item_id AS id, \
+                 CASE WHEN item_id = 2 THEN CAST('NaN' AS REAL) ELSE d0 END AS d0, d1 FROM dataset_vectors), \
+             n_clusters => 2)",
+    )
+    .await;
+    for reason in ["validation_reason=non_finite_vector_value", "non_finite_count=1", "remedy=replace or reject"] {
+        assert!(status.message().contains(reason), "{status:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -313,6 +329,23 @@ async fn execute_batches(client: &mut FlightSqlServiceClient<Channel>, sql: &str
         .try_collect::<Vec<_>>()
         .await
         .expect("Flight SQL batches")
+}
+
+async fn execute_error_status(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> Status {
+    let error = match client.execute(sql.to_string(), None).await {
+        Ok(info) => {
+            let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
+            match client.do_get(ticket).await {
+                Ok(stream) => stream.try_collect::<Vec<_>>().await.expect_err("statement must fail"),
+                Err(error) => error,
+            }
+        },
+        Err(error) => error,
+    };
+    let FlightError::Tonic(status) = error else {
+        panic!("expected a tonic Flight error, got {error:?}");
+    };
+    *status
 }
 
 fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {

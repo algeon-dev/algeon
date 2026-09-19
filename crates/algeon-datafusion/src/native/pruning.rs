@@ -286,7 +286,8 @@ pub(super) fn validate_pruning_only_parquet_predicate(
         };
     };
     let filter_schema = filter.input().schema();
-    validate_physical_expr_contract(filter.predicate(), &filter_schema)?;
+    validate_physical_expr_contract(filter.predicate(), &filter_schema)
+        .map_err(|rejection| rejection.capability_reason())?;
     if scan_predicate_matches_filter(scan_predicate.as_ref(), filter.predicate().as_ref()) {
         Ok(())
     } else {

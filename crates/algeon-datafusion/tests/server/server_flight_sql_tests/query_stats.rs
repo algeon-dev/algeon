@@ -198,6 +198,17 @@ async fn strict_flight_executes_basic_list_limit_natively() {
     let (planning_header, planning_row) = query_stats_tsv_single_row(&payload, "planning");
     assert_eq!(tsv_value(&planning_header, &planning_row, "native_plan_fragment_count"), "1", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "host_datafusion_boundary_count"), "0", "{payload}");
+    // Runtime columns project the metrics sealed with the attempt report, not
+    // the wrapper metrics that existed when planning was captured.
+    let (header, row) = query_stats_tsv_single_row(&payload, "execution");
+    assert_eq!(tsv_value(&header, &row, "runtime_outcome"), "succeeded", "{payload}");
+    assert_eq!(tsv_value(&header, &row, "device_ordinal"), "0", "{payload}");
+    assert!(tsv_value(&header, &row, "query_grant_bytes").parse::<u64>().unwrap() > 0, "{payload}");
+    assert_eq!(tsv_value(&header, &row, "device_to_host_materialized_rows"), "10", "{payload}");
+    assert!(tsv_value(&header, &row, "device_to_host_materialized_bytes").parse::<u64>().unwrap() > 0, "{payload}");
+    assert_eq!(tsv_value(&header, &row, "parquet_files"), "1", "{payload}");
+    assert!(tsv_value(&header, &row, "max_task_observed_peak_bytes").parse::<u64>().is_ok(), "{payload}");
+    assert!(payload.contains("# metric_projection_truncated=false\n"), "{payload}");
     assert_single_sealed_attempt_report(&payload);
 }
 

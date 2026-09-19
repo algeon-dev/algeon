@@ -5,12 +5,12 @@
 //! native subplans, but the final DataFusion-facing boundary still streams
 //! host Arrow.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, metrics::ExecutionPlanMetricsSet},
 };
 pub use query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
@@ -51,15 +51,14 @@ pub(crate) use common::{NativeHostOutputCursor, native_host_output_stream, run_g
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::composed::composed_admission_capability_evidence;
-#[cfg(feature = "cugraph")]
-pub(crate) use self::metrics::GraphClaimCalibrationCapture;
 #[cfg(feature = "server")]
 pub(crate) use self::metrics::{NativeMetricsCapture, ServerNativeObservationActivityFactory};
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
     composed::producer_bound_capability_evidence,
     metrics::{
-        AlgeonNativeMetrics, NativeExecutionMetricsCapture, NativeRuntimeObservation, SealedAttemptMetricsTarget,
+        AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, NativeRuntimeObservation,
+        SealedAttemptMetricsTarget,
     },
     occurrence::{GpuFunctionHostOccurrenceExec, gpu_function_occurrence_from_task_context},
     producer::{
@@ -181,5 +180,55 @@ pub(crate) fn sealed_attempt_metrics_target(plan: &dyn ExecutionPlan) -> Option<
     if let Some(input) = transparent_root_wrapper_input(plan) {
         return sealed_attempt_metrics_target(input.as_ref());
     }
-    plan.children().into_iter().find_map(|child| sealed_attempt_metrics_target(child.as_ref()))
+    let descendant = plan.children().into_iter().find_map(|child| sealed_attempt_metrics_target(child.as_ref()));
+    // A producer reached here is either a relation function materializing its
+    // own host result, which makes it the native root, or a composed root's
+    // GPU input whose captures alone are read. It owns no graph calibration
+    // capture, so captures elected below it still reach the sealed snapshot.
+    if let Some(metrics) = gpu_resident_producer(plan).and_then(GpuResidentProducer::execution_metrics) {
+        let captures = descendant.iter().flat_map(SealedAttemptMetricsTarget::graph_claim_calibration_captures);
+        return Some(
+            SealedAttemptMetricsTarget::new(metrics, GraphClaimCalibrationCapture::default())
+                .with_graph_claim_calibration_captures(captures),
+        );
+    }
+    descendant
+}
+
+/// Returns the live metric set of every native execution wrapper in `plan`,
+/// including GPU-resident producers, relation functions, and graph nodes below
+/// a composed root. Execution clones share these sets and wrappers register
+/// their metrics only while executing, so readers take them after execution
+/// rather than an `ExecutionPlan::metrics` snapshot.
+pub(crate) fn native_execution_metrics(plan: &dyn ExecutionPlan) -> Vec<ExecutionPlanMetricsSet> {
+    fn visit(plan: &dyn ExecutionPlan, seen: &mut HashSet<*const ()>, sets: &mut Vec<ExecutionPlanMetricsSet>) {
+        // Physical plans can be DAGs; visit each shared node once.
+        if !seen.insert(std::ptr::from_ref(plan).cast::<()>()) {
+            return;
+        }
+        sets.extend(native_execution_wrapper_metrics(plan).cloned());
+        for child in plan.children() {
+            visit(child.as_ref(), seen, sets);
+        }
+    }
+
+    let mut sets = Vec::new();
+    visit(plan, &mut HashSet::new(), &mut sets);
+    sets
+}
+
+/// Whether `plan` contains a native execution wrapper.
+pub(crate) fn contains_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
+    native_execution_wrapper_metrics(plan).is_some()
+        || plan.children().into_iter().any(|child| contains_native_execution_wrapper(child.as_ref()))
+}
+
+fn native_execution_wrapper_metrics(plan: &dyn ExecutionPlan) -> Option<&ExecutionPlanMetricsSet> {
+    if let Some(exec) = plan.downcast_ref::<AlgeonNativeExec>() {
+        return Some(exec.execution_metrics());
+    }
+    if let Some(exec) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+        return Some(exec.execution_metrics());
+    }
+    gpu_resident_producer(plan).and_then(GpuResidentProducer::execution_metrics)
 }

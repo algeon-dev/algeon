@@ -1,7 +1,7 @@
 //! Native query-metric recording into DataFusion wrapper metrics.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fmt::{self, Write},
     ops::Deref,
     sync::{
@@ -10,7 +10,9 @@ use std::{
     },
 };
 
-use datafusion::physical_plan::metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType, MetricsSet,
+};
 use query_engine::{
     error::QueryError,
     exec::output::{QueryExecutionOutcome, QueryOutput},
@@ -38,6 +40,9 @@ pub(super) use mapping::{NATIVE_ALGEON_RECORDING_DESCRIPTORS, NativeMetricRecord
 pub(crate) struct SealedAttemptMetricsTarget {
     metrics: ExecutionPlanMetricsSet,
     graph_claim_calibration_captures: Vec<GraphClaimCalibrationCapture>,
+    /// Every native wrapper's live metric set projected at seal, starting with
+    /// the elected root's own set. Only the root receives the attempt row.
+    execution_metrics: Vec<ExecutionPlanMetricsSet>,
 }
 
 impl SealedAttemptMetricsTarget {
@@ -45,7 +50,19 @@ impl SealedAttemptMetricsTarget {
         metrics: &ExecutionPlanMetricsSet,
         graph_claim_calibration_capture: GraphClaimCalibrationCapture,
     ) -> Self {
-        Self { metrics: metrics.clone(), graph_claim_calibration_captures: vec![graph_claim_calibration_capture] }
+        Self {
+            metrics: metrics.clone(),
+            graph_claim_calibration_captures: vec![graph_claim_calibration_capture],
+            execution_metrics: vec![metrics.clone()],
+        }
+    }
+
+    /// Adds the metric sets of the other native wrappers that execute under
+    /// this attempt, such as producers and relation functions below a composed
+    /// root.
+    pub(crate) fn with_execution_metrics(mut self, metrics: impl IntoIterator<Item = ExecutionPlanMetricsSet>) -> Self {
+        self.execution_metrics.extend(metrics);
+        self
     }
 
     pub(crate) fn with_graph_claim_calibration_captures(
@@ -60,16 +77,24 @@ impl SealedAttemptMetricsTarget {
         self.graph_claim_calibration_captures.iter().cloned()
     }
 
-    /// Emit the single fixed-cardinality DataFusion row for this attempt.
+    /// Emit the single fixed-cardinality DataFusion row for this attempt and
+    /// project the attempt's native execution metrics.
     ///
     /// The caller elects exactly one root wrapper before execution. All labels
     /// are derived from the sealed projection; in particular, the attempt id and device
     /// ordinal deliberately never become metric labels.
+    ///
+    /// Each wrapper's metrics project separately and merge with
+    /// [`NativeDataFusionExecutionMetrics::merge_from`]: cumulative counters
+    /// add and peaks keep the maximum, the rule the engine also applies when
+    /// it merges `QueryMetrics`. Admission sequence, wait, device ordinal, and
+    /// grant come from the sealed report, which records the attempt's one
+    /// admission even when several wrappers observed it.
     pub(crate) fn record(
         self,
         report: &QueryAttemptReport,
     ) -> (SealedAttemptGraphClaimCalibrationSnapshot, NativeDataFusionExecutionMetrics) {
-        let execution = NativeDataFusionExecutionMetrics::from_metrics(&self.metrics.clone_inner());
+        let execution = sealed_execution_metrics(&self.execution_metrics, report);
         let graph_claim_calibration = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(
             report.attempt_id,
             self.graph_claim_calibration_captures,
@@ -93,6 +118,39 @@ impl SealedAttemptMetricsTarget {
             .add(1);
         (graph_claim_calibration, execution)
     }
+}
+
+fn sealed_execution_metrics(
+    sets: &[ExecutionPlanMetricsSet],
+    report: &QueryAttemptReport,
+) -> NativeDataFusionExecutionMetrics {
+    let mut seen = HashSet::new();
+    let mut execution: Option<NativeDataFusionExecutionMetrics> = None;
+    for set in sets {
+        // Execution clones and delegating wrappers expose the same metric
+        // handles; each handle counts once.
+        let mut wrapper = MetricsSet::new();
+        for metric in set.clone_inner().iter() {
+            if seen.insert(Arc::as_ptr(metric)) {
+                wrapper.push(Arc::clone(metric));
+            }
+        }
+        if wrapper.iter().next().is_none() {
+            continue;
+        }
+        let projected = NativeDataFusionExecutionMetrics::from_metrics(&wrapper);
+        match execution.as_mut() {
+            Some(execution) => execution.merge_from(projected),
+            None => execution = Some(projected),
+        }
+    }
+    let mut execution = execution.unwrap_or_default();
+    let admission = report.admission.as_ref();
+    execution.admission_sequence = admission.map(|admission| count(admission.admission_sequence));
+    execution.admission_wait_time_ns = admission.map(|admission| count(admission.admission_wait_ns));
+    execution.device_ordinal = report.device_ordinal;
+    execution.query_grant_bytes = admission.map(|admission| count(admission.grant_bytes));
+    execution
 }
 
 /// Maximum graph calibration rows retained by one public sealed-attempt

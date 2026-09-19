@@ -920,6 +920,17 @@ fn log_expr() {
     assert!((values[2] - 2.0).abs() < 1e-10);
 }
 
+fn exp_expr() {
+    let df = f64_df("x", &[0.0, 1.0, f64::NEG_INFINITY]);
+    let result = eval(col("x").exp().alias("exp_x"), &df);
+    let values = result.to_vec_strict::<f64>().unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(values[0], 1.0);
+    assert!((values[1] - std::f64::consts::E).abs() < 1e-12);
+    assert_eq!(values[2], 0.0);
+}
+
 fn eval_fillna_display_omits_input_name() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").fillna(99i32), &df);
@@ -1444,6 +1455,7 @@ fn expr_tests_cases() {
         ),
         ("eval_unary_op_display_omits_input_name", eval_unary_op_display_omits_input_name),
         ("log_expr", log_expr),
+        ("exp_expr", exp_expr),
         ("eval_fillna_display_omits_input_name", eval_fillna_display_omits_input_name),
         ("eval_cumsum_preserves_name", eval_cumsum_preserves_name),
         ("eval_reduce_has_no_implicit_name", eval_reduce_has_no_implicit_name),

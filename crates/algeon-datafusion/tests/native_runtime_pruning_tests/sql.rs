@@ -503,6 +503,20 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
+// `orderkey` is [1, 2, NULL, 4, 5, NULL], so the shifted inputs cover a
+// negative argument (LN -> NaN), zero (LN -> -inf), null, and EXP overflow to
+// +inf in both Float64 and Float32.
+pub(super) const SQL_LN_EXP_SCALAR_QUERY: &str = "
+SELECT
+    row_id,
+    LN(CAST(orderkey AS DOUBLE) - 2.0) AS ln_f64,
+    LN(CAST(orderkey AS REAL) - CAST(2 AS REAL)) AS ln_f32,
+    EXP(CAST(orderkey AS DOUBLE) * 300.0 - 600.0) AS exp_f64,
+    EXP(CAST(orderkey AS REAL) * CAST(30 AS REAL) - CAST(60 AS REAL)) AS exp_f32
+FROM bench
+ORDER BY row_id ASC
+";
+
 pub(super) const SQL_STRING_CONCAT_OPERATOR_QUERY: &str = "
 SELECT row_id, status_label, COUNT(*) AS row_count
 FROM (

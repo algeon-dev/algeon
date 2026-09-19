@@ -14,7 +14,7 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     datatypes::is_supported_arrow_cast,
-    expr::{CaseWhen, DatePart},
+    expr::{CaseWhen, DatePart, UnaryMathOp},
     plan::ProjectionOutput,
 };
 
@@ -90,15 +90,16 @@ pub fn validate_expr(
             require_arithmetic_type(&data_type, "ABS input")?;
             Ok(data_type)
         },
-        Expr::Sqrt { expr, output_type } => {
+        Expr::UnaryMath { op, expr, output_type } => {
             let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
-            require_arithmetic_type(&data_type, "SQRT input")?;
-            require_arithmetic_type(output_type, "SQRT output")?;
+            let (input_context, output_context) = unary_math_type_contexts(*op);
+            require_arithmetic_type(&data_type, input_context)?;
+            require_arithmetic_type(output_type, output_context)?;
             if is_decimal_type(&data_type) != is_decimal_type(output_type) {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "query_engine.plan.validate_expr",
-                    "native SQRT input and output must both be decimal or both be non-decimal",
+                    format!("native {op} input and output must both be decimal or both be non-decimal"),
                 )
                 .with_fact("input_type", format!("{data_type:?}"))
                 .with_fact("output_type", format!("{output_type:?}")));
@@ -778,4 +779,12 @@ fn validate_like_escape_contract(escape: &str) -> Result<()> {
 
 pub fn comma_separated(columns: &BTreeSet<String>) -> String {
     columns.iter().cloned().collect::<Vec<_>>().join(",")
+}
+
+fn unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
+    match op {
+        UnaryMathOp::Sqrt => ("SQRT input", "SQRT output"),
+        UnaryMathOp::Ln => ("LN input", "LN output"),
+        UnaryMathOp::Exp => ("EXP input", "EXP output"),
+    }
 }

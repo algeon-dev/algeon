@@ -26,7 +26,10 @@ use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use futures::TryStreamExt;
 use server_gpu_fixture::lock_async;
 use tokio::{task::JoinHandle, time::sleep};
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+    Status,
+    transport::{Channel, Endpoint},
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_lists_and_executes_all_cuml_functions() {
@@ -130,6 +133,16 @@ async fn flight_sql_lists_and_executes_all_cuml_functions() {
                 &DataType::Float32
             }
         );
+    }
+    let status = execute_error_status(
+        &mut client,
+        "SELECT id, prediction FROM cuml_logistic_regression(\
+         training => (SELECT id, d0, d1, CAST(0 AS INT) AS label FROM input_vectors WHERE id < 0), \
+         predict => (SELECT id, d0, d1 FROM input_vectors))",
+    )
+    .await;
+    for reason in ["training requires at least two rows", "reason=insufficient_training_rows", "training_rows=0"] {
+        assert!(status.message().contains(reason), "{status:?}");
     }
     drop(client);
     drop(server);
@@ -253,4 +266,21 @@ async fn execute_batches(client: &mut FlightSqlServiceClient<Channel>, sql: &str
     let info = client.execute(sql.to_string(), None).await.expect("Flight SQL statement");
     let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
     client.do_get(ticket).await.expect("Flight SQL stream").try_collect::<Vec<_>>().await.expect("Flight SQL batches")
+}
+
+async fn execute_error_status(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> Status {
+    let error = match client.execute(sql.to_string(), None).await {
+        Ok(info) => {
+            let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
+            match client.do_get(ticket).await {
+                Ok(stream) => stream.try_collect::<Vec<_>>().await.expect_err("statement must fail"),
+                Err(error) => error,
+            }
+        },
+        Err(error) => error,
+    };
+    let FlightError::Tonic(status) = error else {
+        panic!("expected a tonic Flight error, got {error:?}");
+    };
+    *status
 }

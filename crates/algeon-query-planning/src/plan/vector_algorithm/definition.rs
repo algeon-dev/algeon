@@ -500,7 +500,7 @@ const TOP_K_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
         data_type: "UInt64",
         nullable: false,
         repeats: None,
-        description: "Zero-based physical ordinal of the evaluated input row; it disambiguates duplicate input IDs.",
+        description: "Zero-based physical ordinal of the evaluated input row; it disambiguates duplicate input IDs. Follows the input's top-level ORDER BY on output columns; unspecified without one.",
     },
     GpuOutputFieldDefinition {
         name: "id",
@@ -537,7 +537,7 @@ const KMEANS_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
         data_type: "UInt64",
         nullable: false,
         repeats: None,
-        description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs.",
+        description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. Follows the input's top-level ORDER BY on output columns; unspecified without one.",
     },
     GpuOutputFieldDefinition {
         name: "id",
@@ -561,7 +561,7 @@ const PCA_OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
         data_type: "UInt64",
         nullable: false,
         repeats: None,
-        description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs.",
+        description: "Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. Follows the input's top-level ORDER BY on output columns; unspecified without one.",
     },
     GpuOutputFieldDefinition {
         name: "id",

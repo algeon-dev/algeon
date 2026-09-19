@@ -27,6 +27,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
+        LoweringRejection,
         expression_contract::validate_physical_expr_contract,
         lowering::{
             LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
@@ -48,7 +49,7 @@ pub(super) fn lower_local_parquet_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(CapabilityReason::UnsupportedOperator)?;
     let required_scan_output_indices =
@@ -80,7 +81,7 @@ pub(super) fn lower_local_parquet_source_input(
     }
     if local_parquet_scan_is_empty(file_scan) {
         if !native_parquet_object_store_scan_is_supported(file_scan) {
-            return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
+            return Err(CapabilityReason::NativeSourceNonLocalObjectStore.into());
         }
         return lower_empty_local_parquet_source_input(source_exec, filter, builder, required_output_fields);
     }
@@ -234,7 +235,7 @@ fn lower_empty_local_parquet_source_input(
     filter: Option<&FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let frontend_schema = filter.map_or_else(|| source_exec.schema(), |filter| filter.schema());
     let (source_schema, source_bindings) = executable_schema_and_bindings(&frontend_schema, required_output_fields)?;
     validate_schema(Arc::clone(&source_schema))?;

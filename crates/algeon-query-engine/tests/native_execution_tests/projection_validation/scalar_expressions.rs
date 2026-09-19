@@ -1,6 +1,6 @@
 use std::{fs::File, sync::Arc};
 
-use query_engine::expr::{CaseWhen, DatePart};
+use query_engine::expr::{CaseWhen, DatePart, UnaryMathOp};
 
 use super::*;
 
@@ -153,7 +153,7 @@ fn native_query_executes_scalar_expression_families() {
         Expr::ends_with(Expr::column("status"), "O").alias("status_ends_o"),
         Expr::abs(Expr::binary(Expr::column("orderkey"), BinaryOp::Subtract, Expr::literal(LiteralValue::Int64(3))))
             .alias("abs_order_delta"),
-        Expr::sqrt(Expr::column("orderkey"), DataType::Float64).alias("sqrt_orderkey"),
+        Expr::unary_math(UnaryMathOp::Sqrt, Expr::column("orderkey"), DataType::Float64).alias("sqrt_orderkey"),
         Expr::is_distinct_from(Expr::column("status"), Expr::literal(LiteralValue::Utf8("O".to_string())))
             .alias("status_distinct_from_o"),
         Expr::is_not_distinct_from(Expr::column("status"), Expr::literal(LiteralValue::Utf8("O".to_string())))

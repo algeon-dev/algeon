@@ -12,13 +12,14 @@ use serde_json::{Map, Value};
 
 use super::{
     CumlLogicalNode, CumlOperation, GpuOptionKind,
-    error::invalid_call,
+    error::{input_ordering_key_not_projected, invalid_call},
     model_store::{CumlModelStore, bind_operation_model},
     options::{options_from_named_values, validate_options},
 };
 use crate::gpu_functions::{
     bind_named_arguments,
     dense_relation::dense_relation_argument_definitions,
+    resolve_input_ordering,
     scalar_arguments::{scalar_json, scalar_literal},
 };
 
@@ -84,14 +85,19 @@ impl RelationPlanner for CumlRelationPlanner {
                 context.normalize_ident(ident)
             })?;
         let mut inputs = Vec::with_capacity(operation.descriptor().relation_roles.len());
+        let mut input_orderings = Vec::with_capacity(operation.descriptor().relation_roles.len());
         for role in operation.descriptor().relation_roles {
             let query = arguments.take_relation(role.as_str()).expect("required cuML relation argument");
-            inputs.push(context.plan(TableFactor::Derived {
+            let input = context.plan(TableFactor::Derived {
                 lateral: false,
-                subquery: query,
+                subquery: query.clone(),
                 alias: None,
                 sample: None,
+            })?;
+            input_orderings.push(resolve_input_ordering(&query, &input, context, |key| {
+                input_ordering_key_not_projected(operation, role.as_str(), key)
             })?);
+            inputs.push(input);
         }
         let mut values = Map::new();
         for option in operation.descriptor().options {
@@ -106,7 +112,8 @@ impl RelationPlanner for CumlRelationPlanner {
         let options_json = options_from_named_values(operation, &inputs, values)?;
         let model =
             bind_operation_model(operation, self.model_store.as_deref(), &validate_options(operation, &options_json)?)?;
-        let node = CumlLogicalNode::try_new_with_model(operation, inputs, &options_json, model)?;
+        let node = CumlLogicalNode::try_new_with_model(operation, inputs, &options_json, model)?
+            .with_input_orderings(input_orderings)?;
         let plan = LogicalPlan::Extension(Extension { node: Arc::new(node) });
         Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(plan, alias))))
     }
