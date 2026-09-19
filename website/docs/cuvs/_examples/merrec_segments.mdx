@@ -1,0 +1,143 @@
+This capture uses the MerRec marketplace interaction sample. The preparation
+query retained 1,919 users with at least 20 `item_view` events before the
+exclusive cutoff of 2023-10-21. Each of the 17 input features is the square
+root of that user's category `item_view` event share.
+The [MerRec dataset page](../../guides/datasets/merrec.mdx) describes the
+snapshot preparation, including the `mr_tastes` relation.
+
+### Which category-specific campaign variants could be worth testing?
+
+The query fits KMeans with eight clusters and `n_init = 5` on those 17
+transformed features. SQL squares the features before averaging them within
+each fitted group, then Top-K returns the three largest mean category shares.
+Each percentage below is an equal-user mean of that category's share of
+`item_view` events. It is not a share of all events in a group or a proportion
+of users.
+
+| Query-local cluster | Top category | Second category | Third category |
+| ---: | --- | --- | --- |
+| 0 | Men 62.3% | Women 15.1% | Sports & outdoors 5.0% |
+| 1 | Toys & Collectibles 79.8% | Electronics 4.5% | Women 2.7% |
+| 2 | Women 77.0% | Men 5.1% | Home 2.9% |
+| 3 | Electronics 67.7% | Toys & Collectibles 6.4% | Other 4.5% |
+| 4 | Toys & Collectibles 22.4% | Women 18.2% | Books 12.0% |
+| 5 | Kids 69.7% | Women 13.5% | Toys & Collectibles 5.5% |
+| 6 | Home 46.3% | Women 15.5% | Vintage & collectibles 13.2% |
+| 7 | Beauty 55.5% | Women 22.3% | Home 5.5% |
+
+Cluster 0 is weighted toward Men at 62.3%, with Women at 15.1%. Cluster 5 is
+weighted toward Kids at 69.7%, with Women at 13.5%. Cluster 4 has a more
+distributed profile: its leading category, Toys & Collectibles, is 22.4%.
+These differences can guide which category-specific campaign variants a
+marketplace team tests. This capture has no conversion outcomes and measures
+no campaign uplift.
+
+The query returns no group sizes or per-user assignments. Cluster IDs belong
+to this fit and are not durable audience identifiers. A separate comparison
+against saved KMeans assignments matched all eight top-three profile means
+exactly after cluster-label matching. That cross-fit consistency supports
+this profile table only; it does not establish that the independent fits
+assigned each user to the same cluster.
+
+The captured plan reported five native plan fragments and zero host DataFusion
+boundaries. Server query statistics reported 246 ms elapsed. The client Flight
+`elapsed_s` was 0.25340579298790544 seconds, including planning and receipt of
+the full result while excluding preparation. Both are single observations from
+a shared server, not isolated benchmarks. [The JSON capture](/data/merrec-segment-capture.json)
+preserves the timing boundaries, query ID, exact SQL, output schema, all 24
+result rows, and source hashes.
+
+<details>
+  <summary>Exact captured SQL</summary>
+
+```sql
+-- Fit one query-local KMeans model, then rank each fitted group's mean category shares.
+WITH assignments AS (
+    SELECT id, cluster_id
+    FROM cuvs_kmeans(
+        input => (
+            SELECT
+                id,
+                COALESCE(women, CAST(0 AS REAL)) AS women,
+                COALESCE(toys, CAST(0 AS REAL)) AS toys,
+                COALESCE(kids, CAST(0 AS REAL)) AS kids,
+                COALESCE(men, CAST(0 AS REAL)) AS men,
+                COALESCE(home, CAST(0 AS REAL)) AS home,
+                COALESCE(electronics, CAST(0 AS REAL)) AS electronics,
+                COALESCE(beauty, CAST(0 AS REAL)) AS beauty,
+                COALESCE(vintage, CAST(0 AS REAL)) AS vintage,
+                COALESCE(books, CAST(0 AS REAL)) AS books,
+                COALESCE(sports, CAST(0 AS REAL)) AS sports,
+                COALESCE(other, CAST(0 AS REAL)) AS other,
+                COALESCE(handmade, CAST(0 AS REAL)) AS handmade,
+                COALESCE(garden, CAST(0 AS REAL)) AS garden,
+                COALESCE(arts, CAST(0 AS REAL)) AS arts,
+                COALESCE(pets, CAST(0 AS REAL)) AS pets,
+                COALESCE(office, CAST(0 AS REAL)) AS office,
+                COALESCE(tools, CAST(0 AS REAL)) AS tools
+            FROM mr_tastes
+            ORDER BY id
+        ),
+        n_clusters => 8,
+        n_init => 5
+    )
+), profiles AS (
+    SELECT
+        a.cluster_id AS id,
+        COALESCE(CAST(AVG(COALESCE(t.women, CAST(0 AS REAL)) * COALESCE(t.women, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS women,
+        COALESCE(CAST(AVG(COALESCE(t.toys, CAST(0 AS REAL)) * COALESCE(t.toys, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS toys,
+        COALESCE(CAST(AVG(COALESCE(t.kids, CAST(0 AS REAL)) * COALESCE(t.kids, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS kids,
+        COALESCE(CAST(AVG(COALESCE(t.men, CAST(0 AS REAL)) * COALESCE(t.men, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS men,
+        COALESCE(CAST(AVG(COALESCE(t.home, CAST(0 AS REAL)) * COALESCE(t.home, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS home,
+        COALESCE(CAST(AVG(COALESCE(t.electronics, CAST(0 AS REAL)) * COALESCE(t.electronics, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS electronics,
+        COALESCE(CAST(AVG(COALESCE(t.beauty, CAST(0 AS REAL)) * COALESCE(t.beauty, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS beauty,
+        COALESCE(CAST(AVG(COALESCE(t.vintage, CAST(0 AS REAL)) * COALESCE(t.vintage, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS vintage,
+        COALESCE(CAST(AVG(COALESCE(t.books, CAST(0 AS REAL)) * COALESCE(t.books, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS books,
+        COALESCE(CAST(AVG(COALESCE(t.sports, CAST(0 AS REAL)) * COALESCE(t.sports, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS sports,
+        COALESCE(CAST(AVG(COALESCE(t.other, CAST(0 AS REAL)) * COALESCE(t.other, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS other,
+        COALESCE(CAST(AVG(COALESCE(t.handmade, CAST(0 AS REAL)) * COALESCE(t.handmade, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS handmade,
+        COALESCE(CAST(AVG(COALESCE(t.garden, CAST(0 AS REAL)) * COALESCE(t.garden, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS garden,
+        COALESCE(CAST(AVG(COALESCE(t.arts, CAST(0 AS REAL)) * COALESCE(t.arts, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS arts,
+        COALESCE(CAST(AVG(COALESCE(t.pets, CAST(0 AS REAL)) * COALESCE(t.pets, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS pets,
+        COALESCE(CAST(AVG(COALESCE(t.office, CAST(0 AS REAL)) * COALESCE(t.office, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS office,
+        COALESCE(CAST(AVG(COALESCE(t.tools, CAST(0 AS REAL)) * COALESCE(t.tools, CAST(0 AS REAL))) AS REAL), CAST(0 AS REAL)) AS tools
+    FROM assignments a
+    JOIN mr_tastes t ON t.id = a.id
+    GROUP BY a.cluster_id
+)
+SELECT
+    ranked.id AS cluster_id,
+    ranked.rank,
+    CASE ranked.position
+        WHEN 0 THEN 'Women'
+        WHEN 1 THEN 'Toys & Collectibles'
+        WHEN 2 THEN 'Kids'
+        WHEN 3 THEN 'Men'
+        WHEN 4 THEN 'Home'
+        WHEN 5 THEN 'Electronics'
+        WHEN 6 THEN 'Beauty'
+        WHEN 7 THEN 'Vintage & collectibles'
+        WHEN 8 THEN 'Books'
+        WHEN 9 THEN 'Sports & outdoors'
+        WHEN 10 THEN 'Other'
+        WHEN 11 THEN 'Handmade'
+        WHEN 12 THEN 'Garden & Outdoor'
+        WHEN 13 THEN 'Arts & Crafts'
+        WHEN 14 THEN 'Pet Supplies'
+        WHEN 15 THEN 'Office'
+        WHEN 16 THEN 'Tools'
+    END AS category,
+    ranked.value AS mean_view_share
+FROM cuvs_top_k(
+    input => (
+        SELECT id, women, toys, kids, men, home, electronics, beauty, vintage,
+               books, sports, other, handmade, garden, arts, pets, office, tools
+        FROM profiles
+        ORDER BY id
+    ),
+    k => 3,
+    select => 'max'
+) ranked
+ORDER BY cluster_id, rank;
+```
+</details>

@@ -1,6 +1,13 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecCollections from './merrec_collections.mdx';
+
+<Tabs>
+<TabItem value="citation-network" label="Citation network" default>
+
 {/* Hand-owned examples for cugraph_leiden. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
 ### Would another community algorithm split our largest research groups?
 
@@ -56,3 +63,12 @@ below that threshold; it does not establish that the group remained intact.
 Community IDs are local labels, and membership can vary between GPU runs even
 with a fixed seed. Compare the membership of papers, rather than label values
 from separate executions.
+
+</TabItem>
+
+<TabItem value="merrec-marketplace" label="MerRec marketplace">
+
+<MerRecCollections />
+
+</TabItem>
+</Tabs>

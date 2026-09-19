@@ -6,7 +6,7 @@ high-cardinality group-bys on the native GPU path.
 
 ## Semantic SQL examples
 
-The [Amazon demo walkthrough](../../../website/docs/cuvs/demo-dataset.mdx)
+The [Amazon demo walkthrough](../../../website/docs/guides/datasets/amazon-reviews.mdx)
 uses this fixture for catalog search constrained by review history, changes
 in a product's review topics, and a UMAP view linked to original reviews.
 The [Top-K example](../../../website/docs/cuvs/_examples/cuvs_top_k.mdx)

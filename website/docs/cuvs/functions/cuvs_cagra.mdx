@@ -98,6 +98,12 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 
 **Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 
+## Examples
+
+import Examples from '../_examples/cuvs_cagra.mdx';
+
+<Examples />
+
 ## Limits
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.

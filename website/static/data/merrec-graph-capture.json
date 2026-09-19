@@ -1,0 +1,160 @@
+{
+  "source": {
+    "dataset": "mercari-us/merrec",
+    "dataset_url": "https://huggingface.co/datasets/mercari-us/merrec",
+    "partition": "20231001",
+    "scope": "One source shard covering October 2023",
+    "counts": {
+      "events": 494357,
+      "items": 358893,
+      "distinct_users": 5660,
+      "buy_comp_events": 238
+    },
+    "schemas": {
+      "events": {
+        "rows": 494357,
+        "columns": [
+          "event_id",
+          "event_time",
+          "user_id",
+          "item_id",
+          "session_id",
+          "sequence_id",
+          "sequence_length",
+          "event_type"
+        ]
+      },
+      "items": {
+        "rows": 358893,
+        "columns": [
+          "item_id",
+          "product_id",
+          "name",
+          "price",
+          "c0_id",
+          "c0_name",
+          "c1_id",
+          "c1_name",
+          "c2_id",
+          "c2_name",
+          "category_path",
+          "brand_id",
+          "brand_name",
+          "item_condition_id",
+          "item_condition_name",
+          "size_id",
+          "size_name",
+          "color",
+          "shipper_id",
+          "shipper_name"
+        ]
+      }
+    },
+    "graph": {
+      "market_vertices": 1711,
+      "directed_transition_edges": 4963,
+      "market_user_edges": 59629,
+      "seed_vertex": 672,
+      "seed_product_id": "15928_1315"
+    },
+    "provenance": {
+      "graph_views": "docs/research/merrec/sql/01_graph_views.sql",
+      "snapshot_registration": "docs/research/merrec/sql/02_graph_snapshots.sql",
+      "graph_registration": "docs/research/merrec/sql/03_register_graph.sql",
+      "validation": "docs/research/merrec/graph_validation.json"
+    }
+  },
+  "capture": {
+    "name": "20_cross_category_discovery",
+    "status": "ok",
+    "query_id": "9d6e7979-3aa8-4202-b60b-c94bfb1d2b4d",
+    "elapsed_seconds": 0.1333777399850078,
+    "timing_note": "One Flight elapsed observation including planning and complete receipt. Graph preparation occurred before the call; many queries had already run on the reused server. No repeated performance claim follows from this value.",
+    "result_rows": 10,
+    "schema": "product_id: string_view\nbrand_name: string_view\ncategory: string_view\nleaf_category: string_view\nviewers: int64 not null\naudience_jaccard: double not null",
+    "sql": "SELECT m.product_id, m.brand_name, m.category, m.leaf_category,\n       m.viewers, r.similarity AS audience_jaccard\nFROM cugraph_jaccard(\n  edges => (SELECT src, dst FROM mr_audience),\n  vertex_pairs => (\n    SELECT CAST(672 AS INT) AS first, candidates.vertex AS second\n    FROM (\n      SELECT vertex, value\n      FROM cugraph_personalized_pagerank(\n        edges => (SELECT src, dst, weight FROM mr_edges),\n        personalization => (\n          SELECT id AS vertex, CAST(1.0 AS DOUBLE) AS value\n          FROM mr_nodes WHERE product_id = '15928_1315'))\n      WHERE vertex <> 672\n      ORDER BY value DESC, vertex LIMIT 100\n    ) candidates\n  ), directed => false\n) r\nJOIN mr_nodes m ON m.id = r.second\nWHERE m.category = 'Toys & Collectibles' AND m.viewers >= 30\nORDER BY r.similarity DESC, m.product_id\nLIMIT 10;\n",
+    "rows": [
+      {
+        "product_id": "17470_3525",
+        "brand_name": "Pokemon",
+        "category": "Toys & Collectibles",
+        "leaf_category": "Single Cards",
+        "viewers": 135,
+        "audience_jaccard": 0.13428571820259094
+      },
+      {
+        "product_id": "0_561",
+        "brand_name": null,
+        "category": "Toys & Collectibles",
+        "leaf_category": "Action Figures",
+        "viewers": 395,
+        "audience_jaccard": 0.12886597216129303
+      },
+      {
+        "product_id": "7969_2428",
+        "brand_name": "Funko",
+        "category": "Toys & Collectibles",
+        "leaf_category": "Bobbleheads",
+        "viewers": 315,
+        "audience_jaccard": 0.11605415493249893
+      },
+      {
+        "product_id": "12864_2430",
+        "brand_name": "LEGO",
+        "category": "Toys & Collectibles",
+        "leaf_category": "LEGO Toys",
+        "viewers": 211,
+        "audience_jaccard": 0.10256410390138626
+      },
+      {
+        "product_id": "0_3525",
+        "brand_name": null,
+        "category": "Toys & Collectibles",
+        "leaf_category": "Single Cards",
+        "viewers": 159,
+        "audience_jaccard": 0.0963541641831398
+      },
+      {
+        "product_id": "7969_561",
+        "brand_name": "Funko",
+        "category": "Toys & Collectibles",
+        "leaf_category": "Action Figures",
+        "viewers": 234,
+        "audience_jaccard": 0.094922736287117
+      },
+      {
+        "product_id": "7969_580",
+        "brand_name": "Funko",
+        "category": "Toys & Collectibles",
+        "leaf_category": "Figurines",
+        "viewers": 167,
+        "audience_jaccard": 0.09160305559635162
+      },
+      {
+        "product_id": "0_645",
+        "brand_name": null,
+        "category": "Toys & Collectibles",
+        "leaf_category": "Stuffed Animals",
+        "viewers": 228,
+        "audience_jaccard": 0.08888889104127884
+      },
+      {
+        "product_id": "9814_561",
+        "brand_name": "Hasbro",
+        "category": "Toys & Collectibles",
+        "leaf_category": "Action Figures",
+        "viewers": 158,
+        "audience_jaccard": 0.0824742242693901
+      },
+      {
+        "product_id": "17470_543",
+        "brand_name": "Pokemon",
+        "category": "Toys & Collectibles",
+        "leaf_category": null,
+        "viewers": 62,
+        "audience_jaccard": 0.07641196250915527
+      }
+    ],
+    "displayed_rows": 6
+  }
+}

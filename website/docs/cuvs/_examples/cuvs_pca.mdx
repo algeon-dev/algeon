@@ -1,0 +1,54 @@
+import EmberMap from '@site/src/components/ember2024/EmberMap';
+import emberMap from '@site/static/data/ember2024-map.json';
+
+This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+
+### How much histogram variation remains visible in two PCA dimensions?
+
+The HDBSCAN review case reduces the 512-dimensional Win32 challenge histogram
+to 16 PCA components before clustering. A CPU geometry check reports that
+these 16 centered components retain 89.997% of the input variance
+for the 3,225-row cohort. This reduction keeps more of the cohort's centered
+variance than the two-dimensional inspection projection below.
+
+The query returns two PCA coordinates for all 3,225 Win32 challenge rows. The
+first two centered components retain 71.187% of the variance. A
+separate centered-Gram comparison against the CPU reference passed with
+relative Frobenius error `4.681247737755186e-07` (tolerance `0.0001`).
+The SQL result contains 3,225 rows and recorded `native`
+disposition. Labels and family names are joined after PCA for inspection; the
+PCA input consists only of row IDs and histograms.
+
+For the 16-component reduction followed by HDBSCAN, see the [full PCA and
+HDBSCAN SQL example](/cuml/functions/cuml_hdbscan#examples).
+
+The saved map keeps this PCA-2 view alongside the matching TSVD-2 and UMAP-2
+captures. Its cluster filter uses assignments from the separate 16-component
+PCA and HDBSCAN result.
+
+<EmberMap data={emberMap} initialProjection="pca" />
+
+```sql
+-- Project all Win32 challenge histograms to two principal components, preserving
+-- source ID, label, and week for review and comparison with TSVD and UMAP.
+SELECT p.id,
+       p.pc_0,
+       p.pc_1,
+       v.label,
+       m.week_id,
+       m.sha256,
+       m.family
+FROM cuvs_pca(
+    input => (
+        SELECT r.id, r.histogram AS vector
+        FROM ember_research_vectors_challenge r
+        JOIN ember_metadata_challenge m ON m.id = r.id
+        WHERE r.split = 'challenge' AND m.file_type = 'Win32'
+        ORDER BY r.id
+    ),
+    n_components => 2
+) p
+JOIN ember_research_vectors_challenge v ON v.id = p.id AND v.split = 'challenge'
+JOIN ember_metadata_challenge m ON m.id = v.id
+ORDER BY p.row_ordinal;
+```

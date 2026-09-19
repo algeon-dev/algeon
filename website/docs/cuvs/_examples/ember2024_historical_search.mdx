@@ -1,0 +1,192 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+
+### Which earlier Win32 files make useful references for a new quarter?
+
+An analyst reviewing a new Win32 file can retrieve structurally similar files
+from an earlier period and inspect their historical labels and families. The
+search corpus contains 15,588 sampled train files from weeks 0-51; the held-out
+test period contains 3,618 sampled files from weeks 52-63. Both use the same
+one-percent SHA-256 sample and 512 normalized byte and byte-entropy histogram
+features. The train and test SHA-256 sets are disjoint. The search UDTFs
+receive only IDs and histogram vectors. Labels, family names, week IDs, and
+SHA-256 values are joined after search for review.
+The query retrieves references; it does not classify malware.
+
+| Method | ID recall@10 vs CPU oracle | Known-family match among top 10 | Three-run median whole SQL time | Dedicated r3 query ID |
+| --- | ---: | ---: | ---: | --- |
+| Brute-force exact | 0.9990 | 35.39% | 0.876 s | `73f3ec94-7127-4b7f-95a7-6a949ceeaa98` |
+| CAGRA | 0.9968 | 35.37% | 1.319 s | `c0f13481-511d-4600-815e-b43ab2685418` |
+| IVF-Flat | 0.9954 | 35.33% | 1.005 s | `02f1af3f-270f-4a22-8559-dee13bd59478` |
+
+The family rates measure agreement with the available family labels. For the 1,575
+test queries with a known family, 35.39% of brute-force top-10 reference slots
+had the same known family; references with no family label count as nonmatches.
+A uniform random training reference gives a 2.76% expected same-family rate.
+The search input does not use those labels or families.
+
+For test file `10021055` from week 52, the exact result's three nearest
+references are from weeks 9, 16, then 10. Their family labels appear only after
+the search join:
+
+| Rank | Reference ID | Train week | Family | Squared-L2 distance |
+| ---: | ---: | ---: | --- | ---: |
+| 1 | `935830` | 9 | `berbew` | 0.0053381994 |
+| 2 | `1663154` | 16 | `berbew` | 0.0058313087 |
+| 3 | `1032030` | 10 | `berbew` | 0.0058773160 |
+
+At this cohort size brute force had the lowest median whole-statement time.
+Each time includes per-statement index construction and fetching all 36,180
+result rows. The captures ran on the dedicated EMBER server. They are not a
+controlled performance study, so the timings do not support an ANN speedup
+claim.
+
+The exhaustive brute-force search uses Float32 squared-L2 arithmetic. Its
+0.9990 ID recall against direct Float64 distances reflects changes near the
+top-10 boundary; the measured maximum distance error was `6.72e-6`.
+
+[Download the capture JSON](/data/ember2024-reference-search-capture.json),
+including all three exact SQL statements, run query IDs, CPU-oracle metrics,
+post-search family measurements, and conditions.
+
+<Tabs groupId="ember2024-reference-search">
+  <TabItem value="brute-force" label="Exact brute force">
+
+```sql
+WITH train_index AS (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors v
+    JOIN ember_metadata m ON m.id = v.id
+    WHERE v.split = 'train' AND m.file_type = 'Win32'
+    ORDER BY v.id
+), test_queries AS (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors v
+    JOIN ember_metadata m ON m.id = v.id
+    WHERE v.split = 'test' AND m.file_type = 'Win32'
+    ORDER BY v.id
+)
+SELECT n.query_ordinal,
+       n.query_id,
+       qm.week_id AS query_week,
+       q.label AS query_label,
+       n.rank,
+       n.neighbor_id,
+       tm.week_id AS neighbor_week,
+       train.label AS neighbor_label,
+       tm.sha256 AS neighbor_sha256,
+       tm.family AS neighbor_family,
+       n.distance
+FROM cuvs_brute_force_knn(
+    dataset => (SELECT id, vector FROM train_index ORDER BY id),
+    queries => (SELECT id, vector FROM test_queries ORDER BY id),
+    k => 10,
+    metric => 'l2_expanded'
+) n
+JOIN ember_research_vectors q ON q.id = n.query_id AND q.split = 'test'
+JOIN ember_metadata qm ON qm.id = q.id
+JOIN ember_research_vectors train ON train.id = n.neighbor_id AND train.split = 'train'
+JOIN ember_metadata tm ON tm.id = train.id
+ORDER BY n.query_ordinal, n.rank;
+```
+
+Dedicated r3 capture query ID: `73f3ec94-7127-4b7f-95a7-6a949ceeaa98`.
+
+  </TabItem>
+  <TabItem value="cagra" label="CAGRA">
+
+```sql
+-- CAGRA approximate search over the same ordered Win32 train and test cohorts
+-- used by 20_cuvs_brute_force_knn.sql.
+WITH train_index AS (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors v
+    JOIN ember_metadata m ON m.id = v.id
+    WHERE v.split = 'train' AND m.file_type = 'Win32'
+    ORDER BY v.id
+), test_queries AS (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors v
+    JOIN ember_metadata m ON m.id = v.id
+    WHERE v.split = 'test' AND m.file_type = 'Win32'
+    ORDER BY v.id
+)
+SELECT n.query_ordinal,
+       n.query_id,
+       qm.week_id AS query_week,
+       q.label AS query_label,
+       n.rank,
+       n.neighbor_id,
+       tm.week_id AS neighbor_week,
+       train.label AS neighbor_label,
+       tm.sha256 AS neighbor_sha256,
+       tm.family AS neighbor_family,
+       n.distance
+FROM cuvs_cagra(
+    dataset => (SELECT id, vector FROM train_index ORDER BY id),
+    queries => (SELECT id, vector FROM test_queries ORDER BY id),
+    k => 10,
+    metric => 'l2_expanded',
+    graph_degree => 32,
+    intermediate_graph_degree => 64
+) n
+JOIN ember_research_vectors q ON q.id = n.query_id AND q.split = 'test'
+JOIN ember_metadata qm ON qm.id = q.id
+JOIN ember_research_vectors train ON train.id = n.neighbor_id AND train.split = 'train'
+JOIN ember_metadata tm ON tm.id = train.id
+ORDER BY n.query_ordinal, n.rank;
+```
+
+Dedicated r3 capture query ID: `c0f13481-511d-4600-815e-b43ab2685418`.
+
+  </TabItem>
+  <TabItem value="ivf-flat" label="IVF-Flat">
+
+```sql
+-- IVF-Flat approximate search with 128 lists and 16 probes. Keep the input
+-- cohorts aligned with the exact-search baseline for later recall comparison.
+WITH train_index AS (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors v
+    JOIN ember_metadata m ON m.id = v.id
+    WHERE v.split = 'train' AND m.file_type = 'Win32'
+    ORDER BY v.id
+), test_queries AS (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors v
+    JOIN ember_metadata m ON m.id = v.id
+    WHERE v.split = 'test' AND m.file_type = 'Win32'
+    ORDER BY v.id
+)
+SELECT n.query_ordinal,
+       n.query_id,
+       qm.week_id AS query_week,
+       q.label AS query_label,
+       n.rank,
+       n.neighbor_id,
+       tm.week_id AS neighbor_week,
+       train.label AS neighbor_label,
+       tm.sha256 AS neighbor_sha256,
+       tm.family AS neighbor_family,
+       n.distance
+FROM cuvs_ivf_flat(
+    dataset => (SELECT id, vector FROM train_index ORDER BY id),
+    queries => (SELECT id, vector FROM test_queries ORDER BY id),
+    k => 10,
+    metric => 'l2_expanded',
+    n_lists => 128,
+    n_probes => 16
+) n
+JOIN ember_research_vectors q ON q.id = n.query_id AND q.split = 'test'
+JOIN ember_metadata qm ON qm.id = q.id
+JOIN ember_research_vectors train ON train.id = n.neighbor_id AND train.split = 'train'
+JOIN ember_metadata tm ON tm.id = train.id
+ORDER BY n.query_ordinal, n.rank;
+```
+
+Dedicated r3 capture query ID: `02f1af3f-270f-4a22-8559-dee13bd59478`.
+
+  </TabItem>
+</Tabs>

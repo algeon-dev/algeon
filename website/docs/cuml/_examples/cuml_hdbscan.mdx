@@ -1,0 +1,103 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecAudiences from './merrec_audiences.mdx';
+
+<Tabs>
+  <TabItem value="ember2024" label="EMBER2024">
+This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+
+### Which missed Win32 files should an analyst group for batch review?
+
+A security analyst needs to organize 3,225 Win32 samples that initially
+escaped antivirus detection. This query projects each sample's
+512 byte and byte-entropy histogram features (`f7` through `f518`) to 16 PCA
+components, then fits HDBSCAN with `min_cluster_size = 30` and `min_samples =
+10`. The family labels do not enter either fit; SQL joins them after clustering
+to summarize the resulting groups.
+
+The capture contains seven clusters and 508 rows assigned to noise (`cluster_id
+= -1`). HDBSCAN keeps those noise rows in the output. Cluster IDs are local to
+this fit. The 930-file cluster contains 736 `snackarcin` files, 193
+`opensupdater` files, and one file without a family label. The 1,005-file
+cluster has 734 family-labeled files, 547 of them `malicord`. These family
+counts describe the families present within each fitted group.
+All challenge files are positive examples, so this cohort cannot measure a
+false-positive rate.
+
+The SQL returns one row per cluster. `example_sha256` is the minimum SHA-256
+within that cluster's most common labeled family. It provides an audit link;
+the query does not compute a representative sample. The complete capture
+preserves the full SHA values.
+
+| Cluster ID (capture-local) | Files | Family-labeled files | Most common family | Files in family |
+| ---: | ---: | ---: | --- | ---: |
+| `6` | 1005 | 734 | `malicord` | 547 |
+| `1` | 930 | 929 | `snackarcin` | 736 |
+| `-1` | 508 | 246 | `fragtor` | 23 |
+| `3` | 451 | 174 | `fragtor` | 28 |
+| `5` | 146 | 123 | `doenerium` | 110 |
+| `4` | 91 | 57 | `innobundle` | 14 |
+| `0` | 59 | 59 | `snackarcin` | 46 |
+| `2` | 35 | 3 | `fragtor` | 2 |
+
+[Download the JSON capture](/data/ember2024-capture.json), including the SQL,
+all eight result rows, query ID, and execution conditions.
+
+```sql
+WITH reduced AS (
+  SELECT id, pc_0, pc_1, pc_2, pc_3, pc_4, pc_5, pc_6, pc_7,
+         pc_8, pc_9, pc_10, pc_11, pc_12, pc_13, pc_14, pc_15
+  FROM cuvs_pca(
+    input => (
+      SELECT v.id, v.histogram AS vector
+      FROM ember_research_vectors_challenge v
+      JOIN ember_metadata_challenge m ON m.id = v.id
+      WHERE m.file_type = 'Win32'
+      ORDER BY v.id
+    ),
+    n_components => 16
+  )
+), assignments AS (
+  SELECT id, cluster_id
+  FROM cuml_hdbscan(
+    input => (SELECT * FROM reduced ORDER BY id),
+    min_cluster_size => 30,
+    min_samples => 10
+  )
+), family_counts AS (
+  SELECT a.cluster_id, m.family, COUNT(*) AS files,
+         MIN(m.sha256) AS example_sha256
+  FROM assignments a
+  JOIN ember_metadata_challenge m ON m.id = a.id
+  GROUP BY a.cluster_id, m.family
+), ranked AS (
+  SELECT *,
+         SUM(files) OVER (PARTITION BY cluster_id) AS cluster_files,
+         SUM(CASE WHEN family <> '' THEN files ELSE 0 END)
+           OVER (PARTITION BY cluster_id) AS family_labeled_files,
+         ROW_NUMBER() OVER (
+           PARTITION BY cluster_id
+           ORDER BY CASE WHEN family = '' THEN 1 ELSE 0 END,
+                    files DESC, family
+         ) AS family_rank
+  FROM family_counts
+)
+SELECT cluster_id, cluster_files, family_labeled_files,
+       family AS most_common_family, files AS most_common_family_files,
+       example_sha256
+FROM ranked
+WHERE family_rank = 1
+ORDER BY cluster_files DESC, cluster_id;
+```
+
+The query orders the input by `id`, which fixes the input sequence represented
+by this capture. It does not guarantee identical fitted memberships or label
+numbers across hardware and software environments. The observed execution
+used a dedicated EMBER server and had `partial_native` disposition: PCA and
+HDBSCAN ran on the GPU; the statement also included CPU window processing.
+The saved runtime observation identifies this execution path.
+  </TabItem>
+  <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecAudiences />
+  </TabItem>
+</Tabs>

@@ -1,0 +1,180 @@
+---
+sidebar_position: 5
+title: MerRec Marketplace
+description: Source preparation, browsing graphs, audience features, and captured MerRec examples.
+---
+
+# MerRec Marketplace
+
+[MerRec](https://huggingface.co/datasets/mercari-us/merrec) records browsing
+and purchase events from the Mercari US marketplace. The examples use one
+shard from October 2023 and turn it into a graph of product groups that users
+browse in sequence, plus a table of per-user category preferences. Graph,
+clustering, and projection functions then run over those tables.
+
+The examples measure browsing and audience overlap. They leave purchase and
+conversion outcomes unevaluated, and none of the captures estimates revenue
+uplift.
+
+## At a glance
+
+| Item | Details |
+|---|---|
+| Source | [mercari-us/merrec](https://huggingface.co/datasets/mercari-us/merrec), one shard of the October 2023 partition |
+| Scale | 494,357 events, 358,893 items, and 5,660 users from October 1 to October 30, 2023 |
+| Preparation | The fixture script downloads the sample shard; graph and preference tables are built by SQL on the running server |
+| Python packages | `pyarrow`, and the `duckdb` CLI on `PATH` for conversion |
+| Server | `127.0.0.1:50063`; the research configuration uses a 32 GiB device limit and 16 GiB per query |
+| Examples | cuGraph personalized PageRank, Jaccard, Leiden, and PageRank; cuML HDBSCAN and UMAP; cuVS KMeans and Top-K |
+
+## Examples
+
+- [Find collectible markets that share an audience with Nintendo games](../../cugraph/functions/centrality/cugraph_personalized_pagerank.mdx#examples)
+  with personalized PageRank and Jaccard.
+  [Download its ten result rows](/data/merrec-graph-capture.json).
+- [Inspect concentrated and mixed preferences](../../cuml/functions/cuml_hdbscan.mdx#examples)
+  with HDBSCAN and UMAP.
+  [Download all 1,919 points](/data/merrec-audience-capture.json).
+- [Describe campaign themes](../../cuvs/functions/cuvs_kmeans.mdx#examples)
+  with KMeans and Top-K, returning three category means for each of eight
+  groups. [Download all 24 rows](/data/merrec-segment-capture.json).
+- [Build navigation collections](../../cugraph/functions/community/cugraph_leiden.mdx#examples)
+  with Leiden and weighted PageRank, returning five representative markets for
+  each of 22 groups. [Download all 110 rows](/data/merrec-community-capture.json).
+
+## Prepare the data
+
+Run commands from the repository root. The
+[fixture README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/merrec/README.md)
+documents acquisition, conversion, and source columns. This command downloads
+the sample shard when raw source files are absent, then converts it into
+`events` and `items` Parquet tables:
+
+```bash
+fixture/fixture.sh merrec prepare --download-sample
+```
+
+The graph and preference tables are built in the next steps, because they
+are SQL queries that run on the server.
+
+## Start the server
+
+```bash
+cargo build --workspace --all-features --release --bin algeon_server
+
+ALGEON_SERVER_CONFIG_FILE="$PWD/docs/research/merrec/server-models.toml" \
+ALGEON_SERVER_BIND=127.0.0.1:50063 \
+flock -x /tmp/cudf-gpu.lock target/release/algeon_server
+```
+
+The configuration sets a 32 GiB device memory limit, a 1 GiB backend reserve,
+a 16 GiB default query limit, one active attempt, and a model root for the
+supervised research probes. The
+[reproduction guide](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/REPRODUCE.md)
+lists the extra Python packages used by the CPU checks.
+
+## Register the tables
+
+From another terminal, register the source tables and build the graph and
+preference snapshots:
+
+```bash
+python3 scripts/dev/merrec_run.py --prepare
+```
+
+The runner connects to `grpc://127.0.0.1:50063`. It registers
+`merrec_events` and `merrec_items`, defines the graph views, runs each
+preparation query, and registers the saved snapshots. Each preparation query
+writes Parquet under `target/merrec-exploration/results/` and a result record
+under `docs/research/merrec/results/`. The runner stops at its first
+preparation error and saves the error record.
+
+### Browsing graph
+
+The source views in
+[`sql/01_graph_views.sql`](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/sql/01_graph_views.sql)
+pair adjacent `item_view` events within `(user_id, session_id)`, ordered by
+`(event_time, event_id)`. A pair becomes a transition when it crosses
+different `product_id` values with a positive time gap of at most 30 minutes.
+Both endpoint markets need at least 10 distinct viewers, and each retained
+directed edge needs support from at least three distinct users. Its weight
+counts those users.
+
+The saved graph has 1,711 market vertices and 4,963 directed transition
+edges. The audience graph has 59,629 distinct market-user edges from
+`item_view` events. The snapshot inputs and registration SQL are
+[`sql/02_graph_snapshots.sql`](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/sql/02_graph_snapshots.sql)
+and
+[`sql/03_register_graph.sql`](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/sql/03_register_graph.sql).
+
+Vertex numbers belong to the saved snapshot and can change when the graph is
+rebuilt. In the captured snapshot, vertex `672` maps to product group
+`15928_1315` (Nintendo, Electronics, Games).
+
+### Audience features
+
+[`prepare_tastes.sql`](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/sql/prepare_tastes.sql)
+keeps 1,919 users with at least 20 `item_view` events before the exclusive
+cutoff of October 21, 2023. The 17 features are square roots of each user's
+category shares of view events, and repeated views count separately. KMeans,
+HDBSCAN, and UMAP read the same ordered features, with a separate fit in each
+query.
+
+## Run the examples
+
+Copy an example's SQL from its function page into any Flight SQL client
+connected to `127.0.0.1:50063`, or pass a saved query file to the runner:
+
+```bash
+python3 scripts/dev/merrec_run.py \
+  docs/research/merrec/sql/20_cross_category_discovery.sql
+```
+
+A direct `cugraph_pagerank` call over the live `merrec_transitions` view is
+recorded as a physical planning failure in
+[M01](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/FINDINGS.md#m01-pagerank-over-nested-views-fails-during-physical-planning).
+The examples read the registered snapshots, which avoids that failure.
+
+## Tables
+
+| Table | Rows | Contents |
+|---|---:|---|
+| `merrec_events` | 494,357 | `event_time`, `user_id`, `item_id`, `session_id`, `event_type` |
+| `merrec_items` | 358,893 | `item_id`, `product_id`, name, price, three category levels, `brand_id` |
+| `mr_nodes` | 1,711 | Market vertices: `product_id`, brand, category, item count, mean price, viewers |
+| `mr_edges` | 4,963 | Directed browsing transitions `src`, `dst`, `weight` |
+| `mr_undirected` | 3,317 | Transitions merged into undirected weighted edges |
+| `mr_audience` | 59,629 | Market-user edges from `item_view` events |
+| `mr_tastes` | 1,919 | Per-user view counts and the 17 category features |
+
+The runner also defines views such as `merrec_transitions` and
+`merrec_markets` over the source tables. Those views feed the snapshots above.
+
+## Captured run
+
+The [discovery capture](/data/merrec-graph-capture.json) records the executed
+SQL, output schema, query ID, all ten result rows, and one elapsed time of
+0.13337774 seconds. That value is one Flight elapsed observation, including
+planning and receipt of the complete result. Graph preparation ran before the
+call on a server that had already run many queries, and no repeated
+performance claim follows from it. The source shard includes 238 `buy_comp`
+events.
+
+The graph validation compares the saved personalized PageRank scores with
+NetworkX. The top-15 order matches, with a maximum absolute error of
+9.59610868e-7 across shared vertices against a tolerance of 1e-5. The source
+snapshot comparison matched the saved nodes, transitions, edges, and audience
+rows in
+[`graph_validation.json`](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/graph_validation.json).
+
+The audience map combines saved UMAP display coordinates with HDBSCAN labels
+fitted in the original 17 dimensions. Its filters keep all 1,316 noise rows
+available. The campaign-theme query fits eight KMeans groups, joins their
+assignments to source shares, averages those shares with equal weight for each
+user, and applies Top-K to the category means.
+
+The collection statement includes host window processing: its captured plan
+has two native fragments and 15 host DataFusion boundaries. The campaign-theme
+statement has five native fragments and zero host boundaries. Their timing
+observations exclude source preparation and provide no controlled performance
+comparison.

@@ -1,6 +1,14 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecDiscovery from './merrec_discovery.mdx';
+import EmberImportReview from './ember2024_import_review.mdx';
+
 {/* Hand-owned examples for cugraph_personalized_pagerank. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+<Tabs>
+<TabItem value="citation-network" label="Citation network" default>
+
+This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
 ### What should I read to understand BERT beyond its own bibliography?
 
@@ -42,3 +50,17 @@ LIMIT 8;
 The returned list includes work on speech recognition, statistical machine
 translation, and the Penn Treebank. Those titles provide examples of papers
 ranked beyond BERT's direct references.
+
+</TabItem>
+
+<TabItem value="merrec-marketplace" label="MerRec marketplace">
+
+<MerRecDiscovery />
+
+</TabItem>
+<TabItem value="ember2024-import-review" label="EMBER2024 import review">
+
+<EmberImportReview />
+
+</TabItem>
+</Tabs>

@@ -1,0 +1,127 @@
+.figure {
+  margin: 1.5rem 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.controls label {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.controls input,
+.controls select,
+.navigation button {
+  color: var(--ifm-font-color-base);
+  background: var(--ifm-background-color);
+  border: 1px solid var(--ifm-color-emphasis-400);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.9rem;
+  margin: 0.75rem 0;
+  font-size: 0.8rem;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.count {
+  margin-left: auto;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.plot {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 8px;
+  outline-offset: 3px;
+}
+
+.plot circle {
+  cursor: pointer;
+  transition: opacity 100ms linear;
+}
+
+.navigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.navigation button {
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.navigation button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.navigation span,
+.meta,
+.figure figcaption,
+.provenance {
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.detail {
+  margin: 0.75rem 0;
+  padding: 0.8rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  margin: 0.3rem 0 0.6rem;
+}
+
+.figure .detail .sha {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.provenance summary {
+  cursor: pointer;
+}
+
+.provenance li {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .count {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}

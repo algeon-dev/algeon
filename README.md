@@ -61,7 +61,7 @@ The `NOT EXISTS` clauses prune BERT itself and its direct bibliography, leaving
 foundational predecessors across continuous speech recognition and statistical
 machine translation alongside LSTM. The output is ordinary rows that a `JOIN`
 attaches titles to. The
-[citation demo dataset](https://algeon.dev/cugraph/demo-dataset) behind this
+[citation demo dataset](https://algeon.dev/guides/datasets/citation-network) behind this
 query has 4.9 million papers and 45.6 million citation edges.
 
 ## What it does

@@ -89,6 +89,12 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 
 **Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 
+## Examples
+
+import Examples from '../_examples/cuml_logistic_regression.mdx';
+
+<Examples />
+
 ## Limits
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.

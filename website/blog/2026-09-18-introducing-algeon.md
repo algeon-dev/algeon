@@ -119,7 +119,7 @@ author. The SQL keeps the working set's definition available for inspection
 and revision as the question changes.
 
 Our documentation's runnable examples use a public
-[citation network](/cugraph/demo-dataset) of 4.9 million papers and 45.6
+[citation network](/guides/datasets/citation-network) of 4.9 million papers and 45.6
 million directed citation edges, registered from Parquet files. Ranking the
 foundational reading list for BERT beyond its own bibliography takes a seed
 view and one query:

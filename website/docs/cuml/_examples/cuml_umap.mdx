@@ -1,7 +1,14 @@
 import ReviewMap from '@site/src/components/amazon/ReviewMap';
 import reviewMap from '@site/src/data/amazonReviewMap.json';
+import EmberMap from '@site/src/components/ember2024/EmberMap';
+import emberMap from '@site/static/data/ember2024-map.json';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecAudiences from './merrec_audiences.mdx';
 
-This example uses the [Amazon Reviews demo dataset](../../cuvs/demo-dataset.mdx).
+<Tabs>
+  <TabItem value="amazon-reviews" label="Amazon Reviews">
+This example uses the [Amazon Reviews demo dataset](../../guides/datasets/amazon-reviews.mdx).
 
 ### Which nearby reviews should a support analyst read together?
 
@@ -38,3 +45,50 @@ have no calibrated business meaning, and compact regions do not establish
 product failure categories. Review year is a display color, not an input
 feature. Changing the filters in the visualization highlights saved points;
 it does not rerun the query.
+  </TabItem>
+  <TabItem value="ember2024" label="EMBER2024">
+This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+
+### Where do the challenge histograms sit in a two-dimensional UMAP view?
+
+This query fits UMAP to all 3,225 Win32 challenge files using their 512-element
+normalized histograms, with `n_neighbors = 30` and `random_state = 42`. The SQL
+joins labels, weeks, SHA-256 values, and family names after the projection.
+These fields support later inspection; they are not UMAP input columns.
+
+The saved scatter includes all query rows and lets you select a captured
+projection. Its HDBSCAN filter uses the separate PCA-16 cluster assignments.
+Changing a projection or filter only selects saved output rows. It does not
+rerun UMAP or HDBSCAN.
+
+<EmberMap data={emberMap} initialProjection="umap" />
+
+```sql
+SELECT u.id,
+       u.dim_0,
+       u.dim_1,
+       v.label,
+       m.week_id,
+       m.sha256,
+       m.family
+FROM cuml_umap(
+    input => (
+        SELECT r.id, r.histogram AS vector
+        FROM ember_research_vectors_challenge r
+        JOIN ember_metadata_challenge m ON m.id = r.id
+        WHERE r.split = 'challenge' AND m.file_type = 'Win32'
+        ORDER BY r.id
+    ),
+    n_components => 2,
+    n_neighbors => 30,
+    random_state => 42
+) u
+JOIN ember_research_vectors_challenge v ON v.id = u.id AND v.split = 'challenge'
+JOIN ember_metadata_challenge m ON m.id = v.id
+ORDER BY u.row_ordinal;
+```
+  </TabItem>
+  <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecAudiences />
+  </TabItem>
+</Tabs>

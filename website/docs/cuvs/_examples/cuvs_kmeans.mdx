@@ -1,4 +1,10 @@
-This example uses the [Amazon Reviews demo dataset](../demo-dataset.mdx).
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecSegments from './merrec_segments.mdx';
+
+<Tabs>
+  <TabItem value="amazon-reviews" label="Amazon Reviews">
+This example uses the [Amazon Reviews demo dataset](../../guides/datasets/amazon-reviews.mdx).
 
 ### Which products have a changed mix of low-rating reviews?
 
@@ -68,7 +74,7 @@ product IDs for each result.
 The query took a median 0.752 seconds over three runs. This capture used
 mixed execution: the vector input and KMeans ran on the GPU, with part of
 the subsequent relational work in DataFusion. See the
-[capture conditions](../demo-dataset.mdx#captured-run).
+[capture conditions](../../guides/datasets/amazon-reviews.mdx#captured-run).
 
 `example_review` is the 2022 review with the smallest ID for that product
 and cluster. It provides an audit link; it is not selected as a cluster's
@@ -84,3 +90,9 @@ runs.
 
 For a composition that derives its numerical features directly from raw
 review text, see [KMeans followed by Top-K](../functions/cuvs_top_k.mdx#examples).
+
+  </TabItem>
+  <TabItem value="merrec" label="MerRec marketplace">
+    <MerRecSegments />
+  </TabItem>
+</Tabs>

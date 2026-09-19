@@ -1,0 +1,105 @@
+This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+
+### Which import patterns should an analyst compare around an unlabeled file?
+
+The seed is Win32 challenge file `20005740`, SHA-256
+`004ed0c4c3beadf297651f8f7dbfae41c8103e248f33fab9194213809e9cb7be`. It has
+no family label, 58 retained import symbols, and undirected kNN degree 7. The
+seed was selected from samples with 10-100 retained imports and kNN degree at
+least 5 by choosing the lexicographically smallest SHA-256. Neither family nor
+label determined the seed or graph edges.
+
+The query uses Personalized PageRank to form a 25-file comparison queue, then
+Jaccard similarity on the shared sample-to-import graph to return 15 files.
+The four highest-ranked files each share 54 of the seed's 58 retained imports.
+Each has 130 retained imports, giving `54 / (58 + 130 - 54) = 0.402985`.
+All 15 returned files have `family = ''`.
+
+| Candidate ID | Family | Retained imports | Jaccard | Shared imports | Example shared import |
+| ---: | :---: | ---: | ---: | ---: | --- |
+| `20005223` | `''` | 130 | 0.402985 | 54 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005770` | `''` | 130 | 0.402985 | 54 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005854` | `''` | 130 | 0.402985 | 54 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20006065` | `''` | 130 | 0.402985 | 54 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005238` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005457` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005509` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005606` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005701` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005765` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005863` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005946` | `''` | 108 | 0.394958 | 47 | `msvbvm60.dll!MSVBVM60.DLL:ordinal521` |
+| `20005163` | `''` | 137 | 0.326531 | 48 | `msvbvm60.dll!MSVBVM60.DLL:ordinal572` |
+| `20005412` | `''` | 137 | 0.326531 | 48 | `msvbvm60.dll!MSVBVM60.DLL:ordinal572` |
+| `20005478` | `''` | 137 | 0.326531 | 48 | `msvbvm60.dll!MSVBVM60.DLL:ordinal572` |
+
+The graph retains symbols seen in 3-100 distinct Win32 challenge files. This
+leaves import edges for 926 of 3,225 Win32 files, with 4,988 retained symbol
+vertices; 2,299 other file vertices have no retained imports and remain as
+isolates in the sample-count input. The challenge split contains only positive
+examples. An empty family field does not show that a file is benign or belongs
+to a new family.
+
+The top rows repeatedly show `msvbvm60.dll` runtime ordinals among their shared
+imports. Common runtime imports can explain overlap, so this queue requires
+analyst inspection. It does not establish a campaign or family attribution.
+The SQL computes graph similarity over imports and joins family metadata only
+for result review.
+
+[Download the capture JSON](/data/ember2024-graph-capture.json), including all
+15 rows with full SHA-256 values, query conditions, seed selection, graph-edge
+provenance, and source query ID `7e26a7d3-b2b1-45b3-83df-837ea347b55e`.
+
+CPU validation confirmed the 15-candidate order against the GPU PageRank
+candidate pool followed by CPU Jaccard, including every shared-import count,
+minimum symbol, and metadata value. The PageRank scores differ from a NetworkX
+3.7 reference by at most `7.43e-8` (absolute tolerance `1e-4`). The validation
+record is `docs/research/ember2024/results/import_review_check.json`.
+
+```sql
+WITH candidates AS (
+  SELECT p.vertex
+  FROM cugraph_personalized_pagerank(
+    edges => (
+      SELECT src_id AS src, dst_id AS dst
+      FROM ember_48_challenge_import_edges
+    ),
+    personalization => (
+      SELECT id AS vertex, CAST(1.0 AS DOUBLE) AS value
+      FROM ember_49_challenge_graph_seed
+    ),
+    directed => false
+  ) p
+  JOIN ember_48_challenge_import_sample_counts c ON c.id = p.vertex
+  CROSS JOIN ember_49_challenge_graph_seed seed
+  WHERE p.vertex <> seed.id AND c.retained_import_count >= 5
+  ORDER BY p.value DESC, p.vertex
+  LIMIT 25
+), similarities AS (
+  SELECT * FROM cugraph_jaccard(
+    edges => (
+      SELECT src_id AS src, dst_id AS dst
+      FROM ember_48_challenge_import_edges
+    ),
+    vertex_pairs => (
+      SELECT seed.id AS first, c.vertex AS second
+      FROM candidates c CROSS JOIN ember_49_challenge_graph_seed seed
+    ),
+    directed => false
+  )
+)
+SELECT j.second AS candidate_id, m.sha256, m.family,
+       counts.retained_import_count, j.similarity,
+       COUNT(*) AS shared_rare_imports,
+       MIN(symbols.symbol) AS example_shared_import
+FROM similarities j
+JOIN ember_48_challenge_import_edges seed_edges ON seed_edges.src_id = j.first
+JOIN ember_48_challenge_import_edges candidate_edges
+  ON candidate_edges.src_id = j.second AND candidate_edges.dst_id = seed_edges.dst_id
+JOIN ember_48_challenge_import_symbols symbols ON symbols.symbol_id = seed_edges.dst_id
+JOIN ember_metadata_challenge m ON m.id = j.second
+JOIN ember_48_challenge_import_sample_counts counts ON counts.id = j.second
+GROUP BY j.second, m.sha256, m.family, counts.retained_import_count, j.similarity
+ORDER BY j.similarity DESC, j.second
+LIMIT 15;
+```

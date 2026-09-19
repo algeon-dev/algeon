@@ -1,0 +1,191 @@
+---
+sidebar_position: 4
+title: EMBER2024
+description: Prepare EMBER2024 malware features locally for cuML, cuVS, and cuGraph SQL examples.
+---
+
+# EMBER2024
+
+[EMBER2024](https://github.com/FutureComputing4AI/EMBER2024) is a malware
+benchmark with train, test, and challenge splits of extracted file features.
+The examples organize the 3,225 Win32 files in the challenge split for
+analyst review, compare classifiers trained on earlier files with a later
+quarter, and search earlier files for reference samples.
+
+The challenge split contains only malicious files. Group membership there
+describes similarity in the selected features, and the cohort has no benign
+files with which to evaluate false positives.
+
+## At a glance
+
+| Item | Details |
+|---|---|
+| Source | [EMBER2024](https://github.com/FutureComputing4AI/EMBER2024): features for 3,232,000 files uploaded to VirusTotal between September 2023 and December 2024 |
+| Scale | Challenge: 6,315 malicious files, 3,225 of them Win32. Train and test: a 1% SHA-256 sample of vectors, plus metadata for every unique file |
+| Preparation | About 24.3 GB of compressed raw archives. Python scripts read all three splits and write Parquet under `target/ember2024-research/` |
+| Python packages | Pinned in `fixture/demo/ember2024/research-requirements.txt` |
+| Server | `127.0.0.1:50062` with the EMBER model root; the captures used a 64 GiB device limit and 32 GiB per query |
+| Examples | Six cuML, four cuVS, and two cuGraph function pages |
+
+## Examples
+
+- [Group missed Win32 files for batch review](../../cuml/functions/cuml_hdbscan.mdx#examples)
+  with HDBSCAN over the challenge histograms.
+- [Project the challenge cohort into two dimensions](../../cuml/functions/cuml_umap.mdx#examples)
+  with UMAP, [truncated SVD](../../cuml/functions/cuml_tsvd.mdx#examples), or
+  [PCA](../../cuvs/functions/cuvs_pca.mdx#examples).
+- [Rank high-scoring challenge files for review](../../cuml/functions/cuml_forest_predict.mdx#examples)
+  with forest inference and precomputed attributions.
+- [Compare classifiers on a later quarter](../../cuml/functions/cuml_logistic_regression.mdx#examples)
+  with logistic regression and
+  [random forest](../../cuml/functions/cuml_random_forest_classifier.mdx#examples).
+- [Find earlier Win32 reference files](../../cuvs/functions/cuvs_brute_force_knn.mdx#examples)
+  with exact search, [CAGRA](../../cuvs/functions/cuvs_cagra.mdx#examples), or
+  [IVF-Flat](../../cuvs/functions/cuvs_ivf_flat.mdx#examples).
+- [Compare import patterns around an unlabeled file](../../cugraph/functions/centrality/cugraph_personalized_pagerank.mdx#examples)
+  with personalized PageRank and
+  [Jaccard](../../cugraph/functions/similarity/cugraph_jaccard.mdx#examples).
+
+## Prepare the data
+
+Run commands from the repository root. The website does not host the raw
+dataset or generated Parquet files. Follow the
+[fixture README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/ember2024/README.md)
+to download the raw archives and `EMBER2024_all.model`, vectorize the
+features, and export the split Parquet files under
+`fixture/demo/ember2024/parquet/`.
+
+### Build the research relations
+
+Install the pinned research dependencies in the fixture's virtual environment
+and run the preparation script:
+
+```bash
+~/.venvs/forest/bin/pip install -r fixture/demo/ember2024/research-requirements.txt
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research_prepare.py
+```
+
+The script reads all three splits, so allow time for the full metadata scan.
+It keeps the first row for each SHA-256 within a split. The challenge split
+keeps every unique row; train and test keep a one-percent SHA-256 sample of
+vectors and metadata for every unique row. IDs use disjoint ranges: train
+starts at `0`, test at `10,000,000`, and challenge at `20,000,000`.
+
+Each vector row stores the full 2,568-element Float32 feature vector and a
+512-element `histogram`: a 256-bin byte histogram followed by a 256-bin
+byte-entropy histogram (source features `f7` through `f518`), each normalized
+by its own total count. Metadata rows store the SHA-256, file type, split,
+week, label, and family fields used for filtering and review after a fit.
+
+### Compute forest attributions
+
+The forest review example also reads per-file attributions. Once the
+challenge feature memmaps and `EMBER2024_all.model` are in place, run:
+
+```bash
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research_attributions.py
+```
+
+This script uses CPU LightGBM `pred_contrib` to produce signed SHAP values,
+then sums the 2,568 features into 12 thrember feature blocks. The recorded
+`pred_contrib` step took 13.311 seconds for 6,315 challenge rows. SQL later
+applies GPU Top-K to these precomputed values; the CPU preparation is separate
+from query execution.
+
+## Start the server
+
+```bash
+cargo build --workspace --all-features --release --bin algeon_server
+
+ALGEON_SERVER_CONFIG_FILE="$PWD/docs/research/ember2024/server.toml" \
+ALGEON_SERVER_BIND=127.0.0.1:50062 \
+flock -x /tmp/cudf-gpu.lock target/release/algeon_server
+```
+
+[`server.toml`](https://github.com/algeon-dev/algeon/blob/main/docs/research/ember2024/server.toml)
+is the capture configuration. It sets a 64 GiB device limit, a 32 GiB default
+query limit, and a `[models]` root of `fixture/demo/ember2024/models`, which
+`cuml_forest_predict` needs. Start the server from the repository root so
+that relative path resolves. See
+[model configuration](../../integration/configuration.mdx#models-and-forest-inference)
+for the models-root contract.
+
+## Register the tables
+
+From another terminal, register every generated relation:
+
+```bash
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research.py \
+  --uri grpc://127.0.0.1:50062 --register
+```
+
+`--register` creates `ember_train`, `ember_test`, and `ember_challenge` from
+the fixture's split Parquet, and one external table named `ember_<name>` for
+each `target/ember2024-research/input_<name>.parquet`. It uses
+`IF NOT EXISTS`, so rerunning it after adding files registers only the new
+ones.
+
+### Add the import review graph
+
+The import review example needs a graph built from an earlier query result.
+With the tables above registered, capture the exact Win32 neighbors, build
+the sample-to-import graph on the CPU, and register the new files:
+
+```bash
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research.py \
+  --uri grpc://127.0.0.1:50062 \
+  docs/research/ember2024/sql/47_challenge_exact_neighbors.sql
+
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research_graph_prepare.py
+
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research.py \
+  --uri grpc://127.0.0.1:50062 --register
+```
+
+The graph keeps import symbols seen in 3 to 100 distinct Win32 challenge
+files. Its edges connect 926 of the 3,225 sample files to 4,988 symbols. The
+other 2,299 sample files have no retained import edges and remain as isolates
+in the sample-count relation.
+
+## Run the examples
+
+Copy an example's SQL from its function page into any Flight SQL client
+connected to `127.0.0.1:50062`, or pass a saved query file to `research.py`:
+
+```bash
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research.py \
+  --uri grpc://127.0.0.1:50062 \
+  docs/research/ember2024/sql/87_import_review_queue.sql
+```
+
+`research.py` writes the result Parquet under `target/ember2024-research/` and
+a result record under `docs/research/ember2024/results/`.
+
+## Tables
+
+| Table | Rows | Contents | Used by |
+|---|---:|---|---|
+| `ember_metadata_challenge` | 6,315 | SHA-256, file type, week, label, and family | Most examples |
+| `ember_research_vectors_challenge` | 6,315 | `id`, `split`, `label`, `vector`, `histogram` | Most examples |
+| `ember_metadata_train`, `ember_metadata_test` | 2,626,000; 605,929 | Metadata for every unique file | Classifier comparison |
+| `ember_research_vectors_train`, `ember_research_vectors_test` | 26,277; 6,102 | One-percent SHA-256 vector sample | Classifier comparison |
+| `ember_metadata`, `ember_research_vectors` | 3,238,244; 38,694 | All three splits combined, selected by `split` | Reference search |
+| `ember_attributions` | 6,315 | Signed SHAP values summed into 12 feature blocks | Forest review |
+| `ember_feature_groups` | 12 | Block index, name, first feature, and feature count | Forest review |
+| `ember_48_challenge_import_edges` | 80,673 | Sample-to-symbol edges | Import review |
+| `ember_48_challenge_import_symbols` | 4,988 | Retained import symbols | Import review |
+| `ember_48_challenge_import_sample_counts` | 3,225 | Import counts per sample, including isolates | Import review |
+| `ember_49_challenge_graph_seed` | 1 | The unlabeled seed file | Import review |
+
+The training query uses 15,588 sampled Win32 rows after joining vectors to
+metadata, and the test query evaluates 3,618 sampled Win32 rows from the
+later held-out period. Labels are joined after prediction for reporting. The
+cuVS examples pass only IDs and histograms to search, then join labels and
+family names after the UDTF returns.
+
+## Captured run
+
+Each example page links a capture JSON with its SQL, output, and run
+conditions. The HDBSCAN input is ordered by `id`, which fixes the input
+sequence for that capture. It does not promise the same fitted memberships or
+cluster IDs across different hardware and software environments.

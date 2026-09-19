@@ -1,0 +1,95 @@
+This example uses the [EMBER2024 demo dataset](../../guides/datasets/ember2024.mdx).
+
+### How much analyst review does each classifier leave for a new quarter?
+
+The held-out EMBER2024 test period contains 3,618 sampled Win32 files: 1,787
+malicious and 1,831 benign. Both query-local classifiers train on the same
+15,588 sampled Win32 training files and use the same 512 normalized byte and
+byte-entropy histogram features. The sample rule is independent of labels and
+retains hashes whose first eight hexadecimal characters, read as an integer,
+give remainder zero modulo 100.
+Test labels join only after prediction.
+
+| Model | Files | True positives | False positives, benign files flagged | False negatives, malicious files missed | True negatives |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Logistic regression | 3,618 | 1,393 | 241 | 394 | 1,590 |
+| Random forest classifier | 3,618 | 1,517 | 112 | 270 | 1,719 |
+
+In this capture the random forest leaves 129 fewer false positive files for
+review and misses 124 fewer malicious files. Both functions return the binary
+class IDs `0` and `1` in `prediction`. The comparison applies to this feature
+set and the model options in the SQL below.
+
+The official `EMBER2024_all.model` reference has 17 false positives and 53
+false negatives on the same Win32 test rows at a 0.5 score threshold. That
+model uses all 2,568 features and a larger upstream training corpus, so its
+metrics are a reference and do not support a fair algorithm ranking against
+the 512-feature query-local fits.
+
+[Download the JSON capture](/data/ember2024-temporal-capture.json), including
+the exact SQL, both result rows, execution conditions, supervised report
+metrics by week, and source query IDs.
+
+```sql
+WITH logistic AS (
+SELECT p.id, p.prediction, m.label, m.week_id, m.sha256, m.family
+FROM cuml_logistic_regression(
+  training => (
+    SELECT v.id, v.histogram AS vector, v.label
+    FROM ember_research_vectors_train v
+    JOIN ember_metadata_train m ON m.id = v.id
+    WHERE m.file_type = 'Win32'
+    ORDER BY v.id
+  ),
+  predict => (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors_test v
+    JOIN ember_metadata_test m ON m.id = v.id
+    WHERE m.file_type = 'Win32'
+    ORDER BY v.id
+  ),
+  max_iter => 1000,
+  penalty_l2 => 1.0
+) p
+JOIN ember_metadata_test m ON m.id = p.id
+),
+random_forest AS (
+SELECT p.id, p.prediction, m.label, m.week_id, m.sha256, m.family
+FROM cuml_random_forest_classifier(
+  training => (
+    SELECT v.id, v.histogram AS vector, v.label
+    FROM ember_research_vectors_train v
+    JOIN ember_metadata_train m ON m.id = v.id
+    WHERE m.file_type = 'Win32'
+    ORDER BY v.id
+  ),
+  predict => (
+    SELECT v.id, v.histogram AS vector
+    FROM ember_research_vectors_test v
+    JOIN ember_metadata_test m ON m.id = v.id
+    WHERE m.file_type = 'Win32'
+    ORDER BY v.id
+  ),
+  n_trees => 100,
+  max_depth => 12,
+  seed => 42
+) p
+JOIN ember_metadata_test m ON m.id = p.id
+),
+classified AS (
+  SELECT 'logistic' AS model, id, prediction, label FROM logistic
+  UNION ALL
+  SELECT 'random_forest' AS model, id, prediction, label FROM random_forest
+)
+SELECT model, COUNT(*) AS files,
+       SUM(CASE WHEN prediction = 1 AND label = 1 THEN 1 ELSE 0 END) AS true_positive,
+       SUM(CASE WHEN prediction = 1 AND label = 0 THEN 1 ELSE 0 END) AS false_positive,
+       SUM(CASE WHEN prediction = 0 AND label = 1 THEN 1 ELSE 0 END) AS false_negative,
+       SUM(CASE WHEN prediction = 0 AND label = 0 THEN 1 ELSE 0 END) AS true_negative
+FROM classified
+GROUP BY model
+ORDER BY model;
+```
+
+Both classifiers are fitted within the statement. Repeating the SQL trains
+them again on the selected training rows.

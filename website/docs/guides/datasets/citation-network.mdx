@@ -1,29 +1,46 @@
 ---
-sidebar_position: 4.5
-title: "Demo Dataset: Citation Network"
-sidebar_label: Demo Dataset
-description: Prepare the citation network, start a local server, and rank papers with cuGraph SQL.
+sidebar_position: 2
+title: Citation Network
+description: Prepare the DBLP / AMiner V12 citation network, start a local server, and rank papers with cuGraph SQL.
 ---
 
-# Demo Dataset: Citation Network
+# Citation Network
 
-Run PageRank over **4.9 million papers and 45.6 million citations**, then join
-its scores to paper titles. The DBLP / AMiner V12 dataset is a fixed snapshot
-from April 2020; an edge `src` → `dst` means “paper `src` cites paper `dst`.”
+The DBLP / AMiner V12 citation network holds 4.9 million papers and 45.6
+million citations. An edge `src` → `dst` means paper `src` cites paper `dst`.
+Every cuGraph function page runs its examples on these tables, and the
+integration guides use them for their first query.
 
-This walkthrough uses local Parquet files and the repository's SQL client.
-After setup, the same tables work with the other cuGraph examples.
+The data is a fixed snapshot from April 2020. Graph scores describe a paper's
+position in this snapshot and say nothing about its quality.
 
-## Before you start
+## At a glance
 
-Use a Linux GPU host with the [native libraries built](../build/from-source.md#3-build-the-native-stack).
-Run shell commands from the repository root. The full dataset requires a
-12.5 GB source JSON and about 4.6 GB of generated Parquet, plus conversion
-workspace. The recorded conversion took 17–19 minutes and 7.8 GB RAM on a
-32-core host with local NVMe. GPU memory requirements depend on the query;
-these preparation figures describe host resources.
+| Item | Details |
+|---|---|
+| Source | [DBLP / AMiner V12](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset), April 2020 snapshot |
+| Scale | 4.9M papers and 45.6M citations, plus author and field-of-study links |
+| Preparation | 12.5 GB source JSON becomes about 4.6 GB of Parquet. The recorded conversion took 17–19 minutes and 7.8 GB RAM on a 32-core host with local NVMe |
+| Python packages | `pyarrow` |
+| Server | `127.0.0.1:50051` on GPU 0; cuGraph calls run on the GPU and ordinary SQL on the CPU |
+| Examples | Every [cuGraph function](../../cugraph/functions/index.mdx) |
+
+## Examples
+
+- [Rank papers by PageRank](#run-the-examples), the first query on this page.
+- [Find a citation path from BERT to LSTM](../../cugraph/functions/traversal/cugraph_bfs.mdx#examples).
+- [Compare citation communities with research fields](../../cugraph/functions/community/cugraph_louvain.mdx#examples).
+- [Find papers with references similar to the Transformer](../../cugraph/functions/similarity/cugraph_jaccard.mdx#examples).
+
+The remaining cuGraph pages, from degree counts to force-directed layout,
+read the same tables.
 
 ## Prepare the data
+
+Use a Linux GPU host with the
+[native libraries built](../../build/from-source.md#3-build-the-native-stack),
+and run shell commands from the repository root. GPU memory requirements
+depend on the query; the figures above describe host resources.
 
 Download and extract `dblp.v12.json` from the
 [DBLP / AMiner V12 dataset](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset).
@@ -98,8 +115,9 @@ sql "CREATE OR REPLACE EXTERNAL TABLE paper_fos STORED AS PARQUET LOCATION '$cit
 Table registrations last until the server stops. After restarting, run this
 registration block again; the Parquet files can be reused.
 
-## Rank the papers
+## Run the examples
 
+PageRank weights incoming citations by the scores of the citing papers.
 Run this in the client terminal:
 
 ```bash
@@ -112,7 +130,6 @@ LIMIT 5;
 SQL
 ```
 
-PageRank weights incoming citations by the scores of the citing papers.
 A run recorded on 2026-09-26 returned these rows (scores rounded):
 
 | title | year | pagerank |
@@ -123,24 +140,14 @@ A run recorded on 2026-09-26 returned these rows (scores rounded):
 | The complexity of theorem-proving procedures | 1971 | 0.00073 |
 | A mathematical theory of communication | 1948 | 0.00066 |
 
-These scores describe the 2020 snapshot. They measure position in this
-citation graph, and do not establish a paper's quality.
+For the other examples, replace the query between `sql <<'SQL'` and `SQL`, or
+connect an [interactive SQL client](../../integration/flight-sql-server.mdx#use-an-interactive-client)
+to the running server. Execute multi-statement examples one statement at a
+time. Examples use `CREATE OR REPLACE` for reusable views and result tables,
+and running another example can replace shared names such as `ai_nodes` and
+`ai_edges`.
 
-## Explore another question
-
-Replace the query between `sql <<'SQL'` and `SQL` with another statement, or
-connect an [interactive SQL client](../integration/flight-sql-server.mdx#use-an-interactive-client)
-to the running server. Execute multi-statement examples one statement at a time.
-
-- [Find a citation path from BERT to LSTM](./functions/traversal/cugraph_bfs.mdx#examples).
-- [Compare citation communities with research fields](./functions/community/cugraph_louvain.mdx#examples).
-- [Find papers with references similar to the Transformer](./functions/similarity/cugraph_jaccard.mdx#examples).
-
-Examples use `CREATE OR REPLACE` for reusable views and result tables. Running
-another example can replace shared names such as `ai_nodes` and `ai_edges`.
-
-<details>
-<summary>Table reference</summary>
+## Tables
 
 | Table | Rows | Contents |
 |---|---|---|
@@ -152,10 +159,8 @@ another example can replace shared names such as `ai_nodes` and `ai_edges`.
 
 `papers.n_citation` is AMiner's reported global citation count. In-graph
 degree counts only edges present here; the
-[in-degree example](./functions/structure/cugraph_in_degrees_all.mdx#examples)
+[in-degree example](../../cugraph/functions/structure/cugraph_in_degrees_all.mdx#examples)
 compares them.
-
-</details>
 
 <details id="seed-papers-used-in-the-examples">
 <summary>Seed papers used in the examples</summary>

@@ -66,9 +66,15 @@ import thrember
 # Download dataset slices
 thrember.download_dataset("./fixture/demo/ember2024/raw", file_type="PE", split="test")
 
-# Download 14 pre-trained benchmark LightGBM models
+# Download 14 pre-trained benchmark model files
 thrember.download_models("./fixture/demo/ember2024/models")
 ```
+
+The local model set contains nine LightGBM text forests and five Python pickle
+files (behavior, exploit, file_property, group, and packer). The `.model`
+extension does not identify the format. `cuml_forest_predict` can import the
+LightGBM text files with `model_format => 'lightgbm'`; Python pickle is outside
+its supported import formats. The examples below use `EMBER2024_all.model`.
 
 ## Feature Vectorization and Usage
 
@@ -148,8 +154,10 @@ back-to-back (verified byte-identical, e.g.
 a week the paper's own per-week volume table says should hold 500). The
 `challenge` split is not affected (6,315 rows, matching the paper). `id` is
 the row ordinal in this (duplicated) split as vectorized, not a dedup key;
-`prepare.py` does not deduplicate. Use `--rows 606000` / `--rows 2626000` to
-reproduce the paper's row counts for a `test` / `train` Parquet export.
+`prepare.py` does not deduplicate. `--rows` retains a prefix of the sorted raw
+row sequence. Matching a paper's row count with this option does not reproduce
+its unique samples or temporal coverage. Use SHA-256 deduplication for temporal
+evaluation and nearest-neighbor research.
 
 Labels observed in this fixture (the default `label_type="label"` binary
 task; `thrember` only writes -1 for classes below `class_min` under a
@@ -157,13 +165,45 @@ non-default multiclass `label_type`, which this fixture does not use):
 `test` and `train` are exactly balanced 50/50 between label 0 (benign) and
 label 1 (malicious); `challenge` is 100% label 1.
 
+### SQL research data and evidence
+
+`scripts/research_prepare.py` retains the first occurrence of each SHA-256
+within a split and preserves its raw ordinal. The local full scan found
+2,626,000 unique train hashes, 605,929 unique test hashes, and 6,315 challenge
+hashes, with no overlap between splits. Test contains 71 fewer unique hashes
+than the paper's nominal 606,000 files. IDs occupy separate ranges for each
+split; the existing fixture exports remain unchanged.
+
+```bash
+~/.venvs/forest/bin/pip install -r fixture/demo/ember2024/research-requirements.txt
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research_prepare.py
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/research_attributions.py
+```
+
+The preparation script requires the complete raw JSONL and memmap inputs. It
+writes metadata for every unique hash under `target/ember2024-research/`.
+Vector and import tables retain all challenge files and a one-percent train
+and test sample selected by SHA-256, independently of labels. Each vector row
+includes the full 2,568 features and a separate 512-value byte/entropy
+histogram. `research_attributions.py` computes CPU LightGBM SHAP values for
+the forest review example; that preparation cost is recorded separately from
+SQL execution.
+
+The [website preparation guide](../../../website/docs/guides/datasets/ember2024.mdx)
+contains table registration and model configuration. The research entry
+point is [`docs/research/ember2024/README.md`](../../../docs/research/ember2024/README.md),
+with SQL, captured results, CPU comparisons, and findings. This research
+snapshot is explicitly included despite the parent `docs/` ignore rule.
+The raw inputs and generated Parquet files remain local. Package versions and the thrember source
+revision are recorded in `results/preparation.json` under that research entry.
+
 ## Directory Layout
 
 ```
 fixture/demo/ember2024/
   scripts/prepare.py, prepare.sh, README.md   versioned
   raw/       weekly JSONL, archives, and thrember's X_*.dat / y_*.dat memmaps
-  models/    14 pretrained LightGBM models
+  models/    9 LightGBM text models and 5 Python pickle model files
   parquet/   <split>.parquet exports read by crates/workloads
 ```
 

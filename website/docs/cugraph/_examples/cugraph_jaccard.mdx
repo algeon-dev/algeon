@@ -1,6 +1,14 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecDiscovery from './merrec_discovery.mdx';
+import EmberImportReview from './ember2024_import_review.mdx';
+
 {/* Hand-owned examples for cugraph_jaccard. NOT generated; safe to edit. */}
 
-This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+<Tabs>
+<TabItem value="citation-network" label="Citation network" default>
+
+This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
 ### Which papers should I read after the Transformer if I want familiar references?
 
@@ -70,3 +78,17 @@ Jaccard score among these candidates, at 0.296.
 
 For coverage of a smaller bibliography, see the
 [Overlap example](../functions/similarity/cugraph_overlap.mdx).
+
+</TabItem>
+
+<TabItem value="merrec-marketplace" label="MerRec marketplace">
+
+<MerRecDiscovery />
+
+</TabItem>
+<TabItem value="ember2024-import-review" label="EMBER2024 import review">
+
+<EmberImportReview />
+
+</TabItem>
+</Tabs>

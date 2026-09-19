@@ -1,6 +1,13 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecCollections from './merrec_collections.mdx';
+
+<Tabs>
+<TabItem value="citation-network" label="Citation network" default>
+
 {/* Hand-owned examples for cugraph_pagerank. NOT generated; safe to edit. */}
 
-These examples run on the [citation network demo dataset](../demo-dataset.mdx)
+These examples run on the [citation network demo dataset](../../guides/datasets/citation-network.mdx)
 (4.9M papers, 45.6M `src`-cites-`dst` edges).
 
 ### Which papers rank highest when citations from influential papers count more?
@@ -84,3 +91,12 @@ LIMIT 6;
 Automata theory, information theory, the classic algorithms textbook, and the
 ALGOL report: the view's `WHERE` clause restricts the graph to one era, and
 the algorithm re-ranks the field within it.
+
+</TabItem>
+
+<TabItem value="merrec-marketplace" label="MerRec marketplace">
+
+<MerRecCollections />
+
+</TabItem>
+</Tabs>

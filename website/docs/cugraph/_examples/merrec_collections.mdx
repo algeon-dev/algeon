@@ -1,0 +1,105 @@
+import MarketCollections from '@site/src/components/merrec/MarketCollections';
+import communityCapture from '@site/static/data/merrec-community-capture.json';
+
+This example uses the [October 2023 MerRec fixture and graph preparation](../../guides/datasets/merrec.mdx).
+
+### Which browsing neighborhoods could become draft marketplace collections?
+
+This query joins two graph views of observed `item_view` transitions. Leiden
+groups product groups on an unweighted, undirected graph. PageRank scores
+markets on a directed graph whose transition weights count distinct viewers.
+For each Leiden group with at least ten markets, the query returns the five
+markets with the highest weighted PageRank.
+
+The default community 11 contains 58 grouped markets. Its five representatives
+include Nintendo games, Pokemon single cards, Sony games, Nintendo consoles,
+and Microsoft games. Other captured groups include Disney pins and stuffed
+animals, Squishmallows, Loungefly, and fashion dolls. Merchandising teams can
+review these cross-category patterns when drafting navigation collections from
+observed browsing. This query does not evaluate purchases, conversion, or sales.
+
+The graph's `product_id` represents a brand and leaf-category group; `item_id`
+identifies an individual listing. `viewers` counts distinct users with an
+`item_view` in that group. Missing brand and leaf-category values appear as
+“Brand not listed” and “Leaf category not listed” in the table.
+
+<MarketCollections data={communityCapture} />
+
+Community numbers are labels from this query's Leiden fit. They describe this
+capture and do not establish run-to-run stability. The CPU assessment reports
+zero market-metadata mismatches, PageRank maximum absolute error `0.0` against
+the saved full PageRank output, and correct five-row rank ordering for each of
+the 22 returned groups. The validation does not prove that query 24's labels
+match a separately executed full Leiden assignment, because that query fits
+Leiden independently.
+
+The captured plan has two native GPU fragments, Leiden and PageRank, and 15
+host DataFusion boundaries for joins, repartitioning, and ranked-window
+processing. The single observed Flight elapsed time was `0.2762586469762027`
+seconds. It includes planning and complete result receipt, excludes graph
+preparation, and came from a reused server after many previous queries. It is
+not a performance benchmark.
+
+[Download all 110 result rows](/data/merrec-community-capture.json), including
+the executed SQL, schema, query ID, timing boundary, and source SHA-256 values.
+The [CPU community validation](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/community_validation.json)
+records its comparison scope and limits.
+
+<details>
+<summary>Executed SQL, query `6490d83e-5bce-4ada-ad7a-77c742ecebab`</summary>
+
+```sql
+-- Review representative markets from each sufficiently large Leiden community.
+-- Community labels are query-local; PageRank uses directed weighted transitions.
+WITH assignments AS (
+    SELECT
+        r.vertex,
+        r."partition" AS community,
+        COUNT(*) OVER (PARTITION BY r."partition") AS community_size
+    FROM cugraph_leiden(
+        edges => (SELECT src, dst FROM mr_undirected),
+        directed => false,
+        seed => 42
+    ) r
+), weighted_pagerank AS (
+    SELECT vertex, value AS pagerank
+    FROM cugraph_pagerank(
+        edges => (SELECT src, dst, weight FROM mr_edges),
+        directed => true
+    )
+), ranked_markets AS (
+    SELECT
+        a.vertex,
+        a.community,
+        a.community_size,
+        ROW_NUMBER() OVER (
+            PARTITION BY a.community
+            ORDER BY p.pagerank DESC, n.product_id ASC
+        ) AS representative_rank,
+        n.product_id,
+        n.brand_name,
+        n.category,
+        n.leaf_category,
+        n.viewers,
+        p.pagerank
+    FROM assignments a
+    JOIN mr_nodes n ON n.id = a.vertex
+    JOIN weighted_pagerank p ON p.vertex = a.vertex
+)
+SELECT
+    vertex,
+    community,
+    community_size,
+    representative_rank,
+    product_id,
+    brand_name,
+    category,
+    leaf_category,
+    viewers,
+    pagerank
+FROM ranked_markets
+WHERE community_size >= 10
+  AND representative_rank <= 5
+ORDER BY community, representative_rank;
+```
+</details>

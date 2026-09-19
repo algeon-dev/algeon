@@ -1,6 +1,6 @@
 {
   "label": "Build & Test",
-  "position": 4,
+  "position": 2,
   "link": {
     "type": "doc",
     "id": "build/overview"
