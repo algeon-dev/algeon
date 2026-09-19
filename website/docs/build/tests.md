@@ -134,15 +134,18 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep
 | --- | --- |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
 | `cuvs` | cuVS SQL functions (exact kNN, KMeans, PCA) and their GPU execution |
-| `iceberg` | Iceberg catalogs and native scan integration |
 | `nvml` | Optional NVML device diagnostics |
 
-The Arrow Flight SQL server is the separate `nexus-server` package; its
-`cugraph`, `cuvs`, `iceberg`, and `nvml` features forward the corresponding
+The Arrow Flight SQL server is launched by the separate private `server` package; its
+`cugraph`, `cuvs`, and `nvml` features forward the corresponding
 adapter and engine capabilities.
 
+Iceberg remains part of the supported source design. Its Cargo feature and
+release acceptance resume after the upstream iceberg-rust 0.12 release is
+available and validated.
+
 ```bash
-cargo run -p nexus-server --all-features --bin datafusion_nexus_server
+cargo run -p server --all-features --bin algeon_server
 ```
 
 ## Acceptance runs outside the gate
@@ -155,13 +158,13 @@ Scale-factor workloads validate their dataset before starting and fail when it
 is incomplete; the TPC-DS report emits one row per attempted query:
 
 ```bash
-NEXUS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
+ALGEON_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
   flock /tmp/cudf-gpu.lock \
-  cargo run -p nexus-bench --all-features --bin native_tpcds_parity_report
+  cargo run -p bench --all-features --bin native_tpcds_parity_report
 
-NEXUS_PARQUET_DIR=/path/to/complete/tpch-sf1 \
+ALGEON_PARQUET_DIR=/path/to/complete/tpch-sf1 \
   flock /tmp/cudf-gpu.lock \
-  cargo run -p nexus-bench --all-features --bin native_tpch_execution_report
+  cargo run -p bench --all-features --bin native_tpch_execution_report
 ```
 
 Sustained-load measurement uses the `query_service_goodput` binary through
@@ -172,7 +175,7 @@ fingerprint; the measurement groups then refuse to run if the live GPU or
 dataset differs from that calibration:
 
 ```bash
-crates/nexus-bench/scripts/run_goodput_matrix.sh calibrate g1
+crates/bench/scripts/run_goodput_matrix.sh calibrate g1
 ```
 
 Python-cuGraph comparisons run only on a host with Python cuGraph installed;
@@ -180,7 +183,7 @@ an unavailable oracle fails the run rather than skipping it:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  cargo run -p nexus-tools --all-features -- \
+  cargo run -p tools --all-features -- \
   cugraph-fixture-e2e bfs-include-edges
 ```
 
@@ -202,7 +205,7 @@ nextest configuration, or a build script.
 
 `scripts/check_all.sh` is the only top-level script entry point. Supporting
 files are grouped by responsibility, and the directory map is maintained in
-[`scripts/README.md`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/scripts/README.md):
+[`scripts/README.md`](https://github.com/algeon-dev/algeon/blob/main/scripts/README.md):
 `scripts/build/` (build support and packaging policy), `scripts/ci/`
 (validation policies and parsers, with their fault-injection suites under
 `scripts/ci/tests/`), and `scripts/dev/` (manually invoked helpers). Policy
@@ -225,7 +228,7 @@ nextest's one-process-per-test isolation already covers ordinary
 process-global state, so exclusivity is for tests that need the *device* to
 themselves, not just the process.
 
-Because every test process pays for its own CUDA context, the cudf-nexus
+Because every test process pays for its own CUDA context, the cudf
 contract binaries `semantic_contracts_gpu`, `execution_contracts_gpu`, and
 `interop_contracts_gpu` group small tests into one table per file: the test
 functions are plain `fn`s, and a single `#[test] fn <file_stem>_cases` passes
@@ -235,7 +238,7 @@ file's table. Keep a test as its own `#[test]` only when it arms one-shot
 native fault injection, installs process-global or device-safety state, spawns
 threads, is `#[should_panic]`, or uses a device other than 0. A table is run
 like any test, for example
-`cargo nt -E 'binary_id(cudf-nexus::semantic_contracts_gpu) & test(expr_tests_cases)'`.
+`cargo nt -E 'binary_id(cudf::semantic_contracts_gpu) & test(expr_tests_cases)'`.
 
 Every test binary lands in exactly one of:
 
@@ -319,7 +322,7 @@ Rustdoc is always strict: the harness appends `-D warnings` after any
 caller-provided `RUSTDOCFLAGS`, so an earlier `-A warnings` cannot weaken it.
 
 `scripts/build/rapids.rs` is the std-only build-script support included by the
-root adapter, `nexus-query-engine`, server, benchmark, tools, and examples
+DataFusion adapter, `query-engine`, server, benchmark, tools, and examples
 packages. Its isolated policy suite runs as part of the policy phase's
 self-test scripts and can be run alone; it neither loads nor modifies the
 real RAPIDS libraries:
@@ -344,12 +347,12 @@ CARGO_LOG=cargo::core::compiler::fingerprint=info \
 
 Fingerprint logs can contain full local environment values such as `PATH`;
 redact them before attaching to an issue. The live fingerprint matrix for
-`cudf-nexus-sys` is
-[`scripts/build/check_fingerprint_matrix.sh`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/scripts/build/check_fingerprint_matrix.sh)
+`cudf-sys` is
+[`scripts/build/check_fingerprint_matrix.sh`](https://github.com/algeon-dev/algeon/blob/main/scripts/build/check_fingerprint_matrix.sh)
 (requires `CUDF_INSTALL_DIR`, `CC`, and `CXX`), and its static contract is:
 
 ```bash
-cargo test -p cudf-nexus-sys --all-features --test fingerprint_matrix_contract
+cargo test -p cudf-sys --all-features --test fingerprint_matrix_contract
 ```
 
 ### Target artifact maintenance

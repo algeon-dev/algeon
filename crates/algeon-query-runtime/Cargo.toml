@@ -1,0 +1,56 @@
+[package]
+name = "algeon-query-runtime"
+description = "DataFusion-free native query runtime, lifecycle, ledger, and observation owners."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+publish = ["crates-io"]
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-query-runtime"
+readme = "../../README.md"
+keywords = ["datafusion", "gpu", "cuda", "runtime", "rapids"]
+categories = ["database"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+features = ["cugraph", "nvml"]
+
+# The package carries the `algeon-` prefix for crates.io; the library identity
+# stays bare so `use query_runtime::…` and the public API snapshots do not move.
+[lib]
+name = "query_runtime"
+
+[features]
+default = []
+cugraph = ["dep:cugraph", "query-planning/cugraph"]
+nvml = ["dep:nvml-wrapper"]
+# Controlled device-quarantine qualification: closes admission on one live
+# device ledger through the same gate placement uses. No generic fault API.
+qualification = []
+test-hooks = ["query-planning/test-hooks"]
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+cudf = { workspace = true }
+cugraph = { workspace = true, optional = true }
+fnv = { workspace = true }
+futures = { workspace = true }
+getrandom = { workspace = true }
+query-planning = { workspace = true }
+nvml-wrapper = { version = "0.12.1", optional = true }
+object_store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+cudf-sys = { workspace = true, features = ["test-hooks"] }

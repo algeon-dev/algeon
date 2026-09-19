@@ -42,7 +42,7 @@ for that function.
 ## Construction policy
 
 `construction_policy` is a graph-ingress choice, not an algorithm choice. It
-decides whether DataFusion Nexus should first make the SQL edge relation match
+decides whether Algeon should first make the SQL edge relation match
 Python cuGraph edge-list construction semantics, or pass the relation directly
 to the lower-level libcugraph construction path.
 
@@ -51,16 +51,16 @@ edge normalization.
 
 | Policy | Best use | What happens |
 | --- | --- | --- |
-| `python_cugraph` | Default for application SQL, notebooks, Python cuGraph parity checks, and edge tables that may contain duplicate or one-way undirected edges. | Requests Python `cugraph.Graph.from_cudf_edgelist(...)`-compatible construction. DataFusion Nexus inserts an `EdgeNormalize` step when the edge source is not already proven canonical. |
+| `python_cugraph` | Default for application SQL, notebooks, Python cuGraph parity checks, and edge tables that may contain duplicate or one-way undirected edges. | Requests Python `cugraph.Graph.from_cudf_edgelist(...)`-compatible construction. Algeon inserts an `EdgeNormalize` step when the edge source is not already proven canonical. |
 | `raw_libcugraph` | Pre-normalized edge tables, lower-level libcugraph parity checks, and performance-sensitive paths where duplicate/reverse-edge semantics are intentionally handled upstream. | Skips Python-style `EdgeNormalize` and sends the edge list to the libcugraph-compatible graph builder. Null edge rows are still sanitized because libcugraph has no null-edge semantics. |
 
 For SQL calls, both policies still use simple graph properties selected by
-`directed`; there is no SQL multigraph option. The difference is whether Nexus
+`directed`; there is no SQL multigraph option. The difference is whether Algeon
 performs the Python-compatible edge normalization before the raw graph build.
 
 ## What `python_cugraph` normalizes
 
-When normalization is required, Nexus rewrites the edge list before graph
+When normalization is required, Algeon rewrites the edge list before graph
 construction:
 
 - `directed=true`: duplicate directed `(src, dst)` pairs are collapsed.
@@ -105,11 +105,11 @@ FROM cugraph_pagerank(
 ```
 
 On the standalone Flight SQL server, set a process default with
-`NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY`. Per-call `options_json` still wins:
+`ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY`. Per-call `options_json` still wins:
 
 ```bash
-NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY=raw_libcugraph \
-NEXUS_SERVER_CUGRAPH_ENABLED=true \
+ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY=raw_libcugraph \
+ALGEON_SERVER_CUGRAPH_ENABLED=true \
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
@@ -133,7 +133,7 @@ Look for both fields in the physical plan:
 
 - `construction_policy=python_cugraph` means the SQL call requested
   Python-compatible construction semantics.
-- `edge_normalize_inserted=true` means Nexus will run a physical edge
+- `edge_normalize_inserted=true` means Algeon will run a physical edge
   normalization step.
 - `construction_policy=python_cugraph` with `edge_normalize_inserted=false`
   means the optimizer proved the input is already canonical for the requested

@@ -25,20 +25,20 @@ RUN_REMOTE_DIRECT=0
 RUN_SERVER_REST_MULTIGPU=0
 GPU_PARITY=0
 
-REST_URI="${NEXUS_ICEBERG_REST_URI:-${DEFAULT_REST_URI}}"
-GLUE_URI="${NEXUS_ICEBERG_GLUE_URI:-${DEFAULT_GLUE_URI}}"
-WAREHOUSE="${NEXUS_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
-S3_ENDPOINT="${NEXUS_ICEBERG_S3_ENDPOINT:-${DEFAULT_S3_ENDPOINT}}"
-S3_REGION="${NEXUS_ICEBERG_S3_REGION:-us-east-1}"
-S3_ACCESS_KEY="${NEXUS_ICEBERG_S3_ACCESS_KEY_ID:-${RUSTFS_ACCESS_KEY:-nexusadmin}}"
-S3_SECRET_KEY="${NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY:-${RUSTFS_SECRET_KEY:-nexusadmin}}"
+REST_URI="${ALGEON_ICEBERG_REST_URI:-${DEFAULT_REST_URI}}"
+GLUE_URI="${ALGEON_ICEBERG_GLUE_URI:-${DEFAULT_GLUE_URI}}"
+WAREHOUSE="${ALGEON_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
+S3_ENDPOINT="${ALGEON_ICEBERG_S3_ENDPOINT:-${DEFAULT_S3_ENDPOINT}}"
+S3_REGION="${ALGEON_ICEBERG_S3_REGION:-us-east-1}"
+S3_ACCESS_KEY="${ALGEON_ICEBERG_S3_ACCESS_KEY_ID:-${RUSTFS_ACCESS_KEY:-algeonadmin}}"
+S3_SECRET_KEY="${ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY:-${RUSTFS_SECRET_KEY:-algeonadmin}}"
 MOTO_ACCESS_KEY="${MOTO_ACCESS_KEY:-moto-access}"
 MOTO_SECRET_KEY="${MOTO_SECRET_KEY:-moto-secret}"
 WAREHOUSE_BUCKET=""
 
-REST_TABLE="${NEXUS_ICEBERG_REST_E2E_TABLE:-nation}"
-REST_GROUP_COL="${NEXUS_ICEBERG_REST_E2E_GROUP_COL:-n_regionkey}"
-REST_EXPECTED_ROWS="${NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS:-}"
+REST_TABLE="${ALGEON_ICEBERG_REST_E2E_TABLE:-nation}"
+REST_GROUP_COL="${ALGEON_ICEBERG_REST_E2E_GROUP_COL:-n_regionkey}"
+REST_EXPECTED_ROWS="${ALGEON_ICEBERG_REST_E2E_EXPECTED_ROWS:-}"
 
 usage() {
   cat <<'USAGE'
@@ -46,7 +46,7 @@ Usage:
   fixture/iceberg-local/e2e.sh iceberg-local [options]
 
 Runs the local Iceberg REST + Glue/Moto E2E suite through
-nexus-tools. The suite is explicit Cargo run tooling; it is not part
+tools. The suite is explicit Cargo run tooling; it is not part
 of cargo test --all-features.
 
 Options:
@@ -69,19 +69,19 @@ Options:
                          one Tokio worker and GPUs 0,1,2,3 against REST/RustFS
   --server-rest-multigpu-only
                          Run only that production REST/RustFS multi-GPU acceptance
-  --gpu-parity           Enable NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1 for REST E2E
+  --gpu-parity           Enable ALGEON_ICEBERG_REST_E2E_GPU_PARITY=1 for REST E2E
   --rest-table NAME      REST table used for scan/planning checks (default: nation)
   --rest-group-col NAME  REST group column for planning checks (default: n_regionkey)
   --expected-rows N      Expected REST table row count (default: 25 for tpch nation)
   -h, --help             Show this help
 
 Environment overrides:
-  DOCKER, NEXUS_ICEBERG_REST_URI,
-  NEXUS_ICEBERG_GLUE_URI, NEXUS_ICEBERG_WAREHOUSE,
-  NEXUS_ICEBERG_S3_ENDPOINT,
-  NEXUS_ICEBERG_S3_REGION,
-  NEXUS_ICEBERG_S3_ACCESS_KEY_ID,
-  NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY.
+  DOCKER, ALGEON_ICEBERG_REST_URI,
+  ALGEON_ICEBERG_GLUE_URI, ALGEON_ICEBERG_WAREHOUSE,
+  ALGEON_ICEBERG_S3_ENDPOINT,
+  ALGEON_ICEBERG_S3_REGION,
+  ALGEON_ICEBERG_S3_ACCESS_KEY_ID,
+  ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY.
 
 Endpoint overrides must be loopback http:// URLs. Custom endpoint ports require
 --skip-stack because fixture/iceberg-local/docker-compose.yml publishes fixed
@@ -191,12 +191,12 @@ warehouse_bucket() {
   local rest
 
   if [[ "${warehouse}" != s3://* ]]; then
-    die "NEXUS_ICEBERG_WAREHOUSE must be an s3:// URI for iceberg-local, got '${warehouse}'"
+    die "ALGEON_ICEBERG_WAREHOUSE must be an s3:// URI for iceberg-local, got '${warehouse}'"
   fi
   rest="${warehouse#s3://}"
   rest="${rest%%/*}"
   if [[ -z "${rest}" ]]; then
-    die "NEXUS_ICEBERG_WAREHOUSE must include a bucket, got '${warehouse}'"
+    die "ALGEON_ICEBERG_WAREHOUSE must include a bucket, got '${warehouse}'"
   fi
   printf '%s\n' "${rest}"
 }
@@ -211,8 +211,8 @@ case "${suite}" in
   iceberg-local) ;;
   embedded-backend)
     shift
-    echo "warning: fixture/iceberg-local/e2e.sh embedded-backend moved to crates/nexus-examples/scripts/e2e.sh" >&2
-    exec "${REPO_ROOT}/crates/nexus-examples/scripts/e2e.sh" "$@"
+    echo "warning: fixture/iceberg-local/e2e.sh embedded-backend moved to crates/examples/scripts/e2e.sh" >&2
+    exec "${REPO_ROOT}/crates/examples/scripts/e2e.sh" "$@"
     ;;
   *)
     usage >&2
@@ -350,10 +350,10 @@ if [[ "${WORKLOAD}" == "equality_delete" ]]; then
   RUN_REMOTE_DIRECT=0
   RUN_SERVER_REST_MULTIGPU=0
   LOAD_GLUE=0
-  if [[ "${REST_TABLE}" == "nation" && -z "${NEXUS_ICEBERG_REST_E2E_TABLE:-}" ]]; then
+  if [[ "${REST_TABLE}" == "nation" && -z "${ALGEON_ICEBERG_REST_E2E_TABLE:-}" ]]; then
     REST_TABLE="eq_deletes"
   fi
-  if [[ "${REST_GROUP_COL}" == "n_regionkey" && -z "${NEXUS_ICEBERG_REST_E2E_GROUP_COL:-}" ]]; then
+  if [[ "${REST_GROUP_COL}" == "n_regionkey" && -z "${ALGEON_ICEBERG_REST_E2E_GROUP_COL:-}" ]]; then
     REST_GROUP_COL="grp"
   fi
   if [[ -z "${REST_EXPECTED_ROWS}" ]]; then
@@ -374,9 +374,9 @@ if [[ "${RUN_REMOTE_DIRECT}" == "1" && "${NO_LOAD}" != "1" ]]; then
   LOAD_GLUE=1
 fi
 
-require_loopback_http_url "NEXUS_ICEBERG_REST_URI" "${REST_URI}"
-require_loopback_http_url "NEXUS_ICEBERG_GLUE_URI" "${GLUE_URI}"
-require_loopback_http_url "NEXUS_ICEBERG_S3_ENDPOINT" "${S3_ENDPOINT}"
+require_loopback_http_url "ALGEON_ICEBERG_REST_URI" "${REST_URI}"
+require_loopback_http_url "ALGEON_ICEBERG_GLUE_URI" "${GLUE_URI}"
+require_loopback_http_url "ALGEON_ICEBERG_S3_ENDPOINT" "${S3_ENDPOINT}"
 WAREHOUSE_BUCKET="$(warehouse_bucket "${WAREHOUSE}")"
 
 if [[ "${SKIP_STACK}" != "1" ]] && has_custom_endpoint_override; then
@@ -443,53 +443,53 @@ namespace="${WORKLOAD}_sf${SCALE}"
 if [[ "${RUN_REST}" == "1" ]]; then
   step "running REST catalog E2E"
   rest_env=(
-    "NEXUS_ICEBERG_REST_E2E=1"
-    "NEXUS_ICEBERG_REST_URI=${REST_URI}"
-    "NEXUS_ICEBERG_WAREHOUSE=${WAREHOUSE}"
-    "NEXUS_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
-    "NEXUS_ICEBERG_S3_PATH_STYLE=true"
-    "NEXUS_ICEBERG_S3_REGION=${S3_REGION}"
-    "NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
-    "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
-    "NEXUS_ICEBERG_NAMESPACE=${namespace}"
-    "NEXUS_ICEBERG_REST_E2E_TABLE=${REST_TABLE}"
-    "NEXUS_ICEBERG_REST_E2E_GROUP_COL=${REST_GROUP_COL}"
+    "ALGEON_ICEBERG_REST_E2E=1"
+    "ALGEON_ICEBERG_REST_URI=${REST_URI}"
+    "ALGEON_ICEBERG_WAREHOUSE=${WAREHOUSE}"
+    "ALGEON_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
+    "ALGEON_ICEBERG_S3_PATH_STYLE=true"
+    "ALGEON_ICEBERG_S3_REGION=${S3_REGION}"
+    "ALGEON_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
+    "ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
+    "ALGEON_ICEBERG_NAMESPACE=${namespace}"
+    "ALGEON_ICEBERG_REST_E2E_TABLE=${REST_TABLE}"
+    "ALGEON_ICEBERG_REST_E2E_GROUP_COL=${REST_GROUP_COL}"
   )
   if [[ -n "${REST_EXPECTED_ROWS}" ]]; then
-    rest_env+=("NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS=${REST_EXPECTED_ROWS}")
+    rest_env+=("ALGEON_ICEBERG_REST_E2E_EXPECTED_ROWS=${REST_EXPECTED_ROWS}")
   fi
   if [[ "${WORKLOAD}" == "equality_delete" ]]; then
     rest_env+=(
-      "NEXUS_ICEBERG_REST_E2E_EXPECTED_EQ_DELETE_FILES=1"
-      "NEXUS_ICEBERG_REST_E2E_EXPECTED_IDS=1,3,4,5"
+      "ALGEON_ICEBERG_REST_E2E_EXPECTED_EQ_DELETE_FILES=1"
+      "ALGEON_ICEBERG_REST_E2E_EXPECTED_IDS=1,3,4,5"
     )
   fi
   if [[ "${GPU_PARITY}" == "1" ]]; then
-    rest_env+=("NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1")
+    rest_env+=("ALGEON_ICEBERG_REST_E2E_GPU_PARITY=1")
     env "${rest_env[@]}" \
-      NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+      ALGEON_ICEBERG_S3_SESSION_TOKEN= \
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
       flock /tmp/cudf-gpu.lock \
-      cargo run -p nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
+      cargo run -p tools --features iceberg-e2e -- iceberg-rest-local-e2e
   else
     env "${rest_env[@]}" \
-      NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+      ALGEON_ICEBERG_S3_SESSION_TOKEN= \
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
-      cargo run -p nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
+      cargo run -p tools --features iceberg-e2e -- iceberg-rest-local-e2e
   fi
 fi
 
 glue_env=(
-  "NEXUS_ICEBERG_GLUE_LOCAL_E2E=1"
-  "NEXUS_ICEBERG_GLUE_URI=${GLUE_URI}"
-  "NEXUS_ICEBERG_WAREHOUSE=${WAREHOUSE}"
-  "NEXUS_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
-  "NEXUS_ICEBERG_S3_PATH_STYLE=true"
-  "NEXUS_ICEBERG_S3_REGION=${S3_REGION}"
-  "NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
-  "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
+  "ALGEON_ICEBERG_GLUE_LOCAL_E2E=1"
+  "ALGEON_ICEBERG_GLUE_URI=${GLUE_URI}"
+  "ALGEON_ICEBERG_WAREHOUSE=${WAREHOUSE}"
+  "ALGEON_ICEBERG_S3_ENDPOINT=${S3_ENDPOINT}"
+  "ALGEON_ICEBERG_S3_PATH_STYLE=true"
+  "ALGEON_ICEBERG_S3_REGION=${S3_REGION}"
+  "ALGEON_ICEBERG_S3_ACCESS_KEY_ID=${S3_ACCESS_KEY}"
+  "ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=${S3_SECRET_KEY}"
   "MOTO_ACCESS_KEY=${MOTO_ACCESS_KEY}"
   "MOTO_SECRET_KEY=${MOTO_SECRET_KEY}"
 )
@@ -497,60 +497,60 @@ glue_env=(
 if [[ "${RUN_GLUE}" == "1" ]]; then
   step "running Glue/Moto backend E2E"
   env "${glue_env[@]}" \
-    cargo run -p nexus-tools --features iceberg-e2e -- iceberg-glue-moto-e2e
+    cargo run -p tools --features iceberg-e2e -- iceberg-glue-moto-e2e
 fi
 
 if [[ "${RUN_SERVER}" == "1" ]]; then
   step "running server + Glue/Moto E2E"
   env "${glue_env[@]}" \
-    cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e
+    cargo run -p tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e
 fi
 
 if [[ "${RUN_REMOTE_DIRECT}" == "1" ]]; then
   step "running credentialless Glue/S3 remote-direct server E2E (GPU, flock /tmp/cudf-gpu.lock)"
   # RustFS credentials flow ONLY through the provider-path env pair
   # (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) so the runner exercises the
-  # default credential chain; static NEXUS_ICEBERG_S3_* credentials and
+  # default credential chain; static ALGEON_ICEBERG_S3_* credentials and
   # ambient session state are scrubbed.
   env \
-    NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1 \
-    NEXUS_ICEBERG_GLUE_URI="${GLUE_URI}" \
-    NEXUS_ICEBERG_WAREHOUSE="${WAREHOUSE}" \
-    NEXUS_ICEBERG_S3_ENDPOINT="${S3_ENDPOINT}" \
-    NEXUS_ICEBERG_S3_REGION="${S3_REGION}" \
-    NEXUS_ICEBERG_NAMESPACE="${namespace}" \
+    ALGEON_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1 \
+    ALGEON_ICEBERG_GLUE_URI="${GLUE_URI}" \
+    ALGEON_ICEBERG_WAREHOUSE="${WAREHOUSE}" \
+    ALGEON_ICEBERG_S3_ENDPOINT="${S3_ENDPOINT}" \
+    ALGEON_ICEBERG_S3_REGION="${S3_REGION}" \
+    ALGEON_ICEBERG_NAMESPACE="${namespace}" \
     AWS_ACCESS_KEY_ID="${S3_ACCESS_KEY}" \
     AWS_SECRET_ACCESS_KEY="${S3_SECRET_KEY}" \
     AWS_SESSION_TOKEN= \
     AWS_SECURITY_TOKEN= \
     AWS_PROFILE= \
-    NEXUS_ICEBERG_S3_ACCESS_KEY_ID= \
-    NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY= \
-    NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+    ALGEON_ICEBERG_S3_ACCESS_KEY_ID= \
+    ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY= \
+    ALGEON_ICEBERG_S3_SESSION_TOKEN= \
     flock /tmp/cudf-gpu.lock \
-    cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e
+    cargo run -p tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e
 fi
 
 if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
   step "running production Flight SQL + REST/RustFS four-GPU acceptance (flock /tmp/cudf-gpu.lock)"
   (
     flock 9
-    cargo build --release -p nexus-server --bin datafusion_nexus_server --features iceberg,nvml
+    cargo build --release -p server --bin algeon_server --features iceberg,nvml
     env \
-      NEXUS_ICEBERG_SERVER_REST_MULTIGPU_E2E=1 \
-      NEXUS_SERVER_BINARY="${REPO_ROOT}/target/release/datafusion_nexus_server" \
-      NEXUS_ICEBERG_REST_URI="${REST_URI}" \
-      NEXUS_ICEBERG_WAREHOUSE="${WAREHOUSE}" \
-      NEXUS_ICEBERG_S3_ENDPOINT="${S3_ENDPOINT}" \
-      NEXUS_ICEBERG_S3_PATH_STYLE=true \
-      NEXUS_ICEBERG_S3_REGION="${S3_REGION}" \
-      NEXUS_ICEBERG_S3_ACCESS_KEY_ID="${S3_ACCESS_KEY}" \
-      NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY="${S3_SECRET_KEY}" \
-      NEXUS_ICEBERG_S3_SESSION_TOKEN= \
+      ALGEON_ICEBERG_SERVER_REST_MULTIGPU_E2E=1 \
+      ALGEON_SERVER_BINARY="${REPO_ROOT}/target/release/algeon_server" \
+      ALGEON_ICEBERG_REST_URI="${REST_URI}" \
+      ALGEON_ICEBERG_WAREHOUSE="${WAREHOUSE}" \
+      ALGEON_ICEBERG_S3_ENDPOINT="${S3_ENDPOINT}" \
+      ALGEON_ICEBERG_S3_PATH_STYLE=true \
+      ALGEON_ICEBERG_S3_REGION="${S3_REGION}" \
+      ALGEON_ICEBERG_S3_ACCESS_KEY_ID="${S3_ACCESS_KEY}" \
+      ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY="${S3_SECRET_KEY}" \
+      ALGEON_ICEBERG_S3_SESSION_TOKEN= \
       AWS_SESSION_TOKEN= \
       AWS_SECURITY_TOKEN= \
-      NEXUS_ICEBERG_NAMESPACE="${namespace}" \
-      cargo run -p nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e
+      ALGEON_ICEBERG_NAMESPACE="${namespace}" \
+      cargo run -p tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e
   ) 9>/tmp/cudf-gpu.lock
 fi
 

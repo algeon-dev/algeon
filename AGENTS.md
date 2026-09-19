@@ -3,7 +3,7 @@
 ## Working principles
 
 - Fix the owning abstraction or contract, not a failing query with an adapter
-  workaround. Extend `cudf-nexus` or `cugraph-nexus` when the gap belongs there.
+  workaround. Extend `cudf` or `cugraph` when the gap belongs there.
 - Keep changes scoped: preserve unrelated worktree edits, public behavior, and
   contract tests unless the task changes them; avoid opportunistic cleanup.
 - Grow the system in layers: start from the smallest version that works end to
@@ -34,30 +34,44 @@
 
 ## Project boundaries
 
-`datafusion-nexus` lowers DataFusion physical plans through the compatible
-`nexus-query-engine` facade and executes them via the Rust components under
-`components/`. DataFusion-dependent code belongs in the root adapter. IR,
-optimizer, capability, proof, admission contracts, and pipeline belong in
-`crates/nexus-query-planning`; attempt lifecycle, query service, device ledger,
+`algeon-datafusion` lowers DataFusion physical plans through the compatible
+`query-engine` facade and executes them via the Rust components under
+`components/`. DataFusion-dependent code belongs in
+`crates/algeon-datafusion`; IR, optimizer, capability, proof, admission
+contracts, and pipeline belong in
+`crates/algeon-query-planning`; attempt lifecycle, query service, device ledger,
 immutable grants, cache, observation, and metrics belong in
-`crates/nexus-query-runtime`; native execution composition and facade
-compatibility belong in `crates/nexus-query-engine`.
+`crates/algeon-query-runtime`; native execution composition and facade
+compatibility belong in `crates/algeon-query-engine`.
 
-- `cudf-nexus`, `cugraph-nexus`, and `cuvs-nexus` are internal members of the
-  root workspace. Their package and Rust import identities remain unchanged.
+- `cudf`, `cugraph`, and `cuvs` are members of the root workspace. Every
+  published package carries an `algeon-` prefix, because the bare RAPIDS names
+  are taken on crates.io (`cudf`/`cudf-sys` by a third party, `cuvs`/`cuvs-sys`
+  by NVIDIA's rapidsai/cuvs). `[workspace.dependencies]` maps each one through
+  a `package = "algeon-…"` alias under its bare key, so Rust imports stay
+  `cudf`, `cugraph`, and `cuvs`, and `dep:` feature strings keep resolving.
+  Directory names match package names; refer to layers by their bare alias.
+  Every renamed crate pins `[lib] name` explicitly: without it Cargo derives the
+  library name from the package name, so a rename silently moves `use
+  query_engine::…` and the `public-api` snapshots, which record library names.
+- Each crate declares `publish` directly: the release closure as
+  `publish = ["crates-io"]`, everything else as `publish = false`. Never set
+  `[workspace.package].publish` — inheriting it once silently reverted the
+  whole closure to unpublishable. `scripts/ci/check_workspace_publication.py`
+  holds the allowlist and fails closed.
 - Native sources are the root-registered submodules at
   `components/cudf/cudf`, `components/cugraph/cugraph`, and
   `components/cuvs/cuvs`; native defaults live under `target/native/`.
 - The root `.gitmodules`, `Cargo.lock`, workspace, and `scripts/check_all.sh`
   are the only source registry, lockfile, workspace, and full validation gate.
-- Default members are the adapter, `nexus-workloads`, and `nexus-query-engine`.
+- Default members are the adapter, `workloads`, and `query-engine`.
   Bench, tools, and examples are explicit non-default members.
 - Linux only. MSRV is Rust 1.95; formatting requires nightly.
 
 ## Native GPU engine core
 
 - Support requires a correct kernel, types, and semantics; an operator lacking one is structured unsupported. A missing memory estimate is never a reason to reject.
-- Admission issues a service-configured cap, not a predicted requirement: `nexus-query-planning` proves the plan is executable, `nexus-query-runtime` admits it against the device ledger, and the query domain's allocator enforces the cap while `nexus-query-engine` executes.
+- Admission issues a service-configured cap, not a predicted requirement: `query-planning` proves the plan is executable, `query-runtime` admits it against the device ledger, and the query domain's allocator enforces the cap while `query-engine` executes.
 - The query domain's allocator is the single arbiter of a query's allocation limit. Never add a second Rust-side reservation, per-operator subgrant, or estimate-derived veto.
 - Use one compiled schedule, per-device ledger, and immutable grant; deferred refinement stays inside that grant.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
@@ -104,7 +118,7 @@ condition. Run the full gate only for pre-merge validation or when the task
 explicitly requests it. Report a focused run as partial; do not automatically
 expand it into the full gate. Read-only reviews and prose-only edits do not
 require Cargo or GPU checks unless requested. The non-default bench package
-uses the same commands: `cargo nt -E 'package(nexus-bench)'`.
+uses the same commands: `cargo nt -E 'package(bench)'`.
 
 ## Writing tests
 
@@ -131,23 +145,23 @@ uses the same commands: `cargo nt -E 'package(nexus-bench)'`.
   `_cpu` target suffix or a listed binary, `_gpu_exclusive` targets run alone,
   and every other test runs in the `gpu` group.
 - Do not add external-service E2E tests to Cargo test targets; invoke them
-  explicitly through `cargo run -p nexus-tools --all-features`.
+  explicitly through `cargo run -p tools --all-features`.
 - Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
   artifacts; cleanup is never implicit.
 - `scripts/check_all.sh` is the only top-level script entry. Build tooling lives
   in `scripts/build/`, CI helpers in `scripts/ci/`, manual helpers in
   `scripts/dev/`, and policy data in `.config/policies/`.
-- Keep `scripts/build/rapids.rs` std-only and shared by the root, native engine,
-  server, bench, tools, and examples packages.
+- Keep `scripts/build/rapids.rs` std-only and shared by the DataFusion adapter,
+  native engine, server, bench, tools, and examples packages.
 
 ## Public contracts
 
 - Preserve report row schemas, TSV ordering, `NATIVE_*_TSV_HEADER` constants,
-  `NATIVE_NEXUS_DATAFUSION_METRIC_NAMES`, and native execution-plan wrappers.
+  `NATIVE_ALGEON_DATAFUSION_METRIC_NAMES`, and native execution-plan wrappers.
 - TSV, DataFusion metrics, and `QueryMetrics` are projections of the runtime
   observation snapshot, not a second event store.
 - Preserve workload environment variables and item shapes.
-- Keep `src/error.rs` errors structured; convert to `DataFusionError` only at
+- Keep `crates/algeon-datafusion/src/error.rs` errors structured; convert to `DataFusionError` only at
   the DataFusion boundary.
-- `datafusion_nexus_native` (`NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME`) is
+- `algeon_datafusion_native` (`ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME`) is
   public and is the rule deduplication key.

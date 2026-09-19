@@ -1,9 +1,9 @@
 [submodule "components/cudf/cudf"]
 	path = components/cudf/cudf
-	url = https://github.com/DataFusion-Nexus/cudf.git
+	url = https://github.com/algeon-dev/cudf.git
 [submodule "components/cugraph/cugraph"]
 	path = components/cugraph/cugraph
-	url = https://github.com/DataFusion-Nexus/cugraph
+	url = https://github.com/algeon-dev/cugraph.git
 [submodule "components/cuvs/cuvs"]
 	path = components/cuvs/cuvs
 	url = https://github.com/rapidsai/cuvs.git

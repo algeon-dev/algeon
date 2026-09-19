@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ===========================================================================
-# datafusion-nexus  —  Arrow Flight SQL service  (GPU query engine)
+# algeon-datafusion  —  Arrow Flight SQL service  (GPU query engine)
 # ===========================================================================
 #
 # This image ships a Rust binary that links FORKED RAPIDS C++ libraries
@@ -13,7 +13,7 @@
 #
 # BUILD FLOW (two host-side steps):
 #   1. bash docker/stage-docker-payload.sh
-#        -> stages docker/dist/{bin/datafusion_nexus_server, lib/*.so}
+#        -> stages docker/dist/{bin/algeon_server, lib/*.so}
 #           (forked libs only; stripped; RUNPATHs rehomed)
 #   2. bash docker/build-image.sh
 #
@@ -57,13 +57,13 @@ RUN apt-get update && \
 
 # Drop the staged payload in at its final runtime location so the binary's
 # RUNPATH (/app/lib, set by stage-docker-payload.sh) resolves the forked libs during ldd.
-COPY dist/bin/datafusion_nexus_server /app/datafusion_nexus_server
+COPY dist/bin/algeon_server /app/algeon_server
 COPY dist/lib/                        /app/lib/
 COPY dist/payload-manifest.json       /app/payload-manifest.json
 
 # Refuse an image whose payload, declared policy identity, or hashes do not
 # match the clean packaging output staged by docker/stage-docker-payload.sh.
-RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha256sum -c - && \
+RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/algeon_server | sha256sum -c - && \
     printf '%s  %s\n' "${CPU_MANIFEST_SHA256}" /app/payload-manifest.json | sha256sum -c - && \
     grep -Fq "\"baseline\": \"${CPU_BASELINE}\"" /app/payload-manifest.json && \
     grep -Fq "\"image_arch\": \"${CPU_ARCH}\"" /app/payload-manifest.json && \
@@ -76,7 +76,7 @@ RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha2
 # glibc ldd renders libnvtx3interop's DT_AUXILIARY [visibility=hidden] marker
 # as `visibility=hidden => not found`; it is not a DT_NEEDED dependency.
 RUN set -eu; mkdir -p /cuda-collect; \
-    closure="$(for elf in /app/datafusion_nexus_server /app/lib/*.so*; do \
+    closure="$(for elf in /app/algeon_server /app/lib/*.so*; do \
         test -f "$elf" || continue; \
         LD_LIBRARY_PATH=/app/lib ldd "$elf"; \
     done)"; \
@@ -104,9 +104,9 @@ RUN set -eu; mkdir -p /cuda-collect; \
         resolved_cuvs="$(echo "$closure" | awk '$1 ~ /^libcuvs\.so/ && $3 ~ /^\// { print $3; exit }')"; \
         test "$(readlink -f "$resolved_cuvs")" = "$(readlink -f /app/lib/libcuvs.so)"; \
     fi; \
-    ! readelf -d /app/datafusion_nexus_server /app/lib/*.so* 2>/dev/null \
+    ! readelf -d /app/algeon_server /app/lib/*.so* 2>/dev/null \
         | grep -E 'Shared library: \[libraft\.so'; \
-    test -z "$(readelf -d /app/datafusion_nexus_server /app/lib/*.so* 2>/dev/null \
+    test -z "$(readelf -d /app/algeon_server /app/lib/*.so* 2>/dev/null \
         | awk -F'[][]' '/\(NEEDED\)/ && $2 ~ /^libcudart\.so/ && $2 != "libcudart.so.13" { print $2 }')"; \
     echo "$closure" \
         | awk '$3 ~ /^\/usr\/local\/cuda/ { print $3 }' \
@@ -141,11 +141,11 @@ RUN apt-get update && \
 
 # Policy and artifact identity are supplied only by the verified canonical
 # packaging inputs verified by docker/build-image.sh.
-LABEL org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}" \
-      org.datafusion-nexus.cpu-arch="${CPU_ARCH}" \
-      org.datafusion-nexus.cpu-target="${CPU_TARGET}" \
-      org.datafusion-nexus.binary-sha256="${CPU_BINARY_SHA256}" \
-      org.datafusion-nexus.manifest-sha256="${CPU_MANIFEST_SHA256}"
+LABEL dev.algeon.cpu-baseline="${CPU_BASELINE}" \
+      dev.algeon.cpu-arch="${CPU_ARCH}" \
+      dev.algeon.cpu-target="${CPU_TARGET}" \
+      dev.algeon.binary-sha256="${CPU_BINARY_SHA256}" \
+      dev.algeon.manifest-sha256="${CPU_MANIFEST_SHA256}"
 
 ARG USERNAME=appuser
 ARG USER_UID=1001
@@ -158,13 +158,13 @@ WORKDIR /app
 # Forked RAPIDS libs (bundled) + harvested CUDA toolkit subset, side by side.
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/lib/      /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /cuda-collect/ /app/lib/
-COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/datafusion_nexus_server /app/datafusion_nexus_server
+COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/algeon_server /app/algeon_server
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/payload-manifest.json /app/payload-manifest.json
 
 # Re-check after assembling the final image: the base-stage loader closure must
 # still resolve the staged canonical RMM/cuVS identities with no missing edge.
 RUN set -eu; \
-    closure="$(for elf in /app/datafusion_nexus_server /app/lib/*.so*; do \
+    closure="$(for elf in /app/algeon_server /app/lib/*.so*; do \
         test -f "$elf" || continue; \
         LD_LIBRARY_PATH=/app/lib ldd "$elf"; \
     done)"; \
@@ -197,44 +197,44 @@ RUN set -eu; \
 # LD_LIBRARY_PATH as a belt-and-suspenders fallback for hosts without patchelf.
 ENV LD_LIBRARY_PATH=/app/lib \
     RUST_BACKTRACE=1 \
-    NEXUS_SERVER_BIND=0.0.0.0:50051 \
+    ALGEON_SERVER_BIND=0.0.0.0:50051 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # ===========================================================================
 # Runtime configuration — environment variables read by the server
-# (verified against crates/nexus-server/src/config/; names are load-bearing)
+# (verified against crates/algeon-datafusion/src/server/config/; names are load-bearing)
 # ===========================================================================
 #
 # ── Server core ─────────────────────────────────────────────────────────────
-#   NEXUS_SERVER_BIND                  listen addr           (default 0.0.0.0:50051)
-#   NEXUS_SERVER_LOG                   tracing filter        (default info)
-#   NEXUS_SERVER_GPU_DEVICES           CUDA ordinals, csv    (default 0)
-#   NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS                   (default 300)
-#   NEXUS_SERVER_CONFIG_FILE           optional TOML overlay ([admission],[native],[observability])
+#   ALGEON_SERVER_BIND                  listen addr           (default 0.0.0.0:50051)
+#   ALGEON_SERVER_LOG                   tracing filter        (default info)
+#   ALGEON_SERVER_GPU_DEVICES           CUDA ordinals, csv    (default 0)
+#   ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS                   (default 300)
+#   ALGEON_SERVER_CONFIG_FILE           optional TOML overlay ([admission],[native],[observability])
 #
 # ── Native GPU execution (bounded per-device admission) ─────────────────────
-#   NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES          ┐ set all three together,
-#   NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES       │ or omit all (auto-sized)
-#   NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK     ┘
-#   NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
-#   NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS
-#   NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
-#   NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE   conservative | local_parquet_throughput
-#   NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
+#   ALGEON_SERVER_NATIVE_DEVICE_BUDGET_BYTES          ┐ set all three together,
+#   ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES       │ or omit all (auto-sized)
+#   ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK     ┘
+#   ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
+#   ALGEON_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS
+#   ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
+#   ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE   conservative | local_parquet_throughput
+#   ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #                                      datafusion_exact_host_welford | gpu_native_tolerant
 #
 # ── Iceberg catalog (feature `iceberg`; omit all to disable) ────────────────
-#   NEXUS_ICEBERG_CATALOG_KIND         glue | rest
-#   NEXUS_ICEBERG_CATALOG_NAME  NEXUS_ICEBERG_NAMESPACE  NEXUS_ICEBERG_WAREHOUSE
-#   NEXUS_ICEBERG_TABLES               optional "alias=table,table2"
-#   NEXUS_ICEBERG_GLUE_CATALOG_ID  NEXUS_ICEBERG_GLUE_URI   (kind=glue)
-#   NEXUS_ICEBERG_REST_URI  NEXUS_ICEBERG_REST_PREFIX  NEXUS_ICEBERG_REST_TOKEN  (kind=rest)
-#   NEXUS_ICEBERG_S3_ENDPOINT / _REGION / _PATH_STYLE
-#   NEXUS_ICEBERG_S3_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN  (static creds)
-#   NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain         (use AWS SDK default chain)
-#   NEXUS_LAKEHOUSE_CACHE_ROOT / _READ / _POLICY / _MAX_BYTES
-#   NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS                (default 60)
+#   ALGEON_ICEBERG_CATALOG_KIND         glue | rest
+#   ALGEON_ICEBERG_CATALOG_NAME  ALGEON_ICEBERG_NAMESPACE  ALGEON_ICEBERG_WAREHOUSE
+#   ALGEON_ICEBERG_TABLES               optional "alias=table,table2"
+#   ALGEON_ICEBERG_GLUE_CATALOG_ID  ALGEON_ICEBERG_GLUE_URI   (kind=glue)
+#   ALGEON_ICEBERG_REST_URI  ALGEON_ICEBERG_REST_PREFIX  ALGEON_ICEBERG_REST_TOKEN  (kind=rest)
+#   ALGEON_ICEBERG_S3_ENDPOINT / _REGION / _PATH_STYLE
+#   ALGEON_ICEBERG_S3_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN  (static creds)
+#   ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain         (use AWS SDK default chain)
+#   ALGEON_LAKEHOUSE_CACHE_ROOT / _READ / _POLICY / _MAX_BYTES
+#   ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS                (default 60)
 #   AWS_DEFAULT_REGION                 REQUIRED for KvikIO S3 (reads ONLY this var;
 #                                      AWS_REGION alone -> unsigned reqs -> 403)
 #   AWS_REGION  AWS_PROFILE  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
@@ -243,9 +243,9 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #   DATAFUSION_EXECUTION_TARGET_PARTITIONS   DATAFUSION_EXECUTION_BATCH_SIZE
 #
 # ── cuGraph SQL DSL (image must be built with the cugraph feature) ──────────
-#   NEXUS_SERVER_CUGRAPH_ENABLED       true | false
-#   NEXUS_SERVER_CUGRAPH_DIRECTED  NEXUS_SERVER_CUGRAPH_RENUMBER
-#   NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY   python_cugraph | raw_libcugraph
+#   ALGEON_SERVER_CUGRAPH_ENABLED       true | false
+#   ALGEON_SERVER_CUGRAPH_DIRECTED  ALGEON_SERVER_CUGRAPH_RENUMBER
+#   ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY   python_cugraph | raw_libcugraph
 #
 # ===========================================================================
 
@@ -255,7 +255,7 @@ EXPOSE 50051
 # connect is a sufficient readiness signal. Generous start-period covers cold
 # GPU init + first cuDF load.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/${NEXUS_SERVER_BIND##*:}' || exit 1
+    CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/${ALGEON_SERVER_BIND##*:}' || exit 1
 
 USER ${USERNAME}
 
@@ -263,4 +263,4 @@ USER ${USERNAME}
 # ulimit -c 0: disable core dumps so a crash exits immediately and surfaces the
 # panic on stderr instead of freezing in do_coredump on GPU nodes.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "ulimit -c 0 && exec /app/datafusion_nexus_server"]
+CMD ["sh", "-c", "ulimit -c 0 && exec /app/algeon_server"]

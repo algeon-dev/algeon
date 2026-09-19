@@ -5,8 +5,8 @@
 #
 # Prerequisites: arrow_cli and jq on PATH; a server with the desired GPU
 # families installed. For example:
-#   cargo build --release -p nexus-server --features cugraph,cuvs --bin datafusion_nexus_server
-#   NEXUS_SERVER_CUGRAPH_ENABLED=true \
+#   cargo build --workspace --all-features --release --bin algeon_server
+#   ALGEON_SERVER_CUGRAPH_ENABLED=true \
 #   bash scripts/dev/run_server.sh
 set -euo pipefail
 

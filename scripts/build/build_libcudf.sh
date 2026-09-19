@@ -10,7 +10,7 @@ install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
 build_dir="$(realpath -m -- "${build_dir}")"
 install_dir="$(realpath -m -- "${install_dir}")"
 cache_file="${build_dir}/CMakeCache.txt"
-cuda_architectures="$(nexus_cuda_architectures)"
+cuda_architectures="$(algeon_cuda_architectures)"
 
 validate_cache_identity() {
     local cached_install_dir
@@ -59,7 +59,7 @@ CUDF_INSTALL_DIR="${install_dir}" \
 CUDF_CPP_BUILD_DIR="${build_dir}" \
     "${repo_root}/scripts/build/bootstrap_cudf_install.sh"
 
-shim_source_dir="${repo_root}/components/cudf/cudf-nexus-sys/native"
+shim_source_dir="${repo_root}/components/cudf/algeon-cudf-sys/native"
 shim_build_dir="${repo_root}/target/native/cudf-rust-build"
 CUDF_INSTALL_DIR="${install_dir}" \
 CUDF_CPP_BUILD_DIR="${build_dir}" \
@@ -106,8 +106,8 @@ done
     echo "error: canonical cuDF install does not contain libcudf.so under ${install_dir}/{lib,lib64}" >&2
     exit 1
 }
-architecture_contract="$(nexus_cuda_write_contract "${install_dir}" "${cudf_library}" "${cuda_architectures}")"
+architecture_contract="$(algeon_cuda_write_contract "${install_dir}" "${cudf_library}" "${cuda_architectures}")"
 
 echo "canonical cuDF/RMM prefix ready: ${install_dir}"
 echo "native build: ${build_dir}"
-echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"
+echo "CUDA architectures: requested=${cuda_architectures}, real=$(algeon_cuda_read_contract_value "${architecture_contract}" real)"

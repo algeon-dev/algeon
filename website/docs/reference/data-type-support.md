@@ -1,11 +1,11 @@
 ---
 sidebar_position: 3
-description: Arrow, cuDF, and cuGraph data type support boundaries for native DataFusion Nexus execution.
+description: Arrow, cuDF, and cuGraph data type support boundaries for native Algeon execution.
 ---
 
 # Data Type Support
 
-DataFusion Nexus checks Arrow data types before a whole relational candidate
+Algeon checks Arrow data types before a whole relational candidate
 enters native execution. A candidate with an unsupported type keeps the
 executable DataFusion baseline. Unified Iceberg scans retain their executable
 CPU delegate when native type admission does not select acceleration. A
@@ -13,11 +13,11 @@ CPU delegate when native type admission does not select acceleration. A
 retains DataFusion CPU execution.
 
 This page covers column representation: which Arrow types the GPU execution
-path (Nexus's "native" path) can hold, and what it can do with each. Operator
+path (Algeon's "native" path) can hold, and what it can do with each. Operator
 and function support is documented separately in
 [Native SQL Support](./native-sql-support.mdx), and the exact physical plan
 should be checked with
-[`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
+[`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx).
 
 Two levels of support appear below:
 
@@ -64,7 +64,7 @@ precision and scale pair passes Arrow's validator:
 Carry paths preserve raw values, nulls, logical width, precision, and scale
 through scans, projections, aliases, row selection, `UNION ALL`, and non-key
 payloads (columns that ride along beside a join or grouping key without being
-one). "Schema-aware output" means the Arrow schema Nexus was given for the
+one). "Schema-aware output" means the Arrow schema Algeon was given for the
 query; when that schema is present the narrow type is returned as declared.
 Without an external Arrow schema, untyped cuDF Decimal32/64 output retains the
 canonical `Decimal128(38, S)` mapping. Narrow decimals are rejected

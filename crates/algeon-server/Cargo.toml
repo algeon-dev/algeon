@@ -1,0 +1,38 @@
+[package]
+name = "algeon-server"
+description = "Private standalone launcher for the algeon-datafusion Flight SQL server."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+license.workspace = true
+publish = ["crates-io"]
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+build = "build.rs"
+autotests = false
+
+[features]
+default = []
+cugraph = ["algeon-datafusion/cugraph", "dep:cugraph-sys"]
+cuvs = ["algeon-datafusion/cuvs", "dep:cuvs-sys"]
+nvml = ["algeon-datafusion/nvml"]
+
+[lints]
+workspace = true
+
+[dependencies]
+algeon-datafusion = { workspace = true, default-features = false, features = ["server"] }
+# Keep these direct sys edges so build.rs receives runtime link metadata.
+cudf-sys = { workspace = true }
+cugraph-sys = { workspace = true, optional = true }
+cuvs-sys = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+rapids-build-support = { workspace = true }
+
+[[bin]]
+name = "algeon_server"

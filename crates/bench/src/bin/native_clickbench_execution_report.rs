@@ -1,0 +1,118 @@
+use std::{
+    io::{self, Write as _},
+    process::ExitCode,
+};
+
+use algeon_datafusion::native_report::NativeDataFusionExecutionReport;
+use bench::{
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::{
+        RelationalExecutionSelection,
+        clickbench::{
+            ClickbenchExecutionProgressEvent, clickbench_datafusion_execution_workload_items_filtered,
+            clickbench_native_optimizer_config, clickbench_native_profile_settings_from_env,
+            clickbench_report_session_config,
+        },
+    },
+};
+use workloads::clickbench::{
+    ClickbenchDatasetMetadata, WorkloadError, WorkloadResult, prepare_clickbench_report_dataset,
+};
+
+const ALGEON_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "ALGEON_CLICKBENCH_EXECUTION_QUERY_IDS";
+const ALGEON_CLICKBENCH_EXECUTION_PROGRESS_ENV: &str = "ALGEON_CLICKBENCH_EXECUTION_PROGRESS";
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    match clickbench_report().await {
+        Ok(ClickbenchExecutionReport { report, metadata }) => {
+            print!("{}", report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata()).to_tsv());
+            ExitCode::SUCCESS
+        },
+        Err(error) => {
+            let mut stderr = io::stderr().lock();
+            let _ = writeln!(stderr, "native_clickbench_execution_report: {error}");
+            ExitCode::FAILURE
+        },
+    }
+}
+
+async fn clickbench_report() -> WorkloadResult<ClickbenchExecutionReport> {
+    let relational_execution = RelationalExecutionSelection::native();
+    let native_profile = clickbench_native_profile_settings_from_env();
+    eprintln!(
+        "[native_clickbench_execution_report] stage=run_config relational_execution={} native_profile={} device_budget_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={}",
+        relational_execution.as_str(),
+        native_profile.profile_name,
+        native_profile.device_budget_bytes,
+        native_profile.max_source_chunk_bytes,
+        native_profile.max_row_groups_per_chunk,
+        native_profile.source_chunk_planning_mode.as_str(),
+    );
+    let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
+        WorkloadError::InvalidDataset(
+            "no ClickBench fixture found; set ALGEON_PARQUET_DIR or stage \
+             fixture/clickbench/data/{hits.parquet, partitioned/} before running this report"
+                .to_string(),
+        )
+    })?;
+    let optimizer_config = relational_execution
+        .configure_native_optimizer(clickbench_native_optimizer_config())
+        .expect("native execution report installs the native rule");
+    let query_filter = query_filter_from_env();
+    let progress_enabled = progress_enabled_from_env();
+    let mut progress_callback = |event: ClickbenchExecutionProgressEvent<'_>| {
+        let mut stderr = io::stderr().lock();
+        match event {
+            ClickbenchExecutionProgressEvent::QueryStarted { query_index, total, query_id } => {
+                let _ = writeln!(stderr, "[clickbench-exec] start  {query_index}/{total} {query_id}");
+            },
+            ClickbenchExecutionProgressEvent::QueryFinished {
+                query_index,
+                total,
+                query_id,
+                elapsed_ms,
+                runtime_outcome,
+            } => {
+                let _ = writeln!(
+                    stderr,
+                    "[clickbench-exec] finish {query_index}/{total} {query_id} elapsed_ms={elapsed_ms} outcome={runtime_outcome}"
+                );
+            },
+        }
+    };
+    let progress = if progress_enabled {
+        Some(&mut progress_callback as &mut dyn FnMut(ClickbenchExecutionProgressEvent<'_>))
+    } else {
+        None
+    };
+    let query_ids: Option<Vec<&str>> = query_filter.as_ref().map(|ids| ids.iter().map(String::as_str).collect());
+    let items = clickbench_datafusion_execution_workload_items_filtered(
+        &root,
+        clickbench_report_session_config(),
+        optimizer_config,
+        query_ids.as_deref(),
+        progress,
+    )
+    .await?;
+    let report = NativeDataFusionExecutionReport::collect(items);
+    Ok(ClickbenchExecutionReport { report, metadata })
+}
+
+struct ClickbenchExecutionReport {
+    report: NativeDataFusionExecutionReport,
+    metadata: ClickbenchDatasetMetadata,
+}
+
+fn query_filter_from_env() -> Option<Vec<String>> {
+    let raw = std::env::var(ALGEON_CLICKBENCH_EXECUTION_QUERY_IDS_ENV).ok()?;
+    let filtered: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    if filtered.is_empty() { None } else { Some(filtered) }
+}
+
+fn progress_enabled_from_env() -> bool {
+    match std::env::var(ALGEON_CLICKBENCH_EXECUTION_PROGRESS_ENV) {
+        Ok(value) => matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}

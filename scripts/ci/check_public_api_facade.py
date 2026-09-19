@@ -8,7 +8,7 @@ from pathlib import Path
 
 HEADER = ["public_symbol", "engine_type", "consumer", "decision", "facade_path", "reason", "phase"]
 DECISIONS = {"RE-EXPORT", "ADAPT", "HIDE", "INTERNAL CONSUMER"}
-ENGINE_TYPE = re.compile(r"nexus_query_engine(?:::[A-Za-z_][A-Za-z0-9_]*)+")
+ENGINE_TYPE = re.compile(r"query_engine(?:::[A-Za-z_][A-Za-z0-9_]*)+")
 
 
 def fail(message: str) -> None:

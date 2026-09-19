@@ -1,0 +1,39 @@
+[package]
+name = "algeon-cuvs-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = ["crates-io"]
+links = "cuvs_c"
+description = "Generated low-level FFI bindings to the NVIDIA cuVS C API"
+license-file = "../../../LICENSE"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-cuvs-sys"
+readme = "../README.md"
+categories = ["api-bindings", "external-ffi-bindings"]
+keywords = ["cuvs", "cuda", "ffi", "gpu", "rapids"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[lints]
+workspace = true
+
+[lib]
+name = "cuvs_sys"
+
+[package.metadata.bindgen-cli]
+version = "0.73.2"
+
+[build-dependencies]
+anyhow.workspace = true
+cc.workspace = true
+cmake-package.workspace = true
+rapids-build-support.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+cmake-package.workspace = true
+static_assertions.workspace = true

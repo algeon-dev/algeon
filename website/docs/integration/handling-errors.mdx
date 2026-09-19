@@ -1,28 +1,28 @@
 ---
 sidebar_position: 7
 sidebar_label: Handling Errors
-description: Understand error ownership, DataFusion and Flight boundaries, retry evidence, and safe diagnostics in DataFusion Nexus.
+description: Understand error ownership, DataFusion and Flight boundaries, retry evidence, and safe diagnostics in Algeon.
 ---
 
 # Error Handling Design
 
-Every Nexus-owned adapter failure carries a stable machine-readable `code`, a
+Every Algeon-owned adapter failure carries a stable machine-readable `code`, a
 coarse `kind`, and a `status` that says whether the condition is permanent,
 temporary, or persistent, in addition to a human-readable message. An
 application can find that identity inside a `DataFusionError` that wraps a
-Nexus adapter error, or read it from gRPC metadata over Flight SQL, and
+DataFusion adapter error, or read it from gRPC metadata over Flight SQL, and
 should make decisions from those typed fields, never from formatted error
-text. Nexus keeps an error typed at the layer that owns the failure and
+text. Algeon keeps an error typed at the layer that owns the failure and
 converts it only when crossing a real boundary. Ordinary DataFusion errors
-that carry no Nexus identity, and transport errors below the server, keep
-their own policies: nothing in this guide upgrades them to Nexus errors.
+that carry no Algeon identity, and transport errors below the server, keep
+their own policies: nothing in this guide upgrades them to Algeon errors.
 
 The typical native-execution path is:
 
 ~~~text
 cuDF / cuGraph / cuVS
   -> shared native QueryError taxonomy
-  -> datafusion_nexus::error::Error
+  -> algeon_datafusion::error::Error
   -> DataFusionError::External
   -> embedded application or Flight SQL status
 ~~~
@@ -37,15 +37,15 @@ runtime failure is an error.
 
 | Layer | Error type | Responsibility |
 | --- | --- | --- |
-| `nexus-query-planning` | `QueryError` | Canonical DataFusion-independent error taxonomy plus IR, optimizer, capability, proof, and admission failures. |
-| `nexus-query-runtime` | planning's `QueryError` | Attempt lifecycle, query service, device ledger, grant, cache, observation, and metric failures; it does not define another taxonomy. |
-| `nexus-query-engine` | planning's `QueryError` | Native execution failures and the compatible public facade re-export. |
-| Root adapter | `datafusion_nexus::error::Error` | DataFusion planning/execution context and projection of native errors into the public adapter taxonomy. |
-| DataFusion traits | `DataFusionError` | Framework boundary only. Nexus errors cross it as a typed `External` source. |
-| `nexus-server` | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics. |
+| `query-planning` | `QueryError` | Canonical DataFusion-independent error taxonomy plus IR, optimizer, capability, proof, and admission failures. |
+| `query-runtime` | planning's `QueryError` | Attempt lifecycle, query service, device ledger, grant, cache, observation, and metric failures; it does not define another taxonomy. |
+| `query-engine` | planning's `QueryError` | Native execution failures and the compatible public facade re-export. |
+| DataFusion adapter | `algeon_datafusion::error::Error` | DataFusion planning/execution context and projection of native errors into the public adapter taxonomy. |
+| DataFusion traits | `DataFusionError` | Framework boundary only. Algeon errors cross it as a typed `External` source. |
+| DataFusion server module | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics under `algeon_datafusion::server`; the private `server` package only launches it. |
 
 Fix a missing classification at its owner. If a cuDF or cuGraph error lacks the
-typed information Nexus needs, extend the owning component crate instead of
+typed information Algeon needs, extend the owning component crate instead of
 parsing its message in the adapter.
 
 ## One identity, several projections
@@ -74,25 +74,25 @@ in-process diagnostics only and can contain raw facts and source text.
 `From<Error> for DataFusionError` performs one conversion:
 
 ```rust
-DataFusionError::External(Box::new(nexus_error))
+DataFusionError::External(Box::new(algeon_error))
 ```
 
 DataFusion may wrap that value in context, diagnostics, shared errors, or error
-collections. Use `DataFusionErrorExt::find_nexus_error()` rather than matching
+collections. Use `DataFusionErrorExt::find_algeon_error()` rather than matching
 one `External` layer:
 
 ```rust
 use datafusion::common::DataFusionError;
-use datafusion_nexus::error::DataFusionErrorExt;
+use algeon_datafusion::error::DataFusionErrorExt;
 
 fn record_failure(error: &DataFusionError) {
-    if let Some(nexus) = error.find_nexus_error() {
+    if let Some(algeon) = error.find_algeon_error() {
         tracing::warn!(
-            code = nexus.code().as_str(),
-            kind = nexus.kind().as_str(),
-            status = nexus.status().as_str(),
-            operation = nexus.operation(),
-            "Nexus query failed"
+            code = algeon.code().as_str(),
+            kind = algeon.kind().as_str(),
+            status = algeon.status().as_str(),
+            operation = algeon.operation(),
+            "Algeon query failed"
         );
         return;
     }
@@ -103,10 +103,10 @@ fn record_failure(error: &DataFusionError) {
 
 The search is deterministic depth-first pre-order and bounded by both depth
 and total node count. It follows standard source chains and visits every
-`DataFusionError::Collection` branch in order, returning the first Nexus
+`DataFusionError::Collection` branch in order, returning the first Algeon
 error it reaches — not the most severe one. A `None` result only means no
-Nexus error was found within that budget; it does not prove that branches
-beyond the budget contain no Nexus identity. When there is no match, keep the
+Algeon error was found within that budget; it does not prove that branches
+beyond the budget contain no Algeon identity. When there is no match, keep the
 application's existing DataFusion policy. There is deliberately no blanket
 conversion in the other direction.
 
@@ -116,7 +116,7 @@ Create the error where the failed contract is known:
 
 - Use the shared `QueryError` for DataFusion-independent planning, runtime, and
   engine behavior; add its canonical code and mappings in
-  `nexus-query-planning`.
+  `query-planning`.
 - Use adapter `Error` for DataFusion-specific planning, wrappers, and public
   integration behavior.
 - A `QueryError` reaching the adapter is converted at that boundary (the
@@ -124,8 +124,8 @@ Create the error where the failed contract is known:
   The conversion maps the native code and preserves native code, kind,
   status, operation, message, non-colliding facts, and source. Contributors
   find the canonical construction rules in the owner rustdoc
-  (`crates/nexus-query-planning/src/error.rs`, `src/error.rs`); integrators
-  only need the public constructors and `find_nexus_error()` shown above.
+  (`crates/algeon-query-planning/src/error.rs`, `crates/algeon-datafusion/src/error.rs`); integrators
+  only need the public constructors and `find_algeon_error()` shown above.
 - Use the existing typed lower-layer constructors and provenance at cuDF,
   cuGraph, or cuVS boundaries. Their mappings use enums and status, not message
   text.
@@ -140,7 +140,7 @@ planning, runtime, and engine, adapter `Result<T>` before DataFusion, and
 DataFusion's result type in DataFusion traits. Let `?` perform the single
 adapter-to-DataFusion conversion.
 
-Once native GPU execution starts, a failure closes the attempt; Nexus does not
+Once native GPU execution starts, a failure closes the attempt; Algeon does not
 replay the retained CPU plan. Native-owned failures stay typed, while a
 DataFusion-owned boundary failure keeps its DataFusion identity.
 
@@ -217,7 +217,7 @@ credentials.
 
 The built-in server first looks for a typed adapter error. Ordinary DataFusion
 errors receive a server-private classification for gRPC presentation, but that
-does not give them a public Nexus identity for embedded callers.
+does not give them a public Algeon identity for embedded callers.
 
 The server maps cancellation, auth, not-found, invalid/planning, unsupported,
 and resource kinds to their matching gRPC codes. Execution, dependency,
@@ -234,10 +234,10 @@ not a condition to blindly retry.
 
 Every status created from an adapter `Error` includes these metadata fields:
 
-- `x-datafusion-nexus-error-code`
-- `x-datafusion-nexus-error-kind`
-- `x-datafusion-nexus-error-status`
-- `x-datafusion-nexus-error-operation`
+- `x-algeon-error-code`
+- `x-algeon-error-kind`
+- `x-algeon-error-status`
+- `x-algeon-error-operation`
 
 The server also projects only `unsupported_column`, `unsupported_column_type`,
 `unsupported_column_role`, `predicate_role`, `reason`, `required_option`,
@@ -256,7 +256,7 @@ the projection, not the producer.
 Metadata values must be transmittable ASCII and are capped at 256 bytes per
 value with a `...` marker. Values that cannot cross the wire (for example
 non-ASCII schema details) are omitted and listed under
-`x-datafusion-nexus-omitted-facts`; the full diagnosis stays available in the
+`x-algeon-omitted-facts`; the full diagnosis stays available in the
 status message and query stats.
 
 ### Strict unsupported-type rejection
@@ -276,10 +276,10 @@ That status also carries the matching structured metadata:
 
 | Metadata key | Example value |
 | --- | --- |
-| `x-datafusion-nexus-reason` | `unsupported_type` |
-| `x-datafusion-nexus-unsupported-column` | `countDetail` |
-| `x-datafusion-nexus-unsupported-column-type` | `List(Decimal128(10, 2))` |
-| `x-datafusion-nexus-unsupported-column-role` | `projected` |
+| `x-algeon-reason` | `unsupported_type` |
+| `x-algeon-unsupported-column` | `countDetail` |
+| `x-algeon-unsupported-column-type` | `List(Decimal128(10, 2))` |
+| `x-algeon-unsupported-column-role` | `projected` |
 
 The terminal `GetQueryStats` structured error retains the same facts as
 `fact.reason`, `fact.unsupported_column`, `fact.unsupported_column_type`, and
@@ -292,7 +292,7 @@ The four projections do not carry identical bytes. The status message keeps
 the full actionable text, including non-ASCII column names. Metadata carries
 only ASCII values capped at 256 bytes with a `...` marker; a non-ASCII column
 name is omitted from metadata and listed under
-`x-datafusion-nexus-omitted-facts`. Query stats retain the structured facts
+`x-algeon-omitted-facts`. Query stats retain the structured facts
 without the wire encoding limits. The column name never enters operational
 logs or `Debug` output. Compare projections per surface — message, metadata,
 logs, query stats — rather than asserting four equal strings.
@@ -316,7 +316,7 @@ When adding an error:
    tests. A useful regression test must fail when the mapping or boundary
    behavior is reverted.
 
-The canonical implementation points are `src/error.rs`, `src/error/code.rs`,
-`crates/nexus-query-planning/src/error.rs`,
-`crates/nexus-query-runtime/src/observability/attempt_report.rs`,
-`crates/nexus-query-engine/src/exec/`, and `crates/nexus-server/src/error.rs`.
+The canonical implementation points are `crates/algeon-datafusion/src/error.rs`, `crates/algeon-datafusion/src/error/code.rs`,
+`crates/algeon-query-planning/src/error.rs`,
+`crates/algeon-query-runtime/src/observability/attempt_report.rs`,
+`crates/algeon-query-engine/src/exec/`, and `crates/algeon-datafusion/src/server/error.rs`.

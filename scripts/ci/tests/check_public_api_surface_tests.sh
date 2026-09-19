@@ -11,21 +11,20 @@ export PUBLIC_API_SKIP_NATIVE_COMPONENT_POLICY=1
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "${ROOT}"
 
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-public-api-surface-tests.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-public-api-surface-tests.XXXXXX")
 trap 'rm -rf "${tmp_dir}"' EXIT
 mkdir -p "${tmp_dir}/bin" "${tmp_dir}/snapshots"
 
 # A deterministic, tiny fake "public API" per crate, independent of the real
 # crates in this repository.
-baseline_datafusion_nexus='pub fn datafusion_nexus::backend::NexusGpuBackend::builder() -> datafusion_nexus::backend::NexusGpuBackendBuilder
-pub struct datafusion_nexus::backend::NexusGpuBackend'
-baseline_nexus_query_engine='pub fn nexus_query_engine::runtime::GpuBackendSession::admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle>'
-baseline_nexus_query_planning='pub struct nexus_query_planning::plan::QueryPlan'
-baseline_nexus_query_runtime='pub struct nexus_query_runtime::runtime::GpuBackendSession'
-baseline_nexus_bench='pub mod nexus_bench::tpch_benchmark'
-baseline_nexus_server='pub struct nexus_server::FlightSqlServer'
-baseline_cudf_nexus='pub mod cudf'
-baseline_cugraph_nexus='pub mod cugraph'
+baseline_algeon_datafusion='pub fn algeon_datafusion::backend::AlgeonGpuBackend::builder() -> algeon_datafusion::backend::AlgeonGpuBackendBuilder
+pub struct algeon_datafusion::backend::AlgeonGpuBackend'
+baseline_query_engine='pub fn query_engine::runtime::GpuBackendSession::admit_query(&self) -> query_engine::error::Result<query_engine::runtime::QueryHandle>'
+baseline_query_planning='pub struct query_planning::plan::QueryPlan'
+baseline_query_runtime='pub struct query_runtime::runtime::GpuBackendSession'
+baseline_bench='pub mod bench::tpch_benchmark'
+baseline_cudf='pub mod cudf'
+baseline_cugraph='pub mod cugraph'
 
 # A deterministic fake toolchain identity, in the same shape
 # current_toolchain_identity() in the real script produces.
@@ -80,14 +79,13 @@ if [[ "\${crate}" == "\${FAKE_TOOL_FAILS_FOR:-}" ]]; then
 fi
 
 case "\${crate}" in
-  datafusion-nexus) printf '%s\n' "\${FAKE_DATAFUSION_NEXUS:-${baseline_datafusion_nexus}}" ;;
-  nexus-query-engine) printf '%s\n' "\${FAKE_NEXUS_QUERY_ENGINE:-${baseline_nexus_query_engine}}" ;;
-  nexus-query-planning) printf '%s\n' "\${FAKE_NEXUS_QUERY_PLANNING:-${baseline_nexus_query_planning}}" ;;
-  nexus-query-runtime) printf '%s\n' "\${FAKE_NEXUS_QUERY_RUNTIME:-${baseline_nexus_query_runtime}}" ;;
-  nexus-bench) printf '%s\n' "\${FAKE_NEXUS_BENCH:-${baseline_nexus_bench}}" ;;
-  nexus-server) printf '%s\n' "\${FAKE_NEXUS_SERVER:-${baseline_nexus_server}}" ;;
-  cudf-nexus) printf '%s\n' "\${FAKE_CUDF_NEXUS:-${baseline_cudf_nexus}}" ;;
-  cugraph-nexus) printf '%s\n' "\${FAKE_CUGRAPH_NEXUS:-${baseline_cugraph_nexus}}" ;;
+  algeon-datafusion) printf '%s\n' "\${FAKE_DATAFUSION_ALGEON:-${baseline_algeon_datafusion}}" ;;
+  algeon-query-engine) printf '%s\n' "\${FAKE_ALGEON_QUERY_ENGINE:-${baseline_query_engine}}" ;;
+  algeon-query-planning) printf '%s\n' "\${FAKE_ALGEON_QUERY_PLANNING:-${baseline_query_planning}}" ;;
+  algeon-query-runtime) printf '%s\n' "\${FAKE_ALGEON_QUERY_RUNTIME:-${baseline_query_runtime}}" ;;
+  bench) printf '%s\n' "\${FAKE_ALGEON_BENCH:-${baseline_bench}}" ;;
+  algeon-cudf) printf '%s\n' "\${FAKE_CUDF_ALGEON:-${baseline_cudf}}" ;;
+  algeon-cugraph) printf '%s\n' "\${FAKE_CUGRAPH_ALGEON:-${baseline_cugraph}}" ;;
   *)
     echo "unexpected fake cargo-public-api crate: \${crate}" >&2
     exit 97
@@ -100,15 +98,14 @@ write_clean_snapshots() {
   local dir=$1
   mkdir -p "${dir}"
   printf '%s\n' "${baseline_toolchain_file}" >"${dir}/TOOLCHAIN.txt"
-  printf '%s\n' "${baseline_datafusion_nexus}" >"${dir}/datafusion-nexus.txt"
-  printf '%s\n' "${baseline_nexus_query_engine}" >"${dir}/nexus-query-engine.txt"
-  printf '%s\n' "${baseline_nexus_query_planning}" >"${dir}/nexus-query-planning.txt"
-  printf '%s\n' "${baseline_nexus_query_runtime}" >"${dir}/nexus-query-runtime.txt"
-  printf '%s\n' "${baseline_nexus_bench}" >"${dir}/nexus-bench.txt"
-  printf '%s\n' "${baseline_nexus_server}" >"${dir}/nexus-server.txt"
-  printf '%s\n' "${baseline_cudf_nexus}" >"${dir}/cudf-nexus.txt"
-  printf '%s\n' "${baseline_cugraph_nexus}" >"${dir}/cugraph-nexus.txt"
-  cp .config/policies/public-api/datafusion-nexus-hidden.tsv "${dir}/"
+  printf '%s\n' "${baseline_algeon_datafusion}" >"${dir}/algeon-datafusion.txt"
+  printf '%s\n' "${baseline_query_engine}" >"${dir}/algeon-query-engine.txt"
+  printf '%s\n' "${baseline_query_planning}" >"${dir}/algeon-query-planning.txt"
+  printf '%s\n' "${baseline_query_runtime}" >"${dir}/algeon-query-runtime.txt"
+  printf '%s\n' "${baseline_bench}" >"${dir}/bench.txt"
+  printf '%s\n' "${baseline_cudf}" >"${dir}/algeon-cudf.txt"
+  printf '%s\n' "${baseline_cugraph}" >"${dir}/algeon-cugraph.txt"
+  cp .config/policies/public-api/algeon-datafusion-hidden.tsv "${dir}/"
 }
 
 run_check() {
@@ -159,20 +156,19 @@ assert_not_contains() {
 
 CHECK_SCRIPT=scripts/ci/check_public_api_surface.sh
 
-# 1. Clean baseline: check passes for all eight crates.
+# 1. Clean baseline: check passes for all seven independently snapshotted crates.
 clean_dir="${tmp_dir}/snapshots/clean"
 write_clean_snapshots "${clean_dir}"
 run_check clean "${clean_dir}" "${CHECK_SCRIPT}" check --all-features
 assert_status clean 0
-assert_contains "${tmp_dir}/clean.output" "PASS: datafusion-nexus public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: nexus-query-engine public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: nexus-query-planning public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: nexus-query-runtime public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: nexus-bench public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: nexus-server public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: cudf-nexus public API matches"
-assert_contains "${tmp_dir}/clean.output" "PASS: cugraph-nexus public API matches"
-echo "PASS: clean snapshot matches for all eight crates"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-datafusion public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-query-engine public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-query-planning public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-query-runtime public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: bench public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cudf public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cugraph public API matches"
+echo "PASS: clean snapshot matches for all seven independently snapshotted crates"
 
 # 2. Fault injection: a forbidden item reappears in one crate's public API.
 # This is the regression this whole check exists to catch, and it must fail
@@ -180,34 +176,34 @@ echo "PASS: clean snapshot matches for all eight crates"
 drift_dir="${tmp_dir}/snapshots/drift"
 write_clean_snapshots "${drift_dir}"
 run_check drift "${drift_dir}" env \
-  FAKE_NEXUS_BENCH="${baseline_nexus_bench}
-pub fn nexus_bench::workload::forbidden_reintroduced_facade()" \
+  FAKE_ALGEON_BENCH="${baseline_bench}
+pub fn bench::workload::forbidden_reintroduced_facade()" \
   bash "${CHECK_SCRIPT}" check --all-features
 assert_status drift 1
-assert_contains "${tmp_dir}/drift.output" "ERROR: public API of 'nexus-bench' drifted from the checked-in snapshot"
-assert_contains "${tmp_dir}/drift.output" "+pub fn nexus_bench::workload::forbidden_reintroduced_facade()"
+assert_contains "${tmp_dir}/drift.output" "ERROR: public API of 'bench' drifted from the checked-in snapshot"
+assert_contains "${tmp_dir}/drift.output" "+pub fn bench::workload::forbidden_reintroduced_facade()"
 assert_contains "${tmp_dir}/drift.output" "bash scripts/ci/check_public_api_surface.sh write --all-features"
-assert_contains "${tmp_dir}/drift.output" "PASS: datafusion-nexus public API matches"
+assert_contains "${tmp_dir}/drift.output" "PASS: algeon-datafusion public API matches"
 echo "PASS: a reintroduced forbidden item fails closed with a useful diagnostic, without masking other crates' results"
 
 # 3. Missing snapshot file: fails closed with instructions, not a silent skip.
 missing_dir="${tmp_dir}/snapshots/missing"
 write_clean_snapshots "${missing_dir}"
-rm -f "${missing_dir}/nexus-query-engine.txt"
+rm -f "${missing_dir}/algeon-query-engine.txt"
 run_check missing "${missing_dir}" "${CHECK_SCRIPT}" check --all-features
 assert_status missing 1
 assert_contains "${tmp_dir}/missing.output" "ERROR: missing public API snapshot"
-assert_contains "${tmp_dir}/missing.output" "nexus-query-engine.txt"
+assert_contains "${tmp_dir}/missing.output" "algeon-query-engine.txt"
 echo "PASS: a missing snapshot fails closed instead of being silently skipped"
 
 # 4. The underlying tool itself failing (e.g. a build error) is reported, not
 # swallowed as an empty diff.
 tool_failure_dir="${tmp_dir}/snapshots/tool_failure"
 write_clean_snapshots "${tool_failure_dir}"
-run_check tool_failure "${tool_failure_dir}" env FAKE_TOOL_FAILS_FOR=nexus-query-engine \
+run_check tool_failure "${tool_failure_dir}" env FAKE_TOOL_FAILS_FOR=algeon-query-engine \
   bash "${CHECK_SCRIPT}" check --all-features
 assert_status tool_failure 1
-assert_contains "${tmp_dir}/tool_failure.output" "ERROR: cargo public-api failed for 'nexus-query-engine'"
+assert_contains "${tmp_dir}/tool_failure.output" "ERROR: cargo public-api failed for 'algeon-query-engine'"
 assert_contains "${tmp_dir}/tool_failure.output" "FAKE_CARGO_PUBLIC_API_FAILURE"
 echo "PASS: a failing underlying tool is reported per-crate rather than swallowed"
 
@@ -215,12 +211,12 @@ echo "PASS: a failing underlying tool is reported per-crate rather than swallowe
 # intentional API change has a real, reviewable approval path.
 write_dir="${tmp_dir}/snapshots/write_roundtrip"
 mkdir -p "${write_dir}"
-cp .config/policies/public-api/datafusion-nexus-hidden.tsv "${write_dir}/"
+cp .config/policies/public-api/algeon-datafusion-hidden.tsv "${write_dir}/"
 run_check write_mode "${write_dir}" "${CHECK_SCRIPT}" write --all-features
 assert_status write_mode 0
-assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/datafusion-nexus.txt"
+assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/algeon-datafusion.txt"
 assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/TOOLCHAIN.txt"
-diff -u "${write_dir}/nexus-bench.txt" <(printf '%s\n' "${baseline_nexus_bench}")
+diff -u "${write_dir}/bench.txt" <(printf '%s\n' "${baseline_bench}")
 diff -u "${write_dir}/TOOLCHAIN.txt" <(printf '%s\n' "${baseline_toolchain_file}")
 run_check write_roundtrip_check "${write_dir}" "${CHECK_SCRIPT}" check --all-features
 assert_status write_roundtrip_check 0
@@ -283,70 +279,70 @@ echo "PASS: an unknown or missing mode argument is a usage error"
 
 facade_dir="${tmp_dir}/facade_policy"
 mkdir -p "${facade_dir}"
-facade_snapshot="${facade_dir}/datafusion-nexus.txt"
-facade_ledger="${facade_dir}/datafusion-nexus-engine-types.tsv"
+facade_snapshot="${facade_dir}/algeon-datafusion.txt"
+facade_ledger="${facade_dir}/algeon-datafusion-engine-types.tsv"
 facade_output="${facade_dir}/output"
 facade_header=$'public_symbol\tengine_type\tconsumer\tdecision\tfacade_path\treason\tphase'
-facade_engine_type='nexus_query_engine::observability::attempt_report::AttemptId'
+facade_engine_type='query_engine::observability::attempt_report::AttemptId'
 printf '%s\n' \
-  'pub use datafusion_nexus::attempt::AttemptId' \
-  "pub fn datafusion_nexus::attempt::id() -> ${facade_engine_type}" \
+  'pub use algeon_datafusion::attempt::AttemptId' \
+  "pub fn algeon_datafusion::attempt::id() -> ${facade_engine_type}" \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'datafusion_nexus::attempt::AttemptId\tnexus_query_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\tdatafusion_nexus::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  $'algeon_datafusion::attempt::AttemptId\tquery_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
   >"${facade_ledger}"
 python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
 assert_contains "${facade_output}" "PASS: 1 live engine types have unique approved facade reachability"
 echo "PASS: an approved selective re-export has a reachable facade path"
 
 printf '%s\n' \
-  'pub use datafusion_nexus::attempt::RuntimeTerminalOutcome' \
+  'pub use algeon_datafusion::attempt::RuntimeTerminalOutcome' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'datafusion_nexus::attempt::RuntimeTerminalOutcome\tnexus_query_engine::observability::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\tdatafusion_nexus::attempt::RuntimeTerminalOutcome\tstable terminal outcome\t3' \
+  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_engine::observability::RuntimeTerminalOutcome\tattempt observability\tRE-EXPORT\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tstable terminal outcome\t3' \
   >"${facade_ledger}"
 python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
 assert_contains "${facade_output}" "PASS: 1 live engine types have unique approved facade reachability"
 echo "PASS: a pure facade re-export has a live disposition"
 
 printf '%s\n' \
-  'pub use datafusion_nexus::attempt::RuntimeTerminalOutcome' \
+  'pub use algeon_datafusion::attempt::RuntimeTerminalOutcome' \
   >"${facade_snapshot}"
 printf '%s\n' \
   "${facade_header}" \
-  $'datafusion_nexus::attempt::RuntimeTerminalOutcome\tnexus_query_engine::observability::RuntimeTerminalOutcome\tattempt observability\tHIDE\tdatafusion_nexus::attempt::RuntimeTerminalOutcome\tinternal terminal outcome\t3' \
+  $'algeon_datafusion::attempt::RuntimeTerminalOutcome\tquery_engine::observability::RuntimeTerminalOutcome\tattempt observability\tHIDE\talgeon_datafusion::attempt::RuntimeTerminalOutcome\tinternal terminal outcome\t3' \
   >"${facade_ledger}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
   echo "FAIL: a pure facade re-export with HIDE disposition passed the facade policy" >&2
   exit 1
 fi
-assert_contains "${facade_output}" "forbidden HIDE type reappeared in the live surface: nexus_query_engine::observability::RuntimeTerminalOutcome"
+assert_contains "${facade_output}" "forbidden HIDE type reappeared in the live surface: query_engine::observability::RuntimeTerminalOutcome"
 echo "PASS: a pure facade re-export cannot bypass a HIDE disposition"
 
 printf '%s\n' \
-  'pub use datafusion_nexus::attempt::AttemptId' \
-  "pub fn datafusion_nexus::attempt::id() -> ${facade_engine_type}" \
-  'pub fn datafusion_nexus::native::plan() -> nexus_query_engine::plan::core::QueryPlan' \
+  'pub use algeon_datafusion::attempt::AttemptId' \
+  "pub fn algeon_datafusion::attempt::id() -> ${facade_engine_type}" \
+  'pub fn algeon_datafusion::native::plan() -> query_engine::plan::core::QueryPlan' \
   >"${facade_snapshot}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
   echo "FAIL: an unclassified live engine type passed the facade policy" >&2
   exit 1
 fi
-assert_contains "${facade_output}" "live engine type has no disposition: nexus_query_engine::plan::core::QueryPlan"
+assert_contains "${facade_output}" "live engine type has no disposition: query_engine::plan::core::QueryPlan"
 echo "PASS: an unclassified live engine type fails closed"
 
 printf '%s\n' \
   "${facade_header}" \
-  $'datafusion_nexus::attempt::AttemptId\tnexus_query_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\tdatafusion_nexus::attempt::AttemptId\tstable immutable attempt identity\t3' \
-  $'datafusion_nexus::native::plan\tnexus_query_engine::plan::core::QueryPlan\tnative IR\tHIDE\tdatafusion_nexus::report::PlanningReport\traw IR stays engine-owned\t5' \
+  $'algeon_datafusion::attempt::AttemptId\tquery_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\talgeon_datafusion::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  $'algeon_datafusion::native::plan\tquery_engine::plan::core::QueryPlan\tnative IR\tHIDE\talgeon_datafusion::report::PlanningReport\traw IR stays engine-owned\t5' \
   >"${facade_ledger}"
 if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
   echo "FAIL: a live HIDE engine type passed the facade policy" >&2
   exit 1
 fi
-assert_contains "${facade_output}" "nexus_query_engine::plan::core::QueryPlan is live but disposition is HIDE"
+assert_contains "${facade_output}" "query_engine::plan::core::QueryPlan is live but disposition is HIDE"
 echo "PASS: a HIDE engine type cannot reappear in the public surface"
 
 
@@ -356,7 +352,7 @@ mkdir -p "${native_policy_dir}"
 native_snapshot_dir="${native_policy_dir}/snapshots"
 mkdir -p "${native_snapshot_dir}"
 
-cat >"${native_snapshot_dir}/cudf-nexus.txt" <<'EOF'
+cat >"${native_snapshot_dir}/algeon-cudf.txt" <<'EOF'
 pub mod cudf
 pub mod cudf::core
 pub mod cudf::device
@@ -368,7 +364,7 @@ pub mod cudf::ops
 pub mod cudf::runtime
 EOF
 
-cat >"${native_snapshot_dir}/cugraph-nexus.txt" <<'EOF'
+cat >"${native_snapshot_dir}/algeon-cugraph.txt" <<'EOF'
 pub mod cugraph
 pub mod cugraph::array
 pub mod cugraph::centrality
@@ -399,23 +395,23 @@ if ! python3 scripts/ci/check_native_component_architecture.py "${native_snapsho
 fi
 echo "PASS: native component architecture clean baseline passed"
 
-cat >>"${native_snapshot_dir}/cudf-nexus.txt" <<'EOF'
+cat >>"${native_snapshot_dir}/algeon-cudf.txt" <<'EOF'
 pub mod cudf::unapproved_new_ns
 EOF
 if python3 scripts/ci/check_native_component_architecture.py "${native_snapshot_dir}" "${native_policy_file}" >"${tmp_dir}/native_unapproved.output" 2>&1; then
   echo "FAIL: unapproved top-level namespace passed policy" >&2
   exit 1
 fi
-assert_contains "${tmp_dir}/native_unapproved.output" "unapproved top-level namespaces for cudf-nexus: unapproved_new_ns"
+assert_contains "${tmp_dir}/native_unapproved.output" "unapproved top-level namespaces for algeon-cudf: unapproved_new_ns"
 echo "PASS: unapproved top-level namespace fails closed"
 
-sed -i '/pub mod cudf::unapproved_new_ns/d' "${native_snapshot_dir}/cudf-nexus.txt"
-sed -i '/pub mod cudf::runtime/d' "${native_snapshot_dir}/cudf-nexus.txt"
+sed -i '/pub mod cudf::unapproved_new_ns/d' "${native_snapshot_dir}/algeon-cudf.txt"
+sed -i '/pub mod cudf::runtime/d' "${native_snapshot_dir}/algeon-cudf.txt"
 if python3 scripts/ci/check_native_component_architecture.py "${native_snapshot_dir}" "${native_policy_file}" >"${tmp_dir}/native_stale.output" 2>&1; then
   echo "FAIL: stale approved namespace passed policy" >&2
   exit 1
 fi
-assert_contains "${tmp_dir}/native_stale.output" "stale approved top-level namespaces for cudf-nexus: runtime"
+assert_contains "${tmp_dir}/native_stale.output" "stale approved top-level namespaces for algeon-cudf: runtime"
 echo "PASS: stale approved top-level namespace fails closed"
 
 echo "OK: public API surface snapshot check fault-injection tests passed."

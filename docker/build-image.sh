@@ -27,7 +27,7 @@ command -v docker >/dev/null 2>&1 || {
     exit 1
 }
 
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-datafusion-nexus-server}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-algeon-server}"
 IMAGE_TAG="$IMAGE_REPOSITORY:$CPU_IMAGE_TAG_SUFFIX"
 docker_args=(
     build

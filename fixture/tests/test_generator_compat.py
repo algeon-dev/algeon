@@ -152,7 +152,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
     def test_dblp_edge_footer_carries_simple_topology_and_only_full_fixture_carries_vertex_bound(self) -> None:
         dblp = load_script_module("dblp_ingest_footer_contract_under_test", DBLP_INGEST)
 
-        with tempfile.TemporaryDirectory(prefix="nexus_dblp_footer_contract.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_dblp_footer_contract.") as tmp:
             root = Path(tmp)
             source = root / "dblp.json"
             source.write_text(
@@ -218,7 +218,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
     def test_dblp_multi_graph_slices_are_disjoint_discoverable_and_rowset_distinct(self) -> None:
         dblp = load_script_module("dblp_ingest_multigraph_contract_under_test", DBLP_INGEST)
 
-        with tempfile.TemporaryDirectory(prefix="nexus_dblp_multigraph_contract.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_dblp_multigraph_contract.") as tmp:
             root = Path(tmp)
             source = root / "dblp.json"
             papers = [
@@ -315,7 +315,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         )
 
     def test_fixture_router_calls_generate_raw_without_verification_dependency(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_router.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_router.") as tmp:
             root = Path(tmp)
             true_root = fake_tpcgen_root(root, "/bin/true")
             tpch = run_cmd(
@@ -364,7 +364,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertIn("--out-root", result.stdout)
 
     def test_force_flag_preserves_overwrite_behavior(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_force.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_force.") as tmp:
             root = Path(tmp)
             true_root = fake_tpcgen_root(root, "/bin/true")
             out_dir = Path(tmp) / "tpch_force"
@@ -391,7 +391,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             self.assertFalse(stale.exists())
 
     def test_new_generator_entrypoints_remain_strict_by_default(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_strict.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_strict.") as tmp:
             root = Path(tmp)
             true_root = fake_tpcgen_root(root, "/bin/true")
 
@@ -428,7 +428,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             self.assertNotEqual(tpcds.returncode, 0)
 
     def test_new_optimized_variant_reaches_backend_with_out_root(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_optimized.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_optimized.") as tmp:
             root = Path(tmp)
             false_root = fake_tpcgen_root(root, "/bin/false")
 
@@ -469,7 +469,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
             self.assertIn("tpcds parquet", tpcds.stderr)
 
     def test_fixture_router_new_optimized_variant_reaches_backend_with_out_root(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_router_optimized.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_router_optimized.") as tmp:
             root = Path(tmp)
             false_root = fake_tpcgen_root(root, "/bin/false")
 
@@ -520,7 +520,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertIn("--reload", result.stdout)
 
     def test_citation_network_loader_fails_fast_with_acquisition_instructions(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_citation_missing.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_citation_missing.") as tmp:
             root = Path(tmp)
             result = run_cmd(
                 [
@@ -546,7 +546,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertIn("dblp_ingest.py", result.stderr)
 
     def test_citation_network_loader_rejects_partial_parquet_before_staging(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="nexus_fixture_citation_partial.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_fixture_citation_partial.") as tmp:
             root = Path(tmp)
             parquet = root / "partial"
             parquet.mkdir()
@@ -668,7 +668,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         writer = load_script_module("spark_write_iceberg_local_schema_under_test", SPARK_WRITE_ICEBERG)
         spark = FakeSpark()
 
-        with tempfile.TemporaryDirectory(prefix="nexus_add_files_schema.") as tmp:
+        with tempfile.TemporaryDirectory(prefix="algeon_add_files_schema.") as tmp:
             (Path(tmp) / "profiles_by_paper_id.parquet").touch()
             writer.add_files_mode(
                 spark,

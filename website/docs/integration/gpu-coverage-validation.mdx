@@ -6,7 +6,7 @@ description: Inspect the exact planned GPU and DataFusion execution domains for 
 
 # GPU Coverage Validation
 
-`nexus_explain_coverage` tells you, before running a query, which parts of it
+`algeon_explain_coverage` tells you, before running a query, which parts of it
 will execute on the GPU and which will stay on the DataFusion CPU path, with a
 stable reason and remedy for each part that was not selected. It plans the
 query exactly as execution would, but does not execute it and does not wait
@@ -19,7 +19,7 @@ contains GPU work.
 
 ## SQL surface
 
-On a session with the Nexus native optimizer installed, call the table function
+On a session with the Algeon native optimizer installed, call the table function
 with one query string literal:
 
 ```sql
@@ -31,7 +31,7 @@ SELECT row_kind,
        remedy_kind,
        remedy,
        coverage_json
-FROM nexus_explain_coverage('SELECT l_returnflag, sum(l_quantity)
+FROM algeon_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
 ```
 
@@ -51,7 +51,7 @@ FROM lineitem GROUP BY l_returnflag;
 Arrow schema but returns only the summary row, whose `coverage_json` contains
 all candidate evidence. `EXPLAIN GPU` is Flight SQL statement-query syntax; it
 cannot be prepared or sent to an update endpoint. Both the UDTF and Flight
-schema carry `datafusion_nexus.explain_gpu.schema_version=2` in Arrow schema
+schema carry `algeon_datafusion.explain_gpu.schema_version=2` in Arrow schema
 metadata so clients can identify this shared row contract without inspecting
 its columns. When planning produces no executable plan, the summary
 `gpu_fragments` and `cpu_boundaries` cells are null, not zero.
@@ -71,7 +71,7 @@ its columns. When planning produces no executable plan, the summary
 
 Validation accepts exactly one query statement. Empty input, multiple
 statements, non-query statements, and direct or view-indirect recursive calls
-to `nexus_explain_coverage` return a structured terminal result.
+to `algeon_explain_coverage` return a structured terminal result.
 
 ## Final disposition and GPU path
 
@@ -120,7 +120,7 @@ describe the completed executable plan.
 
 ## Validation uses the caller's real planning contract
 
-Validation clones the caller's `SessionState`. If that state has a Nexus
+Validation clones the caller's `SessionState`. If that state has an Algeon
 native optimizer rule, the clone receives an isolated copy of the exact
 optimizer configuration after the cloned DataFusion options are applied. Its
 completed-plan requirements are copied too. Validation does not install a
@@ -145,7 +145,7 @@ fingerprints do not claim that source metadata or table contents are unchanged.
 The SQL function and Rust API use the same validation primitive:
 
 ```rust
-use datafusion_nexus::{
+use algeon_datafusion::{
     gpu_coverage::{QueryGpuPlanningOutcome, validate_query},
     planner::FinalPlanDisposition,
 };
@@ -188,7 +188,7 @@ executes the returned plan or performs GPU admission.
 | --- | --- |
 | `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait or fail under concurrency; once admitted, each grant is immutable. |
 | `device_memory_runtime_unknown` | Allocation, reservation, and retry outcomes depend on data and concurrency. |
-| `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, a native failure is terminal; Nexus does not replay it on CPU. |
+| `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, a native failure is terminal; Algeon does not replay it on CPU. |
 | `host_output_materialization` | Query output is materialized back to host Arrow outside the GPU-execution promise. |
 | `cugraph_runtime_validation_unknown` | cuGraph seed, personalization, weight, and device-side checks can still fail at runtime. |
 | `execution_mode_plan_time_only` | Coverage does not acquire a device grant; capability-first admission and bounded execution happen later for the selected native plan. |
@@ -198,7 +198,7 @@ executes the returned plan or performs GPU admission.
 [`gpu_validate_call`](../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json)
 validates one installed GPU function call's named relations and provider-owned
 options. Its result does not inspect the surrounding physical plan.
-`nexus_explain_coverage` inspects the whole planned query, including DataFusion
+`algeon_explain_coverage` inspects the whole planned query, including DataFusion
 boundaries feeding or consuming an explicit GPU island. Use both when composing
 graph SQL: validate the function call, then check coverage for the query that
 will execute.

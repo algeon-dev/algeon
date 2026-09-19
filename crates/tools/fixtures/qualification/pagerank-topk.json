@@ -1,0 +1,17 @@
+{
+  "schema": "algeon_tools.single_node_multi_gpu.run_profile.v1",
+  "version": 1,
+  "name": "qualification-pagerank-topk-cache-off",
+  "scenario_requirements": {},
+  "graph_claim_calibration": {},
+  "vram_calibration": {"max_underclaim_bytes": 67108864, "max_observed_to_claim_ratio_milli": 1000, "max_overclaim_bytes": 67108864, "max_claim_to_observed_ratio_milli": 1000},
+  "backend": {
+    "device_profiles": [{"ordinal": 0, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 0, "default_query_limit_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 1, "installation": {"stream_pool_size": 3, "worker_count": 1, "lane_count": 1}}],
+    "queue": {"max_queued_attempts": 64, "max_queue_wait_ms": 30000},
+    "native_execution": {"device_budget_bytes": 1073741824, "max_source_chunk_bytes": 268435456, "max_row_groups_per_chunk": 1024, "max_retry_attempts": 3, "min_retry_chunk_row_groups": 1}
+  },
+  "session": {"shared_session_count": 1},
+  "scheduling": {"arrival_mode": "concurrency", "concurrency": 1, "seed": 20260810, "warmup_seconds": 0, "measurement_seconds": 70, "max_rounds": 1},
+  "cache": {"mode": "disabled"},
+  "workloads": [{"kind": "dblp", "path": "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet", "scale": "v12", "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1", "queries": ["pagerank_topk"]}]
+}

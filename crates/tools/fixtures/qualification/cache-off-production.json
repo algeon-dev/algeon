@@ -1,0 +1,85 @@
+{
+  "schema": "algeon_tools.single_node_multi_gpu.qualification_manifest.v1",
+  "version": 1,
+  "target_claim": "cache-off production-qualified",
+  "cells": [
+    {
+      "name": "pagerank-topk",
+      "profile_path": "pagerank-topk.json",
+      "profile_sha256": "9a13502bd25996fcd530e46cde4d070c405f5fc422ed3838b20dd4d227956cf3",
+      "minimum_repeats": 3,
+      "maximum_sample_gap_ms": 1000,
+      "required_queries": ["pagerank_topk"]
+    },
+    {
+      "name": "bfs-topk",
+      "profile_path": "bfs-topk.json",
+      "profile_sha256": "238a53e195acb3ed416cfedde43cea66e94eed0e7118b8aa3de37199ebbc5b76",
+      "minimum_repeats": 3,
+      "maximum_sample_gap_ms": 1000,
+      "required_queries": ["bfs_topk"]
+    },
+    {
+      "name": "conservative-owner-sum",
+      "profile_path": "../p6-isolated-pagerank-cache-off.json",
+      "profile_sha256": "3a66966a18de6213f0be696926accfaa2ad015b5c4ad7cb8ca1d5437480785f8",
+      "minimum_repeats": 1,
+      "maximum_sample_gap_ms": 1000,
+      "required_queries": ["pagerank"]
+    },
+    {
+      "name": "four-gpu-mixed",
+      "profile_path": "four-gpu-mixed.json",
+      "profile_sha256": "20e929dede5376d95125b5d4abe48853a9d622a132ab347d9d463290645e12cc",
+      "minimum_repeats": 1,
+      "maximum_sample_gap_ms": 1000,
+      "required_queries": ["pagerank_topk", "bfs_topk", "pagerank"],
+      "required_clauses": ["multiple_admitted_attempts_on_one_device", "distinct_grants", "distinct_domains", "concurrent_attempt_intervals_on_one_device", "witnessed_concurrent_device_occupancy", "one_ordinal_per_attempt", "progress_on_all_eligible_devices"],
+      "mixed_interval": {
+        "device_ordinals": [0, 1, 2, 3],
+        "minimum_utilization_percent": 80,
+        "minimum_duration_seconds": 60,
+        "maximum_sample_gap_ms": 1000,
+        "minimum_active_attempts": 4,
+        "minimum_completed_attempts": 4,
+        "minimum_successful_native_attempts": 4
+      }
+    },
+    {
+      "name": "overload-fairness",
+      "profile_path": "../p6-overload-fairness-profile.json",
+      "profile_sha256": "1ca63abc7eb6589cff12bcd1ca6cfc29a14de8c56a731e1ab5eaa6dd8d484808",
+      "minimum_repeats": 1,
+      "maximum_sample_gap_ms": 1000,
+      "required_evidence": ["/execution/measurement/aggregate/scenarios/overload_fairness"],
+      "required_queries": ["q01", "edge_scan"]
+    },
+    {
+      "name": "device-quarantine",
+      "profile_path": "../p6-concurrent-quarantine-profile.json",
+      "profile_sha256": "897d9083546464483c24d6ebb7c2b3d051b2072a303a18a8ecb8d4e3014d034c",
+      "minimum_repeats": 1,
+      "maximum_sample_gap_ms": 1000,
+      "required_evidence": ["/execution/measurement/aggregate/quarantine_fallback"],
+      "required_queries": ["q01", "edge_scan"]
+    },
+    {
+      "name": "after-admission-deadline",
+      "profile_path": "../p6-after-admission-deadline-profile.json",
+      "profile_sha256": "61a0b8c3fbd7d1a0ce2dd69e7f6a533b35923037a00e5025a6319b4ecb7bf878",
+      "minimum_repeats": 1,
+      "maximum_sample_gap_ms": 1000,
+      "required_evidence": ["/execution/measurement/deadline_barrier"],
+      "required_queries": ["q01"]
+    },
+    {
+      "name": "caller-cancellation",
+      "profile_path": "../p6-measured-run-profile.json",
+      "profile_sha256": "397e6165ff5e5b0cc85fdeeb5af345e95a209b5ddb2e82bee6280ad91fea4ca3",
+      "minimum_repeats": 1,
+      "maximum_sample_gap_ms": 1000,
+      "required_evidence": ["/execution/measurement/cancellation_barrier"],
+      "required_queries": ["q01", "q06", "bfs", "edge_scan"]
+    }
+  ]
+}

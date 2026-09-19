@@ -16,7 +16,7 @@ their `dependencies.yaml` and `CMakeLists.txt` files take precedence if they
 differ from those upstream references.
 
 This page covers only what connects that upstream environment to DataFusion
-Nexus. Linux is the only supported platform.
+Algeon. Linux is the only supported platform.
 
 ## Native build environment
 
@@ -31,7 +31,7 @@ Install the checkout-specific host tools:
 sudo apt-get install -y build-essential git clang mold
 ```
 
-The root [`.cargo/config.toml`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/.cargo/config.toml)
+The root [`.cargo/config.toml`](https://github.com/algeon-dev/algeon/blob/main/.cargo/config.toml)
 selects `clang` and `mold` for normal source builds.
 
 The [build shell](./from-source.md#2-configure-the-build-shell) on the next
@@ -51,7 +51,7 @@ current shell only. Write them once into a Cargo `[env]` table outside the
 checkout so every shell, and `scripts/check_all.sh`, build with the same
 toolchain whether or not the build shell block was run: use
 `<parent-of-checkout>/.cargo/config.toml` to cover every checkout and worktree
-that [`scripts/dev/new_worktree.sh`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/scripts/dev/new_worktree.sh)
+that [`scripts/dev/new_worktree.sh`](https://github.com/algeon-dev/algeon/blob/main/scripts/dev/new_worktree.sh)
 creates as siblings, or `~/.cargo/config.toml` to apply it to all of this
 user's Cargo projects:
 

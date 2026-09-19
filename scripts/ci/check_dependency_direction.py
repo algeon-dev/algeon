@@ -12,16 +12,16 @@ from pathlib import Path
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
-PLANNING_PACKAGE = "nexus-query-planning"
-RUNTIME_PACKAGE = "nexus-query-runtime"
-EXECUTION_PACKAGE = "nexus-query-engine"
+PLANNING_PACKAGE = "algeon-query-planning"
+RUNTIME_PACKAGE = "algeon-query-runtime"
+EXECUTION_PACKAGE = "algeon-query-engine"
 COMPONENT_PACKAGES = (
-    "cudf-nexus",
-    "cudf-nexus-sys",
-    "cugraph-nexus",
-    "cugraph-nexus-sys",
-    "cuvs-nexus",
-    "cuvs-nexus-sys",
+    "algeon-cudf",
+    "algeon-cudf-sys",
+    "algeon-cugraph",
+    "algeon-cugraph-sys",
+    "algeon-cuvs",
+    "algeon-cuvs-sys",
 )
 DATAFUSION_PACKAGE_PREFIX = "datafusion"
 
@@ -172,8 +172,8 @@ def looks_native(package_name: str) -> bool:
 def check_planning_closure(metadata: dict[str, object]) -> list[str]:
     """Planning must build without DataFusion, CUDA/RAPIDS, runtime, or engine.
 
-    This is the contract that keeps the crate publishable and testable on a
-    host with no GPU toolchain. It is checked against the resolved closure, not
+    This is the contract that keeps the planning crate internally isolated and
+    API-testable on a host with no GPU toolchain. It is checked against the resolved closure, not
     the manifest, so a helper crate cannot reintroduce the coupling quietly.
     """
     by_name, _member_ids = workspace_packages(metadata)
@@ -235,7 +235,7 @@ def check_package_edges(metadata: dict[str, object]) -> list[str]:
                 f"{DATAFUSION_PACKAGE_PREFIX}-"
             ):
                 violations.append(
-                    f"{layer_package.removeprefix('nexus-query-')} -> DataFusion: "
+                    f"{layer_package.removeprefix('query-')} -> DataFusion: "
                     f"declared Cargo dependency {dependency_name}"
                 )
     return violations
@@ -305,27 +305,27 @@ def mask_rust_non_code(text: str) -> str:
 
 
 DIRECT_LAYER_PATH = re.compile(
-    r"\b(?:crate|self|super(?:\s*::\s*super)*|nexus_query_engine|"
-    r"nexus_query_planning|nexus_query_runtime)"
+    r"\b(?:crate|self|super(?:\s*::\s*super)*|query_engine|"
+    r"query_planning|query_runtime)"
     r"\s*::(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*(?P<target>runtime|exec)\s*(?:::|[,;)}])"
 )
 USE_STATEMENT = re.compile(r"\buse\s+.*?;", re.DOTALL)
 USE_ROOT = re.compile(
-    r"\b(?:crate|self|super|nexus_query_engine|nexus_query_planning|nexus_query_runtime)\s*::"
+    r"\b(?:crate|self|super|query_engine|query_planning|query_runtime)\s*::"
 )
 USE_LAYER_SEGMENT = re.compile(r"\b(?P<target>runtime|exec)\s*(?:::|[,;)}])")
 USE_RUNTIME_MODULE_SEGMENT = re.compile(r"\b(?P<target>attempt|metrics|observability)\s*(?:::|[,;)}])")
-PACKAGE_PATH = re.compile(r"\b(?P<package>nexus_query_engine|nexus_query_runtime)\s*::")
+PACKAGE_PATH = re.compile(r"\b(?P<package>query_engine|query_runtime)\s*::")
 PACKAGE_ROOT_IMPORT = re.compile(
-    r"\buse\s+(?P<package>nexus_query_engine|nexus_query_runtime)"
+    r"\buse\s+(?P<package>query_engine|query_runtime)"
     r"\s*(?:as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*;"
 )
-ENGINE_EXEC_PATH = re.compile(r"\bnexus_query_engine\s*::\s*exec\s*::")
+ENGINE_EXEC_PATH = re.compile(r"\bquery_engine\s*::\s*exec\s*::")
 EXTERN_PACKAGE = re.compile(
-    r"\bextern\s+crate\s+(?P<package>nexus_query_engine|nexus_query_runtime)\b"
+    r"\bextern\s+crate\s+(?P<package>query_engine|query_runtime)\b"
 )
 RUNTIME_MODULE_PATH = re.compile(
-    r"\b(?:crate|self|super(?:\s*::\s*super)*|nexus_query_engine)"
+    r"\b(?:crate|self|super(?:\s*::\s*super)*|query_engine)"
     r"\s*::(?P<target>attempt|metrics|observability)\s*(?:::|[,;)}])"
 )
 DATAFUSION_PATH = re.compile(r"\bdatafusion(?:_[A-Za-z_][A-Za-z0-9_]*)?\s*::")
@@ -397,23 +397,23 @@ def source_import_violations(path: Path, layer: str) -> list[str]:
 
     for match in PACKAGE_PATH.finditer(masked):
         package = match.group("package")
-        if package == "nexus_query_runtime" and layer == "planning":
+        if package == "query_runtime" and layer == "planning":
             add("planning -> runtime", match.start(), package)
         elif ENGINE_EXEC_PATH.match(masked, match.start()) is not None:
             add(f"{layer} -> engine-exec", match.start(), package)
 
     for match in PACKAGE_ROOT_IMPORT.finditer(masked):
         package = match.group("package")
-        if package == "nexus_query_runtime" and layer == "planning":
+        if package == "query_runtime" and layer == "planning":
             add("planning -> runtime", match.start(), package)
-        elif package == "nexus_query_engine":
+        elif package == "query_engine":
             add(f"{layer} -> engine-exec", match.start(), package)
 
     for match in EXTERN_PACKAGE.finditer(masked):
         package = match.group("package")
-        if package == "nexus_query_runtime" and layer == "planning":
+        if package == "query_runtime" and layer == "planning":
             add("planning -> runtime", match.start(), package)
-        elif package == "nexus_query_engine":
+        elif package == "query_engine":
             add(f"{layer} -> engine-exec", match.start(), package)
 
     for pattern in (DATAFUSION_PATH, DATAFUSION_ROOT_IMPORT):
@@ -616,7 +616,7 @@ def check_sources(root: Path, metadata: dict[str, object]) -> list[str]:
         for path in source_files(roots):
             text = mask_rust_non_code(path.read_text(encoding="utf-8"))
             for match in PACKAGE_PATH.finditer(text):
-                if match.group("package") == "nexus_query_engine":
+                if match.group("package") == "query_engine":
                     number = line_number(text, match.start())
                     original_lines = path.read_text(encoding="utf-8").splitlines()
                     snippet = (
@@ -626,7 +626,7 @@ def check_sources(root: Path, metadata: dict[str, object]) -> list[str]:
                     )
                     violations.append(f"component -> engine: {path}:{number}: {snippet}")
             for match in PACKAGE_ROOT_IMPORT.finditer(text):
-                if match.group("package") == "nexus_query_engine":
+                if match.group("package") == "query_engine":
                     number = line_number(text, match.start())
                     original_lines = path.read_text(encoding="utf-8").splitlines()
                     snippet = (
@@ -636,7 +636,7 @@ def check_sources(root: Path, metadata: dict[str, object]) -> list[str]:
                     )
                     violations.append(f"component -> engine: {path}:{number}: {snippet}")
             for match in EXTERN_PACKAGE.finditer(text):
-                if match.group("package") == "nexus_query_engine":
+                if match.group("package") == "query_engine":
                     number = line_number(text, match.start())
                     violations.append(f"component -> engine: {path}:{number}: extern crate {match.group('package')}")
     return violations

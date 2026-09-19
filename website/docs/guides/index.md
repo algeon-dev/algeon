@@ -15,4 +15,4 @@ local fixtures behind the end-to-end flows and demo services.
   installed cuGraph and cuVS functions, inspect a contract, validate a call,
   and check whole-query GPU coverage.
 - [Local Iceberg E2E](./iceberg-e2e.md) - run the local Iceberg REST, RustFS,
-  and Moto stack used by Nexus E2E and website examples.
+  and Moto stack used by Algeon E2E and website examples.

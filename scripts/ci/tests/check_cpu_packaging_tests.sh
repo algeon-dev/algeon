@@ -8,7 +8,7 @@ cd "${ROOT}"
 
 HELPER="${ROOT}/scripts/build/cpu_packaging_policy.py"
 POLICY="${ROOT}/.config/policies/cpu-packaging.toml"
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-cpu-policy.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/algeon-datafusion-cpu-policy.XXXXXX")
 trap 'rm -rf "${tmp_dir}"' EXIT
 mkdir -p "${tmp_dir}/bin" "${tmp_dir}/home"
 
@@ -17,7 +17,7 @@ fail() {
   exit 1
 }
 
-if rg -n 'ensure_cpu_baseline|is_x86_feature_detected!' crates/nexus-server/src/bin/datafusion_nexus_server.rs; then
+if rg -n 'ensure_cpu_baseline|is_x86_feature_detected!' crates/algeon-server/src/bin/algeon_server.rs; then
   fail "server still contains an in-process CPU feature check"
 fi
 echo "PASS: server has no in-process CPU feature detection"
@@ -29,7 +29,7 @@ import tomllib
 with open(sys.argv[1], "rb") as policy_file:
     policy = tomllib.load(policy_file)
 assert policy["clean_environment"]["explicit_inputs"] == [
-    "NEXUS_NATIVE_DIR",
+    "ALGEON_NATIVE_DIR",
 ]
 cpu = policy["cpu"]
 assert cpu["baseline"] == "x86-64-v4"
@@ -71,7 +71,7 @@ for argument in "$@"; do
 done
 [[ -n "${target_dir}" && -n "${target}" && -n "${profile}" ]]
 mkdir -p "${target_dir}/${target}/${profile}"
-printf 'fake canonical server\n' >"${target_dir}/${target}/${profile}/datafusion_nexus_server"
+printf 'fake canonical server\n' >"${target_dir}/${target}/${profile}/algeon_server"
 SH
 
 cat >"${tmp_dir}/bin/rustc" <<'SH'
@@ -107,11 +107,11 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   python3 "${HELPER}" build \
     --features 'nvml,iceberg' \
     --target-root "${target_root}" \
-    --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
-    --explicit-env "NEXUS_NATIVE_DIR=${tmp_dir}/native" \
+    --manifest "${ROOT}/crates/algeon-server/Cargo.toml" \
+    --explicit-env "ALGEON_NATIVE_DIR=${tmp_dir}/native" \
     >"${tmp_dir}/build.output"
 
-binary="${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
+binary="${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/algeon_server"
 build_record="${binary}.build-record.json"
 [[ -f "${binary}" && -f "${build_record}" ]] || fail "fake canonical build did not create artifact/record"
 
@@ -200,7 +200,7 @@ python3 "${HELPER}" --policy "${tmp_dir}/tampered-policy.toml" verify-build \
 grep -Fq 'policy_fingerprint' "${tmp_dir}/tampered-policy.output" || fail "missing policy tamper diagnostic"
 echo "PASS: artifact-affecting policy tamper prevents artifact reuse"
 
-staged_binary="${tmp_dir}/dist/bin/datafusion_nexus_server"
+staged_binary="${tmp_dir}/dist/bin/algeon_server"
 mkdir -p "$(dirname "${staged_binary}")"
 cp "${binary}" "${staged_binary}"
 printf 'post-stage-patchelf-fixture\n' >>"${staged_binary}"
@@ -240,10 +240,10 @@ rm -f "${tmp_dir}/dist/lib/untracked.so"
 echo "PASS: unexpected staged file fails manifest verification"
 
 for needle in \
-  'org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}"' \
-  'org.datafusion-nexus.cpu-arch="${CPU_ARCH}"' \
-  'org.datafusion-nexus.cpu-target="${CPU_TARGET}"' \
-  'org.datafusion-nexus.manifest-sha256="${CPU_MANIFEST_SHA256}"' \
+  'dev.algeon.cpu-baseline="${CPU_BASELINE}"' \
+  'dev.algeon.cpu-arch="${CPU_ARCH}"' \
+  'dev.algeon.cpu-target="${CPU_TARGET}"' \
+  'dev.algeon.manifest-sha256="${CPU_MANIFEST_SHA256}"' \
   'CPU_MANIFEST_SHA256' \
   'sha256sum -c -'; do
   grep -Fq "${needle}" docker/Dockerfile || fail "Dockerfile missing assertion: ${needle}"
@@ -264,15 +264,15 @@ grep -Fq 'build-record' "${tmp_dir}/skip-without-provenance.output" \
 # Exercise the complete SKIP/stage/image-entry path with the fake canonical artifact,
 # fake native libraries, and an isolated dist directory.
 mkdir -p "${tmp_dir}/cudf/lib" "${tmp_dir}/native" \
-  "${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
+  "${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib"
 ln -s ../cudf "${tmp_dir}/native/cudf-install"
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
 printf 'fake cudf bridge\n' \
-  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust.so"
+  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust.so"
 printf 'fake cudf RMM interop bridge\n' \
-  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
+  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
 cat >"${tmp_dir}/bin/patchelf" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
@@ -329,7 +329,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
 FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LDD_AUXILIARY_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/full-skip-stage.output"
@@ -349,15 +349,15 @@ echo "PASS: staging reports a concise image-build next step"
 
 FAKE_DOCKER_ARGS="${tmp_dir}/docker.args" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
-IMAGE_REPOSITORY=datafusion-nexus-test \
+IMAGE_REPOSITORY=algeon-datafusion-test \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/build-image.sh >"${tmp_dir}/build-image.output"
-grep -Fq '==> Building image: datafusion-nexus-test:x86-64-v4' "${tmp_dir}/build-image.output" \
+grep -Fq '==> Building image: algeon-datafusion-test:x86-64-v4' "${tmp_dir}/build-image.output" \
   || fail "image builder omitted its build status"
-grep -Fq '==> SUCCESS: Docker image built: datafusion-nexus-test:x86-64-v4' "${tmp_dir}/build-image.output" \
+grep -Fq '==> SUCCESS: Docker image built: algeon-datafusion-test:x86-64-v4' "${tmp_dir}/build-image.output" \
   || fail "image builder omitted its success status"
 manifest_sha=$(sha256sum "${tmp_dir}/docker-dist/payload-manifest.json" | awk '{print $1}')
-binary_sha=$(sha256sum "${tmp_dir}/docker-dist/bin/datafusion_nexus_server" | awk '{print $1}')
+binary_sha=$(sha256sum "${tmp_dir}/docker-dist/bin/algeon_server" | awk '{print $1}')
 for needle in \
   'build' \
   '--build-arg' \
@@ -367,7 +367,7 @@ for needle in \
   "CPU_BINARY_SHA256=${binary_sha}" \
   "CPU_MANIFEST_SHA256=${manifest_sha}" \
   '-t' \
-  'datafusion-nexus-test:x86-64-v4'; do
+  'algeon-datafusion-test:x86-64-v4'; do
   grep -Fxq -- "${needle}" "${tmp_dir}/docker.args" \
     || fail "image builder omitted Docker input: ${needle}"
 done
@@ -378,7 +378,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
 FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_LOGGER_NEEDED=1 \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
@@ -392,7 +392,7 @@ CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-static-external-logger" \
 FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_LOGGER_REALPATH="${tmp_dir}/cudf/lib/librapids_logger.so" \
 PATH="${tmp_dir}/bin:${PATH}" \
@@ -417,8 +417,8 @@ build_fake_variant() {
     python3 "${HELPER}" build \
       --features "${features}" \
       --target-root "${target_root}" \
-      --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
-      --explicit-env "NEXUS_NATIVE_DIR=${tmp_dir}/native" \
+      --manifest "${ROOT}/crates/algeon-server/Cargo.toml" \
+      --explicit-env "ALGEON_NATIVE_DIR=${tmp_dir}/native" \
       >"${tmp_dir}/variant-build.output"
 }
 
@@ -426,7 +426,7 @@ build_fake_variant cuvs
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cuvs" \
 FEATURES=cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_CLOSURE_HAS_CUVS=1 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/cuvs-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs.so" ]] || fail "cuVS-only package omitted canonical libcuvs.so"
@@ -436,7 +436,7 @@ build_fake_variant cugraph
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cugraph" \
 FEATURES=cugraph SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/cugraph-stage.output"
@@ -447,7 +447,7 @@ build_fake_variant cugraph,cuvs
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-combined" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/combined-stage.output"
@@ -459,7 +459,7 @@ printf 'fake divergent logger\n' >"${tmp_dir}/divergent-librapids_logger.so"
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent-logger" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 FAKE_LOGGER_NEEDED=1 FAKE_CLOSURE_HAS_LOGGER=1 \
 FAKE_SECOND_LOGGER_REALPATH="${tmp_dir}/divergent-librapids_logger.so" \
@@ -473,7 +473,7 @@ printf 'fake divergent cuvs\n' >"${tmp_dir}/divergent-libcuvs.so"
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/divergent-libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/divergent-cuvs.output" 2>&1 || status=$?
@@ -484,7 +484,7 @@ grep -Fq 'different libcuvs.so identities' "${tmp_dir}/divergent-cuvs.output" \
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-not-found" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 FAKE_LDD_NOT_FOUND=1 \
 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-not-found.output" 2>&1 || status=$?
@@ -495,7 +495,7 @@ grep -Fq 'unresolved loader dependency' "${tmp_dir}/loader-not-found.output" \
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-raft" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
-NEXUS_NATIVE_DIR="${tmp_dir}/native" \
+ALGEON_NATIVE_DIR="${tmp_dir}/native" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
 FAKE_READELF_NEEDED=libraft.so PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/loader-raft.output" 2>&1 || status=$?

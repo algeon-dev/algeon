@@ -6,14 +6,14 @@ description: Native cuDF support boundaries for relational SQL operators, expres
 
 # Native SQL Support
 
-Nexus selects supported whole relational DataFusion physical-plan candidates
+Algeon selects supported whole relational DataFusion physical-plan candidates
 for cuDF execution. Support is capability-first: every operator, expression,
 type, and source in the exact physical candidate must have a native kernel
 with matching semantics. Memory is not a support criterion; an admitted query
 runs inside its granted cap and fails with a typed allocation error if it
 exceeds it. This page is a practical map, not a substitute for validating a
 production query with
-[`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
+[`algeon_explain_coverage`](../integration/gpu-coverage-validation.mdx).
 
 ## Relational plan shapes
 
@@ -96,7 +96,7 @@ SELECT row_kind,
        remedy_code,
        remedy,
        coverage_json
-FROM nexus_explain_coverage('
+FROM algeon_explain_coverage('
   SELECT l_returnflag, sum(l_quantity)
   FROM lineitem
   WHERE l_shipdate >= DATE ''1996-01-01''

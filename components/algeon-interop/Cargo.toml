@@ -1,0 +1,27 @@
+[package]
+name = "algeon-interop"
+description = "Shared RAPIDS Rust interop contract types and traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = ["crates-io"]
+license-file = "../../LICENSE"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-interop"
+keywords = ["cuda", "gpu", "interop", "rapids"]
+categories = ["api-bindings", "science"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[lints]
+workspace = true
+
+[lib]
+name = "rapids_interop"
+path = "src/lib.rs"
+
+[dev-dependencies]
+static_assertions.workspace = true

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cuGraph oracle driver for the datafusion-nexus parity harness.
+"""cuGraph oracle driver for the algeon-datafusion parity harness.
 
 Produces deterministic JSON output for a single (dataset, algorithm,
 params) triple by running RAPIDS Python cuGraph on a local CSV fixture
@@ -106,7 +106,7 @@ def _load_python_cugraph():
         # can degrade gracefully.
         print(
             f"cuGraph Python stack unavailable: {exc}. "
-            "Activate the shared ~/code/datafusion-nexus/.venv to refresh oracles.",
+            "Activate the shared ~/code/algeon/algeon/.venv to refresh oracles.",
             file=sys.stderr,
         )
         sys.exit(EXIT_UNAVAILABLE)
@@ -255,7 +255,7 @@ def _louvain(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
 def _eigenvector_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     """Run cuGraph eigenvector centrality with deterministic key ordering.
 
-    Mirrors ``nexus_query_engine::GraphEigenvectorCentralityParams`` defaults
+    Mirrors ``query_engine::GraphEigenvectorCentralityParams`` defaults
     (epsilon=1e-6, max_iterations=200) so the harness header round-trip
     matches the parity spec exactly.
     """
@@ -285,7 +285,7 @@ def _eigenvector_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[
 def _katz_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     """Run cuGraph Katz centrality with deterministic key ordering.
 
-    Mirrors ``nexus_query_engine::GraphKatzCentralityParams`` defaults
+    Mirrors ``query_engine::GraphKatzCentralityParams`` defaults
     (alpha=0.01, beta=1.0, epsilon=1e-6, max_iterations=1000) so the
     header round-trip matches the parity spec exactly.
     """
@@ -311,7 +311,7 @@ def _katz_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, An
 def _hits(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     """Run cuGraph HITS with deterministic key ordering.
 
-    Mirrors ``nexus_query_engine::GraphHitsParams`` defaults
+    Mirrors ``query_engine::GraphHitsParams`` defaults
     (epsilon=1e-5, max_iterations=100, normalize=False) and normalizes
     the result column names (``hubs`` / ``authorities`` ->
     ``hub_score`` / ``authority_score``) so the JSON shape matches the

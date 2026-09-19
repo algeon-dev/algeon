@@ -19,7 +19,7 @@ import styles from './styles.module.css';
  * selected node's detail renders in an HTML panel under the SVG, so the
  * diagram stays sparse while the content stays rich.
  *
- * Colors come from the theme-aware --nx-* tokens in src/css/custom.css, with
+ * Colors come from the theme-aware --ag-* tokens in src/css/custom.css, with
  * literal fallbacks so an extracted SVG still renders standalone. Tones are a
  * small fixed palette; meaning is always carried by an adjacent label, never
  * by color alone.
@@ -43,28 +43,28 @@ export interface DiagramNode {
   boundary?: string;
 }
 
-const MONO = 'var(--nx-dg-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)';
+const MONO = 'var(--ag-dg-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)';
 
 const COLOR = {
-  border: 'var(--nx-dg-border-strong, #c3c9d4)',
-  surface: 'var(--nx-dg-surface, #ffffff)',
-  fg: 'var(--nx-dg-fg, #1c1e21)',
-  muted: 'var(--nx-dg-fg-muted, #5b6470)',
-  subtle: 'var(--nx-dg-fg-subtle, #8a93a2)',
+  border: 'var(--ag-dg-border-strong, #c3c9d4)',
+  surface: 'var(--ag-dg-surface, #ffffff)',
+  fg: 'var(--ag-dg-fg, #1c1e21)',
+  muted: 'var(--ag-dg-fg-muted, #5b6470)',
+  subtle: 'var(--ag-dg-fg-subtle, #8a93a2)',
 };
 
 // A DataFusion-orange → NVIDIA-green ramp: the closer a component sits to the
-// GPU, the greener its tone (see the --nx-design-* tokens in custom.css).
+// GPU, the greener its tone (see the --ag-design-* tokens in custom.css).
 const TONE: Record<Tone, string> = {
-  plan: 'var(--nx-design-df, #f1543f)',
-  engine: 'var(--nx-design-nexus, #fbb040)',
-  bridge: 'var(--nx-design-bridge, #b5c400)',
-  gpu: 'var(--nx-design-gpu, #76b900)',
-  graph: 'var(--nx-design-graph, #2fb56b)',
-  lake: 'var(--nx-design-lake, #5fb3e4)',
-  foreign: 'var(--nx-tone-foreign, #e8716d)',
-  reject: 'var(--nx-design-df, #f1543f)',
-  plain: 'var(--nx-dg-border-strong, #c3c9d4)',
+  plan: 'var(--ag-design-df, #f1543f)',
+  engine: 'var(--ag-design-algeon, #fbb040)',
+  bridge: 'var(--ag-design-bridge, #b5c400)',
+  gpu: 'var(--ag-design-gpu, #76b900)',
+  graph: 'var(--ag-design-graph, #2fb56b)',
+  lake: 'var(--ag-design-lake, #5fb3e4)',
+  foreign: 'var(--ag-tone-foreign, #e8716d)',
+  reject: 'var(--ag-design-df, #f1543f)',
+  plain: 'var(--ag-dg-border-strong, #c3c9d4)',
 };
 
 // Monospace advance width as a fraction of font size. Common stacks sit at
@@ -559,8 +559,8 @@ const ARCH_FONTS: BoxFonts = {
   padX: 20,
   padY: 15,
 };
-const ARCH_CARD_BORDER = 'var(--nx-arch-card-border, #d7dce1)';
-const ARCH_EDGE = 'var(--nx-arch-edge, #748292)';
+const ARCH_CARD_BORDER = 'var(--ag-arch-card-border, #d7dce1)';
+const ARCH_EDGE = 'var(--ag-arch-edge, #748292)';
 const ARCH_CARD_BORDER_WIDTH = 1.2;
 const ARCH_EDGE_WIDTH = 1.1;
 
@@ -593,7 +593,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   };
   const rule: DiagramNode = {
     kind: 'DataFusion optimizer rule',
-    name: 'datafusion_nexus_native',
+    name: 'algeon_datafusion_native',
     note: 'selects a whole relational candidate',
     tone: 'engine',
   };

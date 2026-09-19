@@ -1,10 +1,11 @@
 # Contributing
 
-Contributions are very welcome. DataFusion Nexus is an experimental GPU query
-engine for Apache DataFusion that lowers physical plans to native IR and
-executes them via cuDF and cuGraph. The most valuable contributions make
-physical-to-native lowering, capability admission, bounded resource management,
-and GPU execution clearer, faster, and more reliable.
+Contributions are very welcome. Algeon brings specialized GPU algorithms into
+composable SQL workflows. Its first integration lowers Apache DataFusion
+physical plans to native IR and executes them via cuDF and cuGraph. The most
+valuable contributions make physical-to-native lowering, capability admission,
+bounded resource management, and GPU execution clearer, faster, and more
+reliable.
 
 This repository is Linux-only. Concrete toolchain requirements, system
 prerequisites, build environments, and operational specifications are
@@ -26,8 +27,8 @@ the issue before writing code:
 - Solve a demonstrated problem or concrete query pattern. Speculative
   abstractions, unverified performance fixes, and mechanical refactors without
   an agreed technical goal are not useful starting points.
-- Identify the owning layer early. If a capability gap belongs in `cudf-nexus` or
-  `cugraph-nexus`, open the issue and implement the fix in its component under
+- Identify the owning layer early. If a capability gap belongs in `cudf` or
+  `cugraph`, open the issue and implement the fix in its component under
   `components/` rather than introducing an adapter-level workaround.
 - For bug reports, specify the affected crate, physical plan or SQL query,
   minimal reproduction steps, sanitized configuration or data, actual result,
@@ -59,23 +60,23 @@ relevance, and maintainability of the submission.
 
 ## Architecture & Project Boundaries
 
-DataFusion Nexus maintains strict separation of concerns across workspace
+Algeon maintains strict separation of concerns across workspace
 crates:
 
 ```text
                  Apache DataFusion Physical Plan
                                │
                                ▼
-┌──────────────────────────────────────────────────────────────┐
-│ datafusion-nexus (Root Adapter)                              │
-│ - Physical optimizer rules (NexusNativePhysicalOptimizerRule)│
-│ - Table providers, Iceberg integration, Parquet scans        │
-│ - NativeExecutionPlan wrappers & DataFusion metric bridges   │
-└──────────────────────────────┬───────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ algeon-datafusion (DataFusion Adapter)                        │
+│ - Physical optimizer rules (AlgeonNativePhysicalOptimizerRule)│
+│ - Table providers, Iceberg integration, Parquet scans         │
+│ - NativeExecutionPlan wrappers & DataFusion metric bridges    │
+└──────────────────────────────┬────────────────────────────────┘
                                │ uses the compatible facade
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ crates/nexus-query-engine (Facade + Native Execution)       │
+│ crates/algeon-query-engine (Facade + Native Execution)             │
 │ - Public planning/runtime re-exports                        │
 │ - Bounded relational, graph, vector, and source execution   │
 │ - Host/GPU-resident result composition                      │
@@ -83,7 +84,7 @@ crates:
                                │ depends on
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ nexus-query-runtime -> nexus-query-planning                 │
+│ query-runtime -> query-planning                             │
 │ - Runtime: lifecycle, query service, ledger, grant, cache   │
 │ - Planning: IR, optimizer, capability, proof, pipeline      │
 └──────────────────────────────┬──────────────────────────────┘
@@ -100,22 +101,22 @@ crates:
 ### Key Invariants
 
 - **Fix the owning abstraction**: DataFusion-dependent lowering belongs in the
-  root adapter; IR, optimizer, capability, proof, admission contracts, and
-  pipeline belong in `crates/nexus-query-planning`; lifecycle, query service,
+  DataFusion adapter; IR, optimizer, capability, proof, admission contracts, and
+  pipeline belong in `crates/algeon-query-planning`; lifecycle, query service,
   ledger, grant, cache, observation, and metrics belong in
-  `crates/nexus-query-runtime`; native execution and public facade compatibility
-  belong in `crates/nexus-query-engine`. Native cuDF and cuGraph operations
+  `crates/algeon-query-runtime`; native execution and public facade compatibility
+  belong in `crates/algeon-query-engine`. Native cuDF and cuGraph operations
   belong in their respective component crates. Never paper over an owner or
   RAPIDS limitation with an adapter workaround.
 - **One bounded admission contract**: Every native attempt is admitted against
   a single per-device ledger, immutable grants, and transactional envelopes.
   The reservation ledger is integer accounting, not a residency oracle.
-- **Structured planning diagnostics**: `NexusNativePhysicalOptimizerRule` emits
+- **Structured planning diagnostics**: `AlgeonNativePhysicalOptimizerRule` emits
   structured `PlanningReport`s. Assert reports and structured diagnostics in
   tests, not printed string plans.
 - **Explicit aggregation state**: Model partial and final aggregate states
   explicitly (e.g., `AVG` is `SUM + COUNT` followed by final `SUM / SUM`).
-- **Structured errors**: Keep `src/error.rs` errors structured and typed;
+- **Structured errors**: Keep `crates/algeon-datafusion/src/error.rs` errors structured and typed;
   convert to `DataFusionError` only at the DataFusion boundary.
 
 For complete architectural details and reference designs, consult the
@@ -163,8 +164,8 @@ In the PR description, include:
 - The linked issue.
 - A concise summary of the change and its user-facing or technical value.
 - The behavior, API, or contract that changed.
-- The layer that owns the change (root adapter, `nexus-query-planning`,
-  `nexus-query-runtime`, `nexus-query-engine`, `nexus-server`, `nexus-iceberg`,
+- The layer that owns the change (DataFusion adapter, `query-planning`,
+  `query-runtime`, `query-engine`, `server`, `iceberg-catalog`,
   or a component crate under `components/`).
 - The test environment used: CUDA driver and toolkit setup, GPU model, Rust
   toolchain, host OS, and relevant environment variables.
@@ -191,27 +192,28 @@ and inherited by every workspace package; the canonical Clippy gate is
 
 ## Local Setup
 
-DataFusion Nexus is a single recursive checkout. The root workspace owns the
+Algeon is a single recursive checkout. The root workspace owns the
 adapter, planning/runtime/engine stack, server, tests, and all three Rust
 integration components:
 
 ```text
-datafusion-nexus/
-├── components/cudf/             # cudf-nexus, cudf-nexus-sys, rapids-interop
+algeon/
+├── components/cudf/             # cudf, cudf-sys, rapids-interop
 │   └── cudf/                    # pinned cuDF fork submodule
-├── components/cugraph/          # cugraph-nexus and cugraph-nexus-sys
+├── components/cugraph/          # cugraph and cugraph-sys
 │   └── cugraph/                 # pinned cuGraph fork submodule
-├── components/cuvs/             # cuvs-nexus and cuvs-nexus-sys
+├── components/cuvs/             # cuvs and cuvs-sys
 │   └── cuvs/                    # pinned official cuVS submodule
+├── crates/algeon-datafusion/    # DataFusion adapter
+│   └── src/
 ├── crates/                      # Planning, runtime, engine, and support crates
-└── src/                         # DataFusion adapter
 ```
 
 Clone the repository with its pinned native sources:
 
 ```bash
 git clone --recurse-submodules \
-  https://github.com/DataFusion-Nexus/datafusion-nexus.git
+  https://github.com/algeon-dev/algeon.git
 ```
 
 ## Native Components
@@ -230,7 +232,7 @@ defined and maintained in the website documentation:
 - [Prerequisites](website/docs/build/prerequisites.md): System dependencies,
   CUDA requirements, compiler pairings, and linker setup.
 - [Building from Source](website/docs/build/from-source.md): Recursive clone,
-  checkout-local native selectors (`CUDF_INSTALL_DIR`, `NEXUS_NATIVE_DIR`,
+  checkout-local native selectors (`CUDF_INSTALL_DIR`, `ALGEON_NATIVE_DIR`,
   `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`), native build order, and Rust
   workspace compilation.
 
@@ -248,9 +250,9 @@ cargo +nightly fmt --all --check
 cargo nt -E 'package(<component-packages...>)'
 ```
 
-The package groups are `package(cudf-nexus) | package(cudf-nexus-sys) |
-package(rapids-interop)`, `package(cugraph-nexus) | package(cugraph-nexus-sys)`,
-and `package(cuvs-nexus) | package(cuvs-nexus-sys)`.
+The package groups are `package(cudf) | package(cudf-sys) |
+package(rapids-interop)`, `package(cugraph) | package(cugraph-sys)`,
+and `package(cuvs) | package(cuvs-sys)`.
 
 ## Testing & Validation
 
@@ -259,7 +261,7 @@ refer to the [Tests Documentation](website/docs/build/tests.md).
 
 ### Test Isolation & Runners
 
-`nexus-query-engine` tests require process isolation because allocator lifecycle
+`query-engine` tests require process isolation because allocator lifecycle
 cases install a process-global `DeviceMemoryManager`, and native execution cases
 retain backend policy per process. Broad `cargo test --all-features` runs without process
 isolation fail closed or corrupt global state. Test execution must use
@@ -274,7 +276,7 @@ serializes correctly. Non-test GPU commands (benchmarks, servers, tools) still
 take the lock themselves:
 
 ```shell
-flock /tmp/cudf-gpu.lock cargo run -p nexus-server --all-features --bin datafusion_nexus_server
+flock /tmp/cudf-gpu.lock cargo run -p server --all-features --bin algeon_server
 ```
 
 > [!IMPORTANT]
@@ -292,11 +294,11 @@ cargo +nightly fmt --all
 cargo clippy --workspace --all-targets --all-features
 
 # What you changed, then everything downstream
-cargo nt -E 'package(datafusion-nexus)'
-cargo nt -E 'rdeps(datafusion-nexus)'
+cargo nt -E 'package(algeon-datafusion)'
+cargo nt -E 'rdeps(algeon-datafusion)'
 
 # Rerun only the failures (repeat the same -E, or skipped binaries rerun as new)
-cargo nt -E 'package(datafusion-nexus)' -R latest
+cargo nt -E 'package(algeon-datafusion)' -R latest
 ```
 
 ### Full Pre-Merge Validation
@@ -316,5 +318,5 @@ bash scripts/check_all.sh
   targets run alone and last, and every other test runs in the `gpu` group.
 - Do not add external-service E2E tests (such as live Iceberg REST/Glue catalogs)
   to default Cargo test targets; run them explicitly via
-  `cargo run -p nexus-tools --all-features`
+  `cargo run -p tools --all-features`
   or fixture scripts under `fixture/`.

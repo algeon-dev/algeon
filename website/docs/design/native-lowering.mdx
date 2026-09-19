@@ -31,7 +31,7 @@ DataFusion ExecutionPlan
   -> normalize and validate the completed physical shape
   -> lower one supported candidate to QueryPlan
   -> optimize IR, apply cost selection, and check execution capability
-  -> NexusNativeExec or NexusNativeComposedExec
+  -> AlgeonNativeExec or AlgeonNativeComposedExec
   -> capability evidence and, when needed, a QueryAdmissionTicket
 ~~~
 
@@ -40,7 +40,7 @@ Runtime admission and device-memory accounting begin later. See
 
 ## Session wiring
 
-The backend's `NexusGpuExecutionMode` controls relational selection.
+The backend's `AlgeonGpuExecutionMode` controls relational selection.
 `NativePreferred` (the default) enables it and permits DataFusion CPU execution;
 `NativeRequired` enables it and rejects a completed plan containing DataFusion
 CPU operators. `FunctionsOnly` disables relational rewrites while retaining
@@ -48,19 +48,19 @@ explicit cuGraph/cuVS execution and the same backend admission authority. See
 [Choose an execution mode](../integration/datafusion-session.mdx#choose-an-execution-mode)
 for configuration and CPU/GPU composition limits.
 
-`with_nexus_native` installs three physical optimizer rules around DataFusion's
+`with_algeon_native` installs three physical optimizer rules around DataFusion's
 own rules:
 
 | Rule | Position | Responsibility |
 | --- | --- | --- |
-| `datafusion_nexus_native_count_only` | Before `aggregate_statistics` | Capture safe zero-column count shapes before DataFusion replaces them with statistics. |
-| `datafusion_nexus_native` | After the other physical optimizer rules | Make the final native selection and retain its structured diagnostics. This public name is also the deduplication key. |
-| `datafusion_nexus_final_plan_requirement` | After native selection, before `SanityCheckPlan` | Enforce optional requirements against the exact completed plan. |
+| `algeon_datafusion_native_count_only` | Before `aggregate_statistics` | Capture safe zero-column count shapes before DataFusion replaces them with statistics. |
+| `algeon_datafusion_native` | After the other physical optimizer rules | Make the final native selection and retain its structured diagnostics. This public name is also the deduplication key. |
+| `algeon_datafusion_final_plan_requirement` | After native selection, before `SanityCheckPlan` | Enforce optional requirements against the exact completed plan. |
 
-The entry points are `src/session.rs` for rule ordering and
-`NexusNativePhysicalOptimizerRule::optimize` in `src/planner/native.rs` for the
-rewrite. The rule is idempotent: an admission wrapper, `NexusNativeExec`,
-`NexusNativeComposedExec`, or a
+The entry points are `crates/algeon-datafusion/src/session.rs` for rule ordering and
+`AlgeonNativePhysicalOptimizerRule::optimize` in `crates/algeon-datafusion/src/planner/native.rs` for the
+rewrite. The rule is idempotent: an admission wrapper, `AlgeonNativeExec`,
+`AlgeonNativeComposedExec`, or a
 [certified mixed plan](#selection-fallback-and-mixed-execution) is not lowered
 again.
 
@@ -68,17 +68,17 @@ again.
 
 ### 1. Recognize a physical candidate
 
-`src/native/normalize.rs` removes only known transparent wrappers and builds a
+`crates/algeon-datafusion/src/native/normalize.rs` removes only known transparent wrappers and builds a
 `NormalizedNativePlan` for an exact supported shape. Operator, expression,
-type, source, and ordering checks stay in `src/native/validate.rs`,
-`src/native/expression_contract/`, and the source-specific lowering code.
+type, source, and ordering checks stay in `crates/algeon-datafusion/src/native/validate.rs`,
+`crates/algeon-datafusion/src/native/expression_contract/`, and the source-specific lowering code.
 
 Normalization is deliberately narrower than DataFusion's plan model. A miss
 returns a stable `CapabilityReason`; it does not guess at an equivalent plan.
 
 ### 2. Build engine-owned IR
 
-`src/native/lowering/` recursively translates the normalized tree with
+`crates/algeon-datafusion/src/native/lowering/` recursively translates the normalized tree with
 `QueryPlanBuilder`. The result is an append-only DAG of engine `PlanNode`s with
 an explicit `ResultSink`. The host sink preserves the DataFusion output schema,
 including schema metadata.
@@ -89,7 +89,7 @@ candidate remains on DataFusion with `NativeOrderedOutputUnsupported`.
 
 ### 3. Select an executable native plan
 
-`replace_lowered_root_or_keep_plan` in `src/planner/native/attempt.rs` accepts
+`replace_lowered_root_or_keep_plan` in `crates/algeon-datafusion/src/planner/native/attempt.rs` accepts
 only one lowered plan with one selected candidate. It then:
 
 1. runs the engine-owned native optimizer;
@@ -107,8 +107,8 @@ native-capable plan declined by cost is distinct from an unsupported plan.
 
 The selected candidate is wrapped in one of two `ExecutionPlan` nodes:
 
-- `NexusNativeExec` for plans with ordinary sources.
-- `NexusNativeComposedExec` for plans that read named GPU-resident sources.
+- `AlgeonNativeExec` for plans with ordinary sources.
+- `AlgeonNativeComposedExec` for plans that read named GPU-resident sources.
   Its children are the explicit GPU producers, and the wrapper checks that the
   required and provided input names match exactly. This is GPU-to-GPU
   composition, not arbitrary relational fragment extraction.
@@ -141,8 +141,8 @@ diagnostic state, not a planning history.
 When enabled, relational selection is whole-candidate by default. Explicit GPU
 functions can separately compose with DataFusion CPU operators, including in
 `FunctionsOnly` mode. The narrow relational rewrite exception lives in
-`src/planner/native/mixed.rs`: when whole-plan lowering misses on
-an unsupported expression, Nexus may certify a final CPU `ILIKE` filter over a
+`crates/algeon-datafusion/src/planner/native/mixed.rs`: when whole-plan lowering misses on
+an unsupported expression, Algeon may certify a final CPU `ILIKE` filter over a
 single local-Parquet source and replace only that source with a native
 host-output leaf. The certificate checks the exact shape, source, schema, and
 physical properties, then rebuilds the CPU filter from the new child. Do not
@@ -151,7 +151,7 @@ complete property and ownership proof.
 
 ## Native execution boundary
 
-`NexusNativeExec` and `NexusNativeComposedExec` are ordinary DataFusion
+`AlgeonNativeExec` and `AlgeonNativeComposedExec` are ordinary DataFusion
 `ExecutionPlan`s with one bounded output partition. At execution they acquire
 the admitted native context, run the engine's observed execution entry point,
 and expose Arrow `RecordBatch`es to the caller. The composed form first turns
@@ -182,12 +182,12 @@ Keep changes at the owner of the missing contract:
 
 | Change | Extend |
 | --- | --- |
-| Recognize another DataFusion physical shape | `src/native/normalize.rs`, `src/native/validate.rs`, and the existing module in `src/native/lowering/` |
-| Add or change native IR semantics | `crates/nexus-query-planning/src/plan/`, `crates/nexus-query-planning/src/optimizer/`, and `crates/nexus-query-planning/src/capability/`; execution changes remain in `crates/nexus-query-engine/src/exec/` |
-| Add an explicit GPU producer or graph island | The existing `GpuResidentProducer` or `GraphExecutionPlan` boundary in `src/native_exec/`, then compose through the current wrappers |
+| Recognize another DataFusion physical shape | `crates/algeon-datafusion/src/native/normalize.rs`, `crates/algeon-datafusion/src/native/validate.rs`, and the existing module in `crates/algeon-datafusion/src/native/lowering/` |
+| Add or change native IR semantics | `crates/algeon-query-planning/src/plan/`, `crates/algeon-query-planning/src/optimizer/`, and `crates/algeon-query-planning/src/capability/`; execution changes remain in `crates/algeon-query-engine/src/exec/` |
+| Add an explicit GPU producer or graph island | The existing `GpuResidentProducer` or `GraphExecutionPlan` boundary in `crates/algeon-datafusion/src/native_exec/`, then compose through the current wrappers |
 | Add a missing cuDF or cuGraph primitive | `components/cudf` or `components/cugraph`; do not emulate it in the DataFusion adapter |
 | Add a missing cuVS primitive | `components/cuvs`; preserve runtime binding, tensor ownership, and completion contracts |
-| Change selection evidence | `src/report.rs`, `src/capability.rs`, and the existing public report projections and contract tests |
+| Change selection evidence | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/capability.rs`, and the existing public report projections and contract tests |
 
 Extend `tests/native_planning/lowering.rs` for lowering and report behavior,
 `tests/native_exec_tests.rs` for selection, fallback, mixed, and wrapper
@@ -195,6 +195,6 @@ contracts, and the engine's `native_contract_tests` for DataFusion-independent
 behavior. A useful focused loop is:
 
 ~~~bash
-cargo nextest run -p datafusion-nexus --all-features --test native_planning_tests
-cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
+cargo nextest run -p algeon-datafusion --all-features --test native_planning_tests
+cargo nextest run -p query-engine --all-features --test native_contract_tests
 ~~~

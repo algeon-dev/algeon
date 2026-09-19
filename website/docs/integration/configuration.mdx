@@ -5,12 +5,12 @@ description: Configure the Flight SQL server, GPU admission, native execution, a
 
 # Configuration
 
-Nexus has three configuration owners. Keep them separate:
+Algeon has three configuration owners. Keep them separate:
 
 | Surface | Configure with | Owns |
 | --- | --- | --- |
 | Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, source catalogs, and retention |
-| Embedded GPU backend | `NexusGpuBackend::builder()` | Device ownership, capacity, queues, and execution mode |
+| Embedded GPU backend | `AlgeonGpuBackend::builder()` | Device ownership, capacity, queues, and execution mode |
 | DataFusion session | `SessionConfig` | Standard DataFusion behavior (catalogs, batch size, target partitions) |
 
 This page covers the Flight SQL process. For an embedded Rust service, use [DataFusion Session](./datafusion-session.mdx).
@@ -18,7 +18,7 @@ This page covers the Flight SQL process. For an embedded Rust service, use [Data
 ## How server configuration is resolved
 
 `ServerConfig::from_env()` starts with built-in defaults, reads the TOML file
-named by `NEXUS_SERVER_CONFIG_FILE`, and then applies environment overrides for
+named by `ALGEON_SERVER_CONFIG_FILE`, and then applies environment overrides for
 matching scalar admission, native, and observability fields.
 
 The TOML file accepts only `[auth]`, `[admission]`, `[native]`, and
@@ -38,8 +38,8 @@ device_ordinal = 0
 ```
 
 ```bash
-export NEXUS_SERVER_CONFIG_FILE="$PWD/server.toml"
-export NEXUS_SERVER_GPU_DEVICES=0
+export ALGEON_SERVER_CONFIG_FILE="$PWD/server.toml"
+export ALGEON_SERVER_GPU_DEVICES=0
 
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
@@ -53,13 +53,13 @@ deployment needs them.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address |
-| `NEXUS_SERVER_LOG` | `info` | Tracing filter |
-| `NEXUS_SERVER_CONFIG_FILE` | unset | TOML overlay path |
-| `NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS` | `300` | How long an unconsumed Flight statement ticket may wait for `DoGet` |
-| `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA ordinals |
-| `NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Maximum queued admission waiters |
-| `NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum wait for a compatible device |
+| `ALGEON_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address |
+| `ALGEON_SERVER_LOG` | `info` | Tracing filter |
+| `ALGEON_SERVER_CONFIG_FILE` | unset | TOML overlay path |
+| `ALGEON_SERVER_STATEMENT_TICKET_TTL_SECS` | `300` | How long an unconsumed Flight statement ticket may wait for `DoGet` |
+| `ALGEON_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA ordinals |
+| `ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Maximum queued admission waiters |
+| `ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum wait for a compatible device |
 
 The two queue values can also be placed under `[admission]` as
 `max_queued_attempts` and `max_queue_wait_ms`. Environment values win.
@@ -76,7 +76,7 @@ in driver headroom, but an explicit limit does not, so the reserve must be
 declared (`0` is a valid, deliberate choice).
 
 Selected ordinals and profile ordinals must match exactly. A profile outside
-`NEXUS_SERVER_GPU_DEVICES`, a missing profile, or a duplicate ordinal is an
+`ALGEON_SERVER_GPU_DEVICES`, a missing profile, or a duplicate ordinal is an
 error. `cache_cap_bytes = 0` (the default) installs no resident GPU cache.
 `default_query_limit_bytes` is the immutable cap granted to a query unless an
 embedding caller supplies an explicit cap. It must be positive and no larger
@@ -102,7 +102,7 @@ execution_mode = "functions_only"
 Or override it through the environment:
 
 ```bash
-export NEXUS_SERVER_EXECUTION_MODE=functions_only
+export ALGEON_SERVER_EXECUTION_MODE=functions_only
 ```
 
 Accepted values are `native_preferred`, `functions_only`, and `native_required`.
@@ -117,14 +117,14 @@ Native settings are accepted both under `[native]` and through the environment:
 
 | TOML field | Environment variable | Default |
 | --- | --- | --- |
-| `execution_mode` | `NEXUS_SERVER_EXECUTION_MODE` | `native_preferred` |
-| `max_source_chunk_bytes` | `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | 64 MiB |
-| `max_row_groups_per_chunk` | `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | `1` |
-| `max_retry_attempts` | `NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
-| `max_source_reads_in_flight` | `NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
-| `source_chunk_planning_mode` | `NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` |
-| `statistical_aggregate_execution_mode` | `NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `gpu_native_tolerant` |
-| `final_plan_requirement` | `NEXUS_SERVER_FINAL_PLAN_REQUIREMENT` | unset |
+| `execution_mode` | `ALGEON_SERVER_EXECUTION_MODE` | `native_preferred` |
+| `max_source_chunk_bytes` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | 64 MiB |
+| `max_row_groups_per_chunk` | `ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | `1` |
+| `max_retry_attempts` | `ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
+| `max_source_reads_in_flight` | `ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
+| `source_chunk_planning_mode` | `ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` |
+| `statistical_aggregate_execution_mode` | `ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `gpu_native_tolerant` |
+| `final_plan_requirement` | `ALGEON_SERVER_FINAL_PLAN_REQUIREMENT` | unset |
 
 `source_chunk_planning_mode` also accepts `local_parquet_throughput`.
 
@@ -176,13 +176,13 @@ budget:
 
 | TOML field under `[observability]` | Environment override | Default |
 | --- | --- | --- |
-| `per_query_max_records` | `NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS` | `65536` |
-| `per_query_max_bytes` | `NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES` | 8 MiB |
-| `active_logical_capture_max_bytes` | `NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES` | 1 GiB |
-| `global_sealed_max_count` | `NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT` | `1024` |
-| `global_sealed_max_bytes` | `NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES` | 1 GiB |
-| `sealed_ttl_secs` | `NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS` | `3600` |
-| `shutdown_grace_secs` | `NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS` | `30` |
+| `per_query_max_records` | `ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS` | `65536` |
+| `per_query_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES` | 8 MiB |
+| `active_logical_capture_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES` | 1 GiB |
+| `global_sealed_max_count` | `ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT` | `1024` |
+| `global_sealed_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES` | 1 GiB |
+| `sealed_ttl_secs` | `ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS` | `3600` |
+| `shutdown_grace_secs` | `ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS` | `30` |
 
 All values must be greater than zero.
 
@@ -192,11 +192,11 @@ cuGraph registration is controlled by these settings:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_CUGRAPH_ENABLED` | `true` | Register the `cugraph_*` SQL frontend |
-| `NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | `python_cugraph` or `raw_libcugraph` |
+| `ALGEON_SERVER_CUGRAPH_ENABLED` | `true` | Register the `cugraph_*` SQL frontend |
+| `ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | `python_cugraph` or `raw_libcugraph` |
 
 The construction-policy override is rejected when
-`NEXUS_SERVER_CUGRAPH_ENABLED` is false. A binary without the `cugraph` feature can still expose the frontend,
+`ALGEON_SERVER_CUGRAPH_ENABLED` is false. A binary without the `cugraph` feature can still expose the frontend,
 but execution returns a structured `required_feature_disabled` error.
 Per-call `options_json` overrides these defaults; see
 [Graph Inputs and Construction](../cugraph/graph-options.mdx).
@@ -209,42 +209,44 @@ structured `required_feature_disabled` error. See
 ## Iceberg and workspace
 
 Iceberg server configuration activates when a catalog, storage, or cache
-setting below is present and requires the `iceberg` Cargo feature. Start with the
+setting below is present and requires the `iceberg` Cargo feature. That feature
+is held out of the current release while the project waits for the upstream
+iceberg-rust 0.12 release and compatibility validation. Start with the
 [Local Iceberg E2E](../guides/iceberg-e2e.md) for a reproducible REST catalog.
 
 Common settings are:
 
 | Variable | Requirement |
 | --- | --- |
-| `NEXUS_ICEBERG_CATALOG_KIND` | Required when Iceberg settings are present; `glue` or `rest` |
-| `NEXUS_ICEBERG_CATALOG_NAME` | DataFusion catalog name; defaults to the selected backend name |
-| `NEXUS_ICEBERG_NAMESPACE` | Required namespace exposed to SQL |
-| `NEXUS_ICEBERG_WAREHOUSE` | Required warehouse URI |
-| `NEXUS_ICEBERG_TABLES` | Optional `alias=table` preload list; otherwise tables resolve lazily |
-| `NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS` | Planning timeout; default `60` |
+| `ALGEON_ICEBERG_CATALOG_KIND` | Required when Iceberg settings are present; `glue` or `rest` |
+| `ALGEON_ICEBERG_CATALOG_NAME` | DataFusion catalog name; defaults to the selected backend name |
+| `ALGEON_ICEBERG_NAMESPACE` | Required namespace exposed to SQL |
+| `ALGEON_ICEBERG_WAREHOUSE` | Required warehouse URI |
+| `ALGEON_ICEBERG_TABLES` | Optional `alias=table` preload list; otherwise tables resolve lazily |
+| `ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS` | Planning timeout; default `60` |
 
-REST catalogs require `NEXUS_ICEBERG_REST_URI`. Glue requires `AWS_REGION` or
+REST catalogs require `ALGEON_ICEBERG_REST_URI`. Glue requires `AWS_REGION` or
 `AWS_DEFAULT_REGION`; backend-specific prefix, token, catalog-handle, ID, and
 endpoint variables are optional.
 
-S3-compatible storage uses `NEXUS_ICEBERG_S3_ENDPOINT`,
-`NEXUS_ICEBERG_S3_REGION`, and `NEXUS_ICEBERG_S3_PATH_STYLE`. Choose either
-static `NEXUS_ICEBERG_S3_ACCESS_KEY_ID` /
-`NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY` credentials or
-`NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain`; combining them is rejected.
+S3-compatible storage uses `ALGEON_ICEBERG_S3_ENDPOINT`,
+`ALGEON_ICEBERG_S3_REGION`, and `ALGEON_ICEBERG_S3_PATH_STYLE`. Choose either
+static `ALGEON_ICEBERG_S3_ACCESS_KEY_ID` /
+`ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY` credentials or
+`ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain`; combining them is rejected.
 For Glue with remote KvikIO reads, set both `AWS_REGION` and
 `AWS_DEFAULT_REGION` to the same region.
 
 The optional persistent byte cache is separate from GPU memory. Configure it
-with `NEXUS_LAKEHOUSE_CACHE_ROOT`, `NEXUS_LAKEHOUSE_CACHE_READ`,
-`NEXUS_LAKEHOUSE_CACHE_POLICY`, and `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES`; cache
+with `ALGEON_LAKEHOUSE_CACHE_ROOT`, `ALGEON_LAKEHOUSE_CACHE_READ`,
+`ALGEON_LAKEHOUSE_CACHE_POLICY`, and `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES`; cache
 policy is `disabled`, `read_through`, or `fill_before_read`.
-`NEXUS_LAKEHOUSE_CACHE_READ` accepts only `enabled` or `disabled`.
-`NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is required whenever a cache root is
+`ALGEON_LAKEHOUSE_CACHE_READ` accepts only `enabled` or `disabled`.
+`ALGEON_LAKEHOUSE_CACHE_MAX_BYTES` is required whenever a cache root is
 configured with a filling policy (`read_through` or `fill_before_read`).
-`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `NEXUS_ICEBERG_FOOTER_PRUNING` are
+`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `ALGEON_ICEBERG_FOOTER_PRUNING` are
 process/source flags rather than `ServerConfig` fields; set them before
-process startup. `NEXUS_ICEBERG_FOOTER_PRUNING` accepts only `true`, `false`,
+process startup. `ALGEON_ICEBERG_FOOTER_PRUNING` accepts only `true`, `false`,
 `1`, or `0` — any other value is a startup/planning error, not a silent
 `false`.
 
@@ -252,11 +254,11 @@ Use a workspace overlay when the source catalog is read-only but interactive
 DDL should remain local:
 
 ```bash
-export NEXUS_SERVER_WORKSPACE_CATALOG=datafusion
-export NEXUS_SERVER_WORKSPACE_SCHEMA=public
-export NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake
-export NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
-export NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,papers,paper_authors
+export ALGEON_SERVER_WORKSPACE_CATALOG=datafusion
+export ALGEON_SERVER_WORKSPACE_SCHEMA=public
+export ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake
+export ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
+export ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,papers,paper_authors
 ```
 
 The backing catalog and schema must be set together. Catalog/schema default to
@@ -270,6 +272,6 @@ Common keys include `DATAFUSION_EXECUTION_BATCH_SIZE`,
 `DATAFUSION_CATALOG_DEFAULT_CATALOG`, and
 `DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
 
-Native execution policy is owned solely by the server configuration (`[native]` TOML options and `NEXUS_SERVER_NATIVE_*` environment variables) or the embedded `NexusGpuBackendBuilder`.
-Nexus registers no session configuration extensions; DataFusion sessions carry standard DataFusion configuration only.
-SQL statements attempting `SET datafusion_nexus.*` fail with an unrecognized configuration key error.
+Native execution policy is owned solely by the server configuration (`[native]` TOML options and `ALGEON_SERVER_NATIVE_*` environment variables) or the embedded `AlgeonGpuBackendBuilder`.
+Algeon registers no session configuration extensions; DataFusion sessions carry standard DataFusion configuration only.
+SQL statements attempting `SET algeon_datafusion.*` fail with an unrecognized configuration key error.

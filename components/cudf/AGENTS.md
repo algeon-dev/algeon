@@ -11,12 +11,12 @@
 
 `components/cudf` provides service-facing Rust DataFrame and runtime integration
 over libcudf. Query planning and runtime ownership follow the root
-`datafusion-nexus` ownership map.
+`algeon-datafusion` ownership map.
 
-- Safe APIs belong in `cudf-nexus/`; the C++ shim and raw FFI belong in
-  `cudf-nexus-sys/`; cross-library ownership and synchronization vocabulary
+- Safe APIs belong in `cudf/`; the C++ shim and raw FFI belong in
+  `cudf-sys/`; cross-library ownership and synchronization vocabulary
   belongs in `rapids-interop/`.
-- `components/cudf/cudf/` is the pinned DataFusion-Nexus cuDF fork used for
+- `components/cudf/cudf/` is the pinned Algeon cuDF fork used for
   native builds.
 - The three component crates are members of the root workspace; preserve their
   dependency direction and package/import identities.
@@ -40,10 +40,10 @@ over libcudf. Query planning and runtime ownership follow the root
 ## Build and test
 
 ```bash
-cargo clippy -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
+cargo clippy -p cudf -p cudf-sys -p rapids-interop \
   --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cudf-nexus) | package(cudf-nexus-sys) | package(rapids-interop)'
+cargo nt -E 'package(cudf) | package(cudf-sys) | package(rapids-interop)'
 ```
 
 Run focused checks first, then broaden validation with the change's blast
@@ -65,8 +65,8 @@ native work.
 
 ## Public contracts
 
-- Preserve package/import identities: `cudf-nexus` imports as `cudf`,
-  `cudf-nexus-sys` imports as `cudf_sys`, `rapids-interop` imports as
+- Preserve package/import identities: `cudf` imports as `cudf`,
+  `cudf-sys` imports as `cudf_sys`, `rapids-interop` imports as
   `rapids_interop`, and the sys crate keeps `links = "cudf_rust"`.
 - Preserve `DEP_CUDF_RUST_*` native metadata and exact libcudf/RMM runtime
   identity for downstream consumers.

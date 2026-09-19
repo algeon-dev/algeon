@@ -21,7 +21,7 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = ROOT / ".config" / "policies" / "cpu-packaging.toml"
-SERVER_BINARY = "datafusion_nexus_server"
+SERVER_BINARY = "algeon_server"
 MANIFEST_SCHEMA_VERSION = 1
 
 
@@ -122,7 +122,7 @@ def canonical_features(raw: str) -> list[str]:
     if not features:
         raise PolicyError("packaging features must not be empty")
     if "server" in features:
-        raise PolicyError("the nexus-server package has no server feature")
+        raise PolicyError("the server package has no server feature")
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", feature) for feature in features):
         raise PolicyError(f"invalid Cargo feature list: {raw!r}")
     return sorted(set(features))
@@ -356,11 +356,11 @@ def command_build(args: argparse.Namespace) -> None:
         "--features",
         ",".join(features),
         "--package",
-        "nexus-server",
+        "algeon-server",
         "--bin",
         SERVER_BINARY,
     ]
-    with tempfile.TemporaryDirectory(prefix="datafusion-nexus-cpu-package-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="algeon-datafusion-cpu-package-") as temporary:
         cwd = Path(temporary)
         ensure_clean_cwd(cwd)
         fixed_tool_versions = collect_fixed_tool_versions(policy, cwd=cwd, environment=environment)

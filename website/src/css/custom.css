@@ -17,84 +17,84 @@
   --ifm-navbar-background-color: rgba(255, 255, 255, 0.6);
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
 
-  --nx-ayu-bg: #0f1419;
-  --nx-ayu-bg-sunk: #0d1017;
-  --nx-ayu-surface: #10141c;
-  --nx-ayu-panel: #141821;
-  --nx-ayu-line: #1b1f29;
-  --nx-ayu-text: #bfbdb6;
-  --nx-ayu-heading: #e6e1cf;
-  --nx-ayu-muted: #5a6378;
-  --nx-ayu-muted-strong: #8b95a3;
-  --nx-ayu-accent: #e6b450;
-  --nx-ayu-accent-strong: #ffb454;
-  --nx-ayu-blue: #59c2ff;
-  --nx-ayu-green: #aad94c;
-  --nx-ayu-teal: #95e6cb;
-  --nx-ayu-red: #f07178;
-  --nx-ayu-purple: #d2a6ff;
+  --ag-ayu-bg: #0f1419;
+  --ag-ayu-bg-sunk: #0d1017;
+  --ag-ayu-surface: #10141c;
+  --ag-ayu-panel: #141821;
+  --ag-ayu-line: #1b1f29;
+  --ag-ayu-text: #bfbdb6;
+  --ag-ayu-heading: #e6e1cf;
+  --ag-ayu-muted: #5a6378;
+  --ag-ayu-muted-strong: #8b95a3;
+  --ag-ayu-accent: #e6b450;
+  --ag-ayu-accent-strong: #ffb454;
+  --ag-ayu-blue: #59c2ff;
+  --ag-ayu-green: #aad94c;
+  --ag-ayu-teal: #95e6cb;
+  --ag-ayu-red: #f07178;
+  --ag-ayu-purple: #d2a6ff;
 }
 
 [data-theme='dark'] {
-  --ifm-color-primary: var(--nx-ayu-accent);
+  --ifm-color-primary: var(--ag-ayu-accent);
   --ifm-color-primary-dark: #d9a84a;
   --ifm-color-primary-darker: #cc9c43;
   --ifm-color-primary-darkest: #a87d33;
-  --ifm-color-primary-light: var(--nx-ayu-accent-strong);
+  --ifm-color-primary-light: var(--ag-ayu-accent-strong);
   --ifm-color-primary-lighter: #ffc466;
   --ifm-color-primary-lightest: #ffd48a;
 
-  --ifm-background-color: var(--nx-ayu-bg);
-  --ifm-background-surface-color: var(--nx-ayu-surface);
-  --ifm-card-background-color: var(--nx-ayu-surface);
-  --ifm-footer-background-color: var(--nx-ayu-bg-sunk);
+  --ifm-background-color: var(--ag-ayu-bg);
+  --ifm-background-surface-color: var(--ag-ayu-surface);
+  --ifm-card-background-color: var(--ag-ayu-surface);
+  --ifm-footer-background-color: var(--ag-ayu-bg-sunk);
   --ifm-navbar-background-color: rgba(20, 24, 33, 0.78);
   --ifm-navbar-search-input-background-color: rgba(15, 20, 25, 0.62);
-  --ifm-navbar-search-input-color: var(--nx-ayu-text);
-  --ifm-navbar-search-input-placeholder-color: var(--nx-ayu-muted-strong);
-  --ifm-toc-border-color: var(--nx-ayu-line);
-  --ifm-table-border-color: var(--nx-ayu-line);
+  --ifm-navbar-search-input-color: var(--ag-ayu-text);
+  --ifm-navbar-search-input-placeholder-color: var(--ag-ayu-muted-strong);
+  --ifm-toc-border-color: var(--ag-ayu-line);
+  --ifm-table-border-color: var(--ag-ayu-line);
   --ifm-table-stripe-background: rgba(20, 24, 33, 0.62);
-  --ifm-hr-border-color: var(--nx-ayu-line);
+  --ifm-hr-border-color: var(--ag-ayu-line);
 
-  --ifm-font-color-base: var(--nx-ayu-text);
-  --ifm-font-color-secondary: var(--nx-ayu-muted-strong);
-  --ifm-heading-color: var(--nx-ayu-heading);
-  --ifm-link-color: var(--nx-ayu-blue);
-  --ifm-link-hover-color: var(--nx-ayu-accent-strong);
-  --ifm-menu-color: var(--nx-ayu-muted-strong);
-  --ifm-menu-color-active: var(--nx-ayu-accent);
-  --ifm-breadcrumb-color-active: var(--nx-ayu-heading);
+  --ifm-font-color-base: var(--ag-ayu-text);
+  --ifm-font-color-secondary: var(--ag-ayu-muted-strong);
+  --ifm-heading-color: var(--ag-ayu-heading);
+  --ifm-link-color: var(--ag-ayu-blue);
+  --ifm-link-hover-color: var(--ag-ayu-accent-strong);
+  --ifm-menu-color: var(--ag-ayu-muted-strong);
+  --ifm-menu-color-active: var(--ag-ayu-accent);
+  --ifm-breadcrumb-color-active: var(--ag-ayu-heading);
 
-  --ifm-code-background: var(--nx-ayu-panel);
-  --ifm-code-color: var(--nx-ayu-accent-strong);
-  --ifm-pre-background: var(--nx-ayu-surface);
-  --ifm-blockquote-border-color: var(--nx-ayu-line);
-  --ifm-alert-background-color: var(--nx-ayu-panel);
-  --ifm-alert-border-color: var(--nx-ayu-line);
+  --ifm-code-background: var(--ag-ayu-panel);
+  --ifm-code-color: var(--ag-ayu-accent-strong);
+  --ifm-pre-background: var(--ag-ayu-surface);
+  --ifm-blockquote-border-color: var(--ag-ayu-line);
+  --ifm-alert-background-color: var(--ag-ayu-panel);
+  --ifm-alert-border-color: var(--ag-ayu-line);
 
-  --ifm-color-emphasis-0: var(--nx-ayu-bg-sunk);
-  --ifm-color-emphasis-100: var(--nx-ayu-surface);
-  --ifm-color-emphasis-200: var(--nx-ayu-line);
+  --ifm-color-emphasis-0: var(--ag-ayu-bg-sunk);
+  --ifm-color-emphasis-100: var(--ag-ayu-surface);
+  --ifm-color-emphasis-200: var(--ag-ayu-line);
   --ifm-color-emphasis-300: #252b38;
   --ifm-color-emphasis-400: #343b4a;
-  --ifm-color-emphasis-500: var(--nx-ayu-muted);
+  --ifm-color-emphasis-500: var(--ag-ayu-muted);
   --ifm-color-emphasis-600: #7a8494;
-  --ifm-color-emphasis-700: var(--nx-ayu-muted-strong);
-  --ifm-color-emphasis-800: var(--nx-ayu-text);
-  --ifm-color-emphasis-900: var(--nx-ayu-heading);
+  --ifm-color-emphasis-700: var(--ag-ayu-muted-strong);
+  --ifm-color-emphasis-800: var(--ag-ayu-text);
+  --ifm-color-emphasis-900: var(--ag-ayu-heading);
 
-  --search-local-modal-background: var(--nx-ayu-panel);
+  --search-local-modal-background: var(--ag-ayu-panel);
   --search-local-modal-shadow:
     inset 1px 1px 0 0 rgba(230, 225, 207, 0.04),
     0 18px 48px rgba(0, 0, 0, 0.42);
-  --search-local-hit-background: var(--nx-ayu-surface);
-  --search-local-hit-shadow: inset 0 0 0 1px var(--nx-ayu-line);
-  --search-local-hit-color: var(--nx-ayu-text);
-  --search-local-hit-active-color: var(--nx-ayu-bg-sunk);
-  --search-local-highlight-color: var(--nx-ayu-accent);
-  --search-local-muted-color: var(--nx-ayu-muted-strong);
-  --search-local-input-active-border-color: var(--nx-ayu-accent);
+  --search-local-hit-background: var(--ag-ayu-surface);
+  --search-local-hit-shadow: inset 0 0 0 1px var(--ag-ayu-line);
+  --search-local-hit-color: var(--ag-ayu-text);
+  --search-local-hit-active-color: var(--ag-ayu-bg-sunk);
+  --search-local-highlight-color: var(--ag-ayu-accent);
+  --search-local-muted-color: var(--ag-ayu-muted-strong);
+  --search-local-input-active-border-color: var(--ag-ayu-accent);
 
   --docusaurus-highlighted-code-line-bg: rgba(230, 180, 80, 0.12);
 }
@@ -228,7 +228,7 @@
 
 [data-theme='dark'] .navbar-sidebar,
 [data-theme='dark'] .navbar-sidebar__brand {
-  background: var(--nx-ayu-bg-sunk);
+  background: var(--ag-ayu-bg-sunk);
 }
 
 [data-theme='dark'] .navbar-sidebar__backdrop {
@@ -239,38 +239,38 @@
 [data-theme='dark'] .navbar__item,
 [data-theme='dark'] .navbar__toggle,
 [data-theme='dark'] .navbar-sidebar__item {
-  color: var(--nx-ayu-muted-strong);
+  color: var(--ag-ayu-muted-strong);
 }
 
 [data-theme='dark'] .navbar__link:hover,
 [data-theme='dark'] .navbar__link--active,
 [data-theme='dark'] .navbar-sidebar__item .menu__link:hover,
 [data-theme='dark'] .navbar-sidebar__item .menu__link--active {
-  color: var(--nx-ayu-accent);
+  color: var(--ag-ayu-accent);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-container,
 [data-theme='dark'] .table-of-contents,
 [data-theme='dark'] .pagination-nav__link,
 [data-theme='dark'] .card {
-  border-color: var(--nx-ayu-line);
+  border-color: var(--ag-ayu-line);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-container,
 [data-theme='dark'] .pagination-nav__link,
 [data-theme='dark'] .card {
-  background: var(--nx-ayu-surface);
+  background: var(--ag-ayu-surface);
 }
 
 [data-theme='dark'] .alert--warning {
   --ifm-alert-background-color: color-mix(
     in srgb,
-    var(--nx-ayu-accent) 18%,
-    var(--nx-ayu-bg-sunk)
+    var(--ag-ayu-accent) 18%,
+    var(--ag-ayu-bg-sunk)
   );
   --ifm-alert-background-color-highlight: rgba(230, 180, 80, 0.18);
-  --ifm-alert-foreground-color: var(--nx-ayu-heading);
-  --ifm-alert-border-color: var(--nx-ayu-accent);
+  --ifm-alert-foreground-color: var(--ag-ayu-heading);
+  --ifm-alert-border-color: var(--ag-ayu-accent);
 }
 
 [data-theme='light'] .footer.footer--dark {
@@ -294,19 +294,19 @@
 
 [data-theme='dark'] .footer,
 [data-theme='dark'] .footer--dark {
-  background: var(--nx-ayu-bg-sunk);
-  border-top: 1px solid var(--nx-ayu-line);
+  background: var(--ag-ayu-bg-sunk);
+  border-top: 1px solid var(--ag-ayu-line);
 }
 
 [data-theme='dark'] .footer__title,
 [data-theme='dark'] .footer__link-item:hover {
-  color: var(--nx-ayu-accent);
+  color: var(--ag-ayu-accent);
 }
 
 [data-theme='dark'] .footer__item,
 [data-theme='dark'] .footer__copyright,
 [data-theme='dark'] .footer__link-item {
-  color: var(--nx-ayu-muted-strong);
+  color: var(--ag-ayu-muted-strong);
 }
 
 [data-theme='dark'] .markdown :not(pre) > code {
@@ -321,7 +321,7 @@
 }
 
 [data-theme='dark'] .theme-code-block {
-  border: 1px solid var(--nx-ayu-line);
+  border: 1px solid var(--ag-ayu-line);
 }
 
 .theme-code-block .token.table {
@@ -346,7 +346,7 @@
 
 [data-theme='dark'] .navbar__search .navbar__search-input {
   background-color: rgba(230, 225, 207, 0.12);
-  color: var(--nx-ayu-text);
+  color: var(--ag-ayu-text);
 }
 
 /* Mobile search: Docusaurus pins the search wrapper to the navbar's right edge
@@ -409,7 +409,7 @@
 
 [data-theme='dark'] input[type='search']:not(.navbar__search-input) {
   background-color: rgba(15, 20, 25, 0.62);
-  color: var(--nx-ayu-text);
+  color: var(--ag-ayu-text);
 }
 
 .navbar__search [class*='searchHintContainer'] {
@@ -440,13 +440,13 @@
 }
 
 [data-theme='dark'] .navbar__search kbd[class*='searchHint'] {
-  color: var(--nx-ayu-text);
+  color: var(--ag-ayu-text);
   opacity: 0.48;
 }
 
 [data-theme='dark'] mark {
   background: rgba(230, 180, 80, 0.24);
-  color: var(--nx-ayu-heading);
+  color: var(--ag-ayu-heading);
 }
 
 /* ===========================================================================
@@ -455,79 +455,79 @@
  * An engineering-minimal, hairline-first visual language for the architecture
  * diagrams (StackDiagram / FlowDiagram). Tokens map onto Infima's theme-aware
  * variables so light and dark stay correct automatically; the tone hues are
- * fixed and chosen to read on both themes. Components consume --nx-* only and
+ * fixed and chosen to read on both themes. Components consume --ag-* only and
  * never hardcode raw hex.
  * ======================================================================== */
 :root {
-  --nx-dg-bg: var(--ifm-background-color);
-  --nx-dg-surface: var(--ifm-card-background-color);
-  --nx-dg-surface-2: var(--ifm-color-emphasis-100);
-  --nx-dg-border: var(--ifm-color-emphasis-200);
-  --nx-dg-border-strong: var(--ifm-color-emphasis-400);
-  --nx-dg-fg: var(--ifm-font-color-base);
-  --nx-dg-fg-muted: var(--ifm-color-emphasis-700);
-  --nx-dg-fg-subtle: var(--ifm-color-emphasis-600);
+  --ag-dg-bg: var(--ifm-background-color);
+  --ag-dg-surface: var(--ifm-card-background-color);
+  --ag-dg-surface-2: var(--ifm-color-emphasis-100);
+  --ag-dg-border: var(--ifm-color-emphasis-200);
+  --ag-dg-border-strong: var(--ifm-color-emphasis-400);
+  --ag-dg-fg: var(--ifm-font-color-base);
+  --ag-dg-fg-muted: var(--ifm-color-emphasis-700);
+  --ag-dg-fg-subtle: var(--ifm-color-emphasis-600);
   /* Homepage architecture hierarchy: cards are tangible objects; connectors
      recede one step so they communicate relationships without dominating. */
-  --nx-arch-card-border: #d7dce1;
-  --nx-arch-edge: #748292;
-  --nx-dg-bar: var(--ifm-color-emphasis-900);
-  --nx-dg-bar-fg: var(--ifm-background-color);
-  --nx-dg-accent: var(--ifm-color-primary);
+  --ag-arch-card-border: #d7dce1;
+  --ag-arch-edge: #748292;
+  --ag-dg-bar: var(--ifm-color-emphasis-900);
+  --ag-dg-bar-fg: var(--ifm-background-color);
+  --ag-dg-accent: var(--ifm-color-primary);
 
   /* Semantic tones — fixed hues, paired with a label so they never carry
      meaning by color alone. */
-  --nx-tone-safe: #2bb673;   /* compile-time safe region */
-  --nx-tone-ffi: #4d8bf0;    /* the extern "C" / FFI boundary layer */
-  --nx-tone-foreign: #e8716d;/* foreign / unsafe region */
-  --nx-tone-shim: #a884f3;   /* hand-written shim */
-  --nx-tone-rust: #d9a066;   /* Rust-side artifacts */
-  --nx-tone-plain: var(--ifm-color-emphasis-500);
+  --ag-tone-safe: #2bb673;   /* compile-time safe region */
+  --ag-tone-ffi: #4d8bf0;    /* the extern "C" / FFI boundary layer */
+  --ag-tone-foreign: #e8716d;/* foreign / unsafe region */
+  --ag-tone-shim: #a884f3;   /* hand-written shim */
+  --ag-tone-rust: #d9a066;   /* Rust-side artifacts */
+  --ag-tone-plain: var(--ifm-color-emphasis-500);
 
   /* Design-page tones — a DataFusion-orange → NVIDIA-green ramp: the closer a
      component sits to the GPU, the greener it gets. DataFusion hues come from
      the DataFusion logo gradient (#EF4136 → #FBB040); GPU is NVIDIA green
      (#76B900). Light-theme variants are darkened for text contrast. */
-  --nx-design-df: #c93a26;      /* DataFusion / host SQL surface */
-  --nx-design-nexus: #a87414;   /* the Nexus adapter layer */
-  --nx-design-bridge: #7e8f00;  /* nexus-query-engine — halfway to the GPU */
-  --nx-design-gpu: #5e9400;     /* cudf / libcudf / CUDA — NVIDIA green */
-  --nx-design-graph: #1f8b4d;   /* cugraph, one step off the cuDF green */
-  --nx-design-lake: #2e7cb4;    /* Iceberg lakehouse blue */
+  --ag-design-df: #c93a26;      /* DataFusion / host SQL surface */
+  --ag-design-algeon: #a87414;   /* the DataFusion adapter layer */
+  --ag-design-bridge: #7e8f00;  /* query-engine — halfway to the GPU */
+  --ag-design-gpu: #5e9400;     /* cudf / libcudf / CUDA — NVIDIA green */
+  --ag-design-graph: #1f8b4d;   /* cugraph, one step off the cuDF green */
+  --ag-design-lake: #2e7cb4;    /* Iceberg lakehouse blue */
 
-  --nx-dg-mono: var(--ifm-font-family-monospace);
-  --nx-dg-radius: 10px;
-  --nx-dg-radius-sm: 6px;
+  --ag-dg-mono: var(--ifm-font-family-monospace);
+  --ag-dg-radius: 10px;
+  --ag-dg-radius-sm: 6px;
 }
 
 [data-theme='dark'] {
-  --nx-dg-bg: var(--nx-ayu-bg-sunk);
-  --nx-dg-surface: var(--nx-ayu-surface);
-  --nx-dg-surface-2: var(--nx-ayu-panel);
-  --nx-dg-border: var(--nx-ayu-line);
-  --nx-dg-border-strong: #343b4a;
-  --nx-dg-fg: var(--nx-ayu-heading);
-  --nx-dg-fg-muted: var(--nx-ayu-muted-strong);
-  --nx-dg-fg-subtle: #7a8494;
-  --nx-arch-card-border: #313a47;
-  --nx-arch-edge: #8492a5;
-  --nx-dg-bar: var(--nx-ayu-text);
-  --nx-dg-bar-fg: var(--nx-ayu-bg);
-  --nx-dg-accent: var(--nx-ayu-accent);
+  --ag-dg-bg: var(--ag-ayu-bg-sunk);
+  --ag-dg-surface: var(--ag-ayu-surface);
+  --ag-dg-surface-2: var(--ag-ayu-panel);
+  --ag-dg-border: var(--ag-ayu-line);
+  --ag-dg-border-strong: #343b4a;
+  --ag-dg-fg: var(--ag-ayu-heading);
+  --ag-dg-fg-muted: var(--ag-ayu-muted-strong);
+  --ag-dg-fg-subtle: #7a8494;
+  --ag-arch-card-border: #313a47;
+  --ag-arch-edge: #8492a5;
+  --ag-dg-bar: var(--ag-ayu-text);
+  --ag-dg-bar-fg: var(--ag-ayu-bg);
+  --ag-dg-accent: var(--ag-ayu-accent);
 
-  --nx-tone-safe: var(--nx-ayu-green);
-  --nx-tone-ffi: var(--nx-ayu-blue);
-  --nx-tone-foreign: var(--nx-ayu-red);
-  --nx-tone-shim: var(--nx-ayu-purple);
-  --nx-tone-rust: var(--nx-ayu-accent);
+  --ag-tone-safe: var(--ag-ayu-green);
+  --ag-tone-ffi: var(--ag-ayu-blue);
+  --ag-tone-foreign: var(--ag-ayu-red);
+  --ag-tone-shim: var(--ag-ayu-purple);
+  --ag-tone-rust: var(--ag-ayu-accent);
 
   /* Design-page tones, dark: full-strength brand hues. */
-  --nx-design-df: #f1543f;      /* DataFusion logo red-orange (#EF4136) */
-  --nx-design-nexus: #fbb040;   /* DataFusion logo amber (#FBB040) */
-  --nx-design-bridge: #b5c400;  /* yellow-green hand-off */
-  --nx-design-gpu: #76b900;     /* NVIDIA green */
-  --nx-design-graph: #2fb56b;   /* cugraph emerald */
-  --nx-design-lake: #5fb3e4;    /* Iceberg lakehouse blue */
+  --ag-design-df: #f1543f;      /* DataFusion logo red-orange (#EF4136) */
+  --ag-design-algeon: #fbb040;   /* DataFusion logo amber (#FBB040) */
+  --ag-design-bridge: #b5c400;  /* yellow-green hand-off */
+  --ag-design-gpu: #76b900;     /* NVIDIA green */
+  --ag-design-graph: #2fb56b;   /* cugraph emerald */
+  --ag-design-lake: #5fb3e4;    /* Iceberg lakehouse blue */
 }
 
 /* Blog layout. Keep the existing desktop article-page layout: a fixed recent

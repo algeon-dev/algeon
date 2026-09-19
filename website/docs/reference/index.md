@@ -19,6 +19,6 @@ terms the design pages use.
 - [GPU Function Catalog API](./gpu-function-catalog.mdx) - the common
   cuGraph/cuVS catalog, descriptor, and static-validation schema reference.
 - [Benchmarks](./benchmarks/index.mdx) - CPU and GPU benchmark results for DataFusion
-  Nexus.
-- [Glossary](./glossary.md) - one-line definitions of Nexus-specific terms,
+  Algeon.
+- [Glossary](./glossary.md) - one-line definitions of Algeon-specific terms,
   linking to the owning contract pages.

@@ -1,0 +1,235 @@
+use std::sync::Arc;
+
+use arrow::datatypes::{DataType, IntervalMonthDayNanoType, TimeUnit};
+use datafusion::{
+    common::ScalarValue,
+    physical_expr::{PhysicalExpr, expressions::Literal},
+};
+use query_engine::{datatypes::is_supported_arrow_type, expr::LiteralValue as NativeLiteralValue};
+
+use crate::capability::CapabilityReason;
+
+/// Chooses the fallback category for literal lowering failures.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum NativeLiteralContext {
+    Expression,
+    SourceValue,
+}
+
+impl NativeLiteralContext {
+    fn fallback_reason(self) -> CapabilityReason {
+        match self {
+            Self::Expression => CapabilityReason::UnsupportedExpression,
+            Self::SourceValue => CapabilityReason::UnsupportedType,
+        }
+    }
+}
+
+pub(super) fn native_literal_value(
+    value: &ScalarValue,
+    context: NativeLiteralContext,
+) -> Result<NativeLiteralValue, CapabilityReason> {
+    let literal = match value {
+        ScalarValue::Boolean(Some(value)) => NativeLiteralValue::Boolean(*value),
+        ScalarValue::Int8(Some(value)) => NativeLiteralValue::Int8(*value),
+        ScalarValue::Int16(Some(value)) => NativeLiteralValue::Int16(*value),
+        ScalarValue::Int32(Some(value)) => NativeLiteralValue::Int32(*value),
+        ScalarValue::Int64(Some(value)) => NativeLiteralValue::Int64(*value),
+        ScalarValue::UInt8(Some(value)) => NativeLiteralValue::UInt8(*value),
+        ScalarValue::UInt16(Some(value)) => NativeLiteralValue::UInt16(*value),
+        ScalarValue::UInt32(Some(value)) => NativeLiteralValue::UInt32(*value),
+        ScalarValue::UInt64(Some(value)) => NativeLiteralValue::UInt64(*value),
+        ScalarValue::Float32(Some(value)) => NativeLiteralValue::Float32(*value),
+        ScalarValue::Float64(Some(value)) => NativeLiteralValue::Float64(*value),
+        // Utf8View has no distinct native literal; non-null values are canonicalized to Utf8.
+        ScalarValue::Utf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => NativeLiteralValue::Utf8(value.clone()),
+        ScalarValue::LargeUtf8(Some(value)) => NativeLiteralValue::LargeUtf8(value.clone()),
+        ScalarValue::Decimal128(Some(raw), precision, scale) => {
+            NativeLiteralValue::Decimal128 { raw: *raw, precision: *precision, scale: *scale }
+        },
+        ScalarValue::Date32(Some(value)) => NativeLiteralValue::Date32(*value),
+        ScalarValue::Date64(Some(value)) => NativeLiteralValue::Date64(*value),
+        ScalarValue::Time32Second(Some(raw)) => NativeLiteralValue::Time32 { raw: *raw, unit: TimeUnit::Second },
+        ScalarValue::Time32Millisecond(Some(raw)) => {
+            NativeLiteralValue::Time32 { raw: *raw, unit: TimeUnit::Millisecond }
+        },
+        ScalarValue::Time64Microsecond(Some(raw)) => {
+            NativeLiteralValue::Time64 { raw: *raw, unit: TimeUnit::Microsecond }
+        },
+        ScalarValue::Time64Nanosecond(Some(raw)) => {
+            NativeLiteralValue::Time64 { raw: *raw, unit: TimeUnit::Nanosecond }
+        },
+        ScalarValue::TimestampSecond(Some(raw), _) => {
+            NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Second }
+        },
+        ScalarValue::TimestampMillisecond(Some(raw), _) => {
+            NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Millisecond }
+        },
+        ScalarValue::TimestampMicrosecond(Some(raw), _) => {
+            NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Microsecond }
+        },
+        ScalarValue::TimestampNanosecond(Some(raw), _) => {
+            NativeLiteralValue::Timestamp { raw: *raw, unit: TimeUnit::Nanosecond }
+        },
+        ScalarValue::DurationSecond(Some(raw)) => NativeLiteralValue::Duration { raw: *raw, unit: TimeUnit::Second },
+        ScalarValue::DurationMillisecond(Some(raw)) => {
+            NativeLiteralValue::Duration { raw: *raw, unit: TimeUnit::Millisecond }
+        },
+        ScalarValue::DurationMicrosecond(Some(raw)) => {
+            NativeLiteralValue::Duration { raw: *raw, unit: TimeUnit::Microsecond }
+        },
+        ScalarValue::DurationNanosecond(Some(raw)) => {
+            NativeLiteralValue::Duration { raw: *raw, unit: TimeUnit::Nanosecond }
+        },
+        ScalarValue::IntervalMonthDayNano(Some(value)) => {
+            let (months, days, nanoseconds) = IntervalMonthDayNanoType::to_parts(*value);
+            NativeLiteralValue::IntervalMonthDayNano { months, days, nanoseconds }
+        },
+        ScalarValue::Boolean(None) => NativeLiteralValue::Null(DataType::Boolean),
+        ScalarValue::Int8(None) => NativeLiteralValue::Null(DataType::Int8),
+        ScalarValue::Int16(None) => NativeLiteralValue::Null(DataType::Int16),
+        ScalarValue::Int32(None) => NativeLiteralValue::Null(DataType::Int32),
+        ScalarValue::Int64(None) => NativeLiteralValue::Null(DataType::Int64),
+        ScalarValue::UInt8(None) => NativeLiteralValue::Null(DataType::UInt8),
+        ScalarValue::UInt16(None) => NativeLiteralValue::Null(DataType::UInt16),
+        ScalarValue::UInt32(None) => NativeLiteralValue::Null(DataType::UInt32),
+        ScalarValue::UInt64(None) => NativeLiteralValue::Null(DataType::UInt64),
+        ScalarValue::Float32(None) => NativeLiteralValue::Null(DataType::Float32),
+        ScalarValue::Float64(None) => NativeLiteralValue::Null(DataType::Float64),
+        ScalarValue::Utf8(None) => NativeLiteralValue::Null(DataType::Utf8),
+        // Typed Utf8View null is preserved; native dtype maps it to a cuDF string.
+        ScalarValue::Utf8View(None) => NativeLiteralValue::Null(DataType::Utf8View),
+        ScalarValue::LargeUtf8(None) => NativeLiteralValue::Null(DataType::LargeUtf8),
+        ScalarValue::Decimal128(None, precision, scale) => {
+            NativeLiteralValue::Null(DataType::Decimal128(*precision, *scale))
+        },
+        ScalarValue::Date32(None) => NativeLiteralValue::Null(DataType::Date32),
+        ScalarValue::Date64(None) => NativeLiteralValue::Null(DataType::Date64),
+        ScalarValue::Time32Second(None) => NativeLiteralValue::Null(DataType::Time32(TimeUnit::Second)),
+        ScalarValue::Time32Millisecond(None) => NativeLiteralValue::Null(DataType::Time32(TimeUnit::Millisecond)),
+        ScalarValue::Time64Microsecond(None) => NativeLiteralValue::Null(DataType::Time64(TimeUnit::Microsecond)),
+        ScalarValue::Time64Nanosecond(None) => NativeLiteralValue::Null(DataType::Time64(TimeUnit::Nanosecond)),
+        ScalarValue::TimestampSecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Second, timezone.clone()))
+        },
+        ScalarValue::TimestampMillisecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Millisecond, timezone.clone()))
+        },
+        ScalarValue::TimestampMicrosecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()))
+        },
+        ScalarValue::TimestampNanosecond(None, timezone) => {
+            NativeLiteralValue::Null(DataType::Timestamp(TimeUnit::Nanosecond, timezone.clone()))
+        },
+        ScalarValue::DurationSecond(None) => NativeLiteralValue::Null(DataType::Duration(TimeUnit::Second)),
+        ScalarValue::DurationMillisecond(None) => NativeLiteralValue::Null(DataType::Duration(TimeUnit::Millisecond)),
+        ScalarValue::DurationMicrosecond(None) => NativeLiteralValue::Null(DataType::Duration(TimeUnit::Microsecond)),
+        ScalarValue::DurationNanosecond(None) => NativeLiteralValue::Null(DataType::Duration(TimeUnit::Nanosecond)),
+        _ => return Err(context.fallback_reason()),
+    };
+
+    if native_literal_type_is_supported(&literal, context) { Ok(literal) } else { Err(context.fallback_reason()) }
+}
+
+pub(super) fn validate_native_literal(
+    value: &ScalarValue,
+    context: NativeLiteralContext,
+) -> Result<(), CapabilityReason> {
+    native_literal_value(value, context).map(|_literal| ())
+}
+
+pub(super) fn parse_yyyy_mm_dd_date32(value: &str) -> Option<i32> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let year = parse_digits_i32(&bytes[0..4])?;
+    let month = parse_digits_i32(&bytes[5..7])?;
+    let day = parse_digits_i32(&bytes[8..10])?;
+    if !(1..=12).contains(&month) || !(1..=days_in_month(year, month)).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day))
+}
+
+pub(crate) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, CapabilityReason> {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
+        return Err(CapabilityReason::UnsupportedExpression);
+    };
+    match literal.value() {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
+            Ok(value.clone())
+        },
+        _ => Err(CapabilityReason::UnsupportedExpression),
+    }
+}
+
+pub(crate) fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, CapabilityReason> {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
+        return Err(CapabilityReason::UnsupportedExpression);
+    };
+    match literal.value() {
+        ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::Int32(Some(value)) => Ok(*value),
+        ScalarValue::Int64(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| CapabilityReason::UnsupportedExpression)
+        },
+        ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::UInt32(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| CapabilityReason::UnsupportedExpression)
+        },
+        ScalarValue::UInt64(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| CapabilityReason::UnsupportedExpression)
+        },
+        _ => Err(CapabilityReason::UnsupportedExpression),
+    }
+}
+
+pub(crate) fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
+}
+
+pub(crate) fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.downcast_ref::<Literal>()
+        .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
+}
+
+fn parse_digits_i32(bytes: &[u8]) -> Option<i32> {
+    bytes.iter().try_fold(0i32, |acc, byte| {
+        if byte.is_ascii_digit() { acc.checked_mul(10)?.checked_add(i32::from(byte - b'0')) } else { None }
+    })
+}
+
+fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_from_civil(year: i32, month: i32, day: i32) -> i32 {
+    let year = year - i32::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn native_literal_type_is_supported(literal: &NativeLiteralValue, context: NativeLiteralContext) -> bool {
+    if matches!(literal, NativeLiteralValue::IntervalMonthDayNano { .. }) {
+        return matches!(context, NativeLiteralContext::Expression);
+    }
+    is_supported_arrow_type(&literal.data_type())
+}

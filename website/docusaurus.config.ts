@@ -5,13 +5,13 @@ import prismLight from './src/utils/prismLight';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
-const GITHUB_ORG = 'DataFusion-Nexus';
-const GITHUB_REPO = 'datafusion-nexus';
+const GITHUB_ORG = 'algeon-dev';
+const GITHUB_REPO = 'algeon';
 const GITHUB_URL = `https://github.com/${GITHUB_ORG}/${GITHUB_REPO}`;
 
 const config: Config = {
-  title: 'DataFusion Nexus',
-  tagline: 'A DataFusion physical-plan adapter that lowers supported plans into a native, cuDF-backed query engine.',
+  title: 'Algeon',
+  tagline: 'Specialized GPU algorithms, composed through SQL.',
   favicon: 'favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -19,14 +19,12 @@ const config: Config = {
     v4: true, // Improve compatibility with the upcoming Docusaurus v4
   },
 
-  // Production URL. Served from the apex custom domain `datafusion.nexus`
-  // (Cloudflare-managed DNS) via GitHub Pages. The domain is pinned in
-  // static/CNAME so GitHub Pages keeps serving it across deploys.
-  url: 'https://datafusion.nexus',
+  // Production URL served from the apex custom domain through Cloudflare Pages.
+  url: 'https://algeon.dev',
   // Served at the domain root (apex custom domain), so no repo-name prefix.
   baseUrl: '/',
 
-  // GitHub pages deployment config.
+  // Repository coordinates used by edit and source links.
   organizationName: GITHUB_ORG,
   projectName: GITHUB_REPO,
 
@@ -83,18 +81,19 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/nexus-social-card.jpg',
+    image: 'img/algeon-social-card.jpg',
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,
     },
     navbar: {
-      // The wide logo already includes the "DataFusion Nexus" wordmark, so we
+      // The wide logo already includes the "Algeon" wordmark, so we
       // intentionally omit a separate navbar title to avoid duplicating it.
+      // The wordmark is a mid-tone slate that reads on both themes, so one
+      // file serves light and dark without a `srcDark` variant.
       logo: {
-        alt: 'DataFusion Nexus',
-        src: 'img/nexus-logo-light-theme.png',
-        srcDark: 'img/nexus-logo-dark-theme.png',
+        alt: 'Algeon',
+        src: 'img/algeon-logo-center.png',
       },
       items: [
         {
@@ -117,7 +116,7 @@ const config: Config = {
     },
     footer: {
       style: 'dark',
-      copyright: 'Copyright © 2026 DataFusion Nexus.',
+      copyright: 'Copyright © 2026 Algeon.',
     },
     prism: {
       theme: prismLight,

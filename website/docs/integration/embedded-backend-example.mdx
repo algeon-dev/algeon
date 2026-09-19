@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 sidebar_label: Embedded Backend Example
-description: Run one Rust process with REST pipelines and Flight SQL sharing a single DataFusion Nexus GPU backend.
+description: Run one Rust process with REST pipelines and Flight SQL sharing a single Algeon GPU backend.
 ---
 
 # Embedded Backend Example
@@ -11,7 +11,7 @@ The embedded backend example runs one process with two frontends:
 - REST endpoints for predefined citation-network pipelines.
 - Arrow Flight SQL for ad-hoc SQL, metadata, prepared statements, and cancel.
 
-Both frontends share one `NexusGpuBackend` and one base `SessionContext`. REST
+Both frontends share one `AlgeonGpuBackend` and one base `SessionContext`. REST
 requests use the backend-installed session's plan-scoped admission tickets.
 Flight SQL statements issue Flight tickets first and acquire GPU admission only
 when a native plan starts executing. Native work from both paths draws slots and
@@ -32,7 +32,7 @@ B: Flight SQL client ---->   Flight SQL frontend                 |
                         |   shared DataFusion SessionContext     |
                         |                  |                     |
                         |                  v                     |
-                        |   NexusGpuBackend                      |
+                        |   AlgeonGpuBackend                      |
                         |   QueryService admission ledger        |
                         |                  |                     |
                         |                  v                     |
@@ -91,43 +91,43 @@ The example consumes the same server configuration contract as the
 [Flight SQL server](./flight-sql-server.mdx), plus `EXAMPLE_REST_BIND`.
 `EXAMPLE_REST_BIND` is the bind address for this example's own axum HTTP API
 (`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the Iceberg REST catalog
-endpoint; the Iceberg REST catalog endpoint is `NEXUS_ICEBERG_REST_URI`.
+endpoint; the Iceberg REST catalog endpoint is `ALGEON_ICEBERG_REST_URI`.
 
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
-NEXUS_SERVER_BIND=127.0.0.1:50051 \
-NEXUS_SERVER_CUGRAPH_ENABLED=true \
+ALGEON_SERVER_BIND=127.0.0.1:50051 \
+ALGEON_SERVER_CUGRAPH_ENABLED=true \
 DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
 DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
-NEXUS_ICEBERG_CATALOG_KIND=rest \
-NEXUS_ICEBERG_CATALOG_NAME=lake \
-NEXUS_ICEBERG_NAMESPACE=citation_network \
-NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
-NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
-NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
-NEXUS_ICEBERG_S3_REGION=us-east-1 \
-NEXUS_ICEBERG_S3_PATH_STYLE=true \
-NEXUS_ICEBERG_S3_ACCESS_KEY_ID=nexusadmin \
-NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=nexusadmin \
-NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
-NEXUS_SERVER_WORKSPACE_SCHEMA=public \
-NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
-NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
-NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
+ALGEON_ICEBERG_CATALOG_KIND=rest \
+ALGEON_ICEBERG_CATALOG_NAME=lake \
+ALGEON_ICEBERG_NAMESPACE=citation_network \
+ALGEON_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
+ALGEON_ICEBERG_REST_URI=http://localhost:8181 \
+ALGEON_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
+ALGEON_ICEBERG_S3_REGION=us-east-1 \
+ALGEON_ICEBERG_S3_PATH_STYLE=true \
+ALGEON_ICEBERG_S3_ACCESS_KEY_ID=algeonadmin \
+ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=algeonadmin \
+ALGEON_SERVER_WORKSPACE_CATALOG=datafusion \
+ALGEON_SERVER_WORKSPACE_SCHEMA=public \
+ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake \
+ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
+ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
 flock /tmp/cudf-gpu.lock \
-cargo run -p nexus-examples --all-features --bin embedded_backend
+cargo run -p examples --all-features --bin embedded_backend
 ```
 
-Use the exact Iceberg keys shown above. `NEXUS_ICEBERG_CATALOG=rest` is not a
-server config key, and `NEXUS_ICEBERG_REST_WAREHOUSE` is not read by the REST
-catalog path. `NEXUS_ICEBERG_CATALOG_KIND` is required whenever Iceberg
+Use the exact Iceberg keys shown above. `ALGEON_ICEBERG_CATALOG=rest` is not a
+server config key, and `ALGEON_ICEBERG_REST_WAREHOUSE` is not read by the REST
+catalog path. `ALGEON_ICEBERG_CATALOG_KIND` is required whenever Iceberg
 settings are present, so a missing or misspelled
-`NEXUS_ICEBERG_CATALOG_KIND=rest` now fails startup directly with its own
+`ALGEON_ICEBERG_CATALOG_KIND=rest` now fails startup directly with its own
 error rather than falling through to a Glue-specific `AWS_REGION` complaint.
 
 The example HTTP API frontend binds to `EXAMPLE_REST_BIND`. The Flight SQL
-frontend binds to `NEXUS_SERVER_BIND`. The backend connects to the Iceberg REST
-catalog at `NEXUS_ICEBERG_REST_URI`.
+frontend binds to `ALGEON_SERVER_BIND`. The backend connects to the Iceberg REST
+catalog at `ALGEON_ICEBERG_REST_URI`.
 
 ## REST Pipelines
 
@@ -186,7 +186,7 @@ REST pipeline results, Flight SQL graph queries, shared-ledger overload, and
 graceful shutdown:
 
 ```bash
-crates/nexus-examples/scripts/e2e.sh
+crates/examples/scripts/e2e.sh
 ```
 
 Use `--skip-stack` when the REST catalog and RustFS are already running, and
@@ -198,7 +198,7 @@ citation-network Parquet files are missing.
 
 The example is built on the same public APIs available to application code:
 
-- `nexus_server::backend_from_server_config(&config)` builds the bounded backend
+- `algeon_datafusion::server::backend_from_server_config(&config)` builds the bounded backend
   from the server configuration contract.
 - `FlightSqlServer::builder().backend(backend.clone())` runs the built-in
   Flight SQL server on that backend.

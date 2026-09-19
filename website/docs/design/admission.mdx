@@ -1,14 +1,14 @@
 ---
 sidebar_position: 2
 slug: /design/admission
-description: "How DataFusion Nexus admits one bounded GPU attempt for an executable native plan."
+description: "How Algeon admits one bounded GPU attempt for an executable native plan."
 ---
 
 # Admission & Memory Governance
 
-Nexus admits GPU work once per native query attempt: one admission, one
+Algeon admits GPU work once per native query attempt: one admission, one
 selected device, and one immutable memory grant. Embedded DataFusion sessions
-and the Flight SQL server share the same process-scoped `NexusGpuBackend`,
+and the Flight SQL server share the same process-scoped `AlgeonGpuBackend`,
 `QueryService`, bounded queue, and per-device ledgers. Planning may create an
 attempt lifecycle and a lazy admission ticket, but it does not reserve a GPU
 slot. Admission happens when execution first needs the device. `EXPLAIN` does
@@ -58,7 +58,7 @@ one evidence set. Runtime activation validates producer scope, occurrence,
 schema, and resident ownership before execution uses the frames. The composed
 query uses one ticket, one selected device, and one grant.
 
-Manual `NexusGpuBackend::admit_query()` handles are resource-only. Native
+Manual `AlgeonGpuBackend::admit_query()` handles are resource-only. Native
 execution also requires planning-issued capability and scope evidence.
 
 ## Device profiles and grants
@@ -79,7 +79,7 @@ move to another device during the attempt.
 The query allocation domain is the single arbiter of the attempt's allocation
 limit. cuDF, cuGraph, and cuVS execute with the domain memory resource, and an
 allocation beyond the immutable grant returns a typed allocation failure at
-its native source. Nexus does not add per-operator reservations or reject work
+its native source. Algeon does not add per-operator reservations or reject work
 from an estimate-derived byte requirement.
 
 The allocation domain records aligned current and peak bytes for attempt-level
@@ -118,4 +118,4 @@ query domain. Device pool observations retain their device scope and
 availability metadata.
 
 See [Cache Design](./cache.mdx) for resident cache policy and
-[Integrating Nexus](../integration/overview.mdx) for backend construction.
+[Integrating Algeon](../integration/overview.mdx) for backend construction.

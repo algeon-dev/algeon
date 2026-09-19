@@ -1,21 +1,21 @@
 use std::{sync::Arc, time::Duration};
 
-use datafusion_nexus::{
+use algeon_datafusion::{
     attempt::{
-        AttemptOptions, NexusAttempt, QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        AlgeonAttempt, AttemptOptions, QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
+    backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
     error::{Error, ErrorCode, ErrorStatus, Result},
     observability::{BackendMetricsSnapshot, backend_metric_descriptors},
     report::PlanningReport,
 };
 
-pub fn backend_contract() -> Result<NexusGpuBackend> {
-    let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
-    NexusGpuBackend::builder().devices([device]).build()
+pub fn backend_contract() -> Result<AlgeonGpuBackend> {
+    let device = AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
+    AlgeonGpuBackend::builder().devices([device]).build()
 }
 
-pub fn attempt_contract(backend: &NexusGpuBackend, options: AttemptOptions) -> Result<NexusAttempt> {
+pub fn attempt_contract(backend: &AlgeonGpuBackend, options: AttemptOptions) -> Result<AlgeonAttempt> {
     let attempt = backend.begin_attempt(options)?;
     let _ = attempt.attempt_id();
     let _ = attempt.cancellation();
@@ -45,6 +45,6 @@ pub fn metrics_contract(snapshot: &BackendMetricsSnapshot) -> usize {
         .sum()
 }
 
-pub fn close_contract(backend: &NexusGpuBackend) -> Result<()> {
+pub fn close_contract(backend: &AlgeonGpuBackend) -> Result<()> {
     backend.close_and_wait(Duration::from_secs(30)).map(|_| ())
 }

@@ -36,9 +36,9 @@ fixture/fixture.sh iceberg rest load \
 That creates namespace `citation_network` with `citation_edges`,
 `citation_edges_by_dst`, `papers`, `paper_authors`, and `paper_fos`. Run the
 loader again after a fresh compose stack starts; `add-files` registers staged
-Parquet files in place. Run the server with `NEXUS_ICEBERG_CATALOG_KIND=rest`,
-`NEXUS_ICEBERG_CATALOG_NAME=lake`, and
-`NEXUS_ICEBERG_NAMESPACE=citation_network`; the cuGraph examples use the workspace
+Parquet files in place. Run the server with `ALGEON_ICEBERG_CATALOG_KIND=rest`,
+`ALGEON_ICEBERG_CATALOG_NAME=lake`, and
+`ALGEON_ICEBERG_NAMESPACE=citation_network`; the cuGraph examples use the workspace
 overlay so those tables are available as unqualified names.
 
 ## Glue tests are local-only

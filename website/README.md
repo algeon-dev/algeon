@@ -1,6 +1,6 @@
-# DataFusion Nexus Website
+# Algeon Website
 
-The documentation site for [DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus).
+The documentation site for [Algeon](https://github.com/algeon-dev/algeon).
 
 `website/` is owned by the root repository. Source-build pages refer to the
 recursive checkout, root Cargo workspace, and native artifacts under
@@ -132,7 +132,7 @@ switch:
      algolia: {
        appId: 'YOUR_APP_ID',
        apiKey: 'YOUR_SEARCH_ONLY_API_KEY',
-       indexName: 'datafusion-nexus',
+       indexName: 'algeon',
        contextualSearch: true,
      },
    }
@@ -140,8 +140,8 @@ switch:
 
 ## Deployment
 
-The site is deployed to **Cloudflare Pages** (project `datafusion-nexus`) at the
-apex custom domain **<https://datafusion.nexus>** (`url` + `baseUrl: '/'` in
+The site is deployed to **Cloudflare Pages** (project `algeon`) at the
+apex custom domain **<https://algeon.dev>** (`url` + `baseUrl: '/'` in
 `docusaurus.config.ts`).
 
 Two paths, both live:

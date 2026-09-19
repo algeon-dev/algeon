@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Recoverable target/ maintenance for datafusion-nexus.
+# Recoverable target/ maintenance for algeon-datafusion.
 #
 # This is an explicit developer/CI maintenance helper. It never runs as a
 # hidden side effect of tests. Cleanup forces a cold next build.

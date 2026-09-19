@@ -1,0 +1,152 @@
+[package]
+name = "algeon-datafusion"
+autotests = false
+description = "DataFusion physical-plan adapter for native GPU execution."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+publish = ["crates-io"]
+build = "build.rs"
+repository = "https://github.com/algeon-dev/algeon"
+homepage = "https://algeon.dev"
+license = "Apache-2.0"
+documentation = "https://docs.rs/algeon-datafusion"
+keywords = ["sql", "datafusion", "gpu", "cuda", "rapids"]
+categories = ["database", "hardware-support"]
+readme = "README.md"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+features = ["server", "bench-support", "cugraph", "cuvs", "nvml"]
+
+[features]
+default = []
+# DataFusion-specific Flight SQL frontend and embeddable server API.
+server = [
+  "dep:argon2",
+  "dep:arrow-flight",
+  "dep:base64",
+  "dep:dashmap",
+  "dep:prost",
+  "dep:rand",
+  "dep:serde",
+  "dep:tokio-util",
+  "dep:toml",
+  "dep:tonic",
+  "dep:uuid",
+]
+# Application/test support surface; not part of the normal embedded/server report contract.
+bench-support = []
+# Controlled device-quarantine qualification for the multi-GPU validation tool.
+# Closes admission on one live device ledger.
+qualification = ["query-engine/qualification"]
+cugraph = ["dep:cugraph", "dep:cugraph-sys", "query-engine/cugraph"]
+cuvs = ["dep:cuvs", "dep:cuvs-sys", "query-engine/cuvs"]
+# Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
+nvml = ["query-engine/nvml"]
+
+[dependencies]
+arrow = { workspace = true }
+arrow-flight = { workspace = true, optional = true }
+argon2 = { version = "0.5", optional = true }
+async-trait = { workspace = true }
+base64 = { version = "0.22", optional = true }
+bytes = { workspace = true }
+cudf = { workspace = true }
+# Direct sys edges expose authoritative native library paths to build.rs.
+cudf-sys = { workspace = true }
+cugraph = { workspace = true, optional = true }
+cugraph-sys = { workspace = true, optional = true }
+cuvs = { workspace = true, optional = true }
+cuvs-sys = { workspace = true, optional = true }
+query-engine = { workspace = true }
+datafusion = { workspace = true }
+dashmap = { version = "6.2", optional = true }
+fnv = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true, optional = true }
+opendal = { workspace = true, optional = true }
+parquet = { workspace = true, default-features = true }
+prost = { workspace = true, optional = true }
+rand = { version = "0.10", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { workspace = true, optional = true }
+toml = { version = "1.1", optional = true }
+tonic = { workspace = true, optional = true }
+tracing = { workspace = true }
+uuid = { version = "1.23", features = ["v4"], optional = true }
+
+[build-dependencies]
+rapids-build-support = { workspace = true }
+
+[dev-dependencies]
+# Test-only engine seams for owner-crate white-box tests.
+query-engine = { workspace = true, features = ["test-hooks"] }
+workloads = { workspace = true }
+hex = "0.4"
+proptest = "1.7"
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[test]]
+name = "cugraph_tests_gpu"
+required-features = ["cugraph"]
+
+[[test]]
+name = "root_gpu_tests"
+
+[[test]]
+name = "p6_device_identity_tests_gpu_exclusive"
+required-features = ["nvml"]
+
+[[test]]
+name = "cpu_contract_tests"
+
+[[test]]
+name = "native_exec_tests"
+
+[[test]]
+name = "native_planning_tests"
+
+[[test]]
+name = "native_runtime_pruning_tests_gpu"
+
+[[test]]
+name = "native_tpcds_parity_tests_gpu"
+required-features = ["bench-support"]
+
+[[test]]
+name = "server_tests_gpu_exclusive"
+required-features = ["server"]
+
+[[test]]
+name = "server_admission_concurrency_tests_gpu_exclusive"
+required-features = ["server"]
+
+[[test]]
+name = "server_device_pressure_tests_gpu_exclusive"
+required-features = ["server"]
+
+[[test]]
+name = "server_multi_gpu_tests_gpu_exclusive"
+required-features = ["server"]
+
+[[test]]
+name = "server_config_tests_cpu"
+required-features = ["server"]
+
+[[test]]
+name = "server_cugraph_tests_gpu"
+required-features = ["server", "cugraph"]
+
+[[test]]
+name = "server_cuvs_tests_gpu"
+required-features = ["server", "cuvs"]
+
+[lints]
+workspace = true

@@ -7,7 +7,7 @@ description: What you are building, how the repository fits together, and the or
 
 # Build & Test
 
-DataFusion Nexus sits above a feature-selected GPU stack. Relational execution
+Algeon sits above a feature-selected GPU stack. Relational execution
 uses RAPIDS cuDF, graph SQL adds cuGraph, and vector SQL adds cuVS. cuGraph
 links libcuvs, so a full-feature source build always includes it, and the
 native libraries must be built in a fixed, bottom-up order.
@@ -29,13 +29,13 @@ Follow the pages in this order:
 
 | Component | Role | Language | How it is consumed |
 | --- | --- | --- | --- |
-| Root adapter | DataFusion lowering, execution wrappers, report projection, workload contracts, benchmarks, and Flight SQL server | Rust | `src/`, adapter-support crates |
-| `nexus-query-planning` | DataFusion-free IR, optimizer, capability, proof, admission contracts, and compiled pipeline | Rust | `crates/nexus-query-planning/` |
-| `nexus-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation, and metrics | Rust | `crates/nexus-query-runtime/` |
-| `nexus-query-engine` | Native execution composition and the compatible public facade over planning and runtime | Rust | `crates/nexus-query-engine/` |
-| `components/cudf` | Safe Rust API over libcudf (`cudf-nexus`, `cudf-nexus-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/DataFusion-Nexus/cudf) | Rust + C++/CUDA | one component + submodule |
-| `components/cuvs` | Safe Rust API over libcuvs (`cuvs-nexus`, `cuvs-nexus-sys`); pins official [`cuVS`](https://github.com/rapidsai/cuvs) | Rust + C++/CUDA | one component + submodule |
-| `components/cugraph` | Safe Rust API over libcugraph (`cugraph-nexus`, `cugraph-nexus-sys`); pins the [`cugraph` fork](https://github.com/DataFusion-Nexus/cugraph) | Rust + C++/CUDA | one component + submodule |
+| DataFusion adapter | DataFusion lowering, execution wrappers, report projection, workload contracts, benchmarks, and Flight SQL server | Rust | `crates/algeon-datafusion/src/`, adapter-support crates |
+| `query-planning` | DataFusion-free IR, optimizer, capability, proof, admission contracts, and compiled pipeline | Rust | `crates/algeon-query-planning/` |
+| `query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation, and metrics | Rust | `crates/algeon-query-runtime/` |
+| `query-engine` | Native execution composition and the compatible public facade over planning and runtime | Rust | `crates/algeon-query-engine/` |
+| `components/cudf` | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
+| `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins official [`cuVS`](https://github.com/rapidsai/cuvs) | Rust + C++/CUDA | one component + submodule |
+| `components/cugraph` | Safe Rust API over libcugraph (`cugraph`, `cugraph-sys`); pins the [`cugraph` fork](https://github.com/algeon-dev/cugraph) | Rust + C++/CUDA | one component + submodule |
 
 The root `.gitmodules` pins the three native sources and the root Cargo
 workspace resolves all Rust components through `components/*`. Cargo fetches
@@ -43,12 +43,12 @@ Apache DataFusion and the remaining registry or Git dependencies automatically;
 there is one product checkout and one recursive submodule update.
 
 ```text
-datafusion-nexus/
+algeon/
 ├── components/cudf/cudf/       # pinned cuDF fork submodule
 ├── components/cugraph/cugraph/ # pinned cuGraph fork submodule
 ├── components/cuvs/cuvs/       # pinned official cuVS submodule
 ├── crates/                      # planning, runtime, engine, and support crates
-├── src/                         # DataFusion adapter
+├── crates/algeon-datafusion/src/ # DataFusion adapter
 └── target/native/
     ├── cudf-build/             # canonical cuDF CMake cache
     ├── cudf-install/           # canonical cuDF/RMM install prefix
@@ -64,9 +64,9 @@ libcudf ── produces ──> librmm.so
                             ├──> libcuvs
                             └──> libcugraph <── libcuvs
 
-nexus-query-runtime depends on nexus-query-planning.
-nexus-query-engine depends on both and preserves the public facade.
-datafusion-nexus depends on that facade and uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
+query-runtime depends on query-planning.
+query-engine depends on both and preserves the public facade.
+algeon-datafusion depends on that facade and uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
 ```
 
 The full-feature build follows those dependencies, and each step below is

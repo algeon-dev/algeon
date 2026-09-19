@@ -1,7 +1,7 @@
 version = 1
 
 [surfaces]
-cudf-nexus = [
+algeon-cudf = [
   "core",
   "device",
   "frame",
@@ -11,7 +11,7 @@ cudf-nexus = [
   "ops",
   "runtime",
 ]
-cugraph-nexus = [
+algeon-cugraph = [
   "array",
   "centrality",
   "community",

@@ -1,0 +1,26 @@
+[package]
+name = "algeon-build-support"
+description = "Shared std-only Cargo build-script support for Algeon RAPIDS native linking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = ["crates-io"]
+license-file = "../../LICENSE"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-build-support"
+readme = "../../README.md"
+keywords = ["build-dependencies", "cuda", "gpu", "rapids"]
+categories = ["development-tools::build-utils"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+# The package carries the `algeon-` prefix for crates.io; the library identity
+# stays bare so the build scripts keep calling `rapids_build_support::…`.
+[lib]
+name = "rapids_build_support"
+
+[lints]
+workspace = true

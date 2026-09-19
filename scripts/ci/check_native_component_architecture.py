@@ -11,12 +11,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / ".config/policies/native-component-surfaces.toml"
 COMPONENTS = {
-    "cudf-nexus": ROOT / "components/cudf/cudf-nexus",
-    "cudf-nexus-sys": ROOT / "components/cudf/cudf-nexus-sys",
-    "cugraph-nexus": ROOT / "components/cugraph/cugraph-nexus",
-    "cugraph-nexus-sys": ROOT / "components/cugraph/cugraph-nexus-sys",
+    "algeon-cudf": ROOT / "components/cudf/algeon-cudf",
+    "algeon-cudf-sys": ROOT / "components/cudf/algeon-cudf-sys",
+    "algeon-cugraph": ROOT / "components/cugraph/algeon-cugraph",
+    "algeon-cugraph-sys": ROOT / "components/cugraph/algeon-cugraph-sys",
 }
-SNAPSHOT_CRATES = {"cudf-nexus": "cudf", "cugraph-nexus": "cugraph"}
+# Package name -> `[lib] name`. Snapshots are filed under the package name,
+# while the `pub mod` lines inside them carry the bare library identity the
+# `algeon-` prefixed packages deliberately keep.
+SNAPSHOT_CRATES = {"algeon-cudf": "cudf", "algeon-cugraph": "cugraph"}
 
 
 def fail(message: str) -> None:
@@ -43,7 +46,7 @@ def manifest_contracts() -> None:
 
 def source_contracts() -> None:
     forbidden = {
-        ROOT / "components/cudf/cudf-nexus/src": [
+        ROOT / "components/cudf/algeon-cudf/src": [
             r"\bpub\s+mod\s+query\b",
             r"\bQueryAggregateSpec\b",
             r"\bQuerySortSpec\b",
@@ -53,7 +56,7 @@ def source_contracts() -> None:
             r"\bCsv(?:Table)?(?:Read|Write)Options\b",
             r"\bpub\s+mod\s+csv\b",
         ],
-        ROOT / "components/cugraph/cugraph-nexus/src": [
+        ROOT / "components/cugraph/algeon-cugraph/src": [
             r"\bgraph_from_dataframe\b",
             r"\bDataFrameGraphOptions\b",
             r"\bgraph_from_series\b",
@@ -65,7 +68,7 @@ def source_contracts() -> None:
             r"\bgraph_from_borrowed(?:_columns|_table_view)\b",
             r"\bBorrowedInputOrderingPlan\b",
         ],
-        ROOT / "crates/nexus-query-engine/src": [
+        ROOT / "crates/algeon-query-engine/src": [
             r"\b(?:cudf_sys|cugraph_sys)::",
             r"\brun_with_cugraph_graph_edge_ids\b",
             r"\bbuild_graph_from_edge_id_columns\b",

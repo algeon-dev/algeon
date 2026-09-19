@@ -28,7 +28,7 @@ Invoked inside the pinned Spark image via spark-submit (see load.sh). Catalog
 config is passed as spark.sql.catalog.* conf; this script only takes the
     namespace, the input parquet dir, and the table spec list.
 
-Naming contract (must match datafusion-nexus registration):
+Naming contract (must match algeon-datafusion registration):
     catalog   : lake
     namespace : tpch_sf<SF> / tpcds_sf<SF>
     tables    : bare names
@@ -270,7 +270,7 @@ def add_files_mode(
             # rewrite_manifests no-ops on a single small manifest, so the
             # target size is pinned tiny for the call to force the rewrite.
             # The identity schema.name-mapping.default that add_files
-            # generates is kept: datafusion-nexus admits identity mappings.
+            # generates is kept: algeon-datafusion admits identity mappings.
             spark.sql(
                 f"ALTER TABLE {fq} SET TBLPROPERTIES ('commit.manifest.target-size-bytes'='1024')"
             )
@@ -303,8 +303,8 @@ import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.spark.Spark3Util;
 import org.apache.spark.sql.SparkSession;
 
-public final class NexusEqualityDeleteFixture {
-  private NexusEqualityDeleteFixture() {}
+public final class AlgeonEqualityDeleteFixture {
+  private AlgeonEqualityDeleteFixture() {}
 
   public static void commitIdEqualityDeletes(
       SparkSession spark, String tableIdentifier, String fileName, List<?> ids) throws Exception {
@@ -344,8 +344,8 @@ public final class NexusEqualityDeleteFixture {
 
 def compile_equality_delete_helper(spark):
     """Compile and load the tiny Java helper after Spark has resolved Iceberg jars."""
-    helper_root = tempfile.mkdtemp(prefix="nexus-equality-delete-helper.")
-    source_path = os.path.join(helper_root, "NexusEqualityDeleteFixture.java")
+    helper_root = tempfile.mkdtemp(prefix="algeon-equality-delete-helper.")
+    source_path = os.path.join(helper_root, "AlgeonEqualityDeleteFixture.java")
     classes_dir = os.path.join(helper_root, "classes")
     os.makedirs(classes_dir, exist_ok=True)
     with open(source_path, "w", encoding="utf-8") as source:
@@ -361,7 +361,7 @@ def compile_equality_delete_helper(spark):
     parent = spark._jvm.java.lang.Thread.currentThread().getContextClassLoader()
     loader = spark._jvm.java.net.URLClassLoader.newInstance(urls, parent)
     spark._jvm.java.lang.Thread.currentThread().setContextClassLoader(loader)
-    return spark._jvm.java.lang.Class.forName("NexusEqualityDeleteFixture", True, loader)
+    return spark._jvm.java.lang.Class.forName("AlgeonEqualityDeleteFixture", True, loader)
 
 
 def invoke_static_helper(spark, helper_class, method_name: str, *args) -> None:
