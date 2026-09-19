@@ -20,7 +20,12 @@ Fit a query-local cuML logistic or softmax classifier and score independent rows
 Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `training_vectors` and `predict_vectors`.
 
 ```sql
-SELECT id, prediction FROM cuml_logistic_regression(training => (SELECT id, d0, label FROM train), predict => (SELECT id, d0 FROM test)) ORDER BY row_ordinal;
+SELECT id, prediction
+FROM cuml_logistic_regression(
+  training => (SELECT id, d0, label FROM train),
+  predict => (SELECT id, d0 FROM test)
+)
+ORDER BY row_ordinal;
 ```
 
 ## Inputs

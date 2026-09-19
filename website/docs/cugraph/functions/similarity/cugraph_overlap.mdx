@@ -20,7 +20,11 @@ Compare explicit vertex pairs by dividing their shared-neighbor count by the sma
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `candidate_pairs` (the `vertex_pairs` relation with columns `first`, `second`). Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_overlap(edges => (SELECT src, dst FROM target_edges), vertex_pairs => (SELECT first, second FROM candidate_pairs));
+SELECT *
+FROM cugraph_overlap(
+  edges => (SELECT src, dst FROM target_edges),
+  vertex_pairs => (SELECT first, second FROM candidate_pairs)
+);
 ```
 
 ## Inputs

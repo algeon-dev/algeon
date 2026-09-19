@@ -10,6 +10,7 @@ import {
   cell,
   code,
   densePresentation,
+  formatFunctionQuickstartSql,
   loadProviderSpecs,
   prose,
   renderDenseArguments,
@@ -131,7 +132,7 @@ function renderPage(spec) {
     reference: `Official cuML reference: [${documentation.officialApi}](${officialRefUrl(documentation)})`,
     quickstart: {
       prerequisite: `Register the relations referenced by the parenthesized ${code('SELECT')} clauses below. For metadata validation, the descriptor names ${Object.values(entry.validation.call.relations).map(relation => code(relation.table)).join(' and ')}.`,
-      sql: entry.quickstart.sql,
+      sql: formatFunctionQuickstartSql(entry.quickstart.sql),
     },
     inputs: renderInputs(spec),
     argumentsAndOptions: renderDenseArguments(spec, [

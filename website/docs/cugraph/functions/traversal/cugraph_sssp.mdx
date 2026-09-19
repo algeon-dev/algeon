@@ -20,7 +20,11 @@ Compute minimum path distances and predecessors from one source vertex, using ed
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, and starts from source vertex `123`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM target_edges), source_vertex => 123);
+SELECT *
+FROM cugraph_sssp(
+  edges => (SELECT src, dst, weight FROM target_edges),
+  source_vertex => 123
+);
 ```
 
 ## Inputs

@@ -20,7 +20,10 @@ Select a minimum-total-weight acyclic edge set, producing a spanning tree for a 
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM target_edges));
+SELECT *
+FROM cugraph_minimum_spanning_tree(
+  edges => (SELECT src, dst, weight FROM target_edges)
+);
 ```
 
 ## Inputs

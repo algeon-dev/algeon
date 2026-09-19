@@ -20,7 +20,11 @@ Rank vertices with PageRank while biasing random-walk restarts toward explicitly
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `ppr_seeds` (the `personalization` relation with columns `vertex`, `value`). Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_personalized_pagerank(edges => (SELECT src, dst FROM target_edges), personalization => (SELECT vertex, value FROM ppr_seeds));
+SELECT *
+FROM cugraph_personalized_pagerank(
+  edges => (SELECT src, dst FROM target_edges),
+  personalization => (SELECT vertex, value FROM ppr_seeds)
+);
 ```
 
 ## Inputs

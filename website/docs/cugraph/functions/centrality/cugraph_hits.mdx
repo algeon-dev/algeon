@@ -20,7 +20,10 @@ Compute mutually reinforcing hub and authority scores: strong hubs point to stro
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_hits(edges => (SELECT src, dst FROM target_edges));
+SELECT *
+FROM cugraph_hits(
+  edges => (SELECT src, dst FROM target_edges)
+);
 ```
 
 ## Inputs

@@ -20,7 +20,10 @@ Find modularity-based communities with refinement steps that improve the interna
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_leiden(edges => (SELECT src, dst FROM target_edges));
+SELECT *
+FROM cugraph_leiden(
+  edges => (SELECT src, dst FROM target_edges)
+);
 ```
 
 ## Inputs

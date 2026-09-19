@@ -20,7 +20,13 @@ Score Float32 rows with a pretrained XGBoost, LightGBM, or Treelite forest throu
 Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
 
 ```sql
-SELECT id, prediction FROM cuml_forest_predict(input => (SELECT id, d0, d1, d2, d3 FROM t), model => 'scorer.json', model_format => 'xgboost_json') ORDER BY row_ordinal;
+SELECT id, prediction
+FROM cuml_forest_predict(
+  input => (SELECT id, d0, d1, d2, d3 FROM t),
+  model => 'scorer.json',
+  model_format => 'xgboost_json'
+)
+ORDER BY row_ordinal;
 ```
 
 ## Inputs

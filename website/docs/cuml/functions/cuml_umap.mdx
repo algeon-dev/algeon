@@ -20,7 +20,12 @@ cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows.
 Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
 
 ```sql
-SELECT id, dim_0, dim_1 FROM cuml_umap(input => (SELECT id, d0, d1 FROM t), n_neighbors => 5) ORDER BY row_ordinal;
+SELECT id, dim_0, dim_1
+FROM cuml_umap(
+  input => (SELECT id, d0, d1 FROM t),
+  n_neighbors => 5
+)
+ORDER BY row_ordinal;
 ```
 
 ## Inputs
