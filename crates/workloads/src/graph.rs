@@ -296,9 +296,12 @@ fn validate_manifest(manifest: &Value) -> WorkloadResult<String> {
     }
     let generator = required_string(manifest, &["generator"], "manifest generator")?;
     // Fixtures prepared before the converter was renamed record `dblp_ingest.py`.
-    if !(generator.ends_with("citation_network/prepare.py") || generator.ends_with("dblp_ingest.py")) {
+    if !(generator.ends_with("citation_network/prepare.py")
+        || generator.ends_with("citation_network/scripts/prepare.py")
+        || generator.ends_with("dblp_ingest.py"))
+    {
         return Err(WorkloadError::InvalidDataset(
-            "manifest generator must identify fixture/demo/citation_network/prepare.py".to_string(),
+            "manifest generator must identify fixture/demo/citation_network/scripts/prepare.py".to_string(),
         ));
     }
     validate_dataset_id(manifest, "manifest")?;

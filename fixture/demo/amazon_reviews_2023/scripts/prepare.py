@@ -55,8 +55,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-DATASET_DIR = Path(__file__).resolve().parent
-GENERATOR = "fixture/demo/amazon_reviews_2023/prepare.py"
+DATASET_DIR = Path(__file__).resolve().parents[1]
+GENERATOR = "fixture/demo/amazon_reviews_2023/scripts/prepare.py"
 SOURCE = "McAuley-Lab/Amazon-Reviews-2023 (https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)"
 DEFAULT_CATEGORY = "Electronics"
 DEFAULT_REVIEW_ROW_GROUP_ROWS = 1_048_576

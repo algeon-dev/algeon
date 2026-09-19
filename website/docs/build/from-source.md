@@ -44,7 +44,7 @@ gitlinks:
 ```text
 components/cudf/cudf/       # Algeon cuDF fork
 components/cugraph/cugraph/ # Algeon cuGraph fork
-components/cuvs/cuvs/       # pinned cuVS submodule
+components/cuvs/cuvs/       # Algeon cuVS fork
 components/cuml/cuml/       # pinned cuML source
 ```
 

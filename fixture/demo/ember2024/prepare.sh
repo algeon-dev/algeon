@@ -16,4 +16,4 @@ forest_python() {
   fi
 }
 
-exec "$(forest_python)" "${HERE}/prepare.py" "$@"
+exec "$(forest_python)" "${HERE}/scripts/prepare.py" "$@"

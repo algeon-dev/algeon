@@ -16,7 +16,7 @@ is one JSON array with a paper object per line. Place it at
 
 ```bash
 fixture/fixture.sh graph dblp-ingest --overwrite
-# same as: python3 fixture/demo/citation_network/prepare.py --overwrite
+# same as: python3 fixture/demo/citation_network/scripts/prepare.py --overwrite
 ```
 
 The defaults read `raw/dblp.v12.json` and write `v1/`. The full conversion

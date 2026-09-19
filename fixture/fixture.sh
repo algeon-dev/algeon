@@ -16,6 +16,8 @@ Usage:
   fixture/fixture.sh graph rmat --scale N --edge-factor K --skew skewed|uniform --seed S --out-root PATH [--force]
   fixture/fixture.sh ember2024 prepare [--split test|train|challenge]... [--rows N] [--force]
   fixture/fixture.sh amazon-reviews prepare [--category NAME] [--out-dir PATH] [--force]
+  fixture/fixture.sh kuairand prepare [--variant pure|1k|27k] [--out-dir PATH] [--force] [--download]
+  fixture/fixture.sh merrec prepare [--partition NAME] [--input-parquet PATH] [--out-dir PATH] [--force] [--download-sample]
   fixture/fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
   fixture/fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
@@ -277,7 +279,7 @@ case "${domain}:${command}" in
     clickbench_fetch "$@"
     ;;
   graph:dblp-ingest)
-    exec python3 "${SCRIPT_DIR}/demo/citation_network/prepare.py" "$@"
+    exec python3 "${SCRIPT_DIR}/demo/citation_network/scripts/prepare.py" "$@"
     ;;
   graph:rmat)
     exec python3 "${SCRIPT_DIR}/graph/rmat_generate.py" "$@"
@@ -286,7 +288,13 @@ case "${domain}:${command}" in
     exec "${SCRIPT_DIR}/demo/ember2024/prepare.sh" "$@"
     ;;
   amazon-reviews:prepare)
-    exec python3 "${SCRIPT_DIR}/demo/amazon_reviews_2023/prepare.py" "$@"
+    exec python3 "${SCRIPT_DIR}/demo/amazon_reviews_2023/scripts/prepare.py" "$@"
+    ;;
+  kuairand:prepare)
+    exec python3 "${SCRIPT_DIR}/demo/kuairand/scripts/prepare.py" "$@"
+    ;;
+  merrec:prepare)
+    exec python3 "${SCRIPT_DIR}/demo/merrec/scripts/prepare.py" "$@"
     ;;
   iceberg:rest)
     subcommand="${1:-}"

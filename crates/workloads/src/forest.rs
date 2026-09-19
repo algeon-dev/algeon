@@ -2,7 +2,7 @@
 //!
 //! Two workloads score pretrained tree ensembles over Parquet: the EMBER2024
 //! malware feature splits with the upstream LightGBM models, both written by
-//! `fixture/demo/ember2024/prepare.py`, and TPC-H `lineitem` with a 500-tree
+//! `fixture/demo/ember2024/scripts/prepare.py`, and TPC-H `lineitem` with a 500-tree
 //! XGBoost JSON regression model over seven numeric columns. Like
 //! [`crate::graph`], this module never invokes a generator; it validates the
 //! prepared files against their Parquet footers.
@@ -125,7 +125,7 @@ impl Ember2024DatasetMetadata {
             workload: "ember2024",
             root: self.parquet_root.clone(),
             scale_factor: None,
-            provenance: "fixture/demo/ember2024/prepare.py".to_string(),
+            provenance: "fixture/demo/ember2024/scripts/prepare.py".to_string(),
             generation_command: "fixture/fixture.sh ember2024 prepare".to_string(),
             table_count: self.splits.len(),
             file_count: self.splits.len(),

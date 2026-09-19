@@ -101,7 +101,10 @@ fn dblp_discovery_accepts_the_pre_rename_generator_and_rejects_other_converters(
     for (generator, accepted) in [
         ("fixture/graph/dblp_ingest.py", true),
         ("fixture/demo/citation_network/dblp_ingest.py", true),
+        ("fixture/demo/citation_network/prepare.py", true),
+        ("fixture/demo/citation_network/scripts/prepare.py", true),
         ("fixture/demo/amazon_reviews_2023/prepare.py", false),
+        ("fixture/demo/amazon_reviews_2023/scripts/prepare.py", false),
     ] {
         write_dblp_fixture(&root, None);
         let mut document: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();

@@ -8,7 +8,7 @@ high-cardinality group-bys on the native GPU path.
 
 [McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023),
 `Electronics` category. `raw/all_categories.txt` lists the other 33 categories;
-`prepare.py --category NAME` converts any of them.
+`scripts/prepare.py --category NAME` converts any of them.
 
 | File | Bytes | Records | SHA-256 |
 | :--- | ---: | ---: | :--- |
@@ -30,7 +30,7 @@ lower than the raw file, which has 40,546,884 `true` values.
 
 ```bash
 fixture/fixture.sh amazon-reviews prepare
-# same as: python3 fixture/demo/amazon_reviews_2023/prepare.py
+# same as: python3 fixture/demo/amazon_reviews_2023/scripts/prepare.py
 ```
 
 The converter requires the `duckdb` CLI and `pyarrow`. On a 32-core host with

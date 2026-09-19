@@ -3,7 +3,7 @@
 ## Working principles
 
 - Fix the owning abstraction or contract, not a failing query with an adapter
-  workaround. Extend `cudf` or `cugraph` when the gap belongs there.
+  workaround. Extend `cudf`, `cugraph`, or `cuvs` when the gap belongs there.
 - Keep changes scoped: preserve unrelated worktree edits, public behavior, and
   contract tests unless the task changes them; avoid opportunistic cleanup.
 - Grow the system in layers: start from the smallest version that works end to

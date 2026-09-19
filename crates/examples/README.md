@@ -156,7 +156,7 @@ with a symlink to NVMe, and allow roughly 30 GB of transient space for ingest
 plus Parquet output. The ingest script requires Python with `pyarrow`.
 
 ```bash
-python3 fixture/demo/citation_network/prepare.py --overwrite
+python3 fixture/demo/citation_network/scripts/prepare.py --overwrite
 ```
 
 Start the local REST/RustFS stack and register the generated Parquet files with
