@@ -143,13 +143,13 @@
 .navbar__logo {
   align-items: center;
   display: flex;
-  height: 3.15rem;
+  height: 2.558rem;
 }
 
 .navbar__logo img {
   height: 100%;
   width: auto;
-  transform: translateY(-0.2rem);
+  transform: translateY(-0.03rem);
 }
 
 .footer__copyright {
@@ -182,19 +182,39 @@
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
-@media (min-width: 997px) {
-  .navbar__items--right {
-    /* The wide logo stretches the flex line; lift controls back to center. */
-    transform: translateY(-0.2rem);
-  }
+.header-github-link {
+  align-items: center;
+  display: flex;
 }
 
-@media (max-width: 996px) {
-  .navbar__toggle,
-  .navbar__search:not(:focus-within) {
-    /* Match the logo's lift without moving the expanded mobile search row. */
-    transform: translateY(-0.2rem);
-  }
+.header-github-link::before {
+  background-color: var(--ifm-navbar-link-color, currentColor);
+  content: '';
+  display: flex;
+  height: 22.8px;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12'/%3E%3C/svg%3E");
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  transition: background-color var(--ifm-transition-fast)
+    var(--ifm-transition-timing-default);
+  width: 22.8px;
+}
+
+.header-github-link:hover::before {
+  background-color: var(--ifm-navbar-link-hover-color);
+}
+
+[data-theme='dark'] .header-github-link::before {
+  background-color: var(--ag-ayu-muted-strong);
+}
+
+[data-theme='dark'] .header-github-link:hover::before {
+  background-color: var(--ag-ayu-accent);
 }
 
 /* The mobile sidebar header is only 83vw wide and also holds the color-mode
@@ -511,8 +531,6 @@
   --ag-dg-fg-subtle: var(--ifm-color-emphasis-600);
   /* Homepage architecture hierarchy: cards are tangible objects; connectors
      recede one step so they communicate relationships without dominating. */
-  --ag-arch-card-border: #d7dce1;
-  --ag-arch-edge: #748292;
   --ag-dg-bar: var(--ifm-color-emphasis-900);
   --ag-dg-bar-fg: var(--ifm-background-color);
   --ag-dg-accent: var(--ifm-color-primary);
@@ -540,9 +558,16 @@
   --ag-dg-mono: var(--ifm-font-family-monospace);
   --ag-dg-radius: 10px;
   --ag-dg-radius-sm: 6px;
+  /* Box fill in the sketch diagrams: hachure reads as hand-drawn on a light
+     page, but light hatch lines under light text hurt legibility on a dark
+     page, so dark mode swaps the hatch for a flat tint of the same tone. */
+  --ag-dg-hatch-opacity: 0.22;
+  --ag-dg-tint-opacity: 0;
 }
 
 [data-theme='dark'] {
+  --ag-dg-hatch-opacity: 0;
+  --ag-dg-tint-opacity: 0.16;
   --ag-dg-bg: var(--ag-ayu-bg-sunk);
   --ag-dg-surface: var(--ag-ayu-surface);
   --ag-dg-surface-2: var(--ag-ayu-panel);
@@ -551,8 +576,6 @@
   --ag-dg-fg: var(--ag-ayu-heading);
   --ag-dg-fg-muted: var(--ag-ayu-muted-strong);
   --ag-dg-fg-subtle: #7a8494;
-  --ag-arch-card-border: #313a47;
-  --ag-arch-edge: #8492a5;
   --ag-dg-bar: var(--ag-ayu-text);
   --ag-dg-bar-fg: var(--ag-ayu-bg);
   --ag-dg-accent: var(--ag-ayu-accent);
@@ -893,3 +916,63 @@ html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(3) 
 }
 
 
+
+/* Excalifont (OFL 1.1, see static/fonts/Excalifont/LICENSE.txt): the hand-drawn
+   face used by the sketch-style diagrams. Split by unicode-range so a page
+   only downloads the subsets its labels use. */
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-a88b72a24fb54c9f94e3b5fdaa7481c9.woff2') format('woff2');
+  unicode-range: U+20-7e,U+a0-a3,U+a5-a6,U+a8-ab,U+ad-b1,U+b4,U+b6-b8,U+ba-ff,U+131,U+152-153,U+2bc,U+2c6,U+2da,U+2dc,U+304,U+308,U+2013-2014,U+2018-201a,U+201c-201e,U+2020,U+2022,U+2024-2026,U+2030,U+2039-203a,U+20ac,U+2122,U+2212;
+}
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-be310b9bcd4f1a43f571c46df7809174.woff2') format('woff2');
+  unicode-range: U+100-130,U+132-137,U+139-149,U+14c-151,U+154-17e,U+192,U+1fc-1ff,U+218-21b,U+237,U+1e80-1e85,U+1ef2-1ef3,U+2113;
+}
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-b9dcf9d2e50a1eaf42fc664b50a3fd0d.woff2') format('woff2');
+  unicode-range: U+400-45f,U+490-491,U+2116;
+}
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-41b173a47b57366892116a575a43e2b6.woff2') format('woff2');
+  unicode-range: U+37e,U+384-38a,U+38c,U+38e-393,U+395-3a1,U+3a3-3a8,U+3aa-3cf,U+3d7;
+}
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-3f2c5db56cc93c5a6873b1361d730c16.woff2') format('woff2');
+  unicode-range: U+2c7,U+2d8-2d9,U+2db,U+2dd,U+302,U+306-307,U+30a-30c,U+326-328,U+212e,U+2211,U+fb01-fb02;
+}
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-349fac6ca4700ffec595a7150a0d1e1d.woff2') format('woff2');
+  unicode-range: U+462-463,U+472-475,U+4d8-4d9,U+4e2-4e3,U+4e6-4e9,U+4ee-4ef;
+}
+@font-face {
+  font-family: 'Excalifont';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/Excalifont/Excalifont-Regular-623ccf21b21ef6b3a0d87738f77eb071.woff2') format('woff2');
+  unicode-range: U+300-301,U+303;
+}

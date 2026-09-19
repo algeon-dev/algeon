@@ -1,30 +1,32 @@
 import React from 'react';
 import {
-  Arrowhead,
+  BackedLabel,
   Box,
   COLOR,
   COMPACT_FONTS,
   EDGE,
-  FLOW_FONTS,
   Figure,
   LABEL,
   TONE,
   measureNode,
-  smallHeadDown,
-  smallHeadUp,
   textWidth,
 } from '@site/src/components/design/Diagram';
 import type {BoxFonts, DiagramNode} from '@site/src/components/design/Diagram';
+import {SANS, sketchHead, sketchLine, sketchPath, sketchRoundRect} from '@site/src/components/design/sketch';
 
 /**
- * Static figures for the introduction post. They are assembled from the
- * Design diagrams' box, tone, and figure primitives so the blog reads as the
- * same visual system, and each one carries its meaning in labels and a
- * caption rather than in color alone.
+ * The introduction post's bespoke figures: the export-and-notebook detour
+ * against one SQL statement, and the agent's investigation loop through the
+ * application's ontology, its backend service, Algeon, and the lakehouse.
+ * Built from the Design diagrams' box, tone, figure, and sketch primitives so
+ * the blog reads as the same hand-drawn visual system.
  */
 
-const HEAD = {size: 10.5, track: 0.07};
-const FOOT = {size: 11, lh: 15};
+const HEAD = {size: 11, track: 0.08};
+const NOTE = {size: 12.5, lh: 17};
+const INK = COLOR.fg;
+const EDGE_W = 1.4;
+const GROUP_RADIUS = 18;
 
 interface Placed {
   x: number;
@@ -33,145 +35,17 @@ interface Placed {
   h: number;
 }
 
-/** Label with a surface-colored backing so it stays legible over lines. */
-function BackedLabel({x, y, text, fill}: {x: number; y: number; text: string; fill: string}) {
-  const w = textWidth(text, LABEL);
-  return (
-    <g>
-      <rect x={x - w / 2 - 5} y={y - 9.5} width={w + 10} height={13} rx={3}
-        fill={COLOR.surface} opacity={0.92} />
-      <text x={x} y={y} fontSize={LABEL.size} letterSpacing={`${LABEL.track}em`}
-        textAnchor="middle" fill={fill}>
-        {text}
-      </text>
-    </g>
-  );
-}
-
-/* ====================== WorkingSetFigure ====================== */
-
-const WS_NODES: DiagramNode[] = [
-  {kind: 'terabytes', name: 'Lakehouse', note: 'Parquet · tables · views', tone: 'lake'},
-  {kind: 'gigabytes', name: 'Working set', note: 'fits one GPU', tone: 'engine'},
-  {
-    kind: 'gpu algorithm', name: 'Algorithm output',
-    note: ['paths · communities', 'neighbors · scores'], tone: 'gpu',
-  },
-  {kind: 'rows', name: 'Answer', note: 'back to the caller', tone: 'plain'},
-];
-
-const WS_EDGE_LABELS: string[][] = [
-  ['filter · join', 'aggregate'],
-  ['cugraph_* · cuvs_*', 'cuml_*'],
-  ['join · filter', 'aggregate'],
-];
-
-const WS_BAND_LABEL = 'ONE SQL STATEMENT · ONE PHYSICAL PLAN';
-const WS_RETURN_LABEL = 'next stage input';
-
-/**
- * The relational reduction on the left, the GPU algorithm after it, and the
- * output returning as rows: a left-to-right flow with a tinted band over the
- * part that is one statement, plus a dashed loop for output feeding the next
- * stage.
- */
-export function WorkingSetFigure({caption}: {caption?: React.ReactNode}) {
-  const fonts: BoxFonts = FLOW_FONTS;
-  const sizes = WS_NODES.map((n) => measureNode(n, fonts));
-  const rowH = Math.max(...sizes.map((s) => s.h));
-  const BAND_HEAD = 32;
-  const RAIL_DROP = 28;
-  const boxTop = EDGE + BAND_HEAD;
-
-  // The gap before each target box is sized to its widest label line.
-  const gaps = WS_EDGE_LABELS.map((lines) =>
-    Math.max(76, Math.ceil(Math.max(...lines.map((line) => textWidth(line, LABEL)))) + 34),
-  );
-  const placed: Placed[] = [];
-  let x = EDGE + 8;
-  WS_NODES.forEach((_, i) => {
-    if (i > 0) x += gaps[i - 1];
-    const s = sizes[i];
-    placed.push({x, y: boxTop + (rowH - s.h) / 2, w: s.w, h: s.h});
-    x += s.w;
-  });
-  const railY = boxTop + rowH + RAIL_DROP;
-  const svgH = railY + FOOT.lh + 10 + EDGE;
-  const svgW = x + 8 + EDGE;
-
-  const bandX = placed[1].x - 16;
-  const bandW = placed[3].x + placed[3].w + 16 - bandX;
-  const cy = boxTop + rowH / 2;
-  const wsCx = placed[1].x + placed[1].w / 2;
-  const algoCx = placed[2].x + placed[2].w / 2;
-  const wsBottom = placed[1].y + placed[1].h;
-  const algoBottom = placed[2].y + placed[2].h;
-  const R = 10;
-  const rail = [
-    `M ${algoCx} ${algoBottom}`,
-    `L ${algoCx} ${railY - R}`,
-    `Q ${algoCx} ${railY} ${algoCx - R} ${railY}`,
-    `L ${wsCx + R} ${railY}`,
-    `Q ${wsCx} ${railY} ${wsCx} ${railY - R}`,
-    `L ${wsCx} ${wsBottom + 1}`,
-  ].join(' ');
-
-  return (
-    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={720} center>
-      <rect x={bandX} y={EDGE} width={bandW} height={svgH - 2 * EDGE} rx={10}
-        fill={TONE.gpu} opacity={0.05} />
-      <rect x={bandX} y={EDGE} width={bandW} height={svgH - 2 * EDGE} rx={10}
-        fill="none" stroke={TONE.gpu} strokeWidth={1} strokeDasharray="5 4" opacity={0.5} />
-      <text x={bandX + 12} y={EDGE + 18} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
-        fill={TONE.gpu}>
-        {WS_BAND_LABEL}
-      </text>
-      {placed.slice(1).map((b, i) => {
-        const a = placed[i];
-        const sx = a.x + a.w;
-        const dx = b.x;
-        const mid = (sx + dx) / 2;
-        const lines = WS_EDGE_LABELS[i];
-        return (
-          <g key={`edge-${i}`}>
-            <line x1={sx} y1={cy} x2={dx - 1} y2={cy} stroke={COLOR.border} strokeWidth={1} />
-            <Arrowhead x={dx} y={cy} stroke={COLOR.border} />
-            {lines.map((line, j) => (
-              <BackedLabel key={`l-${j}`} x={mid} y={cy - 10 - (lines.length - 1 - j) * 14}
-                text={line} fill={COLOR.subtle} />
-            ))}
-          </g>
-        );
-      })}
-      <path d={rail} fill="none" stroke={COLOR.border} strokeWidth={1} strokeDasharray="5 4"
-        strokeLinejoin="round" />
-      <path d={smallHeadUp(wsCx, wsBottom)} fill="none" stroke={COLOR.border} strokeWidth={1.25}
-        strokeLinecap="round" strokeLinejoin="round" />
-      <text x={(wsCx + algoCx) / 2} y={railY + FOOT.lh} fontSize={LABEL.size}
-        letterSpacing={`${LABEL.track}em`} textAnchor="middle" fill={COLOR.subtle}>
-        {WS_RETURN_LABEL}
-      </text>
-      {WS_NODES.map((n, i) => (
-        <Box key={n.name} node={n} x={placed[i].x} y={placed[i].y} w={placed[i].w} h={placed[i].h}
-          fonts={fonts} />
-      ))}
-    </Figure>
-  );
-}
-
-/* ====================== GlueVsPlanFigure ====================== */
-
 const LEFT_NODES: DiagramNode[] = [
-  {kind: 'warehouse', name: 'Select the rows', note: 'one tenant · one quarter', tone: 'plan'},
-  {kind: 'export job', name: 'Write Parquet to a bucket', tone: 'plain'},
+  {kind: 'warehouse', name: 'Select the rows and columns', note: 'one tenant · one quarter', tone: 'plan'},
+  {kind: 'export job', name: 'Write data to a bucket', tone: 'plain'},
   {kind: 'notebook', name: 'Load, clean, reshape', note: 'ids · nulls · duplicates · casts', tone: 'plain'},
-  {kind: 'gpu library', name: 'cuGraph or cuML call', tone: 'gpu'},
+  {kind: 'gpu library', name: 'cu* call', tone: 'gpu'},
   {kind: 'export again', name: 'Write the result', tone: 'plain'},
   {kind: 'another system', name: 'Import and join back', tone: 'plan'},
 ];
 const LEFT_STEPS = ['export', 'download', 'in process', 'write', 'import'];
 const LEFT_HEAD = 'TODAY: THE DETOUR';
-const LEFT_FOOT = ['every step is application code', 'written for one dataset'];
+const LEFT_NOTE = ['each step relies on ad-hoc ETL scripts', 'written for a small fraction of the dataset'];
 
 const RIGHT_NODES: DiagramNode[] = [
   {kind: 'sql', name: 'Select and clean the input', note: 'WHERE · JOIN · CAST · DISTINCT', tone: 'plan'},
@@ -183,18 +57,18 @@ const RIGHT_NODES: DiagramNode[] = [
 ];
 const RIGHT_HEAD = 'WITH ALGEON: ONE PLAN';
 const RIGHT_GROUP = 'one SQL statement · one process';
-const RIGHT_FOOT = ['the planner owns scan, pushdown,', 'join order and GPU placement'];
+const RIGHT_NOTE = ['the planner owns scan, pushdown,', 'join order and GPU placement'];
 
-function Spine({a, b, cx, label}: {a: Placed; b: Placed; cx: number; label?: string}) {
+function Spine({id, a, b, cx, label}: {id: string; a: Placed; b: Placed; cx: number; label?: string}) {
   const top = a.y + a.h;
+  const edge = {stroke: INK, strokeWidth: EDGE_W};
   return (
     <g>
-      <line x1={cx} y1={top} x2={cx} y2={b.y - 1} stroke={COLOR.border} strokeWidth={1} />
-      <path d={smallHeadDown(cx, b.y)} fill="none" stroke={COLOR.border} strokeWidth={1.25}
-        strokeLinecap="round" strokeLinejoin="round" />
+      {sketchLine(`glue:spine:${id}`, cx, top + 2, cx, b.y - 2, edge)}
+      {sketchHead(`glue:spine:${id}:head`, cx, b.y, 'down', edge)}
       {label ? (
-        <text x={cx + 10} y={(top + b.y) / 2 + LABEL.size * 0.36} fontSize={LABEL.size}
-          letterSpacing={`${LABEL.track}em`} fill={COLOR.subtle}>
+        <text x={cx + 12} y={(top + b.y) / 2 + LABEL.size * 0.36} fontSize={LABEL.size}
+          fontFamily={SANS} letterSpacing={`${LABEL.track ?? 0}em`} fill={COLOR.muted}>
           {label}
         </text>
       ) : null}
@@ -202,23 +76,18 @@ function Spine({a, b, cx, label}: {a: Placed; b: Placed; cx: number; label?: str
   );
 }
 
-/**
- * Two columns: the export-and-notebook detour on the left, one SQL statement
- * with the algorithm as a table function on the right.
- */
 export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
   const fonts: BoxFonts = COMPACT_FONTS;
   const ls = LEFT_NODES.map((n) => measureNode(n, fonts));
   const rs = RIGHT_NODES.map((n) => measureNode(n, fonts));
   const leftW = Math.max(...ls.map((s) => s.w));
   const rightW = Math.max(...rs.map((s) => s.w));
-  const HEADER_H = 30;
-  const GAP = 40;
+  const HEADER_H = 14 + 12 + 2 * NOTE.lh + 18;
+  const GAP = 42;
   const COL_GAP = 88;
-  const GROUP_PAD = 16;
-  const GROUP_HEAD = 32;
-  const GROUP_FOOT = 16;
-  const FOOTER_H = 2 * FOOT.lh + 18;
+  const GROUP_PAD = 18;
+  const GROUP_HEAD = 36;
+  const GROUP_FOOT = 18;
 
   const leftX = EDGE + 8;
   const top = EDGE + HEADER_H;
@@ -235,8 +104,8 @@ export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
   const groupW = rightW + 2 * GROUP_PAD;
   const innerH = rs.reduce((acc, s) => acc + s.h, 0) + GAP * (RIGHT_NODES.length - 1);
   const groupH = GROUP_HEAD + innerH + GROUP_FOOT;
-  // The shorter column is centered against the taller one.
-  const groupY = top + (leftBottom - top - groupH) / 2;
+  // Both columns start at the same height so the eye compares step one with step one.
+  const groupY = top;
   const rp: Placed[] = [];
   let ry = groupY + GROUP_HEAD;
   RIGHT_NODES.forEach((_, i) => {
@@ -246,42 +115,49 @@ export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
   });
 
   const svgW = groupX + groupW + 8 + EDGE;
-  const svgH = leftBottom + FOOTER_H + EDGE;
+  const svgH = leftBottom + 8 + EDGE;
   const lcx = leftX + leftW / 2;
   const rcx = groupX + GROUP_PAD + rightW / 2;
 
   return (
-    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={620} center>
-      <text x={leftX} y={EDGE + 13} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
-        fill={COLOR.subtle}>
+    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={620} center
+      ariaLabel="Left: export, notebook, GPU call, and import as separate steps. Right: one SQL statement with the algorithm as a table function.">
+      <text x={leftX} y={EDGE + 14} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
+        fill={COLOR.muted}>
         {LEFT_HEAD}
       </text>
-      <text x={groupX} y={EDGE + 13} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
-        fill={TONE.gpu}>
+      <text x={groupX} y={EDGE + 14} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
+        fill={COLOR.muted}>
         {RIGHT_HEAD}
       </text>
-      <rect x={groupX} y={groupY} width={groupW} height={groupH} rx={9}
-        fill={TONE.gpu} opacity={0.05} />
-      <rect x={groupX} y={groupY} width={groupW} height={groupH} rx={9}
-        fill="none" stroke={TONE.gpu} strokeWidth={1} strokeDasharray="5 4" opacity={0.55} />
-      <text x={groupX + 12} y={groupY + 18} fontSize={LABEL.size}
-        letterSpacing={`${LABEL.track}em`} fill={TONE.gpu}>
+      <rect x={groupX} y={groupY} width={groupW} height={groupH} rx={GROUP_RADIUS}
+        fill={TONE.gpu} opacity={0.06} />
+      <g opacity={0.7}>
+        {sketchRoundRect('glue:group', groupX, groupY, groupW, groupH, GROUP_RADIUS,
+          {stroke: TONE.gpu, strokeWidth: 1.2, dashed: true})}
+      </g>
+      <text x={groupX + 14} y={groupY + 20} fontSize={LABEL.size}
+        letterSpacing={`${LABEL.track ?? 0}em`} fill={COLOR.muted}>
         {RIGHT_GROUP}
       </text>
+      <g opacity={0.6}>
+        {sketchLine('glue:divider', leftX + leftW + COL_GAP / 2, EDGE + 4, leftX + leftW + COL_GAP / 2, svgH - EDGE - 4,
+          {stroke: COLOR.border, strokeWidth: 1, dashed: true, roughness: 0.5})}
+      </g>
       {lp.slice(1).map((b, i) => (
-        <Spine key={`l-${i}`} a={lp[i]} b={b} cx={lcx} label={LEFT_STEPS[i]} />
+        <Spine key={`l-${i}`} id={`l${i}`} a={lp[i]} b={b} cx={lcx} label={LEFT_STEPS[i]} />
       ))}
       {rp.slice(1).map((b, i) => (
-        <Spine key={`r-${i}`} a={rp[i]} b={b} cx={rcx} />
+        <Spine key={`r-${i}`} id={`r${i}`} a={rp[i]} b={b} cx={rcx} />
       ))}
-      {LEFT_FOOT.map((line, i) => (
-        <text key={`lf-${i}`} x={leftX} y={leftBottom + 20 + i * FOOT.lh} fontSize={FOOT.size}
+      {LEFT_NOTE.map((line, i) => (
+        <text key={`ln-${i}`} x={leftX} y={EDGE + 14 + 12 + NOTE.lh * 0.8 + i * NOTE.lh} fontSize={NOTE.size}
           fill={COLOR.muted}>
           {line}
         </text>
       ))}
-      {RIGHT_FOOT.map((line, i) => (
-        <text key={`rf-${i}`} x={groupX} y={leftBottom + 20 + i * FOOT.lh} fontSize={FOOT.size}
+      {RIGHT_NOTE.map((line, i) => (
+        <text key={`rn-${i}`} x={groupX} y={EDGE + 14 + 12 + NOTE.lh * 0.8 + i * NOTE.lh} fontSize={NOTE.size}
           fill={COLOR.muted}>
           {line}
         </text>
@@ -292,6 +168,142 @@ export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
       {RIGHT_NODES.map((n, i) => (
         <Box key={n.name} node={n} x={rp[i].x} y={rp[i].y} w={rp[i].w} h={rp[i].h} fonts={fonts} />
       ))}
+    </Figure>
+  );
+}
+
+/* ====================== AgentLoopFigure ====================== */
+
+const LOOP_AGENT: DiagramNode = {
+  kind: 'agentic loop', name: 'Agent and human',
+  note: ['hypothesis → question', 'reads rows, asks again'], tone: 'plain',
+};
+const LOOP_SEMANTIC: DiagramNode = {
+  kind: 'ontology', name: 'Semantic layer',
+  note: ['terms → tables · keys · joins', 'application-owned'], tone: 'engine',
+};
+const LOOP_BACKEND: DiagramNode = {
+  kind: 'your service', name: 'Backend service',
+  note: ['embeds Algeon · Flight SQL', 'sessions · policy · retries'], tone: 'plan',
+};
+const LOOP_ALGEON: DiagramNode = {
+  kind: 'GPU query engine', name: 'Algeon',
+  note: ['plan · admit · run on one GPU', 'graph · vector · ML functions'], tone: 'gpu',
+};
+const LOOP_LAKE: DiagramNode = {
+  kind: 'world state · physical store', name: 'Lakehouse',
+  note: ['Parquet · disk or object storage', 'tables · views · workspace'], tone: 'lake',
+};
+const LOOP_BAND = 'APPLICATION · AGENT, ONTOLOGY, SERVICE';
+const LOOP_RETURN = 'rows and typed diagnostics feed the next hypothesis';
+
+/**
+ * The investigation loop as a ring: the agent's question passes through the
+ * application's semantic layer and backend service into Algeon, which reads
+ * the lakehouse and returns rows plus structured diagnostics to the agent.
+ */
+export function AgentLoopFigure({caption}: {caption?: React.ReactNode}) {
+  const fonts: BoxFonts = COMPACT_FONTS;
+  const [agent, semantic, backend, algeon, lake] =
+    [LOOP_AGENT, LOOP_SEMANTIC, LOOP_BACKEND, LOOP_ALGEON, LOOP_LAKE].map((n) => measureNode(n, fonts));
+  const BAND_PAD = 18;
+  const BAND_HEAD = 34;
+  const BAND_FOOT = 16;
+  const V_GAP = 64;
+  const RAIL_DROP = 34;
+  const R = 10;
+  const label01 = ['question in', 'domain terms'];
+  const label12 = ['SQL over', 'registered relations'];
+  const gapFor = (lines: string[]) =>
+    Math.max(72, Math.ceil(Math.max(...lines.map((l) => textWidth(l, LABEL)))) + 48);
+
+  // Row 1: the application-owned chain, left to right, inside one band.
+  const bandY = EDGE + 4;
+  const row1Top = bandY + BAND_HEAD;
+  const row1H = Math.max(agent.h, semantic.h, backend.h);
+  const x0 = EDGE + 8 + BAND_PAD;
+  const x1 = x0 + agent.w + gapFor(label01);
+  const x2 = x1 + semantic.w + gapFor(label12);
+  const place = (x: number, s: {w: number; h: number}) =>
+    ({x, y: row1Top + (row1H - s.h) / 2, w: s.w, h: s.h, cx: x + s.w / 2, cy: row1Top + row1H / 2});
+  const A = place(x0, agent);
+  const S = place(x1, semantic);
+  const B = place(x2, backend);
+  const bandX = x0 - BAND_PAD;
+  const bandW = B.x + B.w + BAND_PAD - bandX;
+  const bandH = BAND_HEAD + row1H + BAND_FOOT;
+
+  // Row 2: Algeon under the service, the lakehouse under the semantic layer.
+  const row2Top = bandY + bandH + V_GAP;
+  const row2H = Math.max(algeon.h, lake.h);
+  const G = {x: B.cx - algeon.w / 2, y: row2Top + (row2H - algeon.h) / 2, w: algeon.w, h: algeon.h};
+  const L = {x: S.cx - lake.w / 2, y: row2Top + (row2H - lake.h) / 2, w: lake.w, h: lake.h};
+  const Gcx = G.x + G.w / 2;
+  const row2Cy = row2Top + row2H / 2;
+
+  const railY = row2Top + row2H + RAIL_DROP;
+  const svgH = railY + LABEL.lh + 8 + EDGE;
+  const svgW = Math.max(bandX + bandW, G.x + G.w) + 8 + EDGE;
+  const edge = {stroke: INK, strokeWidth: EDGE_W};
+  const rail = [
+    `M ${Gcx} ${G.y + G.h}`,
+    `L ${Gcx} ${railY - R}`,
+    `Q ${Gcx} ${railY} ${Gcx - R} ${railY}`,
+    `L ${A.cx + R} ${railY}`,
+    `Q ${A.cx} ${railY} ${A.cx} ${railY - R}`,
+    `L ${A.cx} ${A.y + A.h + 1}`,
+  ].join(' ');
+
+  return (
+    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={640} center
+      ariaLabel="The agent's question passes through the application's semantic layer and backend service into Algeon, which reads the lakehouse and returns rows and diagnostics to the agent for the next hypothesis.">
+      {/* the application band */}
+      <rect x={bandX} y={bandY} width={bandW} height={bandH} rx={GROUP_RADIUS} fill={TONE.plan} opacity={0.05} />
+      <g opacity={0.7}>
+        {sketchRoundRect('loop:band', bandX, bandY, bandW, bandH, GROUP_RADIUS,
+          {stroke: TONE.plan, strokeWidth: 1.2, dashed: true})}
+      </g>
+      <text x={bandX + 16} y={bandY + 20} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
+        fill={COLOR.muted}>
+        {LOOP_BAND}
+      </text>
+      {/* row 1 arrows */}
+      {sketchLine('loop:a-s', A.x + A.w + 2, A.cy, S.x - 2, A.cy, edge)}
+      {sketchHead('loop:a-s:head', S.x, A.cy, 'right', edge)}
+      {label01.map((line, j) => (
+        <BackedLabel key={`l01-${j}`} x={(A.x + A.w + S.x) / 2}
+          y={A.cy - 14 - (label01.length - 1 - j) * LABEL.lh} text={line} />
+      ))}
+      {sketchLine('loop:s-b', S.x + S.w + 2, S.cy, B.x - 2, S.cy, edge)}
+      {sketchHead('loop:s-b:head', B.x, S.cy, 'right', edge)}
+      {label12.map((line, j) => (
+        <BackedLabel key={`l12-${j}`} x={(S.x + S.w + B.x) / 2}
+          y={S.cy - 14 - (label12.length - 1 - j) * LABEL.lh} text={line} />
+      ))}
+      {/* the statement goes down into Algeon */}
+      {sketchLine('loop:b-g', B.cx, B.y + B.h + 2, B.cx, G.y - 2, edge)}
+      {sketchHead('loop:b-g:head', B.cx, G.y, 'down', edge)}
+      <text x={B.cx + 12} y={(B.y + B.h + G.y) / 2 + LABEL.size * 0.36} fontSize={LABEL.size}
+        fontFamily={SANS} fill={COLOR.muted}>
+        one statement
+      </text>
+      {/* Algeon reads the lakehouse */}
+      {sketchLine('loop:g-l', G.x - 2, row2Cy, L.x + L.w + 2, row2Cy, edge)}
+      {sketchHead('loop:g-l:head', L.x + L.w, row2Cy, 'left', edge)}
+      <BackedLabel x={(L.x + L.w + G.x) / 2} y={row2Cy - 14} text="GPU file scans" />
+      {/* rows and diagnostics return to the agent */}
+      {sketchPath('loop:rail', rail, {...edge, dashed: true})}
+      {sketchHead('loop:rail:head', A.cx, A.y + A.h, 'up', edge)}
+      <text x={(A.cx + Gcx) / 2} y={railY + LABEL.lh} fontSize={LABEL.size} fontFamily={SANS}
+        textAnchor="middle" fill={COLOR.muted}>
+        {LOOP_RETURN}
+      </text>
+      {/* boxes last so edge ends tuck under their borders */}
+      <Box node={LOOP_AGENT} x={A.x} y={A.y} w={A.w} h={A.h} fonts={fonts} />
+      <Box node={LOOP_SEMANTIC} x={S.x} y={S.y} w={S.w} h={S.h} fonts={fonts} />
+      <Box node={LOOP_BACKEND} x={B.x} y={B.y} w={B.w} h={B.h} fonts={fonts} />
+      <Box node={LOOP_ALGEON} x={G.x} y={G.y} w={G.w} h={G.h} fonts={fonts} />
+      <Box node={LOOP_LAKE} x={L.x} y={L.y} w={L.w} h={L.h} fonts={fonts} />
     </Figure>
   );
 }

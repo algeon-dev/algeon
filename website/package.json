@@ -28,6 +28,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.9.2",
+    "roughjs": "^4.6.6",
     "sigma": "^3.0.3"
   },
   "devDependencies": {

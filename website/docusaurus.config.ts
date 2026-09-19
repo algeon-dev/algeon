@@ -11,7 +11,7 @@ const GITHUB_URL = `https://github.com/${GITHUB_ORG}/${GITHUB_REPO}`;
 
 const config: Config = {
   title: 'Algeon',
-  tagline: 'GPU analytics on any SQL result.',
+  tagline: 'One Query, Any Data, Any Algorithm.',
   favicon: 'favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
@@ -84,7 +84,7 @@ const config: Config = {
     image: 'img/algeon-social-card.jpg',
     colorMode: {
       defaultMode: 'dark',
-      respectPrefersColorScheme: true,
+      respectPrefersColorScheme: false,
     },
     navbar: {
       // The wide logo already includes the "Algeon" wordmark, so we
@@ -93,7 +93,7 @@ const config: Config = {
       // file serves light and dark without a `srcDark` variant.
       logo: {
         alt: 'Algeon',
-        src: 'img/algeon-logo-center.png',
+        src: 'img/algeon-logo.png',
       },
       items: [
         {
@@ -109,8 +109,9 @@ const config: Config = {
         },
         {
           href: GITHUB_URL,
-          label: 'GitHub',
           position: 'right',
+          className: 'header-github-link',
+          'aria-label': 'GitHub repository',
         },
       ],
     },
