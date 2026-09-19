@@ -206,6 +206,10 @@
     /* Match the logo's lift without moving the expanded mobile search row. */
     transform: translateY(-0.2rem);
   }
+
+  .navbar__item.header-github-link {
+    display: none;
+  }
 }
 
 .header-github-link {
@@ -281,6 +285,12 @@
 .nx-mobile-drawer__color-mode-icon {
   display: none;
   height: 1.1rem;
+  width: 1.1rem;
+}
+
+.navbar-sidebar .header-github-link::before {
+  height: 1.1rem;
+  margin-right: 0.6rem;
   width: 1.1rem;
 }
 

@@ -82,6 +82,7 @@ function drawNodeHover(
 function EgoCanvas(): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const {colorMode} = useColorMode();
+  const [selected, setSelected] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
 
   useEffect(() => {
@@ -118,9 +119,15 @@ function EgoCanvas(): React.ReactElement {
         const edgeColor = dark ? '#343b4a' : '#d9d8d3';
         const dimmed = dark ? '#1b1f29' : '#e4e3de';
         const highlight = dark ? '#e6b450' : '#52514e';
-        // Mutable hover state closed over by the reducers: the reducers run
+        // Mutable interaction state closed over by the reducers: the reducers run
         // during Sigma's constructor render, before the instance binding exists.
-        const state: {hovered?: string} = {};
+        const state: {
+          selected: string | null;
+          hovered: string | null;
+        } = {
+          selected: null,
+          hovered: null,
+        };
         const sigma = new Sigma(graph, container, {
           renderLabels: false,
           defaultEdgeColor: edgeColor,
@@ -131,35 +138,321 @@ function EgoCanvas(): React.ReactElement {
             drawNodeHover(context, node, settings, dark);
           },
           nodeReducer: (node, attrs) => {
-            if (state.hovered == null) {
+            const active = state.selected ?? state.hovered;
+            if (active == null) {
               return attrs;
             }
-            if (node === state.hovered || graph.areNeighbors(node, state.hovered)) {
+            if (node === active) {
+              return {...attrs, highlighted: true, zIndex: 1};
+            }
+            if (graph.areNeighbors(node, active)) {
               return {...attrs, zIndex: 1};
             }
             return {...attrs, color: dimmed, label: '', zIndex: 0};
           },
           edgeReducer: (edge, attrs) => {
-            if (state.hovered == null) {
+            const active = state.selected ?? state.hovered;
+            if (active == null) {
               return attrs;
             }
-            if (graph.hasExtremity(edge, state.hovered)) {
+            if (graph.hasExtremity(edge, active)) {
               return {...attrs, color: highlight, zIndex: 1};
             }
             return {...attrs, hidden: true};
           },
         });
+        // Viscoelastic jelly physics simulation
+        interface PhysicsNode {
+          id: string;
+          x: number;
+          y: number;
+          homeX: number;
+          homeY: number;
+          vx: number;
+          vy: number;
+          fx: number;
+          fy: number;
+          mass: number;
+          degree: number;
+        }
+
+        const physicsNodes = new Map<string, PhysicsNode>();
+        for (const n of data.nodes) {
+          const mass = 1.0 + 2.0 * Math.sqrt(n.degree / (maxDegree || 1));
+          physicsNodes.set(n.id, {
+            id: n.id,
+            x: n.x,
+            y: n.y,
+            homeX: n.x,
+            homeY: n.y,
+            vx: 0,
+            vy: 0,
+            fx: 0,
+            fy: 0,
+            mass,
+            degree: n.degree,
+          });
+        }
+
+        const physicsEdges = data.edges.map(([src, dst]) => {
+          const u = physicsNodes.get(src)!;
+          const v = physicsNodes.get(dst)!;
+          return {
+            source: src,
+            target: dst,
+            restLength: Math.hypot(v.homeX - u.homeX, v.homeY - u.homeY),
+          };
+        });
+
+        let draggedNodeId: string | null = null;
+        let hasDragged = false;
+        let dragStartPos: {x: number; y: number} | null = null;
+        let animFrameId: number | null = null;
+
+        const K_ANCHOR = 0.05;
+        const K_EDGE = 0.015;
+        const DAMPING = 0.91;
+
+        const stepSimulation = () => {
+          // Soft-saturating restoring force: smooth non-linear jelly elasticity
+          for (const p of physicsNodes.values()) {
+            if (p.id === draggedNodeId) {
+              p.fx = 0;
+              p.fy = 0;
+              continue;
+            }
+            const dx = p.x - p.homeX;
+            const dy = p.y - p.homeY;
+            const d = Math.hypot(dx, dy);
+            const factor = K_ANCHOR / (1 + d / 20);
+            p.fx = -factor * dx;
+            p.fy = -factor * dy;
+          }
+
+          // Viscoelastic edge spring coupling with soft saturation and degree scaling
+          for (const e of physicsEdges) {
+            const u = physicsNodes.get(e.source);
+            const v = physicsNodes.get(e.target);
+            if (!u || !v) continue;
+            const dx = v.x - u.x;
+            const dy = v.y - u.y;
+            const dist = Math.hypot(dx, dy) || 0.001;
+            const displacement = dist - e.restLength;
+
+            const maxDeg = Math.max(u.degree, v.degree, 1);
+            const edgeFactor =
+              K_EDGE / Math.sqrt(maxDeg) / (1 + Math.abs(displacement) / 15);
+            const force = edgeFactor * displacement;
+
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+
+            if (u.id !== draggedNodeId) {
+              u.fx += fx;
+              u.fy += fy;
+            }
+            if (v.id !== draggedNodeId) {
+              v.fx -= fx;
+              v.fy -= fy;
+            }
+          }
+
+          let maxVelocity = 0;
+          let maxDisplacement = 0;
+
+          // Mass-weighted acceleration and underdamped harmonic oscillation
+          for (const p of physicsNodes.values()) {
+            if (p.id === draggedNodeId) continue;
+
+            const ax = p.fx / p.mass;
+            const ay = p.fy / p.mass;
+            p.vx = (p.vx + ax) * DAMPING;
+            p.vy = (p.vy + ay) * DAMPING;
+
+            p.x += p.vx;
+            p.y += p.vy;
+
+            graph.setNodeAttribute(p.id, 'x', p.x);
+            graph.setNodeAttribute(p.id, 'y', p.y);
+
+            const speed = Math.hypot(p.vx, p.vy);
+            const dMag = Math.hypot(p.x - p.homeX, p.y - p.homeY);
+            if (speed > maxVelocity) maxVelocity = speed;
+            if (dMag > maxDisplacement) maxDisplacement = dMag;
+          }
+
+          sigma.refresh();
+
+          if (
+            draggedNodeId == null &&
+            maxVelocity < 0.003 &&
+            maxDisplacement < 0.015
+          ) {
+            for (const p of physicsNodes.values()) {
+              p.x = p.homeX;
+              p.y = p.homeY;
+              p.vx = 0;
+              p.vy = 0;
+              graph.setNodeAttribute(p.id, 'x', p.homeX);
+              graph.setNodeAttribute(p.id, 'y', p.homeY);
+            }
+            sigma.refresh();
+            animFrameId = null;
+          } else {
+            animFrameId = requestAnimationFrame(stepSimulation);
+          }
+        };
+
+        const startSimulation = () => {
+          if (animFrameId == null) {
+            animFrameId = requestAnimationFrame(stepSimulation);
+          }
+        };
+
+        const triggerImpulse = (centerId: string, strength: number) => {
+          const center = physicsNodes.get(centerId);
+          if (!center) return;
+          center.vx += (Math.random() - 0.5) * strength;
+          center.vy += (Math.random() - 0.5) * strength;
+
+          graph.forEachNeighbor(centerId, (neighborId) => {
+            const n = physicsNodes.get(neighborId);
+            if (!n) return;
+            const dx = n.x - center.x;
+            const dy = n.y - center.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            n.vx += (dx / dist) * strength * 0.75;
+            n.vy += (dy / dist) * strength * 0.75;
+          });
+          startSimulation();
+        };
+
+        // Entrance animation: gentle initial jelly ripple
+        for (const p of physicsNodes.values()) {
+          p.vx = (Math.random() - 0.5) * 0.4;
+          p.vy = (Math.random() - 0.5) * 0.4;
+        }
+        startSimulation();
+
+        sigma.on('downNode', ({node, event}) => {
+          draggedNodeId = node;
+          hasDragged = false;
+          dragStartPos = {x: event.x, y: event.y};
+          sigma.getCamera().enabledPanning = false;
+        });
+
+        const mouseCaptor = sigma.getMouseCaptor();
+        const handlePointerMove = (e: {x: number; y: number}) => {
+          if (!draggedNodeId) return;
+          if (dragStartPos) {
+            const dx = e.x - dragStartPos.x;
+            const dy = e.y - dragStartPos.y;
+            if (Math.hypot(dx, dy) > 3) {
+              hasDragged = true;
+            }
+          }
+          if (hasDragged) {
+            container.style.cursor = 'grabbing';
+            const pos = sigma.viewportToGraph(e);
+            const p = physicsNodes.get(draggedNodeId);
+            if (p) {
+              p.vx = (pos.x - p.x) * 0.4;
+              p.vy = (pos.y - p.y) * 0.4;
+              p.x = pos.x;
+              p.y = pos.y;
+              graph.setNodeAttribute(draggedNodeId, 'x', pos.x);
+              graph.setNodeAttribute(draggedNodeId, 'y', pos.y);
+              startSimulation();
+            }
+          }
+        };
+
+        const handlePointerUp = () => {
+          if (draggedNodeId) {
+            draggedNodeId = null;
+            container.style.cursor = state.hovered ? 'grab' : 'default';
+            sigma.getCamera().enabledPanning = true;
+            startSimulation();
+          }
+        };
+
+        const handleTouchMove = (e: {touches: {x: number; y: number}[]}) => {
+          if (e.touches && e.touches.length > 0) {
+            handlePointerMove(e.touches[0]);
+          }
+        };
+
+        mouseCaptor.on('mousemove', handlePointerMove);
+        mouseCaptor.on('mouseup', handlePointerUp);
+
+        const touchCaptor = sigma.getTouchCaptor();
+        touchCaptor.on('touchmove', handleTouchMove);
+        touchCaptor.on('touchup', handlePointerUp);
+
+        window.addEventListener('mouseup', handlePointerUp);
+        window.addEventListener('touchend', handlePointerUp);
+
         sigma.on('enterNode', ({node}) => {
+          if (!draggedNodeId) {
+            container.style.cursor = 'grab';
+          }
           state.hovered = node;
           setHovered(node);
+          triggerImpulse(node, 0.2);
           sigma.refresh();
         });
         sigma.on('leaveNode', () => {
-          state.hovered = undefined;
+          if (!draggedNodeId) {
+            container.style.cursor = 'default';
+          }
+          state.hovered = null;
           setHovered(null);
           sigma.refresh();
         });
-        renderer = sigma;
+        sigma.on('clickNode', ({node}) => {
+          if (hasDragged) {
+            hasDragged = false;
+            return;
+          }
+          state.selected = state.selected === node ? null : node;
+          setSelected(state.selected);
+          triggerImpulse(node, 0.8);
+          sigma.refresh();
+        });
+        sigma.on('clickStage', () => {
+          if (state.selected != null) {
+            state.selected = null;
+            setSelected(null);
+            sigma.refresh();
+          }
+        });
+
+        const handleDocumentClick = (event: MouseEvent) => {
+          if (container && !container.contains(event.target as Node)) {
+            if (state.selected != null) {
+              state.selected = null;
+              setSelected(null);
+              sigma.refresh();
+            }
+          }
+        };
+        document.addEventListener('click', handleDocumentClick);
+
+        renderer = {
+          kill: () => {
+            if (animFrameId != null) {
+              cancelAnimationFrame(animFrameId);
+            }
+            mouseCaptor.off('mousemove', handlePointerMove);
+            mouseCaptor.off('mouseup', handlePointerUp);
+            touchCaptor.off('touchmove', handleTouchMove);
+            touchCaptor.off('touchup', handlePointerUp);
+            window.removeEventListener('mouseup', handlePointerUp);
+            window.removeEventListener('touchend', handlePointerUp);
+            document.removeEventListener('click', handleDocumentClick);
+            sigma.kill();
+          },
+        };
       },
     );
 
@@ -169,8 +462,9 @@ function EgoCanvas(): React.ReactElement {
     };
   }, [colorMode]);
 
-  const hoveredNode =
-    hovered == null ? null : data.nodes.find((n) => n.id === hovered) ?? null;
+  const activeId = hovered ?? selected;
+  const activeNode =
+    activeId == null ? null : data.nodes.find((n) => n.id === activeId) ?? null;
 
   return (
     <figure className={styles.figure}>
@@ -187,17 +481,18 @@ function EgoCanvas(): React.ReactElement {
       </div>
       <div ref={containerRef} className={styles.canvas} />
       <figcaption className={styles.caption}>
-        {hoveredNode ? (
+        {activeNode ? (
           <>
-            <strong>{hoveredNode.title}</strong> ({hoveredNode.year}), degree{' '}
-            {hoveredNode.degree} in this ego network
+            <strong>{activeNode.title}</strong> ({activeNode.year}), degree{' '}
+            {activeNode.degree} in this ego network
           </>
         ) : (
           <>
             Ego network of <em>Attention Is All You Need</em> (133 papers, 393
             citation edges). Positions from <code>cugraph_force_atlas2</code>,
-            colors from <code>cugraph_louvain</code>. Hover a node; drag or
-            scroll to pan and zoom.
+            colors from <code>cugraph_louvain</code>. Click, hover, or drag
+            nodes to explore connections; click background to reset. Scroll to
+            zoom.
           </>
         )}
       </figcaption>
