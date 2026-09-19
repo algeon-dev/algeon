@@ -2,36 +2,13 @@
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Count every triangle in 45.6M edges
+### Which well-connected papers have the tightest citation neighborhoods?
 
-A triangle in a citation graph is a paper that cites two works which also cite
-each other, forming the unit of tightly interlinked literature. One call counts them
-for every vertex (edges are treated as undirected):
-
-```sql
-SELECT COUNT(*) AS vertices,
-       SUM(triangle_count) AS triangle_sum,
-       MAX(triangle_count) AS max_triangles
-FROM cugraph_triangle_count_all(edges => (SELECT src, dst FROM citation_edges));
-```
-
-| vertices | triangle_sum | max_triangles |
-|---|---|---|
-| 4,146,772 | 202,557,720 | 143,168 |
-
-`SUM` counts each triangle once per corner, so the graph holds ~67.5M distinct
-triangles; the busiest single paper (the SIFT paper, *Distinctive Image
-Features from Scale-Invariant Keypoints*) sits on 143,168 of them. In this run
-the full scan, GPU graph build, and count returned in about 0.6 s on the
-[capture host](../demo-dataset.mdx).
-
-### Local clustering coefficient in plain SQL
-
-Raw triangle counts track degree. Normalizing by the possible neighbor pairs
-(the local clustering coefficient `2T / (d·(d−1))`) separates *communities*
-from *hubs*. With `{"directed": false}` the `in_degree` column of
-`cugraph_degrees_all` is exactly the triangle graph's neighbor count, so two
-GPU calls joined in SQL give the coefficient:
+Treating citation edges as undirected, `triangle_count` gives the triangles
+touching each paper. The local clustering coefficient `2T / (d·(d−1))`
+divides that count by the possible pairs among its neighbors. This query ranks
+papers with at least 200 undirected neighbors by the share of those pairs that
+are connected in the same graph:
 
 ```sql
 WITH tri AS (
@@ -59,8 +36,7 @@ LIMIT 5;
 | Smashing the Gadgets: Hindering Return-Oriented Programming Using In-place Code Randomization | 2012 | 201 | 2,407 | 0.120 |
 | A Leakage-Resilient Mode of Operation | 2009 | 210 | 2,566 | 0.117 |
 
-Among well-connected papers (degree ≥ 200), the most clustered neighborhoods
-are systems-security and leakage-resilient-crypto papers, representing communities where
-everyone cites everyone. The contrast with a hub: SIFT has 46× the triangles
-of the top row but a coefficient of just 0.0005, because its 22,925 neighbors
-barely know each other.
+The top rows have coefficients from 0.117 to 0.146, meaning 11.7% to 14.6%
+of possible neighbor pairs are connected. SIFT has 46 times as many triangles
+as the top row but a coefficient near 0.0005 because its 22,925 neighbors
+create far more possible pairs.

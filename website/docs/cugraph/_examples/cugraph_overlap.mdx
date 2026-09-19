@@ -1,14 +1,75 @@
 {/* Hand-owned examples for cugraph_overlap. NOT generated; safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Which broader reading lists cover the most of BERT's bibliography?
+
+Compare the references of the 2018 BERT paper with NLP papers from 2015
+through 2020. Candidates have at least 10 references, use one of the listed
+field labels, and have at least as many references as BERT. The smaller set is
+therefore BERT's 55-reference bibliography, and the overlap score is the share
+of that list also found in each candidate's bibliography.
+
+The function requires an undirected graph. Positive IDs represent citing
+papers and negative IDs represent cited papers in the reference role. This
+keeps papers that cite BERT on the positive-ID side and references on the
+negative-ID side. The edge projection omits weights, so each reference
+contributes one unit. Candidate pairs exclude title-identical BERT records.
 
 ```sql
-SELECT * FROM cugraph_overlap(
-  edges => (SELECT src, dst FROM target_edges),
-  vertex_pairs => (SELECT first, second FROM candidate_pairs))
+CREATE OR REPLACE VIEW similarity_seed AS
+SELECT paper_id, title, n_references
+FROM papers
+WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'
+  AND year = 2018;
+
+CREATE OR REPLACE VIEW similarity_candidates AS
+SELECT p.paper_id, p.title, p.n_references, p.year
+FROM papers p
+WHERE p.year BETWEEN 2015 AND 2020
+  AND p.n_references >= 10
+  AND p.primary_fos IN (
+    'Natural language processing', 'Language model',
+    'Machine translation', 'Question answering');
+
+CREATE OR REPLACE VIEW bibliography_edges AS
+SELECT e.src, -e.dst AS dst
+FROM citation_edges e
+JOIN (
+  SELECT paper_id FROM similarity_seed
+  UNION
+  SELECT paper_id FROM similarity_candidates
+) selected ON selected.paper_id = e.src;
+
+SELECT p.year, p.title, p.n_references,
+       ROUND(r.similarity, 3) AS bert_reference_coverage
+FROM cugraph_overlap(
+  edges => (SELECT src, dst FROM bibliography_edges),
+  vertex_pairs => (
+    SELECT s.paper_id AS first, c.paper_id AS second
+    FROM similarity_seed s
+    CROSS JOIN similarity_candidates c
+    WHERE LOWER(c.title) <> LOWER(s.title)
+      AND c.n_references >= s.n_references),
+  directed => false) r
+JOIN papers p ON p.paper_id = r.second
+ORDER BY r.similarity DESC, p.paper_id
+LIMIT 5;
 ```
 
-Use the same shape with your registered relations; pass algorithm and graph
-values as additional named arguments, for example
-`directed => false` or `construction_policy => 'raw_libcugraph'`.
+| year | title | n_references | bert_reference_coverage |
+|---|---|---|---|
+| 2019 | Linguistic Knowledge and Transferability of Contextual Representations | 66 | 0.2 |
+| 2018 | The Natural Language Decathlon: Multitask Learning as Question Answering | 94 | 0.145 |
+| 2018 | Neural Approaches to Conversational AI. | 385 | 0.109 |
+| 2017 | Neural Machine Translation and Sequence-to-sequence Models: A Tutorial. | 85 | 0.091 |
+| 2018 | Improving Machine Reading Comprehension with General Reading Strategies | 56 | 0.091 |
+
+*Linguistic Knowledge and Transferability of Contextual Representations*
+covers 11 of BERT's 55 references, the largest share in this result at 0.2.
+
+A score of 1 means that every reference in BERT's smaller list also appears
+in the candidate's list. Candidate citations to BERT and agreement with its
+claims are outside this measure. Compare with the
+[Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx),
+which divides by the union of both lists.

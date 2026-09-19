@@ -23,19 +23,13 @@ result as a property of this fixed snapshot, not a statement about the current
 literature.
 :::
 
-The timings quoted on the example pages were observed in one run against the
-local Iceberg REST catalog backed by RustFS on a single NVIDIA RTX PRO 6000
-(96 GB VRAM); they describe that host, not performance figures or a minimum
-requirement. On 2026-09-22 every example statement was rerun twice in one
-session with `scripts/dev/verify_cugraph_examples.py` against the direct-Parquet
-tables described below, on an NVIDIA GeForce RTX 5070 Ti (16 GB) with a device
-profile that sets only `device_ordinal` and leaves every admission limit at its
-default. All statements completed, and result tables whose values had changed
-since the first capture were refreshed from that run. Rows that tie, per-run
-component labels, layout coordinates, and BFS path intermediates can still
-differ between runs. Whether a query fits a device depends on the subgraph it
-defines and on the query's admitted memory cap. The primary demo path remains
-the Iceberg namespace used below.
+The revised queries were executed on **2026-09-26** against the direct-Parquet
+tables below. Displayed tables are representative captures; tied rows,
+community membership, layout coordinates, and shortest-path predecessors can
+vary between executions. Jaccard, Overlap, and Sørensen scores were also checked
+against independent calculations from the reference sets. The
+[Cosine example](./functions/similarity/cugraph_cosine.mdx#examples) records a
+known normalization error and withholds its incorrect ranking.
 
 ## Tables
 
@@ -76,15 +70,21 @@ workspace overlay that makes these tables available as unqualified names.
 The workspace overlay makes unqualified names such as `citation_edges` and
 `papers` resolve through to `lake.citation_network.*`, while interactive DDL
 stays local to `datafusion.public`. Every example statement that creates a name
-uses `CREATE OR REPLACE`, so a page can be rerun in one session, and pages that
-share a name (several define `ai_nodes` and `ai_edges`) overwrite each other
-instead of failing. SQL-defined subgraphs and seed selections are views.
+uses `CREATE OR REPLACE`, so repeat runs can replace prior workspace state, and
+pages that share a name (several define `ai_nodes` and `ai_edges`) overwrite
+each other instead of failing. SQL-defined subgraphs and seed selections are views.
 `CREATE OR REPLACE TABLE ... AS` is reserved for a snapshot of
 non-deterministic algorithm output that later statements read more than once
-(`scc_snapshot`, `wcc_snapshot`, `initial_layout`), an algorithm output chained
-into another `cugraph_*` call (`kcore30`, `kcore30_edges`), and an Int32
-renumbering map (see below). Such a table is
-local workspace state; it does not write back to the Iceberg source catalog.
+(`scc_snapshot`, `wcc_snapshot`, `initial_layout`), shared algorithm scores
+(`hits_snapshot`), an algorithm output chained
+into another `cugraph_*` call (`kcore30_edges`), and an Int32
+renumbering map (see below). These tables provide reusable results for later
+statements. CTAS executes its input eagerly, downloads cuGraph output into Arrow
+batches, and registers a DataFusion `MemTable` in the local workspace. The
+collected batches occupy host RAM, and a later native scan uploads the required
+data to the GPU again. This path has no disk sink or SQL-accessible GPU-resident
+table. Include CTAS execution and result collection in end-to-end timing. The
+table does not write back to the Iceberg source catalog.
 
 For direct-Parquet debugging without the REST catalog, start the server with
 Iceberg disabled (`ALGEON_RUN_SERVER_ICEBERG=0` in the
@@ -119,20 +119,32 @@ SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
 FROM (SELECT src AS paper_id FROM my_edges UNION SELECT dst FROM my_edges);
 ```
 
-Materializing with `CREATE OR REPLACE TABLE ... AS` (not a view) matters: it keeps the
-window function out of the cuGraph table-function input, and the mapping table
-joins results back to `papers` afterwards.
+The examples compute the dense map once, then reuse it to map edge endpoints
+and join result ids back to `papers`.
 
-## The two-table pattern
+## From question to answer
 
-cuGraph UDTFs consume an **edge relation** and return vertex ids. The
-examples follow one pattern throughout:
+For “Do citation communities match the research fields in our catalog?”, a
+backend agent can map papers and field labels to `papers.paper_id`,
+`papers.year`, and `papers.primary_fos`, and citations to
+`citation_edges.src` and `citation_edges.dst` (`src` cites `dst`). The SQL
+filters `papers` to selected AI field labels from 2010 onward, then keeps only
+citations whose source and destination both belong to that set. It passes the
+resulting edge view to `cugraph_louvain`, joins each returned `vertex` to
+`papers.paper_id`, and groups by community `partition` and `primary_fos`.
 
-1. **SQL defines the graph the GPU sees**: a `CREATE OR REPLACE VIEW` with joins and
-   `WHERE` clauses builds the subgraph (an era, a field, an ego network), and
-   the view name is passed directly to the `cugraph_*` function.
-2. **SQL turns vertex ids back into results**: the `(vertex, value)` output
-   is joined to `papers`, windowed, aggregated, or anti-joined like any table.
+The query reports the three most common field labels in each selected
+community larger than 2,500 papers, with the community size and label counts.
+Those rows let a reader compare the citation-based grouping with the catalog's
+labels for this selected population.
+
+The Jaccard and Overlap examples compare bibliographies with undirected
+similarity functions. Their edge views keep `src` as a positive paper ID and
+negate `dst` to create a negative reference-role ID (`-e.dst`). This role split
+makes each paper's outgoing bibliography its neighborhood; incoming citations
+connect through the separate negative reference-role ID. See the local
+[Jaccard example](./functions/similarity/cugraph_jaccard.mdx#examples) and
+[Overlap example](./functions/similarity/cugraph_overlap.mdx#examples).
 
 ## Seed papers used in the examples
 
@@ -143,7 +155,7 @@ one title is shared by 32 papers, so a title-keyed graph would merge those
 papers into single vertices. Each seed is resolved with
 `WHERE title = '…' AND year = …`, plus `venue` where title and year still
 collide, and results are joined back to `papers` for display. The
-[BFS page](./functions/traversal/cugraph_bfs.mdx#title-keyed-vertices-on-a-small-subgraph)
+[BFS page](./functions/traversal/cugraph_bfs.mdx#would-using-paper-titles-as-graph-ids-merge-different-records)
 shows what title keys do on a small subgraph.
 
 | Paper | `paper_id` | Exact `title` in the corpus | `year` | Extra predicate |
@@ -165,12 +177,10 @@ from this table or from a query on `papers`, not from the published paper.
 ### Snapshot non-deterministic labels before self-joining
 
 Component and community ids (`label`, `partition`) are assigned per execution.
-A view over a `cugraph_*` call re-runs the algorithm on every scan, so a query
-that scans such a view twice (for example a CTE joined back to it) can join
-mismatched labels. If one statement cannot keep the algorithm output single-use,
-materialize once into the mutable `datafusion.public` workspace with
-`CREATE OR REPLACE TABLE <name> AS SELECT …`, then analyze the snapshot. That snapshot is
-local session/workspace state, not an Iceberg table write.
+A view retains the logical definition of its `cugraph_*` call, and a later scan
+can execute that definition again. A query plan may share work within one
+statement. A view provides no fixed snapshot guarantee. Use the CTAS pattern
+above when later statements need to reuse the same label assignment.
 
 ### `n_citation` counts the whole world, in-degree counts this corpus
 

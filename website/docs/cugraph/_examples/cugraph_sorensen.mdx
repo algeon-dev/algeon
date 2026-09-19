@@ -1,14 +1,66 @@
 {/* Hand-owned examples for cugraph_sorensen. NOT generated; safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Which influential NLP papers would make a reading pair with shared background?
+
+Take the 12 most-cited papers from 2015 through 2020 in the listed NLP fields,
+then compare each distinct-title pair by its bibliography overlap. Sørensen
+similarity weights the intersection by the sum of both reference-list sizes.
+The score describes shared citation background; project-specific relevance
+falls outside the measure.
+
+The function requires an undirected graph. Positive IDs identify citing
+papers, while negative IDs identify reference-role vertices for cited papers.
+Outgoing bibliography neighbors are the negative IDs adjacent to each
+positive paper ID; citing papers remain on the positive-ID side. The edge
+projection omits weights, so each reference counts as one unit.
 
 ```sql
-SELECT * FROM cugraph_sorensen(
-  edges => (SELECT src, dst FROM target_edges),
-  vertex_pairs => (SELECT first, second FROM candidate_pairs))
+CREATE OR REPLACE VIEW similarity_candidates AS
+SELECT paper_id, title, n_references
+FROM papers
+WHERE year BETWEEN 2015 AND 2020
+  AND n_references >= 10
+  AND primary_fos IN (
+    'Natural language processing', 'Language model',
+    'Machine translation', 'Question answering')
+ORDER BY n_citation DESC, paper_id
+LIMIT 12;
+
+CREATE OR REPLACE VIEW bibliography_edges AS
+SELECT e.src, -e.dst AS dst
+FROM citation_edges e
+JOIN similarity_candidates c ON c.paper_id = e.src;
+
+SELECT a.title AS paper_a, b.title AS paper_b,
+       ROUND(r.similarity, 3) AS sorensen
+FROM cugraph_sorensen(
+  edges => (SELECT src, dst FROM bibliography_edges),
+  vertex_pairs => (
+    SELECT a.paper_id AS first, b.paper_id AS second
+    FROM similarity_candidates a
+    JOIN similarity_candidates b ON a.paper_id < b.paper_id
+    WHERE LOWER(a.title) <> LOWER(b.title)),
+  directed => false) r
+JOIN papers a ON a.paper_id = r.first
+JOIN papers b ON b.paper_id = r.second
+ORDER BY r.similarity DESC, r.first, r.second
+LIMIT 5;
 ```
 
-Use the same shape with your registered relations; pass algorithm and graph
-values as additional named arguments, for example
-`directed => false` or `construction_policy => 'raw_libcugraph'`.
+| paper_a | paper_b | sorensen |
+|---|---|---|
+| VQA: Visual Question Answering | Visual Genome: Connecting Language and Vision Using Crowdsourced Dense Image Annotations | 0.253 |
+| Hierarchical Question-Image Co-Attention for Visual Question Answering | Stacked Attention Networks for Image Question Answering | 0.157 |
+| Visual Genome: Connecting Language and Vision Using Crowdsourced Dense Image Annotations | Stacked Attention Networks for Image Question Answering | 0.138 |
+| Character-aware neural language models | Neural Machine Translation of Rare Words with Subword Units | 0.137 |
+| VQA: Visual Question Answering | Stacked Attention Networks for Image Question Answering | 0.125 |
+
+The strongest pair in this pool is *VQA: Visual Question Answering* with
+*Visual Genome*, at a Sørensen score of 0.253.
+
+The coefficient is twice the shared-reference count divided by the sum of
+both reference counts. Project-specific relevance is outside this measure.
+For a score based on the union of the two lists, see the
+[Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx).

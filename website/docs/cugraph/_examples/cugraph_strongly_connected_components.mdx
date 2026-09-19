@@ -1,63 +1,50 @@
 {/* Hand-owned examples for cugraph_strongly_connected_components. NOT generated; safe to edit. */}
 
-These examples run on the [citation network demo dataset](../demo-dataset.mdx).
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Count multi-paper strongly connected components
+### Which mutually citing paper pairs have the largest publication-year gaps?
 
-A citation normally points from a newer paper to an older one, so a *directed*
-cycle of citations is an anomaly: two or more papers that cite each other
-directly or transitively. Such a group forms a strongly connected component of
-more than one vertex. SCC finds every component in one pass. Snapshot the run in
-the mutable `datafusion.public` workspace (labels are assigned per execution),
-then count the multi-paper components:
+Before using citation direction as a timeline, inspect pairs whose references
+run both ways despite a large gap in publication years. A strongly connected
+component with two vertices contains such a pair. These are candidates for
+checking editions and publication metadata, not proof of an incorrect citation.
+
+Save one SCC result so the pair selection and both paper lookups use labels
+from the same execution. The query excludes years outside 1900 through 2020
+and returns one row per pair.
 
 ```sql
--- Local workspace snapshot; this does not write to lake.citation_network.
 CREATE OR REPLACE TABLE scc_snapshot AS
 SELECT vertex, label
 FROM cugraph_strongly_connected_components(
   edges => (SELECT src, dst FROM citation_edges), directed => true);
 
-WITH loops AS (
-  SELECT label, COUNT(*) AS members FROM scc_snapshot
-  GROUP BY label HAVING COUNT(*) > 1)
-SELECT COUNT(*) AS loops, MAX(members) AS biggest, SUM(members) AS papers_in_loops
-FROM loops;
-```
-
-| loops | biggest | papers_in_loops |
-|---|---|---|
-| 14,613 | 1,370,029 | 1,404,311 |
-
-The notable result is the largest component: **1.37M papers sit inside one
-strongly connected component**. Preprint/journal duplicate versions,
-simultaneous publication, and metadata errors introduce enough forward-dated
-citations (a newer paper cited by an older one) to bind roughly a third of the
-graph into a single component. These apparent forward-in-time citations are a
-structural feature of bibliographic data.
-
-### Inspect the two-paper cycles
-
-```sql
 WITH pairs AS (
   SELECT label FROM scc_snapshot GROUP BY label HAVING COUNT(*) = 2)
-SELECT c.label, p.year, p.title
+SELECT pa.year AS year_a, pa.title AS paper_a,
+       pb.year AS year_b, pb.title AS paper_b,
+       ABS(pa.year - pb.year) AS year_gap
 FROM pairs x
-JOIN scc_snapshot c ON c.label = x.label
-JOIN papers p ON p.paper_id = c.vertex
-ORDER BY c.label
-LIMIT 6;
+JOIN scc_snapshot a ON a.label = x.label
+JOIN scc_snapshot b ON b.label = x.label AND a.vertex < b.vertex
+JOIN papers pa ON pa.paper_id = a.vertex
+JOIN papers pb ON pb.paper_id = b.vertex
+WHERE pa.year BETWEEN 1900 AND 2020 AND pb.year BETWEEN 1900 AND 2020
+ORDER BY year_gap DESC, a.vertex, b.vertex
+LIMIT 5;
 ```
 
-| label | year | title |
-|---|---|---|
-| 57 | 2017 | Index Modulation Techniques for Next-Generation Wireless Networks |
-| 57 | 2017 | Multidimensional index modulation in wireless communications |
-| 210 | 2017 | A Survey of Research into Mixed Criticality Systems |
-| 210 | 2017 | Probabilistic analysis for mixed criticality systems using fixed priority… |
-| 265 | 2018 | DC programming and DCA: thirty years of developments |
-| 265 | 2018 | Convergence Analysis of Difference-of-Convex Algorithm with Subanalytic Data |
+| year_a | paper_a | year_b | paper_b | year_gap |
+|---|---|---|---|---|
+| 1965 | An analysis of floating-point addition | 2000 | Architecture of the IBM System/360 | 35 |
+| 2013 | On Lipschitz Mappings Onto a Square | 2001 | A Multidimensional Generalization of the Erdös–Szekeres Lemma on Monotone Subsequences | 12 |
+| 2001 | High-resolution passive polarimetric microwave mapping of ocean surface wind vector fields | 2013 | Digital Correlation Microwave Polarimetry: Analysis and Demonstration | 12 |
+| 2013 | On parallel solution of linear elasticity problems. Part III: higher order finite elements | 2002 | On parallel solution of linear elasticity problems. Part II: Methods and some computer experiments. | 11 |
+| 1991 | Large minimal realizers of a partial order II | 1980 | A generalization of Turán's theorem to directed graphs | 11 |
 
-12,015 of the 14,613 cycles are exactly two papers: same-year companion
-papers and surveys citing each other, the typical form of mutual citation in
-practice.
+The largest gap among these isolated mutually citing pairs is 35 years,
+between floating-point addition and IBM System/360 architecture papers.
+
+The year gap prioritizes records for review. Larger strongly connected
+components can also contain mutual citations; this query selects isolated
+two-paper components to keep each case directly inspectable.

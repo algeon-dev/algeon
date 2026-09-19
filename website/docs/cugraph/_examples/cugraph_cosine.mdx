@@ -1,14 +1,74 @@
 {/* Hand-owned examples for cugraph_cosine. NOT generated; safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Which papers share BERT's references despite different bibliography sizes?
+
+:::warning[Known cosine scoring issue]
+The query below currently returns incorrect scores on the tested native build.
+For example, BERT and *MASS: Masked Sequence to Sequence Pre-training for
+Language Generation* share 19 references out of lists of 55 and 53, giving a
+cosine of about 0.352. The current execution returns 1 for pairs with any shared
+reference, so its ordering cannot answer this question. This issue is recorded
+as [CUGRAPH-COSINE-001](https://github.com/algeon-dev/algeon/blob/main/docs/bugs/2026-09-26-cugraph-cosine-normalization.md);
+the result is withheld here pending a correction.
+The [Jaccard example](../functions/similarity/cugraph_jaccard.mdx) demonstrates
+a separately verified bibliography ranking with its own scoring definition.
+:::
+
+Compare BERT's 2018 reference list with NLP papers from 2015 through 2020 that
+have at least 10 references. Candidate papers use one of the listed field
+labels. The cosine score divides shared references by the square root of the
+two bibliography sizes, which accounts for lists of different lengths.
+
+The function requires an undirected graph. Positive IDs represent citing
+papers, and negative IDs represent cited-paper reference roles. This keeps
+each positive paper ID adjacent only to negative IDs for its references;
+papers that cite BERT remain positive vertices. The edge projection omits
+weights, giving each reference a unit contribution. Candidate pairs exclude
+records whose title matches BERT's, avoiding title-identical editions as
+separate suggestions.
 
 ```sql
-SELECT * FROM cugraph_cosine(
-  edges => (SELECT src, dst FROM target_edges),
-  vertex_pairs => (SELECT first, second FROM candidate_pairs))
+CREATE OR REPLACE VIEW similarity_seed AS
+SELECT paper_id, title, n_references
+FROM papers
+WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'
+  AND year = 2018;
+
+CREATE OR REPLACE VIEW similarity_candidates AS
+SELECT p.paper_id, p.title, p.n_references, p.year
+FROM papers p
+WHERE p.year BETWEEN 2015 AND 2020
+  AND p.n_references >= 10
+  AND p.primary_fos IN (
+    'Natural language processing', 'Language model',
+    'Machine translation', 'Question answering');
+
+CREATE OR REPLACE VIEW bibliography_edges AS
+SELECT e.src, -e.dst AS dst
+FROM citation_edges e
+JOIN (
+  SELECT paper_id FROM similarity_seed
+  UNION
+  SELECT paper_id FROM similarity_candidates
+) selected ON selected.paper_id = e.src;
+
+SELECT p.year, p.title, p.n_references,
+       ROUND(r.similarity, 3) AS cosine
+FROM cugraph_cosine(
+  edges => (SELECT src, dst FROM bibliography_edges),
+  vertex_pairs => (
+    SELECT s.paper_id AS first, c.paper_id AS second
+    FROM similarity_seed s
+    CROSS JOIN similarity_candidates c
+    WHERE LOWER(c.title) <> LOWER(s.title)),
+  directed => false) r
+JOIN papers p ON p.paper_id = r.second
+ORDER BY r.similarity DESC, p.paper_id
+LIMIT 5;
 ```
 
-Use the same shape with your registered relations; pass algorithm and graph
-values as additional named arguments, for example
-`directed => false` or `construction_policy => 'raw_libcugraph'`.
+The result ranks bibliography similarity; topic meaning is outside the score. For
+intersection divided by the union of references, see the
+[Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx).

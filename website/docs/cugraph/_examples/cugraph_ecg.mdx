@@ -2,15 +2,14 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Benchmark the ensemble against single-run algorithms
+### Which grouping best matches our catalog's research-field labels?
 
-ECG runs an ensemble of Louvain passes (`ensemble_size`, default 10), reweights
-edges by how often their endpoints co-cluster, and clusters the consensus. Is
-that worth it? Because every `cugraph_*` function returns a plain relation, one
-statement can run all three community algorithms on the same subgraph (the
-Louvain example's 2010s AI views) and score them against the human-assigned
-`primary_fos` labels, representing the share of members in a community carrying its
-dominant label:
+This comparison uses the share of members carrying their community's most
+common `primary_fos` label as a diagnostic against the catalog. It includes
+communities with at least 100 members in the purity calculation; community
+sizes and that cutoff affect the result. The field labels provide a diagnostic
+reference for the score, while citation structure defines the communities.
+The query runs Louvain, Leiden, and ECG on the same 2010s AI citation subgraph.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -61,10 +60,6 @@ ORDER BY purity_pct DESC;
 | louvain | 1,233 | 27 | 47.1 |
 | leiden | 851 | 26 | 45.9 |
 
-In this run the three GPU graph builds plus the joins and aggregation returned
-together in about one second on the [capture host](../demo-dataset.mdx). ECG's
-consensus is deliberately conservative: it only keeps vertices together when
-most ensemble members agree, so on this subgraph it produced the finest
-partition (1,932 communities, 41 of them with 100+ papers) and scored above a
-single Louvain run on label purity. Determinism comes from `seed` (default 0);
-`ensemble_size` trades run time for consensus stability.
+ECG has the highest reported purity in this run (47.7%), with 41 communities
+of at least 100 members. Community size affects this diagnostic. The default
+`seed` is 0, but it does not guarantee identical labels across GPU runs.

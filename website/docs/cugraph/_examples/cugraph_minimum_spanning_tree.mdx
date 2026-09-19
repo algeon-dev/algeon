@@ -2,13 +2,12 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### The backbone with the least time travel
+### Which large publication-year gaps remain in a minimal map of AI citations?
 
-An MST needs a weight worth minimizing, and SQL can derive one: weight each
-citation by the **year gap** between the two papers, and the minimum spanning
-tree becomes the backbone that keeps every paper connected through the most
-era-local links available. The graph is the AI literature across all years
-(same ten field-of-study labels as the Louvain example, no year filter);
+Each citation receives a weight equal to the absolute publication-year gap.
+The query finds a minimum spanning forest that minimizes the total gap within
+each connected component, then shows its five largest selected gaps. The graph
+covers 1900 to 2020 and the ten field-of-study labels below.
 `cugraph_minimum_spanning_tree` needs Int32 vertex ids, so the
 [renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-cugraph-c-api-algorithms)
 from the demo-dataset page applies:
@@ -39,13 +38,7 @@ JOIN ai_all_nodes a ON a.paper_id = e.src
 JOIN ai_all_nodes b ON b.paper_id = e.dst
 JOIN ai_era_vertex_ids va ON va.paper_id = e.src
 JOIN ai_era_vertex_ids vb ON vb.paper_id = e.dst;
-```
 
-The interesting rows are the links the tree could **not** avoid: the largest
-year gaps that survive minimization are places where a modern paper's only
-connection to the rest of the field runs through a decades-older one.
-
-```sql
 SELECT pa.year AS year_a, substr(pa.title, 1, 38) AS paper_a,
        pb.year AS year_b, substr(pb.title, 1, 38) AS paper_b,
        ABS(pa.year - pb.year) AS gap
@@ -68,12 +61,9 @@ LIMIT 5;
 | 2015 | A survey of fingerprint classification | 1976 | Feature extraction for fingerprint cla | 39 |
 | 1982 | On the Difficulties Involved in the Se | 2018 | An Accurate Modeling Technology Based | 36 |
 
-Character recognition, radiographic imaging, and fingerprint classification:
-half-century-old pattern-recognition work is still the shortest bridge between
-some modern niches and everything else. Overall the 204,472-edge input reduces
-to 49,263 backbone links over 50,300 connected papers (a forest of ~1,000
-similarity families; the output is symmetrized, which `m.src < m.dst`
-de-duplicates), and minimization pulls the average year gap from 3.9 down to
-2.5 years. The MST output carries only `src`/`dst`, so every attribute in the
-result (years, titles, the gap itself) comes from joining SQL tables back
-onto the tree.
+Among the selected links, the largest gaps connect papers in character
+recognition, radiographic imaging, and fingerprint classification. The input
+has 204,472 edges and the symmetrized forest returns 49,263 links over 50,300
+papers. These rows show one minimum forest; they do not establish that an
+individual link is unique or unavoidable. The function returns `src` and
+`dst`, so SQL joins the IDs back to years and titles.

@@ -15,6 +15,22 @@ you can compose with ordinary SQL.
 This section helps you choose a graph UDTF, provide its edge relation, and
 understand its execution and reuse boundaries.
 
+The host application lets a person or agent ask in natural language. Its
+backend agent uses an enterprise semantic layer to map terms and definitions
+to registered data entities, then submits the resulting SQL to Algeon. Algeon
+executes the SQL and returns rows for the application to present.
+
+## Questions to explore
+
+- [What should I read to understand BERT beyond its own bibliography?](./functions/centrality/cugraph_personalized_pagerank.mdx#examples)
+- [What is the shortest citation chain from BERT back to LSTM?](./functions/traversal/cugraph_bfs.mdx#examples)
+- [Which widely cited early language-modeling papers are closest to the Transformer?](./functions/traversal/cugraph_sssp.mdx#examples)
+- [Which papers should I read after the Transformer if I want familiar references?](./functions/similarity/cugraph_jaccard.mdx#examples)
+- [Which broader reading lists cover most of BERT's bibliography?](./functions/similarity/cugraph_overlap.mdx#examples)
+- [Do citation communities match the research fields in our catalog?](./functions/community/cugraph_louvain.mdx#examples)
+- [Which research pockets are disconnected from the main citation network?](./functions/connectivity/cugraph_weakly_connected_components.mdx#examples)
+- [How are the papers around the Transformer connected?](./functions/layout/cugraph_force_atlas2.mdx#examples)
+
 Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
 to keep scans and surrounding SQL on DataFusion CPU while graph algorithms run
 on GPU. The same page covers backend configuration and host staging limits.

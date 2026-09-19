@@ -1,32 +1,16 @@
 {/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated; safe to edit. */}
 
-These examples run on the [citation network demo dataset](../demo-dataset.mdx).
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Measure the largest connected component
+### Which research pockets are disconnected from the main citation network?
 
-WCC requires `directed: false`. Of the 4.15M papers that have at least one
-edge, 99.4% form a single giant component:
+An exploration that starts in the largest connected component cannot reach
+the other components, even when citations can be followed in either direction.
+This query finds the largest disconnected groups and names the most-cited
+paper in each. Papers without any citation edge are outside this graph.
 
-```sql
-WITH comp AS (
-  SELECT label, COUNT(*) AS members
-  FROM cugraph_weakly_connected_components(
-    edges => (SELECT src, dst FROM citation_edges), directed => false)
-  GROUP BY label)
-SELECT COUNT(*) AS components, MAX(members) AS giant, SUM(members) AS vertices
-FROM comp;
-```
-
-| components | giant | vertices |
-|---|---|---|
-| 9,751 | 4,123,602 | 4,146,772 |
-
-### Snapshot first, then examine the isolated components
-
-Component labels are assigned **per execution**, so a query that scans the
-algorithm twice can join mismatched labels. Materialize one run in the mutable
-`datafusion.public` workspace, then summarize the largest components outside the
-giant one: one row per component, represented by its most-cited member.
+Component labels belong to one execution. Save the result once in the local
+workspace so the size calculation and paper lookup use matching labels.
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.
@@ -55,8 +39,7 @@ ORDER BY members DESC;
 | 25 | 2013 | IEICE Electronics Express | Cavity-resonator-integrated guided-mode resonance filter… |
 | 21 | 2015 | Symmetry | Inflationary Cosmology in Modified Gravity Theories |
 
-The three largest isolated components are a 39-paper cluster on
-electrical-contact arc discharge, a 25-paper photonics/electromagnetics
-cluster, and a 21-paper modified-gravity cosmology cluster, each citing only
-itself. Communities that publish outside the corpus's main subject areas appear
-as disconnected components in the graph.
+The displayed groups have no citation links to the main component in this
+snapshot. Their representative papers suggest subject areas for a separate
+search. Missing links in this corpus do not establish that the research fields
+are disconnected in the wider literature.

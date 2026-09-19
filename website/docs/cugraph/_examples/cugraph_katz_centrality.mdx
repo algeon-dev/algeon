@@ -2,14 +2,11 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### `alpha` decides how deep credit flows
+### Which papers rise in rank when indirect citations count too?
 
-Katz centrality counts *all* incoming walks, discounting a walk of length *n*
-by `alpha^n`. At the default `alpha` (0.01) long chains contribute almost
-nothing and the ranking is nearly in-degree. Raising `alpha` to 0.05 shifts
-credit to papers whose citers are themselves heavily cited, transitively;
-window functions over the two results make the shift visible as rank
-movement:
+Direct citation counts and citation walks can produce different rankings.
+This query compares in-degree rank with Katz rank at `alpha` 0.05, where walks
+beyond a paper's direct citations contribute to its score.
 
 ```sql
 WITH katz AS (
@@ -38,12 +35,6 @@ ORDER BY k.katz_rank;
 | A Computational Approach to Edge Detection | 1986 | 7 | 24 | 9,069 |
 | A method for obtaining digital signatures and public-key cryptosystems | 1978 | 8 | 50 | 6,580 |
 
-The risers are the foundations: *New Directions in Cryptography* climbs from
-in-degree rank #69 to Katz rank #5 and the RSA paper from #50 to #8, because
-the papers citing them anchor entire downstream literatures. Katz is the natural choice on citation-style
-graphs; near-acyclic structure starves
-[eigenvector centrality](../functions/centrality/cugraph_eigenvector_centrality.mdx),
-while the `beta` base score keeps every vertex non-zero here. Convergence
-requires `alpha` below the reciprocal of the graph's largest eigenvalue:
-pushing it too high fails with a convergence error rather than returning
-partial scores.
+*New Directions in Cryptography* moves from in-degree rank #69 to Katz rank #5;
+the RSA paper moves from #50 to #8. These rows show how the ordering changes
+when the score includes walks beyond direct citations.

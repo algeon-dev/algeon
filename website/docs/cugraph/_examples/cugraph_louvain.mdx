@@ -2,13 +2,12 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Compare citation communities against field labels
+### Do citation communities match the research fields in our catalog?
 
-Two views select the 2010s AI literature (nodes by field-of-study label,
-edges where **both** endpoints qualify), and Louvain partitions it by citation
-structure alone. Cross-tabulating each community against `primary_fos` (with a
-window function to keep the top 3 labels per community) shows how closely the
-detected communities align with the assigned labels:
+Comparing graph communities with catalog fields can show where the two
+groupings align or mix. This query partitions a selected 2010s AI citation
+subgraph, then reports the three most common `primary_fos` labels in larger
+communities.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -60,9 +59,7 @@ ORDER BY members DESC, rn;
 | 3,518 | 2 | Convolutional neural network | 467 |
 | 3,518 | 3 | Deep learning | 342 |
 
-Louvain (1,233 communities over 38,054 papers) recovers recognizable subfield
-boundaries: convolutional-network, sequence-modeling, image-segmentation, and
-object-detection communities, plus a reinforcement-learning community that is
-81% one label. Note the quoted
-`"partition"`, since the output column name is a SQL keyword. `cugraph_leiden`
-is a drop-in replacement with the same call shape.
+The 3,859-paper community has 3,129 papers labeled reinforcement learning.
+The 7,172-paper community has similar counts for convolutional neural network
+(2,698) and deep learning (2,527). These rows compare partition membership
+with the catalog's current field assignments.
