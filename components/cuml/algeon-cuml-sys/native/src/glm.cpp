@@ -40,6 +40,7 @@ ML::GLM::qn_params make_params(int32_t loss, double penalty_l1, double penalty_l
   p.penalty_normalized = penalty_normalized != 0;
   p.grad_tol = grad_tol;
   p.change_tol = change_tol;
+  p.verbose = static_cast<int>(cuml_native_log_level);
   return p;
 }
 void validate(cuml_handle_t handle, const void* const* pointers, size_t count,

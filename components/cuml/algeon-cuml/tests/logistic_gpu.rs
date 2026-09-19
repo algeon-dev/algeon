@@ -116,3 +116,58 @@ fn logistic_regression_fit_and_predict_binary_and_multiclass() {
         ErrorCode::UnsupportedDtype
     );
 }
+
+// cuML's default logger sink (cuml/common/logger.hpp default_sink) writes to the file named by
+// CUML_DEBUG_LOG_FILE, but only flushes that file's buffer on process exit; there is no API to
+// force a flush mid-process. Run the fit in a child process (re-exec of this same test binary) so
+// the parent can read a fully flushed log after the child exits.
+const DEBUG_LOG_CHILD_ENV: &str = "CUML_LOGISTIC_DEBUG_LOG_CHILD";
+
+#[test]
+fn logistic_regression_fit_does_not_enable_debug_logging() {
+    if std::env::var_os(DEBUG_LOG_CHILD_ENV).is_some() {
+        run_logistic_fit_for_debug_log_test();
+        return;
+    }
+
+    let log_path = std::env::temp_dir().join(format!("cuml-logistic-debug-log-{}.log", std::process::id()));
+    let exe = std::env::current_exe().expect("test binary path");
+    let output = std::process::Command::new(&exe)
+        .args(["logistic_regression_fit_does_not_enable_debug_logging", "--exact"])
+        .env(DEBUG_LOG_CHILD_ENV, "1")
+        .env("CUML_DEBUG_LOG_FILE", &log_path)
+        .output()
+        .expect("spawn logistic fit child process");
+    assert!(
+        output.status.success(),
+        "child logistic fit process failed: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let log = std::fs::read_to_string(&log_path).expect("QN solver wrote the cuML debug log file");
+    let _ = std::fs::remove_file(&log_path);
+    // Pattern is "[%6t][%H:%M:%S:%f][%-6l] %v" (see cuml/common/logger.hpp default_pattern), so a
+    // debug or trace line contains "[debug ]" or "[trace ]" respectively.
+    assert!(!log.contains("[debug "), "QN solver logged at debug level:\n{log}");
+    assert!(!log.contains("[trace "), "QN solver logged at trace level:\n{log}");
+}
+
+fn run_logistic_fit_for_debug_log_test() {
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
+    let features = [-4.0_f32, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0];
+    let column = runtime.column_from_slice(&features).expect("features");
+    let packed = runtime.pack_columns(&[&column], DenseMatrixLayout::ColumnMajor).expect("matrix");
+    let packed = packed.validate().expect("finite features");
+    let input = DeviceMatrix::from_validated(&packed).expect("matrix view");
+    let labels = runtime.series(&[0_i32, 0, 0, 0, 1, 1, 1, 1]).expect("labels");
+    LogisticRegressionModel::fit(
+        &resources,
+        &input,
+        &labels,
+        LogisticRegressionParams { max_iter: 20, ..Default::default() },
+    )
+    .expect("logistic fit");
+}

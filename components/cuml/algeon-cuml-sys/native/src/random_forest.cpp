@@ -192,7 +192,7 @@ extern "C" cuml_status_t cuml_rf_classifier_fit(
     fit_with_sync(fit_handle, streams, [&] {
       ML::fit(fit_handle, forest.get(), const_cast<float*>(input), rows, columns,
               const_cast<int32_t*>(labels), n_classes, params,
-              rapids_logger::level_enum::warn, nullptr, nullptr, input_row_major != 0);
+              cuml_native_log_level, nullptr, nullptr, input_row_major != 0);
     });
     auto result = std::make_unique<cuml_rf_forest>();
     result->type = cuml_rf_forest::kind::classifier;
@@ -225,7 +225,7 @@ extern "C" cuml_status_t cuml_rf_regressor_fit(
     raft::handle_t fit_handle{base};
     fit_with_sync(fit_handle, streams, [&] {
       ML::fit(fit_handle, forest.get(), const_cast<float*>(input), rows, columns,
-              const_cast<float*>(labels), params, rapids_logger::level_enum::warn,
+              const_cast<float*>(labels), params, cuml_native_log_level,
               nullptr, nullptr, input_row_major != 0);
     });
     auto result = std::make_unique<cuml_rf_forest>();
