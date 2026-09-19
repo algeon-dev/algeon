@@ -92,6 +92,10 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
 }
 
 const TEST_RESERVATION_LIMIT_BYTES: usize = 1 << 30;
+// Its float32 squared norm rounds to exactly 1.0, the norm of `[1.0, 0.0]`, while the true squared
+// L2 distance between the two is about 3.99987e-4 (AR-009).
+const NEAR_UNIT_ROW: [f32; 2] = [0.999_800_006_666_577_8_f64 as f32, 0.019_998_666_693_333_08_f64 as f32];
+const NEAR_UNIT_SQUARED_L2: f32 = 3.999_87e-4;
 static NEXT_RESERVATION_ID: AtomicUsize = AtomicUsize::new(0xC0_0000);
 
 struct CoveredCuvsResources {
@@ -501,6 +505,25 @@ fn brute_force_search_writes_caller_owned_device_buffers() {
 }
 
 #[test]
+fn brute_force_ranks_equal_norm_near_unit_rows_by_distance() {
+    let (runtime, resources, _reservation) = resources();
+    let dataset = DeviceBuffer::from_slice(&resources, &[NEAR_UNIT_ROW[0], NEAR_UNIT_ROW[1], 1.0, 0.0]).unwrap();
+    let dataset = dataset.as_validated_matrix(&resources, 2, 2).unwrap();
+    let query = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.0]).unwrap();
+    let query = query.as_validated_matrix(&resources, 1, 2).unwrap();
+    let index = BruteForceIndex::build(&resources, &dataset, DistanceMetric::L2Expanded).unwrap();
+    let mut neighbors = DeviceBuffer::<i64>::new(&resources, 2).unwrap();
+    let mut distances = DeviceBuffer::<f32>::new(&resources, 2).unwrap();
+    index.search_into(&query, 2, &mut neighbors, &mut distances).unwrap();
+    index.close().unwrap();
+
+    let distances = f32_to_host(&runtime, distances);
+    assert_eq!(i64_to_host(&runtime, neighbors), [1, 0], "distances {distances:?}");
+    assert_eq!(distances[0], 0.0);
+    assert!((distances[1] - NEAR_UNIT_SQUARED_L2).abs() < 1e-6, "distances {distances:?}");
+}
+
+#[test]
 fn offset_dataset_is_used_by_brute_force_and_select_k() {
     let (runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(&resources, &[100.0_f32, 101.0, 0.0, 2.0, 1.0, 3.0, 5.0, 7.0])
@@ -890,6 +913,21 @@ fn pairwise_metrics_match_host_oracles_and_reject_foreign_bindings() {
     let error = pairwise_distance_into(&other_resources, &x_tensor, &y_tensor, DistanceMetric::L2Expanded, &mut out)
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn pairwise_l2_expanded_keeps_equal_norm_near_unit_distance() {
+    let (runtime, resources, _reservation) = resources();
+    let x = DeviceBuffer::from_slice(&resources, &[NEAR_UNIT_ROW[0], NEAR_UNIT_ROW[1], 1.0, 0.0]).unwrap();
+    let x = x.as_validated_matrix(&resources, 2, 2).unwrap();
+    let y = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.0]).unwrap();
+    let y = y.as_validated_matrix(&resources, 1, 2).unwrap();
+    let mut out = DeviceBuffer::<f32>::new(&resources, 2).unwrap();
+    pairwise_distance_into(&resources, &x, &y, DistanceMetric::L2Expanded, &mut out).unwrap();
+
+    let out = f32_to_host(&runtime, out);
+    assert!((out[0] - NEAR_UNIT_SQUARED_L2).abs() < 1e-6, "distances {out:?}");
+    assert_eq!(out[1], 0.0, "distances {out:?}");
 }
 
 #[test]
