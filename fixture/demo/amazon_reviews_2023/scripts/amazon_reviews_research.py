@@ -13,7 +13,7 @@ import pyarrow.flight as flight
 import pyarrow.parquet as pq
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 REPORT = ROOT / "docs/research/amazon_reviews_2023"
 DATA = ROOT / "target/amazon-reviews-research"
 

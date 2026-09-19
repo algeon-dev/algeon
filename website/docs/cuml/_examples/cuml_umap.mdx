@@ -1,0 +1,40 @@
+import ReviewMap from '@site/src/components/amazon/ReviewMap';
+import reviewMap from '@site/src/data/amazonReviewMap.json';
+
+This example uses the [Amazon Reviews demo dataset](../../cuvs/demo-dataset.mdx).
+
+### Which nearby reviews should a support analyst read together?
+
+A review list sorted by date separates reports that use different words for
+a similar problem. This query selects 9,967 sampled low-rating headphone
+reviews, projects their 1,024-dimensional BGE-M3 vectors into two dimensions,
+and joins the coordinates back to product names and review text.
+
+The cohort is defined inside the algorithm's input subquery. Removing
+accessories or changing the sample changes the fitted map. The displayed
+snapshot lets a reader inspect the original text at a point before treating
+its neighborhood as a useful review group.
+
+<ReviewMap data={reviewMap} />
+
+```sql
+SELECT u.id, u.dim_0, u.dim_1, r.product_id,
+       p.title AS product_title, EXTRACT(YEAR FROM r.review_time) AS review_year,
+       r.rating, r.title, r.embedding_text
+FROM cuml_umap(
+  input => (SELECT v.id, v.vector
+    FROM semantic_reviews_vectors v
+    JOIN semantic_reviews_text r ON r.id = v.id
+    WHERE r.category_l3 = 'Headphones & Earbuds' AND v.sample_rank < 100000
+    ORDER BY v.id),
+  n_components => 2, n_neighbors => 30, min_dist => 0.1, random_state => 42) u
+JOIN semantic_reviews_text r ON r.id = u.id
+JOIN products p ON p.product_id = r.product_id
+ORDER BY u.id;
+```
+
+UMAP coordinates are a view for exploration. Long distances on this map
+have no calibrated business meaning, and compact regions do not establish
+product failure categories. Review year is a display color, not an input
+feature. Changing the filters in the visualization highlights saved points;
+it does not rerun the query.

@@ -4,6 +4,29 @@ A relational demo dataset: 43.9M product reviews joined to a 1.6M-row product
 catalog on one key. It exercises time-range pruning, large hash joins, and
 high-cardinality group-bys on the native GPU path.
 
+## Semantic SQL examples
+
+The [Amazon demo walkthrough](../../../website/docs/cuvs/demo-dataset.mdx)
+uses this fixture for catalog search constrained by review history, changes
+in a product's review topics, and a UMAP view linked to original reviews.
+The [Top-K example](../../../website/docs/cuvs/_examples/cuvs_top_k.mdx)
+derives keyword-mention rates directly from the raw tables and composes
+KMeans with Top-K in one statement.
+
+`scripts/amazon_reviews_semantic.py --profile bge-m3` prepares 1,010,000
+product vectors and 1,000,000 review vectors with `BAAI/bge-m3` revision
+`5617a9f61b028005a4858fdac845db406aefb181`. It uses complete fields after HTML
+normalization, subject to the model's 8,192-token limit, and stores normalized
+1,024-dimensional Float32 vectors. Model inference is an external preparation
+step; SQL consumes the resulting Parquet relations.
+
+The walkthrough contains the environment, preparation commands and server
+configuration. Generated matrices and results live under
+`target/amazon-reviews-bge-m3/`; SQL, checksums and research measurements live
+under `docs/research/amazon_reviews_2023/semantic/bge-m3/`. Both directories
+are ignored by Git. The default `minilm` profile retains the original
+384-dimensional experiments in their existing directories.
+
 ## Source
 
 [McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023),

@@ -2,13 +2,8 @@ use std::sync::Arc;
 
 use super::owned::DataFrame;
 use crate::{
-    core::{
-        column::{Column, ColumnView},
-        error::Result,
-        row_range,
-    },
+    core::{column::ColumnView, error::Result, row_range},
     frame::series::Series,
-    hash::fast_index_map_with_capacity,
     internal::resolve::missing_column_error,
     ops::{self, copying, filter},
     runtime::{
@@ -220,9 +215,6 @@ impl DataFrame {
         )?;
         let output_domain = Arc::clone(execution.output_domain());
 
-        if indices.is_empty()? {
-            return self.empty_with_same_schema_in_domain(output_domain);
-        }
         let tv = self.build_table_view()?;
         let result_table = copying::gather_impl(
             &tv,
@@ -318,10 +310,6 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        if len == 0 {
-            return self.empty_with_same_schema_in_domain(output_domain);
-        }
-
         let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
         let map_view = map.view()?;
         let execution = ResolvedExecution::with_output_domain(
@@ -350,19 +338,6 @@ impl DataFrame {
     }
 
     pub(crate) fn empty_with_same_schema_in_domain(&self, domain: Arc<ExecutionDomain>) -> Result<Self> {
-        let mut new_columns = fast_index_map_with_capacity(self.columns.len());
-        for (name, col) in &self.columns {
-            let cv = col.view()?;
-            let dtype = cv.data_type()?;
-            new_columns.insert(
-                name.clone(),
-                Arc::new(Column::empty_with_dtype_in_domain(
-                    dtype,
-                    Arc::clone(&domain),
-                    "dataframe::empty_with_same_schema_in_domain",
-                )?),
-            );
-        }
-        Ok(Self { columns: new_columns, row_count: 0, domain })
+        self.gather_range_impl(0, 0, domain, "dataframe::empty_with_same_schema_in_domain")
     }
 }

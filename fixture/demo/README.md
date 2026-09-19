@@ -9,7 +9,7 @@ benchmark generators (`fixture/tpc-h/`, `fixture/tpc-ds/`, `fixture/clickbench/`
 | Dataset | Upstream | Parquet tables | Converter | Consumers |
 | :--- | :--- | :--- | :--- | :--- |
 | [`citation_network/`](citation_network/README.md) | DBLP / AMiner V12 JSON, 12 GB | 2 edge layouts (45.6M edges), papers, authors, fields of study; 4.6 GB | `scripts/prepare.py` | cuGraph SQL docs and examples, embedded-backend example, `crates/workloads` graph discovery |
-| [`amazon_reviews_2023/`](amazon_reviews_2023/README.md) | Amazon Reviews 2023 Electronics JSONL, 27 GB | `reviews` (43.9M), `products` (1.6M); 11 GB | `scripts/prepare.py` | relational join and aggregation demos |
+| [`amazon_reviews_2023/`](amazon_reviews_2023/README.md) | Amazon Reviews 2023 Electronics JSONL, 27 GB | `reviews` (43.9M), `products` (1.6M); 11 GB | `scripts/prepare.py` | semantic catalog search, review clustering and UMAP; relational joins and aggregation |
 | [`ember2024/`](ember2024/README.md) | EMBER2024 archives and weekly JSONL, 24 GB compressed | `test`, `challenge`, `train` feature splits; 5.2 GB | `scripts/prepare.py` via `prepare.sh` | `cuml_forest_predict` demos, `forest_predict` bench |
 | [`kuairand/`](kuairand/README.md) | KuaiRand recommendation logs (Pure / 1K / 27K), 194 MB to 46 GB | `interactions` (2.6M to 323M), `users` (27K), `videos` (7.6K to 32M), `video_stats`; 81 MB to 40 GB | `scripts/prepare.py` | sequential recommendation, unbiased offline evaluation, multi-table join and group-by demos |
 | [`merrec/`](merrec/README.md) | MerRec (Mercari C2C recommendation), 6 monthly partitions | `events`, `items`; 80M items, 1B events | `scripts/prepare.py` | sequential recommendation, C2C e-commerce interaction graph, relational join and aggregation demos |

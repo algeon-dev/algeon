@@ -3,8 +3,11 @@
 
 import argparse
 import base64
+from datetime import datetime, timezone
+import gzip
 import hashlib
 import html
+from html.parser import HTMLParser
 import importlib.metadata
 import json
 from pathlib import Path
@@ -17,13 +20,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 DATA = ROOT / "target/amazon-reviews-semantic"
 REPORT = ROOT / "docs/research/amazon_reviews_2023/semantic"
 MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 DIMENSIONS = 384
 FEATURES = [f"e{i:03d}" for i in range(DIMENSIONS)]
+PROFILE = "minilm"
 INTENTS = [
     "Wireless noise cancelling over ear headphones for long airplane flights",
     "A USB C docking station with two HDMI monitors and laptop charging",
@@ -38,6 +42,51 @@ INTENTS = [
     "A 27 inch computer monitor with a high refresh rate for gaming",
     "A webcam with a built in microphone for video meetings on a laptop",
 ]
+
+
+class PlainText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden += 1
+        elif tag in ("br", "p", "div", "li"):
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self.hidden = max(0, self.hidden - 1)
+        elif tag in ("p", "div", "li"):
+            self.parts.append(" ")
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def clean_text(value):
+    parser = PlainText()
+    parser.feed(value)
+    return " ".join(html.unescape("".join(parser.parts)).split())
+
+
+def configure(profile):
+    global PROFILE, DATA, REPORT, MODEL, MODEL_REVISION, DIMENSIONS, FEATURES, INTENTS
+    PROFILE = profile
+    if profile == "bge-m3":
+        DATA = ROOT / "target/amazon-reviews-bge-m3"
+        REPORT = ROOT / "docs/research/amazon_reviews_2023/semantic/bge-m3"
+        MODEL = "BAAI/bge-m3"
+        MODEL_REVISION = "5617a9f61b028005a4858fdac845db406aefb181"
+        DIMENSIONS = 1024
+        FEATURES = [f"e{i:03d}" for i in range(DIMENSIONS)]
+        INTENTS = INTENTS[:12] + [
+            "適合長途飛行的無線主動降噪耳罩式耳機",
+            "Auriculares inalámbricos de diadema con cancelación de ruido para vuelos largos",
+        ]
 
 
 def save_json(path, value):
@@ -75,9 +124,21 @@ ORDER BY hash(r.review_id), r.review_id LIMIT 1000000
     }
     records = []
     for name, sql in statements.items():
+        if PROFILE == "bge-m3":
+            sql = re.sub(r"left\((coalesce\([^)]*\)|[\w.]+),\d+\)", r"\1", sql)
         started = time.perf_counter()
         path = DATA / f"{name}_text.parquet"
-        connection.execute(f"COPY ({sql}) TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+        if PROFILE == "bge-m3":
+            reader = connection.execute(sql).to_arrow_reader(65536)
+            with pq.ParquetWriter(path, reader.schema, compression="zstd") as writer:
+                for batch in reader:
+                    table = pa.Table.from_batches([batch])
+                    index = table.schema.get_field_index("embedding_text")
+                    texts = [clean_text(text) for text in table["embedding_text"].to_pylist()]
+                    table = table.set_column(index, "embedding_text", pa.array(texts))
+                    writer.write_table(table)
+        else:
+            connection.execute(f"COPY ({sql}) TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
         record = {"name": name, "sql": sql, "elapsed_s": time.perf_counter()-started,
                   "rows": pq.ParquetFile(path).metadata.num_rows, "bytes": path.stat().st_size}
         records.append(record)
@@ -94,12 +155,16 @@ def embed(names):
     torch.set_num_threads(8)
     revision = MODEL_REVISION
     started = time.perf_counter()
-    model = SentenceTransformer(MODEL, revision=revision, device="cuda")
+    model = SentenceTransformer(MODEL, revision=revision, device="cuda",
+                                model_kwargs={"attn_implementation": "sdpa"})
     model.half()
     provenance = {"model": MODEL, "revision": revision, "dimensions": DIMENSIONS,
                   "max_sequence_length": model.max_seq_length, "inference_dtype": "float16",
                   "stored_dtype": "float32", "normalization": "L2 in float32 after encoding",
+                  "batch_size": 32 if PROFILE == "bge-m3" else 512,
                   "model_load_s": time.perf_counter()-started,
+                  "text_preparation": "full fields, HTML removed, entities decoded, whitespace collapsed"
+                  if PROFILE == "bge-m3" else "legacy character truncation, HTML retained",
                   "packages": {p: importlib.metadata.version(p) for p in
                                ("torch", "sentence-transformers", "transformers", "numpy", "pyarrow", "duckdb", "faiss-cpu")},
                   "device": torch.cuda.get_device_name(), "runs": []}
@@ -112,16 +177,18 @@ def embed(names):
         started = time.perf_counter()
         offset = 0
         torch.cuda.reset_peak_memory_stats()
+        vector_type = pa.list_(pa.field("element", pa.float32(), nullable=False), DIMENSIONS)
         schema = pa.schema([pa.field("id", pa.int64(), nullable=False),
                             pa.field("sample_rank", pa.int32(), nullable=False)] +
-                           [pa.field(column, pa.float32(), nullable=False) for column in FEATURES])
+                           ([pa.field("vector", vector_type, nullable=False)] if PROFILE == "bge-m3" else
+                            [pa.field(column, pa.float32(), nullable=False) for column in FEATURES]))
         digest = hashlib.sha256()
         with pq.ParquetWriter(DATA / f"{name}_vectors.parquet", schema, compression="snappy",
                               use_dictionary=False) as writer:
-            for batch in parquet.iter_batches(batch_size=8192):
+            for batch in parquet.iter_batches(batch_size=4096 if PROFILE == "bge-m3" else 8192):
                 table = pa.Table.from_batches([batch])
                 texts = table["embedding_text"].to_pylist()
-                values = model.encode(texts, batch_size=512, show_progress_bar=False,
+                values = model.encode(texts, batch_size=32 if PROFILE == "bge-m3" else 512, show_progress_bar=False,
                                       convert_to_numpy=True).astype(np.float32)
                 values /= np.linalg.norm(values, axis=1, keepdims=True)
                 assert values.shape == (len(texts), DIMENSIONS) and np.isfinite(values).all()
@@ -130,7 +197,10 @@ def embed(names):
                 rank = (table["sample_rank"] if "sample_rank" in table.column_names else
                         pa.array(np.arange(offset, offset+len(values), dtype=np.int32)))
                 arrays = [table["id"].cast(pa.int64()), rank]
-                arrays += [pa.array(values[:, i]) for i in range(DIMENSIONS)]
+                if PROFILE == "bge-m3":
+                    arrays.append(pa.FixedSizeListArray.from_arrays(pa.array(values.ravel()), type=vector_type))
+                else:
+                    arrays += [pa.array(values[:, i]) for i in range(DIMENSIONS)]
                 writer.write_table(pa.Table.from_arrays(arrays, schema=schema))
                 offset += len(values)
                 print(json.dumps({"embedding": name, "completed": offset, "total": count,
@@ -146,6 +216,8 @@ def embed(names):
 
 
 def feature_projection(prefix=""):
+    if PROFILE == "bge-m3":
+        return f"{prefix}vector"
     return ", ".join(f"COALESCE({prefix}{column}, CAST(0 AS REAL)) AS {column}" for column in FEATURES)
 
 
@@ -183,7 +255,6 @@ def generate_sql():
                        "FROM semantic_products_vectors v JOIN semantic_products_text p ON v.id=p.id "
                        "WHERE v.sample_rank<1000000 AND p.category_l3='Headphones & Earbuds' "
                        "AND p.price BETWEEN 20 AND 100 AND p.rating_number>=100 AND p.average_rating>=4;")
-    (directory / "00_register.sql").write_text("\n\n".join(definitions) + "\n")
     queries = {}
     for size in (100000, 1000000):
         for count in (1, 1000, 10000):
@@ -293,6 +364,22 @@ ORDER BY share_change DESC, issue_2022 DESC LIMIT 30"""
     input => (SELECT * FROM headphone_reviews_{size}),
     n_components => 5, n_neighbors => 30, min_dist => 0.0, random_state => 42)),
   min_cluster_size => 50, min_samples => 10)"""
+    if PROFILE == "bge-m3":
+        definitions += [
+            f"CREATE EXTERNAL TABLE products STORED AS PARQUET LOCATION '{ROOT / 'fixture/demo/amazon_reviews_2023/parquet/products.parquet'}';",
+            f"CREATE EXTERNAL TABLE reviews STORED AS PARQUET LOCATION '{ROOT / 'fixture/demo/amazon_reviews_2023/parquet/reviews.parquet'}';",
+        ]
+        for name, sql in queries.items():
+            sql = sql.replace("pq_dim => 48", "pq_dim => 64")
+            if any(function in sql for function in ("cuvs_kmeans(", "cuvs_pca(", "cuml_umap(", "cuml_tsvd(")):
+                sql = re.sub(r"(SELECT \* FROM (?:review_corpus_\d+|headphone_reviews(?:_\d+)?))\)",
+                             r"\1 ORDER BY id)", sql)
+                sql = sql.replace("n_init => 1, max_iter => 30", "n_init => 5, max_iter => 100")
+                sql = sql.replace("n_components => 32)),", "n_components => 32) ORDER BY id),")
+                sql = sql.replace("random_state => 42)),", "random_state => 42) ORDER BY id),")
+            queries[name] = sql
+        queries.update(demo_queries())
+    (directory / "00_register.sql").write_text("\n\n".join(definitions) + "\n")
     for name, sql in queries.items():
         (directory / f"{name}.sql").write_text(sql + "\n")
     (directory / "01_register_topics.sql").write_text(
@@ -301,6 +388,114 @@ ORDER BY share_change DESC, issue_2022 DESC LIMIT 30"""
         "CREATE EXTERNAL TABLE semantic_full_products STORED AS PARQUET LOCATION '"
         + str(ROOT / "fixture/demo/amazon_reviews_2023/parquet/products.parquet") + "';\n")
     print(json.dumps({"queries": len(queries), "views_and_tables": len(definitions)}))
+
+
+def demo_queries():
+    queries = {
+        "catalog_batch": """SELECT n.query_id, q.title AS source_title, n.rank,
+       n.neighbor_id, p.title AS candidate_title,
+       1.0 - n.distance / 2.0 AS cosine_similarity
+FROM cuvs_brute_force_knn(
+  dataset => (SELECT * FROM product_corpus_1000000),
+  queries => (SELECT * FROM product_queries_10000),
+  k => 10, metric => 'l2_expanded') n
+JOIN semantic_products_text q ON q.id = n.query_id
+JOIN semantic_products_text p ON p.id = n.neighbor_id
+ORDER BY n.query_id, n.rank""",
+        "headphone_emerging": """WITH assignments AS (
+  SELECT id, cluster_id
+  FROM cuvs_kmeans(
+    input => (SELECT v.id, v.vector
+      FROM semantic_reviews_vectors v
+      JOIN semantic_reviews_text r ON r.id = v.id
+      WHERE r.category_l3 = 'Headphones & Earbuds'
+      ORDER BY v.id),
+    n_clusters => 24, n_init => 5, max_iter => 100, tol => 0.0001)
+), issues AS (
+  SELECT r.product_id, a.cluster_id,
+         SUM(CASE WHEN EXTRACT(YEAR FROM r.review_time) = 2021 THEN 1 ELSE 0 END) AS n2021,
+         SUM(CASE WHEN EXTRACT(YEAR FROM r.review_time) = 2022 THEN 1 ELSE 0 END) AS n2022,
+         MIN(CASE WHEN EXTRACT(YEAR FROM r.review_time) = 2022 THEN r.id END) AS example_id
+  FROM assignments a JOIN semantic_reviews_text r ON r.id = a.id
+  GROUP BY r.product_id, a.cluster_id
+), totals AS (
+  SELECT *, SUM(n2021) OVER (PARTITION BY product_id) AS total2021,
+            SUM(n2022) OVER (PARTITION BY product_id) AS total2022
+  FROM issues
+)
+SELECT p.product_id, p.title, t.cluster_id,
+       t.n2021, t.total2021, t.n2022, t.total2022,
+       100.0 * t.n2021 / t.total2021 AS share2021_pct,
+       100.0 * t.n2022 / t.total2022 AS share2022_pct,
+       100.0 * t.n2022 / t.total2022 - 100.0 * t.n2021 / t.total2021 AS change_pp,
+       t.example_id, r.embedding_text AS example_review
+FROM totals t
+JOIN products p ON p.product_id = t.product_id
+JOIN semantic_reviews_text r ON r.id = t.example_id
+WHERE t.total2021 >= 30 AND t.total2022 >= 30 AND t.n2022 >= 10
+  AND 1.0 * t.n2022 / t.total2022 - 1.0 * t.n2021 / t.total2021 > 0.10
+ORDER BY change_pp DESC, p.product_id, t.cluster_id
+LIMIT 10""",
+        "travel_shortlist": """WITH review_history AS (
+  SELECT product_id, COUNT(*) AS reviews_2022,
+         AVG(CASE WHEN rating <= 2 THEN 1.0 ELSE 0.0 END) AS low_rating_share
+  FROM reviews
+  WHERE review_time >= TIMESTAMP '2022-01-01'
+    AND review_time < TIMESTAMP '2023-01-01' AND verified_purchase
+  GROUP BY product_id
+), eligible AS (
+  SELECT v.id, v.vector
+  FROM semantic_products_vectors v
+  JOIN products p ON p.product_id = v.id
+  JOIN review_history h ON h.product_id = v.id
+  WHERE v.sample_rank < 1000000
+    AND p.category_l3 = 'Headphones & Earbuds'
+    AND p.price BETWEEN 20 AND 150
+    AND h.reviews_2022 >= 100 AND h.low_rating_share <= 0.20
+)
+SELECT n.rank, p.product_id, p.title, p.price,
+       h.reviews_2022, h.low_rating_share,
+       1.0 - n.distance / 2.0 AS cosine_similarity
+FROM cuvs_brute_force_knn(
+  dataset => (SELECT id, vector FROM eligible),
+  queries => (SELECT id, vector FROM intent_queries WHERE id = 0),
+  k => 10, metric => 'l2_expanded') n
+JOIN products p ON p.product_id = n.neighbor_id
+JOIN review_history h ON h.product_id = p.product_id
+ORDER BY n.rank""",
+        "headphone_pca_topics": """SELECT m.cluster_id,
+       EXTRACT(YEAR FROM r.review_time) AS review_year,
+       EXTRACT(MONTH FROM r.review_time) AS review_month,
+       COUNT(*) AS negative_reviews, COUNT(DISTINCT r.product_id) AS products
+FROM cuvs_kmeans(
+  input => (SELECT id, """ + ", ".join(f"pc_{i}" for i in range(32)) + """
+    FROM cuvs_pca(
+      input => (SELECT v.id, v.vector
+        FROM semantic_reviews_vectors v
+        JOIN semantic_reviews_text r ON r.id = v.id
+        WHERE r.category_l3 = 'Headphones & Earbuds'
+        ORDER BY v.id), n_components => 32)
+    ORDER BY id),
+  n_clusters => 24, n_init => 5, max_iter => 100, tol => 0.0001) m
+JOIN semantic_reviews_text r ON r.id = m.id
+GROUP BY m.cluster_id, EXTRACT(YEAR FROM r.review_time), EXTRACT(MONTH FROM r.review_time)
+ORDER BY m.cluster_id, review_year, review_month""",
+        "headphone_umap2": """SELECT u.id, u.dim_0, u.dim_1, r.product_id,
+       p.title AS product_title, EXTRACT(YEAR FROM r.review_time) AS review_year,
+       r.rating, r.title, r.embedding_text
+FROM cuml_umap(
+  input => (SELECT v.id, v.vector
+    FROM semantic_reviews_vectors v
+    JOIN semantic_reviews_text r ON r.id = v.id
+    WHERE r.category_l3 = 'Headphones & Earbuds' AND v.sample_rank < 100000
+    ORDER BY v.id),
+  n_components => 2, n_neighbors => 30, min_dist => 0.1, random_state => 42) u
+JOIN semantic_reviews_text r ON r.id = u.id
+JOIN products p ON p.product_id = r.product_id
+ORDER BY u.id""",
+    }
+    queries["inline_kmeans_topk"] = (Path(__file__).with_name("sql") / "inline_kmeans_topk.sql").read_text()
+    return queries
 
 
 def run_queries(names, register=False, repeats=1):
@@ -327,18 +522,20 @@ def run_queries(names, register=False, repeats=1):
     for name in names:
         sql = (REPORT / "sql" / f"{name}.sql").read_text()
         for repeat in range(repeats):
-            client.run(name + f"_r{repeat+1}", sql, explain=False)
+            record = client.run(name + f"_r{repeat+1}", sql, explain=False)
+            if record["status"] != "ok":
+                raise RuntimeError(f"Query failed: {record['name']}: {record['error']}")
 
 
-def cpu_search(repeats):
+def cpu_search(repeats, sizes, counts):
     import faiss
     from threadpoolctl import threadpool_info
 
     faiss.omp_set_num_threads(16)
     matrix = np.load(DATA / "products.npy", mmap_mode="r")
     records = []
-    for size in (100000, 1000000):
-        for count in (1, 1000, 10000):
+    for size in sizes:
+        for count in counts:
             for repeat in range(repeats):
                 started = time.perf_counter()
                 dataset = np.array(matrix[:size], copy=True)
@@ -438,11 +635,151 @@ def compact_vectors():
     print(json.dumps(records), flush=True)
 
 
+def verify_inputs():
+    provenance = json.loads((REPORT / "embedding_provenance.json").read_text())
+    recorded = {run["name"]: run for run in provenance["runs"]}
+    results = {}
+    for name in ("products", "reviews", "intents"):
+        source = pq.read_table(DATA / f"{name}_text.parquet", columns=["id"])["id"].to_numpy()
+        matrix = np.load(DATA / f"{name}.npy", mmap_mode="r")
+        parquet = pq.ParquetFile(DATA / f"{name}_vectors_compact.parquet")
+        digest = hashlib.sha256()
+        offset = 0
+        norm_error = 0.0
+        for batch in parquet.iter_batches(batch_size=8192):
+            table = pa.Table.from_batches([batch])
+            assert all(column.null_count == 0 for column in table.columns)
+            if PROFILE == "bge-m3":
+                vector = table["vector"].combine_chunks()
+                assert vector.values.null_count == 0
+                values = vector.values.to_numpy().reshape(len(table), DIMENSIONS)
+            else:
+                values = np.column_stack([table[column].to_numpy() for column in FEATURES])
+            assert np.isfinite(values).all()
+            assert np.array_equal(table["id"].to_numpy(), source[offset:offset+len(table)])
+            assert np.array_equal(table["sample_rank"].to_numpy(), np.arange(offset, offset+len(table)))
+            assert np.array_equal(values, matrix[offset:offset+len(table)])
+            norm_error = max(norm_error, float(np.max(np.abs(np.linalg.norm(values, axis=1)-1))))
+            digest.update(values.tobytes())
+            offset += len(table)
+        assert offset == len(source) == len(matrix)
+        assert len(np.unique(source)) == len(source)
+        assert norm_error < 1e-5
+        assert digest.hexdigest() == recorded[name]["matrix_sha256"]
+        results[name] = {"rows": offset, "dimensions": DIMENSIONS, "unique_ids": True,
+                         "parquet_matches_npy_and_source_order": True,
+                         "finite_and_non_null": True, "max_unit_norm_error": norm_error,
+                         "matrix_sha256": digest.hexdigest(), "row_groups": parquet.num_row_groups}
+    save_json(REPORT / "input_verification.json", results)
+    print(json.dumps(results), flush=True)
+
+
+def export_review_map():
+    table = pq.read_table(DATA / "results/headphone_umap2_r1.parquet")
+    # PyArrow 25 lacks take/sort kernels for StringView; select from exported Python rows.
+    rows = sorted(table.to_pylist(), key=lambda row: row["id"])
+    count = min(1200, len(table))
+    rows = [rows[position] for position in np.linspace(0, len(rows)-1, count, dtype=np.int64)]
+    points = [{"id": row["id"], "x": row["dim_0"], "y": row["dim_1"],
+               "year": int(row["review_year"]), "rating": row["rating"],
+               "product": row["product_title"], "text": row["embedding_text"]} for row in rows]
+    record = json.loads((REPORT / "results/headphone_umap2_r1.json").read_text())
+    # The capture date comes from the saved query artifact, including when re-exported later.
+    captured = datetime.fromtimestamp((REPORT / "results/headphone_umap2_r1.json").stat().st_mtime,
+                                      tz=timezone.utc).date().isoformat()
+    output = ROOT / "website/src/data/amazonReviewMap.json"
+    save_json(output, {"fittedRows": len(table), "captured": captured, "points": points})
+    save_json(REPORT / "website_export.json", {"path": str(output.relative_to(ROOT)),
+              "query_id": record["query_id"], "sql": record["sql"], "displayed_rows": count,
+              "fitted_rows": len(table), "sampling": "evenly spaced positions after ORDER BY id",
+              "sha256": hashlib.sha256(output.read_bytes()).hexdigest()})
+    print(json.dumps({"website_map": str(output), "displayed_rows": count, "fitted_rows": len(table)}))
+
+
 def index_positions(ids, keys):
     order = np.argsort(ids)
     positions = order[np.searchsorted(ids[order], keys)]
     assert np.array_equal(ids[positions], keys)
     return positions
+
+
+def verify_demo_results(timings):
+    from sklearn.manifold import trustworthiness
+
+    connection = duckdb.connect()
+    connection.execute("SET threads=8")
+    products_path = ROOT / "fixture/demo/amazon_reviews_2023/parquet/products.parquet"
+    reviews_path = ROOT / "fixture/demo/amazon_reviews_2023/parquet/reviews.parquet"
+    product_text = DATA / "products_text.parquet"
+    review_text = DATA / "reviews_text.parquet"
+    results = {}
+    if "travel_shortlist" in timings:
+        eligible = connection.execute(f"""WITH history AS (
+          SELECT product_id, count(*) AS n,
+                 sum(CAST(rating <= 2 AS BIGINT))::DOUBLE / count(*) AS low
+          FROM '{reviews_path}'
+          WHERE year(review_time) = 2022 AND verified_purchase = true GROUP BY product_id)
+        SELECT p.product_id, h.n, h.low, p.price, s.sample_rank
+        FROM '{products_path}' p JOIN history h USING (product_id)
+        JOIN '{product_text}' s ON s.id = p.product_id
+        WHERE s.sample_rank < 1000000 AND p.category_l3 = 'Headphones & Earbuds'
+          AND p.price >= 20 AND p.price <= 150 AND h.n >= 100 AND h.low <= 0.2""").to_arrow_table()
+        product_vectors = np.load(DATA / "products.npy", mmap_mode="r")
+        query = np.load(DATA / "intents.npy")[0].astype(np.float64)
+        values = product_vectors[eligible["sample_rank"].to_numpy()].astype(np.float64)
+        distance = np.sum((values-query)**2, axis=1)
+        ordered = np.argsort(distance)[:10]
+        expected = eligible.take(ordered).to_pylist()
+        actual = pq.read_table(DATA / "results/travel_shortlist_r1.parquet").to_pylist()
+        assert [row["product_id"] for row in actual] == [row["product_id"] for row in expected]
+        for row, reference, position in zip(actual, expected, ordered):
+            assert row["reviews_2022"] == reference["n"]
+            assert abs(row["low_rating_share"] - reference["low"]) < 1e-12
+            assert row["price"] == reference["price"]
+            assert abs(row["cosine_similarity"] - (1-distance[position]/2)) < 1e-5
+        results["travel_shortlist"] = {"eligible_products": len(eligible), "rows": len(actual),
+                                      "duckdb_history_and_float64_knn_match": True}
+    if "headphone_emerging" in timings:
+        totals = connection.execute(f"""SELECT product_id, year(review_time), count(*)
+            FROM '{review_text}' WHERE category_l3 = 'Headphones & Earbuds' GROUP BY 1,2""").fetchall()
+        totals = {(product, year): count for product, year, count in totals}
+        actual = pq.read_table(DATA / "results/headphone_emerging_r1.parquet").to_pylist()
+        ids = [row["example_id"] for row in actual]
+        source_rows = connection.execute(f"SELECT * FROM '{review_text}' WHERE id IN (SELECT unnest(?))",
+                                          [ids]).to_arrow_table().to_pylist()
+        source = {row["id"]: row for row in source_rows}
+        for row in actual:
+            assert row["total2021"] == totals[row["product_id"], 2021]
+            assert row["total2022"] == totals[row["product_id"], 2022]
+            assert 0 <= row["n2021"] <= row["total2021"]
+            assert 10 <= row["n2022"] <= row["total2022"]
+            change = 100 * row["n2022"] / row["total2022"] - 100 * row["n2021"] / row["total2021"]
+            assert abs(row["change_pp"]-change) < 1e-8
+            example = source[row["example_id"]]
+            assert example["product_id"] == row["product_id"] and example["review_time"].year == 2022
+            assert example["embedding_text"] == row["example_review"]
+        results["headphone_emerging"] = {"rows": len(actual), "duckdb_denominators_match": True,
+                                        "examples_match_original_rows": True}
+    if "headphone_umap2" in timings:
+        actual = pq.read_table(DATA / "results/headphone_umap2_r1.parquet")
+        source = connection.execute(f"""SELECT id, sample_rank FROM '{review_text}'
+            WHERE category_l3 = 'Headphones & Earbuds' AND sample_rank < 100000 ORDER BY id""").to_arrow_table()
+        assert np.array_equal(actual["id"].to_numpy(), source["id"].to_numpy())
+        coordinates = np.column_stack([actual["dim_0"].to_numpy(), actual["dim_1"].to_numpy()])
+        assert np.isfinite(coordinates).all()
+        sample = np.random.default_rng(42).choice(len(actual), min(1500, len(actual)), replace=False)
+        vectors = np.load(DATA / "reviews.npy", mmap_mode="r")[source["sample_rank"].to_numpy()[sample]]
+        score = trustworthiness(vectors, coordinates[sample], n_neighbors=15)
+        deltas = []
+        for repeat in range(2, len(timings["headphone_umap2"])+1):
+            other = pq.read_table(DATA / f"results/headphone_umap2_r{repeat}.parquet")
+            assert np.array_equal(other["id"].to_numpy(), actual["id"].to_numpy())
+            other_coordinates = np.column_stack([other["dim_0"].to_numpy(), other["dim_1"].to_numpy()])
+            deltas.append(float(np.max(np.abs(coordinates-other_coordinates))))
+        results["headphone_umap2"] = {"rows": len(actual), "cohort_ids_match": True,
+                                     "finite_coordinates": True, "trustworthiness_1500_at_15": float(score),
+                                     "repeat_max_coordinate_deltas": deltas}
+    return results
 
 
 def analyze():
@@ -459,6 +796,31 @@ def analyze():
                                   "max_s": max(r["elapsed_s"] for r in group),
                                   "rows": group[0].get("rows")}
                            for name, group in timings.items()}}
+    for name, group in timings.items():
+        observations = []
+        for record in group:
+            with gzip.open(REPORT / "results" / f"{record['name']}.stats.txt.gz", "rt") as source:
+                lines = source.read().splitlines()
+            position = lines.index("[execution]")
+            fields = dict(zip(lines[position+1].split("\t"), lines[position+2].split("\t")))
+            observation = {key: fields[key] for key in (
+                "query_id", "post_native_execution_path", "host_datafusion_boundary_count",
+                "device_ordinal", "query_grant_bytes", "max_task_observed_peak_bytes",
+                "gpu_resident_input_handoffs", "host_to_device_uploaded_bytes",
+                "device_to_host_materializations", "device_to_host_materialized_bytes",
+                "allocator_high_water_bytes")}
+            planning_position = lines.index("[planning]")
+            planning_header = lines[planning_position+1].split("\t")
+            reasons = set()
+            for line in lines[planning_position+2:]:
+                if not line or line.startswith("["):
+                    break
+                planning = dict(zip(planning_header, line.split("\t")))
+                if planning["reason_code"] != "none":
+                    reasons.add(planning["reason_code"])
+            observation["planning_reason_codes"] = sorted(reasons)
+            observations.append(observation)
+        summary["queries"][name]["observations"] = observations
     product_ids = pq.read_table(DATA / "products_text.parquet", columns=["id"])["id"].to_numpy()
     products = np.load(DATA / "products.npy", mmap_mode="r")
     summary["neighbors"] = {}
@@ -475,7 +837,8 @@ def analyze():
         actual_positions = index_positions(product_ids, actual_ids.reshape(-1)).reshape(count, 10)
         expected = reference["neighbors"][query_positions-1000000]
         recall = np.mean([len(set(a) & set(b))/10 for a, b in zip(actual_positions, expected)])
-        distances = np.sum((products[actual_positions] - products[query_positions, None])**2, axis=2)
+        distances = np.sum((products[actual_positions].astype(np.float64) -
+                            products[query_positions, None].astype(np.float64))**2, axis=2)
         threshold = reference["distances"][query_positions-1000000, -1]
         reported = table["distance"].to_numpy().reshape(count, 10)
         summary["neighbors"][name] = {
@@ -493,6 +856,8 @@ def analyze():
     summary["clusters"] = {}
     for name in ("kmeans_n100000", "kmeans_n1000000", "pca_kmeans_n100000", "pca_kmeans_n1000000",
                  "headphone_assignments", "umap_hdbscan_10000", "umap_hdbscan_50000", "umap_hdbscan_100000"):
+        if name not in timings:
+            continue
         table = pq.read_table(DATA / f"results/{name}_r1.parquet")
         ids = table["id"].to_numpy()
         labels = table["cluster_id"].to_numpy()
@@ -514,11 +879,14 @@ def analyze():
                 aligned = index_positions(other["id"].to_numpy(), ids)
                 record["repeat_ari"].append(float(adjusted_rand_score(labels, other["cluster_id"].to_numpy()[aligned])))
         summary["clusters"][name] = record
-    pca = pq.read_table(DATA / "results/pca_n1000000_r1.parquet")
-    projected = np.column_stack([pca[f"pc_{i}"].to_numpy() for i in range(32)])
-    mean = reviews.mean(axis=0, dtype=np.float64)
-    total = np.einsum("ij,ij->", reviews, reviews, dtype=np.float64)-len(reviews)*np.dot(mean, mean)
-    summary["pca_32_centered_variance_ratio"] = float(np.sum(projected.astype(np.float64)**2)/total)
+    if "pca_n1000000" in timings:
+        pca = pq.read_table(DATA / "results/pca_n1000000_r1.parquet")
+        projected = np.column_stack([pca[f"pc_{i}"].to_numpy() for i in range(32)])
+        mean = reviews.mean(axis=0, dtype=np.float64)
+        total = np.einsum("ij,ij->", reviews, reviews, dtype=np.float64)-len(reviews)*np.dot(mean, mean)
+        summary["pca_32_centered_variance_ratio"] = float(np.sum(projected.astype(np.float64)**2)/total)
+    if PROFILE == "bge-m3":
+        summary["demo_verification"] = verify_demo_results(timings)
     save_json(REPORT / "analysis.json", summary)
     print(json.dumps(summary, indent=2), flush=True)
 
@@ -638,12 +1006,15 @@ def render_report():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("prepare", "embed", "sql", "run", "cpu-search", "cpu-clustering", "cpu-threads", "compact", "analyze", "topics", "render"))
-    parser.add_argument("--names", nargs="+", default=["products", "reviews", "intents"])
+    parser.add_argument("--profile", choices=("minilm", "bge-m3"), default="minilm")
+    parser.add_argument("stage", choices=("prepare", "embed", "sql", "run", "cpu-search", "cpu-clustering", "cpu-threads", "compact", "verify-inputs", "export-review-map", "analyze", "topics", "render"))
+    parser.add_argument("--names", nargs="+", default=["intents", "products", "reviews"])
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--sizes", type=int, nargs="+", default=[100000, 1000000])
+    parser.add_argument("--counts", type=int, nargs="+", default=[1, 1000, 10000])
     args = parser.parse_args()
+    configure(args.profile)
     if args.stage == "prepare":
         prepare()
     elif args.stage == "embed":
@@ -653,13 +1024,17 @@ def main():
     elif args.stage == "run":
         run_queries(args.names, args.register, args.repeats)
     elif args.stage == "cpu-search":
-        cpu_search(args.repeats)
+        cpu_search(args.repeats, args.sizes, args.counts)
     elif args.stage == "cpu-clustering":
         cpu_clustering(args.sizes)
     elif args.stage == "cpu-threads":
         cpu_thread_sweep()
     elif args.stage == "compact":
         compact_vectors()
+    elif args.stage == "verify-inputs":
+        verify_inputs()
+    elif args.stage == "export-review-map":
+        export_review_map()
     elif args.stage == "analyze":
         analyze()
     elif args.stage == "topics":
