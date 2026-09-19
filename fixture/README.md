@@ -4,7 +4,10 @@ Run fixture commands from the monorepo root. Native consumers resolve the
 root-owned component sources and `target/native/*` prefixes; fixture data never
 requires a separate Rust checkout.
 
-Fixtures are organized by workload. Generated and host-provisioned data is
+Fixtures are organized by purpose. `demo/` holds the datasets Algeon's examples
+and documentation query; everything else serves unit tests (`graph/cugraph/`,
+`tests/`), benchmarks (`tpc-h/`, `tpc-ds/`, `clickbench/`, `graph/rmat_generate.py`),
+or E2E stacks (`iceberg-local/`). Generated and host-provisioned data is
 gitignored; the small cuGraph parity corpus in `graph/cugraph/` is versioned.
 
 ```
@@ -19,18 +22,16 @@ fixture/
     data/sf<N>/parquet/              # local, gitignored benchmark data
   tpc/parquet_layout.py              # shared TPC layout/verification logic
   clickbench/data/                   # local, gitignored ClickBench layouts
-  ember2024/
-    prepare.py                       # models, download, vectorize, Parquet export
-    prepare.sh                       # venv-resolving entrypoint
-    parquet/<split>.parquet          # local, gitignored id + f0..f2567 + label export
+  demo/                              # demo datasets; see demo/README.md
+    citation_network/                # DBLP / AMiner V12 -> cuGraph edge and paper tables
+    amazon_reviews_2023/             # Amazon Reviews 2023 -> products and reviews
+    ember2024/                       # EMBER2024 -> forest-inference feature splits
   graph/
     cugraph/                         # cuGraph parity corpus and oracle JSON
-    demo/                            # local Citation Network Parquet
-    dblp.v12.json                    # local source JSON
-    dblp_ingest.py                   # Citation Network generator
     prepare.sh                       # cuGraph corpus preparation entrypoint
     rmat_generate.py                 # deterministic synthetic R-MAT generator
     synthetic/                       # local R-MAT Parquet fixtures
+  tests/                             # Python tests for the fixture scripts
   iceberg-local/                     # local REST, RustFS, and Moto stack
 ```
 
@@ -94,41 +95,20 @@ fixture/fixture.sh clickbench fetch --layout both --out ./fixture/clickbench/dat
 `--layout single` writes `hits.parquet`; `--layout partitioned` writes
 `partitioned/hits_0.parquet` through `hits_99.parquet`.
 
-## EMBER2024
+## Demo datasets
 
-`ember2024/prepare.py` downloads the 14 pretrained EMBER2024 LightGBM models
-and the raw weekly JSONL archives via `thrember`, vectorizes them into
-`X_*.dat` / `y_*.dat`, and exports a requested split as Parquet
-(`id` + `f0..f2567` + `label`, all non-nullable) in bounded-RAM row-group
-chunks. Each step is skipped if its output already exists (`--force`
-overrides). See `fixture/ember2024/README.md` for the full flow, the venv
-setup (`~/.venvs/forest`, no `uvx` dependency), and a documented row-count
-anomaly in the upstream `train`/`test` archives.
+`demo/README.md` lists the three demo datasets, their converters, and the
+Parquet conventions they share. Each converter reads upstream files from its
+dataset's `raw/` directory and writes Snappy Parquet next to it:
 
 ```bash
-fixture/fixture.sh ember2024 prepare --split test --split challenge
-fixture/fixture.sh ember2024 prepare --split train --rows 1000000 --force
+fixture/fixture.sh graph dblp-ingest --overwrite              # demo/citation_network/v1/
+fixture/fixture.sh amazon-reviews prepare --force             # demo/amazon_reviews_2023/parquet/
+fixture/fixture.sh ember2024 prepare --split test --split challenge   # demo/ember2024/parquet/
 ```
 
-## Graph fixtures
-
-`graph/dblp_ingest.py` converts the DBLP / AMiner Citation Network V12 JSON
-file into the Parquet files used by the cuGraph SQL examples. The source JSON
-is about 12.5 GB, so place `fixture/graph/demo` on NVMe when the repository is
-on slower storage:
-
-```bash
-python3 fixture/graph/dblp_ingest.py \
-  --source-json /path/to/dblp.v12.json \
-  --out-root fixture/graph/demo \
-  --overwrite
-```
-
-This writes `fixture/graph/demo/citation_network/v1/parquet/` with
-`edges_by_src.parquet`, `edges_by_dst.parquet`,
-`profiles_by_paper_id.parquet`, `paper_authors.parquet`, and
-`paper_fos.parquet`. Register it with the local Iceberg stack without
-rewriting it:
+Register the Citation Network with the local Iceberg stack without rewriting
+it:
 
 ```bash
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
@@ -140,6 +120,8 @@ fixture/fixture.sh iceberg rest load \
 `add-files` stages the Parquet under `s3://lakehouse/staging/...`, then Iceberg
 references those staged objects in place. Do not delete that staging prefix
 while the fixture metadata is live.
+
+## Graph fixtures
 
 To refresh the smaller cuGraph parity corpus and its optional Python oracle,
 run `fixture/graph/prepare.sh --oracle`. It uses
@@ -176,11 +158,12 @@ generate/download directly into it:
 
 ```bash
 export ALGEON_FIXTURE_ROOT=/mnt/fast/algeon-fixtures
-ln -s "$ALGEON_FIXTURE_ROOT/tpch"       fixture/tpc-h/data
-ln -s "$ALGEON_FIXTURE_ROOT/tpcds"      fixture/tpc-ds/data
-ln -s "$ALGEON_FIXTURE_ROOT/clickbench" fixture/clickbench/data
-ln -s "$ALGEON_FIXTURE_ROOT/demo"       fixture/graph/demo
-ln -s "$ALGEON_FIXTURE_ROOT/synthetic"  fixture/graph/synthetic
+ln -s "$ALGEON_FIXTURE_ROOT/tpch"             fixture/tpc-h/data
+ln -s "$ALGEON_FIXTURE_ROOT/tpcds"            fixture/tpc-ds/data
+ln -s "$ALGEON_FIXTURE_ROOT/clickbench"       fixture/clickbench/data
+ln -s "$ALGEON_FIXTURE_ROOT/citation_network" fixture/demo/citation_network/v1/parquet
+ln -s "$ALGEON_FIXTURE_ROOT/amazon_reviews"   fixture/demo/amazon_reviews_2023/parquet
+ln -s "$ALGEON_FIXTURE_ROOT/synthetic"        fixture/graph/synthetic
 ```
 
 For an explicit external fixture, set `ALGEON_PARQUET_DIR` to its Parquet root.

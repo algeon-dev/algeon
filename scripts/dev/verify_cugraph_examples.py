@@ -14,7 +14,7 @@ must already run with cuGraph enabled and hold the GPU lock itself; this helper
 only acts as a client.
 
     python3 scripts/dev/verify_cugraph_examples.py \\
-      --data "$PWD/fixture/graph/citation_network/v1" --report /tmp/report.md
+      --data "$PWD/fixture/demo/citation_network/v1" --report /tmp/report.md
 """
 
 from __future__ import annotations

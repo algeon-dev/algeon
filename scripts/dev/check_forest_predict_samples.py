@@ -47,7 +47,7 @@ def read_sample(path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def ember_features(ember_dir: Path, split: str, feature_count: int, ids: np.ndarray) -> np.ndarray:
-    matrix = np.memmap(ember_dir / f"X_{split}.dat", dtype=np.float32, mode="r").reshape(-1, feature_count)
+    matrix = np.memmap(ember_dir / "raw" / f"X_{split}.dat", dtype=np.float32, mode="r").reshape(-1, feature_count)
     return np.asarray(matrix[ids], dtype=np.float32)
 
 
@@ -90,7 +90,7 @@ def gtil_predict(model_path: Path, model_format: str, features: np.ndarray, thre
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bench-dir", type=Path, required=True)
-    parser.add_argument("--ember-dir", type=Path, default=Path("fixture/ember2024"))
+    parser.add_argument("--ember-dir", type=Path, default=Path("fixture/demo/ember2024"))
     parser.add_argument("--threads", type=int, default=16)
     args = parser.parse_args()
 

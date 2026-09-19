@@ -2,7 +2,7 @@
 //!
 //! Two workloads score pretrained tree ensembles over Parquet: the EMBER2024
 //! malware feature splits with the upstream LightGBM models, both written by
-//! `fixture/ember2024/prepare.py`, and TPC-H `lineitem` with a 500-tree
+//! `fixture/demo/ember2024/prepare.py`, and TPC-H `lineitem` with a 500-tree
 //! XGBoost JSON regression model over seven numeric columns. Like
 //! [`crate::graph`], this module never invokes a generator; it validates the
 //! prepared files against their Parquet footers.
@@ -30,7 +30,7 @@ use crate::{
 /// EMBER2024 fixture root containing `parquet/` and `models/`.
 pub const ALGEON_EMBER2024_DIR_ENV: &str = "ALGEON_EMBER2024_DIR";
 /// In-repo default EMBER2024 fixture root.
-pub const DEFAULT_LOCAL_EMBER2024_DIR: &str = "./fixture/ember2024";
+pub const DEFAULT_LOCAL_EMBER2024_DIR: &str = "./fixture/demo/ember2024";
 /// TPC-H Parquet root whose `lineitem` table feeds the lineitem forest workload.
 pub const ALGEON_FOREST_TPCH_PARQUET_DIR_ENV: &str = "ALGEON_FOREST_TPCH_PARQUET_DIR";
 /// XGBoost JSON model scored over [`LINEITEM_FOREST_FEATURES`].
@@ -125,7 +125,7 @@ impl Ember2024DatasetMetadata {
             workload: "ember2024",
             root: self.parquet_root.clone(),
             scale_factor: None,
-            provenance: "fixture/ember2024/prepare.py".to_string(),
+            provenance: "fixture/demo/ember2024/prepare.py".to_string(),
             generation_command: "fixture/fixture.sh ember2024 prepare".to_string(),
             table_count: self.splits.len(),
             file_count: self.splits.len(),

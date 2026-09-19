@@ -32,7 +32,7 @@ else
 fi
 DATA_ROOT="${DATA_ROOT:-${LOCAL_ICEBERG_DIR}/.loader-data}"
 IVY_CACHE="${IVY_CACHE:-${LOCAL_ICEBERG_DIR}/.ivy-cache}"
-CITATION_NETWORK_DATA_DIR="${CITATION_NETWORK_DATA_DIR:-${REPO_ROOT}/fixture/graph/demo/citation_network/v1/parquet}"
+CITATION_NETWORK_DATA_DIR="${CITATION_NETWORK_DATA_DIR:-${REPO_ROOT}/fixture/demo/citation_network/v1/parquet}"
 
 TPCH_TABLES="customer,lineitem,nation,orders,part,partsupp,region,supplier"
 TPCDS_TABLES="call_center,catalog_page,catalog_returns,catalog_sales,customer,customer_address,customer_demographics,date_dim,household_demographics,income_band,inventory,item,promotion,reason,ship_mode,store,store_returns,store_sales,time_dim,warehouse,web_page,web_returns,web_sales,web_site"
@@ -138,7 +138,7 @@ if [[ "${WORKLOAD}" == "citation_network" ]]; then
     echo "error: missing citation network parquet under ${data_dir}" >&2
     echo "       Download dblp.v12.json from the DBLP/AMiner Citation Network V12 distribution," >&2
     echo "       then run:" >&2
-    echo "         python3 fixture/graph/dblp_ingest.py --source-json /path/to/dblp.v12.json" >&2
+    echo "         python3 fixture/demo/citation_network/prepare.py --source-json /path/to/dblp.v12.json" >&2
     echo "       or set CITATION_NETWORK_DATA_DIR to an existing parquet directory." >&2
     exit 2
   fi
@@ -156,7 +156,7 @@ fi
 print_citation_network_acquisition_instructions() {
   echo "       Download dblp.v12.json from the DBLP/AMiner Citation Network V12 distribution," >&2
   echo "       then run:" >&2
-  echo "         python3 fixture/graph/dblp_ingest.py --source-json /path/to/dblp.v12.json" >&2
+  echo "         python3 fixture/demo/citation_network/prepare.py --source-json /path/to/dblp.v12.json" >&2
   echo "       or set CITATION_NETWORK_DATA_DIR to an existing parquet directory." >&2
 }
 

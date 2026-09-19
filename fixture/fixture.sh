@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unified public fixture entrypoint for benchmark data and local Iceberg E2E.
+# Unified public fixture entrypoint for benchmark data, demo datasets, and local Iceberg E2E.
 
 set -euo pipefail
 
@@ -12,9 +12,10 @@ Usage:
   fixture/fixture.sh tpch generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture/fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture/fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
-  fixture/fixture.sh graph dblp-ingest --source-json PATH [--out-root PATH] [DBLP ingest options]
+  fixture/fixture.sh graph dblp-ingest [--source-json PATH] [--out-root PATH] [--overwrite] [DBLP ingest options]
   fixture/fixture.sh graph rmat --scale N --edge-factor K --skew skewed|uniform --seed S --out-root PATH [--force]
   fixture/fixture.sh ember2024 prepare [--split test|train|challenge]... [--rows N] [--force]
+  fixture/fixture.sh amazon-reviews prepare [--category NAME] [--out-dir PATH] [--force]
   fixture/fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
   fixture/fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
@@ -276,13 +277,16 @@ case "${domain}:${command}" in
     clickbench_fetch "$@"
     ;;
   graph:dblp-ingest)
-    exec python3 "${SCRIPT_DIR}/graph/dblp_ingest.py" "$@"
+    exec python3 "${SCRIPT_DIR}/demo/citation_network/prepare.py" "$@"
     ;;
   graph:rmat)
     exec python3 "${SCRIPT_DIR}/graph/rmat_generate.py" "$@"
     ;;
   ember2024:prepare)
-    exec "${SCRIPT_DIR}/ember2024/prepare.sh" "$@"
+    exec "${SCRIPT_DIR}/demo/ember2024/prepare.sh" "$@"
+    ;;
+  amazon-reviews:prepare)
+    exec python3 "${SCRIPT_DIR}/demo/amazon_reviews_2023/prepare.py" "$@"
     ;;
   iceberg:rest)
     subcommand="${1:-}"

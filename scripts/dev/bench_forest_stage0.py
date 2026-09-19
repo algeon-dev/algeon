@@ -333,7 +333,7 @@ def main() -> None:
 
     # 1. Load real EMBER2024 features
     print("Loading EMBER2024 test features...")
-    ember_dat_path = Path("fixture/ember2024/X_test.dat")
+    ember_dat_path = Path("fixture/demo/ember2024/raw/X_test.dat")
     if ember_dat_path.exists() and ember_dat_path.stat().st_size > 0:
         nrows_test = ember_dat_path.stat().st_size // (2568 * 4)
         print(f"Reading from X_test.dat ({nrows_test} rows)...")
@@ -348,7 +348,7 @@ def main() -> None:
             import thrember
             ext = thrember.PEFeatureExtractor()
         samples = []
-        jsonl_files = sorted(glob.glob("fixture/ember2024/*test*.jsonl"))
+        jsonl_files = sorted(glob.glob("fixture/demo/ember2024/raw/*test*.jsonl"))
         for jf in jsonl_files:
             with open(jf, "r") as f:
                 for line in f:
@@ -393,7 +393,7 @@ def main() -> None:
         all_benchmarks.append(res_xgb)
 
     # 4. Benchmark all 14 EMBER2024 models
-    ember_models = sorted(glob.glob("fixture/ember2024/models/*.model"))
+    ember_models = sorted(glob.glob("fixture/demo/ember2024/models/*.model"))
     for m in ember_models:
         m_name = os.path.basename(m).replace(".model", "")
         # For family model (157k trees, 2538 classes), evaluate smaller batch sizes to respect time

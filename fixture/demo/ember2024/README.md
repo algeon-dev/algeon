@@ -14,7 +14,7 @@ EMBER2024 contains extracted raw features and labels for 3,232,000 files uploade
 
 ### File Manifest and Disk Footprint
 
-All 13 archives (totaling ~24.3 GB compressed, ~48 GB uncompressed) are located in this directory:
+All 13 archives (totaling ~24.3 GB compressed, ~48 GB uncompressed) are downloaded into `raw/`:
 
 | Subset | Archive Name | Compressed Size | Uncompressed Size | Weekly Volume | Train Total | Test Total |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -50,12 +50,12 @@ python3 -m venv ~/.venvs/forest
 # Full dataset download (24.3 GB)
 ~/.venvs/forest/bin/hf download joyce8/EMBER2024 \
   --repo-type dataset \
-  --local-dir ./fixture/ember2024
+  --local-dir ./fixture/demo/ember2024/raw
 
 # Single file download (e.g. challenge set only)
 ~/.venvs/forest/bin/hf download joyce8/EMBER2024 challenge.zip \
   --repo-type dataset \
-  --local-dir ./fixture/ember2024
+  --local-dir ./fixture/demo/ember2024/raw
 ```
 
 ### Method 2: Upstream `thrember` Python Library
@@ -64,10 +64,10 @@ python3 -m venv ~/.venvs/forest
 import thrember
 
 # Download dataset slices
-thrember.download_dataset("./fixture/ember2024", file_type="PE", split="test")
+thrember.download_dataset("./fixture/demo/ember2024/raw", file_type="PE", split="test")
 
 # Download 14 pre-trained benchmark LightGBM models
-thrember.download_models("./fixture/ember2024/models")
+thrember.download_models("./fixture/demo/ember2024/models")
 ```
 
 ## Feature Vectorization and Usage
@@ -78,14 +78,14 @@ EMBER2024 features use format version 3 (`thrember`), using `pefile` instead of 
 import thrember
 
 # Vectorize raw features to binary .dat files
-thrember.create_vectorized_features("./fixture/ember2024")
+thrember.create_vectorized_features("./fixture/demo/ember2024/raw")
 
 # Vectorize for specific label tasks (family, behavior, file_property, packer, exploit, group)
-thrember.create_vectorized_features("./fixture/ember2024", label_type="family", class_min=10)
+thrember.create_vectorized_features("./fixture/demo/ember2024/raw", label_type="family", class_min=10)
 
 # Read vectorized features into numpy arrays
-X_train, y_train = thrember.read_vectorized_features("./fixture/ember2024", split="train")
-X_test, y_test = thrember.read_vectorized_features("./fixture/ember2024", split="test")
+X_train, y_train = thrember.read_vectorized_features("./fixture/demo/ember2024/raw", subset="train")
+X_test, y_test = thrember.read_vectorized_features("./fixture/demo/ember2024/raw", subset="test")
 ```
 
 `create_vectorized_features` always (re)writes all three splits (train, test,
@@ -103,9 +103,16 @@ non-nullable. Parquet is written in row-group chunks straight from the
 100,000); `train` alone is 51 GB vectorized, so never load a full split into
 memory at once.
 
+Only `id` and `label` carry min/max statistics. The feature columns are model
+inputs rather than filter predicates, and dropping their statistics shrinks the
+footer that every scan parses by 22% (0.67 MB to 0.52 MB for 200,000 `test`
+rows). Feature columns keep dictionary encoding: many histogram and count
+features repeat values, and plain encoding grew the same sample from 452 MB to
+557 MB.
+
 ```bash
 # From the venv directly:
-~/.venvs/forest/bin/python fixture/ember2024/prepare.py --split test
+~/.venvs/forest/bin/python fixture/demo/ember2024/prepare.py --split test
 
 # Or via the fixture entrypoint (resolves ~/.venvs/forest automatically,
 # override with ALGEON_EMBER_PYTHON):
@@ -116,10 +123,12 @@ fixture/fixture.sh ember2024 prepare --split test --split challenge
 fixture/fixture.sh ember2024 prepare --split train --rows 1000000 --force
 ```
 
-Output lands at `fixture/ember2024/parquet/<split>.parquet`. Every step is
-skipped if its output already exists; pass `--force` to redo a step (a
-`--force` re-run of the Parquet step also redownloads/revectorizes upstream
-steps that are missing, but not ones already present).
+Output lands at `fixture/demo/ember2024/parquet/<split>.parquet`, and
+`crates/workloads` reads `parquet/` and `models/` from
+`fixture/demo/ember2024` (override with `ALGEON_EMBER2024_DIR`). The download
+and vectorization steps run only when their outputs in `models/` or `raw/` are
+missing; delete those outputs to redo them. `--force` only rewrites Parquet
+splits that already exist.
 
 `prepare.py` fails loudly (and deletes the partial output) if any feature
 value in the split is non-finite (NaN or Inf): the `cuml_forest_predict` SQL
@@ -148,9 +157,15 @@ non-default multiclass `label_type`, which this fixture does not use):
 `test` and `train` are exactly balanced 50/50 between label 0 (benign) and
 label 1 (malicious); `challenge` is 100% label 1.
 
-## Version Control Policy
+## Directory Layout
 
-Everything under this directory (`*.zip`, `*.jsonl`, `.cache/`, `*.dat`,
-`models/`, `parquet/`) is gitignored except `prepare.py`, `prepare.sh`, this
-`README.md`, and `.gitkeep`; see the `fixture/ember2024/` block in the
-repository root [`.gitignore`](file:///home/ubuntu/algeon/.gitignore).
+```
+fixture/demo/ember2024/
+  prepare.py, prepare.sh, README.md   versioned
+  raw/       weekly JSONL, archives, and thrember's X_*.dat / y_*.dat memmaps
+  models/    14 pretrained LightGBM models
+  parquet/   <split>.parquet exports read by crates/workloads
+```
+
+`raw/`, `models/`, and `parquet/` are gitignored by the `fixture/demo` block in
+the repository root `.gitignore`.

@@ -25,8 +25,8 @@ tables are the bytes streamed onto the device for cuGraph), format v2.6, per-col
 statistics, page indexes, dictionary encoding for low-cardinality categoricals, Bloom
 filters on the high-cardinality equality-filter columns the cuGraph story touches
 (``src``/``dst`` on edges; ``paper_id``/``venue``/``primary_fos`` on profiles; keys on the
-side tables), and declared ``sorting_columns`` so libcudf can trust the clustering for
-row-group and Bloom pruning.
+side tables), and declared ``sorting_columns``. Row-group pruning reads the min/max statistics
+that the clustering makes selective; ``sorting_columns`` lets the scan report its output ordering.
 """
 
 from __future__ import annotations
@@ -48,9 +48,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUT_ROOT = REPO_ROOT / "fixture" / "graph" / "demo"
-DEFAULT_SOURCE_JSON = REPO_ROOT / "fixture" / "graph" / "dblp.v12.json"
+DATASET_DIR = Path(__file__).resolve().parent
+REPO_ROOT = DATASET_DIR.parents[2]
+DEFAULT_OUT_ROOT = DATASET_DIR.parent
+DEFAULT_SOURCE_JSON = DATASET_DIR / "raw" / "dblp.v12.json"
+GENERATOR = "fixture/demo/citation_network/prepare.py"
 DEFAULT_ROW_GROUP_SIZE = 1_048_576
 DEFAULT_PROFILE_ROW_GROUP_SIZE = 131_072
 DEFAULT_BUCKET_WIDTH = 100_000_000  # AMiner ids reach ~3e9; keep bucket ids compact for pruning demos.
@@ -824,7 +826,8 @@ def edge_footer_metadata(vertex_upper_bound: int | None) -> dict[bytes, bytes]:
 
     The optional vertex bound is narrower: it is emitted only for the complete
     canonical rowset, because a sample can contain endpoints outside its paper
-    prefix.
+    prefix, and the edge writer fails if any destination is not a scanned
+    paper id.
     """
     if vertex_upper_bound is not None and vertex_upper_bound < 0:
         raise ValueError("graph vertex upper bound must not be negative")
@@ -1186,7 +1189,7 @@ def write_multi_graph_slices(
         }
         manifest = {
             "schema_version": 1,
-            "generator": "fixture/graph/dblp_ingest.py",
+            "generator": GENERATOR,
             "generated_at_unix": int(time.time()),
             "repo_root": str(REPO_ROOT),
             "dataset": {
@@ -1329,6 +1332,9 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
     author_columns = _empty_author_columns()
     fos_columns = _empty_fos_columns()
     edge_id = 0
+    # The footer vertex bound (paper count) holds only if every citation
+    # target is itself a scanned paper, so full runs keep the id set to check.
+    paper_ids: set[int] | None = set() if args.max_papers <= 0 else None
 
     try:
         logger.log("scan source JSON: start")
@@ -1337,6 +1343,8 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
             if paper_id is None:
                 continue
             paper_id = int(paper_id)
+            if paper_ids is not None:
+                paper_ids.add(paper_id)
             counters["min_paper_id"] = min(counters["min_paper_id"], paper_id)
             counters["max_paper_id"] = max(counters["max_paper_id"], paper_id)
 
@@ -1506,6 +1514,7 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
                 order,
                 ndv_edges,
                 graph_vertex_upper_bound,
+                paper_ids,
                 args,
             )
             edge_layouts[order] = {
@@ -1531,7 +1540,7 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
 
     manifest = {
         "schema_version": 1,
-        "generator": "fixture/graph/dblp_ingest.py",
+        "generator": GENERATOR,
         "generated_at_unix": int(time.time()),
         "repo_root": str(REPO_ROOT),
         "dataset": {
@@ -1612,6 +1621,7 @@ def _write_sorted_edges(
     order: str,
     ndv: int,
     graph_vertex_upper_bound: int | None,
+    paper_ids: set[int] | None,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     path = parquet_dir / f"edges_by_{order}.parquet"
@@ -1633,6 +1643,11 @@ def _write_sorted_edges(
                     "cannot emit a simple-directed topology certificate"
                 )
             previous_endpoint_pair = endpoint_pair
+            if graph_vertex_upper_bound is not None and dst not in paper_ids:
+                raise SystemExit(
+                    f"edges_by_{order} references paper {dst}, which is not in the source; "
+                    f"cannot emit {GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY}={graph_vertex_upper_bound}"
+                )
             src_buf.append(src)
             dst_buf.append(dst)
             id_buf.append(edge)

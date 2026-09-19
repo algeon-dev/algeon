@@ -64,15 +64,13 @@ not by a fictional product domain.
 ## Data Prerequisite
 
 The example uses the [Citation Network demo dataset](../cugraph/demo-dataset.mdx):
-4,894,081 papers and 45,564,149 citation edges. Generate the Parquet files from
-the upstream `dblp.v12.json` file, then load them into the local Iceberg REST
-catalog with `add-files` mode:
+4,894,081 papers and 45,564,149 citation edges. Place the upstream
+`dblp.v12.json` file at `fixture/demo/citation_network/raw/dblp.v12.json`,
+generate the Parquet files, then load them into the local Iceberg REST catalog
+with `add-files` mode:
 
 ```bash
-python3 fixture/graph/dblp_ingest.py \
-  --source-json /path/to/dblp.v12.json \
-  --out-root fixture/graph/demo \
-  --overwrite
+python3 fixture/demo/citation_network/prepare.py --overwrite
 
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
 fixture/fixture.sh iceberg rest load \
