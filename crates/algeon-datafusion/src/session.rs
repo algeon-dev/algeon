@@ -56,6 +56,8 @@ pub const ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "algeon_datafusion_
 pub const ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "algeon_datafusion_native_count_only";
 const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
+#[cfg(feature = "cugraph")]
+const DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME: &str = "FilterPushdown(Post)";
 
 pub use crate::gpu_query_planner::AlgeonQueryPlanner;
 
@@ -346,6 +348,11 @@ fn insert_algeon_native_rules_for_cugraph_subplan(
     native_rule: Arc<AlgeonNativePhysicalOptimizerRule>,
 ) {
     remove_algeon_native_rules(rules);
+    // The outer optimizer run revisits this subtree through `CugraphAlgoExec`'s
+    // children. DataFusion forbids `JoinSelection` from swapping a hash join
+    // after `FilterPushdown(Post)` attached its dynamic filter, so only the
+    // outer run may construct dynamic filters.
+    rules.retain(|existing| existing.name() != DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME);
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
     let insertion_position =
         rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
@@ -428,6 +435,23 @@ mod tests {
 
         assert!(rules.iter().any(|rule| rule.name() == ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
         assert!(!rules.iter().any(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME));
+    }
+
+    #[test]
+    fn cugraph_subplanning_leaves_dynamic_filter_pushdown_to_the_outer_run() {
+        let optimizer_config = AlgeonNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        let state =
+            SessionStateBuilder::new_with_default_features().with_algeon_native(optimizer_config.clone()).build();
+        let nested =
+            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
+                .expect("nested cuGraph planning requires installed native selection");
+        let is_post_pushdown = |rule: &Arc<dyn PhysicalOptimizerRule + Send + Sync>| {
+            rule.name() == DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME
+        };
+
+        assert!(state.physical_optimizers().iter().any(is_post_pushdown));
+        assert!(!nested.physical_optimizers().iter().any(is_post_pushdown));
     }
 
     #[test]
