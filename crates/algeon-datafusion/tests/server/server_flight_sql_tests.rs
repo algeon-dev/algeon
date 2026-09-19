@@ -27,8 +27,8 @@ use algeon_datafusion::{
 };
 use arrow::{
     array::{
-        Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, Int32Array, Int64Array, ListArray, StringArray,
-        StringViewArray, UInt8Array, UInt32Array, UnionArray,
+        Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, Float64Array, Int32Array, Int64Array, ListArray,
+        StringArray, StringViewArray, UInt8Array, UInt32Array, UnionArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema},

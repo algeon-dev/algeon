@@ -782,10 +782,19 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
-        let dataset_schema = match self.dataset_schema_for_prepared_statement(&logical_plan) {
+        if let Err(error) = self.verify_prepared_statement_plan(&logical_plan) {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
+        let dataset_schema = match flight_result_schema(&state, &logical_plan) {
             Ok(schema) => schema,
             Err(error) => {
-                let (status, captured) = adapter_error_to_status_and_capture(error);
+                let (status, captured) = datafusion_error_to_status_and_capture(
+                    error,
+                    "algeon_datafusion.server.flight.do_action_create_prepared_statement.dataset_schema",
+                );
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 planning_lease.finish_captured("planning", &status, captured);
                 return Err(status);
