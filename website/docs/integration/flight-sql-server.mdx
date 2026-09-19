@@ -18,7 +18,7 @@ embeddable implementation and public API live in
 Build the `algeon-server` package and its `algeon_server` binary:
 
 ```bash
-cargo build --release -p algeon-server --all-features --bin algeon_server
+cargo build --workspace --all-features --release --bin algeon_server
 ```
 
 Every selected GPU needs an explicit device profile. For a single-GPU local
@@ -29,15 +29,13 @@ server, create `server.toml` in the repository root:
 device_ordinal = 0
 ```
 
-Then start the server on localhost. The development helper enables its local
-Iceberg defaults unless `ALGEON_RUN_SERVER_ICEBERG=0` is set:
+Then start the server on localhost:
 
 ```bash
 export ALGEON_SERVER_CONFIG_FILE="$PWD/server.toml"
 export ALGEON_SERVER_BIND=127.0.0.1:50051
-export ALGEON_RUN_SERVER_ICEBERG=0
 
-flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
+flock /tmp/cudf-gpu.lock "${CARGO_TARGET_DIR:-target}/release/algeon_server"
 ```
 
 From another terminal, verify the endpoint with the repository client:
@@ -60,43 +58,9 @@ their TOML equivalents.
 
 ## Start the citation demo server
 
-The graph examples use an Iceberg REST catalog backed by RustFS. Start the
-fixture, load the citation network, and reuse the `server.toml` profile above:
-
-```bash
-docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/fixture.sh iceberg rest load \
-  --workload citation_network \
-  --load-mode add-files
-
-export ALGEON_SERVER_CONFIG_FILE="$PWD/server.toml"
-export ALGEON_RUN_SERVER_ICEBERG=1
-export ALGEON_SERVER_CUGRAPH_ENABLED=true
-export ALGEON_SERVER_BIND=127.0.0.1:50051
-export DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion
-export DATAFUSION_CATALOG_DEFAULT_SCHEMA=public
-export ALGEON_ICEBERG_CATALOG_KIND=rest
-export ALGEON_ICEBERG_CATALOG_NAME=lake
-export ALGEON_ICEBERG_NAMESPACE=citation_network
-export ALGEON_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse
-export ALGEON_ICEBERG_REST_URI=http://localhost:8181
-export ALGEON_ICEBERG_S3_ENDPOINT=http://localhost:9000
-export ALGEON_ICEBERG_S3_REGION=us-east-1
-export ALGEON_ICEBERG_S3_PATH_STYLE=true
-export ALGEON_ICEBERG_S3_ACCESS_KEY_ID=algeonadmin
-export ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=algeonadmin
-export ALGEON_SERVER_WORKSPACE_CATALOG=datafusion
-export ALGEON_SERVER_WORKSPACE_SCHEMA=public
-export ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake
-export ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
-export ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
-
-flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
-```
-
-The startup snapshot should report `iceberg_enabled=true`,
-`cugraph_enabled=true`, and a non-zero `cugraph_registry_algorithm_count`. The
-[demo dataset](../cugraph/demo-dataset.mdx) page lists the available tables.
+Follow the [citation network walkthrough](../cugraph/demo-dataset.mdx#start-the-server)
+to start a local cuGraph server, register the Parquet tables, and run PageRank.
+The walkthrough includes the server configuration and client commands.
 
 ## Connect with ADBC
 

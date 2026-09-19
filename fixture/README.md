@@ -107,19 +107,9 @@ fixture/fixture.sh amazon-reviews prepare --force             # demo/amazon_revi
 fixture/fixture.sh ember2024 prepare --split test --split challenge   # demo/ember2024/parquet/
 ```
 
-Register the Citation Network with the local Iceberg stack without rewriting
-it:
-
-```bash
-docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/fixture.sh iceberg rest load \
-  --workload citation_network \
-  --load-mode add-files
-```
-
-`add-files` stages the Parquet under `s3://lakehouse/staging/...`, then Iceberg
-references those staged objects in place. Do not delete that staging prefix
-while the fixture metadata is live.
+For the Citation Network, follow the
+[demo walkthrough](../website/docs/cugraph/demo-dataset.mdx) to start a local
+server, register the generated Parquet files, and run the first graph query.
 
 ## Graph fixtures
 

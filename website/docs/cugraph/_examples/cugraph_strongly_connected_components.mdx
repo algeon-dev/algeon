@@ -9,9 +9,9 @@ run both ways despite a large gap in publication years. A strongly connected
 component with two vertices contains such a pair. These are candidates for
 checking editions and publication metadata, not proof of an incorrect citation.
 
-Save one SCC result so the pair selection and both paper lookups use labels
-from the same execution. The query excludes years outside 1900 through 2020
-and returns one row per pair.
+Save one [SCC result](../graph-options.mdx#reuse-algorithm-results) so the pair
+selection and both paper lookups use labels from the same execution. The query
+excludes years outside 1900 through 2020 and returns one row per pair.
 
 ```sql
 CREATE OR REPLACE TABLE scc_snapshot AS

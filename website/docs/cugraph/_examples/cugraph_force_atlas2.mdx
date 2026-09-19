@@ -62,9 +62,9 @@ members):
 `seed` fixes the initial placement, but the parallel layout itself is not
 bit-reproducible; expect different (equally valid) coordinates on each run;
 on larger graphs individual vertices may land far apart. If downstream queries
-must agree on positions, snapshot into the
-mutable `datafusion.public` workspace with `CREATE OR REPLACE TABLE … AS`; that does not
-write back to the Iceberg source catalog.
+must agree on positions, save the result with `CREATE OR REPLACE TABLE … AS`.
+The [result table](../graph-options.mdx#reuse-algorithm-results) occupies host
+RAM and lasts until the server stops.
 
 ### Can I spread overlapping papers apart without starting the map over?
 
@@ -73,7 +73,6 @@ as its initial positions and supplies radius and mass for every vertex, then
 enables overlap prevention:
 
 ```sql
--- Local workspace snapshot; this does not write to lake.citation_network.
 CREATE OR REPLACE TABLE initial_layout AS
 SELECT vertex, x, y
 FROM cugraph_force_atlas2(

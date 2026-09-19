@@ -9,11 +9,11 @@ the other components, even when citations can be followed in either direction.
 This query finds the largest disconnected groups and names the most-cited
 paper in each. Papers without any citation edge are outside this graph.
 
-Component labels belong to one execution. Save the result once in the local
-workspace so the size calculation and paper lookup use matching labels.
+Component labels belong to one execution. Save one
+[result table](../graph-options.mdx#reuse-algorithm-results) so the size
+calculation and paper lookup use matching labels.
 
 ```sql
--- Local workspace snapshot; this does not write to lake.citation_network.
 CREATE OR REPLACE TABLE wcc_snapshot AS
 SELECT vertex, label
 FROM cugraph_weakly_connected_components(
