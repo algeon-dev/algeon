@@ -109,6 +109,17 @@
   --ifm-container-width-xl: 1560px;
 }
 
+@media (min-width: 997px) {
+  :root:root {
+    --ifm-navbar-padding-horizontal: 2.5rem;
+    --doc-sidebar-width: 295px;
+  }
+
+  .theme-doc-sidebar-container nav.menu {
+    padding-left: 1.75rem;
+  }
+}
+
 @media (min-width: 997px) and (pointer: fine) {
   .theme-doc-sidebar-container nav.menu.thin-scrollbar {
     scrollbar-color: transparent transparent;
@@ -143,13 +154,13 @@
 .navbar__logo {
   align-items: center;
   display: flex;
-  height: 2.558rem;
+  height: 3.15rem;
 }
 
 .navbar__logo img {
   height: 100%;
   width: auto;
-  transform: translateY(-0.03rem);
+  transform: translateY(-0.2rem);
 }
 
 .footer__copyright {
@@ -180,6 +191,21 @@
   background: rgba(20, 24, 33, 0.78);
   border-bottom: 1px solid rgba(91, 102, 115, 0.32);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+}
+
+@media (min-width: 997px) {
+  .navbar__items--right {
+    /* The wide logo stretches the flex line; lift controls back to center. */
+    transform: translateY(-0.2rem);
+  }
+}
+
+@media (max-width: 996px) {
+  .navbar__toggle,
+  .navbar__search:not(:focus-within) {
+    /* Match the logo's lift without moving the expanded mobile search row. */
+    transform: translateY(-0.2rem);
+  }
 }
 
 .header-github-link {
