@@ -535,7 +535,7 @@ if [[ "${RUN_SERVER_REST_MULTIGPU}" == "1" ]]; then
   step "running production Flight SQL + REST/RustFS four-GPU acceptance (flock /tmp/cudf-gpu.lock)"
   (
     flock 9
-    cargo build --release -p server --bin algeon_server --features iceberg,nvml
+    cargo build --release -p algeon-server --bin algeon_server --features iceberg,nvml
     env \
       ALGEON_ICEBERG_SERVER_REST_MULTIGPU_E2E=1 \
       ALGEON_SERVER_BINARY="${REPO_ROOT}/target/release/algeon_server" \

@@ -1,7 +1,7 @@
 //! Opt-in Flight SQL server for `algeon-datafusion`.
 //!
 //! DataFusion applications can embed this module directly. The workspace's
-//! private `server` package is only a standalone process launcher over this
+//! `algeon-server` package is only a standalone process launcher over this
 //! API; configuration, session construction, Flight SQL behavior, and error
 //! projection are owned here.
 

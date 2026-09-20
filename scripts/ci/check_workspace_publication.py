@@ -35,7 +35,6 @@ PUBLISHED = frozenset(
         "algeon-query-engine",
         "algeon-query-planning",
         "algeon-query-runtime",
-        "algeon-server",
         "algeon-cudf",
         "algeon-cudf-sys",
         "algeon-cugraph",

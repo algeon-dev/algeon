@@ -76,7 +76,7 @@ crates:
                                │ uses the compatible facade
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ crates/algeon-query-engine (Facade + Native Execution)             │
+│ crates/algeon-query-engine (Facade + Native Execution)      │
 │ - Public planning/runtime re-exports                        │
 │ - Bounded relational, graph, vector, and source execution   │
 │ - Host/GPU-resident result composition                      │
@@ -276,7 +276,7 @@ serializes correctly. Non-test GPU commands (benchmarks, servers, tools) still
 take the lock themselves:
 
 ```shell
-flock /tmp/cudf-gpu.lock cargo run -p server --all-features --bin algeon_server
+flock /tmp/cudf-gpu.lock cargo run -p algeon-server --all-features --bin algeon_server
 ```
 
 > [!IMPORTANT]

@@ -11,14 +11,14 @@ installs the cuVS SQL functions on every session (and the cuGraph functions
 when [enabled in its configuration](./configuration.mdx#gpu-sql-functions)),
 and serves ordinary Arrow results to any ADBC or Flight SQL client. Its
 embeddable implementation and public API live in
-`algeon_datafusion::server`; `crates/algeon-server` is the private standalone launcher.
+`algeon_datafusion::server`; `crates/algeon-server` is the standalone launcher.
 
 ## Build and start
 
-Build the `server` package and its `algeon_server` binary:
+Build the `algeon-server` package and its `algeon_server` binary:
 
 ```bash
-cargo build --release -p server --all-features --bin algeon_server
+cargo build --release -p algeon-server --all-features --bin algeon_server
 ```
 
 Every selected GPU needs an explicit device profile. For a single-GPU local
