@@ -142,26 +142,6 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
                                             cudf_exec_options_t const* options,
                                             cudf_column_handle* out);
 
-/// Deep-copy a fixed-width column from raw borrowed interop-view facts with
-/// explicit execution options.
-///
-/// This reconstructs a temporary `cudf::column_view` from the borrowed device
-/// pointer, optional null mask, and logical offset, then deep-copies the
-/// active logical range into a new owning column.
-///
-/// `options` must be non-NULL and must name an explicit valid device, a
-/// non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive
-/// the returned column.
-cudf_status_t cudf_column_copy_from_borrowed_view_ex(cudf_type_id_t type_id,
-                                                     int32_t scale,
-                                                     int32_t size,
-                                                     int32_t offset,
-                                                     void const* data,
-                                                     void const* null_mask,
-                                                     int32_t null_count,
-                                                     cudf_exec_options_t const* options,
-                                                     cudf_column_handle* out);
-
 /// Deep-copy a column from a prepared-device export semantic graph with
 /// explicit execution options.
 ///
@@ -190,20 +170,6 @@ cudf_status_t cudf_column_copy_from_prepared_host_export_ex(
   cudf_interop_buffer_binding_t const* bindings,
   int32_t num_bindings,
   cudf_exec_options_t const* options,
-  cudf_column_handle* out);
-
-/// Create a zero-copy owning column handle from an owned device transfer
-/// semantic graph.
-///
-/// The resulting handle retains only shim-owned semantic metadata. Higher
-/// layers remain responsible for retaining the transfer root owner for the
-/// lifetime of the returned handle.
-cudf_status_t cudf_column_create_from_owned_device_transfer(
-  uint32_t root_column_id,
-  cudf_interop_semantic_column_t const* semantic_columns,
-  int32_t num_semantic_columns,
-  cudf_interop_buffer_binding_t const* bindings,
-  int32_t num_bindings,
   cudf_column_handle* out);
 
 /// Return payload bytes for this owning column with explicit execution options.

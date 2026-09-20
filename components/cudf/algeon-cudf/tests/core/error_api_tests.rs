@@ -114,24 +114,6 @@ fn interop_execution_binding_unavailable_without_cudf_source_uses_stable_code() 
     assert_eq!(err.details(), [("binding", "execution".to_string())]);
 }
 
-fn interop_lease_already_active_without_cudf_source_uses_stable_code() {
-    let err = from_interop_in_for_test(
-        InteropError::new(
-            InteropErrorKind::LeaseAlreadyActive,
-            "prepared table export already has an active read lease",
-        )
-        .with_context("export_kind", "table"),
-        "test::interop_boundary",
-    );
-
-    assert_eq!(err.code(), ErrorCode::LeaseAlreadyActive);
-    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
-    assert_eq!(err.status(), ErrorStatus::Permanent);
-    assert_eq!(err.message(), "prepared table export already has an active read lease");
-    assert_eq!(err.operation(), "test::interop_boundary");
-    assert_eq!(err.details(), [("export_kind", "table".to_string())]);
-}
-
 fn interop_unsupported_layout_maps_to_unsupported() {
     let err = from_interop_in_for_test(
         InteropError::new(InteropErrorKind::UnsupportedLayout, "struct columns are not supported for this export path")
@@ -493,10 +475,6 @@ fn error_api_tests_cases() {
         (
             "interop_execution_binding_unavailable_without_cudf_source_uses_stable_code",
             interop_execution_binding_unavailable_without_cudf_source_uses_stable_code,
-        ),
-        (
-            "interop_lease_already_active_without_cudf_source_uses_stable_code",
-            interop_lease_already_active_without_cudf_source_uses_stable_code,
         ),
         ("interop_unsupported_layout_maps_to_unsupported", interop_unsupported_layout_maps_to_unsupported),
         (

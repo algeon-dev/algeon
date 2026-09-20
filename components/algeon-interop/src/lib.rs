@@ -1,82 +1,53 @@
 //! Shared interop contract for RAPIDS Rust crates.
 //!
-//! This crate defines:
+//! Producers and consumers import these types through the `rapids_interop`
+//! library name; `cudf` re-exports them from `cudf::interop::contract`.
 //!
-//! - a borrowed GPU-view compatibility profile via [`BorrowedColumnView`] and
-//!   [`BorrowedTableView`]
-//! - a producer-rooted prepared export profile via [`PreparedColumnExport`] and
-//!   [`PreparedTableExport`]
-//! - activated read leases with explicit completion via
-//!   [`ActiveColumnReadLease`], [`ActiveTableReadLease`], and
-//!   [`ActivePartitionedTableReadLease`]
-//! - an owned device transfer profile via [`OwnedColumnTransfer`] and
-//!   [`OwnedTableTransfer`]
-//! - explicit partitioned multi-device wrappers via
-//!   [`PartitionedPreparedTableExport`] and
-//!   [`PartitionedOwnedTableTransfer`]
+//! A producer describes storage it already holds as a [`PreparedColumnExport`]
+//! or [`PreparedTableExport`]. The export pairs a graph of [`SemanticColumn`]s
+//! with the [`BufferBinding`]s behind it and a [`PreparedAccess`], and it never
+//! owns or transfers the storage. A retained owner attached with
+//! [`PreparedColumnExport::with_retained_owner`] or
+//! [`PreparedTableExport::with_retained_owner`] keeps the storage alive while
+//! the export, one of its clones, or a pending [`LeaseCompletion`] holds it.
 //!
-//! Independent producers and consumers import shared contract nouns directly
-//! from this crate through its `rapids_interop` library name. Users that
-//! already depend on `cudf` can import the same types from
-//! `cudf::interop::contract`. Consumer-specific crates provide adapter methods,
-//! runtime integration, and ABI glue on top of this contract rather than
-//! re-owning the shared vocabulary.
+//! # Construction
 //!
-//! # Contract Summary
+//! `try_new` returns `Err` for any graph it cannot validate:
 //!
-//! - Borrowed compatibility and prepared export both describe existing buffers;
-//!   neither transfers ownership.
-//! - Borrowed compatibility covers low-level borrowed descriptors and their
-//!   explicit execution binding facts.
-//! - Prepared export plus activated lease covers read-start, completion, and
-//!   backend-defined incomplete-drop behavior at the shared contract layer, and
-//!   is the primary consumer-neutral interop boundary.
-//! - Owned device transfer is a separate ownership-bearing contract with an
-//!   explicit release contract. It is an ownership-moving fast path, not the
-//!   default consumer story.
-//! - Partitioned multi-device export is explicit composition over multiple
-//!   single-device table roots; it does not weaken the meaning of one
-//!   [`PreparedTableExport`] or one [`OwnedTableTransfer`].
-//! - Current device-export support covers fixed-width layouts, the binary-like
-//!   string layout slice, `List`, `Struct`, and `Dictionary`.
-//! - Current borrowed-compatibility support covers fixed-width layouts plus
-//!   the current `STRING` binary-like slice, `LIST`, `STRUCT`, and
-//!   `DICTIONARY32` recursive semantic projections.
-//! - Nested-layout support is still intentionally narrow in this slice:
-//!   current coverage is the recursive semantic-column graph that can be
-//!   expressed by the existing fixed-width, binary-like string, list, struct,
-//!   and dictionary slices on one CUDA device.
-//! - Consumer algorithms may still allocate or copy for outputs; this crate
-//!   does not promise zero-copy output.
-//! - `cudf` producer adapters require explicit execution provenance at the
-//!   interop boundary.
-//! - User-facing types such as `cudf::Series` and `cudf::DataFrame` may
-//!   provide convenience adapters, but they are not the shared contract.
+//! - Column ids and buffer ids are unique. The graph is acyclic and holds
+//!   exactly the columns reachable from the root, through [`ColumnLayout`]
+//!   children and dictionary keys.
+//! - Each layout matches its [`TypeId`]. Value, offset, index, and validity
+//!   buffers cover the column's logical range.
+//! - With [`PreparedAccess::Host`], every binding is host memory. With
+//!   [`PreparedAccess::Device`], every binding and the [`ProducerReadiness`]
+//!   are on one CUDA device.
+//! - A table's schema column ids are unique, names (when present) match the
+//!   schema length, and every top-level column has `num_rows` rows.
 //!
-//! [`BorrowedColumnView`] and [`BorrowedTableView`] are low-level fact records
-//! about producer-owned device memory. Consumers must not treat them as
-//! ownership-bearing handles or cache them beyond the lifetime of the producer
-//! borrow that created them.
+//! # Leases
 //!
-//! [`PreparedColumnExport`] and [`PreparedTableExport`] are producer-rooted
-//! export contracts. Consumers activate access explicitly by providing
-//! [`ReadStartAuthority`] plus [`CompletionAuthority`], then finish via
-//! [`ActiveColumnReadLease::complete`] or [`ActiveTableReadLease::complete`],
-//! which returns a shared [`LeaseCompletionResult`].
+//! A consumer reads an export through a lease activated with a
+//! [`ReadStartAuthority`] and a [`CompletionAuthority`]. Host exports accept
+//! only the synchronous authorities, and their leases complete without backend
+//! work. For a device export, a same-device completion stream must be on the
+//! producer device, and the export's [`LeaseBackend`] starts, completes, or
+//! drops each lease; a lease dropped without completing runs the backend's
+//! drop fallback.
+//!
+//! [`ActiveColumnReadLease::complete`] and [`ActiveTableReadLease::complete`]
+//! return a [`LeaseCompletion`]. It keeps the export's retained owner alive
+//! until the consumer's reads of producer storage have finished, and leaks the
+//! owner if that wait fails while it is dropped.
 
-mod borrowed;
 mod contract;
 mod lease;
-mod owned;
-mod partitioned;
 mod prepared;
 mod types;
 mod validation;
 
-pub use borrowed::*;
 pub use contract::*;
 pub use lease::*;
-pub use owned::*;
-pub use partitioned::*;
 pub use prepared::*;
 pub use types::*;

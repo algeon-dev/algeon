@@ -16,12 +16,13 @@ use cudf::{
     DataFrame, DeviceId, ErrorCode, Runtime, TypeId,
     core::Table,
     frame::dataframe::JsonReadOptions,
-    interop::{cuda_event_handle, cuda_explicit_completion_required_lease_backend, cuda_stream_handle},
+    interop::cuda_stream_handle,
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
     testing::{
         interop::{
-            trigger_interop_column_index_limit_for_test, trigger_interop_projection_active_range_overflow_for_test,
+            column_export_with_lease_backend_for_test, trigger_interop_column_index_limit_for_test,
+            trigger_interop_projection_active_range_overflow_for_test,
             trigger_interop_projection_dictionary_indices_width_mismatch_for_test,
             trigger_interop_projection_host_offsets_too_small_for_test,
             trigger_interop_projection_list_offsets_width_mismatch_for_test,
@@ -41,11 +42,10 @@ use cudf_sys::{
     },
 };
 use rapids_interop::{
-    ActiveLeaseBackend, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding,
-    CompletionWitness, CompletionWitnessKind, CudaEventHandle, ExportProfile, IncompleteDropBehavior, InteropError,
-    InteropErrorKind, LeaseBackend, LeaseCompletionResult, LeaseExportContext, PhysicalValidity, Placement,
-    PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, SchemaNullability,
-    SemanticColumn, TypeId as InteropTypeId,
+    ActiveLeaseBackend, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionWitness,
+    InteropError, InteropErrorKind, LeaseBackend, PhysicalValidity, Placement, PreparedAccess, PreparedColumnExport,
+    PreparedExportProfile, PreparedTableExport, ProducerReadiness, ReadStartAuthority, SemanticColumn,
+    TypeId as InteropTypeId,
 };
 use tempfile::TempDir;
 
@@ -110,10 +110,6 @@ fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'_> {
     ReadStartAuthority::ConsumerStream { stream: cuda_stream_handle(stream).unwrap() }
 }
 
-fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'_> {
-    CompletionAuthority::CrossDeviceEvent { event: cuda_event_handle(event).unwrap() }
-}
-
 fn binding<'a>(bindings: &'a [BufferBinding<'a>], id: BufferId) -> &'a BufferBinding<'a> {
     bindings.iter().find(|binding| binding.id() == id).unwrap()
 }
@@ -153,17 +149,13 @@ fn assert_device_binding_on(binding: &BufferBinding<'_>, device: DeviceId) {
     assert_eq!(binding.placement(), &Placement::CudaDevice { device: device.ordinal() as i32 });
 }
 
-fn assert_device_stream_readiness(
-    readiness: &ProducerReadiness<'_>,
-    expected_stream_raw: usize,
-    expected_device: DeviceId,
-) {
-    match readiness {
-        ProducerReadiness::DeviceStreamOrdered { stream } => {
+fn assert_device_stream_readiness(access: &PreparedAccess<'_>, expected_stream_raw: usize, expected_device: DeviceId) {
+    match access {
+        PreparedAccess::Device { readiness: ProducerReadiness::DeviceStreamOrdered { stream }, .. } => {
             assert_eq!(stream.as_raw() as usize, expected_stream_raw);
             assert_eq!(stream.device(), expected_device.ordinal() as i32);
         },
-        readiness => panic!("expected device-stream readiness, got {readiness:?}"),
+        access => panic!("expected device-stream readiness, got {access:?}"),
     }
 }
 
@@ -176,16 +168,14 @@ fn assert_host_column_basics(
     assert_eq!(export.column().data_type().id(), expected_type);
     assert_eq!(export.column().len(), expected_len);
     assert_eq!(export.column().offset(), expected_offset);
-    assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedHostExport);
-    assert_eq!(export.readiness(), &ProducerReadiness::HostVisible);
+    assert_eq!(export.profile(), PreparedExportProfile::Host);
     assert!(export.bindings().iter().all(|binding| binding.placement() == &Placement::Host));
 }
 
 fn assert_host_table_basics(export: &PreparedTableExport<'_>, expected_names_slice: &[&str], expected_rows: usize) {
     assert_eq!(export.table().num_rows(), expected_rows);
     assert_eq!(export.table().names().unwrap(), expected_names(expected_names_slice).as_slice());
-    assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedHostExport);
-    assert_eq!(export.readiness(), &ProducerReadiness::HostVisible);
+    assert_eq!(export.profile(), PreparedExportProfile::Host);
     assert!(export.bindings().iter().all(|binding| binding.placement() == &Placement::Host));
 }
 
@@ -193,18 +183,6 @@ fn assert_host_binding_bytes(bindings: &[BufferBinding<'_>], id: BufferId, expec
     let binding = binding(bindings, id);
     assert_eq!(binding.placement(), &Placement::Host);
     assert_eq!(binding_bytes(binding), expected);
-}
-
-fn expect_shared_witness(result: LeaseCompletionResult, expected_kind: CompletionWitnessKind) -> CompletionWitness {
-    match result {
-        LeaseCompletionResult::Completed(witness) => {
-            assert_eq!(witness.kind(), expected_kind);
-            witness
-        },
-        LeaseCompletionResult::FallbackSynchronized => {
-            panic!("expected producer-owned completion witness")
-        },
-    }
 }
 
 fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
@@ -253,53 +231,7 @@ mod lease_contracts {
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
             .unwrap();
 
-        assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
-    }
-
-    fn shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary() {
-        let _observation_lock = lock_event_observation();
-        reset_event_observation();
-        let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
-        let export = series.try_prepare_device_column_export().unwrap();
-        let producer_event = CudaEvent::new().unwrap();
-        let device_count = DeviceId::count().unwrap();
-        let invalid_device = (device_count + 7) as i32;
-        let completion = CompletionAuthority::CrossDeviceEvent {
-            event: CudaEventHandle::from_raw_on_device(
-                producer_event.testing_interop_raw_handle_value() as *mut std::ffi::c_void,
-                invalid_device,
-            )
-            .unwrap(),
-        };
-
-        assert_ne!(invalid_device, producer_runtime.device().ordinal() as i32);
-
-        let lease = export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, completion).unwrap();
-        let err = lease
-            .complete()
-            .expect_err("cross-device completion with an out-of-range CUDA device should fail before event use");
-
-        let message = err.to_string();
-        assert!(message.contains("device ordinal"));
-        // Structured data such as the failing ordinal lives in facts and
-        // details rather than being formatted into the top-level message.
-        assert!(!message.contains("InvalidOperation"));
-        assert!(!message.contains("at DeviceId::new"));
-        assert!(!message.contains("context:"));
-        assert!(!message.contains("called"));
-        let source =
-            std::error::Error::source(&err).expect("expected preserved cudf source when remapped into InteropError");
-        let source_rendered = source.to_string();
-        assert!(source_rendered.contains("device ordinal"));
-        assert!(source_rendered.contains(&invalid_device.to_string()));
-        assert!(
-            err.context()
-                .iter()
-                .any(|(key, value)| *key == "operation" && value == "interop::ActiveReadLease::complete")
-        );
-        assert!(err.context().iter().any(|(key, value)| *key == "ordinal" && value == &invalid_device.to_string()));
-        assert!(err.context().iter().any(|(key, value)| *key == "device_count" && value == &device_count.to_string()));
+        assert!(lease.complete().unwrap().is_ready().unwrap());
     }
 
     fn shared_stream_lease_orders_consumer_stream_and_returns_witness() {
@@ -333,9 +265,9 @@ mod lease_contracts {
         assert!(observed_raw_record_call_count_for_stream_raw(producer_stream_raw) > baseline_producer_record);
         assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_consumer_wait);
 
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
-        assert!(witness.is_ready().unwrap());
+        let mut completion = lease.complete().unwrap();
+        completion.synchronize().unwrap();
+        assert!(completion.is_ready().unwrap());
     }
 
     fn shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream() {
@@ -347,12 +279,12 @@ mod lease_contracts {
         producer_ready.record(&producer_stream).unwrap();
         let export = series.try_prepare_device_column_export_with_event(&producer_ready).unwrap();
 
-        match export.readiness() {
-            ProducerReadiness::DeviceEventOrdered { event } => {
+        match export.access() {
+            PreparedAccess::Device { readiness: ProducerReadiness::DeviceEventOrdered { event }, .. } => {
                 assert_eq!(event.device(), producer_runtime.device().ordinal() as i32);
                 assert!(!event.as_raw().is_null());
             },
-            readiness => panic!("expected device-event readiness, got {readiness:?}"),
+            access => panic!("expected device-event readiness, got {access:?}"),
         }
 
         let consumer_stream = CudaStream::new().unwrap();
@@ -380,8 +312,8 @@ mod lease_contracts {
         assert_eq!(observed_raw_record_call_count_for_stream_raw(producer_stream_raw), baseline_producer_record);
         assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_consumer_wait);
 
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
+        let mut completion = lease.complete().unwrap();
+        completion.synchronize().unwrap();
     }
 
     fn into_prepared_column_export_with_event_retains_the_readiness_event() {
@@ -416,8 +348,8 @@ mod lease_contracts {
             .unwrap();
         assert!(observed_stream_wait_call_count_for_event_raw(producer_event_raw) > baseline);
 
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
+        let mut completion = lease.complete().unwrap();
+        completion.synchronize().unwrap();
     }
 
     fn into_prepared_table_export_with_event_retains_the_readiness_event() {
@@ -450,16 +382,15 @@ mod lease_contracts {
             .unwrap();
         assert!(observed_stream_wait_call_count_for_event_raw(producer_event_raw) > baseline);
 
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
+        let mut completion = lease.complete().unwrap();
+        completion.synchronize().unwrap();
     }
 
-    fn guaranteed_fallback_shared_drop_synchronizes_consumer_stream() {
+    fn shared_lease_drop_synchronizes_consumer_stream() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
         let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let export = series.try_prepare_device_column_export().unwrap();
-        assert_eq!(export.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
 
         let consumer_stream = CudaStream::new().unwrap();
         let consumer_runtime = Runtime::builder()
@@ -471,13 +402,12 @@ mod lease_contracts {
         let consumer_done = CudaEvent::new().unwrap();
 
         {
-            let lease = export
+            let _lease = export
                 .try_activate_read_lease(
                     shared_stream_read_start(&consumer_stream),
                     shared_same_device_completion(&consumer_stream),
                 )
                 .unwrap();
-            assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
             consumer_done.record(&consumer_stream).unwrap();
         }
 
@@ -493,12 +423,12 @@ mod lease_contracts {
         producer_ready.record(producer_runtime.stream()).unwrap();
 
         let export = series.try_prepare_device_column_export_with_event(&producer_ready).unwrap();
-        match export.readiness() {
-            ProducerReadiness::DeviceEventOrdered { event } => {
+        match export.access() {
+            PreparedAccess::Device { readiness: ProducerReadiness::DeviceEventOrdered { event }, .. } => {
                 assert_eq!(event.device(), producer_runtime.device().ordinal() as i32);
                 assert!(!event.as_raw().is_null());
             },
-            readiness => panic!("expected device-event readiness, got {readiness:?}"),
+            access => panic!("expected device-event readiness, got {access:?}"),
         }
 
         if !should_run_multi_gpu_test() {
@@ -524,43 +454,6 @@ mod lease_contracts {
         assert_eq!(interop_error_context_value(&err, "event_device"), None);
     }
 
-    fn explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop() {
-        let _observation_lock = lock_event_observation();
-        let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
-        let export = series
-            .try_prepare_device_column_export()
-            .unwrap()
-            .with_lease_backend(cuda_explicit_completion_required_lease_backend());
-        let cloned = export.clone();
-
-        let consumer_stream = CudaStream::new().unwrap();
-        let _consumer_runtime = Runtime::builder()
-            .with_device(producer_runtime.device())
-            .with_stream(consumer_stream.clone())
-            .build()
-            .unwrap();
-        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
-
-        let lease = export
-            .try_activate_read_lease(
-                shared_stream_read_start(&consumer_stream),
-                shared_same_device_completion(&consumer_stream),
-            )
-            .unwrap();
-        assert_eq!(lease.incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
-
-        reset_event_observation();
-        let baseline_consumer_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
-        drop(lease);
-        assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record);
-
-        let reacquired = cloned
-            .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
-            .unwrap();
-        assert_eq!(reacquired.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
-    }
-
     fn runtime_stream_lease_records_one_completion_event_and_returns_witness() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -581,41 +474,36 @@ mod lease_contracts {
                 shared_same_device_completion(&consumer_stream),
             )
             .unwrap();
-        assert_eq!(lease.export().incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
 
         reset_event_observation();
         let baseline_consumer_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
+        let mut completion = lease.complete().unwrap();
         assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record + 1);
-        witness.synchronize().unwrap();
-        assert!(witness.is_ready().unwrap());
+        completion.synchronize().unwrap();
+        assert!(completion.is_ready().unwrap());
         assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record + 1);
     }
 
     fn runtime_custom_backend_complete_path_is_used() {
         let _observation_lock = lock_event_observation();
-        struct CountingFallbackBackend {
+        struct CountingBackend {
             complete_calls: Arc<AtomicUsize>,
         }
 
-        impl ActiveLeaseBackend for CountingFallbackBackend {
-            fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
-                IncompleteDropBehavior::ExplicitCompletionRequired
-            }
-
+        impl ActiveLeaseBackend for CountingBackend {
             fn complete(
                 &self,
-                _export: &LeaseExportContext,
-                _completion: CompletionBinding,
-            ) -> std::result::Result<LeaseCompletionResult, InteropError> {
+                _readiness: ProducerReadiness<'_>,
+                _completion: CompletionAuthority<'_>,
+            ) -> std::result::Result<Option<CompletionWitness>, InteropError> {
                 self.complete_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(LeaseCompletionResult::FallbackSynchronized)
+                Ok(None)
             }
 
             fn drop_incomplete(
                 &self,
-                _export: &LeaseExportContext,
-                _completion: CompletionBinding,
+                _readiness: ProducerReadiness<'_>,
+                _completion: CompletionAuthority<'_>,
             ) -> std::result::Result<(), InteropError> {
                 Ok(())
             }
@@ -624,9 +512,11 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().build().unwrap();
         let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let complete_calls = Arc::new(AtomicUsize::new(0));
-        let export = series.try_prepare_device_column_export().unwrap().with_lease_backend(LeaseBackend::new(
-            CountingFallbackBackend { complete_calls: Arc::clone(&complete_calls) },
-        ));
+        let export = column_export_with_lease_backend_for_test(
+            &series.try_prepare_device_column_export().unwrap(),
+            LeaseBackend::new(CountingBackend { complete_calls: Arc::clone(&complete_calls) }),
+        )
+        .unwrap();
 
         let consumer_stream = CudaStream::new().unwrap();
         let _consumer_runtime = Runtime::builder()
@@ -642,51 +532,8 @@ mod lease_contracts {
             )
             .unwrap();
 
-        assert!(matches!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized));
+        assert!(lease.complete().unwrap().is_ready().unwrap());
         assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
-    }
-
-    fn runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard() {
-        let _observation_lock = lock_event_observation();
-        let producer_runtime = Runtime::builder().build().unwrap();
-        let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
-        let export = frame
-            .try_prepare_device_table_export()
-            .unwrap()
-            .with_lease_backend(cuda_explicit_completion_required_lease_backend());
-        let cloned = export.clone();
-
-        let consumer_stream = CudaStream::new().unwrap();
-        let _consumer_runtime = Runtime::builder()
-            .with_device(producer_runtime.device())
-            .with_stream(consumer_stream.clone())
-            .build()
-            .unwrap();
-        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
-
-        let lease = export
-            .try_activate_read_lease(
-                shared_stream_read_start(&consumer_stream),
-                shared_same_device_completion(&consumer_stream),
-            )
-            .unwrap();
-        assert_eq!(lease.export().incomplete_drop_behavior(), IncompleteDropBehavior::ExplicitCompletionRequired);
-
-        reset_event_observation();
-        let baseline_consumer_record = observed_raw_record_call_count_for_stream_raw(consumer_stream_raw);
-        drop(lease);
-        assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record);
-
-        let reacquired = cloned
-            .try_activate_read_lease(
-                shared_stream_read_start(&consumer_stream),
-                shared_same_device_completion(&consumer_stream),
-            )
-            .unwrap();
-        let witness = expect_shared_witness(reacquired.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
     }
 
     fn shared_leases_can_overlap_and_reacquire_one_export_root() {
@@ -712,7 +559,7 @@ mod lease_contracts {
             )
             .unwrap();
 
-        assert_eq!(shared_lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+        assert!(shared_lease.complete().unwrap().is_ready().unwrap());
 
         let reacquired_device_stream_lease = export
             .try_activate_read_lease(
@@ -721,122 +568,16 @@ mod lease_contracts {
             )
             .unwrap();
 
-        let witness =
-            expect_shared_witness(device_stream_lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
-        witness.synchronize().unwrap();
-        let witness = expect_shared_witness(
-            reacquired_device_stream_lease.complete().unwrap(),
-            CompletionWitnessKind::ConsumerStream,
-        );
-        witness.synchronize().unwrap();
-    }
-
-    #[test]
-    fn shared_cross_device_event_lease_orders_stream_then_waits_completion_event() {
-        let _observation_lock = lock_event_observation();
-        if !should_run_multi_gpu_test() {
-            return;
-        }
-        let _device_guard = common::DeviceRestoreGuard::new();
-
-        let (device0, device1) = first_two_test_devices();
-        common::set_current_device(device0);
-        let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-        let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
-        let export = frame
-            .try_prepare_device_table_export()
-            .unwrap()
-            .with_lease_backend(cuda_explicit_completion_required_lease_backend());
-
-        common::set_current_device(device1);
-        let consumer_stream = CudaStream::new().unwrap();
-        let consumer_runtime =
-            Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-        let _consumer_work = consumer_runtime.series(&[7i32, 8, 9]).unwrap();
-        let consumer_event = CudaEvent::new().unwrap();
-        consumer_event.record(&consumer_stream).unwrap();
-        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
-        let consumer_event_raw = consumer_event.testing_interop_raw_handle_value();
-
-        common::set_current_device(device0);
-        reset_event_observation();
-        let baseline_activation_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
-        let baseline_completion_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
-
-        let lease = export
-            .try_activate_read_lease(
-                shared_stream_read_start(&consumer_stream),
-                shared_cross_device_completion(&consumer_event),
-            )
-            .unwrap();
-
-        assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_activation_wait);
-        assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait);
-
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerEvent);
-        assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait + 1);
-        witness.synchronize().unwrap();
-    }
-
-    #[test]
-    fn shared_cross_device_event_explicit_backend_orders_stream_then_waits_completion_event() {
-        let _observation_lock = lock_event_observation();
-        if !should_run_multi_gpu_test() {
-            return;
-        }
-        let _device_guard = common::DeviceRestoreGuard::new();
-
-        let (device0, device1) = first_two_test_devices();
-        common::set_current_device(device0);
-        let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-        let ids = producer_runtime.series(&[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series(&[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
-        let export = frame
-            .try_prepare_device_table_export()
-            .unwrap()
-            .with_lease_backend(cuda_explicit_completion_required_lease_backend());
-
-        common::set_current_device(device1);
-        let consumer_stream = CudaStream::new().unwrap();
-        let consumer_runtime =
-            Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-        let _consumer_work = consumer_runtime.series(&[7i32, 8, 9]).unwrap();
-        let consumer_event = CudaEvent::new().unwrap();
-        consumer_event.record(&consumer_stream).unwrap();
-        let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
-        let consumer_event_raw = consumer_event.testing_interop_raw_handle_value();
-
-        common::set_current_device(device0);
-        reset_event_observation();
-        let baseline_activation_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
-        let baseline_completion_wait = observed_stream_wait_call_count_for_event_raw(consumer_event_raw);
-
-        let lease = export
-            .try_activate_read_lease(
-                shared_stream_read_start(&consumer_stream),
-                shared_cross_device_completion(&consumer_event),
-            )
-            .unwrap();
-
-        assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_activation_wait);
-        assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait);
-
-        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerEvent);
-        assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait + 1);
-        witness.synchronize().unwrap();
+        let mut completion = device_stream_lease.complete().unwrap();
+        completion.synchronize().unwrap();
+        let mut completion = reacquired_device_stream_lease.complete().unwrap();
+        completion.synchronize().unwrap();
     }
 
     #[test]
     fn prepared_export_tests_cases_lease_contracts() {
         run_named_cases(&[
             ("shared_synchronous_completion_falls_back_by_return", shared_synchronous_completion_falls_back_by_return),
-            (
-                "shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary",
-                shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary,
-            ),
             (
                 "shared_stream_lease_orders_consumer_stream_and_returns_witness",
                 shared_stream_lease_orders_consumer_stream_and_returns_witness,
@@ -853,23 +594,12 @@ mod lease_contracts {
                 "into_prepared_table_export_with_event_retains_the_readiness_event",
                 into_prepared_table_export_with_event_retains_the_readiness_event,
             ),
-            (
-                "guaranteed_fallback_shared_drop_synchronizes_consumer_stream",
-                guaranteed_fallback_shared_drop_synchronizes_consumer_stream,
-            ),
-            (
-                "explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop",
-                explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop,
-            ),
+            ("shared_lease_drop_synchronizes_consumer_stream", shared_lease_drop_synchronizes_consumer_stream),
             (
                 "runtime_stream_lease_records_one_completion_event_and_returns_witness",
                 runtime_stream_lease_records_one_completion_event_and_returns_witness,
             ),
             ("runtime_custom_backend_complete_path_is_used", runtime_custom_backend_complete_path_is_used),
-            (
-                "runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard",
-                runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard,
-            ),
             (
                 "shared_leases_can_overlap_and_reacquire_one_export_root",
                 shared_leases_can_overlap_and_reacquire_one_export_root,
@@ -1027,9 +757,9 @@ mod device_export_contracts {
             let column = column_from_slice(&[1i32, 2, 3]).unwrap();
             let view = column.testing_view().unwrap();
             let column_export = view.try_prepare_device_column_export().unwrap();
-            assert_eq!(column_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+            assert_eq!(column_export.profile(), PreparedExportProfile::Device);
             assert_device_stream_readiness(
-                column_export.readiness(),
+                column_export.access(),
                 runtime.stream().testing_raw_handle_value(),
                 runtime.device(),
             );
@@ -1038,10 +768,10 @@ mod device_export_contracts {
             let vals = series("value", &[10i64, 20, 30]).unwrap();
             let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
             let frame_export = frame.try_prepare_device_table_export().unwrap();
-            assert_eq!(frame_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+            assert_eq!(frame_export.profile(), PreparedExportProfile::Device);
             assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
             assert_device_stream_readiness(
-                frame_export.readiness(),
+                frame_export.access(),
                 runtime.stream().testing_raw_handle_value(),
                 runtime.device(),
             );
@@ -1077,7 +807,7 @@ mod device_export_contracts {
         assert_eq!(nullable_export.column().data_type().id(), InteropTypeId::Int32);
         assert_eq!(nullable_export.column().len(), 3);
         assert_eq!(nullable_export.column().offset(), 0);
-        assert_eq!(nullable_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+        assert_eq!(nullable_export.profile(), PreparedExportProfile::Device);
 
         let values = match nullable_export.column().layout() {
             &ColumnLayout::FixedWidth { values } => values,
@@ -1095,7 +825,7 @@ mod device_export_contracts {
             PhysicalValidity::NoValidityBuffer => panic!("expected validity mask"),
         };
         assert_device_binding_on(binding(nullable_export.bindings(), mask), runtime.device());
-        assert_device_stream_readiness(nullable_export.readiness(), expected_stream, runtime.device());
+        assert_device_stream_readiness(nullable_export.access(), expected_stream, runtime.device());
 
         let base = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
         let base_view = base.testing_view().unwrap();
@@ -1117,13 +847,9 @@ mod device_export_contracts {
 
         let export = column.try_into_prepared_device_column_export().unwrap();
 
-        assert!(export.clone_retained_owner().is_some());
-        assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
-        assert_device_stream_readiness(
-            export.readiness(),
-            runtime.stream().testing_raw_handle_value(),
-            runtime.device(),
-        );
+        assert!(export.retained_owner().is_some());
+        assert_eq!(export.profile(), PreparedExportProfile::Device);
+        assert_device_stream_readiness(export.access(), runtime.stream().testing_raw_handle_value(), runtime.device());
     }
 
     fn borrowed_low_level_column_prepared_export_does_not_fabricate_owner_retention() {
@@ -1132,7 +858,7 @@ mod device_export_contracts {
 
         let export = column.try_prepare_device_column_export().unwrap();
 
-        assert!(export.clone_retained_owner().is_none());
+        assert!(export.retained_owner().is_none());
     }
 
     fn device_table_export_preserves_names_nullability_readiness_and_low_level_equivalence() {
@@ -1148,12 +874,12 @@ mod device_export_contracts {
 
         assert_eq!(frame_export.table().num_rows(), 3);
         assert_eq!(frame_export.table().names().unwrap(), expected_names(&["id", "value"]).as_slice());
-        assert_eq!(frame_export.columns()[0].schema_nullability(), SchemaNullability::NonNullable);
-        assert_eq!(frame_export.columns()[1].schema_nullability(), SchemaNullability::Nullable);
+        assert_eq!(frame_export.columns()[0].validity(), &PhysicalValidity::NoValidityBuffer);
+        assert!(matches!(frame_export.columns()[1].validity(), PhysicalValidity::ValidityMask { .. }));
         assert_eq!(frame_export.columns(), table_export.columns());
         assert_eq!(frame_export.bindings(), table_export.bindings());
-        assert_eq!(frame_export.readiness(), table_export.readiness());
-        assert_device_stream_readiness(frame_export.readiness(), expected_stream, runtime.device());
+        assert_device_stream_readiness(frame_export.access(), expected_stream, runtime.device());
+        assert_device_stream_readiness(table_export.access(), expected_stream, runtime.device());
     }
 
     fn owned_low_level_table_consuming_prepared_export_retains_owner() {
@@ -1164,13 +890,9 @@ mod device_export_contracts {
 
         let export = table.try_into_prepared_device_table_export().unwrap();
 
-        assert!(export.clone_retained_owner().is_some());
-        assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
-        assert_device_stream_readiness(
-            export.readiness(),
-            runtime.stream().testing_raw_handle_value(),
-            runtime.device(),
-        );
+        assert!(export.retained_owner().is_some());
+        assert_eq!(export.profile(), PreparedExportProfile::Device);
+        assert_device_stream_readiness(export.access(), runtime.stream().testing_raw_handle_value(), runtime.device());
     }
 
     fn borrowed_low_level_table_prepared_export_does_not_fabricate_owner_retention() {
@@ -1181,7 +903,7 @@ mod device_export_contracts {
 
         let export = table.try_prepare_device_table_export().unwrap();
 
-        assert!(export.clone_retained_owner().is_none());
+        assert!(export.retained_owner().is_none());
     }
 
     fn device_string_exports_preserve_binary_like_metadata_and_active_slice_span() {
@@ -1206,7 +928,7 @@ mod device_export_contracts {
         let data_binding = binding(export.bindings(), *data);
         assert_device_binding_on(data_binding, runtime.device());
         assert!(data_binding.bytes().byte_len() >= "alicebob".len());
-        assert_device_stream_readiness(export.readiness(), expected_stream, runtime.device());
+        assert_device_stream_readiness(export.access(), expected_stream, runtime.device());
 
         let base = runtime.column_from_strs(&["zero", "one", "two", "three"]).unwrap();
         let base_view = base.testing_view().unwrap();
@@ -1320,7 +1042,7 @@ mod device_export_contracts {
         let lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
             .unwrap();
-        assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+        assert!(lease.complete().unwrap().is_ready().unwrap());
     }
 
     #[test]
@@ -1436,8 +1158,8 @@ mod host_export_contracts {
 
         let export = frame.try_prepare_host_table_export().unwrap();
         assert_host_table_basics(&export, &["id", "value"], 3);
-        assert_eq!(export.columns()[0].schema_nullability(), SchemaNullability::NonNullable);
-        assert_eq!(export.columns()[1].schema_nullability(), SchemaNullability::Nullable);
+        assert_eq!(export.columns()[0].validity(), &PhysicalValidity::NoValidityBuffer);
+        assert!(matches!(export.columns()[1].validity(), PhysicalValidity::ValidityMask { .. }));
 
         let consumer_stream = CudaStream::new().unwrap();
         let _consumer_runtime =
@@ -1522,7 +1244,7 @@ mod host_export_contracts {
         let lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
             .unwrap();
-        assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+        assert!(lease.complete().unwrap().is_ready().unwrap());
     }
 
     fn host_recursive_nested_export_materializes_supported_projections() {
@@ -1618,7 +1340,7 @@ mod host_export_contracts {
         let lease = export
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
             .unwrap();
-        assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+        assert!(lease.complete().unwrap().is_ready().unwrap());
     }
 
     #[test]

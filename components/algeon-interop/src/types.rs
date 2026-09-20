@@ -3,15 +3,10 @@ use std::sync::Arc;
 
 pub type Result<T> = core::result::Result<T, InteropError>;
 
-/// Logical type identifiers shared by the borrowed interop ABI.
-///
-/// The legacy raw borrowed constructor validates only the fixed-width subset.
-/// The current semantic borrowed compatibility slice additionally supports
-/// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32`.
-#[repr(i32)]
+/// Logical type identifiers shared by interop exports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeId {
-    Empty = 0,
+    Empty,
     Int8,
     Int16,
     Int32,
@@ -68,7 +63,7 @@ impl TypeId {
     }
 }
 
-/// A logical data type for borrowed interop descriptors.
+/// A logical data type for interop column descriptors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DataType {
     id: TypeId,
@@ -102,18 +97,15 @@ pub enum InteropErrorKind {
     UnsupportedLayout,
     ExecutionBindingUnavailable,
     ExecutionBindingMismatch,
-    NullMaskUnsupported,
     InvalidView,
     PlacementUnsupported,
     ReadinessUnavailable,
     ReadinessMismatch,
     MixedDeviceUnsupported,
     ProfileUnsupported,
-    LeaseAlreadyActive,
 }
 
-/// Semantic error returned by borrowed interop validation and producer
-/// adapters.
+/// Semantic error returned by interop validation and producer adapters.
 #[derive(Debug, Clone)]
 pub struct InteropError {
     kind: InteropErrorKind,
@@ -180,20 +172,6 @@ pub struct CudaStreamHandle<'a> {
 }
 
 impl CudaStreamHandle<'_> {
-    /// Reject constructing a borrowed stream handle without CUDA device
-    /// identity.
-    pub fn from_raw(raw: *mut c_void) -> Result<Self> {
-        let _ = NonNull::new(raw).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "CUDA stream handle must be non-null")
-                .with_context("field", "cuda_stream")
-        })?;
-        Err(InteropError::new(
-            InteropErrorKind::ReadinessUnavailable,
-            "CUDA stream handle must carry explicit device identity",
-        )
-        .with_context("field", "cuda_stream.device"))
-    }
-
     /// Construct a borrowed stream handle from a raw non-null pointer plus its
     /// CUDA device identity.
     pub fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
@@ -222,14 +200,12 @@ impl CudaStreamHandle<'_> {
     }
 }
 
-// SAFETY: CUDA streams are opaque runtime handles whose API calls are
-// internally serialized by the CUDA driver, so the handle itself may be sent
-// to or shared with another thread. Note that concurrent *submission* to the
-// same stream from multiple threads is serialized by the driver but callers
-// should still treat stream ordering as single-producer for correctness.
-// This wrapper is borrowed-only: it never destroys the underlying stream and
-// carries explicit device identity plus a lifetime tying validity to the
-// producer-owned source handle.
+// SAFETY: This crate never dereferences the stream pointer or passes it to
+// CUDA; it only copies and compares the address. Sending or sharing the handle
+// therefore cannot race inside this crate. `from_raw_on_device` accepts any
+// lifetime, so `'a` does not prove that the stream is alive: the producer
+// guarantees that. Code that hands the pointer to CUDA relies on that
+// guarantee and on CUDA accepting a stream from any host thread.
 unsafe impl Send for CudaStreamHandle<'_> {}
 unsafe impl Sync for CudaStreamHandle<'_> {}
 
@@ -242,20 +218,6 @@ pub struct CudaEventHandle<'a> {
 }
 
 impl CudaEventHandle<'_> {
-    /// Reject constructing a borrowed event handle without CUDA device
-    /// identity.
-    pub fn from_raw(raw: *mut c_void) -> Result<Self> {
-        let _ = NonNull::new(raw).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "CUDA event handle must be non-null")
-                .with_context("field", "cuda_event")
-        })?;
-        Err(InteropError::new(
-            InteropErrorKind::ReadinessUnavailable,
-            "CUDA event handle must carry explicit device identity",
-        )
-        .with_context("field", "cuda_event.device"))
-    }
-
     /// Construct a borrowed event handle from a raw non-null pointer plus its
     /// CUDA device identity.
     pub fn from_raw_on_device(raw: *mut c_void, device: i32) -> Result<Self> {
@@ -284,11 +246,9 @@ impl CudaEventHandle<'_> {
     }
 }
 
-// SAFETY: CUDA events are opaque synchronization handles whose record, query,
-// and wait operations are internally serialized by the CUDA driver, so the
-// handle may safely be sent to or shared with another thread. This wrapper is
-// borrowed-only, non-dropping, and lifetime-bound to the producer-owned source
-// handle.
+// SAFETY: As with `CudaStreamHandle`, this crate never dereferences the event
+// pointer or passes it to CUDA. The producer, not `'a`, guarantees that the
+// event outlives every use of the handle.
 unsafe impl Send for CudaEventHandle<'_> {}
 unsafe impl Sync for CudaEventHandle<'_> {}
 
@@ -314,32 +274,28 @@ impl DeviceMemoryResourceHandle<'_> {
     }
 }
 
-// SAFETY: RMM memory-resource handles denote allocator objects that are
-// expected to support concurrent use. This wrapper is borrowed-only and does
-// not own or destroy the underlying allocator; the lifetime ensures the source
-// owner outlives the descriptor.
+// SAFETY: This crate never dereferences the memory-resource pointer. A caller
+// that allocates through it relies on the producer keeping the resource alive
+// and on the resource supporting concurrent use; `from_raw` accepts any
+// lifetime, so `'a` cannot enforce either.
 unsafe impl Send for DeviceMemoryResourceHandle<'_> {}
 unsafe impl Sync for DeviceMemoryResourceHandle<'_> {}
 
-/// Execution metadata that a consumer must honor before reading borrowed GPU
-/// data.
-///
-/// Producers are tied to a specific device, CUDA stream, and memory resource.
+/// Execution provenance of a producer runtime: its CUDA stream, and through
+/// the stream its CUDA device, plus its memory resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionBinding<'a> {
-    device: i32,
     cuda_stream: CudaStreamHandle<'a>,
     mr: DeviceMemoryResourceHandle<'a>,
 }
 
 impl<'a> ExecutionBinding<'a> {
-    /// Construct explicit producer execution metadata.
-    pub fn explicit(device: i32, cuda_stream: CudaStreamHandle<'a>, mr: DeviceMemoryResourceHandle<'a>) -> Self {
-        Self { device, cuda_stream, mr }
+    pub fn new(cuda_stream: CudaStreamHandle<'a>, mr: DeviceMemoryResourceHandle<'a>) -> Self {
+        Self { cuda_stream, mr }
     }
 
     pub fn device(&self) -> i32 {
-        self.device
+        self.cuda_stream.device()
     }
 
     pub fn cuda_stream(&self) -> CudaStreamHandle<'a> {
@@ -379,33 +335,11 @@ impl ColumnId {
     }
 }
 
-/// Stable symbolic identifier for a semantic table node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TableId(u32);
-
-impl TableId {
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
 /// Physical validity representation for a semantic column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhysicalValidity {
     NoValidityBuffer,
     ValidityMask { mask: BufferId, null_count: Option<usize> },
-}
-
-/// Optional schema-level nullability fact distinct from the physical mask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaNullability {
-    Unknown,
-    Nullable,
-    NonNullable,
 }
 
 /// Physical layout description for a semantic column.
@@ -426,7 +360,6 @@ pub struct SemanticColumn {
     len: usize,
     offset: usize,
     validity: PhysicalValidity,
-    schema_nullability: SchemaNullability,
     layout: ColumnLayout,
 }
 
@@ -437,10 +370,9 @@ impl SemanticColumn {
         len: usize,
         offset: usize,
         validity: PhysicalValidity,
-        schema_nullability: SchemaNullability,
         layout: ColumnLayout,
     ) -> Self {
-        Self { id, data_type, len, offset, validity, schema_nullability, layout }
+        Self { id, data_type, len, offset, validity, layout }
     }
 
     pub fn id(&self) -> ColumnId {
@@ -467,10 +399,6 @@ impl SemanticColumn {
         &self.validity
     }
 
-    pub fn schema_nullability(&self) -> SchemaNullability {
-        self.schema_nullability
-    }
-
     pub fn layout(&self) -> &ColumnLayout {
         &self.layout
     }
@@ -479,19 +407,14 @@ impl SemanticColumn {
 /// Semantic description of one table independent of resource bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticTable {
-    id: TableId,
     num_rows: usize,
     columns: Vec<ColumnId>,
     names: Option<Vec<String>>,
 }
 
 impl SemanticTable {
-    pub fn new(id: TableId, num_rows: usize, columns: Vec<ColumnId>, names: Option<Vec<String>>) -> Self {
-        Self { id, num_rows, columns, names }
-    }
-
-    pub fn id(&self) -> TableId {
-        self.id
+    pub fn new(num_rows: usize, columns: Vec<ColumnId>, names: Option<Vec<String>>) -> Self {
+        Self { num_rows, columns, names }
     }
 
     pub fn num_rows(&self) -> usize {
@@ -539,22 +462,10 @@ impl BoundBytes<'_> {
         Ok(Self { base_ptr, byte_len, _lifetime: PhantomData })
     }
 
-    /// Returns the base address as a read-only raw pointer.
-    ///
-    /// This descriptor does not claim exclusive or mutable access to the
-    /// pointee. Callers that need mutation-capable access must hold `&mut self`
-    /// and use [`base_mut_ptr()`](Self::base_mut_ptr).
+    /// Returns the base address. Holding a `BoundBytes` grants no access to
+    /// the pointee.
     pub fn base_ptr(&self) -> *const c_void {
         self.base_ptr.as_ptr() as *const c_void
-    }
-
-    /// Returns the base address as a mutable raw pointer.
-    ///
-    /// Requiring `&mut self` prevents safe code from obtaining multiple
-    /// mutation-capable pointers from shared access when `BoundBytes` is shared
-    /// across threads.
-    pub fn base_mut_ptr(&mut self) -> *mut c_void {
-        self.base_ptr.as_ptr()
     }
 
     pub fn byte_len(&self) -> usize {
@@ -562,14 +473,11 @@ impl BoundBytes<'_> {
     }
 }
 
-// SAFETY: `BoundBytes` is a non-owning pointer-plus-length descriptor for
-// CUDA device memory. CUDA device pointers are valid from any host thread;
-// the CUDA runtime does not bind a device pointer to the thread that allocated
-// it. The safe surface exposes only read-only raw pointers from `&self`;
-// mutable raw access requires `&mut self`, preventing aliased mutable device
-// pointers through shared references. The lifetime parameter ties the
-// descriptor to the producer-owned allocation, ensuring the wrapper cannot
-// outlive the storage it references.
+// SAFETY: `BoundBytes` is a `Copy` address-plus-length descriptor for host or
+// device memory, and this crate never dereferences the address. Moving or
+// sharing it across threads copies an integer-like value and cannot race here.
+// `from_raw_parts` accepts any lifetime (cudf produces `'static` bindings), so
+// the producer, not `'a`, guarantees that the storage outlives every read.
 unsafe impl Send for BoundBytes<'_> {}
 unsafe impl Sync for BoundBytes<'_> {}
 
@@ -599,12 +507,22 @@ impl<'a> BufferBinding<'a> {
     }
 }
 
-/// Producer-side read-start fact for a prepared export.
+/// Device point after which a prepared device export's bytes may be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProducerReadiness<'a> {
-    HostVisible,
     DeviceStreamOrdered { stream: CudaStreamHandle<'a> },
     DeviceEventOrdered { event: CudaEventHandle<'a> },
+}
+
+impl ProducerReadiness<'_> {
+    /// CUDA device of the readiness stream or event, which is the producer
+    /// device of the export.
+    pub fn device(&self) -> i32 {
+        match self {
+            Self::DeviceStreamOrdered { stream } => stream.device(),
+            Self::DeviceEventOrdered { event } => event.device(),
+        }
+    }
 }
 
 /// Consumer-supplied read-start authority for an activated read lease.
@@ -619,32 +537,4 @@ pub enum ReadStartAuthority<'a> {
 pub enum CompletionAuthority<'a> {
     SynchronousByReturn,
     SameDeviceStream { stream: CudaStreamHandle<'a> },
-    CrossDeviceEvent { event: CudaEventHandle<'a> },
-}
-
-/// Backend-facing borrowed producer-readiness facts captured on an active
-/// lease.
-///
-/// # Safety
-///
-/// The `raw` pointers are lifetime-erased CUDA stream/event handles.  They
-/// are valid only while the `'consumer` lifetime on the enclosing
-/// `ActiveColumnReadLease` / `ActiveTableReadLease` is alive.  Do not store
-/// these bindings beyond the lease's lifetime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaseReadiness {
-    HostVisible,
-    DeviceStreamOrdered { raw: *mut c_void, device: i32 },
-    DeviceEventOrdered { raw: *mut c_void, device: i32 },
-}
-
-/// Backend-facing read-start authority captured on an active lease.
-///
-/// # Safety
-///
-/// Same lifetime-erasure invariant as [`LeaseReadiness`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReadStartBinding {
-    SynchronousByReturn,
-    ConsumerStream { raw: *mut c_void, device: i32 },
 }

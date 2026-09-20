@@ -1112,18 +1112,6 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
-    #[doc = " Deep-copy a fixed-width column from raw borrowed interop-view facts with\n explicit execution options.\n\n This reconstructs a temporary `cudf::column_view` from the borrowed device\n pointer, optional null mask, and logical offset, then deep-copies the\n active logical range into a new owning column.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned column."]
-    pub fn cudf_column_copy_from_borrowed_view_ex(
-        type_id: cudf_type_id_t,
-        scale: i32,
-        size: i32,
-        offset: i32,
-        data: *const core::ffi::c_void,
-        null_mask: *const core::ffi::c_void,
-        null_count: i32,
-        options: *const cudf_exec_options_t,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
     #[doc = " Deep-copy a column from a prepared-device export semantic graph with\n explicit execution options.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned column."]
     pub fn cudf_column_copy_from_prepared_device_export_ex(
         root_column_id: u32,
@@ -1142,15 +1130,6 @@ unsafe extern "C" {
         bindings: *const cudf_interop_buffer_binding_t,
         num_bindings: i32,
         options: *const cudf_exec_options_t,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-    #[doc = " Create a zero-copy owning column handle from an owned device transfer\n semantic graph.\n\n The resulting handle retains only shim-owned semantic metadata. Higher\n layers remain responsible for retaining the transfer root owner for the\n lifetime of the returned handle."]
-    pub fn cudf_column_create_from_owned_device_transfer(
-        root_column_id: u32,
-        semantic_columns: *const cudf_interop_semantic_column_t,
-        num_semantic_columns: i32,
-        bindings: *const cudf_interop_buffer_binding_t,
-        num_bindings: i32,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
     #[doc = " Return payload bytes for this owning column with explicit execution options.\n\n Compound parent columns contribute through their children; STRING also\n accounts for its chars payload using the resolved execution stream.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. Payload accounting excludes\n allocator padding."]
@@ -1328,15 +1307,6 @@ unsafe extern "C" {
         bindings: *const cudf_interop_buffer_binding_t,
         num_bindings: i32,
         options: *const cudf_exec_options_t,
-        out: *mut cudf_table_handle,
-    ) -> cudf_status_t;
-    #[doc = " Create a zero-copy owning table handle from an owned device transfer\n semantic graph.\n\n The resulting handle retains only shim-owned semantic metadata. Higher\n layers remain responsible for retaining the transfer root owner for the\n lifetime of the returned handle."]
-    pub fn cudf_table_create_from_owned_device_transfer(
-        table: *const cudf_interop_semantic_table_t,
-        semantic_columns: *const cudf_interop_semantic_column_t,
-        num_semantic_columns: i32,
-        bindings: *const cudf_interop_buffer_binding_t,
-        num_bindings: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
     #[doc = " Return payload bytes for this owning table with explicit execution options.\n\n This sums payload accounting for each owning column.\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource."]

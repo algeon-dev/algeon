@@ -6,50 +6,37 @@
 //! [`crate::core::Table`] only when explicit low-level ownership or borrowing
 //! control is required.
 //!
-//! To export from `cudf`, choose one of three contracts:
-//!
-//! - `try_borrow_*_view` lends device buffers without transferring ownership.
-//! - `try_prepare_*_export` prepares data for consumer access or copying.
-//! - `try_into_owned_transfer` moves device-buffer ownership to the consumer.
+//! To export from `cudf`, call `try_prepare_*_export` to prepare data for
+//! consumer access or copying.
 //!
 //! To import into `cudf`, call `try_import_from_*_into_runtime` with the
-//! destination [`crate::Runtime`]. [`runtime_release`] and [`arrow_device`]
-//! expose `cudf`-specific advanced controls; [`arrow_host`] converts through
-//! host `RecordBatch` values. Import the shared types used by these APIs from
-//! [`contract`]. Independent producers and consumers can instead depend on
-//! `algeon-interop` directly and import the same types from `rapids_interop`.
+//! destination [`crate::Runtime`]. [`arrow_device`] exposes `cudf`-specific
+//! advanced controls; [`arrow_host`] converts through host `RecordBatch`
+//! values. Import the shared types used by these APIs from [`contract`].
+//! Independent producers and consumers can instead depend on `algeon-interop`
+//! directly and import the same types from `rapids_interop`.
 
 pub mod arrow_device;
 pub mod arrow_host;
-mod borrowed;
 mod column;
 mod consumer_import;
 mod errors;
 pub(crate) mod execution;
-pub mod frame;
+mod frame;
 mod import_graph;
 pub(crate) mod projection;
-#[path = "contracts.rs"]
-mod release_contracts;
 mod runtime_lease;
-pub mod runtime_release;
 mod table;
 mod table_export;
 pub(crate) mod testing_hooks;
 
-use std::sync::Arc;
-
-use borrowed::*;
-use column::{prepare_from_owned_column, prepare_host_from_owned_column, transfer_from_owned_column};
+use column::{prepare_from_owned_column, prepare_host_from_owned_column};
 use consumer_import::{
-    dataframe_import_names, import_column_from_borrowed_view, import_column_from_owned_transfer,
-    import_column_from_prepared_export, import_partitioned_local_tables_from_prepared_export,
-    import_table_from_borrowed_view, import_table_from_owned_transfer, import_table_from_prepared_export,
+    dataframe_import_names, import_column_from_prepared_export, import_table_from_prepared_export,
     wrap_imported_dataframe, wrap_imported_series,
 };
 use errors::*;
 use execution::*;
-pub use frame::PartitionedDataFrameExport;
 use prepared::*;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
 /// Native-independent interop contracts used by the `cudf` adapters.
@@ -58,27 +45,19 @@ use projection::{prepared_column_projection_from_view, prepared_host_column_proj
 /// module have the same types as values imported directly from that crate.
 pub use rapids_interop as contract;
 use rapids_interop::{
-    OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferParts, PartitionedOwnedTableTransfer,
-    PartitionedOwnedTableTransferPartition, ReleaseContract, ReleaseSynchronization, TransferCompletionRule,
+    BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle,
+    DataType as InteropDataType, DeviceMemoryResourceHandle, ExecutionBinding, PhysicalValidity, Placement,
+    SemanticColumn, SemanticTable, TypeId as InteropTypeId,
 };
-use release_contracts::*;
-use runtime_release::*;
-pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};
 mod prepared {
     pub use rapids_interop::{
-        ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, PartitionedPreparedTableExport,
-        PartitionedPreparedTablePartition, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+        InteropError, InteropErrorKind, PreparedAccess, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
     };
 }
-pub use runtime_lease::cuda_explicit_completion_required_lease_backend;
 use table_export::{
     prepare_device_table_export_from_columns, prepare_device_table_export_from_columns_with_readiness,
-    prepare_host_table_export_from_columns, prepare_host_table_export_from_view,
-    prepare_partitioned_device_table_export_from_columns, prepare_partitioned_host_table_export_from_columns,
-    prepare_table_export_from_view, prepare_table_export_from_view_with_readiness, transfer_from_owned_table,
-    transfer_from_owned_table_with_names, transfer_partitioned_owned_table_from_columns,
-    transfer_partitioned_owned_table_from_columns_with_runtime_release,
-    transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization,
+    prepare_host_table_export_from_columns, prepare_host_table_export_from_view, prepare_table_export_from_view,
+    prepare_table_export_from_view_with_readiness,
 };
 
 use crate::{
@@ -89,12 +68,10 @@ use crate::{
         types::{DataType, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
-    hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
-    internal::resolve::validate_no_duplicate_names,
     ops::dictionary,
     runtime::{
         BoundaryKind, BoundaryObservation, CudaEvent, CudaStream, ExecutionPlacement, QueryStageKind, Runtime,
-        execution_domain::ExecutionDomain, record_boundary_observation_in_domain,
+        execution_domain::ExecutionDomain,
     },
 };
 
@@ -107,24 +84,9 @@ fn boundary_observation(
 ) -> BoundaryObservation {
     let observation = BoundaryObservation::new(kind, placement, rows, columns, synchronized_for_host);
     match kind {
-        BoundaryKind::InteropLease | BoundaryKind::OwnedTransfer => {
-            observation.with_query_stage(QueryStageKind::InteropExport)
-        },
+        BoundaryKind::InteropLease => observation.with_query_stage(QueryStageKind::InteropExport),
         _ => observation,
     }
-}
-
-fn record_observation(domain: &Arc<ExecutionDomain>, observation: BoundaryObservation) {
-    record_boundary_observation_in_domain(domain, observation);
-}
-
-fn column_boundary_observation(
-    kind: BoundaryKind,
-    column: &Column,
-    operation: &'static str,
-) -> Result<BoundaryObservation, InteropError> {
-    let rows = column.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    Ok(boundary_observation(kind, column.execution_domain().placement(), rows, 1, false))
 }
 
 fn column_view_boundary_observation(
@@ -134,15 +96,6 @@ fn column_view_boundary_observation(
 ) -> Result<BoundaryObservation, InteropError> {
     let rows = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     Ok(boundary_observation(kind, view.execution_domain().placement(), rows, 1, false))
-}
-
-fn table_boundary_observation(
-    kind: BoundaryKind,
-    table: &Table,
-    operation: &'static str,
-) -> Result<BoundaryObservation, InteropError> {
-    let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    table_view_boundary_observation(kind, &view, operation)
 }
 
 fn table_view_boundary_observation(

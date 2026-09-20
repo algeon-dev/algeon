@@ -46,7 +46,7 @@ fn device_buffer_duplicate_non_ex_production_apis_are_removed() {
 #[test]
 fn table_ex_entries_use_required_exec_options() {
     for (function, end_marker) in [
-        ("cudf_table_copy_ex", "cudf_status_t cudf_table_create_from_owned_device_transfer"),
+        ("cudf_table_copy_ex", "cudf_status_t cudf_table_payload_size_ex"),
         ("cudf_table_payload_size_ex", "cudf_status_t cudf_table_device_allocated_size"),
     ] {
         let body = function_region(TABLE_CPP, &format!("cudf_status_t {function}"), end_marker);

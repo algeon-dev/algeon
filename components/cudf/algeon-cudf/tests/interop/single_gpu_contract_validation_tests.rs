@@ -14,8 +14,8 @@ use std::{collections::HashMap, ffi::c_void};
 
 use cudf::{AggSpec, DataFrame, GroupByAgg, Runtime, testing::prelude::*};
 use rapids_interop::{
-    BufferBinding, ColumnLayout, CompletionAuthority, ExportProfile, LeaseCompletionResult, PreparedTableExport,
-    ProducerReadiness, ReadStartAuthority, SemanticColumn,
+    BufferBinding, ColumnLayout, CompletionAuthority, PreparedAccess, PreparedExportProfile, PreparedTableExport,
+    ReadStartAuthority, SemanticColumn,
 };
 
 use crate::common::{self, run_named_cases};
@@ -43,11 +43,10 @@ fn fixed_width_binding_ptr(column: &SemanticColumn, bindings: &HashMap<u32, &Buf
         .base_ptr()
 }
 
-fn readiness_device(readiness: &ProducerReadiness<'_>) -> i32 {
-    match readiness {
-        ProducerReadiness::DeviceStreamOrdered { stream } => stream.device(),
-        ProducerReadiness::DeviceEventOrdered { event } => event.device(),
-        ProducerReadiness::HostVisible => panic!("prepared device export must not report host-visible readiness"),
+fn readiness_device(access: &PreparedAccess<'_>) -> i32 {
+    match access {
+        PreparedAccess::Device { readiness, .. } => readiness.device(),
+        PreparedAccess::Host => panic!("prepared device export must not report host access"),
     }
 }
 
@@ -69,8 +68,8 @@ struct MockSingleGpuGraphInput {
 
 impl MockSingleGpuGraphInput {
     fn from_prepared_export(export: &PreparedTableExport<'_>) -> Self {
-        assert_eq!(export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
-        assert_eq!(
+        assert_eq!(export.profile(), PreparedExportProfile::Device);
+        assert!(
             export
                 .try_activate_read_lease(
                     ReadStartAuthority::SynchronousByReturn,
@@ -78,8 +77,9 @@ impl MockSingleGpuGraphInput {
                 )
                 .unwrap()
                 .complete()
-                .unwrap(),
-            LeaseCompletionResult::FallbackSynchronized
+                .unwrap()
+                .is_ready()
+                .unwrap()
         );
 
         let names = export.table().names().expect("graph-shaped prepared export must carry schema names").to_vec();
@@ -90,7 +90,7 @@ impl MockSingleGpuGraphInput {
         Self {
             names,
             num_edges: export.table().num_rows(),
-            device: readiness_device(export.readiness()),
+            device: readiness_device(export.access()),
             src_ptr: fixed_width_binding_ptr(&columns[0], &bindings),
             dst_ptr: fixed_width_binding_ptr(&columns[1], &bindings),
         }
@@ -138,7 +138,7 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
     assert_eq!(sorted_out_degree_rows(&out_degree), vec![(1, 2), (2, 2), (3, 1)]);
 
     let result_export = out_degree.try_prepare_device_table_export().unwrap();
-    assert_eq!(result_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
+    assert_eq!(result_export.profile(), PreparedExportProfile::Device);
     assert_eq!(
         result_export.table().names().unwrap().iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["src", "out_degree"]

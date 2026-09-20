@@ -49,14 +49,13 @@ fn classify_prepared_lease_interop_error(kind: InteropErrorKind) -> (ErrorKind, 
         | InteropErrorKind::UnsupportedLayout
         | InteropErrorKind::PlacementUnsupported
         | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
-        InteropErrorKind::ExecutionBindingMismatch
-        | InteropErrorKind::MixedDeviceUnsupported
-        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch | InteropErrorKind::MixedDeviceUnsupported => {
+            (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent))
+        },
         InteropErrorKind::ExecutionBindingUnavailable
         | InteropErrorKind::NotFound
         | InteropErrorKind::InvalidView
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        | InteropErrorKind::ReadinessMismatch => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
         InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
     }
 }
@@ -67,14 +66,13 @@ fn classify_owned_import_interop_error(kind: InteropErrorKind) -> (ErrorKind, Op
         | InteropErrorKind::UnsupportedLayout
         | InteropErrorKind::PlacementUnsupported
         | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
-        InteropErrorKind::ExecutionBindingMismatch
-        | InteropErrorKind::MixedDeviceUnsupported
-        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch | InteropErrorKind::MixedDeviceUnsupported => {
+            (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent))
+        },
         InteropErrorKind::ExecutionBindingUnavailable
         | InteropErrorKind::NotFound
         | InteropErrorKind::InvalidView
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        | InteropErrorKind::ReadinessMismatch => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
         InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
     }
 }
@@ -85,14 +83,13 @@ fn classify_projection_interop_error(kind: InteropErrorKind) -> (ErrorKind, Opti
         | InteropErrorKind::UnsupportedLayout
         | InteropErrorKind::PlacementUnsupported
         | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
-        InteropErrorKind::ExecutionBindingMismatch
-        | InteropErrorKind::MixedDeviceUnsupported
-        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch | InteropErrorKind::MixedDeviceUnsupported => {
+            (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent))
+        },
         InteropErrorKind::ExecutionBindingUnavailable
         | InteropErrorKind::NotFound
         | InteropErrorKind::InvalidView
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        | InteropErrorKind::ReadinessMismatch => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
         InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
     }
 }
@@ -162,7 +159,6 @@ fn map_cudf_error_code(code: cudf::ErrorCode) -> ErrorKind {
         | cudf::ErrorCode::RuntimeBindingMismatch
         | cudf::ErrorCode::ReadinessUnavailable
         | cudf::ErrorCode::ExecutionBindingUnavailable
-        | cudf::ErrorCode::LeaseAlreadyActive
         | cudf::ErrorCode::InvariantViolation
         | cudf::ErrorCode::ForeignInvariantViolation => ErrorKind::InvalidState,
         cudf::ErrorCode::UnsupportedDtype
@@ -355,17 +351,6 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert!(err.is_permanent(), "foreign invariant violations should be permanent");
         assert!(err.to_string().contains("cudf_detail"), "foreign details should be preserved");
-    }
-
-    #[test]
-    fn prepared_lease_activation_interop_lease_already_active_is_invalid_state() {
-        let interop_err = InteropError::new(
-            InteropErrorKind::LeaseAlreadyActive,
-            "prepared export lease activation requires an inactive export root",
-        );
-        let err = map_prepared_lease_activation_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "lease lifecycle violations should remain permanent invalid-state failures");
     }
 
     #[test]

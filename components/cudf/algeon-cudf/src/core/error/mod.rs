@@ -835,7 +835,6 @@ fn leaf_code_for_interop_kind(kind: InteropErrorKind) -> ErrorCode {
     match kind {
         InteropErrorKind::NotFound => ErrorCode::ForeignInvalidArgument,
         InteropErrorKind::UnsupportedType => ErrorCode::UnsupportedDtype,
-        InteropErrorKind::NullMaskUnsupported => ErrorCode::ForeignInvalidArgument,
         InteropErrorKind::InvalidView => ErrorCode::ForeignInvalidArgument,
         InteropErrorKind::ExecutionBindingUnavailable => ErrorCode::ExecutionBindingUnavailable,
         InteropErrorKind::ReadinessUnavailable => ErrorCode::ReadinessUnavailable,
@@ -847,7 +846,6 @@ fn leaf_code_for_interop_kind(kind: InteropErrorKind) -> ErrorCode {
         InteropErrorKind::ExecutionBindingMismatch | InteropErrorKind::ReadinessMismatch => {
             ErrorCode::RuntimeBindingMismatch
         },
-        InteropErrorKind::LeaseAlreadyActive => ErrorCode::LeaseAlreadyActive,
     }
 }
 

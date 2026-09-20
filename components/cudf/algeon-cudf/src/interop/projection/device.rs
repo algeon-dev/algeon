@@ -88,7 +88,6 @@ fn prepared_column_projection_from_materialized_view<'a>(
         input.len,
         input.offset,
         validity,
-        schema_nullability(input.nullable),
         ColumnLayout::FixedWidth { values: values_id },
     );
     Ok(PreparedColumnProjection {
@@ -118,7 +117,6 @@ pub(super) fn prepared_column_projection_from_view<'a>(
     let data_ptr =
         view.device_data_ptr().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let schema_nullability = schema_nullability(nullable);
     let null_count =
         view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let null_mask_ptr =
@@ -225,7 +223,6 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             len,
             offset,
             validity,
-            schema_nullability,
             ColumnLayout::BinaryLike { offsets: offsets_id, data: data_id },
         );
         return Ok(PreparedColumnProjection {
@@ -330,7 +327,6 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             len,
             offset,
             validity,
-            schema_nullability,
             ColumnLayout::Dictionary { indices: indices_id, keys: keys_projection.column.id() },
         );
         let mut semantic_columns = vec![column.clone()];
@@ -436,7 +432,6 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             len,
             offset,
             validity,
-            schema_nullability,
             ColumnLayout::List { offsets: offsets_id, child: child_projection.column.id() },
         );
         let mut semantic_columns = vec![column.clone()];
@@ -493,7 +488,6 @@ pub(super) fn prepared_column_projection_from_view<'a>(
             len,
             offset,
             validity,
-            schema_nullability,
             ColumnLayout::Struct { children: child_ids },
         );
         let mut all_columns = vec![column.clone()];

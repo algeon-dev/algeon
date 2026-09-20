@@ -130,9 +130,9 @@ impl VertexPairs {
 
 impl Drop for VertexPairs {
     fn drop(&mut self) {
-        if let Some(pending) = self.pending_input_completion.take() {
-            pending.synchronize();
-        }
+        // Fence input reads before releasing the native pairs; a failed fence
+        // leaks the input owners (see `LeaseCompletion`).
+        drop(self.pending_input_completion.take());
         drop_device_resource(&mut self.raw, self.device, "VertexPairs::drop", DeviceResourceKind::VertexPairs);
     }
 }

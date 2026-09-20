@@ -1,178 +1,137 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding, ExportDiagnostics,
-    ExportProfile, InteropError, InteropErrorKind, LeaseReadiness, PhysicalValidity, Placement, PreparedExportProfile,
-    ProducerReadiness, ReadStartAuthority, ReadStartBinding, ReleaseContract, ReleaseSynchronization, Result,
-    SemanticColumn, TransferCompletionRule, TypeId,
+    BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, InteropError, InteropErrorKind,
+    PhysicalValidity, Placement, PreparedExportProfile, ProducerReadiness, ReadStartAuthority, Result, SemanticColumn,
+    SemanticTable, TypeId,
 };
 
-fn export_profile_name(profile: impl Into<ExportProfile>) -> &'static str {
-    match profile.into() {
-        ExportProfile::BorrowedDeviceCompatibility => "borrowed_device_compatibility",
-        ExportProfile::PreparedDeviceExport => "prepared_device_export",
-        ExportProfile::PreparedHostExport => "prepared_host_export",
-        ExportProfile::OwnedDeviceTransfer => "owned_device_transfer",
-    }
+fn host_profile_error(message: &'static str) -> InteropError {
+    InteropError::new(InteropErrorKind::ProfileUnsupported, message).with_context("profile", "prepared_host_export")
 }
 
-fn profile_error(profile: impl Into<ExportProfile>, message: &'static str) -> InteropError {
-    InteropError::new(InteropErrorKind::ProfileUnsupported, message)
-        .with_context("profile", export_profile_name(profile))
-}
-
-pub(crate) fn prepared_profile_error(profile: impl Into<ExportProfile>, message: &'static str) -> InteropError {
-    profile_error(profile, message)
-}
-
-pub(crate) fn owned_transfer_profile_error(profile: ExportProfile, message: &'static str) -> InteropError {
-    profile_error(profile, message)
-}
-
-pub(crate) fn validate_prepared_profile(diagnostics: ExportDiagnostics) -> Result<PreparedExportProfile> {
-    match diagnostics.prepared_profile() {
-        Some(profile) => Ok(profile),
-        None => Err(prepared_profile_error(
-            diagnostics.profile(),
-            "prepared export values must declare a prepared export profile in diagnostics",
-        )),
-    }
-}
-
-pub(crate) fn validate_owned_transfer_profile(diagnostics: ExportDiagnostics) -> Result<ExportProfile> {
-    match diagnostics.profile() {
-        ExportProfile::OwnedDeviceTransfer => Ok(diagnostics.profile()),
-        other => Err(owned_transfer_profile_error(
-            other,
-            "owned transfer values must declare an owned device transfer profile in diagnostics",
-        )),
-    }
-}
-
-pub(crate) fn validate_release_contract(release_contract: ReleaseContract) -> Result<()> {
-    if release_contract.release_device() < 0 {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
-            "owned device transfer release device must be >= 0",
-        )
-        .with_context("release_device", release_contract.release_device().to_string()));
-    }
-
-    match (release_contract.completion(), release_contract.synchronization()) {
-        (
-            TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
-            ReleaseSynchronization::Asynchronous,
-        ) => Err(owned_transfer_profile_error(
-            ExportProfile::OwnedDeviceTransfer,
-            "owned device transfer release contract cannot declare caller-proven completion with asynchronous release",
-        )
-        .with_context("completion", "caller_must_release_after_consumer_work_completes")
-        .with_context("synchronization", "asynchronous")),
-        (
-            TransferCompletionRule::ReleaseWaitsOnConsumerSignal,
-            ReleaseSynchronization::RequiresCallerSynchronization,
-        ) => Err(owned_transfer_profile_error(
-            ExportProfile::OwnedDeviceTransfer,
-            "owned device transfer release contract cannot declare signal-waited release with caller-required synchronization",
-        )
-        .with_context("completion", "release_waits_on_consumer_signal")
-        .with_context("synchronization", "requires_caller_synchronization")),
+/// Requires the readiness device to match the device shared by the graph's
+/// bindings. A graph without bindings (a table without columns) takes the
+/// readiness device.
+pub(crate) fn validate_prepared_readiness(readiness: &ProducerReadiness<'_>, graph_device: Option<i32>) -> Result<()> {
+    let (readiness_name, device_key, message) = match readiness {
+        ProducerReadiness::DeviceStreamOrdered { .. } => (
+            "device_stream_ordered",
+            "stream_device",
+            "prepared export readiness stream must live on the producer CUDA device",
+        ),
+        ProducerReadiness::DeviceEventOrdered { .. } => (
+            "device_event_ordered",
+            "event_device",
+            "prepared export readiness event must live on the producer CUDA device",
+        ),
+    };
+    match graph_device {
+        Some(producer_device) if producer_device != readiness.device() => {
+            Err(InteropError::new(InteropErrorKind::ReadinessMismatch, message)
+                .with_context("readiness", readiness_name)
+                .with_context("producer_device", producer_device.to_string())
+                .with_context(device_key, readiness.device().to_string()))
+        },
         _ => Ok(()),
     }
 }
 
-pub(crate) fn validate_prepared_readiness(
-    profile: PreparedExportProfile,
-    readiness: &ProducerReadiness<'_>,
-    producer_device: Option<i32>,
-) -> Result<()> {
-    match profile {
-        PreparedExportProfile::Device => {
-            let producer_device = producer_device.expect("prepared device export must resolve a producer device");
-            match readiness {
-                ProducerReadiness::DeviceStreamOrdered { stream } => {
-                    let stream_device = stream.device();
-                    if stream_device != producer_device {
-                        return Err(InteropError::new(
-                            InteropErrorKind::ReadinessMismatch,
-                            "prepared export readiness stream must live on the producer CUDA device",
-                        )
-                        .with_context("readiness", "device_stream_ordered")
-                        .with_context("producer_device", producer_device.to_string())
-                        .with_context("stream_device", stream_device.to_string()));
-                    }
-                    Ok(())
-                },
-                ProducerReadiness::HostVisible => {
-                    Err(prepared_profile_error(profile, "prepared device export requires device-ordered readiness")
-                        .with_context("readiness", "host_visible"))
-                },
-                ProducerReadiness::DeviceEventOrdered { event } => {
-                    let event_device = event.device();
-                    if event_device != producer_device {
-                        return Err(InteropError::new(
-                            InteropErrorKind::ReadinessMismatch,
-                            "prepared export readiness event must live on the producer CUDA device",
-                        )
-                        .with_context("readiness", "device_event_ordered")
-                        .with_context("producer_device", producer_device.to_string())
-                        .with_context("event_device", event_device.to_string()));
-                    }
-                    Ok(())
-                },
-            }
-        },
-        PreparedExportProfile::Host => match readiness {
-            ProducerReadiness::HostVisible => Ok(()),
-            ProducerReadiness::DeviceStreamOrdered { .. } => {
-                Err(prepared_profile_error(profile, "prepared host export requires host-visible readiness")
-                    .with_context("readiness", "device_stream_ordered"))
-            },
-            ProducerReadiness::DeviceEventOrdered { .. } => {
-                Err(prepared_profile_error(profile, "prepared host export requires host-visible readiness")
-                    .with_context("readiness", "device_event_ordered"))
-            },
-        },
+/// Placement every binding of an export graph must have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpectedPlacement {
+    Host,
+    Device,
+}
+
+impl From<PreparedExportProfile> for ExpectedPlacement {
+    fn from(profile: PreparedExportProfile) -> Self {
+        match profile {
+            PreparedExportProfile::Host => Self::Host,
+            PreparedExportProfile::Device => Self::Device,
+        }
     }
 }
 
-pub(crate) fn validate_owned_transfer_readiness(readiness: &ProducerReadiness<'_>, producer_device: i32) -> Result<()> {
-    match readiness {
-        ProducerReadiness::DeviceStreamOrdered { stream } => {
-            let stream_device = stream.device();
-            if stream_device != producer_device {
-                return Err(InteropError::new(
-                    InteropErrorKind::ReadinessMismatch,
-                    "owned device transfer readiness stream must live on the producer CUDA device",
-                )
-                .with_context("readiness", "device_stream_ordered")
-                .with_context("producer_device", producer_device.to_string())
-                .with_context("stream_device", stream_device.to_string()));
-            }
-            Ok(())
-        },
-        ProducerReadiness::DeviceEventOrdered { event } => {
-            let event_device = event.device();
-            if event_device != producer_device {
-                return Err(InteropError::new(
-                    InteropErrorKind::ReadinessMismatch,
-                    "owned device transfer readiness event must live on the producer CUDA device",
-                )
-                .with_context("readiness", "device_event_ordered")
-                .with_context("producer_device", producer_device.to_string())
-                .with_context("event_device", event_device.to_string()));
-            }
-            Ok(())
-        },
-        ProducerReadiness::HostVisible => Err(owned_transfer_profile_error(
-            ExportProfile::OwnedDeviceTransfer,
-            "owned device transfer requires device-ordered readiness",
+/// Validates a column root and the graph reachable from it. Returns the root
+/// column and the CUDA device shared by all bindings in device mode.
+pub(crate) fn validate_column<'g>(
+    root: ColumnId,
+    semantic_columns: &'g [SemanticColumn],
+    bindings: &'g [BufferBinding<'_>],
+    expected: ExpectedPlacement,
+) -> Result<(&'g SemanticColumn, Option<i32>)> {
+    let mut walk = GraphWalk::new(semantic_columns, bindings, expected)?;
+    let column = walk.root(root)?;
+    walk.visit(column)?;
+    Ok((column, walk.finish()?))
+}
+
+/// Validates a table root: names, schema ids, row counts, then the graph
+/// reachable from the schema columns in schema order. Returns the top-level
+/// columns in schema order and the CUDA device shared by all bindings in
+/// device mode.
+pub(crate) fn validate_table<'g>(
+    table: &SemanticTable,
+    semantic_columns: &'g [SemanticColumn],
+    bindings: &'g [BufferBinding<'_>],
+    expected: ExpectedPlacement,
+) -> Result<(Vec<&'g SemanticColumn>, Option<i32>)> {
+    if let Some(names) = table.names()
+        && names.len() != table.columns().len()
+    {
+        return Err(InteropError::new(
+            InteropErrorKind::InvalidView,
+            "prepared table names must match the number of table schema columns",
         )
-        .with_context("readiness", "host_visible")),
+        .with_context("names_len", names.len().to_string())
+        .with_context("num_columns", table.columns().len().to_string()));
     }
+
+    let mut walk = GraphWalk::new(semantic_columns, bindings, expected)?;
+    let mut seen = HashSet::with_capacity(table.columns().len());
+    let mut roots = Vec::with_capacity(table.columns().len());
+    for column_id in table.columns() {
+        if !seen.insert(*column_id) {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared table schema must not repeat one semantic column id",
+            )
+            .with_context("column_id", column_id.get().to_string()));
+        }
+        let column = walk.root(*column_id)?;
+        if column.len() != table.num_rows() {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "column length does not match prepared table row count",
+            )
+            .with_context("column_id", column_id.get().to_string())
+            .with_context("column_len", column.len().to_string())
+            .with_context("num_rows", table.num_rows().to_string()));
+        }
+        roots.push(column);
+    }
+    for root in &roots {
+        walk.visit(root)?;
+    }
+    Ok((roots, walk.finish()?))
 }
 
-pub(crate) fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> Result<HashMap<BufferId, &'a BufferBinding<'a>>> {
+fn semantic_column_map(columns: &[SemanticColumn]) -> Result<HashMap<ColumnId, &SemanticColumn>> {
+    let mut map = HashMap::with_capacity(columns.len());
+    for column in columns {
+        if map.insert(column.id(), column).is_some() {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared export semantic columns must not reuse one semantic column id",
+            )
+            .with_context("column_id", column.id().get().to_string()));
+        }
+    }
+    Ok(map)
+}
+
+fn binding_map<'g, 'b>(bindings: &'g [BufferBinding<'b>]) -> Result<HashMap<BufferId, &'g BufferBinding<'b>>> {
     let mut map = HashMap::with_capacity(bindings.len());
     for binding in bindings {
         if map.insert(binding.id(), binding).is_some() {
@@ -186,16 +145,258 @@ pub(crate) fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> Result<HashM
     Ok(map)
 }
 
-fn require_binding<'a>(
-    map: &HashMap<BufferId, &'a BufferBinding<'a>>,
-    buffer_id: BufferId,
+/// Depth-first walk over one export graph. `visiting` holds the current path
+/// for cycle detection; `validated` memoizes columns shared by several parents
+/// and records the closure checked against the graph by `finish`.
+struct GraphWalk<'g, 'b> {
+    semantic_columns: &'g [SemanticColumn],
+    columns: HashMap<ColumnId, &'g SemanticColumn>,
+    bindings: HashMap<BufferId, &'g BufferBinding<'b>>,
+    expected: ExpectedPlacement,
+    device: Option<i32>,
+    visiting: HashSet<ColumnId>,
+    validated: HashSet<ColumnId>,
+}
+
+impl<'g, 'b> GraphWalk<'g, 'b> {
+    fn new(
+        semantic_columns: &'g [SemanticColumn],
+        bindings: &'g [BufferBinding<'b>],
+        expected: ExpectedPlacement,
+    ) -> Result<Self> {
+        Ok(Self {
+            semantic_columns,
+            columns: semantic_column_map(semantic_columns)?,
+            bindings: binding_map(bindings)?,
+            expected,
+            device: None,
+            visiting: HashSet::new(),
+            validated: HashSet::with_capacity(semantic_columns.len()),
+        })
+    }
+
+    fn root(&self, column_id: ColumnId) -> Result<&'g SemanticColumn> {
+        self.columns.get(&column_id).copied().ok_or_else(|| {
+            InteropError::new(
+                InteropErrorKind::NotFound,
+                "prepared export root column must be present in the semantic column graph",
+            )
+            .with_context("column_id", column_id.get().to_string())
+        })
+    }
+
+    /// Requires every graph column to have been reached from a root and
+    /// returns the device shared by all bindings in device mode.
+    fn finish(self) -> Result<Option<i32>> {
+        if let Some(unreferenced) = self.semantic_columns.iter().find(|column| !self.validated.contains(&column.id())) {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared export included an unreferenced semantic column",
+            )
+            .with_context("column_id", unreferenced.id().get().to_string()));
+        }
+        Ok(self.device)
+    }
+
+    fn visit(&mut self, column: &'g SemanticColumn) -> Result<()> {
+        if self.validated.contains(&column.id()) {
+            return Ok(());
+        }
+        if !self.visiting.insert(column.id()) {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared export semantic column graph must not contain cycles",
+            )
+            .with_context("column_id", column.id().get().to_string()));
+        }
+        validate_semantic_layout_matches_data_type(column)?;
+
+        match column.layout() {
+            ColumnLayout::FixedWidth { values } => {
+                let binding = self.binding(column, *values)?;
+                require_byte_len(
+                    column,
+                    *values,
+                    binding,
+                    fixed_width_required_bytes(column)?,
+                    "prepared export value binding is too small for the active logical range",
+                )?;
+            },
+            ColumnLayout::BinaryLike { offsets, data } => {
+                let binding = self.binding(column, *offsets)?;
+                require_byte_len(
+                    column,
+                    *offsets,
+                    binding,
+                    binary_like_offsets_required_bytes(column)?,
+                    "prepared export binary-like offsets binding is too small for the active logical range",
+                )?;
+                self.binding(column, *data)?;
+            },
+            ColumnLayout::List { offsets, child } => {
+                let binding = self.binding(column, *offsets)?;
+                require_byte_len(
+                    column,
+                    *offsets,
+                    binding,
+                    binary_like_offsets_required_bytes(column)?,
+                    "prepared export list offsets binding is too small for the active logical range",
+                )?;
+                self.visit_child(
+                    column,
+                    *child,
+                    "prepared export list layout referenced a missing child semantic column",
+                )?;
+            },
+            ColumnLayout::Struct { children } => {
+                if children.is_empty() {
+                    return Err(InteropError::new(
+                        InteropErrorKind::InvalidView,
+                        "prepared export struct layout must reference at least one child semantic column",
+                    )
+                    .with_context("column_id", column.id().get().to_string()));
+                }
+                for child in children {
+                    self.visit_child(
+                        column,
+                        *child,
+                        "prepared export struct layout referenced a missing child semantic column",
+                    )?;
+                }
+            },
+            ColumnLayout::Dictionary { indices, keys } => {
+                let binding = self.binding(column, *indices)?;
+                require_byte_len(
+                    column,
+                    *indices,
+                    binding,
+                    dictionary_indices_required_bytes(column)?,
+                    "prepared export dictionary indices binding is too small for the active logical range",
+                )?;
+                self.visit_child(
+                    column,
+                    *keys,
+                    "prepared export dictionary layout referenced a missing keys semantic column",
+                )?;
+            },
+        }
+
+        if let PhysicalValidity::ValidityMask { mask, null_count } = column.validity() {
+            self.validate_mask(column, *mask, *null_count)?;
+        }
+
+        self.visiting.remove(&column.id());
+        self.validated.insert(column.id());
+        Ok(())
+    }
+
+    fn visit_child(&mut self, parent: &SemanticColumn, child: ColumnId, missing_message: &'static str) -> Result<()> {
+        let child_column = self.columns.get(&child).copied().ok_or_else(|| {
+            InteropError::new(InteropErrorKind::NotFound, missing_message)
+                .with_context("column_id", parent.id().get().to_string())
+                .with_context("child_column_id", child.get().to_string())
+        })?;
+        self.visit(child_column)
+    }
+
+    fn validate_mask(&mut self, column: &SemanticColumn, mask: BufferId, null_count: Option<usize>) -> Result<()> {
+        if let Some(null_count) = null_count
+            && null_count > column.len()
+        {
+            return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
+                .with_context("column_id", column.id().get().to_string())
+                .with_context("null_count", null_count.to_string())
+                .with_context("len", column.len().to_string()));
+        }
+
+        let mask_binding = self.binding(column, mask)?;
+        let required_bits = column.offset().checked_add(column.len()).ok_or_else(|| {
+            InteropError::new(InteropErrorKind::InvalidView, "required null-mask range overflowed")
+                .with_context("column_id", column.id().get().to_string())
+                .with_context("offset", column.offset().to_string())
+                .with_context("len", column.len().to_string())
+        })?;
+        let bit_len = mask_binding.bytes().byte_len().checked_mul(8).ok_or_else(|| {
+            InteropError::new(InteropErrorKind::InvalidView, "null-mask bit range overflowed")
+                .with_context("column_id", column.id().get().to_string())
+                .with_context("buffer_id", mask.get().to_string())
+                .with_context("byte_len", mask_binding.bytes().byte_len().to_string())
+        })?;
+        if bit_len < required_bits {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared export validity mask is too small for the active logical range",
+            )
+            .with_context("column_id", column.id().get().to_string())
+            .with_context("buffer_id", mask.get().to_string())
+            .with_context("bit_len", bit_len.to_string())
+            .with_context("required_bits", required_bits.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Resolves `buffer_id` and checks its placement. In device mode the first
+    /// binding fixes the graph device; every later binding must match it.
+    fn binding(&mut self, column: &SemanticColumn, buffer_id: BufferId) -> Result<&'g BufferBinding<'b>> {
+        let binding = self.bindings.get(&buffer_id).copied().ok_or_else(|| {
+            InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding")
+                .with_context("column_id", column.id().get().to_string())
+                .with_context("buffer_id", buffer_id.get().to_string())
+        })?;
+        match (self.expected, *binding.placement()) {
+            (ExpectedPlacement::Host, Placement::Host) => {},
+            (ExpectedPlacement::Host, Placement::CudaDevice { device }) => {
+                return Err(InteropError::new(
+                    InteropErrorKind::PlacementUnsupported,
+                    "prepared host export requires host buffer placement",
+                )
+                .with_context("buffer_id", buffer_id.get().to_string())
+                .with_context("placement", "cuda_device")
+                .with_context("device", device.to_string()));
+            },
+            (ExpectedPlacement::Device, Placement::Host) => {
+                return Err(InteropError::new(
+                    InteropErrorKind::PlacementUnsupported,
+                    "prepared device export requires CUDA-device buffer placement",
+                )
+                .with_context("buffer_id", buffer_id.get().to_string())
+                .with_context("placement", "host"));
+            },
+            (ExpectedPlacement::Device, Placement::CudaDevice { device }) => match self.device {
+                None => self.device = Some(device),
+                Some(expected) if expected != device => {
+                    return Err(InteropError::new(
+                        InteropErrorKind::MixedDeviceUnsupported,
+                        "prepared export bindings must live on one CUDA device",
+                    )
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("buffer_id", buffer_id.get().to_string())
+                    .with_context("expected_device", expected.to_string())
+                    .with_context("actual_device", device.to_string()));
+                },
+                Some(_) => {},
+            },
+        }
+        Ok(binding)
+    }
+}
+
+fn require_byte_len(
     column: &SemanticColumn,
-) -> Result<&'a BufferBinding<'a>> {
-    map.get(&buffer_id).copied().ok_or_else(|| {
-        InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding")
+    buffer_id: BufferId,
+    binding: &BufferBinding<'_>,
+    required_bytes: usize,
+    message: &'static str,
+) -> Result<()> {
+    let byte_len = binding.bytes().byte_len();
+    if byte_len < required_bytes {
+        return Err(InteropError::new(InteropErrorKind::InvalidView, message)
             .with_context("column_id", column.id().get().to_string())
             .with_context("buffer_id", buffer_id.get().to_string())
-    })
+            .with_context("byte_len", byte_len.to_string())
+            .with_context("required_bytes", required_bytes.to_string()));
+    }
+    Ok(())
 }
 
 fn fixed_width_required_bytes(column: &SemanticColumn) -> Result<usize> {
@@ -301,616 +502,38 @@ fn validate_semantic_layout_matches_data_type(column: &SemanticColumn) -> Result
     Ok(())
 }
 
-pub(crate) fn semantic_column_map<'a>(
-    columns: &'a [SemanticColumn],
-    context: &'static str,
-) -> Result<HashMap<ColumnId, &'a SemanticColumn>> {
-    let mut map = HashMap::with_capacity(columns.len());
-    for column in columns {
-        if map.insert(column.id(), column).is_some() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "prepared export semantic columns must not reuse one semantic column id",
-            )
-            .with_context(context, column.id().get().to_string()));
-        }
-    }
-    Ok(map)
-}
-
-fn require_cuda_device<'a>(
-    binding: &'a BufferBinding<'a>,
-    kind: InteropErrorKind,
-) -> Result<(i32, &'a BufferBinding<'a>)> {
-    match binding.placement() {
-        Placement::CudaDevice { device } => Ok((*device, binding)),
-        Placement::Host => Err(InteropError::new(kind, "prepared device export requires CUDA-device buffer placement")
-            .with_context("buffer_id", binding.id().get().to_string())
-            .with_context("placement", "host")),
-    }
-}
-
-fn require_host_binding<'a>(binding: &'a BufferBinding<'a>, kind: InteropErrorKind) -> Result<&'a BufferBinding<'a>> {
-    match binding.placement() {
-        Placement::Host => Ok(binding),
-        Placement::CudaDevice { device } => {
-            Err(InteropError::new(kind, "prepared host export requires host buffer placement")
-                .with_context("buffer_id", binding.id().get().to_string())
-                .with_context("placement", "cuda_device")
-                .with_context("device", device.to_string()))
-        },
-    }
-}
-
-pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
-    column: &SemanticColumn,
-    columns: &HashMap<ColumnId, &'a SemanticColumn>,
-    bindings: &HashMap<BufferId, &'a BufferBinding<'a>>,
-    validated_columns: &mut HashSet<ColumnId>,
-) -> Result<()> {
-    validate_semantic_layout_matches_data_type(column)?;
-
-    fn validate_host_validity_against_bindings<'a>(
-        column: &SemanticColumn,
-        bindings: &HashMap<BufferId, &'a BufferBinding<'a>>,
-    ) -> Result<()> {
-        if let PhysicalValidity::ValidityMask { mask, null_count } = column.validity() {
-            if let Some(null_count) = null_count
-                && *null_count > column.len()
-            {
-                return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("null_count", null_count.to_string())
-                    .with_context("len", column.len().to_string()));
-            }
-
-            let mask_binding = require_binding(bindings, *mask, column)?;
-            require_host_binding(mask_binding, InteropErrorKind::PlacementUnsupported)?;
-
-            let required_bits = column.offset().checked_add(column.len()).ok_or_else(|| {
-                InteropError::new(InteropErrorKind::InvalidView, "required null-mask range overflowed")
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("offset", column.offset().to_string())
-                    .with_context("len", column.len().to_string())
-            })?;
-            let bit_len = mask_binding.bytes().byte_len().checked_mul(8).ok_or_else(|| {
-                InteropError::new(InteropErrorKind::InvalidView, "null-mask bit range overflowed")
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("buffer_id", mask.get().to_string())
-                    .with_context("byte_len", mask_binding.bytes().byte_len().to_string())
-            })?;
-            if bit_len < required_bits {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export validity mask is too small for the active logical range",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", mask.get().to_string())
-                .with_context("bit_len", bit_len.to_string())
-                .with_context("required_bits", required_bits.to_string()));
-            }
-        }
-
-        Ok(())
-    }
-
-    fn validate_host_leaf_or_string_column_against_bindings<'a>(
-        column: &SemanticColumn,
-        bindings: &HashMap<BufferId, &'a BufferBinding<'a>>,
-    ) -> Result<()> {
-        match column.layout() {
-            ColumnLayout::FixedWidth { values } => {
-                let values_binding = require_binding(bindings, *values, column)?;
-                require_host_binding(values_binding, InteropErrorKind::PlacementUnsupported)?;
-                let required_bytes = fixed_width_required_bytes(column)?;
-                if values_binding.bytes().byte_len() < required_bytes {
-                    return Err(InteropError::new(
-                        InteropErrorKind::InvalidView,
-                        "prepared export value binding is too small for the active logical range",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("buffer_id", values.get().to_string())
-                    .with_context("byte_len", values_binding.bytes().byte_len().to_string())
-                    .with_context("required_bytes", required_bytes.to_string()));
-                }
-            },
-            ColumnLayout::BinaryLike { offsets, data } => {
-                let offsets_binding = require_binding(bindings, *offsets, column)?;
-                require_host_binding(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
-                let required_bytes = binary_like_offsets_required_bytes(column)?;
-                if offsets_binding.bytes().byte_len() < required_bytes {
-                    return Err(InteropError::new(
-                        InteropErrorKind::InvalidView,
-                        "prepared export binary-like offsets binding is too small for the active logical range",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("buffer_id", offsets.get().to_string())
-                    .with_context("byte_len", offsets_binding.bytes().byte_len().to_string())
-                    .with_context("required_bytes", required_bytes.to_string()));
-                }
-
-                let data_binding = require_binding(bindings, *data, column)?;
-                require_host_binding(data_binding, InteropErrorKind::PlacementUnsupported)?;
-            },
-            _ => {
-                return Err(InteropError::new(
-                    InteropErrorKind::UnsupportedLayout,
-                    "prepared host export currently supports fixed-width and binary-like string column layouts only on the non-list path",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase()));
-            },
-        }
-        validate_host_validity_against_bindings(column, bindings)
-    }
-
-    fn validate_host_column_with_current_supported_child_projection<'a>(
-        column: &SemanticColumn,
-        columns: &HashMap<ColumnId, &'a SemanticColumn>,
-        bindings: &HashMap<BufferId, &'a BufferBinding<'a>>,
-        validated_columns: &mut HashSet<ColumnId>,
-    ) -> Result<()> {
-        validated_columns.insert(column.id());
-
-        match column.layout() {
-            ColumnLayout::List { offsets, child } => {
-                let offsets_binding = require_binding(bindings, *offsets, column)?;
-                require_host_binding(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
-                let required_bytes = binary_like_offsets_required_bytes(column)?;
-                if offsets_binding.bytes().byte_len() < required_bytes {
-                    return Err(InteropError::new(
-                        InteropErrorKind::InvalidView,
-                        "prepared export list offsets binding is too small for the active logical range",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("buffer_id", offsets.get().to_string())
-                    .with_context("byte_len", offsets_binding.bytes().byte_len().to_string())
-                    .with_context("required_bytes", required_bytes.to_string()));
-                }
-
-                let child_column = columns.get(child).copied().ok_or_else(|| {
-                    InteropError::new(
-                        InteropErrorKind::NotFound,
-                        "prepared host export list layout referenced a missing child semantic column",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("child_column_id", child.get().to_string())
-                })?;
-                validate_prepared_host_column_against_bindings(child_column, columns, bindings, validated_columns)?;
-                validate_host_validity_against_bindings(column, bindings)?;
-            },
-            _ => validate_host_leaf_or_string_column_against_bindings(column, bindings)?,
-        }
-
-        Ok(())
-    }
-
-    match column.layout() {
-        ColumnLayout::Struct { children } => {
-            validated_columns.insert(column.id());
-            if children.is_empty() {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared host export struct layout must reference at least one child semantic column",
-                )
-                .with_context("column_id", column.id().get().to_string()));
-            }
-
-            for child in children {
-                let child_column = columns.get(child).copied().ok_or_else(|| {
-                    InteropError::new(
-                        InteropErrorKind::NotFound,
-                        "prepared host export struct layout referenced a missing child semantic column",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("child_column_id", child.get().to_string())
-                })?;
-                validate_prepared_host_column_against_bindings(child_column, columns, bindings, validated_columns)?;
-            }
-            validate_host_validity_against_bindings(column, bindings)
-        },
-        ColumnLayout::Dictionary { indices, keys } => {
-            validated_columns.insert(column.id());
-
-            let indices_binding = require_binding(bindings, *indices, column)?;
-            require_host_binding(indices_binding, InteropErrorKind::PlacementUnsupported)?;
-            let required_bytes = dictionary_indices_required_bytes(column)?;
-            if indices_binding.bytes().byte_len() < required_bytes {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export dictionary indices binding is too small for the active logical range",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", indices.get().to_string())
-                .with_context("byte_len", indices_binding.bytes().byte_len().to_string())
-                .with_context("required_bytes", required_bytes.to_string()));
-            }
-
-            let keys_column = columns.get(keys).copied().ok_or_else(|| {
-                InteropError::new(
-                    InteropErrorKind::NotFound,
-                    "prepared host export dictionary layout referenced a missing keys semantic column",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("child_column_id", keys.get().to_string())
-            })?;
-            validate_prepared_host_column_against_bindings(keys_column, columns, bindings, validated_columns)?;
-            validate_host_validity_against_bindings(column, bindings)
-        },
-        _ => validate_host_column_with_current_supported_child_projection(column, columns, bindings, validated_columns),
-    }
-}
-
-pub(crate) fn validate_prepared_column_against_bindings<'a>(
-    column: &SemanticColumn,
-    columns: &HashMap<ColumnId, &'a SemanticColumn>,
-    bindings: &HashMap<BufferId, &'a BufferBinding<'a>>,
-    cross_binding_kind: InteropErrorKind,
-    visiting: &mut HashSet<ColumnId>,
-    validated_devices: &mut HashMap<ColumnId, i32>,
-) -> Result<i32> {
-    validate_semantic_layout_matches_data_type(column)?;
-
-    if let Some(device) = validated_devices.get(&column.id()) {
-        return Ok(*device);
-    }
-    if !visiting.insert(column.id()) {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
-            "prepared export semantic column graph must not contain cycles",
-        )
-        .with_context("column_id", column.id().get().to_string()));
-    }
-
-    let device = match column.layout() {
-        ColumnLayout::FixedWidth { values } => {
-            let values_binding = require_binding(bindings, *values, column)?;
-            let (device, _) = require_cuda_device(values_binding, InteropErrorKind::PlacementUnsupported)?;
-            let required_bytes = fixed_width_required_bytes(column)?;
-            if values_binding.bytes().byte_len() < required_bytes {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export value binding is too small for the active logical range",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", values.get().to_string())
-                .with_context("byte_len", values_binding.bytes().byte_len().to_string())
-                .with_context("required_bytes", required_bytes.to_string()));
-            }
-            device
-        },
-        ColumnLayout::BinaryLike { offsets, data } => {
-            let offsets_binding = require_binding(bindings, *offsets, column)?;
-            let (device, _) = require_cuda_device(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
-            let required_bytes = binary_like_offsets_required_bytes(column)?;
-            if offsets_binding.bytes().byte_len() < required_bytes {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export binary-like offsets binding is too small for the active logical range",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", offsets.get().to_string())
-                .with_context("byte_len", offsets_binding.bytes().byte_len().to_string())
-                .with_context("required_bytes", required_bytes.to_string()));
-            }
-
-            let data_binding = require_binding(bindings, *data, column)?;
-            let (data_device, _) = require_cuda_device(data_binding, InteropErrorKind::PlacementUnsupported)?;
-            if data_device != device {
-                return Err(InteropError::new(
-                    cross_binding_kind,
-                    "prepared export bindings must live on one CUDA device",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", data.get().to_string())
-                .with_context("expected_device", device.to_string())
-                .with_context("actual_device", data_device.to_string()));
-            }
-            device
-        },
-        ColumnLayout::List { offsets, child } => {
-            let offsets_binding = require_binding(bindings, *offsets, column)?;
-            let (device, _) = require_cuda_device(offsets_binding, InteropErrorKind::PlacementUnsupported)?;
-            let required_bytes = binary_like_offsets_required_bytes(column)?;
-            if offsets_binding.bytes().byte_len() < required_bytes {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export list offsets binding is too small for the active logical range",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", offsets.get().to_string())
-                .with_context("byte_len", offsets_binding.bytes().byte_len().to_string())
-                .with_context("required_bytes", required_bytes.to_string()));
-            }
-
-            let child_column = columns.get(child).copied().ok_or_else(|| {
-                InteropError::new(
-                    InteropErrorKind::NotFound,
-                    "prepared export list layout referenced a missing child semantic column",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("child_column_id", child.get().to_string())
-            })?;
-            let child_device = validate_prepared_column_against_bindings(
-                child_column,
-                columns,
-                bindings,
-                cross_binding_kind,
-                visiting,
-                validated_devices,
-            )?;
-            if child_device != device {
-                return Err(InteropError::new(
-                    cross_binding_kind,
-                    "prepared export bindings must live on one CUDA device",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("child_column_id", child.get().to_string())
-                .with_context("expected_device", device.to_string())
-                .with_context("actual_device", child_device.to_string()));
-            }
-            device
-        },
-        ColumnLayout::Struct { children } => {
-            let mut child_iter = children.iter();
-            let first_child = child_iter.next().ok_or_else(|| {
-                InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export struct layout must reference at least one child semantic column",
-                )
-                .with_context("column_id", column.id().get().to_string())
-            })?;
-            let first_child_column = columns.get(first_child).copied().ok_or_else(|| {
-                InteropError::new(
-                    InteropErrorKind::NotFound,
-                    "prepared export struct layout referenced a missing child semantic column",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("child_column_id", first_child.get().to_string())
-            })?;
-            let device = validate_prepared_column_against_bindings(
-                first_child_column,
-                columns,
-                bindings,
-                cross_binding_kind,
-                visiting,
-                validated_devices,
-            )?;
-            for child in child_iter {
-                let child_column = columns.get(child).copied().ok_or_else(|| {
-                    InteropError::new(
-                        InteropErrorKind::NotFound,
-                        "prepared export struct layout referenced a missing child semantic column",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("child_column_id", child.get().to_string())
-                })?;
-                let child_device = validate_prepared_column_against_bindings(
-                    child_column,
-                    columns,
-                    bindings,
-                    cross_binding_kind,
-                    visiting,
-                    validated_devices,
-                )?;
-                if child_device != device {
-                    return Err(InteropError::new(
-                        cross_binding_kind,
-                        "prepared export bindings must live on one CUDA device",
-                    )
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("child_column_id", child.get().to_string())
-                    .with_context("expected_device", device.to_string())
-                    .with_context("actual_device", child_device.to_string()));
-                }
-            }
-            device
-        },
-        ColumnLayout::Dictionary { indices, keys } => {
-            let indices_binding = require_binding(bindings, *indices, column)?;
-            let (device, _) = require_cuda_device(indices_binding, InteropErrorKind::PlacementUnsupported)?;
-            let required_bytes = dictionary_indices_required_bytes(column)?;
-            if indices_binding.bytes().byte_len() < required_bytes {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared export dictionary indices binding is too small for the active logical range",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", indices.get().to_string())
-                .with_context("byte_len", indices_binding.bytes().byte_len().to_string())
-                .with_context("required_bytes", required_bytes.to_string()));
-            }
-
-            let keys_column = columns.get(keys).copied().ok_or_else(|| {
-                InteropError::new(
-                    InteropErrorKind::NotFound,
-                    "prepared export dictionary layout referenced a missing keys semantic column",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("child_column_id", keys.get().to_string())
-            })?;
-            let keys_device = validate_prepared_column_against_bindings(
-                keys_column,
-                columns,
-                bindings,
-                cross_binding_kind,
-                visiting,
-                validated_devices,
-            )?;
-            if keys_device != device {
-                return Err(InteropError::new(
-                    cross_binding_kind,
-                    "prepared export bindings must live on one CUDA device",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("child_column_id", keys.get().to_string())
-                .with_context("expected_device", device.to_string())
-                .with_context("actual_device", keys_device.to_string()));
-            }
-            device
-        },
-    };
-
-    if let PhysicalValidity::ValidityMask { mask, null_count } = column.validity() {
-        if let Some(null_count) = null_count
-            && *null_count > column.len()
-        {
-            return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("null_count", null_count.to_string())
-                .with_context("len", column.len().to_string()));
-        }
-
-        let mask_binding = require_binding(bindings, *mask, column)?;
-        let (mask_device, _) = require_cuda_device(mask_binding, InteropErrorKind::PlacementUnsupported)?;
-        if mask_device != device {
-            return Err(InteropError::new(cross_binding_kind, "prepared export bindings must live on one CUDA device")
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", mask.get().to_string())
-                .with_context("expected_device", device.to_string())
-                .with_context("actual_device", mask_device.to_string()));
-        }
-
-        let required_bits = column.offset().checked_add(column.len()).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "required null-mask range overflowed")
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("offset", column.offset().to_string())
-                .with_context("len", column.len().to_string())
-        })?;
-        let bit_len = mask_binding.bytes().byte_len().checked_mul(8).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "null-mask bit range overflowed")
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("buffer_id", mask.get().to_string())
-                .with_context("byte_len", mask_binding.bytes().byte_len().to_string())
-        })?;
-        if bit_len < required_bits {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "prepared export validity mask is too small for the active logical range",
-            )
-            .with_context("column_id", column.id().get().to_string())
-            .with_context("buffer_id", mask.get().to_string())
-            .with_context("bit_len", bit_len.to_string())
-            .with_context("required_bits", required_bits.to_string()));
-        }
-    }
-
-    visiting.remove(&column.id());
-    validated_devices.insert(column.id(), device);
-    Ok(device)
-}
-
-pub(crate) fn validate_completion_authority(
-    profile: PreparedExportProfile,
-    completion: CompletionAuthority<'_>,
-    producer_device: Option<i32>,
-) -> Result<()> {
-    match profile {
-        PreparedExportProfile::Host => match completion {
-            CompletionAuthority::SynchronousByReturn => Ok(()),
-            CompletionAuthority::SameDeviceStream { .. } => {
-                Err(prepared_profile_error(profile, "prepared host export does not support CUDA completion authority")
-                    .with_context("completion", "same_device_stream"))
-            },
-            CompletionAuthority::CrossDeviceEvent { .. } => {
-                Err(prepared_profile_error(profile, "prepared host export does not support CUDA completion authority")
-                    .with_context("completion", "cross_device_event"))
-            },
-        },
-        PreparedExportProfile::Device => {
-            let producer_device = producer_device.expect("prepared device export must resolve a producer device");
-            match completion {
-                CompletionAuthority::SynchronousByReturn => Ok(()),
-                CompletionAuthority::SameDeviceStream { stream } => {
-                    let consumer_device = stream.device();
-                    if consumer_device != producer_device {
-                        return Err(InteropError::new(
-                            InteropErrorKind::ReadinessMismatch,
-                            "same-device stream completion must use a consumer stream on the producer CUDA device",
-                        )
-                        .with_context("completion", "same_device_stream")
-                        .with_context("producer_device", producer_device.to_string())
-                        .with_context("consumer_device", consumer_device.to_string()));
-                    }
-                    Ok(())
-                },
-                CompletionAuthority::CrossDeviceEvent { event } => {
-                    let event_device = event.device();
-                    if event_device == producer_device {
-                        return Err(InteropError::new(
-                            InteropErrorKind::InvalidView,
-                            "cross-device event completion authority must use an event on a non-producer CUDA device; use SameDeviceStream for same-device completion",
-                        )
-                        .with_context("completion", "cross_device_event")
-                        .with_context("event_device", event_device.to_string())
-                        .with_context("producer_device", producer_device.to_string()));
-                    }
-
-                    Ok(())
-                },
-            }
-        },
-    }
-}
-
-pub(crate) fn lease_readiness_binding(readiness: ProducerReadiness<'_>) -> LeaseReadiness {
-    match readiness {
-        ProducerReadiness::HostVisible => LeaseReadiness::HostVisible,
-        ProducerReadiness::DeviceStreamOrdered { stream } => {
-            LeaseReadiness::DeviceStreamOrdered { raw: stream.as_raw(), device: stream.device() }
-        },
-        ProducerReadiness::DeviceEventOrdered { event } => {
-            LeaseReadiness::DeviceEventOrdered { raw: event.as_raw(), device: event.device() }
-        },
-    }
-}
-
-pub(crate) fn validate_read_start_authority(
-    profile: PreparedExportProfile,
-    read_start: ReadStartAuthority<'_>,
-) -> Result<()> {
-    match profile {
-        PreparedExportProfile::Host => match read_start {
-            ReadStartAuthority::SynchronousByReturn => Ok(()),
-            ReadStartAuthority::ConsumerStream { .. } => {
-                Err(prepared_profile_error(profile, "prepared host export does not support CUDA read-start authority")
-                    .with_context("read_start", "consumer_stream"))
-            },
-        },
-        PreparedExportProfile::Device => match read_start {
-            ReadStartAuthority::SynchronousByReturn => Ok(()),
-            ReadStartAuthority::ConsumerStream { .. } => Ok(()),
-        },
-    }
-}
-
-pub(crate) fn read_start_binding(read_start: ReadStartAuthority<'_>) -> ReadStartBinding {
-    match read_start {
-        ReadStartAuthority::SynchronousByReturn => ReadStartBinding::SynchronousByReturn,
-        ReadStartAuthority::ConsumerStream { stream } => {
-            ReadStartBinding::ConsumerStream { raw: stream.as_raw(), device: stream.device() }
-        },
-    }
-}
-
-pub(crate) fn completion_binding(completion: CompletionAuthority<'_>) -> CompletionBinding {
+pub(crate) fn validate_completion_authority(producer_device: i32, completion: CompletionAuthority<'_>) -> Result<()> {
     match completion {
-        CompletionAuthority::SynchronousByReturn => CompletionBinding::SynchronousByReturn,
+        CompletionAuthority::SynchronousByReturn => Ok(()),
         CompletionAuthority::SameDeviceStream { stream } => {
-            CompletionBinding::SameDeviceStream { raw: stream.as_raw(), device: stream.device() }
-        },
-        CompletionAuthority::CrossDeviceEvent { event } => {
-            CompletionBinding::CrossDeviceEvent { raw: event.as_raw(), device: event.device() }
+            let consumer_device = stream.device();
+            if consumer_device != producer_device {
+                return Err(InteropError::new(
+                    InteropErrorKind::ReadinessMismatch,
+                    "same-device stream completion must use a consumer stream on the producer CUDA device",
+                )
+                .with_context("completion", "same_device_stream")
+                .with_context("producer_device", producer_device.to_string())
+                .with_context("consumer_device", consumer_device.to_string()));
+            }
+            Ok(())
         },
     }
 }
 
-pub(crate) fn first_buffer_id(column: &SemanticColumn) -> Option<BufferId> {
-    match column.layout() {
-        ColumnLayout::FixedWidth { values } => Some(*values),
-        ColumnLayout::BinaryLike { offsets, .. } => Some(*offsets),
-        ColumnLayout::List { offsets, .. } => Some(*offsets),
-        ColumnLayout::Struct { .. } => None,
-        ColumnLayout::Dictionary { indices, .. } => Some(*indices),
+/// Host leases read host memory and finish before `complete` returns, so they
+/// accept only synchronous authorities.
+pub(crate) fn validate_host_authorities(
+    read_start: ReadStartAuthority<'_>,
+    completion: CompletionAuthority<'_>,
+) -> Result<()> {
+    if let ReadStartAuthority::ConsumerStream { .. } = read_start {
+        return Err(host_profile_error("prepared host export does not support CUDA read-start authority")
+            .with_context("read_start", "consumer_stream"));
     }
+    if let CompletionAuthority::SameDeviceStream { .. } = completion {
+        return Err(host_profile_error("prepared host export does not support CUDA completion authority")
+            .with_context("completion", "same_device_stream"));
+    }
+    Ok(())
 }

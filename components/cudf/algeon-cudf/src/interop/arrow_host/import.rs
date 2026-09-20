@@ -17,7 +17,7 @@ use arrow::{
 };
 use rapids_interop::{
     BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, DataType as InteropDataType, PhysicalValidity,
-    Placement, PreparedColumnExport, ProducerReadiness, SchemaNullability, SemanticColumn, TypeId as InteropTypeId,
+    Placement, PreparedAccess, PreparedColumnExport, SemanticColumn, TypeId as InteropTypeId,
 };
 
 use super::{
@@ -35,7 +35,6 @@ use crate::{
         types::{CudfType, DataType, TypeId, cudf_null_mask_allocation_size_bytes},
     },
     frame::series::Series,
-    interop::host_export_diagnostics,
     runtime::Runtime,
 };
 
@@ -298,7 +297,6 @@ where
         normalized_offsets.len().saturating_sub(1),
         0,
         root_validity.validity,
-        if nulls.is_some() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
         ColumnLayout::List { offsets: BufferId::new(0), child: ColumnId::new(1) },
     );
     let child_column = SemanticColumn::new(
@@ -307,18 +305,16 @@ where
         child_len,
         0,
         child_validity.validity,
-        if child_field.is_nullable() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
         ColumnLayout::BinaryLike { offsets: BufferId::new(2), data: BufferId::new(3) },
     );
-    let export = PreparedColumnExport::try_new_with_semantic_columns(
-        list_column.clone(),
+    let export = PreparedColumnExport::try_new(
+        ColumnId::new(0),
         vec![list_column, child_column],
         bindings,
-        ProducerReadiness::HostVisible,
-        host_export_diagnostics(),
+        PreparedAccess::Host,
     )
     .map_err(|error| error::from_interop_in(error, operation))?
-    .with_retained_host_buffers(retained_buffers);
+    .with_retained_owner(Arc::new(retained_buffers));
 
     Column::try_import_from_prepared_column_export_into_runtime(&export, runtime)
         .map_err(|error| error::from_interop_in(error, operation))
@@ -446,7 +442,6 @@ fn fixed_width_list_array_to_column(
         normalized_offsets.len().saturating_sub(1),
         0,
         root_validity.validity,
-        if nulls.is_some() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
         ColumnLayout::List { offsets: BufferId::new(0), child: ColumnId::new(1) },
     );
     let child_column = SemanticColumn::new(
@@ -455,18 +450,16 @@ fn fixed_width_list_array_to_column(
         child_len,
         0,
         child_validity.validity,
-        if child_field.is_nullable() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
         ColumnLayout::FixedWidth { values: BufferId::new(2) },
     );
-    let export = PreparedColumnExport::try_new_with_semantic_columns(
-        list_column.clone(),
+    let export = PreparedColumnExport::try_new(
+        ColumnId::new(0),
         vec![list_column, child_column],
         bindings,
-        ProducerReadiness::HostVisible,
-        host_export_diagnostics(),
+        PreparedAccess::Host,
     )
     .map_err(|error| error::from_interop_in(error, operation))?
-    .with_retained_host_buffers(retained_buffers);
+    .with_retained_owner(Arc::new(retained_buffers));
 
     Column::try_import_from_prepared_column_export_into_runtime(&export, runtime)
         .map_err(|error| error::from_interop_in(error, operation))

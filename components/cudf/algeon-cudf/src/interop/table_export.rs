@@ -205,23 +205,16 @@ pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
     let observation = table_view_boundary_observation(BoundaryKind::InteropLease, view, operation)?;
     let observer = view.execution_domain().boundary_observer();
     let projection = build_device_table_projection_from_view(view, operation, default_device)?;
-    let table = SemanticTable::new(
-        TableId::new(0),
-        num_rows,
-        projection.columns.iter().map(|column| column.id()).collect(),
-        names,
-    );
-    PreparedTableExport::try_new_with_semantic_columns(
+    let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
+    PreparedTableExport::try_new(
         table,
-        projection.columns,
         projection.semantic_columns,
         projection.bindings,
-        readiness,
-        export_diagnostics(),
+        PreparedAccess::Device {
+            readiness,
+            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
+        },
     )
-    .map(|export| {
-        export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
-    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -232,22 +225,10 @@ pub(super) fn prepare_host_table_export_from_view(
 ) -> Result<PreparedTableExport<'static>, InteropError> {
     let (num_rows, _) = table_dimensions(view, operation)?;
     let projection = build_host_table_projection_from_view(view, operation)?;
-    let table = SemanticTable::new(
-        TableId::new(0),
-        num_rows,
-        projection.columns.iter().map(|column| column.id()).collect(),
-        names,
-    );
-    PreparedTableExport::try_new_with_semantic_columns(
-        table,
-        projection.columns,
-        projection.semantic_columns,
-        projection.bindings,
-        ProducerReadiness::HostVisible,
-        host_export_diagnostics(),
-    )
-    .map(|export| export.with_retained_host_buffers(projection.retained_host_buffers))
-    .map_err(|error| error.with_context("operation", operation))
+    let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
+    PreparedTableExport::try_new(table, projection.semantic_columns, projection.bindings, PreparedAccess::Host)
+        .map(|export| export.with_retained_owner(Arc::new(projection.retained_host_buffers)))
+        .map_err(|error| error.with_context("operation", operation))
 }
 
 pub(super) fn prepare_device_table_export_from_columns<'a, I>(
@@ -279,23 +260,16 @@ where
         boundary_observation(BoundaryKind::InteropLease, context.placement, num_rows, projection.columns.len(), false);
     let readiness = context.readiness;
     let observer = context.observer;
-    let table = SemanticTable::new(
-        TableId::new(0),
-        num_rows,
-        projection.columns.iter().map(|column| column.id()).collect(),
-        names,
-    );
-    PreparedTableExport::try_new_with_semantic_columns(
+    let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
+    PreparedTableExport::try_new(
         table,
-        projection.columns,
         projection.semantic_columns,
         projection.bindings,
-        readiness,
-        export_diagnostics(),
+        PreparedAccess::Device {
+            readiness,
+            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
+        },
     )
-    .map(|export| {
-        export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
-    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -314,28 +288,22 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let default_device = retained_table.execution_domain().device_id().ordinal() as i32;
     let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
-    let table = SemanticTable::new(
-        TableId::new(0),
-        num_rows,
-        projection.columns.iter().map(|column| column.id()).collect(),
-        names,
-    );
-    PreparedTableExport::try_new_with_semantic_columns(
+    let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
+    PreparedTableExport::try_new(
         table,
-        projection.columns,
         projection.semantic_columns,
         to_static_bindings(operation, projection.bindings)?,
-        to_static_readiness(operation, readiness)?,
-        export_diagnostics(),
+        PreparedAccess::Device {
+            readiness: to_static_readiness(operation, readiness)?,
+            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
+        },
     )
     .map(|export| {
-        let export =
-            export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer));
         match retained_event {
             // `to_static_readiness` stores only the raw CUDA event pointer, so
             // the export must co-own the event for its whole lifetime.
-            Some(event) => export.with_retained_owner_arc(Arc::new((Arc::clone(&retained_table), event))),
-            None => export.with_retained_owner_arc(Arc::clone(&retained_table)),
+            Some(event) => export.with_retained_owner(Arc::new((Arc::clone(&retained_table), event))),
+            None => export.with_retained_owner(Arc::<Table>::clone(&retained_table)),
         }
     })
     .map_err(|error| error.with_context("operation", operation))
@@ -360,225 +328,8 @@ where
     I: IntoIterator<Item = &'a Column>,
 {
     let projection = build_host_table_projection_from_columns(columns, operation)?;
-    let table = SemanticTable::new(
-        TableId::new(0),
-        num_rows,
-        projection.columns.iter().map(|column| column.id()).collect(),
-        names,
-    );
-    PreparedTableExport::try_new_with_semantic_columns(
-        table,
-        projection.columns,
-        projection.semantic_columns,
-        projection.bindings,
-        ProducerReadiness::HostVisible,
-        host_export_diagnostics(),
-    )
-    .map(|export| export.with_retained_host_buffers(projection.retained_host_buffers))
-    .map_err(|error| error.with_context("operation", operation))
-}
-
-pub(super) fn transfer_from_owned_table(
-    table: Table,
-    operation: &'static str,
-) -> Result<OwnedTableTransfer, InteropError> {
-    transfer_from_owned_table_with_names(table, None, operation)
-}
-
-pub(super) fn transfer_from_owned_table_with_names(
-    table: Table,
-    names: Option<Vec<String>>,
-    operation: &'static str,
-) -> Result<OwnedTableTransfer, InteropError> {
-    let observation = table_boundary_observation(BoundaryKind::OwnedTransfer, &table, operation)?;
-    let domain = Arc::clone(table.execution_domain());
-    let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
-    let (num_rows, columns, semantic_columns, bindings) = {
-        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (num_rows, _) = table_dimensions(&view, operation)?;
-        let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
-        (num_rows, projection.columns, projection.semantic_columns, projection.bindings)
-    };
-
-    let table_semantic =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
-    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
-        table: table_semantic,
-        columns,
-        semantic_columns,
-        // SAFETY: `to_static_bindings` depends on this retained owner to keep
-        // the source table alive for the transfer lifetime.
-        bindings: to_static_bindings(operation, bindings)?,
-        readiness: to_static_readiness(operation, readiness)?,
-        diagnostics: owned_transfer_diagnostics(),
-        release_contract: owned_transfer_release_contract(default_device),
-        owner: OwnedTableTransferState::new(table),
-    })
-    .map_err(|error| error.with_context("operation", operation))?;
-    record_observation(&domain, observation);
-    Ok(transfer)
-}
-
-pub(super) fn transfer_from_owned_table_with_runtime_release(
-    table: Table,
-    operation: &'static str,
-) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
-    transfer_from_owned_table_with_runtime_release_synchronization(
-        table,
-        ReleaseSynchronization::Asynchronous,
-        operation,
-    )
-}
-
-pub(super) fn transfer_from_owned_table_with_runtime_release_synchronization(
-    table: Table,
-    synchronization: ReleaseSynchronization,
-    operation: &'static str,
-) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
-    transfer_from_owned_table_with_names_and_runtime_release_synchronization(table, None, synchronization, operation)
-}
-
-pub(super) fn transfer_from_owned_table_with_names_and_runtime_release(
-    table: Table,
-    names: Option<Vec<String>>,
-    operation: &'static str,
-) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
-    transfer_from_owned_table_with_names_and_runtime_release_synchronization(
-        table,
-        names,
-        ReleaseSynchronization::Asynchronous,
-        operation,
-    )
-}
-
-pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchronization(
-    table: Table,
-    names: Option<Vec<String>>,
-    synchronization: ReleaseSynchronization,
-    operation: &'static str,
-) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
-    let observation = table_boundary_observation(BoundaryKind::OwnedTransfer, &table, operation)?;
-    let domain = Arc::clone(table.execution_domain());
-    let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
-    let (num_rows, columns, semantic_columns, bindings) = {
-        let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (num_rows, _) = table_dimensions(&view, operation)?;
-        let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
-        (num_rows, projection.columns, projection.semantic_columns, projection.bindings)
-    };
-
-    let table_semantic =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
-    let bindings = to_static_bindings(operation, bindings)?;
-    let readiness = to_static_readiness(operation, readiness)?;
-    let (owner, releaser) = runtime_owned_table_owner_and_releaser(table, default_device, synchronization);
-    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
-        table: table_semantic,
-        columns,
-        semantic_columns,
-        bindings,
-        readiness,
-        diagnostics: owned_transfer_diagnostics(),
-        release_contract: owned_transfer_runtime_release_contract_with_synchronization(
-            default_device,
-            synchronization,
-        )?,
-        owner,
-    })
-    .map_err(|error| error.with_context("operation", operation))?;
-
-    record_observation(&domain, observation);
-    Ok((transfer, releaser))
-}
-
-pub(super) fn prepare_partitioned_device_table_export_from_columns<'a>(
-    producer: &'a PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<PartitionedPreparedTableExport<'a>, InteropError> {
-    let mut partitions = Vec::new();
-
-    for group in producer.grouped_borrowed_columns() {
-        let export = prepare_device_table_export_from_columns(
-            group.columns,
-            producer.num_rows(),
-            None,
-            &group.domain,
-            operation,
-        )?;
-        partitions.push(PartitionedPreparedTablePartition::new(group.top_level_column_indices, export));
-    }
-
-    PartitionedPreparedTableExport::try_new(Some(producer.column_names_owned()), producer.num_rows(), partitions)
+    let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
+    PreparedTableExport::try_new(table, projection.semantic_columns, projection.bindings, PreparedAccess::Host)
+        .map(|export| export.with_retained_owner(Arc::new(projection.retained_host_buffers)))
         .map_err(|error| error.with_context("operation", operation))
-}
-
-pub(super) fn prepare_partitioned_host_table_export_from_columns(
-    producer: &PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<PreparedTableExport<'static>, InteropError> {
-    prepare_host_table_export_from_columns(
-        producer.columns(),
-        producer.num_rows(),
-        Some(producer.column_names_owned()),
-        operation,
-    )
-}
-
-pub(super) fn transfer_partitioned_owned_table_from_columns(
-    producer: PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<PartitionedOwnedTableTransfer, InteropError> {
-    let schema_names = producer.column_names_owned();
-    let row_count = producer.num_rows();
-    let mut partitions = Vec::new();
-
-    for group in producer.grouped_owned_columns() {
-        let table = Table::from_columns(group.columns)
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let transfer = transfer_from_owned_table(table, operation)?;
-        partitions.push(PartitionedOwnedTableTransferPartition::new(group.top_level_column_indices, transfer));
-    }
-
-    PartitionedOwnedTableTransfer::try_new(Some(schema_names), row_count, partitions)
-        .map_err(|error| error.with_context("operation", operation))
-}
-
-pub(super) fn transfer_partitioned_owned_table_from_columns_with_runtime_release(
-    producer: PartitionedDataFrameExport,
-    operation: &'static str,
-) -> Result<(PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser), InteropError> {
-    transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization(
-        producer,
-        ReleaseSynchronization::Asynchronous,
-        operation,
-    )
-}
-
-pub(super) fn transfer_partitioned_owned_table_from_columns_with_runtime_release_synchronization(
-    producer: PartitionedDataFrameExport,
-    synchronization: ReleaseSynchronization,
-    operation: &'static str,
-) -> Result<(PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferReleaser), InteropError> {
-    let schema_names = producer.column_names_owned();
-    let row_count = producer.num_rows();
-    let mut partitions = Vec::new();
-    let mut releasers = Vec::new();
-
-    for group in producer.grouped_owned_columns() {
-        let top_level_column_indices = group.top_level_column_indices;
-        let table = Table::from_columns(group.columns)
-            .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (transfer, releaser) = transfer_from_owned_table_with_names_and_runtime_release_synchronization(
-            table,
-            None,
-            synchronization,
-            operation,
-        )?;
-        partitions.push(PartitionedOwnedTableTransferPartition::new(top_level_column_indices.clone(), transfer));
-        releasers.push(PartitionedOwnedTableTransferReleaserPartition::new(top_level_column_indices, releaser));
-    }
-
-    let transfer = PartitionedOwnedTableTransfer::try_new(Some(schema_names), row_count, partitions)
-        .map_err(|error| error.with_context("operation", operation))?;
-    Ok((transfer, PartitionedOwnedTableTransferReleaser::new(releasers)))
 }

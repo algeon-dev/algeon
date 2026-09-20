@@ -14,7 +14,6 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
     let num_children =
         view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let null_count =
         view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
@@ -65,7 +64,6 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
             len,
             0,
             validity,
-            schema_nullability(nullable),
             ColumnLayout::BinaryLike { offsets: offsets_id, data: data_id },
         );
         return Ok(PreparedHostColumnProjection {
@@ -117,15 +115,8 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
     let mut retained_host_buffers = vec![values_bytes];
     let validity = host_validity.retain_into(&mut bindings, &mut retained_host_buffers);
 
-    let column = SemanticColumn::new(
-        column_id,
-        interop_type,
-        len,
-        0,
-        validity,
-        schema_nullability(nullable),
-        ColumnLayout::FixedWidth { values: values_id },
-    );
+    let column =
+        SemanticColumn::new(column_id, interop_type, len, 0, validity, ColumnLayout::FixedWidth { values: values_id });
     Ok(PreparedHostColumnProjection {
         column: column.clone(),
         semantic_columns: vec![column],
@@ -148,8 +139,6 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
     let num_children =
         view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let schema_nullability = schema_nullability(nullable);
     let null_count =
         view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
@@ -290,7 +279,6 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
         len,
         0,
         validity,
-        schema_nullability,
         ColumnLayout::List { offsets: offsets_id, child: child_projection.column.id() },
     );
     let mut semantic_columns = vec![column.clone()];
@@ -317,8 +305,6 @@ pub(super) fn prepared_host_column_projection_from_view(
     let num_children =
         view.num_children().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let len = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let nullable = view.nullable().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let schema_nullability = schema_nullability(nullable);
     let null_count =
         view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
@@ -381,7 +367,6 @@ pub(super) fn prepared_host_column_projection_from_view(
             len,
             0,
             validity,
-            schema_nullability,
             ColumnLayout::Struct { children: child_ids },
         );
         let mut all_columns = vec![column.clone()];
@@ -472,7 +457,6 @@ pub(super) fn prepared_host_column_projection_from_view(
             len,
             0,
             validity,
-            schema_nullability,
             ColumnLayout::Dictionary { indices: indices_id, keys: keys_projection.column.id() },
         );
         let mut semantic_columns = vec![column.clone()];

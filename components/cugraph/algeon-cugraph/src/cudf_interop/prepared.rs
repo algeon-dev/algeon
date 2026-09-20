@@ -1,9 +1,7 @@
-use std::{any::Any, sync::Arc};
-
 use cudf::interop::{
     contract::{
-        BufferBinding, ColumnLayout, CompletionAuthority, CompletionWitness, ExportProfile, InteropError,
-        LeaseCompletionResult, PhysicalValidity, Placement, ReadStartAuthority, SemanticColumn,
+        BufferBinding, ColumnLayout, CompletionAuthority, InteropError, LeaseCompletion, PhysicalValidity, Placement,
+        PreparedExportProfile, ReadStartAuthority, SemanticColumn,
     },
     cuda_stream_handle,
 };
@@ -45,13 +43,8 @@ pub(super) struct PreparedVertexPairList<'a> {
     pub(super) second: PreparedEdgeColumn<'a>,
 }
 
-pub(super) struct RetainedPreparedCompletion {
-    owner: Arc<dyn Any + Send + Sync>,
-    witness: CompletionWitness,
-}
-
-pub(super) fn prepared_profile_supported(profile: ExportProfile, operation: &'static str) -> Result<()> {
-    if profile == ExportProfile::PreparedDeviceExport {
+pub(super) fn prepared_profile_supported(profile: PreparedExportProfile, operation: &'static str) -> Result<()> {
+    if profile == PreparedExportProfile::Device {
         return Ok(());
     }
 
@@ -253,65 +246,30 @@ pub(super) fn prepared_lease_authorities<'a>(
 }
 
 pub(super) fn complete_prepared_lease(
-    result: std::result::Result<LeaseCompletionResult, InteropError>,
-    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
+    result: std::result::Result<LeaseCompletion, InteropError>,
     operation: &'static str,
-) -> Result<Option<RetainedPreparedCompletion>> {
-    match result.map_err(|error| map_prepared_lease_completion_interop_error(error, operation))? {
-        LeaseCompletionResult::FallbackSynchronized => Ok(None),
-        LeaseCompletionResult::Completed(witness) => match retained_owner {
-            Some(owner) => Ok(Some(RetainedPreparedCompletion { owner, witness })),
-            None => witness
-                .synchronize()
-                .map_err(|error| map_prepared_lease_completion_interop_error(error, operation))
-                .map(|()| None),
-        },
-    }
+) -> Result<LeaseCompletion> {
+    result.map_err(|error| map_prepared_lease_completion_interop_error(error, operation))
+}
+
+/// Collects every lease completion, or returns the first completion error.
+/// Completions dropped on the error path still fence their reads.
+fn deferred_input_completion(
+    completions: impl IntoIterator<Item = Result<LeaseCompletion>>,
+) -> Result<Option<DeferredInputCompletion>> {
+    completions.into_iter().collect::<Result<Vec<_>>>().map(DeferredInputCompletion::new)
 }
 
 pub(super) fn finish_prepared_graph_result<T: Transposition>(
     graph_result: Result<Graph<T>>,
-    completions: impl IntoIterator<Item = Result<Option<RetainedPreparedCompletion>>>,
+    completions: impl IntoIterator<Item = Result<LeaseCompletion>>,
 ) -> Result<Graph<T>> {
-    let mut completion_error = None;
-    let mut retained_owners = Vec::new();
-    let mut retained_witnesses = Vec::new();
-    for completion in completions {
-        match completion {
-            Ok(Some(retained)) => {
-                retained_owners.push(retained.owner);
-                retained_witnesses.push(retained.witness);
-            },
-            Ok(None) => {},
-            Err(error) => {
-                if completion_error.is_none() {
-                    completion_error = Some(error);
-                }
-            },
-        }
-    }
-    let pending_input_completion = DeferredInputCompletion::new(retained_owners, retained_witnesses);
-
-    match graph_result {
-        Ok(graph) => {
-            if let Some(error) = completion_error {
-                if let Some(pending) = pending_input_completion {
-                    pending.synchronize();
-                }
-                Err(error)
-            } else if let Some(pending) = pending_input_completion {
-                Ok(graph.with_pending_input_completion(pending))
-            } else {
-                Ok(graph)
-            }
-        },
-        Err(error) => {
-            if let Some(pending) = pending_input_completion {
-                pending.synchronize();
-            }
-            Err(error)
-        },
-    }
+    let pending_input_completion = deferred_input_completion(completions);
+    let graph = graph_result?;
+    Ok(match pending_input_completion? {
+        Some(pending) => graph.with_pending_input_completion(pending),
+        None => graph,
+    })
 }
 
 /// Finish prepared pair ingress without introducing a host-side fence on the
@@ -320,47 +278,14 @@ pub(super) fn finish_prepared_graph_result<T: Transposition>(
 /// synchronizes that witness before cuGraph releases the native pair object.
 pub(super) fn finish_prepared_vertex_pairs_result(
     pairs_result: Result<VertexPairs>,
-    completions: impl IntoIterator<Item = Result<Option<RetainedPreparedCompletion>>>,
+    completions: impl IntoIterator<Item = Result<LeaseCompletion>>,
 ) -> Result<VertexPairs> {
-    let mut completion_error = None;
-    let mut retained_owners = Vec::new();
-    let mut retained_witnesses = Vec::new();
-    for completion in completions {
-        match completion {
-            Ok(Some(retained)) => {
-                retained_owners.push(retained.owner);
-                retained_witnesses.push(retained.witness);
-            },
-            Ok(None) => {},
-            Err(error) => {
-                if completion_error.is_none() {
-                    completion_error = Some(error);
-                }
-            },
-        }
-    }
-    let pending_input_completion = DeferredInputCompletion::new(retained_owners, retained_witnesses);
-
-    match pairs_result {
-        Ok(pairs) => {
-            if let Some(error) = completion_error {
-                if let Some(pending) = pending_input_completion {
-                    pending.synchronize();
-                }
-                Err(error)
-            } else if let Some(pending) = pending_input_completion {
-                Ok(pairs.with_pending_input_completion(pending))
-            } else {
-                Ok(pairs)
-            }
-        },
-        Err(error) => {
-            if let Some(pending) = pending_input_completion {
-                pending.synchronize();
-            }
-            Err(error)
-        },
-    }
+    let pending_input_completion = deferred_input_completion(completions);
+    let pairs = pairs_result?;
+    Ok(match pending_input_completion? {
+        Some(pending) => pairs.with_pending_input_completion(pending),
+        None => pairs,
+    })
 }
 
 pub(super) fn build_graph_from_prepared_edge_list_raw<T: Transposition>(
@@ -426,7 +351,7 @@ mod tests {
 
     use cudf::interop::contract::{
         BoundBytes, BufferId, ColumnId, ColumnLayout, DataType as InteropDataType, PhysicalValidity, Placement,
-        SchemaNullability, SemanticColumn, TypeId as InteropTypeId,
+        SemanticColumn, TypeId as InteropTypeId,
     };
 
     use super::*;
@@ -440,7 +365,6 @@ mod tests {
             3,
             0,
             PhysicalValidity::NoValidityBuffer,
-            SchemaNullability::NonNullable,
             ColumnLayout::FixedWidth { values: BufferId::new(42) },
         );
         let prepared = PreparedEdgeColumn { column: &column, bindings: &[] };
@@ -461,7 +385,6 @@ mod tests {
             3,
             0,
             PhysicalValidity::ValidityMask { mask: BufferId::new(99), null_count: None },
-            SchemaNullability::Nullable,
             ColumnLayout::FixedWidth { values: BufferId::new(7) },
         );
         let bindings = [binding];
@@ -483,7 +406,6 @@ mod tests {
             3,
             0,
             PhysicalValidity::NoValidityBuffer,
-            SchemaNullability::NonNullable,
             ColumnLayout::FixedWidth { values: BufferId::new(7) },
         );
         let bindings = [binding];

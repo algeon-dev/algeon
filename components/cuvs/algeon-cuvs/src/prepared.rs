@@ -1,13 +1,12 @@
-use std::{any::Any, marker::PhantomData, mem, sync::Arc};
+use std::{marker::PhantomData, mem};
 
 use cudf::{
     TypeId,
     core::Table,
     frame::dataframe::{ValidatedFixedSizeListExport, ValidatedUniformListExport},
     interop::contract::{
-        ActiveColumnReadLease, BufferBinding, ColumnLayout, CompletionAuthority, CompletionWitness,
-        IncompleteDropBehavior, LeaseCompletionResult, PhysicalValidity, Placement, PreparedColumnExport,
-        PreparedExportProfile, PreparedTableExport, ReadStartAuthority,
+        ActiveColumnReadLease, BufferBinding, ColumnLayout, CompletionAuthority, LeaseCompletion, PhysicalValidity,
+        Placement, PreparedColumnExport, PreparedExportProfile, PreparedTableExport, ReadStartAuthority,
     },
 };
 
@@ -22,7 +21,6 @@ use crate::{
 pub struct PreparedTensorLease<'export, 'producer, 'consumer, T: DeviceElement> {
     tensor: DeviceTensor<'export, T>,
     lease: Option<ActiveColumnReadLease<'export, 'producer, 'consumer>>,
-    export: &'export PreparedColumnExport<'producer>,
     _consumer: PhantomData<&'consumer CuvsResources>,
 }
 
@@ -33,16 +31,11 @@ impl<'export, T: DeviceElement> PreparedTensorLease<'export, '_, '_, T> {
 
     /// Complete producer lifetime protection after all cuVS reads have been
     /// enqueued onto the runtime stream.
-    pub fn complete(mut self) -> Result<PreparedReadCompletion> {
+    pub fn complete(mut self) -> Result<LeaseCompletion> {
         let operation = "PreparedTensorLease::complete";
-        let retained_owner = self.export.clone_retained_owner();
         let lease =
             self.lease.take().ok_or_else(|| invalid_input(operation, "prepared tensor lease was already completed"))?;
-        PreparedReadCompletion::from_lease_result(
-            lease.complete().map_err(|error| from_interop(operation, error))?,
-            retained_owner,
-            operation,
-        )
+        lease.complete().map_err(|error| from_interop(operation, error))
     }
 }
 
@@ -61,7 +54,6 @@ impl<T: DeviceElement> std::fmt::Debug for PreparedTensorLease<'_, '_, '_, T> {
 pub struct PreparedValidatedTensorLease<'export, 'producer, 'consumer, T: DeviceElement> {
     tensor: ValidatedDeviceTensor<'export, T>,
     lease: Option<ActiveColumnReadLease<'export, 'producer, 'consumer>>,
-    export: &'export PreparedColumnExport<'producer>,
     _consumer: PhantomData<&'consumer CuvsResources>,
 }
 
@@ -70,16 +62,11 @@ impl<'export, T: DeviceElement> PreparedValidatedTensorLease<'export, '_, '_, T>
         &self.tensor
     }
 
-    pub fn complete(mut self) -> Result<PreparedReadCompletion> {
+    pub fn complete(mut self) -> Result<LeaseCompletion> {
         let operation = "PreparedValidatedTensorLease::complete";
-        let retained_owner = self.export.clone_retained_owner();
         let lease =
             self.lease.take().ok_or_else(|| invalid_input(operation, "prepared tensor lease was already completed"))?;
-        PreparedReadCompletion::from_lease_result(
-            lease.complete().map_err(|error| from_interop(operation, error))?,
-            retained_owner,
-            operation,
-        )
+        lease.complete().map_err(|error| from_interop(operation, error))
     }
 }
 
@@ -89,98 +76,6 @@ impl<T: DeviceElement> std::fmt::Debug for PreparedValidatedTensorLease<'_, '_, 
             .debug_struct("PreparedValidatedTensorLease")
             .field("tensor", &self.tensor)
             .field("completed", &self.lease.is_none())
-            .finish_non_exhaustive()
-    }
-}
-
-/// Owned completion state for one prepared read.
-///
-/// When the producer supplied a retained owner, this value keeps that owner
-/// alive until the completion witness is synchronized. A producer that does
-/// not supply an owner is synchronized before [`PreparedTensorLease::complete`]
-/// returns, so this type never carries a witness without its storage owner.
-pub struct PreparedReadCompletion {
-    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
-    witness: Option<CompletionWitness>,
-}
-
-impl PreparedReadCompletion {
-    fn from_lease_result(
-        result: LeaseCompletionResult,
-        retained_owner: Option<Arc<dyn Any + Send + Sync>>,
-        operation: &'static str,
-    ) -> Result<Self> {
-        match result {
-            LeaseCompletionResult::FallbackSynchronized => Ok(Self { retained_owner: None, witness: None }),
-            LeaseCompletionResult::Completed(witness) => match retained_owner {
-                Some(retained_owner) => Ok(Self { retained_owner: Some(retained_owner), witness: Some(witness) }),
-                None => {
-                    witness.synchronize().map_err(|error| from_interop(operation, error))?;
-                    Ok(Self { retained_owner: None, witness: None })
-                },
-            },
-        }
-    }
-
-    pub fn witness(&self) -> Option<&CompletionWitness> {
-        self.witness.as_ref()
-    }
-
-    pub fn retains_producer_owner(&self) -> bool {
-        self.retained_owner.is_some()
-    }
-
-    pub fn is_ready(&self) -> Result<bool> {
-        self.witness.as_ref().map_or(Ok(true), |witness| {
-            witness.is_ready().map_err(|error| from_interop("PreparedReadCompletion::is_ready", error))
-        })
-    }
-
-    /// Synchronize consumer work and release the retained producer owner.
-    pub fn synchronize(mut self) -> Result<()> {
-        self.synchronize_inner("PreparedReadCompletion::synchronize")?;
-        self.retained_owner.take();
-        Ok(())
-    }
-
-    /// Alias for [`synchronize`](Self::synchronize) that emphasizes owner
-    /// release at this boundary.
-    pub fn release(self) -> Result<()> {
-        self.synchronize()
-    }
-
-    fn synchronize_inner(&mut self, operation: &'static str) -> Result<()> {
-        if let Some(witness) = self.witness.take()
-            && let Err(error) = witness.synchronize()
-        {
-            self.witness = Some(witness);
-            return Err(from_interop(operation, error));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for PreparedReadCompletion {
-    fn drop(&mut self) {
-        if self.synchronize_inner("PreparedReadCompletion::drop").is_err() {
-            if let Some(owner) = self.retained_owner.take() {
-                // A failed completion fence cannot authorize releasing the
-                // producer allocation. Leaking the retained owner is the only
-                // sound drop-time fallback because Drop cannot report failure.
-                mem::forget(owner);
-            }
-        } else {
-            self.retained_owner.take();
-        }
-    }
-}
-
-impl std::fmt::Debug for PreparedReadCompletion {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PreparedReadCompletion")
-            .field("retains_producer_owner", &self.retains_producer_owner())
-            .field("witness", &self.witness)
             .finish_non_exhaustive()
     }
 }
@@ -253,7 +148,7 @@ impl CuvsResources {
             self.binding_id(),
             operation,
         )?;
-        Ok(PreparedTensorLease { tensor, lease: Some(lease), export, _consumer: PhantomData })
+        Ok(PreparedTensorLease { tensor, lease: Some(lease), _consumer: PhantomData })
     }
 
     /// Activate a structurally validated numeric `FixedSizeList`
@@ -302,7 +197,7 @@ impl CuvsResources {
             operation,
         )
         .map(ValidatedDeviceTensor::new)?;
-        Ok(PreparedValidatedTensorLease { tensor, lease: Some(lease), export, _consumer: PhantomData })
+        Ok(PreparedValidatedTensorLease { tensor, lease: Some(lease), _consumer: PhantomData })
     }
 
     /// Activate a structurally validated runtime-uniform
@@ -351,7 +246,7 @@ impl CuvsResources {
             operation,
         )
         .map(ValidatedDeviceTensor::new)?;
-        Ok(PreparedValidatedTensorLease { tensor, lease: Some(lease), export, _consumer: PhantomData })
+        Ok(PreparedValidatedTensorLease { tensor, lease: Some(lease), _consumer: PhantomData })
     }
 
     /// Copy a validated numeric `FixedSizeList` child into a private
@@ -433,12 +328,6 @@ fn require_element<T: DeviceElement>(element: TypeId, operation: &'static str) -
 fn require_device_export(export: &PreparedColumnExport<'_>, operation: &'static str) -> Result<()> {
     if export.profile() != PreparedExportProfile::Device {
         return Err(invalid_input(operation, "cuVS requires a prepared device export"));
-    }
-    if export.incomplete_drop_behavior() != IncompleteDropBehavior::GuaranteedFallback {
-        return Err(invalid_input(
-            operation,
-            "prepared tensor exports must guarantee safe fallback when an active lease is dropped without completion",
-        ));
     }
     Ok(())
 }

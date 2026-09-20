@@ -2,7 +2,9 @@
 use std::{cell::Cell, sync::Arc};
 
 use arrow::datatypes::FieldRef;
-use rapids_interop::{BufferId, ColumnId, ColumnLayout, PhysicalValidity, PreparedColumnExport, ProducerReadiness};
+use rapids_interop::{
+    BufferId, ColumnId, ColumnLayout, PhysicalValidity, PreparedAccess, PreparedColumnExport, ProducerReadiness,
+};
 
 use super::{
     super::DataFrame,
@@ -883,8 +885,8 @@ fn check_list_export_child_values(
             "list_float32_child_device_mismatch",
         ));
     }
-    match export.readiness() {
-        ProducerReadiness::DeviceStreamOrdered { stream }
+    match export.access() {
+        PreparedAccess::Device { readiness: ProducerReadiness::DeviceStreamOrdered { stream }, .. }
             if stream.device() == expected_device && stream.as_raw() as usize == contract.placement.stream_debug => {},
         _ => {
             return Err(list_export_contract_error(

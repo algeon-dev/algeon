@@ -1,3 +1,9 @@
+use std::sync::Arc;
+
+use rapids_interop::{
+    InteropError, InteropErrorKind, LeaseBackend, PreparedAccess, PreparedColumnExport, PreparedTableExport,
+};
+
 pub use crate::interop::arrow_device::testing_hooks::{
     arrow_device_cpu_type_for_test, arrow_device_cuda_host_type_for_test, arrow_device_cuda_managed_type_for_test,
     quarantine_owner_unknown_device_array_for_test,
@@ -68,4 +74,53 @@ pub fn trigger_interop_projection_struct_missing_child_for_test()
 /// Trigger the shared interop invalid-view column-index i32-limit contract.
 pub fn trigger_interop_column_index_limit_for_test() -> std::result::Result<(), rapids_interop::InteropError> {
     interop_trigger_column_index_limit_for_test()
+}
+
+fn device_access_with_backend<'a>(
+    access: &PreparedAccess<'a>,
+    backend: LeaseBackend,
+) -> std::result::Result<PreparedAccess<'a>, InteropError> {
+    match access {
+        PreparedAccess::Device { readiness, .. } => Ok(PreparedAccess::Device { readiness: *readiness, backend }),
+        PreparedAccess::Host => Err(InteropError::new(
+            InteropErrorKind::ProfileUnsupported,
+            "lease backends apply only to prepared device exports",
+        )),
+    }
+}
+
+/// Rebuild a prepared device column export with `backend`, keeping its graph,
+/// readiness, and retained owner.
+pub fn column_export_with_lease_backend_for_test<'a>(
+    export: &PreparedColumnExport<'a>,
+    backend: LeaseBackend,
+) -> std::result::Result<PreparedColumnExport<'a>, InteropError> {
+    let rebuilt = PreparedColumnExport::try_new(
+        export.column().id(),
+        export.semantic_columns().to_vec(),
+        export.bindings().to_vec(),
+        device_access_with_backend(export.access(), backend)?,
+    )?;
+    Ok(match export.retained_owner() {
+        Some(owner) => rebuilt.with_retained_owner(Arc::clone(owner)),
+        None => rebuilt,
+    })
+}
+
+/// Rebuild a prepared device table export with `backend`, keeping its graph,
+/// readiness, and retained owner.
+pub fn table_export_with_lease_backend_for_test<'a>(
+    export: &PreparedTableExport<'a>,
+    backend: LeaseBackend,
+) -> std::result::Result<PreparedTableExport<'a>, InteropError> {
+    let rebuilt = PreparedTableExport::try_new(
+        export.table().clone(),
+        export.semantic_columns().to_vec(),
+        export.bindings().to_vec(),
+        device_access_with_backend(export.access(), backend)?,
+    )?;
+    Ok(match export.retained_owner() {
+        Some(owner) => rebuilt.with_retained_owner(Arc::clone(owner)),
+        None => rebuilt,
+    })
 }

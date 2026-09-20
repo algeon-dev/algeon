@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     cell::{Cell, RefCell},
     marker::PhantomData,
     ptr,
@@ -8,8 +7,15 @@ use std::{
 };
 
 use cudf::{
-    interop::contract::{CompletionWitnessBackend, CompletionWitnessKind, InteropErrorKind, Result as InteropResult},
+    interop::{
+        contract::{
+            ActiveLeaseBackend, CompletionAuthority, CompletionWitness, CompletionWitnessBackend, InteropErrorKind,
+            LeaseBackend, ProducerReadiness, ReadStartAuthority, Result as InteropResult,
+        },
+        cuda_stream_handle,
+    },
     runtime::{DeviceEntryGuard, DeviceFaultNativeStatus, DeviceHealthStatus},
+    testing::interop::column_export_with_lease_backend_for_test,
 };
 
 use super::*;
@@ -21,20 +27,65 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct FailingCompletionWitness;
+struct TestCompletionWitness {
+    fail: bool,
+}
 
-impl CompletionWitnessBackend for FailingCompletionWitness {
+impl CompletionWitnessBackend for TestCompletionWitness {
     fn is_ready(&self) -> InteropResult<bool> {
-        Ok(false)
+        Ok(!self.fail)
     }
 
     fn synchronize(&self) -> InteropResult<()> {
-        Err(InteropError::new(InteropErrorKind::ReadinessUnavailable, "injected sync failure"))
+        if self.fail {
+            return Err(InteropError::new(InteropErrorKind::ReadinessUnavailable, "injected sync failure"));
+        }
+        Ok(())
+    }
+}
+
+/// Completes every stream lease with a witness that fails its wait when
+/// `fail_witness` is set.
+struct WitnessLeaseBackend {
+    fail_witness: bool,
+}
+
+impl ActiveLeaseBackend for WitnessLeaseBackend {
+    fn complete(
+        &self,
+        _readiness: ProducerReadiness<'_>,
+        _completion: CompletionAuthority<'_>,
+    ) -> InteropResult<Option<CompletionWitness>> {
+        Ok(Some(CompletionWitness::new(Arc::new(TestCompletionWitness { fail: self.fail_witness }))))
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
+    fn drop_incomplete(
+        &self,
+        _readiness: ProducerReadiness<'_>,
+        _completion: CompletionAuthority<'_>,
+    ) -> InteropResult<()> {
+        Ok(())
     }
+}
+
+/// Completes one stream-ordered lease over a prepared export that retains
+/// `owner`, so only the returned pending completion keeps `owner` alive.
+fn pending_input_completion(runtime: &cudf::Runtime, owner: Arc<()>, fail_witness: bool) -> DeferredInputCompletion {
+    let series = runtime.series(&[0i32, 1]).expect("series");
+    let export = column_export_with_lease_backend_for_test(
+        &series.try_prepare_device_column_export().expect("prepared export"),
+        LeaseBackend::new(WitnessLeaseBackend { fail_witness }),
+    )
+    .expect("lease backend")
+    .with_retained_owner(owner);
+    let stream = cuda_stream_handle(runtime.stream()).expect("stream handle");
+    let lease = export
+        .try_activate_read_lease(
+            ReadStartAuthority::ConsumerStream { stream },
+            CompletionAuthority::SameDeviceStream { stream },
+        )
+        .expect("lease");
+    DeferredInputCompletion::new(vec![lease.complete().expect("complete")]).expect("pending")
 }
 
 fn dummy_runtime_bound_graph(
@@ -79,12 +130,7 @@ fn test_graph_park_releases_pending_input_owner() {
     let entered = handle.enter("test_graph_park_releases_pending_input_owner").expect("entered");
 
     let owner = Arc::new(());
-    let retained_owner: Arc<dyn Any + Send + Sync> = Arc::<()>::clone(&owner);
-    let pending = DeferredInputCompletion::new(
-        vec![retained_owner],
-        vec![CompletionWitness::new(CompletionWitnessKind::ConsumerStream)],
-    )
-    .expect("pending");
+    let pending = pending_input_completion(&runtime, Arc::clone(&owner), false);
     let graph = dummy_runtime_bound_graph(&entered, Some(pending));
 
     assert_eq!(Arc::strong_count(&owner), 2, "graph should retain the prepared input owner before park");
@@ -100,21 +146,13 @@ fn test_graph_park_surfaces_pending_input_completion_error() {
     let entered = handle.enter("test_graph_park_surfaces_pending_input_completion_error").expect("entered");
 
     let owner = Arc::new(());
-    let retained_owner: Arc<dyn Any + Send + Sync> = Arc::<()>::clone(&owner);
-    let pending = DeferredInputCompletion::new(
-        vec![retained_owner],
-        vec![CompletionWitness::with_backend(
-            CompletionWitnessKind::ConsumerStream,
-            Arc::new(FailingCompletionWitness),
-        )],
-    )
-    .expect("pending");
+    let pending = pending_input_completion(&runtime, Arc::clone(&owner), true);
     let graph = dummy_runtime_bound_graph(&entered, Some(pending));
 
     let err = graph.park(&entered).expect_err("park should fail");
     assert_eq!(err.kind(), ErrorKind::InvalidState);
     assert_eq!(err.operation(), "Graph::park");
-    assert_eq!(Arc::strong_count(&owner), 1, "failed park should drop graph and retained input owner");
+    assert_eq!(Arc::strong_count(&owner), 2, "a failed input fence must leak the retained input owner");
 }
 
 fn triangle_parked_graph(handle: &EnteredContext<'_>) -> ParkedGraph<Forward> {

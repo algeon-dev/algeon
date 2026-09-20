@@ -1586,7 +1586,7 @@ fn fixed_size_list_export_retains_proof_binding_range_and_lease_root() {
         .export()
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
-    lease.complete().unwrap();
+    assert!(lease.complete().unwrap().is_ready().unwrap());
 }
 
 fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime() {
@@ -1767,7 +1767,7 @@ fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root()
         .export()
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
-    lease.complete().unwrap();
+    assert!(lease.complete().unwrap().is_ready().unwrap());
 }
 
 fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
@@ -2264,27 +2264,7 @@ fn prepared_interop_lease_activation_is_an_observable_boundary() {
     assert_eq!(observation.columns, 2);
     assert!(!observation.synchronized_for_host);
     assert_eq!(*observed.lock().unwrap().last().unwrap(), observation);
-    lease.complete().unwrap();
-}
-
-fn owned_transfer_export_is_an_observable_boundary() {
-    let _observation_lock = lock_event_observation();
-    let runtime = sample_runtime();
-    let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
-    let source_placement = df.placement();
-
-    testing::boundary::reset_boundary_observation_for_test();
-    let transfer = df.try_into_owned_transfer().unwrap();
-    let observation = testing::boundary::last_boundary_observation_for_test().unwrap();
-
-    assert_eq!(observation.kind, BoundaryKind::OwnedTransfer);
-    assert_eq!(observation.query_stage, Some(QueryStageKind::InteropExport));
-    assert_eq!(observation.placement, source_placement);
-    assert_eq!(observation.rows, 4);
-    assert_eq!(observation.columns, 2);
-    assert!(!observation.synchronized_for_host);
-    assert_eq!(transfer.table().num_rows(), 4);
-    assert_eq!(transfer.table().columns().len(), 2);
+    assert!(lease.complete().unwrap().is_ready().unwrap());
 }
 
 #[test]
@@ -2488,6 +2468,5 @@ fn query_backend_contract_tests_cases() {
             "prepared_interop_lease_activation_is_an_observable_boundary",
             prepared_interop_lease_activation_is_an_observable_boundary,
         ),
-        ("owned_transfer_export_is_an_observable_boundary", owned_transfer_export_is_an_observable_boundary),
     ]);
 }

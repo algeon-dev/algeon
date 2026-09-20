@@ -76,8 +76,6 @@ pub enum ErrorCode {
     /// An execution binding (stream/memory-resource) was required but
     /// unavailable.
     ExecutionBindingUnavailable,
-    /// A prepared export's read lease was already active.
-    LeaseAlreadyActive,
 
     // -- Domestic unsupported leaves -----------------------------------------
     /// The requested dtype is not supported on this path.
@@ -132,7 +130,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every error code variant, in declaration order.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 33] = [
         Self::MissingColumn,
         Self::DuplicateColumnName,
         Self::DuplicateKey,
@@ -149,7 +147,6 @@ impl ErrorCode {
         Self::RuntimeBindingMismatch,
         Self::ReadinessUnavailable,
         Self::ExecutionBindingUnavailable,
-        Self::LeaseAlreadyActive,
         Self::UnsupportedDtype,
         Self::UnsupportedLayout,
         Self::UnsupportedOperation,
@@ -189,7 +186,6 @@ impl fmt::Display for ErrorCode {
             ErrorCode::RuntimeBindingMismatch => "RuntimeBindingMismatch",
             ErrorCode::ReadinessUnavailable => "ReadinessUnavailable",
             ErrorCode::ExecutionBindingUnavailable => "ExecutionBindingUnavailable",
-            ErrorCode::LeaseAlreadyActive => "LeaseAlreadyActive",
             ErrorCode::UnsupportedDtype => "UnsupportedDtype",
             ErrorCode::UnsupportedLayout => "UnsupportedLayout",
             ErrorCode::UnsupportedOperation => "UnsupportedOperation",
@@ -298,8 +294,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::CrossProvenanceInputs
         | ErrorCode::RuntimeBindingMismatch
         | ErrorCode::ReadinessUnavailable
-        | ErrorCode::ExecutionBindingUnavailable
-        | ErrorCode::LeaseAlreadyActive => ErrorKind::ExecutionContext,
+        | ErrorCode::ExecutionBindingUnavailable => ErrorKind::ExecutionContext,
 
         ErrorCode::UnsupportedDtype | ErrorCode::UnsupportedLayout | ErrorCode::UnsupportedOperation => {
             ErrorKind::Unsupported
@@ -353,7 +348,6 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::RuntimeBindingMismatch
         | ErrorCode::ReadinessUnavailable
         | ErrorCode::ExecutionBindingUnavailable
-        | ErrorCode::LeaseAlreadyActive
         | ErrorCode::UnsupportedDtype
         | ErrorCode::UnsupportedLayout
         | ErrorCode::UnsupportedOperation

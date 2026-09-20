@@ -9,7 +9,7 @@ use arrow::{
 use super::DataFrame;
 use crate::{
     core::{
-        column::ColumnView,
+        column::{Column, ColumnView},
         error::{self, Error, ErrorCode, Result},
         types::TypeId,
     },
@@ -213,7 +213,7 @@ impl GpuRecordBatch {
         let export = producer
             .try_prepare_device_column_export()
             .map_err(|error| error::from_interop_in(error, OPERATION))?
-            .with_retained_owner_arc(Arc::clone(producer));
+            .with_retained_owner(Arc::<Column>::clone(producer));
         let parts = validate_list_export(export, proof.into(), OPERATION)?;
         let child = producer
             .view()
@@ -329,7 +329,7 @@ impl GpuRecordBatch {
         let export = producer
             .try_prepare_device_column_export()
             .map_err(|error| error::from_interop_in(error, OPERATION))?
-            .with_retained_owner_arc(Arc::clone(producer));
+            .with_retained_owner(Arc::<Column>::clone(producer));
         let parts = validate_list_export(export, proof.into(), OPERATION)?;
         let child = producer
             .view()
