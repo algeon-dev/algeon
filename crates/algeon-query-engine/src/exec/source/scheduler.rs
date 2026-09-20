@@ -350,8 +350,7 @@ fn acquire_source_read_lease_then_enqueue(
     context: &ExecutionContext,
     observation: Option<&Arc<SourceReadObservation>>,
 ) -> Result<(crate::runtime::AttemptWorkLease, SourceReadQueueStart)> {
-    let lease =
-        context.acquire_attempt_work_lease(observation.map(|observation| observation.source_worker_scope()), None)?;
+    let lease = context.acquire_attempt_work_lease(observation.map(|observation| observation.source_worker_scope()))?;
     let queue_start = SourceReadQueueStart::new(observation.map(Arc::as_ref));
     Ok((lease, queue_start))
 }

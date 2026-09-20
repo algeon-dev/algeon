@@ -902,20 +902,19 @@ unsafe extern "C" {
     pub fn cudf_stream_raw(handle: cudf_stream_handle, out: *mut *mut core::ffi::c_void) -> cudf_status_t;
     #[doc = " Install Algeon's attempt-owned fork-stream provider.\n\n Installation is process-local and idempotent. Before installation,\n libcudf retains its upstream global-pool behavior. After installation,\n every parent passed to `fork_streams` must have an active attempt route."]
     pub fn cudf_stream_provider_install() -> cudf_status_t;
-    #[doc = " Register the parent and bounded auxiliary stream set for one attempt.\n\n The caller retains ownership of every raw stream. The registration remains\n active until `cudf_stream_provider_unregister_attempt` returns, and the\n caller must keep the streams alive through that point and through any\n worker/stream drain that follows it."]
+    #[doc = " Register the parent and bounded fork stream set for one attempt.\n\n The last element of `fork_streams` is the parent's reserved fork: the\n parent stream is served only from it, and it is never handed to an alias.\n The preceding `fork_count - 1` entries are the auxiliary forks, one per\n attached alias. `fork_count` must therefore be at least two.\n\n The caller retains ownership of every raw stream. The registration remains\n active until `cudf_stream_provider_unregister_attempt` returns, and the\n caller must keep the streams alive through that point and through any\n worker/stream drain that follows it."]
     pub fn cudf_stream_provider_register_attempt(
         parent_stream: *mut core::ffi::c_void,
-        auxiliary_streams: *const *mut core::ffi::c_void,
-        auxiliary_count: usize,
+        fork_streams: *const *mut core::ffi::c_void,
+        fork_count: usize,
     ) -> cudf_status_t;
     #[doc = " Remove one attempt route after its streams have drained."]
     pub fn cudf_stream_provider_unregister_attempt(parent_stream: *mut core::ffi::c_void) -> cudf_status_t;
-    #[doc = " Attach another live attempt-member stream as a fork parent alias, with an\n optional fork subset of its own.\n\n When `fork_end > fork_begin`, forks requested from `alias_stream` are\n served round-robin from `[fork_begin, fork_end)` of the attempt's\n registered fork pool; the range must be non-empty and inside that pool.\n Passing `fork_begin == fork_end == 0` attaches the alias with whole-pool\n behavior. The subset is a property of the alias, not of the calling\n thread, so forks requested from the alias on any thread stay inside it.\n Detaching the alias removes its subset."]
+    #[doc = " Attach another live attempt-member stream as a fork parent alias holding\n one auxiliary fork of the route for its lifetime.\n\n The route claims the lowest auxiliary fork index no live alias holds and\n confines every fork requested from `alias_stream` -- and from the fork it\n is served -- to it; the chosen index is written to\n `out_claimed_fork_index` when that pointer is non-null. The route chooses\n the index, atomically with the attach, because its live-claim table is the\n only record of which forks are taken. The claim is a property of the alias,\n not of the calling thread, so forks requested from the alias on any thread\n stay inside it, and detaching the alias releases it.\n\n The parent's reserved fork is never claimable, so an alias can never be\n served the stream the root runs on.\n\n The attach fails with `CUDF_ERROR_INVALID_OPERATION` when every auxiliary\n fork is already claimed. A caller holding a freshly obtained attempt\n auxiliary permit never sees that: live claims never outnumber the\n attempt's permit holders, which admission caps at the auxiliary fork\n count."]
     pub fn cudf_stream_provider_attach_attempt_stream(
         parent_stream: *mut core::ffi::c_void,
         alias_stream: *mut core::ffi::c_void,
-        fork_begin: usize,
-        fork_end: usize,
+        out_claimed_fork_index: *mut usize,
     ) -> cudf_status_t;
     #[doc = " Remove a previously attached attempt-member stream alias after it drains."]
     pub fn cudf_stream_provider_detach_attempt_stream(alias_stream: *mut core::ffi::c_void) -> cudf_status_t;

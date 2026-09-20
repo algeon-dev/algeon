@@ -20,6 +20,10 @@ use crate::core::error::{self, Error, ErrorCode, Result};
 /// Keeps one attempt's fork-stream route registered while its native work
 /// drains. The route owns clones of every stream handle so the native provider
 /// cannot return a raw stream after its Rust owner has been released.
+///
+/// The last stream of the registered set is the parent's reserved fork: the
+/// parent is served only from it and no alias can ever claim it. The
+/// preceding streams are the auxiliary forks, one per live alias.
 #[must_use = "dropping the registration removes the attempt stream route"]
 pub struct AttemptStreamProviderRegistration {
     parent: CudaStream,
@@ -29,15 +33,30 @@ pub struct AttemptStreamProviderRegistration {
 
 /// Keeps one additional attempt-member stream mapped to the provider until
 /// that stream lease has completed and can safely return to its pool.
+///
+/// The alias holds one auxiliary fork of its route alone for its whole
+/// lifetime, so work it launches can never share a stream with another live
+/// alias or with the route's parent.
 #[must_use = "dropping the alias removes the attempt stream route"]
 pub struct AttemptStreamProviderAlias {
     stream: CudaStream,
     raw: usize,
+    claimed_fork_index: usize,
+}
+
+impl AttemptStreamProviderAlias {
+    /// The auxiliary fork index this alias holds alone.
+    pub fn claimed_fork_index(&self) -> usize {
+        self.claimed_fork_index
+    }
 }
 
 impl std::fmt::Debug for AttemptStreamProviderAlias {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AttemptStreamProviderAlias").field("stream", &self.stream).finish()
+        f.debug_struct("AttemptStreamProviderAlias")
+            .field("stream", &self.stream)
+            .field("claimed_fork_index", &self.claimed_fork_index)
+            .finish()
     }
 }
 
@@ -45,24 +64,26 @@ impl std::fmt::Debug for AttemptStreamProviderRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttemptStreamProviderRegistration")
             .field("parent", &self.parent)
-            .field("auxiliary_count", &self.fork_streams.len())
+            .field("auxiliary_count", &self.auxiliary_count())
             .finish()
     }
 }
 
 impl AttemptStreamProviderRegistration {
-    /// Register a bounded, attempt-owned auxiliary stream set for `parent`.
+    /// Register a bounded, attempt-owned fork stream set for `parent`.
     ///
-    /// Every auxiliary stream must be a live stream on the same CUDA device as
-    /// the parent. The caller must also attach each stream to the attempt's
-    /// memory-domain member before native work can allocate through it.
+    /// `fork_streams` holds the auxiliary forks followed by the parent's
+    /// reserved fork, so it needs at least two entries. Every stream must be a
+    /// live stream on the same CUDA device as the parent. The caller must also
+    /// attach each stream to the attempt's memory-domain member before native
+    /// work can allocate through it.
     pub fn register(parent: &CudaStream, fork_streams: &[CudaStream]) -> Result<Self> {
         let operation = "runtime::AttemptStreamProviderRegistration::register";
-        if fork_streams.is_empty() {
+        if fork_streams.len() < 2 {
             return Err(Error::new_with(
                 ErrorCode::ForeignInvalidArgument,
                 operation,
-                "attempt fork-stream provider requires a non-empty auxiliary stream set",
+                "attempt fork-stream provider requires one reserved parent fork and at least one auxiliary fork",
             ));
         }
         if let Some((index, stream)) =
@@ -103,9 +124,10 @@ impl AttemptStreamProviderRegistration {
         &self.parent
     }
 
-    /// Return the number of attempt-owned auxiliary streams in the route.
+    /// Return the number of attempt-owned auxiliary forks in the route: every
+    /// registered fork but the parent's reserved one.
     pub fn auxiliary_count(&self) -> usize {
-        self.fork_streams.len()
+        self.fork_streams.len() - 1
     }
 
     /// Drain every provider-owned auxiliary stream before the route and its
@@ -117,18 +139,18 @@ impl AttemptStreamProviderRegistration {
         Ok(())
     }
 
-    /// Attach one additional live attempt-member stream as a valid fork parent.
+    /// Attach one additional live attempt-member stream as a valid fork parent
+    /// holding one auxiliary fork of this route alone.
     ///
-    /// `fork_subset` narrows the forks served to work issued from `stream` to
-    /// that non-empty range of this route's fork pool; `None` keeps whole-pool
-    /// behavior. The subset is a property of the alias, so nested forks
-    /// issued from it on any thread stay inside the range. Detaching the
-    /// returned alias removes its subset with it.
-    pub fn attach(
-        &self,
-        stream: &CudaStream,
-        fork_subset: Option<std::ops::Range<usize>>,
-    ) -> Result<AttemptStreamProviderAlias> {
+    /// The route claims an auxiliary fork no other live alias holds and
+    /// confines every fork issued from `stream`, and from the fork it is
+    /// served, to it; the route picks the index, since its claim table is the
+    /// only record of which forks are taken. The parent's reserved fork is
+    /// never claimable. It fails with a typed invalid-input error when every
+    /// auxiliary fork is already claimed. The claim is a property of the
+    /// alias, so nested forks issued from it on any thread stay inside it, and
+    /// detaching the returned alias releases it.
+    pub fn attach(&self, stream: &CudaStream) -> Result<AttemptStreamProviderAlias> {
         let operation = "runtime::AttemptStreamProviderRegistration::attach";
         if stream.device() != self.parent.device() {
             return Err(Error::new_with(
@@ -139,38 +161,24 @@ impl AttemptStreamProviderRegistration {
             .with_detail("parent_device", self.parent.device().ordinal().to_string())
             .with_detail("stream_device", stream.device().ordinal().to_string()));
         }
-        let (fork_begin, fork_end) = match &fork_subset {
-            Some(range) => {
-                if range.start >= range.end || range.end > self.fork_streams.len() {
-                    return Err(Error::new_with(
-                        ErrorCode::ForeignInvalidArgument,
-                        operation,
-                        "attempt fork-stream alias subset is empty or outside the attempt fork pool",
-                    )
-                    .with_detail("fork_begin", range.start.to_string())
-                    .with_detail("fork_end", range.end.to_string())
-                    .with_detail("fork_stream_count", self.fork_streams.len().to_string()));
-                }
-                (range.start, range.end)
-            },
-            None => (0, 0),
-        };
         let _entry = DeviceEntryGuard::enter(stream.device(), operation)?;
         let raw = stream.interop_raw_handle()?;
+        let mut claimed_fork_index: usize = 0;
         error::check_status_in(
             // SAFETY: `self.parent_raw` and `raw` refer to live CUDA streams
-            // retained by the registration and returned alias respectively.
+            // retained by the registration and returned alias respectively,
+            // and the out pointer refers to a live local.
             unsafe {
                 cudf_sys::cudf_stream_provider_attach_attempt_stream(
                     self.parent_raw as *mut std::ffi::c_void,
                     raw,
-                    fork_begin,
-                    fork_end,
+                    &raw mut claimed_fork_index,
                 )
             },
             operation,
-        )?;
-        Ok(AttemptStreamProviderAlias { stream: stream.clone(), raw: raw as usize })
+        )
+        .map_err(|error| error.with_detail("auxiliary_fork_count", self.auxiliary_count().to_string()))?;
+        Ok(AttemptStreamProviderAlias { stream: stream.clone(), raw: raw as usize, claimed_fork_index })
     }
 }
 

@@ -649,6 +649,28 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
     lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
 }
 
+/// Acquires an attempt work lease holding auxiliary fork `fork_index` of
+/// `context`'s attempt pool.
+///
+/// The route, not the caller, picks a claim's index: it takes the lowest
+/// unclaimed one. A test that needs a specific fork held therefore claims
+/// every index up to it and releases the ones it does not want, driving the
+/// choice through acquisition order rather than naming an index.
+fn hold_lane_fork(context: &ExecutionContext, fork_index: usize) -> query_engine::runtime::AttemptWorkLease {
+    let mut leases: Vec<_> = (0..=fork_index)
+        .map(|_| context.acquire_attempt_work_lease(None).expect("the other holder takes its permit"))
+        .collect();
+    let held = leases.pop().expect("the range is non-empty");
+    assert_eq!(
+        held.context().attempt_claimed_fork_index(),
+        Some(fork_index),
+        "claims take the lowest free index in order, so the last of {} holds fork {fork_index}",
+        fork_index + 1
+    );
+    drop(leases);
+    held
+}
+
 /// Lanes never wait for an attempt auxiliary permit. Another holder of this
 /// attempt's auxiliary envelope -- a second native island's fragment context,
 /// say -- may itself be waiting on work the dispatching root job owns, so a
@@ -656,8 +678,19 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
 /// root-class permit. With one of the two permits already taken, the run
 /// narrows to the single lease it can take without waiting and completes
 /// inline instead.
+///
+/// Which fork the other holder ended up with must not matter: the dispatcher
+/// asks the route for an exclusive fork rather than naming one, so it is
+/// served whichever index is still free. A dispatcher that hardcoded lane
+/// `i`'s index would fail permanently when the holder occupies fork 0.
 #[test]
 fn lane_dispatch_narrows_instead_of_waiting_for_a_held_attempt_auxiliary_permit() {
+    for held_fork in [0usize, 1] {
+        lane_dispatch_narrows_with_held_fork(held_fork);
+    }
+}
+
+fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
     let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
     let dir = unique_temp_dir("query-engine-lane-permit-contention");
     let left_path = dir.join("left.parquet");
@@ -693,8 +726,9 @@ fn lane_dispatch_narrows_instead_of_waiting_for_a_held_attempt_auxiliary_permit(
         .expect("observation scope applies");
 
     // Another auxiliary holder of this attempt owns one of the two permits
-    // for the whole run, leaving the dispatcher one.
-    let held = context.acquire_attempt_work_lease(None, Some(1..2)).expect("the other holder takes its permit");
+    // for the whole run, leaving the dispatcher one -- and one fork, which is
+    // whichever of the two the holder did not take.
+    let held = hold_lane_fork(&context, held_fork);
 
     let executor = context.gpu_executor().expect("admitted context exposes its device executor");
     let observation = context.runtime_observation().clone();
@@ -713,7 +747,9 @@ fn lane_dispatch_narrows_instead_of_waiting_for_a_held_attempt_auxiliary_permit(
             },
         ))
         .expect("the root query job runs")
-        .expect("the run narrows to the free envelope instead of blocking on the held permit");
+        .unwrap_or_else(|error| {
+            panic!("the run must narrow onto the free fork while fork {held_fork} is held, got {error}")
+        });
 
     let QueryOutput::HostArrow(batch) = output else {
         panic!("host sink should materialize one RecordBatch");
@@ -752,11 +788,11 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     assert_eq!(route.lane_capacity(), 2, "the fork pool backs exactly the lane width this test pins");
 
-    // Another auxiliary holder of this attempt owns lane 1's permit for the
-    // whole run, exactly as in the narrowing test above: the dispatcher can
-    // only ever obtain lane 0's lease, so the run narrows to width 1 and
-    // falls back to the inline arm.
-    let held = context.acquire_attempt_work_lease(None, Some(1..2)).expect("the other holder takes its permit");
+    // Another auxiliary holder of this attempt owns one of the two permits for
+    // the whole run, exactly as in the narrowing test above: the dispatcher
+    // can only ever obtain one lease, so the run narrows to width 1 and falls
+    // back to the inline arm.
+    let held = hold_lane_fork(context, 1);
 
     let owner =
         RuntimeObservationOwner::new("lane-inline-release", None, RuntimeObservationConfig::bounded(512, 512 * 1024));
@@ -783,12 +819,12 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
         metrics.clone(),
     )
     .with_requested_lanes(2)
-    .with_lane_completion_gate(Arc::new(move |_lane| {
-        // Lane 0's fork range is exactly what the dispatcher's own narrowed
-        // lease claimed. If that lease was released before this inline task
-        // ran, the same range is free to re-acquire right now; if it is
-        // still held for the whole run, this fails.
-        if let Ok(Some(reacquired)) = probed_context.try_acquire_attempt_work_lease(Some(0..1)) {
+    .with_lane_completion_gate(Arc::new(move |_lane, _fork_index| {
+        // The dispatcher's own narrowed lease claimed the attempt's one free
+        // permit and fork. If it was released before this inline task ran,
+        // a work lease is obtainable right now; if it is still held for the
+        // whole run, no permit and no fork are free and this fails.
+        if let Ok(Some(reacquired)) = probed_context.try_acquire_attempt_work_lease() {
             gate_available.store(true, std::sync::atomic::Ordering::Release);
             drop(reacquired);
         }
@@ -811,6 +847,69 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
     );
 
     drop(held);
+    lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
+}
+
+/// With the whole auxiliary envelope free, both lanes obtain a lease and the
+/// route serves each one a fork of its own: the run stays at width 2 and no
+/// two lanes share a stream. The route picks the indices, so the test asserts
+/// distinctness and pool membership rather than a fixed lane-to-fork mapping.
+#[test]
+fn a_full_width_run_serves_every_lane_a_distinct_fork() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let plan = literal_union_plan();
+    let pipeline = admitted_pipeline(&plan);
+    assert!(is_lane_family_pipeline(&pipeline));
+
+    let test_context = backend.admit(&plan, None).expect("lane union admits");
+    let context: &ExecutionContext = test_context.context.context();
+    let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+    let capacity = route.lane_capacity();
+    assert_eq!(capacity, 2, "the fork pool backs exactly the lane width this test pins");
+
+    let owner =
+        RuntimeObservationOwner::new("lane-full-width", None, RuntimeObservationConfig::bounded(512, 512 * 1024));
+    let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner, PlanExecutionId::new("lane-full-width-plan"));
+    let scope = lifecycle.execution_scope();
+    let observed_context = context.with_runtime_execution_scope(scope.clone()).expect("observation scope applies");
+
+    let metrics = ExecutionMetrics::detached("lane-full-width");
+    let metrics_context = metrics.scope_context(&observed_context).expect("metrics scope applies");
+    let gpu_inputs = GpuResidentInputMap::new();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+
+    let observed_forks = Arc::new(std::sync::Mutex::new(Vec::<(usize, Option<usize>)>::new()));
+    let gate_forks = Arc::clone(&observed_forks);
+    let support = LaneDispatchSupport::new(
+        route,
+        metrics_context.clone(),
+        plan.clone(),
+        pipeline.clone(),
+        gpu_inputs.clone(),
+        metrics.clone(),
+    )
+    .with_requested_lanes(capacity)
+    .with_lane_completion_gate(Arc::new(move |lane, fork_index| {
+        gate_forks.lock().expect("the fork record is uncontended by panics").push((lane, fork_index));
+    }));
+
+    let state =
+        run_lane_dispatched(&scheduler, &mut executor, Some(&scope), &support).expect("the full-width run completes");
+    assert_eq!(state.live_resource_count(), 0, "a full-width run releases every resource");
+    let batch = executor.take_host_output().expect("the run commits its sink output");
+    assert_eq!(sorted_host_values(&batch), vec![Some(1), Some(2), Some(3)], "a full-width run unions every branch");
+
+    let records = observed_forks.lock().expect("the fork record is uncontended by panics").clone();
+    let lanes: std::collections::BTreeSet<usize> = records.iter().map(|(lane, _)| *lane).collect();
+    assert_eq!(lanes.len(), capacity, "both lanes of the width-2 run execute, saw {records:?}");
+    let forks: std::collections::BTreeSet<usize> = records
+        .iter()
+        .map(|(lane, fork)| fork.unwrap_or_else(|| panic!("lane {lane} runs on a fork-claiming alias")))
+        .collect();
+    assert_eq!(forks.len(), capacity, "each lane holds a fork of its own, saw {records:?}");
+    assert!(forks.iter().all(|fork| *fork < capacity), "every claimed fork is inside the pool, saw {records:?}");
+
     lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
 }
 
@@ -864,7 +963,7 @@ fn lane_cancellation_while_workers_run_drains_without_committing() {
         gpu_inputs.clone(),
         metrics.clone(),
     )
-    .with_lane_completion_gate(Arc::new(move |_lane| {
+    .with_lane_completion_gate(Arc::new(move |_lane, _fork_index| {
         if gate_rounds.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) > 0 {
             gate_entered.wait();
             gate_release.wait();
@@ -984,7 +1083,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     // lane job. The attempt's remaining auxiliary permit is left free on
     // purpose: a regression that leased a nested worker would acquire it and
     // be observed, instead of blocking forever.
-    let lane_lease = context.acquire_attempt_work_lease(None, Some(0..1)).expect("lane work lease acquires");
+    let lane_lease = context.acquire_attempt_work_lease(None).expect("lane work lease acquires");
     let lane_context = lane_lease.context().clone();
     assert!(lane_context.is_attempt_work_lease_context(), "a lane context is a work-lease context");
 
@@ -1026,4 +1125,85 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     );
     lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
     drop(lane_lease);
+}
+
+/// The reviewer's scenario at the owner level: a source-worker-style lease
+/// held live while the dispatcher's lane leases are taken.
+///
+/// Before every alias claimed a fork for its lifetime, a source worker and a
+/// second island's fragment context attached with no claim at all and were
+/// served forks dynamically from whatever looked unclaimed; a lane attaching
+/// afterwards was then handed a fork whose kernels that live caller had
+/// launched moments earlier. Permit counting could not exclude it, because
+/// the unregistered holders consumed permits without consuming forks.
+///
+/// Now every live caller owns one fixed fork: the source-worker lease, each
+/// lane lease, and the attempt root all hold pairwise-distinct streams, and
+/// none of the lease forks is the root's reserved one. The backend's `S_d` is
+/// the lane width, so the source worker and the lanes together exhaust the
+/// auxiliary pool and the assertion covers the full width.
+#[test]
+fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let plan = literal_union_plan();
+    let test_context = backend.admit(&plan, None).expect("lane union admits");
+    let context: &ExecutionContext = test_context.context.context();
+    let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+    let capacity = route.lane_capacity();
+    assert_eq!(capacity, 2, "this backend backs exactly two attempt auxiliary callers");
+    assert_eq!(
+        context.attempt_claimed_fork_index(),
+        None,
+        "the attempt root claims no auxiliary fork; it runs on the route's reserved one"
+    );
+
+    // A scheduled source read takes its lease exactly this way, naming the
+    // worker it runs for. Before this fix that call registered no claim.
+    let source_worker_lease = context
+        .acquire_attempt_work_lease(Some((
+            query_engine::observability::RuntimeTaskId::new("fork-isolation-source-task"),
+            query_engine::observability::RuntimeWorkerId::new("fork-isolation-source-worker"),
+        )))
+        .expect("the source-worker lease acquires");
+    let lane_lease = context
+        .try_acquire_attempt_work_lease()
+        .expect("a lane lease acquires without error")
+        .expect("the attempt's second auxiliary permit is free");
+
+    let held: Vec<usize> = [source_worker_lease.context(), lane_lease.context()]
+        .iter()
+        .map(|context| context.attempt_claimed_fork_index().expect("every attempt work lease holds one auxiliary fork"))
+        .collect();
+    assert_eq!(
+        held.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        held.len(),
+        "a source worker and a lane never share a fork, saw {held:?}"
+    );
+
+    let root_fork = route.reserved_root_fork_identity();
+    let lease_forks: Vec<usize> = held
+        .iter()
+        .map(|index| route.auxiliary_fork_identity(*index).expect("a claimed index is inside the auxiliary pool"))
+        .collect();
+    assert!(
+        lease_forks.iter().all(|fork| *fork != root_fork),
+        "no lease is served the root's reserved fork, saw {lease_forks:?} against {root_fork}"
+    );
+
+    // Releasing one lease frees exactly its fork, and the next caller takes
+    // it back without ever colliding with the still-live holder.
+    let surviving = held[0];
+    drop(lane_lease);
+    let replacement = context
+        .try_acquire_attempt_work_lease()
+        .expect("the freed permit is reusable")
+        .expect("the released permit is free again");
+    assert_ne!(
+        replacement.context().attempt_claimed_fork_index(),
+        Some(surviving),
+        "a freed index never overlaps the fork the live source-worker lease still holds"
+    );
+
+    drop(replacement);
+    drop(source_worker_lease);
 }

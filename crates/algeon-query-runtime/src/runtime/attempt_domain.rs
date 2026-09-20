@@ -32,29 +32,45 @@ pub struct AttemptStreamProviderRoute {
 }
 
 impl AttemptStreamProviderRoute {
-    /// Maximum execution width this attempt's fork pool can back.
+    /// Maximum execution width this attempt's auxiliary fork pool can back:
+    /// the route's `S_d`, excluding the parent's reserved fork.
     ///
-    /// The pool is fixed at admission and holds exactly as many forks as the
-    /// attempt has auxiliary permits, and lane `i` owns fork `i` alone. A run
-    /// of `k` lanes therefore leaves `lane_capacity() - k` forks unclaimed for
-    /// the up to `lane_capacity() - k` other auxiliary permit holders of the
-    /// same attempt, so no two permit holders can be served the same stream.
+    /// The pool is fixed at admission and holds exactly as many auxiliary
+    /// forks as the attempt has auxiliary permits, and every alias -- lane,
+    /// source worker, or auxiliary fragment context alike -- holds one of them
+    /// alone for its lifetime. Claims therefore never exceed permit holders,
+    /// which never exceed `lane_capacity()`, so a caller holding a fresh
+    /// permit always finds a free fork and no two callers are ever served the
+    /// same stream. A run of `k` lanes leaves `lane_capacity() - k` forks for
+    /// the other permit holders of the same attempt.
     pub fn lane_capacity(&self) -> usize {
-        self._fork_streams.len()
+        self.registration.auxiliary_count()
     }
 
-    /// Attaches `stream` as a fork parent alias of this route.
+    /// Process-unique identity of the fork reserved for this route's parent
+    /// stream. No alias can ever be served it, so it is disjoint from every
+    /// fork a work lease holds.
+    #[doc(hidden)]
+    pub fn reserved_root_fork_identity(&self) -> usize {
+        self._fork_streams.last().expect("a registered route owns at least a reserved root fork").identity()
+    }
+
+    /// Process-unique identity of auxiliary fork `index` of this route.
+    #[doc(hidden)]
+    pub fn auxiliary_fork_identity(&self, index: usize) -> Option<usize> {
+        (index < self.lane_capacity()).then(|| self._fork_streams[index].identity())
+    }
+
+    /// Attaches `stream` as a fork parent alias of this route, holding one
+    /// auxiliary fork alone.
     ///
-    /// `fork_subset` confines forks issued from `stream`, and from the forks
-    /// it is served, to that range of this route's pool; `None` keeps
-    /// whole-pool behavior. The subset lives with the alias, so it is
-    /// released when the alias detaches.
-    pub(super) fn attach(
-        &self,
-        stream: &cudf::runtime::CudaStream,
-        fork_subset: Option<std::ops::Range<usize>>,
-    ) -> Result<cudf::AttemptStreamProviderAlias> {
-        self.registration.attach(stream, fork_subset).map_err(|error| {
+    /// The route claims an auxiliary fork no live alias holds and confines
+    /// forks issued from `stream`, and from the fork it is served, to it. The
+    /// claim lives with the alias, so it is released when the alias detaches.
+    /// It fails typed when every auxiliary fork is claimed, which a caller
+    /// holding a fresh auxiliary permit never sees.
+    pub(super) fn attach(&self, stream: &cudf::runtime::CudaStream) -> Result<cudf::AttemptStreamProviderAlias> {
+        self.registration.attach(stream).map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_stream_provider.attach",
                 "failed to attach an attempt member stream to the fork-stream provider",
@@ -162,8 +178,13 @@ impl AttemptAllocationDomain {
         })
     }
 
-    /// Create and register the bounded native auxiliary stream set used by
+    /// Create and register the bounded native fork stream set used by
     /// libcudf's `fork_streams` provider.
+    ///
+    /// `auxiliary_capacity` forks back the attempt's auxiliary permit holders,
+    /// one each; one further fork is registered last and reserved for the root
+    /// parent stream, so the root never shares a fork with a lane, a source
+    /// worker, or an auxiliary fragment context.
     pub(super) fn create_stream_provider_route(
         &self,
         parent: &cudf::runtime::CudaStream,
@@ -179,7 +200,9 @@ impl AttemptAllocationDomain {
             .with_fact("domain_device_ordinal", self.device_ordinal())
             .with_fact("stream_device_ordinal", parent.device().ordinal()));
         }
-        let capacity = auxiliary_capacity.max(1);
+        // Auxiliary forks plus the parent's reserved fork, which the native
+        // route takes as the last registered entry.
+        let capacity = auxiliary_capacity.max(1) + 1;
         let _entry = cudf::runtime::DeviceEntryGuard::enter(parent.device(), operation).map_err(|error| {
             cudf_query_error(operation, "failed to enter the attempt stream-provider device", error)
         })?;

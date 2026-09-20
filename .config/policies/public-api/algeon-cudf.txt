@@ -6496,13 +6496,15 @@ pub fn cudf::runtime::execution_context::ExecutionOverrides<'a>::with_parquet_pa
 pub fn cudf::runtime::execution_context::ExecutionOverrides<'a>::with_stream(self, &'a cudf::runtime::stream::CudaStream) -> Self
 pub mod cudf::runtime::stream
 pub struct cudf::runtime::stream::AttemptStreamProviderAlias
+impl cudf::runtime::stream::AttemptStreamProviderAlias
+pub fn cudf::runtime::stream::AttemptStreamProviderAlias::claimed_fork_index(&self) -> usize
 impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderAlias
 pub fn cudf::runtime::stream::AttemptStreamProviderAlias::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderAlias
 pub fn cudf::runtime::stream::AttemptStreamProviderAlias::drop(&mut self)
 pub struct cudf::runtime::stream::AttemptStreamProviderRegistration
 impl cudf::runtime::stream::AttemptStreamProviderRegistration
-pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &cudf::runtime::stream::CudaStream, core::option::Option<core::ops::range::Range<usize>>) -> cudf::core::error::Result<cudf::runtime::stream::AttemptStreamProviderAlias>
+pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &cudf::runtime::stream::CudaStream) -> cudf::core::error::Result<cudf::runtime::stream::AttemptStreamProviderAlias>
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::auxiliary_count(&self) -> usize
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::parent(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::register(&cudf::runtime::stream::CudaStream, &[cudf::runtime::stream::CudaStream]) -> cudf::core::error::Result<Self>
@@ -6575,13 +6577,15 @@ pub enum cudf::runtime::StreamDependencyOutcome
 pub cudf::runtime::StreamDependencyOutcome::Barrier(cudf::runtime::event::CudaEvent)
 pub cudf::runtime::StreamDependencyOutcome::NoOp
 pub struct cudf::runtime::AttemptStreamProviderAlias
+impl cudf::runtime::stream::AttemptStreamProviderAlias
+pub fn cudf::runtime::stream::AttemptStreamProviderAlias::claimed_fork_index(&self) -> usize
 impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderAlias
 pub fn cudf::runtime::stream::AttemptStreamProviderAlias::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderAlias
 pub fn cudf::runtime::stream::AttemptStreamProviderAlias::drop(&mut self)
 pub struct cudf::runtime::AttemptStreamProviderRegistration
 impl cudf::runtime::stream::AttemptStreamProviderRegistration
-pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &cudf::runtime::stream::CudaStream, core::option::Option<core::ops::range::Range<usize>>) -> cudf::core::error::Result<cudf::runtime::stream::AttemptStreamProviderAlias>
+pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &cudf::runtime::stream::CudaStream) -> cudf::core::error::Result<cudf::runtime::stream::AttemptStreamProviderAlias>
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::auxiliary_count(&self) -> usize
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::parent(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::register(&cudf::runtime::stream::CudaStream, &[cudf::runtime::stream::CudaStream]) -> cudf::core::error::Result<Self>
@@ -7554,13 +7558,15 @@ pub cudf::AllocatorEventRingBounds::next_sequence: u64
 impl core::convert::From<cudf_sys::bindings::cudf_allocator_event_ring_bounds_t> for cudf::core::memory::AllocatorEventRingBounds
 pub fn cudf::core::memory::AllocatorEventRingBounds::from(cudf_sys::bindings::cudf_allocator_event_ring_bounds_t) -> Self
 pub struct cudf::AttemptStreamProviderAlias
+impl cudf::runtime::stream::AttemptStreamProviderAlias
+pub fn cudf::runtime::stream::AttemptStreamProviderAlias::claimed_fork_index(&self) -> usize
 impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderAlias
 pub fn cudf::runtime::stream::AttemptStreamProviderAlias::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderAlias
 pub fn cudf::runtime::stream::AttemptStreamProviderAlias::drop(&mut self)
 pub struct cudf::AttemptStreamProviderRegistration
 impl cudf::runtime::stream::AttemptStreamProviderRegistration
-pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &cudf::runtime::stream::CudaStream, core::option::Option<core::ops::range::Range<usize>>) -> cudf::core::error::Result<cudf::runtime::stream::AttemptStreamProviderAlias>
+pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::attach(&self, &cudf::runtime::stream::CudaStream) -> cudf::core::error::Result<cudf::runtime::stream::AttemptStreamProviderAlias>
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::auxiliary_count(&self) -> usize
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::parent(&self) -> &cudf::runtime::stream::CudaStream
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::register(&cudf::runtime::stream::CudaStream, &[cudf::runtime::stream::CudaStream]) -> cudf::core::error::Result<Self>

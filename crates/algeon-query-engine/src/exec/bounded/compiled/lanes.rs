@@ -104,7 +104,7 @@ pub struct LaneDispatchSupport {
     pub gpu_inputs: Arc<GpuResidentInputMap>,
     pub metrics: Arc<ExecutionMetrics>,
     #[cfg(any(test, feature = "test-hooks"))]
-    lane_completion_gate: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    lane_completion_gate: Option<LaneCompletionGate>,
 }
 
 impl LaneDispatchSupport {
@@ -141,18 +141,25 @@ impl LaneDispatchSupport {
     }
 
     /// Installs a gate the dispatcher runs on each lane worker after its task
-    /// has produced its output and before the worker returns it.
+    /// has produced its output and before the worker returns it, passing the
+    /// lane index and the fork index that lane's alias holds.
     ///
     /// This is the deterministic seam for exercising events that can only
     /// happen while a lane holds a completed but uncommitted output, such as
     /// an attempt cancelled between task completion and the coordinator's
-    /// join. It is the caller's job to release the gate.
+    /// join, and for observing which fork the route served each lane. It is
+    /// the caller's job to release the gate.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_lane_completion_gate(mut self, gate: Arc<dyn Fn(usize) + Send + Sync>) -> Self {
+    pub fn with_lane_completion_gate(mut self, gate: LaneCompletionGate) -> Self {
         self.lane_completion_gate = Some(gate);
         self
     }
 }
+
+/// Observes each lane worker's completion: the lane index and the fork index
+/// that lane's alias holds, if it holds one.
+#[cfg(any(test, feature = "test-hooks"))]
+pub type LaneCompletionGate = Arc<dyn Fn(usize, Option<usize>) + Send + Sync>;
 
 /// One execution lane's attempt work lease, held for the whole dispatched run.
 ///
@@ -175,12 +182,14 @@ impl LaneWorkLease {
     /// run narrows to that width; whatever stays unclaimed remains reachable
     /// for those other holders.
     ///
-    /// Lane `i` is served fork `i` alone, so `requested_lanes` leases leave
-    /// `lane_capacity() - requested_lanes` forks for the other permit holders.
+    /// Each lease holds one auxiliary fork of the route, whose index the route
+    /// picks, so `requested_lanes` leases leave
+    /// `lane_capacity() - requested_lanes` forks for the other permit holders
+    /// whichever forks those holders already took.
     fn acquire_for_run(support: &LaneDispatchSupport, requested_lanes: usize) -> Result<Vec<Self>> {
         let mut leases = Vec::with_capacity(requested_lanes);
         for lane in 0..requested_lanes {
-            let acquired = support.context.try_acquire_attempt_work_lease(Some(lane..lane + 1)).map_err(|error| {
+            let acquired = support.context.try_acquire_attempt_work_lease().map_err(|error| {
                 error.with_fact("execution_lane", lane).with_fact("execution_lane_count", requested_lanes)
             })?;
             match acquired {
@@ -593,7 +602,7 @@ fn run_lane_claims(
                         LaneTaskRunner { executor: lane_executor, scratch: Some(scratch) }.run_lane_task(lane, &task);
                     #[cfg(any(test, feature = "test-hooks"))]
                     if let Some(gate) = lane_completion_gate {
-                        gate(lane);
+                        gate(lane, context.attempt_claimed_fork_index());
                     }
                     completion
                 },
@@ -650,7 +659,7 @@ fn run_lane_claims(
 }
 
 /// Runs one claim on the coordinator's own context and root stream. Width 1
-/// is one lane over the whole fork pool, so it needs no work lease.
+/// runs on the route's reserved root fork, so it needs no work lease.
 fn run_lane_claim_inline(support: &LaneDispatchSupport, claim: &mut LaneClaim) -> LaneJobCompletion {
     const LANE: usize = 0;
     let task_id = claim.task.id();
@@ -666,7 +675,7 @@ fn run_lane_claim_inline(support: &LaneDispatchSupport, claim: &mut LaneClaim) -
                 .run_lane_task(LANE, &claim.task);
             #[cfg(any(test, feature = "test-hooks"))]
             if let Some(gate) = &support.lane_completion_gate {
-                gate(LANE);
+                gate(LANE, support.context.attempt_claimed_fork_index());
             }
             completion
         },

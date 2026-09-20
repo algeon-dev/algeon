@@ -965,10 +965,6 @@ pub struct ExecutionContext {
     /// stream from the attempt domain, and before the shared route can
     /// unregister its native provider mapping.
     _attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
-    /// Fork subset every alias derived from this context claims. A work lease
-    /// acquired for one execution lane sets it, and contexts derived from that
-    /// lane inherit it, so nested work keeps forking inside the lane.
-    attempt_fork_subset: Option<std::ops::Range<usize>>,
     /// This context's shared member lease on its execution stream. One
     /// member per stream for the attempt; per-stage tokens clone it.
     attempt_member_lease: Option<cudf::StreamReservationLease>,
@@ -1237,7 +1233,6 @@ pub(super) struct ExecutionContextParts {
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
     pub(super) admitted_capability_evidence: Option<Arc<AttemptCapabilityEvidence>>,
     pub(super) attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
-    pub(super) attempt_fork_subset: Option<std::ops::Range<usize>>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
@@ -1321,7 +1316,6 @@ impl ExecutionContext {
             attempt_member_lease: None,
             attempt_stream_provider_route: None,
             attempt_stream_provider_alias: None,
-            attempt_fork_subset: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -1378,7 +1372,6 @@ impl ExecutionContext {
             attempt_member_lease: parts.attempt_member_lease,
             attempt_stream_provider_route: parts.attempt_stream_provider_route,
             _attempt_stream_provider_alias: parts.attempt_stream_provider_alias,
-            attempt_fork_subset: parts.attempt_fork_subset,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -1487,9 +1480,9 @@ impl ExecutionContext {
     }
 
     /// Returns the admitted attempt's fork-stream route, when this context
-    /// carries one. Execution lane `i` is served fork `i` of the route's pool
-    /// through [`AttemptStreamProviderRoute::lane_capacity`]; direct contexts
-    /// have no route and run serially.
+    /// carries one. Each lease derived from it holds one auxiliary fork of the
+    /// route alone, up to [`AttemptStreamProviderRoute::lane_capacity`];
+    /// direct contexts have no route and run serially.
     #[doc(hidden)]
     pub fn attempt_stream_provider_route(&self) -> Option<Arc<AttemptStreamProviderRoute>> {
         self.attempt_stream_provider_route.as_ref().map(Arc::clone)
@@ -1605,14 +1598,15 @@ impl ExecutionContext {
     /// service stream lease, and the derived context that owns them.
     ///
     /// This is the single bundle behind every piece of auxiliary attempt work
-    /// -- execution lanes and scheduled source reads alike. `fork_subset`
-    /// confines the derived context's native forks to one execution lane's
-    /// share of the attempt fork pool; `None` keeps whole-pool forking.
+    /// -- execution lanes and scheduled source reads alike. The derived
+    /// context's alias holds one auxiliary fork of the attempt pool alone for
+    /// the lease's lifetime, so its native forks never reach a stream another
+    /// live holder is launching on. The permit it takes is what bounds those
+    /// claims to the pool's width.
     #[doc(hidden)]
     pub fn acquire_attempt_work_lease(
         &self,
         source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,
-        fork_subset: Option<std::ops::Range<usize>>,
     ) -> Result<AttemptWorkLease> {
         // Admission reserves this bounded auxiliary share per attempt. Hold
         // the local permit for the exact lifetime of the derived stream lease,
@@ -1627,7 +1621,7 @@ impl ExecutionContext {
                 )
             })
             .transpose()?;
-        self.derive_attempt_work_lease(source_worker, fork_subset, attempt_auxiliary_permit)
+        self.derive_attempt_work_lease(source_worker, attempt_auxiliary_permit)
     }
 
     /// Acquires one attempt work lease only if this attempt's auxiliary
@@ -1639,10 +1633,7 @@ impl ExecutionContext {
     /// them. Returns `Ok(None)` when the envelope is fully claimed, so the
     /// caller narrows its own width instead of deadlocking.
     #[doc(hidden)]
-    pub fn try_acquire_attempt_work_lease(
-        &self,
-        fork_subset: Option<std::ops::Range<usize>>,
-    ) -> Result<Option<AttemptWorkLease>> {
+    pub fn try_acquire_attempt_work_lease(&self) -> Result<Option<AttemptWorkLease>> {
         let attempt_auxiliary_permit = match self.attempt_auxiliary_slots.as_ref() {
             Some(slots) => {
                 match slots.try_acquire("query_engine.runtime.attempt_work_lease.attempt_auxiliary_try_acquire")? {
@@ -1652,13 +1643,12 @@ impl ExecutionContext {
             },
             None => None,
         };
-        self.derive_attempt_work_lease(None, fork_subset, attempt_auxiliary_permit).map(Some)
+        self.derive_attempt_work_lease(None, attempt_auxiliary_permit).map(Some)
     }
 
     fn derive_attempt_work_lease(
         &self,
         source_worker: Option<(RuntimeTaskId, RuntimeWorkerId)>,
-        fork_subset: Option<std::ops::Range<usize>>,
         attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
     ) -> Result<AttemptWorkLease> {
         let mut stream_scope = self.runtime_stream_lease_scope.clone();
@@ -1671,9 +1661,7 @@ impl ExecutionContext {
             self.runtime_observation.clone(),
             stream_scope,
         )?;
-        let mut claimed = self.clone();
-        claimed.attempt_fork_subset = fork_subset;
-        let context = claimed.with_stream_lease(&stream_lease)?;
+        let context = self.with_stream_lease(&stream_lease)?;
         Ok(AttemptWorkLease::new(context, stream_lease, attempt_auxiliary_permit))
     }
 
@@ -1685,6 +1673,14 @@ impl ExecutionContext {
     #[doc(hidden)]
     pub fn is_attempt_work_lease_context(&self) -> bool {
         self._attempt_stream_provider_alias.is_some()
+    }
+
+    /// Which auxiliary fork of the attempt pool this context's alias holds
+    /// alone. A context with no alias -- the attempt root, or a direct context
+    /// -- reports `None`; the root runs on the route's reserved fork instead.
+    #[doc(hidden)]
+    pub fn attempt_claimed_fork_index(&self) -> Option<usize> {
+        self._attempt_stream_provider_alias.as_ref().map(|alias| alias.claimed_fork_index())
     }
 
     /// Builds a short-lived execution context from a borrowed stream lease.
@@ -1704,7 +1700,7 @@ impl ExecutionContext {
         let attempt_stream_provider_alias = self
             .attempt_stream_provider_route
             .as_ref()
-            .map(|route| route.attach(runtime.stream(), self.attempt_fork_subset.clone()).map(Arc::new))
+            .map(|route| route.attach(runtime.stream()).map(Arc::new))
             .transpose()?;
         Ok(Self::from_parts(ExecutionContextParts {
             service_epoch: self.service_epoch.clone(),
@@ -1731,7 +1727,6 @@ impl ExecutionContext {
             attempt_member_lease,
             attempt_stream_provider_route: self.attempt_stream_provider_route.as_ref().map(Arc::clone),
             attempt_stream_provider_alias,
-            attempt_fork_subset: self.attempt_fork_subset.clone(),
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,

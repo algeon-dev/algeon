@@ -62,7 +62,7 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
         let usage = context.context().attempt_allocation_domain_usage().unwrap().unwrap();
         assert_eq!(usage.ceiling_bytes, handle.device_budget_bytes());
         assert_eq!(usage.allocation_limit_bytes, handle.device_budget_bytes());
-        assert_eq!(usage.active_members, 3, "root plus two bounded provider members");
+        assert_eq!(usage.active_members, 4, "root plus two auxiliary forks and the reserved root fork");
         if handle.grant_identity().unwrap() == second_grant_identity {
             second_domain_id = usage.domain_id;
         }
