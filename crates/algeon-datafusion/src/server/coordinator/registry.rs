@@ -277,7 +277,7 @@ impl QueryCoordinator {
         );
         let hot = Arc::new(QueryHotCounters::default());
         state.active_logical_capture_bytes = next_active_capture_bytes;
-        state.current.insert(query_id.clone(), key.clone());
+        state.current.insert(query_id, key.clone());
         state.records.insert(
             key.clone(),
             QueryRecord {

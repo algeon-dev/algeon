@@ -118,7 +118,7 @@ fn backend_validation_projection_keeps_device_configs_independent() {
         AlgeonGpuBackend::builder()
             .with_native_execution_config(bounded_execution_config(1024))
             .devices(devices.clone())
-            .queue_policy(policy.clone()),
+            .queue_policy(policy),
     )
     .unwrap();
 

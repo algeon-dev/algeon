@@ -76,7 +76,7 @@ fn test_graph_park_releases_pending_input_owner() {
     let entered = handle.enter("test_graph_park_releases_pending_input_owner").expect("entered");
 
     let owner = Arc::new(());
-    let retained_owner: Arc<dyn Any + Send + Sync> = owner.clone();
+    let retained_owner: Arc<dyn Any + Send + Sync> = Arc::<()>::clone(&owner);
     let pending = DeferredInputCompletion::new(
         vec![retained_owner],
         vec![CompletionWitness::new(CompletionWitnessKind::ConsumerStream)],
@@ -97,7 +97,7 @@ fn test_graph_park_surfaces_pending_input_completion_error() {
     let entered = handle.enter("test_graph_park_surfaces_pending_input_completion_error").expect("entered");
 
     let owner = Arc::new(());
-    let retained_owner: Arc<dyn Any + Send + Sync> = owner.clone();
+    let retained_owner: Arc<dyn Any + Send + Sync> = Arc::<()>::clone(&owner);
     let pending = DeferredInputCompletion::new(
         vec![retained_owner],
         vec![CompletionWitness::with_backend(

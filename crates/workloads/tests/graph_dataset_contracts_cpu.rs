@@ -284,7 +284,7 @@ fn write_tiny_parquet(
         vec![
             Arc::new(Int64Array::from(values.clone())),
             Arc::new(Int64Array::from(values.clone())),
-            Arc::new(Int64Array::from(values.clone())),
+            Arc::new(Int64Array::from(values)),
             Arc::new(Float64Array::from(vec![1.0; rows])),
             Arc::new(Int32Array::from(vec![0; rows])),
             Arc::new(Int32Array::from(vec![0; rows])),

@@ -328,7 +328,7 @@ mod tests {
     fn row_group_with_statistics(schema_body: &str, statistics: Statistics) -> RowGroupMetaData {
         let parquet_type = parse_message_type(schema_body).expect("test Parquet schema should parse");
         let schema = Arc::new(SchemaDescriptor::new(Arc::new(parquet_type)));
-        let column = ColumnChunkMetaData::builder(schema.columns()[0].clone())
+        let column = ColumnChunkMetaData::builder(Arc::clone(&schema.columns()[0]))
             .set_statistics(statistics)
             .build()
             .expect("test column metadata should build");
@@ -380,7 +380,7 @@ mod tests {
             .into_iter()
             .zip(uncompressed_sizes)
             .map(|(encodings, uncompressed_size)| {
-                let column = ColumnChunkMetaData::builder(schema.columns()[0].clone())
+                let column = ColumnChunkMetaData::builder(Arc::clone(&schema.columns()[0]))
                     .set_encodings(encodings)
                     .set_total_uncompressed_size(uncompressed_size)
                     .build()

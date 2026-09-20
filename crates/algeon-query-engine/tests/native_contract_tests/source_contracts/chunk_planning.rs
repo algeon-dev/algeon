@@ -1124,7 +1124,11 @@ fn write_nested_key_parquet(path: &Path) -> Arc<Schema> {
     let payload_a = Arc::new(Field::new("a", DataType::Int32, false));
     let payload_b = Arc::new(Field::new("b", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![
-        Field::new("payload", DataType::Struct(Fields::from(vec![payload_a.clone(), payload_b.clone()])), false),
+        Field::new(
+            "payload",
+            DataType::Struct(Fields::from(vec![Arc::clone(&payload_a), Arc::clone(&payload_b)])),
+            false,
+        ),
         Field::new("key", DataType::Int32, false),
     ]));
     let payload_a_values = Arc::new(Int32Array::from(vec![0, 0])) as ArrayRef;

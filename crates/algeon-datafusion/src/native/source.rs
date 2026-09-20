@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
@@ -225,7 +225,7 @@ fn graph_residency_local_parquet_scan_source(
     )?;
     validate_partition_columns(file_scan, &requirements.partition_column_indices)?;
     let source_schema = native_source_output_schema(file_scan, &requirements)?;
-    let files = local_parquet_files(file_scan, parquet_source, None, source_schema.clone(), &requirements)?;
+    let files = local_parquet_files(file_scan, parquet_source, None, Arc::clone(&source_schema), &requirements)?;
 
     Ok(NativeLocalParquetSource::from_files(files, source_schema, requirements.read_columns)
         .with_column_roles(requirements.projected_output_columns, requirements.pure_filter_columns)

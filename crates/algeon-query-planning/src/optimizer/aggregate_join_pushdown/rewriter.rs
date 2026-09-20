@@ -263,7 +263,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             .nodes
             .get(preagg_input.index())
             .filter(|node| node.id == preagg_input)
-            .map(|node| node.output_schema().clone())
+            .map(|node| Arc::clone(node.output_schema()))
             .ok_or(AggregateJoinPushdownRejectedReason::MissingInputField)?;
         for column in preagg_group_columns {
             let field = input_schema
@@ -293,7 +293,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             .nodes
             .get(preagg_input.index())
             .filter(|node| node.id == preagg_input)
-            .map(|node| node.output_schema().clone())
+            .map(|node| Arc::clone(node.output_schema()))
             .ok_or(AggregateJoinPushdownRejectedReason::MissingInputField)?;
         for key in &join.spec.keys {
             let key_column = join_key_for_side(key, preagg_side);
@@ -335,7 +335,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                 .nodes
                 .get(aggregate.input.index())
                 .filter(|node| node.id == aggregate.input)
-                .map(|node| node.output_schema().clone())
+                .map(|node| Arc::clone(node.output_schema()))
                 .ok_or(AggregateJoinPushdownRejectedReason::MissingInputField)?;
             let measure_input_aliases = aggregate
                 .spec

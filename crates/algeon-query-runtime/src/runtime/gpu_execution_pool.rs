@@ -637,9 +637,7 @@ impl GpuExecutionPool {
         // create an unbounded semaphore waiter queue containing arbitrary
         // caller futures. Same-pool composition uses the same bounded permit
         // below and executes inline only after that accounting succeeds.
-        let class_permit = self
-            .class_semaphore_for_class(class)
-            .clone()
+        let class_permit = Arc::clone(self.class_semaphore_for_class(class))
             .try_acquire_owned()
             .map_err(|_error| self.class_saturated_error_for_class(kind, class))?;
         let job = self.new_job_observation(kind, observation);
@@ -723,9 +721,7 @@ impl GpuExecutionPool {
         F: Future<Output = ()> + Send + 'static,
     {
         self.check_resource_epoch(RUN_OPERATION)?;
-        let class_permit = self
-            .class_semaphore(kind)
-            .clone()
+        let class_permit = Arc::clone(self.class_semaphore(kind))
             .try_acquire_owned()
             .map_err(|_error| self.class_saturated_error(kind))?;
         let job = self.new_job_observation(kind, observation);
@@ -764,9 +760,7 @@ impl GpuExecutionPool {
         C: FnOnce() + Send + 'static,
     {
         self.check_resource_epoch(RUN_OPERATION)?;
-        let class_permit = self
-            .class_semaphore(kind)
-            .clone()
+        let class_permit = Arc::clone(self.class_semaphore(kind))
             .try_acquire_owned()
             .map_err(|_error| self.class_saturated_error(kind))?;
         let job = self.new_job_observation(kind, observation);
@@ -808,10 +802,7 @@ impl GpuExecutionPool {
         C: FnOnce() + Send + 'static,
     {
         self.check_resource_epoch(RUN_OPERATION)?;
-        let release_permit = self
-            .inner
-            .release_cleanup_permits
-            .clone()
+        let release_permit = Arc::clone(&self.inner.release_cleanup_permits)
             .try_acquire_owned()
             .map_err(|_error| self.release_cleanup_saturated_error())?;
         let kind = GpuExecutionJobKind::Cleanup;
@@ -899,9 +890,7 @@ impl GpuExecutionPool {
     {
         self.check_resource_epoch(RUN_OPERATION)?;
         let class = kind.job_class();
-        let class_permit = self
-            .class_semaphore_for_class(class)
-            .clone()
+        let class_permit = Arc::clone(self.class_semaphore_for_class(class))
             .try_acquire_owned()
             .map_err(|_error| self.class_saturated_error_for_class(kind, class))?;
         let job = self.new_job_observation(kind, observation);

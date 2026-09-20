@@ -660,7 +660,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
     );
 
     let projected_normalized_bfs = CugraphAlgoExec::try_new(
-        normalized_bfs.spec.clone(),
+        normalized_bfs.spec,
         Arc::clone(&edge_source),
         Vec::new(),
         Some(vec![1]),
@@ -745,7 +745,7 @@ fn cugraph_algo_exec_does_not_request_input_repartitioning() {
 fn logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema() {
     let spec = bfs_utf8_path_spec();
     let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-        spec: spec.clone(),
+        spec,
         edge_schema: string_edge_schema(),
         predicate_schemas: vec![Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]))],
         predicate_row_upper_bounds: vec![Some(1)],
@@ -846,7 +846,7 @@ fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
     let mut result_options = CugraphResultPlanOptions::new(None, Some(3));
     result_options.subsumed_top_k_sort = Some(SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]));
     let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
-        spec: pagerank_utf8_spec().clone(),
+        spec: pagerank_utf8_spec(),
         edge_schema: string_edge_schema(),
         predicate_schemas: Vec::new(),
         predicate_row_upper_bounds: [].to_vec(),

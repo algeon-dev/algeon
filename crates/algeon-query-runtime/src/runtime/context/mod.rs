@@ -2099,7 +2099,7 @@ impl ExecutionContext {
                 Ok(ActivatedDeferredResidentInput {
                     producer_execution_scope_fingerprint: actual_scope.to_owned(),
                     input_name: input_name.to_owned(),
-                    input_schema: input.schema().clone(),
+                    input_schema: Arc::clone(input.schema()),
                     input_memory_identity: input.frame().memory_identity(),
                     input_row_count,
                 })

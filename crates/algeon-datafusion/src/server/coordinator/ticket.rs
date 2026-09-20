@@ -301,7 +301,7 @@ impl QueryPlanningLease {
     /// across this lease's transition to a ticket or its terminal release.
     pub(crate) fn attempt_report_delivery_terminal(&self) -> QueryPlanningReportDeliveryTerminal {
         self.attempt_report_handoff_registered.set(true);
-        QueryPlanningReportDeliveryTerminal { coordinator: self.coordinator.clone(), key: self.key.clone() }
+        QueryPlanningReportDeliveryTerminal { coordinator: Weak::clone(&self.coordinator), key: self.key.clone() }
     }
 
     #[cfg(test)]
@@ -322,7 +322,7 @@ impl QueryPlanningLease {
     }
 
     pub(crate) fn activity_factory(&self) -> NativeObservationActivityFactory {
-        observation_activity_factory(self.coordinator.clone(), self.key.clone(), self.observation_id.clone())
+        observation_activity_factory(Weak::clone(&self.coordinator), self.key.clone(), self.observation_id.clone())
     }
 
     pub(crate) fn issue_ticket(mut self, payload: CoordinatorTicketPayload) -> Result<QueryKey, QueryCoordinatorError> {
@@ -353,7 +353,7 @@ impl QueryPlanningLease {
         }
         self.released = true;
         Ok(QueryExecutionLease {
-            coordinator: self.coordinator.clone(),
+            coordinator: Weak::clone(&self.coordinator),
             key: self.key.clone(),
             #[cfg(test)]
             observation_id: self.observation_id.clone(),
@@ -431,7 +431,7 @@ impl QueryExecutionLease {
 
     #[cfg(test)]
     pub(crate) fn activity_factory(&self) -> NativeObservationActivityFactory {
-        observation_activity_factory(self.coordinator.clone(), self.key.clone(), self.observation_id.clone())
+        observation_activity_factory(Weak::clone(&self.coordinator), self.key.clone(), self.observation_id.clone())
     }
 
     pub(crate) fn succeed(mut self) {

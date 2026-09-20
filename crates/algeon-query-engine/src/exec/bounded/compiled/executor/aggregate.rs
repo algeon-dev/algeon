@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
 use crate::{
     error::Result,
@@ -212,17 +214,17 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
         let input_payload = state.resource_payload(input)?;
-        let input_schema = self
-            .plan
-            .node(window.input)
-            .ok_or_else(|| {
-                invalid("compiled window task references a missing window input node")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", window.input)
-            })?
-            .output_schema()
-            .clone();
-        let output_schema = node.output_schema().clone();
+        let input_schema = Arc::clone(
+            self.plan
+                .node(window.input)
+                .ok_or_else(|| {
+                    invalid("compiled window task references a missing window input node")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", window.input)
+                })?
+                .output_schema(),
+        );
+        let output_schema = Arc::clone(node.output_schema());
         let frame = execute_bounded_generic_unary_from_frame(
             &mut self.execution,
             node_id,

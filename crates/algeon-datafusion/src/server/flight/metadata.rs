@@ -19,7 +19,7 @@ const FLIGHT_SQL_TABLE_TYPES: &[&str] = &[FLIGHT_SQL_TABLE_TYPE_TABLE, FLIGHT_SQ
 pub(super) fn flight_sql_table_types_schema() -> Arc<Schema> {
     use arrow::datatypes::{DataType, Field};
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
-    SCHEMA.get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]))).clone()
+    Arc::clone(SCHEMA.get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]))))
 }
 
 /// Schema for `CommandGetPrimaryKeys` responses. Pinned to the columns
@@ -30,18 +30,16 @@ pub(super) fn flight_sql_table_types_schema() -> Arc<Schema> {
 /// still carry this exact schema or arrow-flight clients refuse it.
 pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
-    SCHEMA
-        .get_or_init(|| {
-            Arc::new(Schema::new(vec![
-                Field::new("catalog_name", DataType::Utf8, true),
-                Field::new("db_schema_name", DataType::Utf8, true),
-                Field::new("table_name", DataType::Utf8, false),
-                Field::new("column_name", DataType::Utf8, false),
-                Field::new("key_name", DataType::Utf8, true),
-                Field::new("key_sequence", DataType::Int32, false),
-            ]))
-        })
-        .clone()
+    Arc::clone(SCHEMA.get_or_init(|| {
+        Arc::new(Schema::new(vec![
+            Field::new("catalog_name", DataType::Utf8, true),
+            Field::new("db_schema_name", DataType::Utf8, true),
+            Field::new("table_name", DataType::Utf8, false),
+            Field::new("column_name", DataType::Utf8, false),
+            Field::new("key_name", DataType::Utf8, true),
+            Field::new("key_sequence", DataType::Int32, false),
+        ]))
+    }))
 }
 
 /// Schema for `CommandGetImportedKeys` / `CommandGetExportedKeys` /
@@ -51,25 +49,23 @@ pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
 /// the schema must still match exactly or arrow-flight clients refuse it.
 pub(super) fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
     static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
-    SCHEMA
-        .get_or_init(|| {
-            Arc::new(Schema::new(vec![
-                Field::new("pk_catalog_name", DataType::Utf8, true),
-                Field::new("pk_db_schema_name", DataType::Utf8, true),
-                Field::new("pk_table_name", DataType::Utf8, false),
-                Field::new("pk_column_name", DataType::Utf8, false),
-                Field::new("fk_catalog_name", DataType::Utf8, true),
-                Field::new("fk_db_schema_name", DataType::Utf8, true),
-                Field::new("fk_table_name", DataType::Utf8, false),
-                Field::new("fk_column_name", DataType::Utf8, false),
-                Field::new("key_sequence", DataType::Int32, false),
-                Field::new("fk_key_name", DataType::Utf8, true),
-                Field::new("pk_key_name", DataType::Utf8, true),
-                Field::new("update_rule", DataType::UInt8, false),
-                Field::new("delete_rule", DataType::UInt8, false),
-            ]))
-        })
-        .clone()
+    Arc::clone(SCHEMA.get_or_init(|| {
+        Arc::new(Schema::new(vec![
+            Field::new("pk_catalog_name", DataType::Utf8, true),
+            Field::new("pk_db_schema_name", DataType::Utf8, true),
+            Field::new("pk_table_name", DataType::Utf8, false),
+            Field::new("pk_column_name", DataType::Utf8, false),
+            Field::new("fk_catalog_name", DataType::Utf8, true),
+            Field::new("fk_db_schema_name", DataType::Utf8, true),
+            Field::new("fk_table_name", DataType::Utf8, false),
+            Field::new("fk_column_name", DataType::Utf8, false),
+            Field::new("key_sequence", DataType::Int32, false),
+            Field::new("fk_key_name", DataType::Utf8, true),
+            Field::new("pk_key_name", DataType::Utf8, true),
+            Field::new("update_rule", DataType::UInt8, false),
+            Field::new("delete_rule", DataType::UInt8, false),
+        ]))
+    }))
 }
 
 /// Empty-row `RecordBatch` matching [`flight_sql_foreign_keys_schema`].

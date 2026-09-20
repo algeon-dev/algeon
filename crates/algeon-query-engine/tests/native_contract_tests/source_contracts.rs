@@ -717,7 +717,7 @@ fn local_parquet_output_override_allows_only_fixed_size_list_child_name_drift() 
         ),
         2,
     );
-    let source_schema = Arc::new(Schema::new(vec![Field::new("features", source_type.clone(), true)]));
+    let source_schema = Arc::new(Schema::new(vec![Field::new("features", source_type, true)]));
     let source = |output_type| {
         LocalParquetSource::from_files(
             vec![LocalParquetFile::new("/tmp/source-contract.parquet")],

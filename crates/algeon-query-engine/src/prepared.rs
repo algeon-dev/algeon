@@ -470,8 +470,8 @@ fn cudf_binary_expr(left: cudf::Expr, op: BinaryOperator, right: cudf::Expr) -> 
 
 fn sql_boolean_and(left: cudf::Expr, right: cudf::Expr) -> cudf::Expr {
     let any_null = left.clone().is_null() | right.clone().is_null();
-    when(left.clone().eq(lit(false))).then(lit(false)).otherwise(
-        when(right.clone().eq(lit(false)))
+    when(left.eq(lit(false))).then(lit(false)).otherwise(
+        when(right.eq(lit(false)))
             .then(lit(false))
             .otherwise(when(any_null).then(lower_boolean_null_literal()).otherwise(lit(true))),
     )
@@ -479,8 +479,8 @@ fn sql_boolean_and(left: cudf::Expr, right: cudf::Expr) -> cudf::Expr {
 
 fn sql_boolean_or(left: cudf::Expr, right: cudf::Expr) -> cudf::Expr {
     let any_null = left.clone().is_null() | right.clone().is_null();
-    when(left.clone().eq(lit(true))).then(lit(true)).otherwise(
-        when(right.clone().eq(lit(true)))
+    when(left.eq(lit(true))).then(lit(true)).otherwise(
+        when(right.eq(lit(true)))
             .then(lit(true))
             .otherwise(when(any_null).then(lower_boolean_null_literal()).otherwise(lit(false))),
     )

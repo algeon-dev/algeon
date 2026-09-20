@@ -37,16 +37,17 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
         non_gds_deployment(),
     )
     .expect("two-device runtime-backed service");
-    let device_zero_ledger = service
-        .inner
-        .resources
-        .as_ref()
-        .expect("runtime resources")
-        .devices
-        .context_by_ordinal(0)
-        .expect("device zero context")
-        .ledger()
-        .clone();
+    let device_zero_ledger = std::sync::Arc::clone(
+        service
+            .inner
+            .resources
+            .as_ref()
+            .expect("runtime resources")
+            .devices
+            .context_by_ordinal(0)
+            .expect("device zero context")
+            .ledger(),
+    );
     let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
     let unhealthy = cudf::testing::device_safety::injected_device_id(0).expect("isolated device zero health");
     cudf::runtime::report_device_fault(

@@ -406,10 +406,7 @@ pub(super) fn bfs_normalized_output_projection(
         ProjectionOutput::new(NativeExpr::column("vertex"), fields[0].as_ref().clone()),
         ProjectionOutput::new(
             NativeExpr::case(
-                vec![CaseWhen::new(
-                    distance_is_unreachable.clone(),
-                    NativeExpr::literal(LiteralValue::Null(DataType::Int64)),
-                )],
+                vec![CaseWhen::new(distance_is_unreachable, NativeExpr::literal(LiteralValue::Null(DataType::Int64)))],
                 NativeExpr::column("distance"),
             ),
             fields[1].as_ref().clone(),
@@ -768,7 +765,7 @@ mod tests {
             spec: spec.clone(),
             edge_schema: Arc::clone(&edge_schema),
             predicate_schemas: Vec::new(),
-            predicate_row_upper_bounds: predicate_row_upper_bounds.clone(),
+            predicate_row_upper_bounds,
             result_options,
             edge_normalize_inserted: false,
             edge_row_upper_bound: None,
@@ -809,7 +806,7 @@ mod tests {
         let spec = bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Raw);
         let edge_schema = edge_schema(DataType::Int64);
         let definition = CugraphPlanDefinition {
-            spec: spec.clone(),
+            spec,
             edge_schema,
             predicate_schemas: Vec::new(),
             predicate_row_upper_bounds: Vec::new(),

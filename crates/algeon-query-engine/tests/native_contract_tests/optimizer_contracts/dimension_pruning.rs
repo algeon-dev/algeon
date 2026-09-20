@@ -221,7 +221,7 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
     let payload_x = Arc::new(Field::new("x", DataType::Int32, false));
     let payload_y = Arc::new(Field::new("y", DataType::Int32, false));
     let fact_schema = Arc::new(Schema::new(vec![
-        Field::new("payload", DataType::Struct(Fields::from(vec![payload_x.clone(), payload_y.clone()])), false),
+        Field::new("payload", DataType::Struct(Fields::from(vec![Arc::clone(&payload_x), Arc::clone(&payload_y)])), false),
         Field::new("fact_key", DataType::Int32, false),
     ]));
     let dim_schema = Arc::new(Schema::new(vec![

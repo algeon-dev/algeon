@@ -19,7 +19,7 @@ use crate::{
 
 pub(crate) fn missing_column_error(operation: &'static str, name: impl Into<String>) -> Error {
     let name = name.into();
-    Error::new_with(ErrorCode::MissingColumn, operation, "column not found in schema").with_column(name.clone())
+    Error::new_with(ErrorCode::MissingColumn, operation, "column not found in schema").with_column(name)
 }
 
 pub(crate) fn duplicate_column_name_error_with_contract(

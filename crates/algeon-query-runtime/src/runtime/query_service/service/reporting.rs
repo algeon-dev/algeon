@@ -326,6 +326,7 @@ impl QueryService {
                 })
                 .unwrap_or_default(),
         };
+        // Queue-sweep completion may reenter service callers, so release the admission lock first.
         drop(state);
         expired.finish();
         Ok(snapshot)

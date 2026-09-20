@@ -570,14 +570,9 @@ fn parity_row_for_item(
 
     let (native_runtime_started, native_runtime_outcome, native_batches, native_schema, native_metrics, native_failure) =
         match item.native_runtime {
-            NativeTpcdsParityNativeRuntimeOutcome::NotStarted => (
-                false,
-                NativeDataFusionRuntimeOutcome::NotStarted,
-                None,
-                None,
-                None,
-                native_planning_failure_message.clone(),
-            ),
+            NativeTpcdsParityNativeRuntimeOutcome::NotStarted => {
+                (false, NativeDataFusionRuntimeOutcome::NotStarted, None, None, None, native_planning_failure_message)
+            },
             NativeTpcdsParityNativeRuntimeOutcome::Succeeded { schema, batches, metrics } => {
                 (true, NativeDataFusionRuntimeOutcome::Succeeded, Some(batches), Some(schema), Some(metrics), None)
             },

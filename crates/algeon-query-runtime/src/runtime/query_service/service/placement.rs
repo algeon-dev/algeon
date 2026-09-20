@@ -1,7 +1,7 @@
 //! Device placement and immutable-grant admission against per-device ledgers.
 
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use query_planning::{
     admission::AttemptRequirement,
@@ -350,8 +350,10 @@ impl QueryService {
             !registrations.iter().any(|registered| registered.service.ptr_eq(&service)),
             "only one direct placement snapshot pause may be armed for a service at a time"
         );
-        registrations
-            .push(DirectPlacementSnapshotPauseRegistration { service: service.clone(), pause: Arc::clone(&pause) });
+        registrations.push(DirectPlacementSnapshotPauseRegistration {
+            service: Weak::clone(&service),
+            pause: Arc::clone(&pause),
+        });
         TestPauseHandle::new("direct placement snapshot", entered_receiver, release_sender).with_drop_cleanup(
             move || {
                 let mut registrations = direct_placement_snapshot_pause_registry()

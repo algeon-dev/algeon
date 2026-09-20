@@ -712,7 +712,7 @@ fn optional_runtime_dep_classification_requires_real_linkage() {
     assert_eq!(
         build_support::elf::classify_optional_runtime_dep(
             Some(candidate.clone()),
-            &[absorbed_consumer.clone(), linked_consumer.clone()],
+            &[absorbed_consumer, linked_consumer],
             "librapids_logger.so"
         )
         .unwrap(),
@@ -727,7 +727,7 @@ fn optional_runtime_dep_classification_requires_real_linkage() {
             "librapids_logger.so"
         )
         .unwrap(),
-        build_support::elf::OptionalRuntimeDepLinkage::Shared(candidate.clone()),
+        build_support::elf::OptionalRuntimeDepLinkage::Shared(candidate),
         "without readable consumers the historical presence-based classification is preserved"
     );
 

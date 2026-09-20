@@ -1499,7 +1499,7 @@ fn prepared_host_table_export_accepts_struct_and_dictionary_columns_with_current
             Some(vec!["point".into(), "category".into(), "id".into()]),
         ),
         vec![point.clone(), category.clone(), ids.clone()],
-        vec![point.clone(), point_x.clone(), point_name.clone(), category.clone(), category_keys.clone(), ids.clone()],
+        vec![point, point_x, point_name, category, category_keys, ids],
         vec![
             host_binding(10, 0x6000, 3 * std::mem::size_of::<i32>()),
             host_binding(11, 0x7000, 4 * std::mem::size_of::<i32>()),

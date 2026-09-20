@@ -255,7 +255,7 @@ mod tests {
 
         assert_ne!(first_signature, second_signature);
 
-        let mut different_decimal_batch = batch.clone();
+        let mut different_decimal_batch = batch;
         for chunk in &mut different_decimal_batch.chunks {
             chunk.reader_decimal_types =
                 vec![ParquetReaderDecimalType::new("c0", ParquetReaderDecimalTypeId::Decimal64, -2)];

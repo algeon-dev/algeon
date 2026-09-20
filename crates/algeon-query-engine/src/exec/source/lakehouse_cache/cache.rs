@@ -718,7 +718,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
             },
         }
     }
-    let lock_guard = BackgroundLakehouseCacheLock { path: lock_path.clone() };
+    let lock_guard = BackgroundLakehouseCacheLock { path: lock_path };
     let Some(operation_permit) = context.acquire_lakehouse_cache_fill_operation_with_timeout(
         Duration::ZERO,
         "query_engine.lakehouse_cache.background_fill.concurrency",

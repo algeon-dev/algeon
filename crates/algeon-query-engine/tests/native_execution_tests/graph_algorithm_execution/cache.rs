@@ -40,7 +40,7 @@ fn source_alias_residency_does_not_preserve_graph_residency_descriptor() {
     };
 
     let source = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap())
-        .with_graph_residency(descriptor.clone());
+        .with_graph_residency(descriptor);
     let selected = source.frame().select(["src", "dst"]).unwrap();
     let derived = GpuDataFrame::try_new_with_source_residency(selected, &source).unwrap();
 

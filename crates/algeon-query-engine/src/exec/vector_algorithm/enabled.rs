@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cudf::{Series, frame::dataframe::GpuRecordBatch};
 use cuvs::{
@@ -672,7 +672,7 @@ fn with_relation_tensor<T>(
             body(&tensor)
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
-            let batch = match GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
+            let batch = match GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
                 cudf_query_error(
                     PACK_OPERATION,
                     "failed to bind the vector relation to its FixedSizeList schema",
@@ -849,7 +849,7 @@ fn with_owned_relation_matrix<T>(
             }
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
-            let batch = match GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
+            let batch = match GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
                 cudf_query_error(
                     PACK_OPERATION,
                     "failed to bind the vector relation to its FixedSizeList schema",
@@ -938,7 +938,7 @@ fn with_uniform_list_relation_tensor<T>(
 ) -> Result<T> {
     let column = uniform_list_vector_column(binding, node_id, role)?;
     context.check_cancellation("query_engine.vector_algorithm.before_pack")?;
-    let batch = GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
+    let batch = GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
         cudf_query_error(PACK_OPERATION, "failed to bind the vector relation to its variable-width List schema", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
@@ -1019,7 +1019,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
 ) -> Result<T> {
     let column = uniform_list_vector_column(binding, node_id, role)?;
     context.check_cancellation("query_engine.vector_algorithm.before_pack")?;
-    let batch = GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
+    let batch = GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
         cudf_query_error(PACK_OPERATION, "failed to bind the vector relation to its variable-width List schema", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)

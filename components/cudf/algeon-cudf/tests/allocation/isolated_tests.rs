@@ -21,7 +21,7 @@ fn dataframe_prepare_host_export_does_not_allocate_extra_device_memory_when_colu
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i64, 20, 30]).unwrap()],
     )
     .unwrap();
-    let shared = original.clone();
+    let shared = original;
 
     let _ = baseline.try_prepare_host_table_export().unwrap();
     let _ = shared.try_prepare_host_table_export().unwrap();

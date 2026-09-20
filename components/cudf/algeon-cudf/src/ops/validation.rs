@@ -154,7 +154,6 @@ pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<Fi
             ("validation_evidence", "bounded_control_scalar".to_string()),
         ],
     )?;
-    drop(execution);
 
     let (placement, observation) = buffer_validation_observation(buffer, validated_values);
     let non_finite_count = usize::try_from(non_finite_count).map_err(|_| {
@@ -223,7 +222,6 @@ pub(crate) fn validate_int64_buffer_range(
             ("validation_evidence", "bounded_control_scalar".to_string()),
         ],
     )?;
-    drop(execution);
 
     let (placement, observation) = buffer_validation_observation(buffer, validated_values);
     let out_of_range_count = usize::try_from(out_of_range_count).map_err(|_| {

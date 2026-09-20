@@ -311,6 +311,7 @@ impl AdmissionTransactionProbe {
             .with_fact("reason", "injected_admission_step_fault")
             .with_fact("admission_step", step.as_str()));
         }
+        // Release the failure-probe lock before acquiring the pause-probe lock.
         drop(fail_at);
         if let Some(pause) = self
             .pause_at
@@ -537,6 +538,7 @@ impl Drop for AdmissionEnvelope {
             return;
         };
         let EnvelopePhysical { worker_scope: _, root_member, domain, root_stream } = physical;
+        // Release stream reservation lease and domain before handling stream quiescence.
         drop(root_member.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner));
         drop(domain);
         let root_stream = root_stream.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -592,7 +594,6 @@ fn defer_rollback_capacity_release(
             std::mem::forget(retention);
         }
     }
-    drop(root_stream);
 }
 
 impl Drop for EnvelopeBuilder {
@@ -601,6 +602,7 @@ impl Drop for EnvelopeBuilder {
         if let Some(ticket) = lifecycle_ticket.as_mut() {
             let _ = ticket.transition_to_cleanup();
         }
+        // Release the stream reservation lease before reclaiming the allocation domain.
         drop(self.root_member.take());
         drop(self.domain.take());
         let root_stream = self.root_stream.take();
@@ -975,8 +977,10 @@ impl AdmissionEnvelope {
     pub fn release_unconsumed_physical(&mut self) -> Option<StreamLease> {
         let physical = self.teardown.physical.take()?;
         let member = physical.root_member.lock().ok().and_then(|mut slot| slot.take());
+        // Release the stream reservation lease before reclaiming the allocation domain.
         drop(member);
         let domain = physical.domain;
+        // Release the allocation domain before returning the unconsumed root stream lease.
         drop(domain);
         physical.root_stream.lock().ok().and_then(|mut slot| slot.take())
     }

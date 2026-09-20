@@ -605,10 +605,9 @@ mod lease_contracts {
         let producer_runtime = Runtime::builder().build().unwrap();
         let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
         let complete_calls = Arc::new(AtomicUsize::new(0));
-        let export = series
-            .try_prepare_device_column_export()
-            .unwrap()
-            .with_lease_backend(LeaseBackend::new(CountingFallbackBackend { complete_calls: complete_calls.clone() }));
+        let export = series.try_prepare_device_column_export().unwrap().with_lease_backend(LeaseBackend::new(
+            CountingFallbackBackend { complete_calls: Arc::clone(&complete_calls) },
+        ));
 
         let consumer_stream = CudaStream::new().unwrap();
         let _consumer_runtime = Runtime::builder()

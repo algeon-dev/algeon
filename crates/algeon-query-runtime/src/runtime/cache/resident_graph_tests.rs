@@ -154,7 +154,7 @@ fn graph_scope_charge_survives_source_cache_eviction_between_build_and_commit() 
     })
     .expect("shared cache test profile must resolve");
     let ledger = DeviceLedger::new(profile);
-    let factory = DeviceCacheAllocationFactory::new(ledger.clone())
+    let factory = DeviceCacheAllocationFactory::new(ledger)
         .expect("cache factory must be created")
         .expect("non-zero cache cap creates a factory");
     let source_cache = factory.source_cache().expect("source cache lease");

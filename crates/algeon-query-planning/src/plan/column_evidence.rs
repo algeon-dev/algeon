@@ -853,8 +853,8 @@ fn join_evidence(
         .filter(|column| column.side == JoinSide::Right)
         .map(|column| (column.column.name().to_owned(), column.output_name.clone()))
         .collect::<Vec<_>>();
-    output.equivalent_columns.extend(remap_equivalent_columns(left, left_mapping.clone()));
-    output.equivalent_columns.extend(remap_equivalent_columns(right, right_mapping.clone()));
+    output.equivalent_columns.extend(remap_equivalent_columns(left, left_mapping));
+    output.equivalent_columns.extend(remap_equivalent_columns(right, right_mapping));
     Ok(output)
 }
 

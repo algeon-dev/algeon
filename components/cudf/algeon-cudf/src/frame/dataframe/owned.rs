@@ -97,7 +97,7 @@ where I: IntoIterator<Item = (String, Arc<Column>)> {
     let first_rows = named_column_len(&first_name, &first_column, operation)?;
 
     let mut columns: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());
-    columns.insert(first_name.clone(), first_column);
+    columns.insert(first_name, first_column);
 
     for (name, column) in named_columns {
         let rows = named_column_len(&name, &column, operation)?;
@@ -107,7 +107,7 @@ where I: IntoIterator<Item = (String, Arc<Column>)> {
                 operation,
                 format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
             )
-            .with_column(name.clone())
+            .with_column(name)
             .with_fact(FACT_ACTUAL_ROWS, rows)
             .with_fact(FACT_EXPECTED_ROWS, first_rows));
         }

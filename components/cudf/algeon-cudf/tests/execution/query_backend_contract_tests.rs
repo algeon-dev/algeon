@@ -691,7 +691,7 @@ fn binding_extension_factory_can_read_live_and_initialize_vacant_different_types
     let constructor = runtime
         .get_or_try_init_binding_extension("binding_extension_cross_type_constructor", {
             let runtime = Arc::clone(&runtime);
-            let expected_live = live.clone();
+            let expected_live = live;
             let read_live = Arc::clone(&read_live);
             let initialized_vacant = Arc::clone(&initialized_vacant);
             move || {

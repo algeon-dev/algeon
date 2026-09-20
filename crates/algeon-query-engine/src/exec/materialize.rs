@@ -127,7 +127,7 @@ fn record_batch_with_sink_schema(batch: RecordBatch, schema: &SchemaRef) -> Resu
         .enumerate()
         .map(|(index, (column, field))| column_with_sink_field_contract(column, field.as_ref(), index))
         .collect::<Result<Vec<_>>>()?;
-    RecordBatch::try_new(schema.clone(), columns).map_err(|error| {
+    RecordBatch::try_new(Arc::clone(schema), columns).map_err(|error| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.host_arrow.materialize_schema",

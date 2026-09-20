@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::Arc,
     time::Instant,
 };
 
@@ -157,7 +158,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let handle = match GpuResultHandle::new_with_resident_owner(
             self.execution.context(),
             frame,
-            self.plan.output_schema().clone(),
+            Arc::clone(self.plan.output_schema()),
             resident_owner,
         ) {
             Ok(handle) => handle.with_producer_execution_plan(self.plan.clone()),

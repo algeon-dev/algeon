@@ -593,8 +593,9 @@ fn read_table_metadata(layout: &DblpFixtureLayout, manifest: &Value) -> Workload
         if schema.is_empty() {
             return Err(WorkloadError::InvalidDataset(format!("manifest {table} schema must not be empty")));
         }
-        let arrow_schema = ParquetRecordBatchReaderBuilder::try_new(File::open(&path)?)?.schema().clone();
-        let actual_schema = arrow_schema.fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>();
+        let reader_builder = ParquetRecordBatchReaderBuilder::try_new(File::open(&path)?)?;
+        let actual_schema =
+            reader_builder.schema().fields().iter().map(|field| field.name().to_string()).collect::<Vec<_>>();
         if actual_schema != schema {
             return Err(WorkloadError::InvalidDataset(format!(
                 "manifest {table} schema {:?} does not match Parquet schema {:?}",

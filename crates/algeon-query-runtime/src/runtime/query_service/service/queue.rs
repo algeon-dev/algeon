@@ -5,7 +5,7 @@
 //! idle unrelated devices needed only by later work.
 
 #[cfg(test)]
-use std::sync::Mutex;
+use std::sync::{Mutex, Weak};
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::{Arc, atomic::Ordering},
@@ -282,7 +282,7 @@ impl QueryService {
 
     pub(in crate::runtime::query_service) fn ledger_for_ordinal(&self, ordinal: usize) -> Result<Arc<DeviceLedger>> {
         match &self.inner.resources {
-            Some(resources) => Ok(resources.devices.context_by_ordinal(ordinal)?.ledger().clone()),
+            Some(resources) => Ok(Arc::clone(resources.devices.context_by_ordinal(ordinal)?.ledger())),
             None if self.default_device_ordinal() == Some(ordinal) => {
                 self.inner.fallback_device_ledger.clone().map(Arc::new).ok_or_else(|| {
                     QueryError::new(
@@ -751,7 +751,8 @@ impl QueryService {
             !registration.iter().any(|registered| registered.service.ptr_eq(&service)),
             "only one queue sweep finish pause may be armed for a service at a time"
         );
-        registration.push(QueueSweepFinishPauseRegistration { service: service.clone(), pause: pause.clone() });
+        registration
+            .push(QueueSweepFinishPauseRegistration { service: Weak::clone(&service), pause: Arc::clone(&pause) });
         TestPauseHandle::new("queue sweep finish", entered_receiver, release_sender).with_drop_cleanup(move || {
             let mut registration =
                 queue_sweep_finish_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);

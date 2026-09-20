@@ -998,7 +998,7 @@ impl StreamLease {
             return Ok(runtime);
         };
         resource_epoch.check_open("query_engine.service_stream_pool.lease.runtime")?;
-        let retained: Arc<dyn Send + Sync> = resource_epoch.clone();
+        let retained: Arc<dyn Send + Sync> = Arc::clone(resource_epoch) as _;
         runtime.with_retained_lifetime(retained).map_err(|error| {
             cudf_query_error(
                 "query_engine.service_stream_pool.lease.runtime",
@@ -1544,7 +1544,7 @@ mod tests {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         let lease = pool.acquire().unwrap();
         let before_pool = pool.clone();
-        let after_pool = pool.clone();
+        let after_pool = pool;
         let (before_sender, before_receiver) = mpsc::channel();
         let (after_sender, after_receiver) = mpsc::channel();
 
@@ -1757,7 +1757,7 @@ mod tests {
         let held = pool.acquire().unwrap();
         let cancellation = ExecutionCancellation::new();
         let waiter_cancellation = cancellation.clone();
-        let waiter_pool = pool.clone();
+        let waiter_pool = pool;
         let (started_sender, started_receiver) = mpsc::channel();
         let (result_sender, result_receiver) = mpsc::channel();
 
@@ -1819,7 +1819,7 @@ mod permit_class_tests {
         assert_eq!((root_out, root_cap, aux_out, aux_cap), (1, 1, 2, 2));
 
         let (sender, receiver) = std::sync::mpsc::channel();
-        let second_pool = pool.clone();
+        let second_pool = pool;
         let waiter = std::thread::spawn(move || {
             sender.send(()).unwrap();
             second_pool.acquire_observed_with_cancellation_deadline_and_class(
@@ -1853,7 +1853,7 @@ mod permit_class_tests {
         let _root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();
         let aux = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
-        let second_pool = pool.clone();
+        let second_pool = pool;
         let waiter = std::thread::spawn(move || {
             sender.send(()).unwrap();
             second_pool.acquire_observed_with_cancellation_deadline_and_class(

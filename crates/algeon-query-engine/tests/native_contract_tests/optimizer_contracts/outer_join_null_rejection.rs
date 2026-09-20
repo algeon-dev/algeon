@@ -151,7 +151,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
 fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
     let plan = union_aggregate_over_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);

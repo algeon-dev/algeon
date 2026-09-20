@@ -58,7 +58,7 @@ impl QueryPlanBuilder {
     /// Source nodes establish their output schema and currently default to
     /// device placement when lowered into this IR.
     pub fn add_source(&mut self, source: SourceNode) -> NodeId {
-        let output_schema = source.output_schema().clone();
+        let output_schema = Arc::clone(source.output_schema());
         self.push(PlanNode::Source(Box::new(source)), PlanFacts::device(output_schema, SchemaBehavior::SourceOutput))
     }
 
@@ -263,7 +263,7 @@ impl QueryPlanBuilder {
 
     /// Finishes the plan with a host Arrow materialization sink.
     pub fn finish_with_host_sink(self, root: NodeId) -> QueryPlan {
-        let schema = self.node(root).output_schema().clone();
+        let schema = Arc::clone(self.node(root).output_schema());
         self.finish(root, ResultSink::HostArrow { input: root, schema })
     }
 

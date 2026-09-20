@@ -513,7 +513,7 @@ fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
     let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
 
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
         .expect("the matching sealed attempt snapshot is accepted");
     let delivery = tonic::Status::resource_exhausted("attempt failed after sealed report publication");
     planning
@@ -551,12 +551,9 @@ fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
         .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("attempt-owned registration succeeds");
     let sealed_report = cpu_attempt_report(&query_id);
-    let owner = RuntimeObservationOwner::new(
-        RuntimeQueryId::new(query_id.clone()),
-        None,
-        RuntimeObservationConfig::bounded(16, 4096),
-    )
-    .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let owner =
+        RuntimeObservationOwner::new(RuntimeQueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096))
+            .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
     let snapshot = owner
         .finish_query(Some(RuntimeTerminalOutcome::Succeeded))
         .expect("attempt observation seals before its report is handed off");
@@ -1695,12 +1692,13 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
         let state = coordinator.lock_state();
         let key = state.current.get("terminal-error-identity").expect("query remains addressable");
         let record = state.records.get(key).expect("terminal record remains retained");
-        record
-            .retained
-            .as_ref()
-            .and_then(|bundle| bundle.runtime_jsonl.as_ref())
-            .expect("capture-truncated records retain their runtime JSONL internally")
-            .clone()
+        Arc::clone(
+            record
+                .retained
+                .as_ref()
+                .and_then(|bundle| bundle.runtime_jsonl.as_ref())
+                .expect("capture-truncated records retain their runtime JSONL internally"),
+        )
     };
     let footer = std::str::from_utf8(&jsonl)
         .expect("runtime JSONL is UTF-8")

@@ -263,7 +263,7 @@ fn host_materialization_and_io_paths_sync_retained_stream() {
 
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("execution_domain.parquet");
-    let df = DataFrame::from_series([("id", numeric.clone())]).unwrap();
+    let df = DataFrame::from_series([("id", numeric)]).unwrap();
     reset_sync_observation();
     df.write_parquet(&path).unwrap();
     assert_eq!(last_sync_stream_value(), df.testing_execution_domain_stream_value());

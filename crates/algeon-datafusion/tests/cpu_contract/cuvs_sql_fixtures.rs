@@ -79,7 +79,7 @@ pub fn cuvs_cugraph_native_context() -> SessionContext {
     let native_execution_config = AlgeonNativeExecutionConfig::bounded_default();
     let state = SessionStateBuilder::new_with_default_features()
         .with_algeon_native(
-            AlgeonNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone()),
+            AlgeonNativeOptimizerConfig::default().with_native_execution_config(native_execution_config),
         )
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL contracts")

@@ -759,7 +759,7 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
         if self.rewrites[rewrite_index].replay_branch_predicates
             && let Some(predicate) = variant.reader_predicate.clone()
         {
-            let output_schema = self.nodes[current.index()].output_schema().clone();
+            let output_schema = Arc::clone(self.nodes[current.index()].output_schema());
             current = self.push_node(
                 PlanNode::Filter(FilterNode { input: current, predicate: branch_replay_predicate(predicate) }),
                 PlanFacts::device(output_schema, SchemaBehavior::PreservesInput),

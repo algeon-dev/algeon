@@ -16,7 +16,7 @@ fn pagerank_plan(edge_schema: std::sync::Arc<arrow::datatypes::Schema>) -> crate
             renumber: true,
             policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
         },
-        params.clone(),
+        params,
         std::sync::Arc::clone(&output_schema),
     );
     let graph = builder.add_graph_algorithm(edges, spec);

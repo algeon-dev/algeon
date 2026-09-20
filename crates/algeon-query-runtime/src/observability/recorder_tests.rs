@@ -144,7 +144,7 @@ fn non_reentrant_finisher_waits_for_observer_delivery() {
 
     let (started_tx, started_rx) = mpsc::sync_channel(0);
     let (completed_tx, completed_rx) = mpsc::sync_channel(1);
-    let secondary_owner = owner.clone();
+    let secondary_owner = owner;
     let secondary_thread = std::thread::spawn(move || {
         started_tx.send(()).expect("test observes second finisher start");
         let snapshot = secondary_owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap();
@@ -338,7 +338,7 @@ fn clock_panic_publishes_degraded_panicked_result_and_wakes_waiters() {
         "clock-panic-query",
         None,
         RuntimeObservationConfig::bounded(64, 16 * 1024),
-        clock.clone(),
+        Arc::clone(&clock) as _,
     );
     let owner = RuntimeObservationOwner::from_session(session);
     let primary_owner = owner.clone();

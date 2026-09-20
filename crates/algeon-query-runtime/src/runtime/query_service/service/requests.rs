@@ -456,7 +456,7 @@ impl QueryService {
             compatible_devices,
             requested_query_cap_bytes,
             deadline,
-            execution_cancellation: execution_cancellation.clone(),
+            execution_cancellation,
             terminal: QueuedAdmissionTerminal::default(),
         };
         let terminal = request.terminal.clone();
@@ -932,7 +932,7 @@ impl QueryService {
             attempt_id,
             completion,
             submitted_plan_capability_evidence,
-            device_entries: device_entries.clone(),
+            device_entries,
             submission_seq,
             compatible_devices,
             requested_query_cap_bytes,
@@ -1190,6 +1190,7 @@ impl QueryService {
             Some(device_ordinal),
             Some(device_budget_bytes),
         );
+        // Release admission lock before constructing and returning the handle.
         drop(state);
         Ok(QueryHandle {
             lifetime: QueryHandleLifetime::new(
@@ -1698,6 +1699,7 @@ impl QueryService {
         state.closed = true;
         let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
         if !closed_requests.is_empty() {
+            // Release admission lock before completing queued requests and re-locking.
             drop(state);
             finish_closed_queued_requests(closed_requests);
             state = match self.lock_admission_until(deadline, operation) {
@@ -1711,7 +1713,6 @@ impl QueryService {
             };
         }
         if admission_was_poisoned {
-            drop(state);
             return QueryServiceDrainPhaseOutcome::PermanentFailure {
                 phase: QueryServiceDrainPhase::AdmissionQuiescence,
                 error: QueryError::new(

@@ -148,8 +148,7 @@ impl DatafusionAlgeonFlightSqlService {
             .clone()
             .with_io_lifecycle(io_lifecycle.handle())
             .with_host_output_memory_pool_accounting(true);
-        let native_optimizer_config =
-            native_optimizer_config.with_native_execution_config(native_execution_config.clone());
+        let native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
         let observability_config = crate::server::config::ServerObservabilityConfig::default();
         Self {
             ctx,

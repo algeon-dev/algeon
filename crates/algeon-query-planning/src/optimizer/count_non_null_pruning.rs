@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
@@ -294,7 +297,7 @@ impl<'a> CountNonNullColumnPruningRewriter<'a> {
         }
         let input = self.rewrite_subtree(projection.input, RequiredColumns::Only(input_columns));
         let projection = ProjectionNode::new(input, outputs);
-        facts.output_schema = projection.output_schema().clone();
+        facts.output_schema = Arc::clone(projection.output_schema());
         (PlanNode::Projection(projection), facts)
     }
 
@@ -306,7 +309,7 @@ impl<'a> CountNonNullColumnPruningRewriter<'a> {
     ) -> (PlanNode, PlanFacts) {
         let input_required = required.with_expr_columns(&filter.predicate);
         let input = self.rewrite_subtree(filter.input, input_required);
-        let input_schema = self.nodes[input.index()].output_schema().clone();
+        let input_schema = Arc::clone(self.nodes[input.index()].output_schema());
         facts.output_schema = input_schema;
         (PlanNode::Filter(FilterNode { input, predicate: filter.predicate.clone() }), facts)
     }
@@ -327,7 +330,7 @@ impl<'a> CountNonNullColumnPruningRewriter<'a> {
             },
             SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => source.clone(),
         };
-        facts.output_schema = source.output_schema().clone();
+        facts.output_schema = Arc::clone(source.output_schema());
         (PlanNode::Source(Box::new(source)), facts)
     }
 
@@ -520,7 +523,7 @@ fn prune_local_parquet_source(source: &LocalParquetSource, required: &RequiredCo
     pruned.pure_filter_column_source_refs = pure_filter_column_source_refs;
     pruned.partition_columns = partition_columns;
     pruned.missing_columns = missing_columns;
-    let output_schema = pruned.output_schema().clone();
+    let output_schema = Arc::clone(pruned.output_schema());
     pruned.unique_key_columns.retain(|key| {
         key.iter().all(|column| output_schema.field_with_name(column).is_ok_and(|field| !field.is_nullable()))
     });

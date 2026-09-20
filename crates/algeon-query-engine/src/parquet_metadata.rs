@@ -252,6 +252,7 @@ pub fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_identity
     sidecar.sync_all().map_err(|error| {
         sidecar_temp_io_error("failed to sync Parquet footer sidecar", error, &sidecar_path, &temp_path)
     })?;
+    // Close the temp file descriptor before atomic rename into the final sidecar path.
     drop(sidecar);
     fs::rename(&temp_path, &sidecar_path).map_err(|error| {
         sidecar_temp_io_error("failed to publish Parquet footer sidecar", error, &sidecar_path, &temp_path)
@@ -525,7 +526,7 @@ mod tests {
     fn write_test_parquet(row_count: usize, rows_per_group: usize) -> Vec<u8> {
         let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
         let values = (0..row_count).map(|value| value as i32).collect::<Vec<_>>();
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(values))]).unwrap();
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values))]).unwrap();
         let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
         let mut bytes = Vec::new();
         let mut writer = ArrowWriter::try_new(&mut bytes, schema, Some(props)).unwrap();

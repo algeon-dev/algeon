@@ -599,7 +599,7 @@ fn blocking_completion_notifies_in_finish_order_after_releasing_capacity() {
     assert_eq!(pool.snapshot().aux_jobs_available, 2);
     assert_eq!(first.join().unwrap(), 1);
 
-    let panic_completion = completed_sender.clone();
+    let panic_completion = completed_sender;
     let panicked = pool
         .submit_blocking_with_completion(
             GpuExecutionJobKind::AttemptWork,

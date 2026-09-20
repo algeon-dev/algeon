@@ -36,7 +36,7 @@ fn discover_and_describe_single_fixture() {
     let file = temp.path().join("hits.parquet");
     write_tiny_parquet(&file, &[1, 2, 3]);
 
-    assert_eq!(discover_clickbench_layout(temp.path()).unwrap(), ClickbenchLayout::Single { file: file.clone() });
+    assert_eq!(discover_clickbench_layout(temp.path()).unwrap(), ClickbenchLayout::Single { file });
     let metadata = describe_clickbench_dataset(temp.path(), "test", "generated tiny fixture").unwrap();
     assert_eq!(metadata.layout_label(), "single");
     assert_eq!(metadata.file_count, 1);
@@ -80,8 +80,11 @@ fn discover_clickbench_layout_rejects_missing_root() {
 
 fn write_tiny_parquet(path: &Path, values: &[i32]) {
     let schema = std::sync::Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
-    let batch =
-        RecordBatch::try_new(schema.clone(), vec![std::sync::Arc::new(Int32Array::from(values.to_vec()))]).unwrap();
+    let batch = RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![std::sync::Arc::new(Int32Array::from(values.to_vec()))],
+    )
+    .unwrap();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
     writer.write(&batch).unwrap();

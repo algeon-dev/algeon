@@ -549,7 +549,7 @@ fn test_hash_join_supports_parallel_probes_from_cloned_handle() {
         sorted_join_index_pairs(&indices)
     });
 
-    let second_join = hash_join.clone();
+    let second_join = hash_join;
     let second = std::thread::spawn(move || {
         let indices = second_join.left_join_indices(&second_probe.testing_view().unwrap()).unwrap();
         sorted_join_index_pairs(&indices)

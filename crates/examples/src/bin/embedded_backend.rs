@@ -3,7 +3,7 @@
 //! This process creates one shared `AlgeonGpuBackend`, serves the example HTTP
 //! API on `EXAMPLE_REST_BIND`, and serves Flight SQL on `ALGEON_SERVER_BIND`.
 
-use std::{env, net::SocketAddr, process::ExitCode};
+use std::{env, net::SocketAddr, process::ExitCode, sync::Arc};
 
 use algeon_datafusion::{
     backend::GpuMemoryOwnership,
@@ -50,7 +50,7 @@ async fn run() -> anyhow::Result<()> {
         .await
         .context("failed to build Flight SQL frontend")?;
     let flight_addr = flight_server.local_addr();
-    let state = AppState::new(flight_server.session_context().clone(), backend);
+    let state = AppState::new(Arc::clone(flight_server.session_context()), backend);
     let rest_router = rest::router(state);
 
     tracing::info!(

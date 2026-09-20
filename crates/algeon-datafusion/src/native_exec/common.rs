@@ -96,7 +96,7 @@ impl HostOutputReservation {
 /// Conservative `PlanProperties` shared by all native execution wrappers:
 /// one unknown bounded partition, `Final` emission, no ordering guarantees.
 pub(super) fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> {
-    properties_with_equivalence(schema.clone(), EquivalenceProperties::new(schema))
+    properties_with_equivalence(Arc::clone(&schema), EquivalenceProperties::new(schema))
         .expect("fresh equivalence properties must match schema")
 }
 

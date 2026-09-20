@@ -777,6 +777,7 @@ fn read_local_parquet_chunk_batch_uncached(
     for chunk in &batch.chunks {
         record_background_cache_chunk_fill_enqueue(context, chunk);
     }
+    // Release lakehouse cache read pins so cache maintenance can proceed.
     drop(cache_read_pins);
     metrics.record_budgeted_execution("query_engine.local_parquet_chunk_batch.read", outcome.report());
     let read_evidence = outcome.value().read_evidence().cloned();
