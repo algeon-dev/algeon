@@ -5,7 +5,7 @@ use datafusion::{
     catalog::Session,
     common::Result,
     execution::context::QueryPlanner,
-    logical_expr::LogicalPlan,
+    logical_expr::{LogicalPlan, planner::RelationPlanner},
     physical_plan::ExecutionPlan,
     physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner},
 };
@@ -13,30 +13,47 @@ use datafusion::{
 #[derive(Clone)]
 pub struct AlgeonQueryPlanner {
     caller_extension_planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>,
-    family_extension_planners: BTreeMap<&'static str, Arc<dyn ExtensionPlanner + Send + Sync>>,
+    family_planners: BTreeMap<&'static str, FamilyPlanners>,
+}
+
+/// Planners a GPU SQL family installed on the session. The relation planner is
+/// kept so a later install can find it in the builder's list by identity.
+#[derive(Clone)]
+struct FamilyPlanners {
+    extension: Arc<dyn ExtensionPlanner + Send + Sync>,
+    relation: Arc<dyn RelationPlanner>,
 }
 
 impl AlgeonQueryPlanner {
     /// Builds the Algeon planner from caller-owned extension planners.
     pub fn new(caller_extension_planners: Vec<Arc<dyn ExtensionPlanner + Send + Sync>>) -> Self {
-        Self { caller_extension_planners, family_extension_planners: BTreeMap::new() }
+        Self { caller_extension_planners, family_planners: BTreeMap::new() }
     }
 
     pub(crate) fn with_family(
         mut self,
         family_id: &'static str,
-        planner: Arc<dyn ExtensionPlanner + Send + Sync>,
+        extension: Arc<dyn ExtensionPlanner + Send + Sync>,
+        relation: Arc<dyn RelationPlanner>,
     ) -> Self {
-        self.family_extension_planners.entry(family_id).or_insert(planner);
+        self.family_planners.entry(family_id).or_insert(FamilyPlanners { extension, relation });
         self
     }
 
     pub(crate) fn contains_family(&self, family_id: &str) -> bool {
-        self.family_extension_planners.contains_key(family_id)
+        self.family_planners.contains_key(family_id)
+    }
+
+    pub(crate) fn family_relation_planner(&self, family_id: &str) -> Option<&Arc<dyn RelationPlanner>> {
+        self.family_planners.get(family_id).map(|family| &family.relation)
     }
 
     fn extension_planners(&self) -> Vec<Arc<dyn ExtensionPlanner + Send + Sync>> {
-        self.caller_extension_planners.iter().chain(self.family_extension_planners.values()).cloned().collect()
+        self.caller_extension_planners
+            .iter()
+            .cloned()
+            .chain(self.family_planners.values().map(|family| Arc::clone(&family.extension)))
+            .collect()
     }
 }
 
@@ -50,7 +67,7 @@ impl fmt::Debug for AlgeonQueryPlanner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AlgeonQueryPlanner")
             .field("caller_extension_planner_count", &self.caller_extension_planners.len())
-            .field("family_ids", &self.family_extension_planners.keys().collect::<Vec<_>>())
+            .field("family_ids", &self.family_planners.keys().collect::<Vec<_>>())
             .finish()
     }
 }

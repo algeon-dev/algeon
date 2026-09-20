@@ -35,7 +35,7 @@ pub struct GraphPersonalizedPageRankParams {
 
 impl GraphPersonalizedPageRankParams {
     /// Visits every side-input node id in stable role order.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         std::iter::once(self.personalization.input)
     }
 }
@@ -183,19 +183,11 @@ impl GraphBetweennessSeeds {
             Self::Input { row_count_upper_bound, .. } => *row_count_upper_bound == 0,
         }
     }
-
-    /// Proven seed-row upper bound used by graph planning and admission.
-    pub fn row_count_upper_bound(&self) -> u64 {
-        match self {
-            Self::I64(values) => values.len() as u64,
-            Self::Input { row_count_upper_bound, .. } => *row_count_upper_bound,
-        }
-    }
 }
 
 impl GraphBetweennessSeeds {
     /// Visits the encoded seed side-input node, when present.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         match self {
             Self::I64(_) => None,
             Self::Input { input, .. } => Some(input.input),
@@ -225,7 +217,7 @@ pub struct GraphBetweennessCentralityParams {
 
 impl GraphBetweennessCentralityParams {
     /// Visits explicit seed side-input nodes in stable role order.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
     }
 }
@@ -261,7 +253,7 @@ pub struct GraphEdgeBetweennessCentralityParams {
 
 impl GraphEdgeBetweennessCentralityParams {
     /// Visits explicit seed side-input nodes in stable role order.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
     }
 }

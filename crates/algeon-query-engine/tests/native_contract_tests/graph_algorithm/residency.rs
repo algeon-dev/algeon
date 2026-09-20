@@ -320,26 +320,12 @@ fn graph_residency_descriptor_distinguishes_object_store_content_identity() {
 }
 
 #[test]
-fn graph_residency_descriptor_bypasses_delete_files_and_unstable_identity() {
-    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-        "graph-delete",
-        ResolvedParquetSource::local_kvikio("/tmp/graph-deletes.parquet"),
-    )
-    .expect("delete source should be valid");
-    let delete_source = graph_local_parquet_source_with_file(
-        &["src", "dst"],
-        graph_local_parquet_file().with_position_delete_files(vec![delete_file]),
-    );
-    let delete_plan = graph_edge_source_plan_from_source(delete_source, Some(&["src", "dst"]));
+fn graph_residency_descriptor_bypasses_unstable_identity_and_scan_limit() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<String>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
-    );
-    assert_eq!(
-        graph_residency_descriptor_for_edge_plan(&delete_plan, &spec).bypass_reason(),
-        Some(GraphSourceFingerprintBypassReason::DeleteFilesPresent),
     );
 
     let unstable_source = graph_local_parquet_source_with_file(
@@ -363,25 +349,8 @@ fn graph_residency_descriptor_bypasses_delete_files_and_unstable_identity() {
 }
 
 #[test]
-fn graph_residency_descriptor_bypasses_field_id_transforms_and_gpu_inputs() {
+fn graph_residency_descriptor_bypasses_transforms_and_gpu_inputs() {
     let spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
-
-    let field_id_source = graph_local_parquet_source_with_file(
-        &["src", "dst"],
-        graph_local_parquet_file().with_field_id_read_bindings(vec![ParquetFieldIdReadBinding::new(
-            17,
-            "src",
-            "src_physical",
-            0,
-            false,
-            DataType::Int64,
-        )]),
-    );
-    let field_id_plan = graph_edge_source_plan_from_source(field_id_source, Some(&["src", "dst"]));
-    assert_eq!(
-        graph_residency_descriptor_for_edge_plan(&field_id_plan, &spec).bypass_reason(),
-        Some(GraphSourceFingerprintBypassReason::FieldIdReadBindingsPresent),
-    );
 
     let local_source = graph_local_parquet_source(&["src", "dst"]);
     let output_schema = Arc::clone(local_source.output_schema());

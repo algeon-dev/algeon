@@ -3,13 +3,7 @@ use std::thread;
 use cudf::{
     Runtime,
     core::column::DeviceSlice,
-    interop::{
-        arrow_device::{
-            DeviceArrowColumnExport, DeviceArrowColumnOwnedAbiParts, DeviceArrowColumnRawParts, DeviceArrowTableExport,
-            DeviceArrowTableOwnedAbiParts, DeviceArrowTableRawParts, ForeignDeviceArrowColumn, ForeignDeviceArrowTable,
-        },
-        cuda_stream_handle,
-    },
+    interop::cuda_stream_handle,
     ops::join::{HashJoin, HashJoinOptions, JoinIndices, SingleSideJoinIndices},
     runtime::CudaStream,
 };
@@ -24,14 +18,6 @@ assert_impl_all!(DeviceSlice<'static>: Send, Sync);
 assert_impl_all!(ProducerReadiness<'static>: Send, Sync);
 assert_impl_all!(PreparedColumnExport<'static>: Send, Sync);
 assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
-assert_impl_all!(DeviceArrowColumnExport: Send, Sync);
-assert_impl_all!(DeviceArrowColumnRawParts: Send, Sync);
-assert_impl_all!(DeviceArrowColumnOwnedAbiParts: Send, Sync);
-assert_impl_all!(ForeignDeviceArrowColumn: Send, Sync);
-assert_impl_all!(DeviceArrowTableExport: Send, Sync);
-assert_impl_all!(DeviceArrowTableRawParts: Send, Sync);
-assert_impl_all!(DeviceArrowTableOwnedAbiParts: Send, Sync);
-assert_impl_all!(ForeignDeviceArrowTable: Send, Sync);
 assert_impl_all!(HashJoin: Send, Sync);
 assert_impl_all!(HashJoinOptions: Send, Sync);
 assert_impl_all!(JoinIndices: Send, Sync);

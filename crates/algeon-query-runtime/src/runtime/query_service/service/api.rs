@@ -1,11 +1,12 @@
 //! Public request/snapshot DTOs for query-service admission.
 
-use std::{
-    fmt, mem,
-    time::{Duration, Instant},
-};
+#[cfg(test)]
+use std::time::Duration;
+use std::{fmt, mem, time::Instant};
 
-use query_planning::error::{QueryError, QueryErrorCode, Result};
+#[cfg(test)]
+use query_planning::error::QueryErrorCode;
+use query_planning::error::{QueryError, Result};
 use serde::Serialize;
 
 /// Result of a controlled device-quarantine injection.
@@ -45,10 +46,12 @@ impl DeviceQuarantineInjection {
 }
 use query_planning::admission::AttemptRequirement;
 
+#[cfg(test)]
+use crate::runtime::query_service::config::QueueBounds;
 use crate::{
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
     observability::{AttemptId, RuntimeObservationHandle, RuntimeObservationOwner},
-    runtime::{ExecutionCancellation, query_service::config::QueueBounds},
+    runtime::ExecutionCancellation,
 };
 
 #[derive(Debug, Default)]
@@ -74,7 +77,7 @@ pub struct QueryServiceAdmissionSnapshot {
     pub queue_high_watermark: usize,
     /// Devices currently withholding one future slot and liveness bytes for
     /// an overtake-limited waiter.
-    pub protected_devices: Vec<usize>,
+    pub(crate) protected_devices: Vec<usize>,
 }
 
 /// Process-wide active-query slots currently held on one service device.
@@ -85,7 +88,7 @@ pub struct QueryServiceDeviceAdmissionSnapshot {
     /// Slots held across every `QueryService` in this process.
     pub process_active_query_slots: usize,
     /// Whether this device currently protects a future slot for a waiter.
-    pub has_protection: bool,
+    pub(crate) has_protection: bool,
 }
 
 /// Caller-facing classification for a failed native admission or execution
@@ -126,7 +129,8 @@ pub struct QueryServiceDeviceAdmissionSnapshot {
 /// [`QueryError`] remains the structured diagnostic source; this enum is only
 /// its stable policy-selection projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum QueryAdmissionOutcome {
+#[cfg(test)]
+pub(crate) enum QueryAdmissionOutcome {
     /// Bounded capacity is temporarily unavailable.  Queue facts are present
     /// when the service attached them to the structured error; the configured
     /// wait bound is supplied by [`Self::from_error_with_queue_bounds`].
@@ -154,19 +158,22 @@ pub enum QueryAdmissionOutcome {
     ExecutionFailure,
 }
 
+#[cfg(test)]
 impl QueryAdmissionOutcome {
     /// Classifies an error returned while admission is being attempted.
     ///
     /// This method does not inspect diagnostic reason strings. A caller that
     /// has already published a handle must use [`Self::from_execution_error`]
     /// instead, even when the execution error has a resource-exhaustion code.
-    pub fn from_error(error: &QueryError) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_error(error: &QueryError) -> Self {
         Self::from_error_with_optional_queue_bounds(error, None)
     }
 
     /// Classifies a structured native error and attaches the service-owned
     /// queue wait bound when the caller has the corresponding configuration.
-    pub fn from_error_with_queue_bounds(error: &QueryError, queue_bounds: &QueueBounds) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_error_with_queue_bounds(error: &QueryError, queue_bounds: &QueueBounds) -> Self {
         Self::from_error_with_optional_queue_bounds(error, Some(queue_bounds))
     }
 
@@ -176,10 +183,12 @@ impl QueryAdmissionOutcome {
     /// admission capacity: the service cannot ask the caller to queue an
     /// attempt that has already started. Cancellation remains cancellation;
     /// every other post-admission error is an execution failure.
-    pub fn from_execution_error(error: &QueryError) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_execution_error(error: &QueryError) -> Self {
         if error.code() == QueryErrorCode::Cancelled { Self::Cancelled } else { Self::ExecutionFailure }
     }
 
+    #[cfg(test)]
     fn from_error_with_optional_queue_bounds(error: &QueryError, queue_bounds: Option<&QueueBounds>) -> Self {
         match error.code() {
             QueryErrorCode::QueryBudgetUnavailable => Self::BudgetUnavailable {
@@ -226,7 +235,8 @@ impl QueryAdmissionOutcome {
     }
 
     /// Returns the queue depth attached to a capacity result, if known.
-    pub fn queued_queries(&self) -> Option<usize> {
+    #[cfg(test)]
+    pub(crate) fn queued_queries(&self) -> Option<usize> {
         match self {
             Self::Capacity { queued_queries, .. } => *queued_queries,
             _ => None,
@@ -235,7 +245,8 @@ impl QueryAdmissionOutcome {
 
     /// Returns the configured queue capacity attached to a capacity result,
     /// if the rejection carried it.
-    pub fn queue_capacity(&self) -> Option<usize> {
+    #[cfg(test)]
+    pub(crate) fn queue_capacity(&self) -> Option<usize> {
         match self {
             Self::Capacity { queue_capacity, .. } => *queue_capacity,
             _ => None,
@@ -243,7 +254,8 @@ impl QueryAdmissionOutcome {
     }
 
     /// Returns the configured maximum queue wait when supplied by the caller.
-    pub fn max_queue_wait(&self) -> Option<Duration> {
+    #[cfg(test)]
+    pub(crate) fn max_queue_wait(&self) -> Option<Duration> {
         match self {
             Self::Capacity { max_queue_wait, .. } => *max_queue_wait,
             _ => None,
@@ -251,10 +263,12 @@ impl QueryAdmissionOutcome {
     }
 }
 
+#[cfg(test)]
 fn fact_usize(error: &QueryError, key: &str) -> Option<usize> {
     error.fact_value(key)?.parse().ok()
 }
 
+#[cfg(test)]
 fn fact_u64(error: &QueryError, key: &str) -> Option<u64> {
     error.fact_value(key)?.parse().ok()
 }
@@ -368,12 +382,12 @@ pub struct QueryAdmissionRequest {
     planned_capability_evidence: Option<AttemptRequirement>,
     /// Caller-provided bound for queueing this attempt. The service combines it
     /// with its configured queue bound, choosing the earlier instant.
-    pub queue_deadline: Option<Instant>,
+    pub(crate) queue_deadline: Option<Instant>,
     /// Attempt-wide cancellation shared by queueing and transactional resource
     /// acquisition. The same token must remain attached until the admission
     /// either publishes a complete envelope or rolls every provisional
     /// resource back.
-    pub execution_cancellation: ExecutionCancellation,
+    pub(crate) execution_cancellation: ExecutionCancellation,
     runtime_observation: RuntimeObservationAttachment,
     runtime_observation_activity: Option<Result<QueryActivityLease>>,
 }
@@ -438,7 +452,7 @@ impl QueryAdmissionRequest {
 
     /// Borrows the engine-issued capability evidence, if planning attached one.
     /// This is diagnostic/read-only and cannot manufacture a new evidence.
-    pub fn planned_capability_evidence(&self) -> Option<&AttemptRequirement> {
+    pub(crate) fn planned_capability_evidence(&self) -> Option<&AttemptRequirement> {
         self.planned_capability_evidence.as_ref()
     }
 
@@ -457,8 +471,8 @@ impl QueryAdmissionRequest {
     ///
     /// Kept as crate-private API surface: the public-API boundary UI tests
     /// pin that callers outside the crate cannot attach their own requirement.
-    #[doc(hidden)]
-    pub fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self
     }
@@ -511,7 +525,8 @@ impl QueryAdmissionRequest {
     }
 
     /// Retains an adapter-owned activity token through delayed native cleanup.
-    pub fn with_runtime_observation_activity(mut self, activity: QueryActivityLease) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_runtime_observation_activity(mut self, activity: QueryActivityLease) -> Self {
         self.runtime_observation_activity = Some(Ok(activity));
         self
     }

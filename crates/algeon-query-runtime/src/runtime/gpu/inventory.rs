@@ -34,16 +34,16 @@ impl DeviceTelemetryStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceTelemetrySnapshot {
     /// Wall-clock sample time for correlating diagnostics with external telemetry.
-    pub sampled_at_unix_ms: u64,
+    pub(crate) sampled_at_unix_ms: u64,
     pub device_ordinal: usize,
     pub cuda_status: DeviceTelemetryStatus,
-    pub cuda_total_bytes: Option<u64>,
+    pub(crate) cuda_total_bytes: Option<u64>,
     pub cuda_free_bytes: Option<u64>,
     pub nvml_status: DeviceTelemetryStatus,
-    pub nvml_total_bytes: Option<u64>,
-    pub nvml_reserved_bytes: Option<u64>,
+    pub(crate) nvml_total_bytes: Option<u64>,
+    pub(crate) nvml_reserved_bytes: Option<u64>,
     pub nvml_used_bytes: Option<u64>,
-    pub nvml_free_bytes: Option<u64>,
+    pub(crate) nvml_free_bytes: Option<u64>,
     pub gpu_utilization_pct: Option<u32>,
     pub memory_utilization_pct: Option<u32>,
 }
@@ -52,7 +52,7 @@ pub struct DeviceTelemetrySnapshot {
 ///
 /// Telemetry is diagnostics only; it is not a substitute data source for the
 /// admission ledger.
-pub trait GpuTelemetry: Send + Sync {
+pub(crate) trait GpuTelemetry: Send + Sync {
     /// Samples live telemetry for one device.
     ///
     /// Sampling does not fail. An unavailable substrate, a disabled telemetry
@@ -62,8 +62,7 @@ pub trait GpuTelemetry: Send + Sync {
     fn snapshot(&self, device_ordinal: usize) -> DeviceTelemetrySnapshot;
 }
 
-#[doc(hidden)]
-pub fn device_telemetry_snapshots_for_ordinals(
+pub(crate) fn device_telemetry_snapshots_for_ordinals(
     telemetry: &dyn GpuTelemetry,
     device_ordinals: &[usize],
 ) -> Vec<DeviceTelemetrySnapshot> {
@@ -72,7 +71,7 @@ pub fn device_telemetry_snapshots_for_ordinals(
 
 /// Production live telemetry backed by CUDA plus optional NVML.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct AlgeonNvmlTelemetry;
+pub(crate) struct AlgeonNvmlTelemetry;
 
 impl GpuTelemetry for AlgeonNvmlTelemetry {
     fn snapshot(&self, device_ordinal: usize) -> DeviceTelemetrySnapshot {
@@ -123,13 +122,13 @@ pub struct DeviceFacts {
     pub physical_total_bytes: Option<u64>,
     /// CUDA-visible allocation capacity. This can exclude NVML-reserved framebuffer capacity.
     pub total_bytes: u64,
-    pub free_bytes: u64,
-    pub sm_count: Option<u32>,
-    pub utilization_pct: Option<u8>,
+    pub(crate) free_bytes: u64,
+    pub(crate) sm_count: Option<u32>,
+    pub(crate) utilization_pct: Option<u8>,
 }
 
 /// Query GPU facts behind a fakeable interface.
-pub trait GpuInventory: Send + Sync {
+pub(crate) trait GpuInventory: Send + Sync {
     /// Number of CUDA devices visible to this process.
     fn device_count(&self) -> Result<usize>;
 
@@ -142,6 +141,7 @@ pub trait GpuInventory: Send + Sync {
 
     /// Facts for ordinals `0..device_count()`, queried one ordinal at a time
     /// in order. The default returns the first error and no facts.
+    #[cfg(test)]
     fn all_facts(&self) -> Result<Vec<DeviceFacts>> {
         let device_count = self.device_count()?;
         let mut facts = Vec::with_capacity(device_count);
@@ -154,7 +154,7 @@ pub trait GpuInventory: Send + Sync {
 
 /// Production GPU inventory backed by cudf.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct AlgeonGpuInventory;
+pub(crate) struct AlgeonGpuInventory;
 
 impl GpuInventory for AlgeonGpuInventory {
     fn device_count(&self) -> Result<usize> {
@@ -211,7 +211,8 @@ fn nvml_device_identity(_device: cudf::DeviceId) -> (Option<String>, Option<Stri
 }
 
 /// Convert stable device capacity facts into a bounded query budget.
-pub fn device_budget_bytes_from_facts(facts: &DeviceFacts, headroom_bytes: u64, fallback_bytes: u64) -> u64 {
+#[cfg(test)]
+pub(crate) fn device_budget_bytes_from_facts(facts: &DeviceFacts, headroom_bytes: u64, fallback_bytes: u64) -> u64 {
     facts.total_bytes.checked_sub(headroom_bytes).filter(|value| *value > 0).unwrap_or(fallback_bytes)
 }
 

@@ -467,8 +467,8 @@ fn planning_io_phase_marks_planning_did_io_without_retained_diagnostics() {
     let phase = classify_physical_planning_error(&error);
 
     assert_eq!(phase, QueryGpuRejectionPhase::PlanningIo);
-    assert!(planning_did_io_for_physical_error(phase, None));
-    assert!(!planning_did_io_for_physical_error(QueryGpuRejectionPhase::PhysicalPlanning, None));
+    assert!(planning_did_io_for_physical_error(phase));
+    assert!(!planning_did_io_for_physical_error(QueryGpuRejectionPhase::PhysicalPlanning));
 }
 
 #[test]
@@ -514,7 +514,6 @@ fn generic_cpu_parent_over_native_fragment_is_partial() {
         observation,
         Vec::new(),
         Vec::new(),
-        false,
         None,
     );
 
@@ -672,7 +671,6 @@ mod cugraph {
             observation,
             Vec::new(),
             super::physical::cugraph_calls(plan.as_ref()),
-            false,
             None,
         );
 
@@ -696,7 +694,6 @@ mod cugraph {
             observation,
             Vec::new(),
             super::physical::cugraph_calls(plan.as_ref()),
-            false,
             None,
         );
 
@@ -720,7 +717,6 @@ mod cugraph {
             observation,
             Vec::new(),
             super::physical::cugraph_calls(plan.as_ref()),
-            false,
             None,
         );
 

@@ -82,8 +82,7 @@ pub(in crate::capability) use types::{
     RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
 };
 
-#[doc(hidden)]
-pub fn capability_shape_contract_projection_ids(plan: &QueryPlan) -> BTreeSet<NodeId> {
+pub(crate) fn capability_shape_contract_projection_ids(plan: &QueryPlan) -> BTreeSet<NodeId> {
     let mut ids = BTreeSet::new();
 
     if let Ok(shape) = mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(plan) {

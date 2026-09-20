@@ -46,3 +46,10 @@ cargo_profile = "release"
 artifact_dir = "x86-64-v4"
 image_arch = "amd64"
 deployment_requirement = "The host CPU must implement the full x86-64-v4 ISA; a pre-v4 host may SIGILL before main."
+
+# Cargo features of the shipped `algeon_server` binary. Packaging
+# (docker/stage-docker-payload.sh) and the shipped-clippy phase of
+# scripts/check_all.sh both read this list through
+# `scripts/build/cpu_packaging_policy.py shipped-features`.
+[server]
+features = ["cugraph", "cuml", "cuvs", "nvml"]

@@ -1,5 +1,7 @@
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
+    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -20,8 +22,8 @@ use datafusion::{
     },
 };
 use futures::{
-    StreamExt,
-    stream::{empty, once},
+    FutureExt, StreamExt,
+    stream::{empty, once, poll_fn},
 };
 use query_engine::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence, ExecutionCapability},
@@ -49,6 +51,7 @@ enum LifecyclePlanBehavior {
     ExecuteError,
     StreamError,
     CancelledStream,
+    PanickingStream,
 }
 
 #[derive(Debug)]
@@ -84,7 +87,9 @@ impl LifecycleExec {
                 "algeon_datafusion.test.composed_consumer_cancelled",
                 "synthetic composed consumer was cancelled",
             ),
-            LifecyclePlanBehavior::Success => unreachable!("success does not produce a typed error"),
+            LifecyclePlanBehavior::Success | LifecyclePlanBehavior::PanickingStream => {
+                unreachable!("this behavior does not produce a typed error")
+            },
         };
         DataFusionError::from(Error::new(code, operation, message))
     }
@@ -141,6 +146,12 @@ impl ExecutionPlan for LifecycleExec {
                 Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
             },
             LifecyclePlanBehavior::ExecuteError => Err(Self::typed_error(self.behavior)),
+            LifecyclePlanBehavior::PanickingStream => {
+                let stream = poll_fn(|_cx| -> Poll<Option<DataFusionResult<RecordBatch>>> {
+                    panic!("injected inner stream panic")
+                });
+                Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
+            },
             LifecyclePlanBehavior::StreamError | LifecyclePlanBehavior::CancelledStream => {
                 let error = Self::typed_error(self.behavior);
                 let stream = once(async move { Err::<RecordBatch, DataFusionError>(error) });
@@ -281,7 +292,14 @@ async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_grant_for_successive_admission() {
-    let backend = InstalledTestGpuBackend::new();
+    // One active attempt per device, so the second admission can only succeed after the first grant is released.
+    let backend = InstalledTestGpuBackend::with_config(
+        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+        AlgeonGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+            .with_max_active_attempts(1),
+        AlgeonGpuQueuePolicy::default(),
+    );
     let ticket = QueryAdmissionTicket::new(admission_source(&backend), None);
     assert!(ticket.attempt_capability_evidence().is_none());
 
@@ -500,6 +518,54 @@ fn standalone_ticket_drop_seals_local_observation() {
     let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     drop(ticket);
     assert_eq!(owner.sealed_snapshot().unwrap().footer().terminal, Some(RuntimeTerminalOutcome::Dropped));
+}
+
+#[test]
+fn ticket_dropped_during_an_unrelated_unwind_records_dropped() {
+    let owner = lifecycle_owner("ticket-unrelated-unwind");
+    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+
+    let unwind = catch_unwind(AssertUnwindSafe(move || {
+        let _last_ticket_reference = ticket;
+        panic!("unrelated panic");
+    }));
+
+    assert!(unwind.is_err());
+    assert_eq!(owner.sealed_snapshot().unwrap().footer().terminal, Some(RuntimeTerminalOutcome::Dropped));
+}
+
+#[test]
+fn stream_dropped_during_an_unrelated_unwind_records_dropped() {
+    let owner = lifecycle_owner("stream-unrelated-unwind");
+    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let exec =
+        NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))), ticket);
+    let stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
+
+    let unwind = catch_unwind(AssertUnwindSafe(move || {
+        let _stream = stream;
+        panic!("unrelated panic");
+    }));
+
+    assert!(unwind.is_err());
+    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Dropped);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn panic_in_the_inner_stream_poll_records_panicked_once() {
+    let owner = lifecycle_owner("stream-poll-panic");
+    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let exec = NativeAdmissionExec::new(
+        lifecycle_exec(LifecyclePlanBehavior::PanickingStream, Arc::new(Mutex::new(None))),
+        ticket,
+    );
+    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
+
+    let unwind = AssertUnwindSafe(stream.next()).catch_unwind().await;
+
+    assert!(unwind.is_err(), "the inner panic must keep unwinding");
+    drop(stream);
+    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
 }
 
 #[tokio::test(flavor = "current_thread")]

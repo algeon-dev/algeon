@@ -354,26 +354,12 @@ impl ExecutionContext {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn replace_admitted_capability_evidence_for_test(&mut self, evidence: Option<Arc<AttemptCapabilityEvidence>>) {
-        self.admitted_capability_evidence = evidence;
-    }
-
-    #[cfg(test)]
-    #[doc(hidden)]
-    pub fn admitted_capability_evidence_for_test(&self) -> Option<&AttemptCapabilityEvidence> {
-        self.admitted_capability_evidence.as_deref()
-    }
-
-    #[cfg(test)]
-    #[doc(hidden)]
-    pub fn replace_attempt_allocation_domain_for_test(&mut self, domain: Option<AttemptAllocationDomain>) {
+    pub(crate) fn replace_attempt_allocation_domain_for_test(&mut self, domain: Option<AttemptAllocationDomain>) {
         self.attempt_allocation_domain = domain;
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn attempt_allocation_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
+    pub(crate) fn attempt_allocation_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
         self.attempt_allocation_domain.clone()
     }
 

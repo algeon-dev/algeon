@@ -27,8 +27,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) use lineage::{
     AggregateJoinLineage, join_key_for_side, join_side_index, join_side_introduces_nulls, opposite_side,
     rewritten_join_key_after_preagg,
 };
-#[doc(hidden)]
-pub use model::AggregateJoinPushdownResult;
+pub(crate) use model::AggregateJoinPushdownResult;
 // Preserve public API surface for optimizer.rs re-exports.
 pub use model::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
@@ -42,8 +41,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) use preaggregate::{
 };
 pub(in crate::optimizer::aggregate_join_pushdown) use rewriter::AggregateJoinPushdownRewriter;
 
-#[doc(hidden)]
-pub fn optimize_aggregate_join_pushdown(
+pub(crate) fn optimize_aggregate_join_pushdown(
     plan: QueryPlan,
     options: &AggregateJoinPushdownOptions,
 ) -> AggregateJoinPushdownResult {

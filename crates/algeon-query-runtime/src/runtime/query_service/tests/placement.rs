@@ -32,11 +32,10 @@ fn evidence_device_entries_are_retained_through_admission() {
 #[test]
 #[ignore = "requires at least 2 GPUs"]
 fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
-    let service = QueryService::new_with_device_ordinals_and_deployment(
+    let service = QueryService::new_with_device_ordinals(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         vec![0, 1],
-        non_gds_deployment(),
     )
     .expect("two-device runtime-backed service");
     let device_zero_ledger = std::sync::Arc::clone(
@@ -199,11 +198,10 @@ fn dropping_admission_ticket_wakes_a_close_waiter_after_cleanup() {
 
 #[test]
 fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() {
-    let service = QueryService::new_with_device_ordinals_and_deployment(
+    let service = QueryService::new_with_device_ordinals(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         vec![0],
-        non_gds_deployment(),
     )
     .expect("one-device runtime-backed service");
     let pause = service.pause_next_direct_placement_after_snapshot_for_test();
@@ -230,11 +228,10 @@ fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() 
 #[test]
 #[ignore = "requires at least 2 GPUs"]
 fn unknown_isolation_fleet_closure_excludes_a_mid_closure_admission() {
-    let service = QueryService::new_with_device_ordinals_and_deployment(
+    let service = QueryService::new_with_device_ordinals(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         vec![0, 1],
-        non_gds_deployment(),
     )
     .expect("two-device runtime-backed service");
     let closure_pause = service.pause_unknown_isolation_closure_after_first_ledger_for_test();

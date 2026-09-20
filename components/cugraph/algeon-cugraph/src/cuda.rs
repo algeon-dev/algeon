@@ -5,13 +5,14 @@
 
 use std::{fmt, ptr};
 
+#[cfg(any(test, feature = "test-hooks"))]
+use cudf::testing::device_safety;
 use cudf::{
     DeviceId,
     runtime::{
         DeviceEntryGuard, DeviceFaultKind, DeviceFaultNativeStatus, drop_device_resource as cudf_drop_device_resource,
         quarantine_device_resource, report_device_fault,
     },
-    testing::device_safety,
 };
 
 use crate::error::{Error, ErrorKind, Result};
@@ -82,15 +83,14 @@ fn map_cudf_device_error(error: cudf::Error, operation: &'static str) -> Error {
 }
 
 fn validated_device(device: i32, operation: &'static str) -> Result<DeviceId> {
-    usize::try_from(device)
-        .ok()
-        .and_then(|ordinal| DeviceId::new(ordinal).ok())
-        .or_else(|| device_safety::injected_device_id(device))
-        .ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, operation)
-                .with_message("invalid CUDA owner-device ordinal")
-                .with_context("device", device.to_string())
-        })
+    let physical = usize::try_from(device).ok().and_then(|ordinal| DeviceId::new(ordinal).ok());
+    #[cfg(any(test, feature = "test-hooks"))]
+    let physical = physical.or_else(|| device_safety::injected_device_id(device));
+    physical.ok_or_else(|| {
+        Error::new(ErrorKind::InvalidInput, operation)
+            .with_message("invalid CUDA owner-device ordinal")
+            .with_context("device", device.to_string())
+    })
 }
 
 /// cuGraph-local wrapper around cudf's host-thread device-entry proof.

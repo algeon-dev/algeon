@@ -15,7 +15,6 @@ use std::{
 use cudf::{
     DataFrame, DeviceId, ErrorCode, Runtime, TypeId,
     core::Table,
-    frame::dataframe::JsonReadOptions,
     interop::cuda_stream_handle,
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
@@ -47,7 +46,6 @@ use rapids_interop::{
     PreparedExportProfile, PreparedTableExport, ProducerReadiness, ReadStartAuthority, SemanticColumn,
     TypeId as InteropTypeId,
 };
-use tempfile::TempDir;
 
 use crate::common::{
     self, column_from_slice, dataframe_from_columns, interop_error_context_value, lock_event_observation,
@@ -185,28 +183,29 @@ fn assert_host_binding_bytes(bindings: &[BufferBinding<'_>], id: BufferId, expec
     assert_eq!(binding_bytes(binding), expected);
 }
 
-fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join(filename);
-    std::fs::write(&path, rows).unwrap();
-    let runtime = Runtime::builder().build().unwrap();
-    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
-        .unwrap()
-}
-
-fn read_list_dataframe(rows: &str) -> DataFrame {
-    read_json_dataframe("lists.jsonl", rows)
-}
-
 fn recursive_supported_frame() -> DataFrame {
-    let frame = read_json_dataframe(
-        "recursive_supported.jsonl",
-        "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"meta\":{\"x\":1,\"name\":\"one\"},\"coords\":[[1,2],[3]]},\"id\":10}
-\
-         {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"meta\":{\"x\":2,\"name\":\"two\"},\"coords\":[[],[4,5]]},\"id\":20}
-\
-         {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"meta\":{\"x\":3,\"name\":\"three\"},\"coords\":[[6]]},\"id\":30}
-",
+    let nested = vec![vec![vec![1, 2], vec![3]], vec![vec![], vec![4, 5]], vec![vec![6]]];
+    let runtime = Runtime::builder().build().unwrap();
+    let frame = common::nested_dataframe(
+        &runtime,
+        vec![
+            ("category", common::utf8_array(&["beta", "alpha", "beta"])),
+            ("nested", common::nested_int64_list_array(&nested)),
+            (
+                "point",
+                common::struct_array(vec![
+                    (
+                        "meta",
+                        common::struct_array(vec![
+                            ("x", common::int64_array(&[1, 2, 3])),
+                            ("name", common::utf8_array(&["one", "two", "three"])),
+                        ]),
+                    ),
+                    ("coords", common::nested_int64_list_array(&nested)),
+                ]),
+            ),
+            ("id", common::int64_array(&[10, 20, 30])),
+        ],
     );
 
     let category = frame.series("category").unwrap();
@@ -1212,12 +1211,10 @@ mod host_export_contracts {
     }
 
     fn host_list_slice_export_rebases_offsets_and_child_range() {
-        let frame = read_list_dataframe(
-            "{\"lists\":[1,2]}
-{\"lists\":[3]}
-{\"lists\":[]}
-{\"lists\":[4,5,6]}
-",
+        let runtime = Runtime::builder().build().unwrap();
+        let frame = common::nested_dataframe(
+            &runtime,
+            vec![("lists", common::int64_list_array(&[vec![1, 2], vec![3], vec![], vec![4, 5, 6]]))],
         );
         let series = frame.series("lists").unwrap();
         let sliced = series.as_column().testing_slice_view(1, 2).unwrap();

@@ -17,20 +17,10 @@ use query_engine::{
 
 mod local_parquet;
 mod reader_pushdown;
-mod table_format;
 
 use local_parquet::lower_local_parquet_source_input;
-use reader_pushdown::{SourceReaderPushdownPredicate, supported_reader_pushdown_predicate};
 pub(super) use reader_pushdown::{
     reader_predicate_proves_local_parquet_at_most_one_row, source_reader_pushdown_predicate,
-};
-use table_format::lower_table_format_source_input;
-pub(super) use table_format::{
-    available_table_format_scan_plan, lower_empty_table_format_count_star_source,
-    lower_table_format_count_star_fallback_source, lower_table_format_count_star_mixed_row_count_source,
-    lower_table_format_zero_column_count_source, table_format_count_star_mixed_row_count_metadata_can_split,
-    table_format_count_star_probe_can_lower, table_format_scan_rejection,
-    table_format_zero_column_count_metadata_is_available,
 };
 
 use super::{
@@ -40,10 +30,7 @@ use super::{
 };
 use crate::{
     capability::CapabilityReason,
-    native::{
-        LoweringRejection,
-        normalize::{NormalizedNativeScan, NormalizedNativeSource},
-    },
+    native::{LoweringRejection, normalize::NormalizedNativeSource},
 };
 
 pub(super) fn lower_source_input(
@@ -52,22 +39,7 @@ pub(super) fn lower_source_input(
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
 ) -> Result<LoweredNativeInput, LoweringRejection> {
-    match source.scan {
-        NormalizedNativeScan::LocalParquet(source_exec) => lower_local_parquet_source_input(
-            source_exec,
-            source.filter,
-            builder,
-            required_output_fields,
-            pushed_scan_limit,
-        ),
-        NormalizedNativeScan::TableFormat(scan_exec) => lower_table_format_source_input(
-            scan_exec,
-            source.filter,
-            builder,
-            required_output_fields,
-            pushed_scan_limit,
-        ),
-    }
+    lower_local_parquet_source_input(source.scan, source.filter, builder, required_output_fields, pushed_scan_limit)
 }
 
 pub(super) fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {

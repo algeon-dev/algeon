@@ -7,11 +7,6 @@ pub(in crate::exec) fn record_bounded_parquet_source_metrics(
     chunk_plan: &SourceChunkPlan,
     metrics: &ExecutionMetrics,
 ) {
-    if source.has_position_delete_visible_scan_limit() {
-        metrics.record_source_read(SourceReadFact::MetadataLoadTime(chunk_plan.metadata_load_time));
-        return;
-    }
-
     let mut planned_row_group_bytes_by_file = vec![0u64; source.files.len()];
     let mut extra_planned_row_group_bytes = 0u64;
     for chunk in &chunk_plan.chunks {

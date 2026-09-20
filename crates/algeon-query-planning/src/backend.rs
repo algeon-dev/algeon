@@ -97,7 +97,7 @@ impl<'a> AnalysisContext<'a> {
     }
 
     /// The backend answering this pass's capability questions.
-    pub const fn backend(&self) -> &'a dyn BackendCapabilities {
+    pub(crate) const fn backend(&self) -> &'a dyn BackendCapabilities {
         self.backend
     }
 }

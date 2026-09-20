@@ -20,7 +20,11 @@ fn invalid(message: &'static str, reason: &'static str, node_id: NodeId) -> Quer
         .with_fact("node_id", node_id)
 }
 
-pub fn validate_ml_algorithm_node_contract(ml: &MlAlgorithmNode, plan: &QueryPlan, node_id: NodeId) -> Result<()> {
+pub(crate) fn validate_ml_algorithm_node_contract(
+    ml: &MlAlgorithmNode,
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<()> {
     let columns = plan
         .nodes()
         .iter()
@@ -30,7 +34,7 @@ pub fn validate_ml_algorithm_node_contract(ml: &MlAlgorithmNode, plan: &QueryPla
     validate_ml_algorithm_node(ml, plan, &columns, node_id)
 }
 
-pub fn validate_ml_algorithm_node(
+pub(crate) fn validate_ml_algorithm_node(
     ml: &MlAlgorithmNode,
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],

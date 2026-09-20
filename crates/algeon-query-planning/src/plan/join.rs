@@ -85,10 +85,6 @@ pub struct JoinSpec {
     /// retain the conservative Cartesian upper bound.
     #[doc(hidden)]
     pub at_most_one_match_side: Option<JoinSide>,
-    /// Output columns whose operator semantics prove that lookup gathers do not
-    /// exceed the selected input column's total string payload bound.
-    #[doc(hidden)]
-    pub total_payload_bound_preserving_outputs: Vec<String>,
     /// Frontend estimate of this join's whole output.
     ///
     /// Advisory only: optimizer passes may consult it where the conservative
@@ -119,7 +115,6 @@ impl JoinSpec {
             build_artifact_id: None,
             mark_column_name: None,
             at_most_one_match_side: None,
-            total_payload_bound_preserving_outputs: Vec::new(),
             advisory_output_statistics: None,
         }
     }
@@ -188,24 +183,8 @@ impl JoinSpec {
         self
     }
 
-    /// Marks one output whose total string payload remains bounded by its
-    /// selected input column despite lookup-side value repetition.
-    pub fn with_preserved_total_payload_bound_for_output(mut self, output_name: impl Into<String>) -> Self {
-        let output_name = output_name.into();
-        if !self.total_payload_bound_preserving_outputs.contains(&output_name) {
-            self.total_payload_bound_preserving_outputs.push(output_name);
-        }
-        self
-    }
-
-    #[doc(hidden)]
-    pub fn has_at_most_one_match_per_bounded_row(&self, bounded_side: JoinSide) -> bool {
+    pub(crate) fn has_at_most_one_match_per_bounded_row(&self, bounded_side: JoinSide) -> bool {
         self.at_most_one_match_side == Some(bounded_side)
-    }
-
-    #[doc(hidden)]
-    pub fn preserves_total_payload_bound_for_output(&self, output_name: &str) -> bool {
-        self.total_payload_bound_preserving_outputs.iter().any(|candidate| candidate == output_name)
     }
 }
 
@@ -218,16 +197,16 @@ impl JoinSpec {
 pub struct HashJoinBuildArtifactId(String);
 
 impl HashJoinBuildArtifactId {
-    pub fn new(id: impl Into<String>) -> Self {
+    pub(crate) fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
     /// Returns true when this id would be invalid for reusable build caching.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }

@@ -440,7 +440,7 @@ impl ContractGraph<'_> {
         else {
             return false;
         };
-        matches!(source.as_ref(), SourceNode::LocalParquet(source) if !source.has_position_delete_visible_scan_limit())
+        matches!(source.as_ref(), SourceNode::LocalParquet(_))
     }
 
     fn join_node(&self, task: &PipelineTask) -> Option<&JoinNode> {

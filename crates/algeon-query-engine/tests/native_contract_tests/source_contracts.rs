@@ -97,86 +97,6 @@ fn local_parquet_source_reader_predicate_sets_reader_pushdown_diagnostics() {
 }
 
 #[test]
-fn local_parquet_source_rejects_reader_predicate_with_position_deletes() {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::UInt32, false),
-        Field::new("payload", DataType::Int64, false),
-    ]));
-    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-        "delete-0001",
-        ResolvedParquetSource::local_kvikio("/tmp/delete-0001.parquet"),
-    )
-    .unwrap();
-    let predicate = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new("/tmp/reader-predicate-position-delete.parquet")
-                .with_stable_id("reader-predicate-position-delete")
-                .with_file_size_bytes(1024)
-                .with_position_delete_files(vec![delete_file]),
-        ],
-        schema,
-        vec!["key".to_string(), "payload".to_string()],
-    )
-    .with_column_roles(vec!["key".to_string()], vec!["payload".to_string()])
-    .with_reader_predicate(predicate);
-
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("reason"), Some("row_deletes_reject_reader_predicate"));
-}
-
-#[test]
-fn local_parquet_source_accepts_contiguous_row_groups_with_position_deletes() {
-    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
-    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-        "delete-0001",
-        ResolvedParquetSource::local_kvikio("/tmp/delete-0001.parquet"),
-    )
-    .unwrap();
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new("/tmp/position-delete-row-groups.parquet")
-                .with_stable_id("position-delete-row-groups")
-                .with_row_groups(vec![1, 2])
-                .with_row_group_rows(vec![10, 20, 30])
-                .with_position_delete_files(vec![delete_file]),
-        ],
-        schema,
-        vec!["key".to_string()],
-    );
-
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
-}
-
-#[test]
-fn local_parquet_source_rejects_noncontiguous_row_groups_with_position_deletes() {
-    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
-    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-        "delete-0001",
-        ResolvedParquetSource::local_kvikio("/tmp/delete-0001.parquet"),
-    )
-    .unwrap();
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new("/tmp/position-delete-row-groups.parquet")
-                .with_stable_id("position-delete-row-groups")
-                .with_row_groups(vec![0, 2])
-                .with_row_group_rows(vec![10, 20, 30])
-                .with_position_delete_files(vec![delete_file]),
-        ],
-        schema,
-        vec!["key".to_string()],
-    );
-
-    let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("reason"), Some("position_deletes_require_contiguous_row_groups"));
-}
-
-#[test]
 fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -596,28 +516,6 @@ fn local_parquet_source_represents_missing_nullable_columns_as_typed_nulls() {
 }
 
 #[test]
-fn local_parquet_source_tracks_field_id_binding_diagnostics_and_output_override_contract() {
-    let source_schema = Arc::new(Schema::new(vec![
-        Field::new("old_status", DataType::Int64, false),
-        Field::new("status", DataType::Int64, false),
-    ]));
-    let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
-    let file = LocalParquetFile::new("/tmp/source-contract.parquet").with_field_id_read_bindings(vec![
-        ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, false, DataType::Int64),
-    ]);
-    let source = LocalParquetSource::from_files(vec![file], source_schema, vec!["old_status".to_string()])
-        .with_column_roles(vec!["status".to_string()], Vec::new())
-        .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
-        .with_output_schema_override(output_schema);
-
-    validate_local_parquet_source(&source, rapids_analysis_context()).unwrap();
-
-    assert_eq!(source.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::FieldIdBindings);
-    assert_eq!(source.diagnostics.schema_mapping_disposition.as_str(), "field_id_bindings");
-    assert_eq!(source.source_column_ref("status"), Some(SourceColumnRef::File(0)));
-}
-
-#[test]
 fn local_parquet_source_rejects_nullable_physical_field_for_required_output_override() {
     let source_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
@@ -746,13 +644,14 @@ fn local_parquet_output_override_allows_timestamp_timezone_normalization_for_log
 fn local_parquet_source_rejects_output_override_missing_execution_schema_field() {
     let source_schema = Arc::new(Schema::new(vec![Field::new("old_status", DataType::Int64, true)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
-    let file = LocalParquetFile::new("/tmp/source-contract.parquet").with_field_id_read_bindings(vec![
-        ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, DataType::Int64),
-    ]);
-    let source = LocalParquetSource::from_files(vec![file], source_schema, vec!["old_status".to_string()])
-        .with_column_roles(vec!["status".to_string()], Vec::new())
-        .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
-        .with_output_schema_override(output_schema);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet")],
+        source_schema,
+        vec!["old_status".to_string()],
+    )
+    .with_column_roles(vec!["status".to_string()], Vec::new())
+    .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
+    .with_output_schema_override(output_schema);
 
     let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
 

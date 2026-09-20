@@ -12,7 +12,7 @@ This documentation covers Algeon's first integration, the
 **DataFusion adapter**. DataFusion keeps
 SQL parsing, logical planning, physical planning, catalogs, DataFrame APIs, and
 CPU execution. Algeon adds opt-in GPU execution on cuDF, SQL-visible cuGraph and
-cuVS algorithms, Iceberg/lakehouse source handling, and structured diagnostics
+cuVS algorithms, local and S3 Parquet source handling, and structured diagnostics
 around that DataFusion session. Throughout these pages, **native** means
 Algeon's GPU execution path, as opposed to DataFusion's CPU operators.
 
@@ -51,10 +51,7 @@ Arrow rows through that same interface. In between:
    recognizes whole relational plans whose operators, types, and semantics
    have an exact native mapping. Plans that are not selected stay on
    DataFusion and execute on CPU as if Algeon were absent; the reason is
-   recorded in the [`PlanningReport`](./native-lowering.mdx). Every unified
-   Iceberg scan keeps its executable CPU delegate alongside its native scan
-   facts (the format-neutral description of the scan, such as files, schema,
-   and pruning facts, that lowering hands to the engine).
+   recorded in the [`PlanningReport`](./native-lowering.mdx).
 3. **A selected candidate is lowered to the DataFusion-free IR.** The adapter
    translates the DataFusion `ExecutionPlan` tree into the planning crate's
    closed `QueryPlan`, then planning checks kernels, types, semantics, and
@@ -156,11 +153,10 @@ The root workspace contains these crates. Default members are the adapter,
 
 | Crate | Path | Owns |
 | --- | --- | --- |
-| `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph, cuVS, and cuML UDTFs, the GPU UDTF catalog, Iceberg table providers, reports, and errors. The only crate that depends on DataFusion. |
+| `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph, cuVS, and cuML UDTFs, the GPU UDTF catalog, reports, and errors. The only crate that depends on DataFusion. |
 | `query-planning` | `crates/algeon-query-planning` | The native IR (`QueryPlan`), optimizer, capability analysis, proof diagnostics, admission contracts, and compiled pipeline. No DataFusion or execution dependency. |
 | `query-runtime` | `crates/algeon-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, GPU caches, observation, and metrics. |
 | `query-engine` | `crates/algeon-query-engine` | Native execution composition and the public facade that re-exports planning and runtime. |
-| `iceberg-catalog` | `crates/iceberg-catalog` | DataFusion-free Iceberg catalog, snapshot, and scan-candidate contracts. |
 | `workloads` | `crates/workloads` | Benchmark catalogs, fixtures, dataset discovery, and DataFusion registration. |
 | `server` | `crates/algeon-server` | Standalone binary/package shell for the Arrow Flight SQL service; implementation and library API belong to `algeon-datafusion::server`. |
 | `bench` | `crates/bench` | Benchmark, report, triage, and stress binaries. Non-default member. |
@@ -191,7 +187,7 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 | cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `crates/algeon-datafusion/src/cugraph_sql/` |
 | cuVS SQL | You want exact kNN, KMeans, and PCA over vector columns as relations. | `crates/algeon-datafusion/src/cuvs_sql/` |
 | GPU UDTF catalog | You want to list, describe, and validate the installed `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs before executing them. | `crates/algeon-datafusion/src/gpu_functions/` |
-| Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native scan facts while workspace views stay mutable. | `crates/algeon-datafusion/src/table_format/` |
+| Parquet sources | You need local or `s3://` Parquet tables to lower into native scan facts. | `crates/algeon-datafusion/src/native/source.rs`, `crates/algeon-datafusion/src/native/lowering/source/` |
 | Reports and errors | You need stable evidence for candidate selection, final plans, runtime, UDTF validation, source access, and failures. | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/native_report/`, `crates/algeon-datafusion/src/error.rs` |
 
 The preferred embedded entry point is a process-scoped `AlgeonGpuBackend`. It
@@ -237,7 +233,6 @@ plan after native selection. The full boundary is described in
 | --- | --- |
 | `cugraph` | cuGraph UDTFs and graph execution. |
 | `cuvs` | cuVS UDTFs (`cuvs_brute_force_knn`, `cuvs_kmeans`, `cuvs_pca`) and their GPU execution. |
-| `iceberg` | Iceberg catalogs and native scan integration. |
 | `nvml` | Optional NVML device diagnostics. |
 
 `algeon-datafusion` exposes these DataFusion-specific features; the private
@@ -355,23 +350,21 @@ and UDTF reference.
 
 ## Lakehouse and workspace boundary
 
-Iceberg catalogs are source catalogs. They are not the mutable workspace. Algeon
-keeps these concerns separate:
+Source data and the interactive workspace stay separate:
 
-- Iceberg and Glue/REST metadata resolve to adapter-owned table providers and
-  format-neutral scan facts.
+- Local and `s3://` Parquet scans lower to format-neutral scan facts in the
+  adapter.
 - Interactive DDL such as `CREATE VIEW` belongs in a mutable DataFusion
   workspace, including graph edge views built over source tables.
 - The Flight SQL server can expose a workspace overlay so users get short names
-  without teaching a read-only Iceberg catalog to accept views.
+  without teaching a read-only source catalog to accept views.
 
 Set `ALGEON_ICEBERG_FOOTER_PRUNING=true` to let native object-store scans use
 Parquet footers for safe static and dimension-derived row-group pruning before
-execution.
+execution. The variable name predates the removal of the Iceberg integration.
 
-Iceberg/Glue/S3 is designed behind `--features iceberg`; the feature is held
-out of the current release until iceberg-rust 0.12 is available and validated. Tests must not
-require a real AWS account.
+Iceberg sources are not supported; see
+[Iceberg support](../integration/overview.mdx#iceberg-support).
 
 ## Where to change what
 
@@ -389,7 +382,7 @@ contract each one must keep stable.
 | Attempt lifecycle, device admission, grants, cache, observation, or metrics | `crates/algeon-query-runtime/src/{attempt,runtime,observability,metrics}/` | One ledger, immutable grants, and runtime observation projections |
 | Native execution semantics or planning/runtime composition | `crates/algeon-query-engine/src/exec/` | Engine execution contracts and facade compatibility |
 | cuGraph or cuVS SQL behavior | `crates/algeon-datafusion/src/cugraph_sql/`, `crates/algeon-datafusion/src/cuvs_sql/`, `crates/algeon-datafusion/src/gpu_functions/`, `crates/algeon-query-engine/src/exec/graph_algorithm/` | Metadata column order and validation output |
-| Iceberg/source behavior | `crates/algeon-datafusion/src/table_format/`, `crates/iceberg-catalog-catalog/`, server workspace configuration | Source diagnostics and credential-safe error facts |
+| Parquet source or workspace-overlay behavior | `crates/algeon-datafusion/src/native/source.rs`, `crates/algeon-datafusion/src/native/lowering/source/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | GPU memory, streams, source readers, or graph/vector interop | `components/cudf`, `components/cugraph`, `components/cuvs` | Component crate APIs and FFI error mapping |
 | Public diagnostics | `crates/algeon-datafusion/src/native_report/schema.rs`, `crates/algeon-datafusion/src/native_exec/metrics/`, `crates/algeon-datafusion/src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 

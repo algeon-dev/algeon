@@ -348,13 +348,11 @@ fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<Par
     })
 }
 
-#[doc(hidden)]
-pub fn sidecar_content_identity(file: &LocalParquetFile) -> &str {
+pub(crate) fn sidecar_content_identity(file: &LocalParquetFile) -> &str {
     file.resolved_source.content_identity.as_deref().unwrap_or(file.stable_id.as_str())
 }
 
-#[doc(hidden)]
-pub fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Option<&std::path::Path> {
+pub(crate) fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Option<&std::path::Path> {
     if let Some(path) = file.location.as_local_path() {
         return Some(path);
     }
@@ -521,8 +519,7 @@ fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -
 
 // Cache identity for footer metadata, including source resolution contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub struct SourceMetadataCacheKey {
+pub(crate) struct SourceMetadataCacheKey {
     location: ParquetSourceLocation,
     path: PathBuf,
     stable_id: String,
@@ -533,8 +530,7 @@ pub struct SourceMetadataCacheKey {
 }
 
 impl SourceMetadataCacheKey {
-    #[doc(hidden)]
-    pub fn from_file(file: &LocalParquetFile) -> Self {
+    pub(crate) fn from_file(file: &LocalParquetFile) -> Self {
         Self {
             location: file.location.clone(),
             path: file.path.clone(),
@@ -627,8 +623,7 @@ pub(super) fn read_parquet_metadata(
 /// Reuses [`SourceMetadataCache::footer_metadata`] so this shares the same
 /// cache entries, requirement handling, and load-time accounting as ordinary
 /// chunk-planning footer loads instead of loading footers a second time.
-#[doc(hidden)]
-pub fn source_footer_metadata(
+pub(crate) fn source_footer_metadata(
     source: &LocalParquetSource,
     cache: &mut SourceMetadataCache,
     context: Option<&ExecutionContext>,
@@ -654,12 +649,10 @@ pub(super) fn source_file_needs_footer_metadata(source: &LocalParquetSource, fil
 pub(super) fn source_file_requires_footer_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
     source.scan_limit.is_some()
         || source.is_zero_column_count_source()
-        || file.has_position_delete_files()
         || object_store_decimal_reader_predicate_requires_footer_contract(source, file)
 }
 
-#[doc(hidden)]
-pub fn footer_verified_object_store_reader_decimal_types(
+pub(crate) fn footer_verified_object_store_reader_decimal_types(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     file: &LocalParquetFile,
@@ -667,8 +660,7 @@ pub fn footer_verified_object_store_reader_decimal_types(
     footer_verified_object_store_reader_decimal_types_with_supplied(context, source, file, &file.reader_decimal_types)
 }
 
-#[doc(hidden)]
-pub fn footer_verified_object_store_reader_decimal_types_with_supplied(
+pub(crate) fn footer_verified_object_store_reader_decimal_types_with_supplied(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     file: &LocalParquetFile,
@@ -684,8 +676,7 @@ pub fn footer_verified_object_store_reader_decimal_types_with_supplied(
     )
 }
 
-#[doc(hidden)]
-pub fn footer_verified_object_store_reader_decimal_types_with_supplied_cache(
+pub(crate) fn footer_verified_object_store_reader_decimal_types_with_supplied_cache(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     file: &LocalParquetFile,

@@ -32,7 +32,7 @@ pub fn alias_wrapped_column(expr: &Expr) -> Option<&ColumnRef> {
 }
 
 /// Returns whether a string representation cast preserves the source value and row identity.
-pub fn representation_cast_preserves_identity(source_type: &DataType, target_type: &DataType) -> bool {
+pub(crate) fn representation_cast_preserves_identity(source_type: &DataType, target_type: &DataType) -> bool {
     source_type == target_type
         || matches!(
             (source_type, target_type),
@@ -296,10 +296,6 @@ impl Expr {
     /// `display_name` is the projected or user-visible name.
     pub fn input_column(input: usize, name: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self::Column(ColumnRef::input(input, name, display_name))
-    }
-
-    pub fn node_column(node_id: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self::Column(ColumnRef::node(node_id, name, display_name))
     }
 
     pub fn literal(value: LiteralValue) -> Self {
@@ -782,11 +778,6 @@ impl GroupingSetsSpec {
     /// Creates grouping-set metadata from masks and a grouping-id alias.
     pub fn new(groups: Vec<Vec<bool>>, grouping_id_alias: impl Into<String>) -> Self {
         Self { groups, grouping_id_alias: grouping_id_alias.into() }
-    }
-
-    /// Returns true when at least one grouping-set mask is present.
-    pub fn is_grouping_sets(&self) -> bool {
-        !self.groups.is_empty()
     }
 }
 

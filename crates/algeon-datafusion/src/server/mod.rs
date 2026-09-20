@@ -5,8 +5,6 @@
 //! API; configuration, session construction, Flight SQL behavior, and error
 //! projection are owned here.
 
-#[cfg(feature = "iceberg")]
-use std::borrow::Cow;
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -17,8 +15,6 @@ use tokio::{net::TcpListener, signal::ctrl_c, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
-#[cfg(feature = "iceberg")]
-use crate::server::table_format::scan::credential_free_endpoint_identity;
 use crate::server::{
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy,
@@ -27,8 +23,6 @@ use crate::server::{
     cugraph_sql::CUGRAPH_OPERATION_REGISTRY,
     planner::DataFusionCpuExecutionPolicy,
 };
-#[cfg(feature = "iceberg")]
-pub(crate) use crate::table_format;
 pub(crate) use crate::{
     attempt, backend, capability, cugraph_sql, cuml_sql, error as adapter_error, gpu_coverage, native_exec,
     native_report, planner, report, session as adapter_session,
@@ -49,19 +43,13 @@ mod workspace;
 
 pub use auth::{AuthConfig, AuthMode, PasswordHashError, StaticUserConfig, hash_password, verify_password};
 pub use config::{
-    ALGEON_ICEBERG_CATALOG_KIND_ENV, ALGEON_ICEBERG_CATALOG_NAME_ENV, ALGEON_ICEBERG_GLUE_CATALOG_ID_ENV,
-    ALGEON_ICEBERG_GLUE_CATALOG_NAME_ENV, ALGEON_ICEBERG_GLUE_URI_ENV, ALGEON_ICEBERG_NAMESPACE_ENV,
-    ALGEON_ICEBERG_REST_CATALOG_HANDLE_ENV, ALGEON_ICEBERG_REST_PREFIX_ENV, ALGEON_ICEBERG_REST_TOKEN_ENV,
-    ALGEON_ICEBERG_REST_URI_ENV, ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, ALGEON_ICEBERG_S3_ENDPOINT_ENV,
-    ALGEON_ICEBERG_S3_PATH_STYLE_ENV, ALGEON_ICEBERG_S3_REGION_ENV, ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
-    ALGEON_ICEBERG_TABLES_ENV, ALGEON_ICEBERG_WAREHOUSE_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
-    ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV,
-    ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV,
-    ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, ALGEON_SERVER_GPU_DEVICES_ENV, ALGEON_SERVER_LOG_ENV,
-    ALGEON_SERVER_NATIVE_CONFIG_OPTIONS, ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-    ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+    ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
+    ALGEON_SERVER_BIND_ENV, ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+    ALGEON_SERVER_CUGRAPH_ENABLED_ENV, ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+    ALGEON_SERVER_GPU_DEVICES_ENV, ALGEON_SERVER_LOG_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS,
+    ALGEON_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+    ALGEON_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
     ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
     ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
     ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
@@ -70,10 +58,6 @@ pub use config::{
     ALGEON_SERVER_WORKSPACE_BACKING_CATALOG_ENV, ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
     ALGEON_SERVER_WORKSPACE_CATALOG_ENV, ALGEON_SERVER_WORKSPACE_SCHEMA_ENV, AlgeonServerNativeConfigOption,
     CugraphServerConfig, ServerConfig, ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
-};
-#[cfg(feature = "iceberg")]
-pub use config::{
-    GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig, IcebergTableRegistrationConfig,
 };
 pub use error::{
     ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
@@ -826,75 +810,6 @@ fn format_usize_list(values: &[usize]) -> String {
     values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-#[cfg(feature = "iceberg")]
-fn log_server_config_snapshot(config: &ServerConfig) {
-    let native_execution = config.native_optimizer_config.native_execution_config();
-    let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
-    let source_scheduler = native_execution.source_scheduler_policy();
-    match &config.iceberg {
-        Some(iceberg) => {
-            let snapshot = iceberg_backend_snapshot(&iceberg.backend, iceberg.source_access_policy());
-            tracing::info!(
-                bind_addr = %config.bind_addr,
-                statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
-                observability_per_query_max_records = config.observability.per_query_max_records,
-                observability_per_query_max_bytes = config.observability.per_query_max_bytes,
-                observability_active_logical_capture_max_bytes = config.observability.active_logical_capture_max_bytes,
-                observability_global_sealed_max_count = config.observability.global_sealed_max_count,
-                observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
-                observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
-                observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-                native_memory_control_policy = %native_execution.memory_control_policy(),
-                native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
-                native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
-                native_max_retry_attempts = %native_memory.max_retry_attempts,
-                native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
-                native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
-                native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
-                cugraph_enabled = cugraph_enabled(config),
-                cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(config),
-                iceberg_enabled = true,
-                iceberg_catalog_name = %iceberg.catalog_name,
-                iceberg_catalog_type = %snapshot.catalog_type,
-                iceberg_namespace = %iceberg.namespace,
-                iceberg_warehouse = %snapshot.warehouse,
-                iceberg_glue_catalog_handle = %snapshot.glue_catalog_handle,
-                iceberg_glue_region = %snapshot.glue_region,
-                iceberg_glue_catalog_id = %snapshot.glue_catalog_id,
-                iceberg_aws_profile = %snapshot.aws_profile,
-                iceberg_rest_uri = %snapshot.rest_uri,
-                iceberg_rest_s3_endpoint = %snapshot.rest_s3_endpoint,
-                iceberg_scan_planning_timeout_secs = iceberg.scan_planning_timeout.as_secs(),
-                iceberg_static_table_count = iceberg.tables.len(),
-                "server config snapshot"
-            )
-        },
-        None => tracing::info!(
-            bind_addr = %config.bind_addr,
-            statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
-            observability_per_query_max_records = config.observability.per_query_max_records,
-            observability_per_query_max_bytes = config.observability.per_query_max_bytes,
-            observability_active_logical_capture_max_bytes = config.observability.active_logical_capture_max_bytes,
-            observability_global_sealed_max_count = config.observability.global_sealed_max_count,
-            observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
-            observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
-            observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
-            native_memory_control_policy = %native_execution.memory_control_policy(),
-            native_max_source_chunk_bytes = %native_memory.max_source_chunk_bytes,
-            native_max_row_groups_per_chunk = %native_memory.max_row_groups_per_chunk,
-            native_max_retry_attempts = %native_memory.max_retry_attempts,
-            native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
-            native_source_chunk_planning_mode = %native_execution.source_chunk_planning_mode(),
-            native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
-            cugraph_enabled = cugraph_enabled(config),
-            cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(config),
-            iceberg_enabled = false,
-            "server config snapshot"
-        ),
-    }
-}
-
-#[cfg(not(feature = "iceberg"))]
 fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
@@ -997,60 +912,6 @@ impl From<MemoryControlPolicy> for NativeMemorySnapshot {
                 max_retry_attempts: max_retry_attempts.to_string(),
             },
         }
-    }
-}
-
-#[cfg(feature = "iceberg")]
-fn option_display(value: Option<&str>) -> &str {
-    value.unwrap_or("none")
-}
-
-/// Borrowed, secret-redacted view of an Iceberg backend config for the startup
-/// snapshot log. Backend-specific fields are `"none"` for the other backend.
-/// Secret values (`token`, `s3.secret-access-key`) are never included.
-#[cfg(feature = "iceberg")]
-struct IcebergBackendSnapshot<'a> {
-    catalog_type: &'a str,
-    warehouse: &'a str,
-    glue_catalog_handle: &'a str,
-    glue_region: &'a str,
-    glue_catalog_id: &'a str,
-    aws_profile: &'a str,
-    rest_uri: Cow<'a, str>,
-    rest_s3_endpoint: Cow<'a, str>,
-}
-
-#[cfg(feature = "iceberg")]
-fn iceberg_backend_snapshot<'a>(
-    backend: &'a IcebergCatalogBackendConfig,
-    source_access_policy: &'a crate::server::table_format::iceberg::SourceAccessPolicy,
-) -> IcebergBackendSnapshot<'a> {
-    match backend {
-        IcebergCatalogBackendConfig::Glue(glue) => IcebergBackendSnapshot {
-            catalog_type: "glue",
-            warehouse: &glue.warehouse,
-            glue_catalog_handle: &glue.catalog_handle,
-            glue_region: &glue.region,
-            glue_catalog_id: option_display(glue.catalog_id.as_deref()),
-            aws_profile: option_display(glue.profile.as_deref()),
-            rest_uri: Cow::Borrowed("none"),
-            rest_s3_endpoint: Cow::Borrowed("none"),
-        },
-        IcebergCatalogBackendConfig::Rest(rest) => IcebergBackendSnapshot {
-            catalog_type: "rest",
-            warehouse: &rest.warehouse,
-            glue_catalog_handle: "none",
-            glue_region: "none",
-            glue_catalog_id: "none",
-            aws_profile: "none",
-            rest_uri: Cow::Owned(credential_free_endpoint_identity(rest.uri())),
-            rest_s3_endpoint: source_access_policy
-                .s3_access()
-                .endpoint
-                .map(credential_free_endpoint_identity)
-                .map(Cow::Owned)
-                .unwrap_or(Cow::Borrowed("none")),
-        },
     }
 }
 

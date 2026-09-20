@@ -6,7 +6,7 @@ use super::{QueryId, QueryMetrics};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AggregateStrategyDecisionMetrics {
     /// Query-wide diagnostic correlation id, when assigned.
-    pub query_id: Option<QueryId>,
+    pub(crate) query_id: Option<QueryId>,
     /// Native aggregate node id, or a stage-local fallback label when unavailable.
     pub node_id: String,
     /// Stable decision fact keys and values.

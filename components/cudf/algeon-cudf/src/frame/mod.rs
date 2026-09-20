@@ -10,6 +10,8 @@
 pub mod dataframe;
 pub mod factorization;
 pub mod series;
+#[cfg(any(test, feature = "test-hooks"))]
+pub(crate) mod testing_hooks;
 
 pub use dataframe::DataFrame;
 pub use series::{HostColumnData, IntoSeries, Series};

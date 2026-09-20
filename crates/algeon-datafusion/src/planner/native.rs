@@ -123,7 +123,7 @@ impl PhysicalOptimizerRule for AlgeonFinalPlanRequirementRule {
     }
 }
 
-fn final_plan_requirement_error(
+pub(crate) fn final_plan_requirement_error(
     plan: &dyn ExecutionPlan,
     disposition: FinalPlanDisposition,
     report: Option<&PlanningReport>,
@@ -131,12 +131,7 @@ fn final_plan_requirement_error(
     let rejection = report.and_then(first_native_not_supported);
     let message = rejection.and_then(|(_, _, detail)| detail).map_or_else(
         || "exact final physical plan does not satisfy the configured GPU execution requirement".to_string(),
-        |detail| {
-            format!(
-                "GPU execution does not support {} column `{}` with Arrow type `{}`",
-                detail.role, detail.name, detail.data_type
-            )
-        },
+        |detail| format!("GPU execution does not support a {} column with an unsupported Arrow type", detail.role),
     );
     let mut error = Error::new(
         ErrorCode::FinalPlanRequirementUnsatisfied,
@@ -156,10 +151,11 @@ fn final_plan_requirement_error(
             // `reason` is bounded operational classification and may be
             // logged. The column name, Arrow type, and role name the query
             // caller's own schema detail, so they stay ordinary facts hidden
-            // from operational logs and Debug by default. The server
+            // from operational logs and Debug by default, and out of
+            // `message()`, which the server logs verbatim. The server
             // projection owner retains them explicitly for query-caller
             // surfaces (Flight metadata allowlist, query-stats capture) and
-            // keeps them in the actionable status message.
+            // composes them into the actionable status message.
             error = error
                 .with_log_safe_fact("reason", capability_reason.code())
                 .with_fact("unsupported_column", detail.name.as_str())
@@ -901,7 +897,7 @@ mod tests {
         let error = final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&report));
 
         assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
-        assert!(error.message().contains("訂單明細"), "{}", error.message());
+        assert!(!error.message().contains("訂單明細"), "{}", error.message());
         assert_eq!(error.fact_value("unsupported_column"), Some("訂單明細"));
         assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Int64)"));
         assert_eq!(error.fact_value("unsupported_column_role"), Some("projected"));
@@ -1118,11 +1114,9 @@ mod tests {
 
         let failure_a = requirement_rule.optimize(out_a, &config_a).expect_err("NativeRequired rejects the CPU plan");
         let error_a = failure_a.find_algeon_error().expect("typed adapter error");
-        assert!(error_a.message().contains("a_col"), "{}", error_a.message());
-        assert!(!error_a.message().contains("b_col"), "{}", error_a.message());
+        assert_eq!(error_a.fact_value("unsupported_column"), Some("a_col"));
         let failure_b = requirement_rule.optimize(out_b, &config_b).expect_err("NativeRequired rejects the CPU plan");
         let error_b = failure_b.find_algeon_error().expect("typed adapter error");
-        assert!(error_b.message().contains("b_col"), "{}", error_b.message());
-        assert!(!error_b.message().contains("a_col"), "{}", error_b.message());
+        assert_eq!(error_b.fact_value("unsupported_column"), Some("b_col"));
     }
 }

@@ -1,6 +1,6 @@
 use std::{error::Error as StdError, fmt, net::SocketAddr, sync::Arc};
 
-use datafusion::common::{DataFusionError, SchemaError};
+use datafusion::common::DataFusionError;
 use query_engine::error::QueryError;
 #[cfg(test)]
 use query_engine::error::QueryErrorCode;
@@ -13,7 +13,7 @@ use tonic::{
 use crate::server::{
     adapter_error::{
         DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorLogDiagnostics, ErrorSourceDiagnostics, ErrorStatus,
-        Facts, datafusion_error_human_message,
+        Facts, classify, datafusion_error_human_message,
     },
     observability::CapturedError,
 };
@@ -49,9 +49,9 @@ const MAX_CLIENT_FACT_METADATA_VALUE_BYTES: usize = 256;
 /// the wire; the in-process error is never rewritten.
 const MAX_CLIENT_DATAFUSION_MESSAGE_BYTES: usize = 2_048;
 
-/// Maximum depth for server-side DataFusion error traversal. Mirrors the
-/// adapter chain budget: classification always terminates with a defined
-/// code, returning the deepest node reached when the budget is exhausted.
+/// Maximum depth for server-side DataFusion message traversal. Mirrors the
+/// adapter chain budget used by `classify`: extraction always terminates,
+/// returning the deepest node reached when the budget is exhausted.
 const MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH: usize = 32;
 
 pub type Result<T> = std::result::Result<T, ServerError>;
@@ -169,19 +169,6 @@ impl ServerError {
             },
             Err(source) => source,
         };
-        #[cfg(feature = "iceberg")]
-        let source = match source.downcast::<iceberg_catalog::Error>() {
-            Ok(iceberg_error) => {
-                return Self {
-                    inner: crate::server::table_format::iceberg::root_error_from_iceberg(
-                        *iceberg_error,
-                        "algeon_datafusion.server.session",
-                        message,
-                    ),
-                };
-            },
-            Err(source) => source,
-        };
         Self {
             inner: Error::new(ErrorCode::Internal, "algeon_datafusion.server.session", message)
                 .with_source(ServerSource(source)),
@@ -269,7 +256,7 @@ fn server_error_from_datafusion_error(message: String, source: DataFusionError) 
     {
         return Error::new(code, operation, message).with_preserved_facts(facts).with_source(source);
     }
-    let code = classify_datafusion_error(&source);
+    let code = classify(&source);
     let datafusion_error = datafusion_error_variant(&source);
     Error::new(code, "algeon_datafusion.server.session", message)
         .with_log_safe_fact("datafusion_error", datafusion_error)
@@ -353,7 +340,7 @@ pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operat
     if let Some(adapter_error) = error.find_algeon_error() {
         return CapturedError::from_adapter_error(adapter_error);
     }
-    let code = classify_datafusion_error(error);
+    let code = classify(error);
     let message = client_datafusion_error_message(error);
     let datafusion_error = datafusion_error_variant(error);
     let mut facts = Facts::new();
@@ -362,9 +349,12 @@ pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operat
 }
 
 pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
-    let message = client_status_message(error);
+    // Caller schema identifiers reach the wire status only: the logged client
+    // message is the text without them, like `error_message`.
+    let log_message = client_status_message(error);
+    let message = client_schema_detail_message(error).unwrap_or_else(|| log_message.clone());
     let diagnostics = ErrorLogDiagnostics::from_error(error);
-    let log_messages = adapter_status_log_messages(error.message(), message.as_str(), &diagnostics);
+    let log_messages = adapter_status_log_messages(error.message(), log_message.as_str(), &diagnostics);
     // The logged `error_message` is owner-authored adapter text: foreign
     // DataFusion text enters it only through the bounded
     // `client_datafusion_error_message` constructor, and foreign source chains
@@ -530,6 +520,10 @@ fn client_status_message(error: &Error) -> String {
             "one row exceeds the Flight message limit: {}. Project a smaller value; retrying the same request unchanged cannot succeed",
             error.message()
         ),
+        ErrorCode::HostMemoryExhausted => format!(
+            "host memory pool exhausted while processing the request: {}. Reduce query resource usage; retrying the same request unchanged may fail again",
+            error.message()
+        ),
         ErrorCode::DeviceOutOfMemory
         | ErrorCode::DeviceAllocationFailed
         | ErrorCode::MemoryReservationFailed
@@ -549,6 +543,32 @@ fn client_status_message(error: &Error) -> String {
             "internal server error while processing the request".to_string()
         },
         _ => error.message().to_string(),
+    }
+}
+
+/// Wire status text for rejections that name the caller's own schema
+/// identifiers.
+///
+/// Owners keep column and field names and their Arrow types out of
+/// `Error::message()`, which the boundary log records verbatim. The values
+/// travel as ordinary facts and are composed here, so they reach the query
+/// caller and never the log. Returns `None` when the error does not carry the
+/// complete fact set of one of these rejections.
+fn client_schema_detail_message(error: &Error) -> Option<String> {
+    match error.code() {
+        ErrorCode::FinalPlanRequirementUnsatisfied => Some(format!(
+            "GPU execution does not support {} column `{}` with Arrow type `{}`",
+            error.fact_value("unsupported_column_role")?,
+            error.fact_value("unsupported_column")?,
+            error.fact_value("unsupported_column_type")?,
+        )),
+        ErrorCode::UnsupportedType => Some(format!(
+            "{} (field '{}' has Arrow type `{}`)",
+            error.message(),
+            error.fact_value("field")?,
+            error.fact_value("actual_type")?,
+        )),
+        _ => None,
     }
 }
 
@@ -680,7 +700,7 @@ fn truncate_metadata_value(value: &str, max_bytes: usize) -> (String, bool) {
 }
 
 fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'static str) -> Error {
-    let code = classify_datafusion_error(&error);
+    let code = classify(&error);
     let message = client_datafusion_error_message(&error);
     let datafusion_error = datafusion_error_variant(&error);
     Error::new(code, operation, message).with_log_safe_fact("datafusion_error", datafusion_error).with_source(error)
@@ -699,9 +719,9 @@ fn client_datafusion_error_message(error: &DataFusionError) -> String {
     truncate_metadata_value(message.as_str(), MAX_CLIENT_DATAFUSION_MESSAGE_BYTES).0
 }
 
-/// Resolves the effective DataFusion error following the same precedence as
-/// classification: `Context`/`Diagnostic` unwrap, `Collection` follows the
-/// first branch, `Shared` unwraps.
+/// Resolves the effective DataFusion error following the same wrapper
+/// precedence as [`classify`]: `Context`/`Diagnostic` unwrap, `Collection`
+/// follows the first branch, `Shared` unwraps.
 ///
 /// Traversal is iterative with an explicit depth budget so an extreme but
 /// supported wrapper tree always terminates with a defined error. When the
@@ -721,52 +741,6 @@ fn effective_datafusion_error(error: &DataFusionError) -> &DataFusionError {
         }
     }
     current
-}
-
-fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
-    // Iterative descent with the same budget as `effective_datafusion_error`:
-    // wrapper layers are peeled first (preserving first-Collection-branch
-    // precedence), then the deepest node reached is classified. The mapping
-    // below is unchanged; only unbounded recursion is removed.
-    let mut current = error;
-    for _ in 0..MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH {
-        match current {
-            DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => current = source.as_ref(),
-            DataFusionError::Collection(errors) => match errors.first() {
-                Some(first) => current = first,
-                None => return ErrorCode::Internal,
-            },
-            DataFusionError::Shared(source) => current = source.as_ref(),
-            _ => break,
-        }
-    }
-    match current {
-        DataFusionError::SQL(_, _) => ErrorCode::SqlParse,
-        DataFusionError::Plan(_) => ErrorCode::DataFusionPlanning,
-        DataFusionError::SchemaError(schema, _) => match schema.as_ref() {
-            SchemaError::FieldNotFound { .. } => ErrorCode::FieldNotFound,
-            SchemaError::AmbiguousReference { .. }
-            | SchemaError::DuplicateQualifiedField { .. }
-            | SchemaError::DuplicateUnqualifiedField { .. } => ErrorCode::DataFusionPlanning,
-        },
-        DataFusionError::NotImplemented(_) => ErrorCode::UnsupportedOperator,
-        DataFusionError::Configuration(_) => ErrorCode::DataFusionPlanning,
-        // Non-not-found execution errors may include reader internals, so keep
-        // them behind the generic `Internal` client surface.
-        DataFusionError::Execution(_) => ErrorCode::Internal,
-        DataFusionError::ResourcesExhausted(_) => ErrorCode::MemoryReservationFailed,
-        DataFusionError::Context(_, _) | DataFusionError::Diagnostic(_, _) | DataFusionError::Shared(_) => {
-            ErrorCode::Internal
-        },
-        DataFusionError::Collection(_) => ErrorCode::Internal,
-        DataFusionError::Internal(_)
-        | DataFusionError::ArrowError(_, _)
-        | DataFusionError::IoError(_)
-        | DataFusionError::External(_)
-        | DataFusionError::ExecutionJoin(_)
-        | DataFusionError::Ffi(_) => ErrorCode::Internal,
-        _ => ErrorCode::Internal,
-    }
 }
 
 fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
@@ -794,19 +768,62 @@ fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error as StdError, fmt};
+    use std::{
+        error::Error as StdError,
+        fmt,
+        io::Write,
+        sync::{Arc, Mutex},
+    };
 
+    use arrow::{datatypes::Schema, error::ArrowError};
     use cudf::testing::error::new_with_for_test;
     use datafusion::{
         common::{Column, Diagnostic, SchemaError, TableReference},
+        object_store::Error as ObjectStoreError,
+        physical_plan::{ExecutionPlan, empty::EmptyExec},
         prelude::SessionContext,
         sql::sqlparser::parser::ParserError,
     };
     use tonic::Code;
+    use tracing::subscriber::with_default;
 
     use super::*;
+    use crate::{
+        capability::CapabilityReason,
+        gpu_functions::dense_relation_errors::DenseRelationErrorContext,
+        planner::{FinalPlanDisposition, native},
+        report::{GpuCandidate, NotSupportedDetail, PlanningReport, UnsupportedColumnDetail},
+    };
 
     const TEST_OPERATION: &str = "algeon_datafusion.server.flight.test.create_logical_plan";
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer lock").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn with_captured_logs<T>(run: impl FnOnce() -> T) -> (T, String) {
+        let buffer = LogBuffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let value = with_default(subscriber, run);
+        let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+        (value, output)
+    }
 
     #[derive(Debug)]
     struct TestSourceError {
@@ -1436,26 +1453,6 @@ mod tests {
         assert!(!captured.diagnostic.contains("facts="), "{}", captured.diagnostic);
     }
 
-    #[cfg(feature = "iceberg")]
-    #[test]
-    fn server_error_session_preserves_foreign_iceberg_classification() {
-        use iceberg_catalog::{Error as IcebergError, ErrorCode as IcebergErrorCode, Operation};
-
-        let auth = ServerError::session(
-            "catalog authentication failed",
-            IcebergError::new(IcebergErrorCode::Authentication, Operation::CatalogConnect, "authentication failed"),
-        );
-        let access = ServerError::session(
-            "catalog access failed",
-            IcebergError::new(IcebergErrorCode::Access, Operation::CatalogListTables, "access denied"),
-        );
-        let unknown = ServerError::session("foreign source failed", std::io::Error::other("unknown"));
-
-        assert_eq!(auth.code(), ErrorCode::SourceUnauthenticated);
-        assert_eq!(access.code(), ErrorCode::SourceAccessDenied);
-        assert_eq!(unknown.code(), ErrorCode::Internal);
-    }
-
     #[test]
     fn server_error_session_preserves_native_query_error_classification() {
         let native = QueryError::new(
@@ -1483,7 +1480,7 @@ mod tests {
             Error::new(
                 ErrorCode::FinalPlanRequirementUnsatisfied,
                 "algeon_datafusion.planner.final_plan_requirement",
-                "GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`",
+                "GPU execution does not support a projected column with an unsupported Arrow type",
             )
             .with_fact("reason", "unsupported_type")
             .with_fact("unsupported_column", "countDetail")
@@ -1592,7 +1589,7 @@ mod tests {
         Error::new(
             ErrorCode::FinalPlanRequirementUnsatisfied,
             "algeon_datafusion.planner.final_plan_requirement",
-            format!("GPU execution does not support projected column `{column}` with Arrow type `{column_type}`"),
+            "GPU execution does not support a projected column with an unsupported Arrow type",
         )
         .with_log_safe_fact("reason", "unsupported_type")
         .with_fact("unsupported_column", column)
@@ -1670,14 +1667,138 @@ mod tests {
             error = DataFusionError::Context(format!("wrapper layer {depth}"), Box::new(error));
         }
 
-        assert_eq!(classify_datafusion_error(&error), ErrorCode::Internal);
+        assert_eq!(classify(&error), ErrorCode::Internal);
 
         let mut shallow =
             DataFusionError::SQL(Box::new(ParserError::ParserError("Expected: an SQL statement".into())), None);
         for depth in 0..3 {
             shallow = DataFusionError::Context(format!("wrapper layer {depth}"), Box::new(shallow));
         }
-        assert_eq!(classify_datafusion_error(&shallow), ErrorCode::SqlParse);
+        assert_eq!(classify(&shallow), ErrorCode::SqlParse);
+    }
+
+    #[test]
+    fn classify_maps_object_store_not_found_to_source_object_not_found() {
+        let not_found =
+            || ObjectStoreError::NotFound { path: "bucket/missing.parquet".to_string(), source: "absent".into() };
+        let direct = DataFusionError::ObjectStore(Box::new(not_found()));
+        let wrapped = DataFusionError::Context(
+            "scan".to_string(),
+            Box::new(DataFusionError::Shared(Arc::new(DataFusionError::External(Box::new(not_found()))))),
+        );
+        let through_arrow =
+            DataFusionError::ArrowError(Box::new(ArrowError::ExternalError(Box::new(not_found()))), None);
+
+        for error in [direct, wrapped, through_arrow] {
+            assert_eq!(classify(&error), ErrorCode::SourceObjectNotFound, "{error:?}");
+        }
+
+        let status = datafusion_error_to_status_for_operation(
+            DataFusionError::ObjectStore(Box::new(not_found())),
+            TEST_OPERATION,
+        );
+        assert_eq!(status.code(), Code::NotFound);
+        assert_error_metadata(&status, "source_object_not_found", "not_found", "permanent");
+
+        let denied = ObjectStoreError::PermissionDenied { path: "bucket/key".to_string(), source: "denied".into() };
+        assert_eq!(classify(&DataFusionError::ObjectStore(Box::new(denied))), ErrorCode::SourceAccessDenied);
+        let unauthenticated =
+            ObjectStoreError::Unauthenticated { path: "bucket/key".to_string(), source: "no credentials".into() };
+        assert_eq!(
+            classify(&DataFusionError::ObjectStore(Box::new(unauthenticated))),
+            ErrorCode::SourceUnauthenticated
+        );
+    }
+
+    #[test]
+    fn classify_maps_resources_exhausted_to_host_memory() {
+        let exhausted = || DataFusionError::ResourcesExhausted("Failed to allocate 1024 bytes".to_string());
+        let wrapped = DataFusionError::Context("collect".to_string(), Box::new(exhausted()));
+        let through_arrow =
+            DataFusionError::ArrowError(Box::new(ArrowError::ExternalError(Box::new(exhausted()))), None);
+
+        for error in [exhausted(), wrapped, through_arrow] {
+            assert_eq!(classify(&error), ErrorCode::HostMemoryExhausted, "{error:?}");
+        }
+
+        let status = datafusion_error_to_status_for_operation(exhausted(), TEST_OPERATION);
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_error_metadata(&status, "host_memory_exhausted", "resource_exhausted", "temporary");
+        assert!(status.message().starts_with("host memory pool exhausted"), "{}", status.message());
+        assert!(!status.message().contains("device memory"), "{}", status.message());
+    }
+
+    #[tokio::test]
+    async fn classify_maps_cancelled_execution_join_to_cancelled() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        task.abort();
+        let cancelled = DataFusionError::ExecutionJoin(Box::new(task.await.unwrap_err()));
+
+        assert_eq!(classify(&cancelled), ErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn native_required_error_message_omits_column_identifiers() {
+        const COLUMN: &str = "sentinel_customer_column";
+        const COLUMN_TYPE: &str = "List(Int64)";
+        let mut report = PlanningReport::new();
+        report.push_not_supported_with_detail(
+            GpuCandidate::new("ParquetExec", 1),
+            CapabilityReason::UnsupportedType,
+            NotSupportedDetail {
+                column: Some(UnsupportedColumnDetail::new(COLUMN, COLUMN_TYPE, "projected")),
+                expression: None,
+            },
+        );
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let error =
+            native::final_plan_requirement_error(plan.as_ref(), FinalPlanDisposition::DataFusion, Some(&report));
+
+        assert!(!error.message().contains(COLUMN), "{}", error.message());
+        assert_eq!(error.fact_value("unsupported_column"), Some(COLUMN));
+        assert!(!error.facts().log_safe_projection().rendered().unwrap_or_default().contains(COLUMN));
+
+        let (status, logs) = with_captured_logs(|| adapter_error_to_status(&error));
+
+        assert!(logs.contains("converted adapter error to Flight SQL status"), "{logs}");
+        assert!(!logs.contains(COLUMN), "{logs}");
+        assert!(!logs.contains(COLUMN_TYPE), "{logs}");
+        assert_eq!(
+            status.message(),
+            format!("GPU execution does not support projected column `{COLUMN}` with Arrow type `{COLUMN_TYPE}`")
+        );
+    }
+
+    #[test]
+    fn dense_relation_unsupported_type_keeps_field_identifiers_out_of_message_and_logs() {
+        const FIELD: &str = "sentinel_feature_column";
+        const ACTUAL_TYPE: &str = "List(Field { name: \"sentinel_item\" })";
+        let context = DenseRelationErrorContext {
+            family: "cuML",
+            operation_fact: "cuml_operation",
+            validate_operation: "algeon_datafusion.cuml_sql.validate",
+            validate_schema_operation: "algeon_datafusion.cuml_sql.validate_schema",
+            execute_operation: "algeon_datafusion.cuml_sql.execute",
+            required_feature: "cuml",
+            feature_disabled_message: "cuML algorithm execution requires the cuml Cargo feature",
+        };
+        let error = context.unsupported_type("cuml_tsvd", "input", FIELD, ACTUAL_TYPE, "Float32");
+        let adapter = error.find_algeon_error().expect("typed adapter error");
+
+        assert_eq!(adapter.code(), ErrorCode::UnsupportedType);
+        assert!(!adapter.message().contains(FIELD), "{}", adapter.message());
+        assert!(adapter.message().contains("Float32"), "{}", adapter.message());
+        assert_eq!(adapter.fact_value("field"), Some(FIELD));
+        assert_eq!(adapter.fact_value("actual_type"), Some(ACTUAL_TYPE));
+
+        let (status, logs) = with_captured_logs(|| datafusion_error_to_status_for_operation(error, TEST_OPERATION));
+
+        assert!(logs.contains("converted adapter error to Flight SQL status"), "{logs}");
+        assert!(!logs.contains(FIELD), "{logs}");
+        assert!(!logs.contains("sentinel_item"), "{logs}");
+        assert_eq!(status.code(), Code::Unimplemented);
+        assert!(status.message().contains(FIELD), "{}", status.message());
+        assert!(status.message().contains(ACTUAL_TYPE), "{}", status.message());
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use super::owned::DataFrame;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::Runtime;
 use crate::{
     core::{
         column::Column,
@@ -16,8 +18,7 @@ use crate::{
     internal::resolve::missing_column_error,
     ops,
     runtime::{
-        Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
-        execution_resolver::ResolvedExecution,
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
@@ -121,6 +122,7 @@ fn concat_by_name_missing_planned_dtype_error(operation: &'static str, column_na
         .with_detail("remedy", "ensure concat_by_name schema planning records a dtype for every output column")
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_concat_by_name_missing_planned_dtype_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     let df = DataFrame::from_series([("left", runtime.series(&[1i32])?)])?;

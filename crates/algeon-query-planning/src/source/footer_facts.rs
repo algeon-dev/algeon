@@ -33,7 +33,7 @@ impl<'a> SourceFooterFacts<'a> {
     }
 
     /// The footer for `file_index`, when the caller supplied one.
-    pub fn footer(&self, file_index: usize) -> Option<&'a ParquetMetaData> {
+    pub(crate) fn footer(&self, file_index: usize) -> Option<&'a ParquetMetaData> {
         self.per_file.get(file_index).copied().flatten()
     }
 }

@@ -86,9 +86,8 @@
 //! - [`Runtime`] / [`ExecutionOverrides`]: explicit stream and allocator control.
 //! - [`interop::arrow_host`]: Arrow `RecordBatch` conversion through host memory.
 //! - [`interop`]: `cudf`-specific interop adapters, runtime-backed
-//!   release helpers, CUDA handle projection, and Arrow C Device ABI glue.
-//!   `cudf` users can import their shared contract types from
-//!   [`interop::contract`].
+//!   release helpers, and CUDA handle projection. `cudf` users can import
+//!   their shared contract types from [`interop::contract`].
 //! - For lower-level CUDA stream and event management, see the [`runtime`] module.
 //!
 //! If you need to hand device-backed cudf data to another Rust GPU library,
@@ -105,10 +104,9 @@
 //! `algeon-interop` and import the same contracts from `rapids_interop`
 //! without depending on `cudf`.
 //!
-//! Arrow naming can be easy to misread here:
-//! [`interop::arrow_host`] is the host-copy `RecordBatch` path, while
-//! [`interop::arrow_device`] is the Arrow C Device ABI path for
-//! device-backed interop.
+//! [`interop::arrow_host`] is the host-copy `RecordBatch` path. Device-resident
+//! data leaves `cudf` through the prepared RAPIDS exports above, not through
+//! Arrow.
 //!
 //! # Concurrency Model: Device Memory Domains
 //!
@@ -224,6 +222,7 @@ pub(crate) mod internal;
 pub mod io;
 pub mod ops;
 pub mod runtime;
+#[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub mod testing;
 
@@ -282,10 +281,10 @@ pub use ops::{
     },
 };
 pub use runtime::{
-    AttemptStreamProviderAlias, AttemptStreamProviderRegistration, BoundaryKind, BoundaryObservation, BoundaryObserver,
-    BudgetedExecutionOutcome, CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease,
-    CacheAllocationScope, CacheAllocationScopeId, CacheAllocationScopeIdentity, DenseMatrixLayout, DeviceId,
-    ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken,
-    ExecutionOverrides, ExecutionPlacement, PackedMatrix, QueryExecutionContext, Runtime, RuntimeAffinityAnchor,
-    RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome, ValidatedPackedMatrix,
+    AttemptStreamProviderAlias, AttemptStreamProviderRegistration, BudgetedExecutionOutcome, CacheAllocationDomain,
+    CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, CacheAllocationScopeId,
+    CacheAllocationScopeIdentity, DenseMatrixLayout, DeviceId, ExecutionBudgetEnforcement, ExecutionBudgetReport,
+    ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, PackedMatrix,
+    QueryExecutionContext, Runtime, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor,
+    StreamDependencyOutcome, ValidatedPackedMatrix,
 };

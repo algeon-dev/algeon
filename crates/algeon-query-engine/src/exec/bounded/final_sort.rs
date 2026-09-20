@@ -7,7 +7,6 @@ use super::{compiled::ResidentFrameStreamPayload, *};
 mod full_sort;
 mod hierarchical_topk;
 mod limit;
-mod reservation;
 mod retry;
 mod sizing;
 mod sort_lane;
@@ -15,12 +14,8 @@ mod topk_candidate;
 mod topk_level;
 
 use limit::*;
-use reservation::*;
 use retry::*;
-use sizing::{
-    estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes, final_sort_retained_bytes,
-    final_sort_rows_per_chunk,
-};
+use sizing::{estimate_rows_bytes, estimated_bytes_per_row, final_sort_retained_bytes, final_sort_rows_per_chunk};
 use sort_lane::*;
 use topk_candidate::*;
 use topk_level::*;
@@ -241,6 +236,20 @@ fn final_sort_runtime_facts(
     .attach_to(error)
 }
 
+fn observe_final_sort_output(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    frame: GpuDataFrame,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<CommittedPartial> {
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics()).map_err(|error| {
+        final_sort_runtime_facts("final_sort_output", node_id, attempt, max_attempts, execution.metrics(), error)
+    })?;
+
+    Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
+}
+
 impl FinalSortExecutor<'_, '_, '_> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
         self.final_sort_budget_token_for_bytes(boundary, attempt, self.execution.device_budget_bytes())
@@ -259,24 +268,8 @@ impl FinalSortExecutor<'_, '_, '_> {
             .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
     }
 
-    fn reserve_estimated_final_sort_output(&mut self, output_bytes: u64, attempt: usize) -> Result<u64> {
-        reserve_final_sort_output_bytes(self.execution, self.node_id, output_bytes, attempt, self.max_attempts)
-    }
-
-    fn finalize_final_sort_output_reservation(
-        &mut self,
-        frame: GpuDataFrame,
-        reservation: u64,
-        attempt: usize,
-    ) -> Result<CommittedPartial> {
-        finalize_final_sort_output_reservation(
-            self.execution,
-            self.node_id,
-            frame,
-            reservation,
-            attempt,
-            self.max_attempts,
-        )
+    fn observe_final_sort_output(&mut self, frame: GpuDataFrame, attempt: usize) -> Result<CommittedPartial> {
+        observe_final_sort_output(self.execution, self.node_id, frame, attempt, self.max_attempts)
     }
 
     fn attach_final_sort_resource_facts(&self, error: QueryError, attempt: usize) -> QueryError {

@@ -3,36 +3,9 @@
 use arrow::record_batch::RecordBatch;
 
 use crate::{
-    error::QueryError, metrics::QueryMetrics, observability::SealedRuntimeObservationSnapshot, plan::ResultSink,
+    error::QueryError, metrics::QueryMetrics, observability::SealedRuntimeObservationSnapshot,
     runtime::resident::GpuResultHandle,
 };
-
-/// Output residency requested by a query sink.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QueryOutputMode {
-    /// Keep the query output as a runtime/device-affine GPU handle.
-    GpuResident,
-    /// Materialize the query output to a host Arrow record batch.
-    MaterializeToHost,
-}
-
-impl QueryOutputMode {
-    /// Derive the output mode requested by a query plan sink.
-    pub fn for_sink(sink: &ResultSink) -> Self {
-        match sink {
-            ResultSink::GpuResident { .. } => Self::GpuResident,
-            ResultSink::HostArrow { .. } => Self::MaterializeToHost,
-        }
-    }
-
-    /// Stable lowercase label used in metrics and diagnostics.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::GpuResident => "gpu_resident",
-            Self::MaterializeToHost => "materialize_to_host",
-        }
-    }
-}
 
 /// Output produced by native query execution.
 ///
@@ -48,14 +21,6 @@ pub enum QueryOutput {
 }
 
 impl QueryOutput {
-    /// Output residency mode represented by this value.
-    pub fn mode(&self) -> QueryOutputMode {
-        match self {
-            Self::GpuResident(_) => QueryOutputMode::GpuResident,
-            Self::HostArrow(_) => QueryOutputMode::MaterializeToHost,
-        }
-    }
-
     /// Borrow the host Arrow batch when the result was materialized to host.
     pub fn as_host_arrow(&self) -> Option<&RecordBatch> {
         match self {
@@ -102,17 +67,20 @@ impl QueryExecutionOutcome {
     }
 
     /// Borrows the structured output-or-error result.
-    pub fn result(&self) -> std::result::Result<&QueryOutput, &QueryError> {
+    #[cfg(test)]
+    pub(crate) fn result(&self) -> std::result::Result<&QueryOutput, &QueryError> {
         self.result.as_ref()
     }
 
     /// Borrows all aggregate metrics, including records emitted before failure.
-    pub const fn metrics(&self) -> &QueryMetrics {
+    #[cfg(test)]
+    pub(crate) const fn metrics(&self) -> &QueryMetrics {
         &self.metrics
     }
 
     /// Borrows the immutable sealed evidence when recording was enabled.
-    pub const fn observation(&self) -> Option<&SealedRuntimeObservationSnapshot> {
+    #[cfg(test)]
+    pub(crate) const fn observation(&self) -> Option<&SealedRuntimeObservationSnapshot> {
         self.observation.as_ref()
     }
 

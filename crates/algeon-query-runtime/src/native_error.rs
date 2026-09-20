@@ -103,20 +103,6 @@ pub fn cudf_query_error_without_source_with_budget_details(
     error
 }
 
-/// Typed cuDF budget-exhaustion counters preserved from an error's source chain.
-pub fn cudf_budget_exhaustion(error: &QueryError) -> Option<&cudf::BudgetExhaustionDetail> {
-    let mut current = error.source_error();
-    while let Some(error) = current {
-        if let Some(cudf_error) = error.downcast_ref::<cudf::Error>()
-            && let Some(detail) = cudf_error.budget_exhaustion()
-        {
-            return Some(detail);
-        }
-        current = error.source();
-    }
-    None
-}
-
 /// Classifies a `cudf::Error` into the native-engine error taxonomy.
 ///
 /// Notable permanent mappings: `NotFound` is treated as invalid input,

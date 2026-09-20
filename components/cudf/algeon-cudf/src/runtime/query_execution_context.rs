@@ -13,9 +13,7 @@ use crate::core::memory::{DeviceMemoryManager, DeviceMemoryResource, StreamReser
 /// separate execution domain. Outputs still retain provenance through the
 /// underlying operation's normal [`ExecutionOverrides`] resolution.
 ///
-/// Construct via [`Runtime::query_execution`]. Boundary observations remain
-/// attached to the underlying runtime or execution domain; this facade does
-/// not install, replace, or redirect observers.
+/// Construct via [`Runtime::query_execution`].
 #[derive(Clone, Copy)]
 #[must_use]
 pub struct QueryExecutionContext<'a> {

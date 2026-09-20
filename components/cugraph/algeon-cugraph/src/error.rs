@@ -12,10 +12,11 @@ use std::{
     fmt,
 };
 
+#[cfg(any(test, feature = "test-hooks"))]
+use cudf::testing::device_safety;
 use cudf::{
     DeviceId,
     runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
-    testing::device_safety,
 };
 use cugraph_sys::{
     cugraph_allocation_source_t, cugraph_error_alignment, cugraph_error_allocation_source, cugraph_error_code_t,
@@ -777,11 +778,10 @@ unsafe fn check_error_with_payload(
                     .with_context("cuda_status_code", cuda_status.to_string());
             },
             NativeCudaFailure::Fatal(cuda_status) => {
-                if let Some(device_id) = usize::try_from(device)
-                    .ok()
-                    .and_then(|ordinal| DeviceId::new(ordinal).ok())
-                    .or_else(|| device_safety::injected_device_id(device))
-                {
+                let physical = usize::try_from(device).ok().and_then(|ordinal| DeviceId::new(ordinal).ok());
+                #[cfg(any(test, feature = "test-hooks"))]
+                let physical = physical.or_else(|| device_safety::injected_device_id(device));
+                if let Some(device_id) = physical {
                     report_device_fault(
                         device_id,
                         DeviceFaultKind::FatalDeviceOperation,

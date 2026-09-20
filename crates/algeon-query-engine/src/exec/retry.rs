@@ -27,11 +27,7 @@ pub(in crate::exec) enum ResourceFailureRecovery {
 
 pub(in crate::exec) fn resource_failure_recovery(error: &QueryError) -> ResourceFailureRecovery {
     match error.code() {
-        // `CudfResourceExhausted` is the retired stream-reservation vocabulary;
-        // it is kept recoverable for caller-owned reservation paths.
-        QueryErrorCode::QueryMemoryLimitExceeded | QueryErrorCode::CudfResourceExhausted => {
-            ResourceFailureRecovery::ShrinkWorkingSet
-        },
+        QueryErrorCode::QueryMemoryLimitExceeded => ResourceFailureRecovery::ShrinkWorkingSet,
         QueryErrorCode::DeviceOutOfMemory | QueryErrorCode::DeviceAllocationFailed => ResourceFailureRecovery::Terminal,
         _ => ResourceFailureRecovery::NotResource,
     }

@@ -7,10 +7,8 @@ description: Arrow, cuDF, cuGraph, cuVS, and cuML data type support boundaries f
 
 Algeon checks Arrow data types before a whole relational candidate
 enters native execution. A candidate with an unsupported type keeps the
-executable DataFusion baseline. Unified Iceberg scans retain their executable
-CPU delegate when native type admission does not select acceleration. A
-`NoDataFusionCpu` final-plan requirement instead rejects a completed plan that
-retains DataFusion CPU execution.
+executable DataFusion baseline. A `NoDataFusionCpu` final-plan requirement
+instead rejects a completed plan that retains DataFusion CPU execution.
 
 This page covers column representation: which Arrow types the GPU execution
 path (Algeon's "native" path) can hold, and what it can do with each. Operator

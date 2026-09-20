@@ -28,6 +28,29 @@ async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
 }
 
 #[tokio::test]
+async fn one_footer_scope_parses_each_file_once_across_lowerings() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-footer-scope");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    assert!(parquet_row_group_count(&path) > 1);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+
+    let footers = FooterScope::enter();
+    let whole_plan = lower_physical_plan_to_native(Arc::clone(&plan));
+    let mixed_leaf_plan = lower_physical_plan_to_native(plan);
+
+    assert_eq!(whole_plan.selected_count(), 1);
+    assert_eq!(mixed_leaf_plan.selected_count(), 1);
+    assert_eq!(
+        footers.parses(),
+        1,
+        "schema mapping, byte metadata, and row-group pruning of both lowerings must share one footer parse"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-filter-row-group-pruning");
     let path = dir.join("input.parquet");

@@ -10,7 +10,7 @@ use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CaseWhen,
     CudfAggSpec, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext,
     ExecutionMetrics, ExecutionOverrides, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions,
-    LiteralValue, LoweredAggregate, NodeId, QueryError, QueryErrorCode, RecordBatch, ReduceAgg, Result, Schema,
+    LiteralValue, LoweredAggregate, NodeId, QueryError, QueryErrorCode, RecordBatch, Result, Schema,
     aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, attach_budget_token_failure_facts, avg_sum_state_data_type,
     budgeted_value, cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
@@ -74,15 +74,10 @@ use partial_execute::{
     execute_prepared_sort_groupby_single_aggregate_with_budget, prepare_prepared_sort_groupby_with_budget,
 };
 use partial_strategy::{
-    add_exact_grouped_key_cardinality_probe_facts, add_exact_single_key_cardinality_probe_facts,
-    add_prepared_sort_groupby_facts, exact_cardinality_probe_should_select_prepared_sort_groupby_with_options,
-    exact_grouped_key_cardinality_probe, exact_grouped_key_cardinality_probe_candidate_with_options,
-    exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options,
-    exact_single_key_cardinality_probe, exact_single_key_cardinality_probe_candidate_with_options,
-    prepared_sort_groupby_should_select_for_runtime_facts, reject_prepared_sort_groupby_for_exact_cardinality,
+    add_prepared_sort_groupby_facts, prepared_sort_groupby_should_select_for_runtime_facts,
     reject_prepared_sort_groupby_for_runtime_facts, select_partial_aggregate_strategy_decision_with_options,
-    select_prepared_sort_groupby_for_exact_cardinality, select_prepared_sort_groupby_for_runtime_facts,
-    source_adjacent_prepared_sort_groupby_runtime_candidate, source_chunk_structural_part,
+    select_prepared_sort_groupby_for_runtime_facts, source_adjacent_prepared_sort_groupby_runtime_candidate,
+    source_chunk_structural_part,
 };
 pub(in crate::exec) use partial_strategy::{
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
@@ -101,29 +96,29 @@ pub(in crate::exec) use statistical::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec) struct PartialAggregateInputEvidence {
     /// Stable fingerprint of the source chunks that fed this partial aggregate.
-    pub source_chunk_fingerprint: Option<u64>,
+    pub(in crate::exec) source_chunk_fingerprint: Option<u64>,
     /// True when this partial aggregate consumes output from source-local stages.
-    pub source_adjacent_partial: bool,
+    pub(in crate::exec) source_adjacent_partial: bool,
     /// Row groups assigned to the source chunk feeding this partial aggregate.
-    pub source_chunk_row_group_count: u64,
+    pub(in crate::exec) source_chunk_row_group_count: u64,
     /// True when the source chunk represents a whole file with unknown row groups.
-    pub source_chunk_reads_all_row_groups: bool,
+    pub(in crate::exec) source_chunk_reads_all_row_groups: bool,
     /// Known source row count for the chunk before source-adjacent stages.
-    pub source_chunk_known_row_count: Option<u64>,
+    pub(in crate::exec) source_chunk_known_row_count: Option<u64>,
     /// Best available source-read byte estimate for this chunk.
-    pub source_chunk_estimated_source_read_bytes: Option<u64>,
+    pub(in crate::exec) source_chunk_estimated_source_read_bytes: Option<u64>,
     /// True when chunk sizing relied on file-size estimates.
-    pub source_chunk_size_estimate_based: bool,
+    pub(in crate::exec) source_chunk_size_estimate_based: bool,
     /// Source-adjacent partitioning strategy applied before this partial aggregate.
-    pub source_adjacent_partition_strategy: &'static str,
+    pub(in crate::exec) source_adjacent_partition_strategy: &'static str,
     /// Number of source-adjacent partitions planned for the aggregate.
-    pub source_adjacent_partition_count: Option<u64>,
+    pub(in crate::exec) source_adjacent_partition_count: Option<u64>,
     /// Number of source-adjacent partitions that retained at least one input row.
-    pub source_adjacent_non_empty_partition_count: Option<u64>,
+    pub(in crate::exec) source_adjacent_non_empty_partition_count: Option<u64>,
     /// Number of grouping-key columns used by source-adjacent partitioning.
-    pub source_adjacent_partition_key_count: Option<u64>,
+    pub(in crate::exec) source_adjacent_partition_key_count: Option<u64>,
     /// Largest number of chunk fragments feeding one source-adjacent partition.
-    pub source_adjacent_max_partition_fan_in: Option<u64>,
+    pub(in crate::exec) source_adjacent_max_partition_fan_in: Option<u64>,
 }
 
 pub(in crate::exec) fn partial_aggregate_source_chunk_fingerprint(chunks: &[SourceChunk]) -> Option<u64> {
@@ -521,7 +516,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         apply_filtered_grouped_materialization_facts(&mut capability_decision, filtered_grouped_strategy);
     }
     let aggregate_strategy_options = context.aggregate_strategy_execution_options();
-    let mut decision = select_partial_aggregate_strategy_decision_with_options(
+    let decision = select_partial_aggregate_strategy_decision_with_options(
         capability_decision,
         node_id,
         &spec,
@@ -531,48 +526,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         aggregate_strategy_options,
         metrics,
     );
-    let mut selection_elapsed = selection_timer.elapsed();
-    if let Some(key_column) = exact_single_key_cardinality_probe_candidate_with_options(
-        &decision,
-        &spec,
-        prepared_input_schema.as_ref(),
-        input_rows,
-        aggregate_strategy_options,
-    ) {
-        let exact_probe = exact_single_key_cardinality_probe(context, &frame, key_column, input_rows, token, metrics)?;
-        selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.add_operator_time(exact_probe.elapsed);
-        add_exact_single_key_cardinality_probe_facts(&mut decision, &exact_probe);
-        if exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-            &decision,
-            &exact_probe,
-            aggregate_strategy_options,
-        ) {
-            decision = select_prepared_sort_groupby_for_exact_cardinality(decision);
-        } else {
-            decision = reject_prepared_sort_groupby_for_exact_cardinality(decision);
-        }
-    } else if let Some(key_columns) = exact_grouped_key_cardinality_probe_candidate_with_options(
-        &decision,
-        &spec,
-        prepared_input_schema.as_ref(),
-        input_rows,
-        aggregate_strategy_options,
-    ) {
-        let exact_probe = exact_grouped_key_cardinality_probe(context, &frame, &key_columns, input_rows, token)?;
-        selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.add_operator_time(exact_probe.elapsed);
-        add_exact_grouped_key_cardinality_probe_facts(&mut decision, &exact_probe);
-        if exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-            &decision,
-            &exact_probe,
-            aggregate_strategy_options,
-        ) {
-            decision = select_prepared_sort_groupby_for_exact_cardinality(decision);
-        } else {
-            decision = reject_prepared_sort_groupby_for_exact_cardinality(decision);
-        }
-    }
+    let selection_elapsed = selection_timer.elapsed();
     if decision.selected_strategy == AggregateExecutionStrategy::PreparedSortGroupby {
         return execute_prepared_sort_groupby_single_aggregate_with_budget(
             context,
@@ -610,7 +564,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
                 &prepared_input_schema,
                 input_rows,
                 0,
-                decision.clone(),
+                decision,
                 selection_elapsed,
                 timer.elapsed(),
             );
@@ -922,9 +876,11 @@ fn execute_partial_aggregate_with_budget_single_pass(
         },
     };
     if spec.group_exprs.is_empty() {
-        let partial_spec = partial_global_aggregate_spec(&spec);
+        // Schema derivation returns the structured unsupported error for MEDIAN; the spec lowering treats it as
+        // unreachable, so the schema must be derived first.
         let output_schema =
             partial_global_aggregate_output_schema(&spec, &prepared_input_schema, aggregate_output_schema)?;
+        let partial_spec = partial_global_aggregate_spec(&spec);
         return execute_global_aggregate_with_budget(
             context,
             &partial_spec,
@@ -985,48 +941,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
         aggregate_strategy_options,
         metrics,
     );
-    let mut selection_elapsed = selection_timer.elapsed();
-    if let Some(key_column) = exact_single_key_cardinality_probe_candidate_with_options(
-        &decision,
-        &spec,
-        prepared_input_schema.as_ref(),
-        input_rows,
-        aggregate_strategy_options,
-    ) {
-        let exact_probe = exact_single_key_cardinality_probe(context, &frame, key_column, input_rows, token, metrics)?;
-        selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.add_operator_time(exact_probe.elapsed);
-        add_exact_single_key_cardinality_probe_facts(&mut decision, &exact_probe);
-        if exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-            &decision,
-            &exact_probe,
-            aggregate_strategy_options,
-        ) {
-            decision = select_prepared_sort_groupby_for_exact_cardinality(decision);
-        } else {
-            decision = reject_prepared_sort_groupby_for_exact_cardinality(decision);
-        }
-    } else if let Some(key_columns) = exact_grouped_key_cardinality_probe_candidate_with_options(
-        &decision,
-        &spec,
-        prepared_input_schema.as_ref(),
-        input_rows,
-        aggregate_strategy_options,
-    ) {
-        let exact_probe = exact_grouped_key_cardinality_probe(context, &frame, &key_columns, input_rows, token)?;
-        selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.add_operator_time(exact_probe.elapsed);
-        add_exact_grouped_key_cardinality_probe_facts(&mut decision, &exact_probe);
-        if exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-            &decision,
-            &exact_probe,
-            aggregate_strategy_options,
-        ) {
-            decision = select_prepared_sort_groupby_for_exact_cardinality(decision);
-        } else {
-            decision = reject_prepared_sort_groupby_for_exact_cardinality(decision);
-        }
-    }
+    let selection_elapsed = selection_timer.elapsed();
     let mut prepared_partial_input = None;
     let mut prepared_preflight_elapsed = Duration::ZERO;
     if source_adjacent_prepared_sort_groupby_runtime_candidate(

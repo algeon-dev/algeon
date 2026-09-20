@@ -242,14 +242,6 @@ impl Table {
         Self::from_handle_with_domain(handle, domain)
     }
 
-    pub(crate) unsafe fn from_raw_with_domain_and_owners(
-        handle: cudf_sys::cudf_table_handle,
-        domain: Arc<ExecutionDomain>,
-        retained_owners: Vec<Option<Arc<dyn Any + Send + Sync>>>,
-    ) -> Result<Self> {
-        Self::from_handle_with_domain_and_owners(handle, domain, Some(retained_owners))
-    }
-
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }

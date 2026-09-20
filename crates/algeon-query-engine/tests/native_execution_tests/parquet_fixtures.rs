@@ -350,13 +350,6 @@ pub(super) fn write_row_grouped_join_right_parquet(path: &std::path::Path) -> Ar
     schema
 }
 
-pub(super) fn write_single_i32_row_grouped_parquet(path: &std::path::Path, max_row_group_rows: usize) -> Arc<Schema> {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4]))]).unwrap();
-    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, max_row_group_rows);
-    schema
-}
-
 pub(super) fn write_i32_parquet_with_row_group_rows(
     path: &std::path::Path,
     values: &[i32],

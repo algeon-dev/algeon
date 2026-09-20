@@ -22,7 +22,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LakehouseFooterPruningOptions {
     /// Maximum remote target files considered by either footer-pruning phase.
-    pub max_target_files: usize,
+    pub(crate) max_target_files: usize,
 }
 
 impl LakehouseFooterPruningOptions {

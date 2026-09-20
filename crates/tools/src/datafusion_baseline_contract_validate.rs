@@ -5,7 +5,7 @@
 //! - default native planning retaining an executable DataFusion plan
 //! - an explicit completed-plan requirement that rejects DataFusion execution
 //! - a DataFusion baseline that deliberately installs no relational native rule
-//! - Parquet and dual-mode Algeon Iceberg DataFusion delegates
+//! - Parquet scans that expose executable DataFusion plans
 //! - the frozen fact that native runtime failures do not replay through DataFusion
 //!
 //! This is an explicit developer tool (`cargo run`), not a Cargo test target.
@@ -26,17 +26,12 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    error::{DataFusionErrorExt, ErrorCode},
+    error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
     planner::{AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy},
     report::CandidateOutcome,
     session::{ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, AlgeonSessionStateBuilderExt},
-    table_format::{
-        TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
-        TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability, TableFormatScanPlan,
-        TableFormatScanRequest, iceberg::AlgeonIcebergTableProvider,
-    },
 };
 use arrow::{
     array::{Float64Array, Int32Array, Int64Array, StringArray},
@@ -45,15 +40,14 @@ use arrow::{
     util::pretty::pretty_format_batches,
 };
 use datafusion::{
-    datasource::{MemTable, TableProvider},
     error::DataFusionError,
-    execution::SessionStateBuilder,
+    execution::{SessionStateBuilder, session_state::SessionState},
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_plan::{ExecutionPlan, displayable},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use futures::future::BoxFuture;
 use serde::Serialize;
+use tokio::task::spawn_blocking;
 
 type ToolResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -98,7 +92,6 @@ struct CaseResult {
     host_boundaries: Option<usize>,
     plan_root: Option<String>,
     contains_native: Option<bool>,
-    contains_table_format_scan: Option<bool>,
     contains_data_source: Option<bool>,
     rewritten: Option<usize>,
     rejected_reasons: Vec<String>,
@@ -291,7 +284,6 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             plan_root: None,
             contains_native: None,
             contains_data_source: None,
-            contains_table_format_scan: None,
             rewritten: None,
             rejected_reasons: vec![],
             parity_ok: None,
@@ -302,10 +294,6 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     // Preserve the report ordering while deferring the distinct 1-byte backend
     // until the ordinary process backend has closed completely.
     let runtime_failure_case_index = cases.len();
-
-    cases.push(run_iceberg_datafusion_baseline_executes(&backend).await);
-    cases.push(run_iceberg_native_group_by_rewrites(&backend).await);
-    cases.push(run_iceberg_unsupported_expression_retains_executable_datafusion_plan(&backend).await);
 
     // Corner: empty parquet file
     cases.push(run_empty_parquet_corner(&empty, &backend).await);
@@ -336,8 +324,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         "Default native planning may retain an executable DataFusion plan when a relational candidate is unsupported.".into(),
         "The no_datafusion_cpu requirement rejects a completed plan with DataFusion execution as FinalPlanRequirementUnsatisfied.".into(),
         "A datafusion_baseline session deliberately installs no relational native optimizer rule and executes through DataFusion.".into(),
-        "Local Parquet and AlgeonIcebergTableProvider both expose executable DataFusion plans when native lowering is not selected.".into(),
-        "AlgeonIcebergTableProvider is dual-mode: successful native lowering replaces AlgeonIcebergScanExec; otherwise its DataFusion delegate remains executable.".into(),
+        "Local Parquet scans expose executable DataFusion plans when native lowering is not selected.".into(),
         "After native execution starts, cpu_fallback_after_native_start=false means that attempt is terminal and is not restarted through DataFusion.".into(),
     ];
 
@@ -428,9 +415,6 @@ fn render_markdown(report: &MatrixReport) -> String {
         "| `datafusion_baseline` | Install no relational native rule; plan and execute solely with DataFusion. |\n",
     );
     out.push_str(
-        "| Iceberg provider | `AlgeonIcebergScanExec` retains an executable DataFusion delegate unless native lowering replaces the wrapper. |\n",
-    );
-    out.push_str(
         "| Native runtime replay | Does **not** exist (`cpu_fallback_after_native_start=false` means the started native attempt is terminal). |\n",
     );
     out
@@ -477,7 +461,6 @@ async fn run_parquet_case(
             host_boundaries: None,
             plan_root: None,
             contains_native: None,
-            contains_table_format_scan: None,
             contains_data_source: None,
             rewritten: None,
             rejected_reasons: vec![],
@@ -527,7 +510,6 @@ async fn run_parquet_case_inner(
             host_boundaries: None,
             plan_root: None,
             contains_native: None,
-            contains_table_format_scan: None,
             contains_data_source: None,
             rewritten: None,
             rejected_reasons: facts.get("fallback_reason").cloned().into_iter().collect(),
@@ -547,7 +529,6 @@ async fn run_parquet_case_inner(
     let host_boundaries = row.and_then(|r| r.host_datafusion_boundary_count);
     let plan_root = Some(plan.name().to_string());
     let contains_native = Some(plan_contains_native(plan.as_ref()));
-    let contains_table_format_scan = Some(plan_contains_name(plan.as_ref(), "AlgeonIcebergScanExec"));
     let contains_data_source = Some(plan_contains_name(plan.as_ref(), "DataSourceExec"));
 
     let mut detail = format!(
@@ -607,7 +588,6 @@ async fn run_parquet_case_inner(
                     host_boundaries,
                     plan_root,
                     contains_native,
-                    contains_table_format_scan,
                     contains_data_source,
                     rewritten: Some(rewritten),
                     rejected_reasons,
@@ -641,7 +621,6 @@ async fn run_parquet_case_inner(
         host_boundaries,
         plan_root,
         contains_native,
-        contains_table_format_scan,
         contains_data_source,
         rewritten: Some(rewritten),
         rejected_reasons,
@@ -702,7 +681,6 @@ async fn run_single_table_case(
             host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
-            contains_table_format_scan: Some(plan_contains_name(plan.as_ref(), "AlgeonIcebergScanExec")),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: Some(rewritten),
             rejected_reasons,
@@ -724,7 +702,6 @@ async fn run_single_table_case(
             host_boundaries: None,
             plan_root: None,
             contains_native: None,
-            contains_table_format_scan: None,
             contains_data_source: None,
             rewritten: None,
             rejected_reasons: vec![],
@@ -792,7 +769,6 @@ async fn run_tpch_case(tpch: &Path, backend: &AlgeonGpuBackend) -> CaseResult {
             host_boundaries: row.host_datafusion_boundary_count,
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
-            contains_table_format_scan: Some(false),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: Some(rewritten),
             rejected_reasons,
@@ -813,7 +789,6 @@ async fn run_tpch_case(tpch: &Path, backend: &AlgeonGpuBackend) -> CaseResult {
             host_boundaries: None,
             plan_root: None,
             contains_native: None,
-            contains_table_format_scan: None,
             contains_data_source: None,
             rewritten: None,
             rejected_reasons: vec![],
@@ -837,7 +812,6 @@ async fn run_runtime_no_rescue(bench: &Path) -> CaseResult {
             host_boundaries: None,
             plan_root: None,
             contains_native: None,
-            contains_table_format_scan: None,
             contains_data_source: None,
             rewritten: None,
             rejected_reasons: vec![],
@@ -886,7 +860,6 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
             host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(false),
-            contains_table_format_scan: Some(false),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: None,
             rejected_reasons: vec![],
@@ -913,7 +886,6 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
                 host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
                 plan_root: Some(plan.name().to_string()),
                 contains_native: Some(true),
-                contains_table_format_scan: Some(false),
                 contains_data_source: Some(false),
                 rewritten: None,
                 rejected_reasons: vec![],
@@ -922,7 +894,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
             });
         },
     };
-    let rows: usize = batches.iter().map(datafusion::arrow::array::RecordBatch::num_rows).sum();
+    let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
     let ok = !batches.is_empty() && rows > 0;
     Ok(CaseResult {
         id: id.into(),
@@ -937,7 +909,6 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
         host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
         plan_root: Some(plan.name().to_string()),
         contains_native: Some(true),
-        contains_table_format_scan: Some(false),
         contains_data_source: Some(false),
         rewritten: None,
         rejected_reasons: vec![],
@@ -947,144 +918,6 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     }
     .await;
     finish_backend_scope(backend, work).await
-}
-
-async fn run_iceberg_datafusion_baseline_executes(backend: &AlgeonGpuBackend) -> CaseResult {
-    let id = "iceberg_datafusion_baseline_executes_datafusion_delegate";
-    let result = async {
-        let schema = iceberg_schema();
-        let provider = iceberg_provider(Arc::clone(&schema), 32)?;
-        let ctx = relational_ctx(RelationalExecution::DataFusionBaseline, backend)?;
-        ctx.register_table("iceberg_t", provider)?;
-        let sql = "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value";
-        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
-        let batches = ctx.sql(sql).await?.collect().await?;
-        let has_scan = plan_contains_name(plan.as_ref(), "AlgeonIcebergScanExec");
-        let has_native = plan_contains_native(plan.as_ref());
-        let session_state = ctx.state();
-        let native_rule = installed_final_native_rule(&session_state);
-        ToolResult::Ok(CaseResult {
-            id: id.into(),
-            category: RelationalExecution::DataFusionBaseline.as_str().into(),
-            ok: has_scan && !has_native && native_rule.is_none() && !batches.is_empty(),
-            detail: format!(
-                "has_scan={has_scan} has_native={has_native} native_rule={} batches={}",
-                native_rule.is_some(),
-                batches.len()
-            ),
-            path: None,
-            fragments: None,
-            host_boundaries: None,
-            plan_root: Some(plan.name().to_string()),
-            contains_native: Some(has_native),
-            contains_table_format_scan: Some(has_scan),
-            contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
-            rewritten: Some(0),
-            rejected_reasons: vec![],
-            parity_ok: Some(true),
-            error_facts: BTreeMap::new(),
-        })
-    }
-    .await;
-    case_result_or_error(id, RelationalExecution::DataFusionBaseline.as_str(), result)
-}
-
-async fn run_iceberg_native_group_by_rewrites(backend: &AlgeonGpuBackend) -> CaseResult {
-    let id = "iceberg_native_default_group_by_rewrites";
-    let result = async {
-        let schema = iceberg_schema();
-        let provider = iceberg_provider(Arc::clone(&schema), 64)?;
-        let config = backend.optimizer_config().clone();
-        let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(config));
-        let state = SessionStateBuilder::new_with_default_features()
-            .with_config(direct_cfg())
-            .with_algeon_native_rule(Arc::clone(&rule))
-            .build();
-        let ctx = SessionContext::new_with_state(state);
-        ctx.register_table("iceberg_t", provider)?;
-        let sql = "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value";
-        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
-        let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule.as_ref());
-        let row = report.rows.first();
-        let has_scan = plan_contains_name(plan.as_ref(), "AlgeonIcebergScanExec");
-        let has_native = plan_contains_native(plan.as_ref());
-        let ok = !has_scan && has_native && row.and_then(|r| r.final_disposition) == Some(FinalPlanDisposition::Native);
-        ToolResult::Ok(CaseResult {
-            id: id.into(),
-            category: RelationalExecution::NativeDefault.as_str().into(),
-            ok,
-            detail: format!(
-                "has_scan={has_scan} has_native={has_native} path={:?}",
-                row.and_then(|r| r.final_disposition)
-            ),
-            path: row.map(|r| format!("{:?}", r.final_disposition)),
-            fragments: row.and_then(|r| r.native_plan_fragment_count),
-            host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
-            plan_root: Some(plan.name().to_string()),
-            contains_native: Some(has_native),
-            contains_table_format_scan: Some(has_scan),
-            contains_data_source: Some(false),
-            rewritten: None,
-            rejected_reasons: vec![],
-            parity_ok: None,
-            error_facts: BTreeMap::new(),
-        })
-    }
-    .await;
-    case_result_or_error(id, RelationalExecution::NativeDefault.as_str(), result)
-}
-
-async fn run_iceberg_unsupported_expression_retains_executable_datafusion_plan(
-    backend: &AlgeonGpuBackend,
-) -> CaseResult {
-    let id = "iceberg_native_default_unsupported_expression_retains_datafusion_delegate";
-    let result = async {
-        let schema = iceberg_schema();
-        let provider = iceberg_provider(Arc::clone(&schema), 48)?;
-        let config = backend.optimizer_config().clone();
-        let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(config));
-        let state = SessionStateBuilder::new_with_default_features()
-            .with_config(direct_cfg())
-            .with_algeon_native_rule(Arc::clone(&rule))
-            .build();
-        let ctx = SessionContext::new_with_state(state);
-        ctx.register_table("iceberg_t", provider)?;
-        // TRY_CAST blocks native lowering. The dual-mode wrapper must retain its
-        // executable DataFusion delegate rather than making the query unplannable.
-        let sql = "SELECT value, SUM(TRY_CAST(value AS DOUBLE)) AS s FROM iceberg_t GROUP BY value";
-        let plan = ctx.sql(sql).await?.create_physical_plan().await?;
-        let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule.as_ref());
-        let row = report.rows.first();
-        let has_scan = plan_contains_name(plan.as_ref(), "AlgeonIcebergScanExec");
-        let has_native = plan_contains_native(plan.as_ref());
-        let batches = ctx.sql(sql).await?.collect().await?;
-        ToolResult::Ok(CaseResult {
-            id: id.into(),
-            category: RelationalExecution::NativeDefault.as_str().into(),
-            ok: has_scan
-                && !has_native
-                && row.and_then(|row| row.final_disposition) == Some(FinalPlanDisposition::DataFusion)
-                && !batches.is_empty(),
-            detail: format!(
-                "has_scan={has_scan} has_native={has_native} path={:?} batches={}",
-                row.and_then(|row| row.final_disposition),
-                batches.len()
-            ),
-            path: row.map(|row| format!("{:?}", row.final_disposition)),
-            fragments: row.and_then(|row| row.native_plan_fragment_count),
-            host_boundaries: row.and_then(|row| row.host_datafusion_boundary_count),
-            plan_root: Some(plan.name().to_string()),
-            contains_native: Some(has_native),
-            contains_table_format_scan: Some(has_scan),
-            contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
-            rewritten: Some(0),
-            rejected_reasons: vec![],
-            parity_ok: Some(true),
-            error_facts: BTreeMap::new(),
-        })
-    }
-    .await;
-    case_result_or_error(id, RelationalExecution::NativeDefault.as_str(), result)
 }
 
 async fn run_empty_parquet_corner(path: &Path, backend: &AlgeonGpuBackend) -> CaseResult {
@@ -1149,7 +982,6 @@ async fn run_empty_parquet_corner(path: &Path, backend: &AlgeonGpuBackend) -> Ca
             host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
-            contains_table_format_scan: Some(false),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: Some(rewritten),
             rejected_reasons,
@@ -1170,29 +1002,12 @@ async fn run_empty_parquet_corner(path: &Path, backend: &AlgeonGpuBackend) -> Ca
             host_boundaries: None,
             plan_root: None,
             contains_native: None,
-            contains_table_format_scan: None,
             contains_data_source: None,
             rewritten: None,
             rejected_reasons: vec![],
             parity_ok: None,
             error_facts: BTreeMap::new(),
         },
-    }
-}
-
-#[derive(Debug)]
-struct FixedPlanner {
-    plan: TableFormatScanPlan,
-}
-
-impl TableFormatPlanner for FixedPlanner {
-    fn resolve_scan(
-        &self,
-        request: TableFormatScanRequest,
-    ) -> BoxFuture<'_, algeon_datafusion::error::Result<TableFormatScanPlan>> {
-        let scan_limit = request.scan_limit;
-        let plan = self.plan.clone().with_scan_limit(scan_limit);
-        Box::pin(async move { Ok(plan) })
     }
 }
 
@@ -1232,7 +1047,7 @@ fn relational_ctx(selection: RelationalExecution, backend: &AlgeonGpuBackend) ->
 }
 
 async fn finish_backend_scope<T>(backend: AlgeonGpuBackend, work: ToolResult<T>) -> ToolResult<T> {
-    let cleanup = tokio::task::spawn_blocking(move || backend.close_and_wait(Duration::from_secs(30))).await;
+    let cleanup = spawn_blocking(move || backend.close_and_wait(Duration::from_secs(30))).await;
     let cleanup: ToolResult<()> = match cleanup {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(error)) => Err(Box::new(error)),
@@ -1245,29 +1060,6 @@ async fn finish_backend_scope<T>(backend: AlgeonGpuBackend, work: ToolResult<T>)
         (Err(work_error), Err(cleanup_error)) => {
             Err(format!("validation work failed: {work_error:#}; backend cleanup also failed: {cleanup_error:#}")
                 .into())
-        },
-    }
-}
-
-fn case_result_or_error(id: &str, category: &str, result: ToolResult<CaseResult>) -> CaseResult {
-    match result {
-        Ok(case) => case,
-        Err(error) => CaseResult {
-            id: id.into(),
-            category: category.into(),
-            ok: false,
-            detail: format!("{error:#}"),
-            path: None,
-            fragments: None,
-            host_boundaries: None,
-            plan_root: None,
-            contains_native: None,
-            contains_table_format_scan: None,
-            contains_data_source: None,
-            rewritten: None,
-            rejected_reasons: vec![],
-            parity_ok: None,
-            error_facts: BTreeMap::new(),
         },
     }
 }
@@ -1294,9 +1086,7 @@ async fn register_pair(ctx: &SessionContext, bench: &Path, bench2: &Path) -> Too
     Ok(())
 }
 
-fn installed_final_native_rule(
-    state: &datafusion::execution::session_state::SessionState,
-) -> Option<&AlgeonNativePhysicalOptimizerRule> {
+fn installed_final_native_rule(state: &SessionState) -> Option<&AlgeonNativePhysicalOptimizerRule> {
     state.physical_optimizers().iter().find_map(|rule| {
         if rule.name() != ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME {
             return None;
@@ -1377,7 +1167,7 @@ fn walk_df_error(error: &DataFusionError, out: &mut BTreeMap<String, String>, de
             walk_df_error(inner, out, depth + 1);
         },
         DataFusionError::External(boxed) => {
-            if let Some(algeon) = boxed.downcast_ref::<algeon_datafusion::error::Error>() {
+            if let Some(algeon) = boxed.downcast_ref::<Error>() {
                 out.insert("error_code".into(), format!("{:?}", algeon.code()));
                 out.insert("source_error_status".into(), algeon.status().as_str().to_string());
                 out.insert("retry_advice".into(), "unavailable_no_sealed_attempt_report".to_string());
@@ -1413,64 +1203,6 @@ fn walk_df_error(error: &DataFusionError, out: &mut BTreeMap<String, String>, de
             out.entry(format!("other_{depth}")).or_insert_with(|| text.chars().take(500).collect());
         },
     }
-}
-
-fn iceberg_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("value", DataType::Utf8, true)]))
-}
-
-fn iceberg_provider(schema: Arc<Schema>, rows: i64) -> ToolResult<Arc<AlgeonIcebergTableProvider>> {
-    let datafusion_provider: Arc<dyn TableProvider> =
-        Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![iceberg_record_batch(Arc::clone(&schema), rows)?]])?);
-    let scan_plan = native_admissible_scan_plan(schema, "/tmp/datafusion-baseline-contract-iceberg.parquet");
-    Ok(Arc::new(AlgeonIcebergTableProvider::from_cpu_provider_and_native_planner(
-        datafusion_provider,
-        Some(12_345),
-        Arc::new(FixedPlanner { plan: scan_plan }),
-    )))
-}
-
-fn iceberg_record_batch(schema: Arc<Schema>, rows: i64) -> ToolResult<RecordBatch> {
-    let ids: Vec<i64> = (0..rows).collect();
-    let values: Vec<Option<String>> =
-        (0..rows).map(|i| if i % 5 == 0 { None } else { Some(format!("v{}", i % 7)) }).collect();
-    Ok(RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(ids)), Arc::new(StringArray::from(values))])?)
-}
-
-fn native_admissible_scan_plan(schema: Arc<Schema>, file_path: &str) -> TableFormatScanPlan {
-    TableFormatScanPlan::new(TableFormat::Iceberg)
-        .with_snapshot_id("12345")
-        .with_catalog_type("local")
-        .with_logical_schema(Arc::clone(&schema))
-        .with_native_source_schema(schema)
-        .with_data_file(
-            TableFormatDataFile::new(
-                "data-0001",
-                file_path,
-                TableFormatDataFileFormat::Parquet,
-                TableFormatReadCapability::local_file_system(),
-            )
-            .with_size_bytes(4096)
-            .with_row_count(32),
-        )
-        .with_projected_column(TableFormatColumnMapping::new(
-            None,
-            "id",
-            Some("id"),
-            DataType::Int64,
-            false,
-            TableFormatColumnSource::DirectTopLevelFileColumn,
-            TableFormatColumnRole::Projected,
-        ))
-        .with_projected_column(TableFormatColumnMapping::new(
-            None,
-            "value",
-            Some("value"),
-            DataType::Utf8,
-            true,
-            TableFormatColumnSource::DirectTopLevelFileColumn,
-            TableFormatColumnRole::Projected,
-        ))
 }
 
 fn write_synth_parquet(path: &Path, salt: i64, rows: i64) -> ToolResult<()> {

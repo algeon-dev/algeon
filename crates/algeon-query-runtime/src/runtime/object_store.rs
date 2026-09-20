@@ -16,9 +16,9 @@ use tokio::runtime::{Builder, Runtime as TokioRuntime};
 
 /// Storage profile used by native remote reads and cache maintenance.
 ///
-/// The profile is format-neutral: callers such as Iceberg REST/Glue translate
-/// catalog/FileIO settings into this shape before execution. Secrets are held
-/// only as object-store builder inputs and are redacted from [`Debug`].
+/// The adapter translates its S3 storage settings into this shape before
+/// execution. Secrets are held only as object-store builder inputs and are
+/// redacted from [`Debug`].
 #[derive(Clone, PartialEq, Eq)]
 pub struct SourceStorageProfile {
     id: String,
@@ -65,12 +65,6 @@ impl SourceStorageProfile {
     pub fn requires_scoped_remote_direct_profile(&self) -> bool {
         self.s3.requires_scoped_remote_direct_profile()
     }
-
-    /// Stable reason when this profile uses a shape that the explicit cuDF
-    /// remote datasource cannot currently represent.
-    pub fn remote_direct_profile_unsupported_reason(&self) -> Option<&'static str> {
-        self.s3.remote_direct_profile_unsupported_reason()
-    }
 }
 
 impl fmt::Debug for SourceStorageProfile {
@@ -91,7 +85,7 @@ pub struct S3SourceStorageProfile {
     /// path-style S3-compatible stores such as RustFS/MinIO.
     pub virtual_hosted_style_request: Option<bool>,
     /// Optional HTTP allowance. If unset, `http://` endpoints imply `true`.
-    pub allow_http: Option<bool>,
+    pub(crate) allow_http: Option<bool>,
     /// Credential source used by this profile.
     pub credential: S3SourceStorageCredential,
 }
@@ -127,12 +121,6 @@ impl S3SourceStorageProfile {
         self
     }
 
-    /// Allows or rejects HTTP endpoints.
-    pub fn with_allow_http(mut self, allow_http: bool) -> Self {
-        self.allow_http = Some(allow_http);
-        self
-    }
-
     /// Uses unsigned S3 requests without consulting ambient AWS credentials.
     pub fn with_unsigned_requests(mut self) -> Self {
         self.credential = S3SourceStorageCredential::Unsigned;
@@ -163,18 +151,6 @@ impl S3SourceStorageProfile {
             || self.virtual_hosted_style_request.is_some()
             || self.allow_http.is_some()
     }
-
-    /// Stable reason when this profile uses a shape that the explicit cuDF
-    /// remote datasource cannot currently represent.
-    pub fn remote_direct_profile_unsupported_reason(&self) -> Option<&'static str> {
-        if self.endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-            && self.virtual_hosted_style_request == Some(true)
-        {
-            Some("remote_direct_virtual_hosted_endpoint_unsupported")
-        } else {
-            None
-        }
-    }
 }
 
 impl fmt::Debug for S3SourceStorageProfile {
@@ -196,7 +172,7 @@ pub enum S3SourceStorageCredential {
     DefaultChain,
     /// Use unsigned S3 requests and do not consult ambient AWS credentials.
     Unsigned,
-    /// Use explicit static credentials supplied by the adapter/catalog layer.
+    /// Use explicit static credentials supplied by the adapter.
     Static {
         /// Access key id. Redacted from [`Debug`] to keep logs uniformly secret-free.
         access_key_id: String,
@@ -578,10 +554,8 @@ mod tests {
 
     #[test]
     fn source_storage_profile_builds_object_store_for_adapter_metadata_reads() {
-        let profile = SourceStorageProfile::s3(
-            "iceberg-profile",
-            S3SourceStorageProfile::default_chain().with_unsigned_requests(),
-        );
+        let profile =
+            SourceStorageProfile::s3("s3-profile", S3SourceStorageProfile::default_chain().with_unsigned_requests());
 
         let store = profile.build_s3_object_store("lakehouse", "us-east-1");
 

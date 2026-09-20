@@ -74,7 +74,7 @@ pub struct SharedResidentExtractionDiagnostics {
 
 impl SharedResidentExtractionDiagnostics {
     /// Returns whether the stage inspected no nodes.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0
             && self.extracted_count == 0
             && self.rejected_count == 0
@@ -82,7 +82,7 @@ impl SharedResidentExtractionDiagnostics {
     }
 
     /// Merges decisions from another invocation of the same stage.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.extracted_count += other.extracted_count;
         self.rejected_count += other.rejected_count;

@@ -1007,6 +1007,28 @@ fn custom_parquet_file_reader_factory_is_rejected_with_source_reason() {
 }
 
 #[test]
+fn reader_factory_named_like_the_datafusion_default_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-default-lookalike-reader-factory");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_default_lookalike_reader_factory(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeSourceParquetFileReaderFactory,
+            ..
+        }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn parquet_partition_columns_are_represented_in_native_source_contract() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-partition-columns");
     let path = dir.join("input.parquet");

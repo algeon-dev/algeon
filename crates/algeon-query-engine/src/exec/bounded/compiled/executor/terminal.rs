@@ -216,7 +216,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let output = materialize_bounded_frame_to_host(
             &mut self.execution,
             input_payload.clone_frame(),
-            input_payload.reservation_bytes(),
+            input_payload.observed_device_bytes(),
             *final_node_id,
             executable_schema,
             schema,

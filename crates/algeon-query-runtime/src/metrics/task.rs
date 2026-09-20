@@ -62,7 +62,7 @@ impl TaskRuntimeMetrics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetedExecutionEvent {
     /// Query-wide diagnostic correlation id, when assigned.
-    pub query_id: Option<QueryId>,
+    pub(crate) query_id: Option<QueryId>,
     /// Native operation label that produced the report.
     pub operation: String,
     /// Lower-level budget boundary label.
@@ -116,33 +116,6 @@ impl QueryMetrics {
         self.budgeted_execution_events.push(event);
     }
 
-    /// Returns the explicit cursor used by one compiled task to delimit its
-    /// lower-level budget reports.
-    pub fn budgeted_execution_event_count(&self) -> usize {
-        self.budgeted_execution_events.len()
-    }
-
-    /// Projects reports emitted after `start` onto one explicit compiled task.
-    pub fn record_task_budget_observations_since(&mut self, compiled_task_id: impl ToString, start: usize) {
-        let observed_peak_bytes = self
-            .budgeted_execution_events
-            .get(start..)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|event| event.allocator_high_water_bytes)
-            .max();
-        let retained_bytes = self
-            .budgeted_execution_events
-            .get(start..)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|event| event.retained_bytes)
-            .max();
-        if observed_peak_bytes.is_some() || retained_bytes.is_some() {
-            self.record_task_budget_observation(&compiled_task_id.to_string(), observed_peak_bytes, retained_bytes);
-        }
-    }
-
     /// Records execution of a compiled pipeline task.
     pub fn record_compiled_pipeline_task_execution(
         &mut self,
@@ -153,13 +126,13 @@ impl QueryMetrics {
     }
 
     /// Records execution of a task id and operator kind.
-    pub fn record_task_execution(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
+    pub(crate) fn record_task_execution(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
         self.register_task_definition(task_id, operator_kind);
     }
 
     /// Registers one explicit task definition, incrementing operator task count
     /// only when the task id is first observed.
-    pub fn register_task_definition(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
+    pub(crate) fn register_task_definition(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
         let compiled_task_id = task_id.to_string();
         let operator_kind = operator_kind.into();
         let query_id = self.inherited_query_id();

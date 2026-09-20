@@ -18,10 +18,8 @@ mod cache_events;
 mod cache_fill;
 mod context;
 mod deadline;
-#[doc(hidden)]
-pub mod gpu;
+pub(crate) mod gpu;
 mod gpu_execution_pool;
-mod io_capability;
 mod io_lifecycle;
 mod memory_domain;
 mod object_store;
@@ -39,32 +37,27 @@ mod supervised_worker;
 #[cfg(test)]
 mod tests;
 
-pub use attempt_domain::AttemptAllocationDomain;
 #[doc(hidden)]
 pub use attempt_domain::AttemptStreamProviderRoute;
 #[cfg(feature = "qualification")]
 pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{
-    GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreBuilder, GpuBackendCoreDraft,
-    GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
-    GpuBackendDeviceStartupRecord, GpuBackendSession, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryFraction,
-    GpuMemoryOwnership, probe_device_capacity,
+    GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+    GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuBackendDeviceStartupRecord, GpuBackendSession,
+    GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership, probe_device_capacity,
 };
-#[doc(hidden)]
-pub use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
+pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use backend_lifecycle::BackendLifecycle;
-#[doc(hidden)]
-pub use backend_lifecycle::ObservationPermit;
+pub(crate) use backend_lifecycle::ObservationPermit;
 pub use backend_metrics::{
     BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, BACKEND_METRIC_DEVICE_CAPACITY, BackendAdmissionHealth,
-    BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptDurations,
-    BackendAttemptMetricsSnapshot, BackendAttemptOutcome, BackendDeviceMetricsSnapshot, BackendHistogramProjection,
-    BackendHistogramSnapshot, BackendMemoryFailureTelemetry, BackendMetricAttribute, BackendMetricAttributeValue,
-    BackendMetricProjectionError, BackendMetricSample, BackendMetricSampleValue, BackendMetricsSnapshot,
-    BackendTelemetryAvailability, BackendTelemetryMetricsSnapshot, BackendTelemetryRefresh,
-    BackendTelemetryRefreshSnapshot, BackendTelemetrySource, project_backend_histogram,
+    BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptMetricsSnapshot,
+    BackendAttemptOutcome, BackendDeviceMetricsSnapshot, BackendHistogramProjection, BackendHistogramSnapshot,
+    BackendMetricAttribute, BackendMetricAttributeValue, BackendMetricProjectionError, BackendMetricSample,
+    BackendMetricSampleValue, BackendMetricsSnapshot, BackendTelemetryAvailability, BackendTelemetryMetricsSnapshot,
+    BackendTelemetryRefreshSnapshot, BackendTelemetrySource,
 };
 pub use cache::{
     CacheGraphActivity, CacheSourceActivity, CacheSourceEventSnapshot, DeviceCacheReport, cache_observation_fingerprint,
@@ -72,40 +65,29 @@ pub use cache::{
 pub use cache_events::LakehouseCacheFillEventSnapshot;
 #[doc(hidden)]
 pub use cache_events::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome};
-pub use cache_fill::{
-    CacheFillByteBudget, CacheFillBytePermit, DEFAULT_LAKEHOUSE_CACHE_FILL_ACQUIRE_TIMEOUT,
-    DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_BYTES, DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_CAP_BYTES,
-    DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, LakehouseCacheFillConfig,
-    default_lakehouse_cache_fill_budget_bytes,
-};
+pub(crate) use cache_fill::CacheFillByteBudget;
+pub use cache_fill::{CacheFillBytePermit, LakehouseCacheFillConfig};
 pub use context::{
-    ExecutionCancellation, ExecutionContext, LeasedExecutionContext, QueryServiceStreamPool,
-    RuntimeObservationBuildError, RuntimeObservedExecutionContext, RuntimeObservedExecutionContextBuilder,
+    ExecutionCancellation, ExecutionContext, RuntimeObservationBuildError, RuntimeObservedExecutionContext,
+    RuntimeObservedExecutionContextBuilder,
 };
+pub(crate) use gpu::{AlgeonGpuInventory, DeviceContext, DeviceLedger, DeviceRegistry, MemoryGrant};
 pub use gpu::{
-    AlgeonGpuInventory, AlgeonNvmlTelemetry, DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedger,
-    DeviceLedgerGrantRow, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceResourceEnvelope, DeviceResourceProfile,
-    DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant,
-    device_budget_bytes_from_facts,
+    DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedgerGrantRow, DeviceLedgerReport,
+    DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, DeviceTelemetryStatus,
 };
-pub(crate) use gpu::{DeviceContext, DeviceRegistry};
+#[cfg(test)]
+pub(crate) use gpu::{DeviceResourceEnvelope, GpuInventory, device_budget_bytes_from_facts};
+#[doc(hidden)]
+pub use gpu_execution_pool::PoolBlockingWork;
 pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,
 };
-#[doc(hidden)]
-pub use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker, PoolBlockingWork};
-pub use io_capability::{
-    DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV,
-    KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
-};
-pub use io_lifecycle::{IoLifecycle, IoLifecycleLease};
+pub(crate) use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker};
+pub use io_lifecycle::IoLifecycle;
 #[doc(hidden)]
 pub use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
-#[doc(hidden)]
-pub use process_exit::{
-    ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
-};
 pub use query_planning::execution_contracts::{
     MemoryControlPolicy, MemoryResourcePolicy, ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy,
 };
@@ -114,17 +96,15 @@ pub use query_service::DeviceQuarantineInjection;
 #[doc(hidden)]
 pub use query_service::QueryService;
 pub use query_service::{
-    AdmittedQueryContext, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryExecutionConfig,
-    QueryHandle, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    AdmittedQueryContext, QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
+    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
 };
 #[doc(hidden)]
 pub use reservation::RetryFacts;
+#[cfg(test)]
+pub(crate) use service_stream::DEFAULT_SERVICE_STREAM_POOL_SIZE;
 #[doc(hidden)]
 pub use service_stream::{AttemptWorkLease, ServiceStreamPool};
-pub use service_stream::{
-    DEFAULT_SERVICE_STREAM_POOL_SIZE, StreamLease, StreamPermitClass, default_service_stream_pool_size_for_device,
-};
+pub(crate) use service_stream::{StreamLease, StreamPermitClass, default_service_stream_pool_size_for_device};
 #[doc(hidden)]
 pub use supervised_worker::{SupervisedWorker, SupervisedWorkerJoin};
-
-pub use crate::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS;

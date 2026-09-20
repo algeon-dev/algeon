@@ -48,16 +48,12 @@ impl RuntimeAttemptId {
     pub const fn new(value: u32) -> Self {
         Self(value)
     }
-
-    pub const fn get(self) -> u32 {
-        self.0
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TaskAttemptId {
     pub task_id: RuntimeTaskId,
-    pub attempt: RuntimeAttemptId,
+    pub(crate) attempt: RuntimeAttemptId,
 }
 
 impl TaskAttemptId {

@@ -92,11 +92,6 @@ impl ParquetSourceLocation {
         }
     }
 
-    /// Display wrapper for path/URI diagnostics.
-    pub fn display(&self) -> impl fmt::Display + '_ {
-        self
-    }
-
     /// Redacted diagnostic location. Local paths are preserved; object-store
     /// URIs are represented by scheme plus stable hash only.
     pub fn diagnostic_location(&self) -> String {

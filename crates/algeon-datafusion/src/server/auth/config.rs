@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use super::password::validate_password_hash;
+use super::{password::validate_password_hash, token::expiry_after};
 use crate::server::error::{Result, ServerError};
 
 /// Top-level auth section of the server TOML config.
@@ -79,6 +79,11 @@ impl AuthMode {
                 if *token_ttl_secs == 0 {
                     return Err(ServerError::configuration(
                         "auth.mode.token_ttl_secs must be greater than zero; non-expiring bearer tokens are not supported",
+                    ));
+                }
+                if expiry_after(Duration::from_secs(*token_ttl_secs)).is_none() {
+                    return Err(ServerError::configuration(
+                        "auth.mode.token_ttl_secs is too large to compute a token expiry",
                     ));
                 }
                 let mut seen = BTreeSet::new();

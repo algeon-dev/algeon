@@ -12,7 +12,7 @@ use arrow::{
 use super::{
     export::{column_view_to_arrow_with_requested_type, map_record_batch_error},
     import::arrow_array_to_column,
-    record_host_boundary_observation_in_domain, record_host_export_call, record_host_import_call,
+    record_host_export_call, record_host_import_call,
     schema::{ArrowHostField, ArrowHostSchema},
 };
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
     hash::fast_index_map,
     internal::resolve::missing_column_error,
     runtime::{
-        BoundaryKind, CudaEvent, QueryStageKind, Runtime,
+        CudaEvent, Runtime,
         device_guard::DeviceGuard,
         host_staging::{PinnedSlabLease, pinned_staging_pool},
         stream::CudaStream,
@@ -40,9 +40,8 @@ impl DataFrame {
     /// corresponding Arrow array type. The schema (column names and types)
     /// is preserved.
     ///
-    /// If you need device-pointer handoff instead of host materialization, use
-    /// [`crate::DataFrame::try_prepare_device_arrow_export`] from
-    /// [`crate::interop::arrow_device`].
+    /// If you need device-resident handoff instead of host materialization, use
+    /// [`crate::DataFrame::try_prepare_device_table_export`].
     ///
     /// # Supported types
     ///
@@ -79,7 +78,6 @@ impl DataFrame {
         let names = self.column_names();
         let rows = self.num_rows();
         let column_count = self.num_columns();
-        let placement = self.placement();
 
         if schema.is_some_and(|schema| schema.len() != column_count) {
             return Err(Error::new_with(
@@ -114,18 +112,6 @@ impl DataFrame {
             RecordBatch::try_from_iter_with_nullable(columns)
         }
         .map_err(map_record_batch_error)?;
-        let observation = self
-            .boundary_observation_for_query_stage(
-                BoundaryKind::DeviceToHost,
-                QueryStageKind::FinalMaterialize,
-                true,
-                "dataframe::to_record_batch",
-            )
-            .map_err(|error| error.reanchor("dataframe::to_record_batch"))?;
-        debug_assert_eq!(observation.placement, placement);
-        debug_assert_eq!(observation.rows, rows);
-        debug_assert_eq!(observation.columns, column_count);
-        record_host_boundary_observation_in_domain(self.execution_domain(), observation);
         Ok(batch)
     }
 
@@ -140,10 +126,9 @@ impl DataFrame {
     /// precision metadata; re-export normalizes Decimal128 fields to
     /// `Decimal128(38, scale)`.
     ///
-    /// This method imports from host-resident `RecordBatch` data. If you
-    /// already have Arrow C Device ABI roots on the same CUDA device, prefer
-    /// [`crate::DataFrame::try_import_from_device_arrow_table_into_runtime`]
-    /// from [`crate::interop::arrow_device`].
+    /// This method imports from host-resident `RecordBatch` data. For a
+    /// prepared RAPIDS table export on the same CUDA device, use
+    /// [`crate::DataFrame::try_import_from_prepared_table_export_into_runtime`].
     ///
     /// # Supported types
     ///
@@ -214,9 +199,9 @@ impl Runtime {
 /// and scale, but cuDF does not retain Arrow precision metadata; re-export
 /// normalizes Decimal128 fields to `Decimal128(38, scale)`.
 ///
-/// This is the host `RecordBatch` import path, not Arrow C Device ABI import.
-/// For same-device device-root handoff, see
-/// [`crate::DataFrame::try_import_from_device_arrow_table_into_runtime`].
+/// This is the host `RecordBatch` import path. For a prepared RAPIDS table
+/// export on the same CUDA device, see
+/// [`crate::DataFrame::try_import_from_prepared_table_export_into_runtime`].
 ///
 /// # Supported types
 ///
@@ -241,16 +226,11 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
     let num_cols = schema.fields().len();
 
     if num_cols == 0 {
-        let frame =
-            DataFrame::from_raw_parts(fast_index_map(), batch.num_rows(), Arc::clone(runtime.execution_domain()));
-        let observation = frame.boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::InteropImport,
-            false,
-            "dataframe_from_record_batch",
-        )?;
-        record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
-        return Ok(frame);
+        return Ok(DataFrame::from_raw_parts(
+            fast_index_map(),
+            batch.num_rows(),
+            Arc::clone(runtime.execution_domain()),
+        ));
     }
 
     let mut names: Vec<String> = Vec::with_capacity(num_cols);
@@ -263,15 +243,7 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
         columns.push(col);
     }
 
-    let frame = DataFrame::new(names, columns)?;
-    let observation = frame.boundary_observation_for_query_stage(
-        BoundaryKind::HostToDevice,
-        QueryStageKind::InteropImport,
-        false,
-        "dataframe_from_record_batch",
-    )?;
-    record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
-    Ok(frame)
+    DataFrame::new(names, columns)
 }
 
 /// Convert a sequence of Arrow [`RecordBatch`]es sharing one schema into a
@@ -342,15 +314,7 @@ pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch])
 
     let num_cols = schema.fields().len();
     if num_cols == 0 {
-        let frame = DataFrame::from_raw_parts(fast_index_map(), total_rows, Arc::clone(runtime.execution_domain()));
-        let observation = frame.boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::InteropImport,
-            false,
-            "dataframe_from_record_batches",
-        )?;
-        record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
-        return Ok(frame);
+        return Ok(DataFrame::from_raw_parts(fast_index_map(), total_rows, Arc::clone(runtime.execution_domain())));
     }
 
     let mut names: Vec<String> = Vec::with_capacity(num_cols);
@@ -397,15 +361,7 @@ pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch])
         columns.push(column);
     }
 
-    let frame = DataFrame::new(names, columns)?;
-    let observation = frame.boundary_observation_for_query_stage(
-        BoundaryKind::HostToDevice,
-        QueryStageKind::InteropImport,
-        false,
-        "dataframe_from_record_batches",
-    )?;
-    record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
-    Ok(frame)
+    DataFrame::new(names, columns)
 }
 
 /// cudf type id for Arrow types eligible for the staged fixed-width import

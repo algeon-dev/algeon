@@ -9,6 +9,7 @@ mod dataframe;
 mod errors;
 mod output;
 mod shift;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
 pub(crate) use agg::groupby_aggregate_impl;

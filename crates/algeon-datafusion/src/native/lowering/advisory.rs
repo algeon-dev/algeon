@@ -90,12 +90,8 @@ pub(super) fn attach_input(
         NormalizedNativeInput::Source(source) => {
             if let Some(filter) = source.filter {
                 filter
-            } else if let Some(scan) = source.local_parquet_source_exec() {
-                scan
-            } else if let Some(scan) = source.table_format_scan_exec() {
-                scan
             } else {
-                return;
+                source.scan
             }
         },
         NormalizedNativeInput::LiteralSource(source) => match source {

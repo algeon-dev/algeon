@@ -1,9 +1,4 @@
 use algeon_datafusion::server::Result as ServerResult;
-#[cfg(feature = "iceberg")]
-use algeon_datafusion::{
-    server::{GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig},
-    table_format::iceberg::catalog::RestCatalogConfig,
-};
 use arrow::{
     array::Int64Array,
     datatypes::{DataType, Field, Schema},
@@ -32,9 +27,7 @@ fn env_with_default_device_profile() -> (tempfile::TempDir, BTreeMap<&'static st
     env_with_server_toml("")
 }
 
-fn server_config_with_default_device_profile(
-    mut env: BTreeMap<&'static str, String>,
-) -> ServerResult<ServerConfig> {
+fn server_config_with_default_device_profile(mut env: BTreeMap<&'static str, String>) -> ServerResult<ServerConfig> {
     let (_dir, profile_env) = env_with_default_device_profile();
     env.extend(profile_env);
     ServerConfig::from_env_get(|name| env.get(name).cloned())
@@ -82,10 +75,7 @@ impl SchemaProvider for ReadOnlySchema {
         self.tables.keys().cloned().collect()
     }
 
-    async fn table(
-        &self,
-        name: &str,
-    ) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
+    async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         Ok(self.tables.get(name).cloned())
     }
 
@@ -113,24 +103,4 @@ fn edge_table() -> Arc<dyn TableProvider> {
 
 fn batch_i64_value(batch: &RecordBatch, column: usize) -> i64 {
     batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
-}
-
-#[cfg(feature = "iceberg")]
-fn expect_glue_backend(
-    iceberg: &IcebergServerConfig,
-) -> &GlueServerBackendConfig {
-    match &iceberg.backend {
-        IcebergCatalogBackendConfig::Glue(glue) => glue,
-        other => panic!("expected Glue backend, got {other:?}"),
-    }
-}
-
-#[cfg(feature = "iceberg")]
-fn expect_rest_backend(
-    iceberg: &IcebergServerConfig,
-) -> &RestCatalogConfig {
-    match &iceberg.backend {
-        IcebergCatalogBackendConfig::Rest(rest) => rest,
-        other => panic!("expected REST backend, got {other:?}"),
-    }
 }

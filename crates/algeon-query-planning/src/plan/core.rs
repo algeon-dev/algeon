@@ -121,8 +121,7 @@ impl QueryPlan {
 
     /// Returns this plan with dynamic-filter routes and execution options copied
     /// from another plan.
-    #[doc(hidden)]
-    pub fn with_dynamic_filter_state_from(mut self, source: &Self) -> Self {
+    pub(crate) fn with_dynamic_filter_state_from(mut self, source: &Self) -> Self {
         self.dynamic_filter_routes = source.dynamic_filter_routes.clone();
         self.dynamic_filter_execution_options = source.dynamic_filter_execution_options;
         self
@@ -212,8 +211,7 @@ impl QueryPlan {
     /// cannot justify capability, admission, or grant size. A chosen executable
     /// strategy is recorded in the compiled plan. Rewrites invalidate a record when
     /// its occurrence, schema, or dependencies change.
-    #[doc(hidden)]
-    pub fn with_advisory_outputs_from(mut self, source: &Self) -> Self {
+    pub(crate) fn with_advisory_outputs_from(mut self, source: &Self) -> Self {
         let mut unchanged = vec![false; self.node_count()];
         for node in self.nodes() {
             unchanged[node.id.index()] =
@@ -237,8 +235,7 @@ impl QueryPlan {
 
     /// Returns this plan with keyed-hash join strategy options copied from
     /// another plan.
-    #[doc(hidden)]
-    pub fn with_keyed_hash_join_strategy_options_from(self, source: &Self) -> Self {
+    pub(crate) fn with_keyed_hash_join_strategy_options_from(self, source: &Self) -> Self {
         self.with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options)
     }
 
@@ -389,7 +386,7 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::Join(_)))
     }
 
-    pub fn contains_graph_algorithm(&self) -> bool {
+    pub(crate) fn contains_graph_algorithm(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
     }
 
@@ -536,7 +533,7 @@ impl PlanNode {
     /// Joins always return `[left, right]`; graph algorithms return the primary
     /// edge-list input followed by side inputs; unary operators return their
     /// single input; sources return an empty slice.
-    pub fn input_ids(&self) -> &[NodeId] {
+    pub(crate) fn input_ids(&self) -> &[NodeId] {
         match self {
             Self::Source(_) => &[],
             Self::Filter(node) => std::slice::from_ref(&node.input),

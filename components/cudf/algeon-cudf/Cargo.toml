@@ -23,13 +23,18 @@ workspace = true
 [lib]
 name = "cudf"
 
+[features]
+# Compiles the `cudf::testing` seams, hook functions, and device-safety
+# injection that contract tests and consumers' tests use. Production builds
+# leave it off.
+test-hooks = ["cudf-sys/test-hooks"]
+
 [dependencies]
 cudf-sys.workspace = true
 rapids-interop.workspace = true
 ahash.workspace = true
 arrow = { workspace = true, features = ["ffi"] }
 bitflags.workspace = true
-csv.workspace = true
 indexmap.workspace = true
 parquet.workspace = true
 smallvec.workspace = true
@@ -43,3 +48,51 @@ parquet = { workspace = true, features = ["arrow"] }
 static_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[[test]]
+name = "allocation_isolation_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "cache_allocation_domain_contracts_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "device_memory_manager_current_resource_integrity_contract_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "execution_contracts_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "interop_contracts_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "io_contracts_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "io_multi_device_contracts_gpu_exclusive"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "multi_gpu_contracts_gpu_exclusive"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "public_api_smoke_cpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "query_memory_manager_contracts_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "query_memory_manager_failure_callback_contracts_gpu"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "semantic_contracts_gpu"
+required-features = ["test-hooks"]

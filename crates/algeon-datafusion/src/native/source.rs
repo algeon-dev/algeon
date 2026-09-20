@@ -12,16 +12,10 @@ use datafusion::{
     },
     physical_plan::filter::FilterExec,
 };
-use parquet::file::{
-    metadata::{KeyValue, ParquetMetaData},
-    reader::{FileReader, SerializedFileReader},
-};
+use parquet::file::metadata::{KeyValue, ParquetMetaData};
 use query_engine::{
     expr::LiteralValue as NativeLiteralValue,
-    parquet_stats::{
-        ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column,
-        variable_width_payload_evidence_by_root_column,
-    },
+    parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
         GraphSimpleDirectedEdgeTopology, LocalParquetFile as NativeLocalParquetFile,
@@ -35,29 +29,28 @@ use query_engine::{
 };
 use serde_json::Value;
 
+#[cfg(feature = "cugraph")]
+use super::footers::FooterScope;
 use super::{
+    footers::parquet_footer,
     literal::{NativeLiteralContext, native_literal_value},
     pruning::{
         coalesced_local_parquet_scan_files, explicit_row_group_selection, local_object_path_to_filesystem,
         metadata_row_group_selections, scan_predicate_is_dynamic_filter_hint, validate_pruning_only_parquet_predicate,
     },
 };
-use crate::{
-    capability::CapabilityReason,
-    table_format::{
-        TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatReadCapability,
-        resolve_table_format_parquet_source_with_metadata,
-    },
-};
+use crate::capability::CapabilityReason;
 
 mod columns;
 mod diagnostics;
+mod s3_parquet;
 
 pub(super) use columns::{
     NativeParquetColumnRequirements, native_source_output_schema, required_parquet_column_requirements,
     required_parquet_column_requirements_for_scan_columns,
 };
 pub(super) use diagnostics::{local_parquet_source_diagnostics, source_diagnostics_for_normalized_plan};
+use s3_parquet::{ParquetReadStrategyConfig, ParquetSourceMetadata, resolve_parquet_source_with_metadata};
 
 pub(super) fn validate_slice1_parquet_scan(
     file_scan: &FileScanConfig,
@@ -111,18 +104,27 @@ pub(super) fn native_parquet_object_store_scan_is_supported(file_scan: &FileScan
     object_store_url.starts_with("file://") || object_store_url.starts_with("s3://")
 }
 
-pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
-    let Some(factory) = parquet_source.parquet_file_reader_factory() else {
-        return true;
-    };
+const STOCK_PARQUET_FILE_READER_FACTORY_DEBUG_PREFIXES: [&str; 2] =
+    ["DefaultParquetFileReaderFactory { store: ", "CachedParquetFileReaderFactory { store: "];
 
+pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
     // DataFusion's normal local-file scans can carry its default or cached
     // object-store reader factory. Native local reads represent that contract
     // directly through filesystem paths; caller-provided factories remain
     // rejected because they may change bytes, metadata, caching, credentials,
     // or IO semantics in ways the native source IR cannot represent.
-    let debug = format!("{factory:?}");
-    debug.starts_with("DefaultParquetFileReaderFactory") || debug.starts_with("CachedParquetFileReaderFactory")
+    //
+    // `ParquetFileReaderFactory` in DataFusion 55 has no `Any` supertrait, so
+    // the concrete type is unreachable. The derived `Debug` of the two stock
+    // factories opens with `Name { store: `; requiring the full opening, not
+    // only the type name, rejects wrappers such as
+    // `DefaultParquetFileReaderFactoryProxy` and same-named types with other
+    // fields. A caller type that reproduces both name and first field is
+    // indistinguishable until the trait exposes a type identity.
+    parquet_source.parquet_file_reader_factory().is_none_or(|factory| {
+        let debug = format!("{factory:?}");
+        STOCK_PARQUET_FILE_READER_FACTORY_DEBUG_PREFIXES.iter().any(|prefix| debug.starts_with(prefix))
+    })
 }
 
 /// Derives a stable graph-residency descriptor directly from a DataFusion
@@ -155,6 +157,7 @@ pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
 pub(crate) fn graph_local_parquet_source_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
 ) -> Option<NativeLocalParquetSource> {
+    let _footers = FooterScope::enter();
     let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
     graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()
 }
@@ -315,17 +318,13 @@ fn native_parquet_file_for_scan(
     }
 
     let uri = object_store_file_uri(file_scan, file)?;
-    let mut metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(file.object_meta.size), None);
-    if let Some(content_identity) = file.object_meta.e_tag.as_ref().or(file.object_meta.version.as_ref()) {
-        metadata = metadata.with_content_identity(content_identity.clone());
-    }
-    let resolved = resolve_table_format_parquet_source_with_metadata(
-        uri.as_str(),
-        &TableFormatReadCapability::object_store("s3"),
-        &TableFormatParquetReadStrategyConfig::from_env(),
-        &metadata,
-    )
-    .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)?;
+    let metadata = ParquetSourceMetadata {
+        size_bytes: Some(file.object_meta.size),
+        content_identity: file.object_meta.e_tag.as_ref().or(file.object_meta.version.as_ref()).cloned(),
+    };
+    let resolved =
+        resolve_parquet_source_with_metadata(uri.as_str(), &ParquetReadStrategyConfig::from_env(), &metadata)
+            .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)?;
     NativeLocalParquetFile::from_resolved_parquet_source(resolved)
         .map(|native_file| native_file.with_file_size_bytes(file.object_meta.size))
         .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)
@@ -348,17 +347,11 @@ pub(super) fn attach_row_group_byte_metadata(
     mut native_file: NativeLocalParquetFile,
     column_requirements: &NativeParquetColumnRequirements,
 ) -> NativeLocalParquetFile {
-    let Ok(reader) = SerializedFileReader::try_from(native_file.path.as_path()) else {
+    let Ok(footer) = parquet_footer(native_file.path.as_path()) else {
         return native_file;
     };
-    let metadata = reader.metadata();
+    let metadata = footer.as_ref();
     let read_column_indexes = column_requirements.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
-    let variable_width_payload_evidence = variable_width_payload_evidence_by_root_column(
-        metadata,
-        &read_column_indexes,
-        native_file.row_groups.as_deref(),
-    );
-    native_file = native_file.with_variable_width_payload_evidence(variable_width_payload_evidence);
     let projected_column_indexes = column_requirements
         .projected_output_column_source_refs
         .iter()

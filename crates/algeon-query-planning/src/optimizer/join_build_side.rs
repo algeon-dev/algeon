@@ -87,7 +87,7 @@ impl JoinBuildSideSelectionDiagnostics {
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -98,7 +98,7 @@ impl JoinBuildSideSelectionDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinBuildSideSelectionCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Join node considered by the pass.
     pub candidate_node_id: NodeId,
     /// Build side before optimization.
@@ -120,11 +120,11 @@ pub struct JoinBuildSideSelectionCandidateDiagnostics {
     /// Frontend advisory bytes on the left input, if the frontend estimated them.
     pub left_advisory_bytes: Option<u64>,
     /// Frontend advisory bytes on the right input, if the frontend estimated them.
-    pub right_advisory_bytes: Option<u64>,
+    pub(crate) right_advisory_bytes: Option<u64>,
     /// Configured byte threshold under which a side is treated as a small build candidate.
-    pub small_build_side_bytes: u64,
+    pub(crate) small_build_side_bytes: u64,
     /// Configured row threshold under which a side is treated as a small build candidate.
-    pub small_build_side_rows: u64,
+    pub(crate) small_build_side_rows: u64,
     /// Evidence that decided the selected side, when a side was selected.
     pub selection_basis: Option<JoinBuildSideSelectionBasis>,
     /// True when the returned plan uses the selected build side.
@@ -154,7 +154,7 @@ pub enum JoinBuildSideSelectionBasis {
 
 impl JoinBuildSideSelectionBasis {
     /// Stable diagnostic string for this basis.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ConservativeBytes => "conservative_bytes",
             Self::ConservativeRows => "conservative_rows",
@@ -178,15 +178,13 @@ pub enum JoinBuildSideSelectionRejectedReason {
     NoBetterBuildSide,
 }
 
-#[doc(hidden)]
-pub struct JoinBuildSideSelectionResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: JoinBuildSideSelectionDiagnostics,
+pub(crate) struct JoinBuildSideSelectionResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: JoinBuildSideSelectionDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_join_build_side_selection(
+pub(crate) fn optimize_join_build_side_selection(
     plan: QueryPlan,
     options: &JoinBuildSideSelectionOptions,
 ) -> JoinBuildSideSelectionResult {

@@ -4,10 +4,7 @@ use std::fmt::Write;
 
 use arrow::datatypes::SchemaRef;
 use query_planning::{
-    source::{
-        LocalParquetSource, ParquetEqualityDeleteFile, ParquetPositionDeleteFile, ParquetReaderDecimalType,
-        ResolvedParquetSource, SourceColumnRef,
-    },
+    source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::{escape_kv_delimited, fnv1a64},
 };
 
@@ -87,51 +84,6 @@ pub(super) fn push_resolved_source_contract(
     );
 }
 
-pub(super) fn push_position_delete_files(
-    output: &mut String,
-    label: impl AsRef<str>,
-    delete_files: &[ParquetPositionDeleteFile],
-) {
-    let label = label.as_ref();
-    push_token(output, format!("{label}.len"), delete_files.len().to_string());
-    for (index, delete_file) in delete_files.iter().enumerate() {
-        let label = format!("{label}.{index}");
-        push_token(output, format!("{label}.id"), delete_file.id.as_str());
-        push_token(output, format!("{label}.location"), delete_file.location.reader_path());
-        push_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
-        push_token(output, format!("{label}.stable_id"), delete_file.stable_id.as_str());
-        push_optional_u64(output, format!("{label}.size"), delete_file.file_size_bytes);
-        push_optional_u64(output, format!("{label}.rows"), delete_file.row_count);
-        push_optional_string(
-            output,
-            format!("{label}.referenced_data_file"),
-            delete_file.referenced_data_file.as_deref(),
-        );
-        push_optional_u64(output, format!("{label}.position_lower_bound"), delete_file.position_lower_bound);
-        push_optional_u64(output, format!("{label}.position_upper_bound"), delete_file.position_upper_bound);
-    }
-}
-
-pub(super) fn push_equality_delete_files(
-    output: &mut String,
-    label: impl AsRef<str>,
-    delete_files: &[ParquetEqualityDeleteFile],
-) {
-    let label = label.as_ref();
-    push_token(output, format!("{label}.len"), delete_files.len().to_string());
-    for (index, delete_file) in delete_files.iter().enumerate() {
-        let label = format!("{label}.{index}");
-        push_token(output, format!("{label}.id"), delete_file.id.as_str());
-        push_token(output, format!("{label}.location"), delete_file.location.reader_path());
-        push_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
-        push_token(output, format!("{label}.stable_id"), delete_file.stable_id.as_str());
-        push_i32_vec(output, format!("{label}.equality_ids"), &delete_file.equality_ids);
-        push_string_vec(output, format!("{label}.equality_columns"), &delete_file.equality_columns);
-        push_optional_u64(output, format!("{label}.size"), delete_file.file_size_bytes);
-        push_optional_u64(output, format!("{label}.rows"), delete_file.row_count);
-    }
-}
-
 pub(super) fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSource) {
     for (index, file) in source.files.iter().enumerate() {
         replace_token_value(
@@ -147,51 +99,7 @@ pub(super) fn redact_source_cache_fingerprint(output: &mut String, source: &Loca
             file.location.diagnostic_stable_id(file.stable_id.as_str()).as_str(),
         );
         redact_resolved_source_contract(output, format!("file.{index}.resolved"), &file.resolved_source);
-        for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
-            let label = format!("file.{index}.position_delete_files.{delete_index}");
-            replace_token_value(
-                output,
-                format!("{label}.location"),
-                delete_file.location.reader_path().as_str(),
-                delete_file.location.diagnostic_location().as_str(),
-            );
-            replace_token_value(
-                output,
-                format!("{label}.stable_id"),
-                delete_file.stable_id.as_str(),
-                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
-            );
-            if let Some(referenced_data_file) = delete_file.referenced_data_file.as_deref() {
-                replace_token_value(
-                    output,
-                    format!("{label}.referenced_data_file"),
-                    referenced_data_file,
-                    redacted_position_delete_referenced_data_file(referenced_data_file).as_str(),
-                );
-            }
-            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
-        }
-        for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
-            let label = format!("file.{index}.equality_delete_files.{delete_index}");
-            replace_token_value(
-                output,
-                format!("{label}.location"),
-                delete_file.location.reader_path().as_str(),
-                delete_file.location.diagnostic_location().as_str(),
-            );
-            replace_token_value(
-                output,
-                format!("{label}.stable_id"),
-                delete_file.stable_id.as_str(),
-                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
-            );
-            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
-        }
     }
-}
-
-pub(super) fn redacted_position_delete_referenced_data_file(path: &str) -> String {
-    format!("stable_id_fnv64:{:016x}", fnv1a64(path.as_bytes()))
 }
 
 pub(super) fn redact_resolved_source_contract(
@@ -266,13 +174,6 @@ pub(super) fn push_string_vec(output: &mut String, label: impl AsRef<str>, value
 }
 
 pub(super) fn push_usize_vec(output: &mut String, label: impl AsRef<str>, values: &[usize]) {
-    push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
-    for (index, value) in values.iter().enumerate() {
-        push_token(output, format!("{}.{}", label.as_ref(), index), value.to_string());
-    }
-}
-
-pub(super) fn push_i32_vec(output: &mut String, label: impl AsRef<str>, values: &[i32]) {
     push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
     for (index, value) in values.iter().enumerate() {
         push_token(output, format!("{}.{}", label.as_ref(), index), value.to_string());

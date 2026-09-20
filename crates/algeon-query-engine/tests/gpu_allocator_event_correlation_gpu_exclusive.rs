@@ -16,10 +16,9 @@ use query_engine::{
         AttemptDisposition, AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
     },
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
-        GpuDeviceMemoryLimit, GpuExecutionJobKind, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
+        AdmittedQueryContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuExecutionJobKind,
+        GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
 };
 
@@ -33,14 +32,6 @@ struct AdmittedAttempt {
     completion: AttemptCompletion,
     handle: QueryHandle,
     context: AdmittedQueryContext,
-}
-
-fn non_gds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
 }
 
 fn test_backend(device: DeviceId) -> GpuBackendCore {
@@ -57,7 +48,7 @@ fn test_backend(device: DeviceId) -> GpuBackendCore {
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 2, 2)),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: STATIC_PARTITION_BYTES },
     );
-    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
+    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller))
         .build()
         .expect("two-attempt physical allocator-correlation backend builds")
 }

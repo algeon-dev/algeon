@@ -3,7 +3,6 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetSource, parquet::ParquetAccessPlan},
-    parquet::file::reader::{FileReader, SerializedFileReader},
     physical_plan::filter::FilterExec,
 };
 use query_engine::source::{
@@ -19,6 +18,7 @@ use super::{
     native_preserve_order_scan_is_supported, partition_column_disposition, required_parquet_column_requirements,
 };
 use crate::native::{
+    footers::parquet_footer,
     normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeSource},
     pruning::{
         CoalescedLocalParquetFile, LocalParquetByteRangeRepresentation, coalesced_local_parquet_scan_files,
@@ -95,7 +95,7 @@ fn source_diagnostics_for_source(
     source: &NormalizedNativeSource<'_>,
     normalized: &NormalizedNativePlan<'_>,
 ) -> Option<NativeSourceDiagnostics> {
-    let source_exec = source.local_parquet_source_exec()?;
+    let source_exec = source.scan;
     let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let aggregate_root = normalized.aggregate_root();
@@ -315,6 +315,5 @@ fn selected_row_group_count_for_coalesced_file(file: &CoalescedLocalParquetFile<
         return Some(row_groups.len());
     }
     let path = local_object_path_to_filesystem(file.file.object_meta.location.as_ref());
-    let reader = SerializedFileReader::try_from(path.as_path()).ok()?;
-    Some(reader.metadata().num_row_groups())
+    Some(parquet_footer(path.as_path()).ok()?.num_row_groups())
 }

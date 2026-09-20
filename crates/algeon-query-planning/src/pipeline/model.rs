@@ -93,7 +93,7 @@ impl PipelineEdgeId {
         Self(index)
     }
 
-    pub const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self.0
     }
 }
@@ -107,7 +107,7 @@ impl PipelineBarrierId {
         Self(index)
     }
 
-    pub const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self.0
     }
 }
@@ -121,7 +121,7 @@ impl ResidentResourceId {
         Self(index)
     }
 
-    pub const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self.0
     }
 }
@@ -166,7 +166,7 @@ impl PipelineTask {
     }
 
     /// Create a task associated with a native plan node.
-    pub fn for_plan_node(id: PipelineTaskId, kind: PipelineTaskKind, plan_node: NodeId) -> Self {
+    pub(crate) fn for_plan_node(id: PipelineTaskId, kind: PipelineTaskKind, plan_node: NodeId) -> Self {
         Self { plan_node: Some(plan_node), ..Self::new(id, kind) }
     }
 
@@ -183,7 +183,7 @@ impl PipelineTask {
     }
 
     /// Record the strongest payload form this task accepts on a data input.
-    pub fn with_accepted_input_form(mut self, accepted_input_form: AcceptedInputForm) -> Self {
+    pub(crate) fn with_accepted_input_form(mut self, accepted_input_form: AcceptedInputForm) -> Self {
         self.accepted_input_form = accepted_input_form;
         self
     }
@@ -195,13 +195,13 @@ impl PipelineTask {
     }
 
     /// Record the plan-derived join strategy selected for this join task.
-    pub fn with_plan_join_strategy(mut self, plan_join_strategy: CompiledJoinExecutionStrategy) -> Self {
+    pub(crate) fn with_plan_join_strategy(mut self, plan_join_strategy: CompiledJoinExecutionStrategy) -> Self {
         self.plan_join_strategy = Some(plan_join_strategy);
         self
     }
 
     /// Record the aggregate execution stage this task runs.
-    pub fn with_aggregate_stage(mut self, aggregate_stage: AggregateExecutionStage) -> Self {
+    pub(crate) fn with_aggregate_stage(mut self, aggregate_stage: AggregateExecutionStage) -> Self {
         self.aggregate_stage = Some(aggregate_stage);
         self
     }
@@ -245,7 +245,7 @@ impl PipelineTask {
     ///
     /// This is the strategy the plan alone determines. The executor may still
     /// refine it from observed build facts before running the kernel.
-    pub fn plan_join_strategy(&self) -> Option<CompiledJoinExecutionStrategy> {
+    pub(crate) fn plan_join_strategy(&self) -> Option<CompiledJoinExecutionStrategy> {
         self.plan_join_strategy
     }
 
@@ -275,17 +275,7 @@ pub enum AcceptedInputForm {
     AnyProducedForm,
 }
 
-impl AcceptedInputForm {
-    /// Stable diagnostic label for this accepted input form.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frame => "frame",
-            Self::FrameOrStream => "frame_or_stream",
-            Self::FrameStreamOrSourceStream => "frame_stream_or_source_stream",
-            Self::AnyProducedForm => "any_produced_form",
-        }
-    }
-}
+impl AcceptedInputForm {}
 
 /// Final-sort execution strategy, selected once at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -301,15 +291,7 @@ pub enum SortStrategy {
     },
 }
 
-impl SortStrategy {
-    /// Stable diagnostic label for this sort strategy.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::FullSort => "full_sort",
-            Self::FusedTopK { .. } => "fused_topk",
-        }
-    }
-}
+impl SortStrategy {}
 
 /// Symbolic native work categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -568,14 +550,14 @@ impl ResidentResource {
     }
 
     /// Record the payload form and sharing mode resolved for this resource.
-    pub fn with_consumption(mut self, data_form: ResidentDataForm, sharing: ResourceSharing) -> Self {
+    pub(crate) fn with_consumption(mut self, data_form: ResidentDataForm, sharing: ResourceSharing) -> Self {
         self.data_form = data_form;
         self.sharing = sharing;
         self
     }
 
     /// Record the row ordering this resource's rows are known to carry.
-    pub fn with_ordering(mut self, ordering: Option<ResourceOrdering>) -> Self {
+    pub(crate) fn with_ordering(mut self, ordering: Option<ResourceOrdering>) -> Self {
         self.ordering = ordering;
         self
     }
@@ -639,13 +621,8 @@ impl ResourceOrdering {
     }
 
     /// Ordering that holds over every row of the producer.
-    pub fn global(keys: Vec<SortExpr>) -> Self {
+    pub(crate) fn global(keys: Vec<SortExpr>) -> Self {
         Self { keys, scope: OrderingScope::Global }
-    }
-
-    /// Ordering that holds only within each emitted chunk.
-    pub fn per_chunk(keys: Vec<SortExpr>) -> Self {
-        Self { keys, scope: OrderingScope::PerChunk }
     }
 }
 
@@ -659,15 +636,7 @@ pub enum OrderingScope {
     Global,
 }
 
-impl OrderingScope {
-    /// Stable diagnostic label for this ordering scope.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PerChunk => "per_chunk",
-            Self::Global => "global",
-        }
-    }
-}
+impl OrderingScope {}
 
 /// Payload form a compiled resident resource may carry between tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -680,16 +649,7 @@ pub enum ResidentDataForm {
     SourceStream,
 }
 
-impl ResidentDataForm {
-    /// Stable diagnostic label for this payload form.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frame => "frame",
-            Self::FrameStream => "frame_stream",
-            Self::SourceStream => "source_stream",
-        }
-    }
-}
+impl ResidentDataForm {}
 
 /// How several consumers read one resident resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -703,16 +663,7 @@ pub enum ResourceSharing {
     IndependentCursorStream,
 }
 
-impl ResourceSharing {
-    /// Stable diagnostic label for this sharing mode.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SingleConsume => "single_consume",
-            Self::SharedImmutableFrame => "shared_immutable_frame",
-            Self::IndependentCursorStream => "independent_cursor_stream",
-        }
-    }
-}
+impl ResourceSharing {}
 
 /// Symbolic resident lifetime class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

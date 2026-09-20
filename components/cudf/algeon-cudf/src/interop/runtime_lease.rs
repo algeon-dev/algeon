@@ -2,7 +2,7 @@ mod authorities;
 mod backend;
 mod sync;
 
-pub(crate) use backend::shared_cuda_lease_backend_with_observation;
+pub(crate) use backend::shared_cuda_lease_backend;
 pub(super) const SHARED_ACTIVATE_LEASE_OP: &str = "interop::PreparedExport::try_activate_read_lease";
 pub(super) const SHARED_COMPLETE_LEASE_OP: &str = "interop::ActiveReadLease::complete";
 pub(super) const SHARED_DROP_LEASE_OP: &str = "interop::ActiveReadLease::drop";

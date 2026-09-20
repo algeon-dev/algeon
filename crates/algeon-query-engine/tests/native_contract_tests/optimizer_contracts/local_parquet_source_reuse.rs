@@ -245,29 +245,8 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
 }
 
 #[test]
-fn native_optimizer_rejects_position_delete_source_reuse_contract() {
-    let plan = position_delete_source_reuse_plan();
-    let options = NativeOptimizerOptions {
-        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
-        ..NativeOptimizerOptions::disabled()
-    };
-
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
-
-    assert_eq!(result.plan, plan);
-    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
-    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
-    assert_eq!(diagnostics.considered_count, 1);
-    assert_eq!(diagnostics.applied_count, 0);
-    assert_eq!(
-        diagnostics.candidates[0].rejected_reason,
-        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
-    );
-}
-
-#[test]
-fn native_optimizer_rejects_field_id_output_schema_override_source_reuse_contract() {
-    let plan = field_id_output_schema_override_source_reuse_plan();
+fn native_optimizer_rejects_renaming_output_schema_override_source_reuse_contract() {
+    let plan = renaming_output_schema_override_source_reuse_plan();
     let options = NativeOptimizerOptions {
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
@@ -507,31 +486,10 @@ fn count_star_probe_source_reuse_plan() -> QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn position_delete_source_reuse_plan() -> QueryPlan {
+fn renaming_output_schema_override_source_reuse_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(
-        contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
-            .with_position_delete_file("delete-a", "s3://warehouse/customer_address-delete-a.parquet"),
-    ));
-    let right = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
-        remote_direct_customer_address_contract(),
-    )));
-    let left_id = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let right_id = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left_id, right_id], schema(&["id"]));
-    builder.finish_gpu_resident(union)
-}
-
-fn field_id_output_schema_override_source_reuse_plan() -> QueryPlan {
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(field_id_output_schema_override_source(&[("old_id", "id")]));
-    let right = builder.add_source(field_id_output_schema_override_source(&[("old_id", "id"), ("old_state", "state")]));
+    let left = builder.add_source(renaming_output_schema_override_source(&[("old_id", "id")]));
+    let right = builder.add_source(renaming_output_schema_override_source(&[("old_id", "id"), ("old_state", "state")]));
     let left_id = builder.add_projection(
         left,
         vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
@@ -934,7 +892,7 @@ fn contract_sensitive_customer_address_source(resolved_source: ResolvedParquetSo
     LocalParquetSource::from_files(vec![file], schema, vec!["id".to_string()])
 }
 
-fn field_id_output_schema_override_source(field_names: &[(&str, &str)]) -> SourceNode {
+fn renaming_output_schema_override_source(field_names: &[(&str, &str)]) -> SourceNode {
     let physical_names = field_names.iter().map(|(physical, _logical)| *physical).collect::<Vec<_>>();
     let logical_names = field_names.iter().map(|(_physical, logical)| *logical).collect::<Vec<_>>();
     let source_schema = schema(&physical_names);
@@ -943,15 +901,8 @@ fn field_id_output_schema_override_source(field_names: &[(&str, &str)]) -> Sourc
         .with_row_group_bytes(vec![2 * 1024 * 1024])
         .with_row_group_rows(vec![100_000]);
     let read_columns = physical_names.iter().map(|name| (*name).to_string()).collect::<Vec<_>>();
-    let mut source = LocalParquetSource::from_files(vec![file], source_schema, read_columns);
-    source.files[0].field_id_read_bindings = field_names
-        .iter()
-        .enumerate()
-        .map(|(index, (physical, logical))| {
-            ParquetFieldIdReadBinding::new(index as i32 + 1, *logical, *physical, index, false, DataType::Int32)
-        })
-        .collect();
-    source = source.with_output_schema_override(schema(&logical_names));
+    let source = LocalParquetSource::from_files(vec![file], source_schema, read_columns)
+        .with_output_schema_override(schema(&logical_names));
     SourceNode::LocalParquet(source)
 }
 
@@ -962,7 +913,6 @@ trait LocalParquetSourceTestExt {
         type_id: ParquetReaderDecimalTypeId,
         cudf_scale: i32,
     ) -> Self;
-    fn with_position_delete_file(self, id: &str, location: &str) -> Self;
 }
 
 impl LocalParquetSourceTestExt for LocalParquetSource {
@@ -974,17 +924,6 @@ impl LocalParquetSourceTestExt for LocalParquetSource {
     ) -> Self {
         self.files[0].reader_decimal_types =
             vec![ParquetReaderDecimalType::new(column_name.to_string(), type_id, cudf_scale)];
-        self.refresh_diagnostics();
-        self
-    }
-
-    fn with_position_delete_file(mut self, id: &str, location: &str) -> Self {
-        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-            id,
-            ResolvedParquetSource::remote_kvikio(location, CredentialMode::SharedProcessEnv),
-        )
-        .unwrap();
-        self.files[0].position_delete_files = vec![delete_file];
         self.refresh_diagnostics();
         self
     }

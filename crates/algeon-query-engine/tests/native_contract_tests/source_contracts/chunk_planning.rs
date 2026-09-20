@@ -348,45 +348,6 @@ fn source_chunk_planning_applies_scan_limit_to_planned_chunks() {
 }
 
 #[test]
-fn source_chunk_planning_does_not_apply_scan_limit_prefix_before_equality_deletes() {
-    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
-    let delete_file = ParquetEqualityDeleteFile::from_resolved_parquet_source(
-        "delete-000",
-        ResolvedParquetSource::local_kvikio("/tmp/delete-000.parquet"),
-        vec![1],
-        vec!["key".to_string()],
-    )
-    .unwrap();
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new("/tmp/part-000.parquet")
-                .with_file_size_bytes(4_000)
-                .with_row_groups(vec![0, 1, 2, 3])
-                .with_row_group_bytes(vec![1_000, 1_000, 1_000, 1_000])
-                .with_projected_row_group_bytes(vec![50, 50, 50, 50], vec![100, 100, 100, 100])
-                .with_row_group_rows(vec![10, 10, 10, 10])
-                .with_equality_delete_files(vec![delete_file]),
-        ],
-        Arc::clone(&schema),
-        vec!["key".to_string()],
-    )
-    .with_scan_limit(Some(5));
-    let mut builder = QueryPlanBuilder::new();
-    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-
-    let plan =
-        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(250), 8)).unwrap();
-
-    assert_eq!(plan.chunk_count(), 2);
-    assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
-    assert_eq!(plan.chunks[0].known_row_count, Some(20));
-    assert_eq!(plan.chunks[0].scan_limit_rows, None);
-    assert_eq!(plan.chunks[1].row_group_indexes, vec![2, 3]);
-    assert_eq!(plan.chunks[1].known_row_count, Some(20));
-    assert_eq!(plan.chunks[1].scan_limit_rows, None);
-}
-
-#[test]
 fn source_chunk_planning_trims_scan_limit_before_large_chunk_packing() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let source = LocalParquetSource::from_files(
@@ -725,54 +686,6 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
     let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
     assert_eq!(stats.selected_row_groups, 1);
     assert_eq!(stats.total_row_groups, 2);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predicate() {
-    let dir = unique_temp_dir("query-engine-dynamic-filter-position-delete");
-    let path = dir.join("input.parquet");
-    let schema = write_row_grouped_parquet(&path, 8, 2);
-    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-        "delete-0",
-        ResolvedParquetSource::local_kvikio(dir.join("delete.parquet").display().to_string()),
-    )
-    .unwrap();
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_row_group_rows(vec![2, 2, 2, 2])
-                .with_position_delete_files(vec![delete_file]),
-        ],
-        schema,
-        vec!["key".to_string()],
-    );
-    let mut builder = QueryPlanBuilder::new();
-    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route = dynamic_filter_source_route(source_id, DynamicFilterConsumerLowering::ReaderPredicate);
-    let mut filters = DynamicFilterSet::new();
-    filters.insert(DynamicFilterId::new(0), DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 });
-
-    let footer = local_parquet_footer(&path);
-    let footer_refs = vec![Some(&footer)];
-    let rewritten = apply_dynamic_filters_to_local_parquet_source(
-        &source,
-        &[&route],
-        &filters,
-        rapids_analysis_context(),
-        query_engine::source::SourceFooterFacts::new(&footer_refs),
-    )
-    .unwrap();
-    let plan =
-        plan_local_parquet_source_chunks(source_id, &rewritten, SourceChunkPlanningPolicy::new(None, 8)).unwrap();
-
-    assert_eq!(plan.row_group_count(), 3);
-    assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1, 2]);
-    assert!(rewritten.reader_predicate.is_none());
-    let stats = rewritten.diagnostics.selected_row_group_stats.as_ref().unwrap();
-    assert_eq!(stats.selected_row_groups, 3);
-    assert_eq!(stats.total_row_groups, 4);
 
     fs::remove_dir_all(dir).unwrap();
 }

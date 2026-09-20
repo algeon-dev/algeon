@@ -4,10 +4,7 @@ use std::collections::BTreeSet;
 
 use arrow::datatypes::DataType;
 
-use super::{
-    SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, contiguous_row_group_position_range,
-    row_group::RowGroupMetadata,
-};
+use super::{SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, row_group::RowGroupMetadata};
 use crate::{
     datatypes::arrow_fixed_width_byte_size,
     error::{QueryError, QueryErrorCode, Result},
@@ -25,7 +22,6 @@ pub fn planned_row_groups(
 ) -> Result<Option<Vec<usize>>> {
     if let Some(row_groups) = &file.row_groups {
         validate_selected_row_groups(file, file_index, row_groups, metadata)?;
-        validate_position_delete_planned_row_groups(file, file_index, row_groups, metadata)?;
         return Ok(Some(row_groups.clone()));
     }
 
@@ -33,13 +29,10 @@ pub fn planned_row_groups(
         return Ok(None);
     };
 
-    let row_groups = (0..metadata.row_group_count()).collect::<Vec<_>>();
-    validate_position_delete_planned_row_groups(file, file_index, &row_groups, Some(metadata))?;
-    Ok(Some(row_groups))
+    Ok(Some((0..metadata.row_group_count()).collect()))
 }
 
-#[doc(hidden)]
-pub fn validate_selected_row_groups(
+pub(crate) fn validate_selected_row_groups(
     file: &LocalParquetFile,
     file_index: usize,
     row_groups: &[usize],
@@ -66,35 +59,6 @@ pub fn validate_selected_row_groups(
     }
 
     Ok(())
-}
-
-#[doc(hidden)]
-pub fn validate_position_delete_planned_row_groups(
-    file: &LocalParquetFile,
-    file_index: usize,
-    row_groups: &[usize],
-    metadata: Option<&RowGroupMetadata>,
-) -> Result<()> {
-    if !file.has_position_delete_files() || row_groups.is_empty() {
-        return Ok(());
-    }
-    let row_group_rows = metadata.and_then(RowGroupMetadata::row_group_rows_vec).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.source_chunk.plan",
-            "Iceberg position-delete row-group planning requires row-count metadata",
-        )
-        .with_fact("reason", "position_deletes_require_row_group_rows")
-        .with_fact("path", file.location.diagnostic_location())
-        .with_fact("stable_id", parquet_file_stable_id_fact(file))
-        .with_fact("file_index", file_index)
-    })?;
-    contiguous_row_group_position_range(row_groups, &row_group_rows).map(|_range| ()).map_err(|error| {
-        error
-            .with_fact("path", file.location.diagnostic_location())
-            .with_fact("stable_id", parquet_file_stable_id_fact(file))
-            .with_fact("file_index", file_index)
-    })
 }
 
 #[doc(hidden)]
@@ -175,9 +139,8 @@ pub fn append_row_group_chunks(
         chunks,
     );
 }
-#[doc(hidden)]
 #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
-pub fn push_pending_chunk(
+pub(crate) fn push_pending_chunk(
     source_node_id: NodeId,
     source: &LocalParquetSource,
     file: &LocalParquetFile,
@@ -255,8 +218,7 @@ pub fn push_pending_chunk(
     pending.clear();
 }
 
-#[doc(hidden)]
-pub fn source_read_uncompressed_bytes(
+pub(crate) fn source_read_uncompressed_bytes(
     source: &LocalParquetSource,
     projected_uncompressed_bytes: Option<u64>,
     pure_filter_uncompressed_bytes: Option<u64>,
@@ -272,8 +234,7 @@ pub fn source_read_uncompressed_bytes(
     }
 }
 
-#[doc(hidden)]
-pub fn exact_source_read_preflight_bytes(
+pub(crate) fn exact_source_read_preflight_bytes(
     source: &LocalParquetSource,
     known_row_count: Option<u64>,
     zero_column_count: bool,
@@ -300,13 +261,11 @@ pub fn exact_source_read_preflight_bytes(
     Some(exact_source_read_required_budget_bytes(total, sizing))
 }
 
-#[doc(hidden)]
-pub fn exact_source_read_required_budget_bytes(retained_output_bytes: u64, sizing: SourceReadSizing<'_>) -> u64 {
+pub(crate) fn exact_source_read_required_budget_bytes(retained_output_bytes: u64, sizing: SourceReadSizing<'_>) -> u64 {
     retained_output_bytes.max(sizing.minimum_read_budget_bytes())
 }
 
-#[doc(hidden)]
-pub fn exact_fixed_width_column_upper_bound_bytes(
+pub(crate) fn exact_fixed_width_column_upper_bound_bytes(
     data_type: &DataType,
     nullable: bool,
     row_count: u64,
@@ -321,25 +280,11 @@ pub fn exact_fixed_width_column_upper_bound_bytes(
     data_bytes.checked_add(mask_bytes)
 }
 
-#[doc(hidden)]
-pub fn null_mask_allocation_size_bytes(row_count: u64) -> u64 {
+pub(crate) fn null_mask_allocation_size_bytes(row_count: u64) -> u64 {
     if row_count == 0 { 0 } else { row_count.div_ceil(8).div_ceil(64) * 64 }
 }
 
-#[doc(hidden)]
-pub fn source_file_has_row_count_metadata(file: &LocalParquetFile) -> bool {
-    let Some(rows) = &file.row_group_rows else {
-        return false;
-    };
-    if let Some(selected) = &file.row_groups {
-        selected.iter().all(|row_group| *row_group < rows.len())
-    } else {
-        !rows.is_empty()
-    }
-}
-
-#[doc(hidden)]
-pub fn projected_and_pure_filter_file_columns_overlap(source: &LocalParquetSource) -> bool {
+pub(crate) fn projected_and_pure_filter_file_columns_overlap(source: &LocalParquetSource) -> bool {
     let projected = source
         .projected_output_column_source_refs
         .iter()
@@ -458,8 +403,7 @@ pub fn proportional_bytes(total_bytes: Option<u64>, child_row_groups: usize, par
 }
 
 #[derive(Debug, Default)]
-#[doc(hidden)]
-pub struct PendingChunk {
+pub(crate) struct PendingChunk {
     row_groups: Vec<usize>,
     known_bytes: u64,
     known_planning_bytes: u64,

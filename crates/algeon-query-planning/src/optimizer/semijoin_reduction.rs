@@ -124,7 +124,7 @@ impl SemijoinReductionDiagnostics {
     }
 
     /// Merges another semijoin diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -137,23 +137,23 @@ pub struct SemijoinReductionCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
     pub rule_name: &'static str,
     /// Left-semi join candidate node id before rewrite.
-    pub candidate_node_id: NodeId,
+    pub(crate) candidate_node_id: NodeId,
     /// Root node id before the tentative rewrite.
-    pub before_root_node_id: NodeId,
+    pub(crate) before_root_node_id: NodeId,
     /// Root node id after rewrite when a tentative rewrite was built.
-    pub after_root_node_id: Option<NodeId>,
+    pub(crate) after_root_node_id: Option<NodeId>,
     /// Join node ids crossed while pushing the semijoin reduction.
     pub crossed_join_node_ids: Vec<NodeId>,
     /// Target subtree that would receive the pushed semijoin filter.
-    pub target_subtree_id: Option<NodeId>,
+    pub(crate) target_subtree_id: Option<NodeId>,
     /// Key lineage mappings from the original semijoin to the target subtree.
     pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
     /// Cost-gate evidence when lineage reached a target subtree.
     pub cost_gate: Option<SemijoinReductionCostGateDiagnostics>,
     /// Configured cost multiplier used by the semijoin cost gate.
-    pub cost_threshold_multiplier: u64,
+    pub(crate) cost_threshold_multiplier: u64,
     /// Configured post-rewrite admission gate mode.
-    pub admission_mode: SemijoinReductionAdmissionMode,
+    pub(crate) admission_mode: SemijoinReductionAdmissionMode,
     /// Admission decision used after tentative rewrite, if evaluated.
     pub admission_decision: Option<SemijoinReductionAdmissionDecision>,
     /// Whether the original plan was admitted by the selected admission mode.
@@ -174,7 +174,7 @@ pub struct SemijoinReductionKeyMappingDiagnostics {
     /// Column name after crossing projections/joins, if lineage survived.
     pub after_column: Option<String>,
     /// Target subtree reached by this mapping.
-    pub target_subtree_id: Option<NodeId>,
+    pub(crate) target_subtree_id: Option<NodeId>,
 }
 
 /// Cost-gate evidence used to decide whether a semijoin pushdown is worth keeping.
@@ -183,9 +183,9 @@ pub struct SemijoinReductionCostGateDiagnostics {
     /// Cost signal used for the keep/reject decision.
     pub signal: SemijoinReductionCostSignal,
     /// Threshold multiplier configured for this pass.
-    pub threshold_multiplier: u64,
+    pub(crate) threshold_multiplier: u64,
     /// Whether the cost gate accepted the candidate.
-    pub accepted: bool,
+    pub(crate) accepted: bool,
 }
 
 /// Cost signal used by semijoin reduction.
@@ -322,21 +322,19 @@ pub fn optimize_semijoin_reduction(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct SemijoinLineageAnalysis {
-    pub target_subtree_id: NodeId,
-    pub target_key_columns: Vec<ColumnRef>,
-    pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
-    pub steps: Vec<SemijoinLineageStep>,
+pub(crate) struct SemijoinLineageAnalysis {
+    pub(crate) target_subtree_id: NodeId,
+    pub(crate) target_key_columns: Vec<ColumnRef>,
+    pub(crate) key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
+    pub(crate) steps: Vec<SemijoinLineageStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct SemijoinLineageStep {
-    pub crossed_join_node_id: NodeId,
-    pub target_side: JoinSide,
-    pub target_child_id: NodeId,
-    pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
+pub(crate) struct SemijoinLineageStep {
+    pub(crate) crossed_join_node_id: NodeId,
+    pub(crate) target_side: JoinSide,
+    pub(crate) target_child_id: NodeId,
+    pub(crate) key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
 }
 
 struct SemijoinRewritePlan {

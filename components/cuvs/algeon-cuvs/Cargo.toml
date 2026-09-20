@@ -32,4 +32,5 @@ cuvs-sys.workspace = true
 
 [dev-dependencies]
 arrow.workspace = true
+cudf = { workspace = true, features = ["test-hooks"] }
 static_assertions.workspace = true

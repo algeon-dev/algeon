@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 slug: /reference/native-sql-support
-description: Native cuDF support boundaries for relational SQL operators, expressions, aggregates, windows, joins, and Parquet/Iceberg sources.
+description: Native cuDF support boundaries for relational SQL operators, expressions, aggregates, windows, joins, and Parquet sources.
 ---
 
 # Native SQL Support
@@ -19,7 +19,7 @@ production query with
 
 | Area | Native forms |
 | --- | --- |
-| Sources | Local and S3 object-store Parquet, plus resolved Iceberg Parquet data files; projected columns, row-group selection, partition columns, reader predicates, scan limits, and position deletes when their contracts are supported. |
+| Sources | Local and S3 object-store Parquet; projected columns, row-group selection, partition columns, reader predicates, and scan limits when their contracts are supported. |
 | Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. |
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
 | Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. |
@@ -27,11 +27,8 @@ production query with
 | Graph | cuGraph UDTFs are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the UDTF-level contract. |
 
 When a relational candidate is not supported, or an enabled cost rule does not
-select it, the executable DataFusion baseline remains in place. Every Iceberg
-table uses the unified provider: its scan wrapper retains an executable
-`iceberg-datafusion` CPU delegate unless native lowering replaces the wrapper.
-Runtime errors after native execution starts are terminal and do not replay on
-CPU.
+select it, the executable DataFusion baseline remains in place. Runtime errors
+after native execution starts are terminal and do not replay on CPU.
 
 ## Expressions and scalar functions
 
@@ -79,11 +76,11 @@ aggregate types. See
 
 ## Source boundaries
 
-Parquet is the native data-file format. Iceberg planning may use REST or Glue
-catalogs, but data execution still resolves to Parquet source facts. Position
-deletes are applied natively; equality deletes and delete vectors are rejected.
-Schema evolution, field-id remapping, source credentials, and remote read
-capability are validated before execution.
+Parquet is the native data-file format, read from local paths or `s3://`
+object stores. Schema mapping and remote read capability are validated before
+execution, and a scan that fails either check keeps the executable DataFusion
+baseline. Iceberg tables are not a supported source; see
+[Iceberg support](../integration/overview.mdx#iceberg-support).
 
 For ad-hoc SQL, validate against the same catalog and server configuration that
 will execute the query:

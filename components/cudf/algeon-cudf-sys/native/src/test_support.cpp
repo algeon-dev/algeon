@@ -23,8 +23,6 @@
 #include <string>
 #include <unordered_map>
 
-extern "C" void cudf_rust_test_support_set_arrow_device_array_device_type(
-  cudf_arrow_device_array_handle array, int32_t device_type);
 extern "C" cudf_status_t cudf_rust_test_support_io_kvikio_active_io_begin();
 extern "C" cudf_status_t cudf_rust_test_support_io_kvikio_active_io_end();
 
@@ -672,12 +670,6 @@ void cudf_test_table_view_fail_next_negative_num_columns()
 void cudf_test_table_view_fail_next_negative_num_rows()
 {
   g_fail_next_table_view_negative_num_rows = true;
-}
-
-void cudf_test_arrow_device_array_set_device_type(cudf_arrow_device_array_handle array,
-                                                  int32_t device_type)
-{
-  cudf_rust_test_support_set_arrow_device_array_device_type(array, device_type);
 }
 
 void cudf_test_event_reset_observation()

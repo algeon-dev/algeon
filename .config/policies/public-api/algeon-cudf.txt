@@ -47,17 +47,12 @@ pub fn cudf::core::Column::to_optional_vec<T: cudf::core::types::CudfType>(&self
 pub fn cudf::core::Column::to_strings_lossy(&self) -> cudf::core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn cudf::core::Column::to_vec<T: cudf::core::types::CudfType>(&self) -> cudf::core::error::Result<alloc::vec::Vec<T>>
 impl cudf::core::Column
-pub fn cudf::core::Column::try_import_from_device_arrow_column_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowColumn, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::core::Column
 pub fn cudf::core::Column::try_import_from_prepared_column_export_into_runtime(&rapids_interop::prepared::PreparedColumnExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_into_prepared_device_column_export(self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_into_prepared_device_column_export_with_event(self, &cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_prepare_device_column_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
-impl cudf::core::Column
-pub fn cudf::core::Column::try_prepare_device_arrow_export(self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
-pub fn cudf::core::Column::try_prepare_device_arrow_export_with_deep_copy(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
 impl core::convert::TryFrom<cudf::core::Column> for cudf::Series
 pub type cudf::Series::Error = cudf::core::error::Error
 pub fn cudf::Series::try_from(cudf::core::Column) -> cudf::core::error::Result<Self>
@@ -267,7 +262,6 @@ pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::as_ptr(&self) -> cudf::core
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::is_empty(&self) -> bool
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::len(&self) -> usize
-pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::observation(&self) -> cudf::BoundaryObservation
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::placement(&self) -> cudf::ExecutionPlacement
 impl core::fmt::Debug for cudf::core::ValidatedFloat32DeviceBuffer<'_>
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -279,7 +273,6 @@ pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::is_empty(&self) -> bool
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::len(&self) -> usize
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::max_exclusive(&self) -> i64
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::min_inclusive(&self) -> i64
-pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::observation(&self) -> cudf::BoundaryObservation
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::placement(&self) -> cudf::ExecutionPlacement
 impl core::fmt::Debug for cudf::core::ValidatedInt64DeviceBufferRange<'_>
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -936,17 +929,12 @@ pub fn cudf::core::Table::into_columns(self) -> cudf::core::error::Result<alloc:
 pub fn cudf::core::Table::num_columns(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::core::Table::num_rows(&self) -> cudf::core::error::Result<usize>
 impl cudf::core::Table
-pub fn cudf::core::Table::try_import_from_device_arrow_table_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowTable, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::core::Table
 pub fn cudf::core::Table::try_import_from_prepared_table_export_into_runtime(&rapids_interop::prepared::PreparedTableExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_into_prepared_device_table_export(self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_into_prepared_device_table_export_with_event(self, &cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_prepare_device_table_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl cudf::core::Table
-pub fn cudf::core::Table::try_prepare_device_arrow_export(self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
-pub fn cudf::core::Table::try_prepare_device_arrow_export_with_deep_copy(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
 impl core::fmt::Debug for cudf::core::Table
 pub fn cudf::core::Table::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cudf::core::Table
@@ -1254,17 +1242,12 @@ pub fn cudf::core::Column::to_optional_vec<T: cudf::core::types::CudfType>(&self
 pub fn cudf::core::Column::to_strings_lossy(&self) -> cudf::core::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn cudf::core::Column::to_vec<T: cudf::core::types::CudfType>(&self) -> cudf::core::error::Result<alloc::vec::Vec<T>>
 impl cudf::core::Column
-pub fn cudf::core::Column::try_import_from_device_arrow_column_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowColumn, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::core::Column
 pub fn cudf::core::Column::try_import_from_prepared_column_export_into_runtime(&rapids_interop::prepared::PreparedColumnExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_into_prepared_device_column_export(self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_into_prepared_device_column_export_with_event(self, &cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_prepare_device_column_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::core::Column::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
-impl cudf::core::Column
-pub fn cudf::core::Column::try_prepare_device_arrow_export(self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
-pub fn cudf::core::Column::try_prepare_device_arrow_export_with_deep_copy(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
 impl core::convert::TryFrom<cudf::core::Column> for cudf::Series
 pub type cudf::Series::Error = cudf::core::error::Error
 pub fn cudf::Series::try_from(cudf::core::Column) -> cudf::core::error::Result<Self>
@@ -1536,17 +1519,12 @@ pub fn cudf::core::Table::into_columns(self) -> cudf::core::error::Result<alloc:
 pub fn cudf::core::Table::num_columns(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::core::Table::num_rows(&self) -> cudf::core::error::Result<usize>
 impl cudf::core::Table
-pub fn cudf::core::Table::try_import_from_device_arrow_table_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowTable, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::core::Table
 pub fn cudf::core::Table::try_import_from_prepared_table_export_into_runtime(&rapids_interop::prepared::PreparedTableExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_into_prepared_device_table_export(self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_into_prepared_device_table_export_with_event(self, &cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_prepare_device_table_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::core::Table::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl cudf::core::Table
-pub fn cudf::core::Table::try_prepare_device_arrow_export(self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
-pub fn cudf::core::Table::try_prepare_device_arrow_export_with_deep_copy(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
 impl core::fmt::Debug for cudf::core::Table
 pub fn cudf::core::Table::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for cudf::core::Table
@@ -1559,7 +1537,6 @@ pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::as_ptr(&self) -> cudf::core
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::is_empty(&self) -> bool
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::len(&self) -> usize
-pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::observation(&self) -> cudf::BoundaryObservation
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::placement(&self) -> cudf::ExecutionPlacement
 impl core::fmt::Debug for cudf::core::ValidatedFloat32DeviceBuffer<'_>
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1571,7 +1548,6 @@ pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::is_empty(&self) -> bool
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::len(&self) -> usize
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::max_exclusive(&self) -> i64
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::min_inclusive(&self) -> i64
-pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::observation(&self) -> cudf::BoundaryObservation
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::placement(&self) -> cudf::ExecutionPlacement
 impl core::fmt::Debug for cudf::core::ValidatedInt64DeviceBufferRange<'_>
 pub fn cudf::core::ValidatedInt64DeviceBufferRange<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1767,14 +1743,9 @@ impl cudf::DataFrame
 pub fn cudf::DataFrame::info(&self) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameInfo>
 pub fn cudf::DataFrame::info_with(&self, cudf::frame::dataframe::InfoDetail) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameInfo>
 pub fn cudf::DataFrame::memory_identity(&self) -> cudf::DataFrameMemoryIdentity
-pub fn cudf::DataFrame::observe_query_stage(&self, cudf::runtime::QueryStageKind) -> cudf::core::error::Result<cudf::BoundaryObservation>
-pub fn cudf::DataFrame::query_memory_observation(&self) -> cudf::core::error::Result<cudf::runtime::QueryMemoryObservation>
-pub fn cudf::DataFrame::query_stage_observation(&self, cudf::runtime::QueryStageKind) -> cudf::core::error::Result<cudf::BoundaryObservation>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::minimum_parquet_source_read_budget_bytes() -> usize
 pub fn cudf::DataFrame::parquet_source_chunk_exact_preflight(&cudf::io::source::LocalParquetSource, &cudf::io::source::SourceChunk, cudf::io::source::SourceReadMode) -> cudf::core::error::Result<core::option::Option<cudf::ParquetSourceReadPreflight>>
-pub fn cudf::DataFrame::read_json(&cudf::Runtime, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<Self>
-pub fn cudf::DataFrame::read_json_with_options(cudf::frame::dataframe::JsonReadOptions) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet(&cudf::Runtime, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_from_host_buffer(&[u8], cudf::frame::dataframe::ParquetReadOptions<'_>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_many<P>(&cudf::Runtime, impl core::iter::traits::collect::IntoIterator<Item = P>) -> cudf::core::error::Result<Self> where P: core::convert::AsRef<std::path::Path>
@@ -1793,8 +1764,6 @@ pub fn cudf::DataFrame::read_parquet_source_chunks_with_budget_with_evidence(&cu
 pub fn cudf::DataFrame::read_parquet_source_with_mode(&cudf::Runtime, &cudf::io::source::LocalParquetSource, cudf::io::source::SourceReadMode) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_with_budget(cudf::frame::dataframe::ParquetReadOptions<'_>, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::read_parquet_with_options(cudf::frame::dataframe::ParquetReadOptions<'_>) -> cudf::core::error::Result<Self>
-pub fn cudf::DataFrame::write_json(&self, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<()>
-pub fn cudf::DataFrame::write_json_with_options(&self, cudf::frame::dataframe::JsonWriteOptions) -> cudf::core::error::Result<()>
 pub fn cudf::DataFrame::write_parquet(&self, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<()>
 pub fn cudf::DataFrame::write_parquet_with_options(&self, cudf::frame::dataframe::ParquetWriteOptions) -> cudf::core::error::Result<()>
 impl cudf::DataFrame
@@ -1809,14 +1778,10 @@ pub fn cudf::DataFrame::mixed_left_join_size_data<'a>(&self, &cudf::DataFrame, &
 pub fn cudf::DataFrame::mixed_left_semi_join_indices(&self, &cudf::DataFrame, &cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
 pub fn cudf::DataFrame::mixed_left_semi_join_size_data<'a>(&self, &cudf::DataFrame, &'a cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameMixedSingleSideJoinSizeData<'a>>
 impl cudf::DataFrame
-pub fn cudf::DataFrame::try_import_from_device_arrow_table_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowTable, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::DataFrame
 pub fn cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&rapids_interop::prepared::PreparedTableExport<'_>, core::option::Option<alloc::vec::Vec<alloc::string::String>>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_device_table_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::with_execution<'df, 'ctx, 'handles>(&'df self, &'ctx cudf::runtime::execution_context::ExecutionOverrides<'handles>) -> cudf::frame::dataframe::DataFrameExecutionScope<'df, 'ctx, 'handles>
 impl core::fmt::Debug for cudf::DataFrame
@@ -2162,7 +2127,6 @@ pub fn cudf::frame::dataframe::GpuRecordBatch::num_rows(&self) -> usize
 pub fn cudf::frame::dataframe::GpuRecordBatch::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::frame::dataframe::GpuRecordBatch::schema(&self) -> &arrow_schema::schema::SchemaRef
 pub fn cudf::frame::dataframe::GpuRecordBatch::to_host_record_batch(&self) -> cudf::core::error::Result<arrow_array::record_batch::RecordBatch>
-pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
 pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_fixed_size_list_export(&self, usize) -> cudf::core::error::Result<cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>>
 pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_uniform_list_export(&self, usize) -> cudf::core::error::Result<cudf::frame::dataframe::ValidatedUniformListExport<'_>>
 impl cudf::frame::dataframe::GpuRecordBatch
@@ -2272,8 +2236,6 @@ pub fn cudf::frame::dataframe::InfoDetail::bitxor_assign(&mut self, Self)
 impl core::ops::bit::Not for cudf::frame::dataframe::InfoDetail
 pub type cudf::frame::dataframe::InfoDetail::Output = cudf::frame::dataframe::InfoDetail
 pub fn cudf::frame::dataframe::InfoDetail::not(self) -> Self
-pub struct cudf::frame::dataframe::JsonReadOptions
-pub struct cudf::frame::dataframe::JsonWriteOptions
 pub struct cudf::frame::dataframe::MultiParquetReadOptions
 pub struct cudf::frame::dataframe::ParquetReadOptions<'a>
 pub struct cudf::frame::dataframe::ParquetSourceChunkReadOutput
@@ -2305,12 +2267,10 @@ pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::dimension(&self
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::element(&self) -> cudf::core::types::TypeId
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::export(&self) -> &rapids_interop::prepared::PreparedColumnExport<'_>
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::field_index(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::finite_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::pack_active_child_into_runtime(&self, &cudf::Runtime, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::root_column_id(&self) -> rapids_interop::types::ColumnId
 pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::rows(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::structural_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
 pub struct cudf::frame::dataframe::ValidatedUniformListExport<'a>
 impl cudf::frame::dataframe::ValidatedUniformListExport<'_>
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
@@ -2325,9 +2285,7 @@ pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::dimension(&self) 
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::element(&self) -> cudf::core::types::TypeId
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::export(&self) -> &rapids_interop::prepared::PreparedColumnExport<'_>
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::field_index(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::finite_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::offsets_buffer_id(&self) -> rapids_interop::types::BufferId
-pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::offsets_observation(&self) -> cudf::BoundaryObservation
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::pack_active_child_into_runtime(&self, &cudf::Runtime, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::root_column_id(&self) -> rapids_interop::types::ColumnId
@@ -2577,14 +2535,10 @@ pub fn cudf::Series::from_scalar(&cudf::core::scalar::Scalar, usize) -> cudf::co
 impl cudf::Series
 pub fn cudf::Series::str(&self) -> cudf::frame::series::strings::SeriesStringNamespace<'_>
 impl cudf::Series
-pub fn cudf::Series::try_import_from_device_arrow_column_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowColumn, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::Series
 pub fn cudf::Series::try_import_from_prepared_column_export_into_runtime(&rapids_interop::prepared::PreparedColumnExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_device_column_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
-impl cudf::Series
-pub fn cudf::Series::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
 impl core::convert::AsRef<cudf::Series> for cudf::frame::factorization::EncodedSeries
 pub fn cudf::frame::factorization::EncodedSeries::as_ref(&self) -> &cudf::Series
 impl core::convert::TryFrom<cudf::core::Column> for cudf::Series
@@ -3411,14 +3365,9 @@ impl cudf::DataFrame
 pub fn cudf::DataFrame::info(&self) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameInfo>
 pub fn cudf::DataFrame::info_with(&self, cudf::frame::dataframe::InfoDetail) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameInfo>
 pub fn cudf::DataFrame::memory_identity(&self) -> cudf::DataFrameMemoryIdentity
-pub fn cudf::DataFrame::observe_query_stage(&self, cudf::runtime::QueryStageKind) -> cudf::core::error::Result<cudf::BoundaryObservation>
-pub fn cudf::DataFrame::query_memory_observation(&self) -> cudf::core::error::Result<cudf::runtime::QueryMemoryObservation>
-pub fn cudf::DataFrame::query_stage_observation(&self, cudf::runtime::QueryStageKind) -> cudf::core::error::Result<cudf::BoundaryObservation>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::minimum_parquet_source_read_budget_bytes() -> usize
 pub fn cudf::DataFrame::parquet_source_chunk_exact_preflight(&cudf::io::source::LocalParquetSource, &cudf::io::source::SourceChunk, cudf::io::source::SourceReadMode) -> cudf::core::error::Result<core::option::Option<cudf::ParquetSourceReadPreflight>>
-pub fn cudf::DataFrame::read_json(&cudf::Runtime, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<Self>
-pub fn cudf::DataFrame::read_json_with_options(cudf::frame::dataframe::JsonReadOptions) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet(&cudf::Runtime, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_from_host_buffer(&[u8], cudf::frame::dataframe::ParquetReadOptions<'_>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_many<P>(&cudf::Runtime, impl core::iter::traits::collect::IntoIterator<Item = P>) -> cudf::core::error::Result<Self> where P: core::convert::AsRef<std::path::Path>
@@ -3437,8 +3386,6 @@ pub fn cudf::DataFrame::read_parquet_source_chunks_with_budget_with_evidence(&cu
 pub fn cudf::DataFrame::read_parquet_source_with_mode(&cudf::Runtime, &cudf::io::source::LocalParquetSource, cudf::io::source::SourceReadMode) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_with_budget(cudf::frame::dataframe::ParquetReadOptions<'_>, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::read_parquet_with_options(cudf::frame::dataframe::ParquetReadOptions<'_>) -> cudf::core::error::Result<Self>
-pub fn cudf::DataFrame::write_json(&self, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<()>
-pub fn cudf::DataFrame::write_json_with_options(&self, cudf::frame::dataframe::JsonWriteOptions) -> cudf::core::error::Result<()>
 pub fn cudf::DataFrame::write_parquet(&self, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<()>
 pub fn cudf::DataFrame::write_parquet_with_options(&self, cudf::frame::dataframe::ParquetWriteOptions) -> cudf::core::error::Result<()>
 impl cudf::DataFrame
@@ -3453,14 +3400,10 @@ pub fn cudf::DataFrame::mixed_left_join_size_data<'a>(&self, &cudf::DataFrame, &
 pub fn cudf::DataFrame::mixed_left_semi_join_indices(&self, &cudf::DataFrame, &cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
 pub fn cudf::DataFrame::mixed_left_semi_join_size_data<'a>(&self, &cudf::DataFrame, &'a cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameMixedSingleSideJoinSizeData<'a>>
 impl cudf::DataFrame
-pub fn cudf::DataFrame::try_import_from_device_arrow_table_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowTable, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::DataFrame
 pub fn cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&rapids_interop::prepared::PreparedTableExport<'_>, core::option::Option<alloc::vec::Vec<alloc::string::String>>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_device_table_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::with_execution<'df, 'ctx, 'handles>(&'df self, &'ctx cudf::runtime::execution_context::ExecutionOverrides<'handles>) -> cudf::frame::dataframe::DataFrameExecutionScope<'df, 'ctx, 'handles>
 impl core::fmt::Debug for cudf::DataFrame
@@ -3660,14 +3603,10 @@ pub fn cudf::Series::from_scalar(&cudf::core::scalar::Scalar, usize) -> cudf::co
 impl cudf::Series
 pub fn cudf::Series::str(&self) -> cudf::frame::series::strings::SeriesStringNamespace<'_>
 impl cudf::Series
-pub fn cudf::Series::try_import_from_device_arrow_column_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowColumn, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::Series
 pub fn cudf::Series::try_import_from_prepared_column_export_into_runtime(&rapids_interop::prepared::PreparedColumnExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_device_column_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
-impl cudf::Series
-pub fn cudf::Series::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
 impl core::convert::AsRef<cudf::Series> for cudf::frame::factorization::EncodedSeries
 pub fn cudf::frame::factorization::EncodedSeries::as_ref(&self) -> &cudf::Series
 impl core::convert::TryFrom<cudf::core::Column> for cudf::Series
@@ -4378,112 +4317,6 @@ pub type cudf::hash::FastHashSet<T> = ahash::HashSet<T>
 pub type cudf::hash::FastIndexMap<K, V> = indexmap::map::IndexMap<K, V, ahash::random_state::RandomState>
 pub mod cudf::interop
 pub use cudf::interop::contract
-pub mod cudf::interop::arrow_device
-pub enum cudf::interop::arrow_device::DeviceArrowDeviceType
-pub cudf::interop::arrow_device::DeviceArrowDeviceType::Cuda
-pub cudf::interop::arrow_device::DeviceArrowDeviceType::CudaHost
-pub cudf::interop::arrow_device::DeviceArrowDeviceType::CudaManaged
-pub cudf::interop::arrow_device::DeviceArrowDeviceType::Other(i32)
-pub enum cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub cudf::interop::arrow_device::DeviceArrowExportMaterialization::BridgeOwnedDeviceCopy
-pub cudf::interop::arrow_device::DeviceArrowExportMaterialization::ProducerRetainedView
-pub enum cudf::interop::arrow_device::DeviceArrowImportMaterialization
-pub cudf::interop::arrow_device::DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy
-pub cudf::interop::arrow_device::DeviceArrowImportMaterialization::ForeignRetainedView
-pub struct cudf::interop::arrow_device::DeviceArrowColumnExport
-impl cudf::interop::arrow_device::DeviceArrowColumnExport
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::device_array_ptr(&self) -> *const std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::fixed_width_values_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::into_foreign(self) -> cudf::interop::arrow_device::ForeignDeviceArrowColumn
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::into_owned_abi_parts(self) -> cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::into_raw_parts(self) -> cudf::interop::arrow_device::DeviceArrowColumnRawParts
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::schema_ptr(&self) -> *const std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::DeviceArrowColumnExport::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts
-impl cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::device_array_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::fixed_width_values_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::into_foreign(self) -> cudf::interop::arrow_device::ForeignDeviceArrowColumn
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::into_raw_abi(self) -> (*mut std::os::raw::c_void, *mut std::os::raw::c_void, cudf::interop::arrow_device::DeviceArrowImportMaterialization)
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::schema_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::DeviceArrowColumnOwnedAbiParts::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::DeviceArrowColumnRawParts
-impl cudf::interop::arrow_device::DeviceArrowColumnRawParts
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::device_array_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::fixed_width_values_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::into_foreign(self) -> cudf::interop::arrow_device::ForeignDeviceArrowColumn
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::schema_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::DeviceArrowColumnRawParts::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::DeviceArrowTableExport
-impl cudf::interop::arrow_device::DeviceArrowTableExport
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::column_names(&self) -> cudf::core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::device_array_ptr(&self) -> *const std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr(&self, usize) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::into_foreign(self) -> cudf::interop::arrow_device::ForeignDeviceArrowTable
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::into_owned_abi_parts(self) -> cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::into_raw_parts(self) -> cudf::interop::arrow_device::DeviceArrowTableRawParts
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::schema_ptr(&self) -> *const std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::DeviceArrowTableExport::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts
-impl cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::column_names(&self) -> cudf::core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::device_array_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::fixed_width_values_ptr(&self, usize) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::into_foreign(self) -> cudf::interop::arrow_device::ForeignDeviceArrowTable
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::into_raw_abi(self) -> (*mut std::os::raw::c_void, *mut std::os::raw::c_void, cudf::interop::arrow_device::DeviceArrowImportMaterialization)
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::schema_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::DeviceArrowTableOwnedAbiParts::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::DeviceArrowTableRawParts
-impl cudf::interop::arrow_device::DeviceArrowTableRawParts
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::column_names(&self) -> cudf::core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::device_array_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::fixed_width_values_ptr(&self, usize) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::into_foreign(self) -> cudf::interop::arrow_device::ForeignDeviceArrowTable
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowExportMaterialization
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::schema_ptr(&self) -> *mut std::os::raw::c_void
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::DeviceArrowTableRawParts::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::ForeignDeviceArrowColumn
-impl cudf::interop::arrow_device::ForeignDeviceArrowColumn
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::fixed_width_values_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub unsafe fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts(*mut std::os::raw::c_void, *mut std::os::raw::c_void, cudf::interop::arrow_device::DeviceArrowImportMaterialization) -> cudf::core::error::Result<Self>
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowImportMaterialization
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowColumn::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
-pub struct cudf::interop::arrow_device::ForeignDeviceArrowTable
-impl cudf::interop::arrow_device::ForeignDeviceArrowTable
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::column_names(&self) -> cudf::core::error::Result<alloc::vec::Vec<alloc::string::String>>
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::device_id(&self) -> i32
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::device_type(&self) -> cudf::interop::arrow_device::DeviceArrowDeviceType
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::fixed_width_values_ptr(&self, usize) -> cudf::core::error::Result<*const std::os::raw::c_void>
-pub unsafe fn cudf::interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts(*mut std::os::raw::c_void, *mut std::os::raw::c_void, cudf::interop::arrow_device::DeviceArrowImportMaterialization) -> cudf::core::error::Result<Self>
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::materialization(&self) -> cudf::interop::arrow_device::DeviceArrowImportMaterialization
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::sync_event_present(&self) -> bool
-pub fn cudf::interop::arrow_device::ForeignDeviceArrowTable::sync_event_raw_ptr(&self) -> *mut std::os::raw::c_void
 pub mod cudf::interop::arrow_host
 pub struct cudf::interop::arrow_host::ArrowHostField
 impl cudf::interop::arrow_host::ArrowHostField
@@ -4513,11 +4346,6 @@ pub fn cudf::interop::arrow_host::validate_record_batch_schema(&arrow_array::rec
 pub fn cudf::interop::cuda_event_handle(&cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::types::CudaEventHandle<'_>, rapids_interop::types::InteropError>
 pub fn cudf::interop::cuda_stream_handle(&cudf::runtime::stream::CudaStream) -> core::result::Result<rapids_interop::types::CudaStreamHandle<'_>, rapids_interop::types::InteropError>
 pub mod cudf::io
-pub mod cudf::io::json
-pub struct cudf::io::json::JsonTableReadOptions
-pub struct cudf::io::json::JsonTableWriteOptions
-pub fn cudf::io::json::read_json_table(&cudf::io::json::JsonTableReadOptions) -> cudf::core::error::Result<cudf::io::TableReadOutput>
-pub fn cudf::io::json::write_json(&cudf::core::Table, &cudf::io::json::JsonTableWriteOptions) -> cudf::core::error::Result<()>
 pub mod cudf::io::parquet
 pub enum cudf::io::parquet::ParquetDictionaryPolicy
 pub cudf::io::parquet::ParquetDictionaryPolicy::Adaptive
@@ -6409,14 +6237,6 @@ impl<E: core::fmt::Display> core::fmt::Display for cudf::runtime::BindingExtensi
 pub fn cudf::runtime::BindingExtensionInitError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<E> core::error::Error for cudf::runtime::BindingExtensionInitError<E> where E: core::error::Error + 'static
 pub fn cudf::runtime::BindingExtensionInitError<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
-#[non_exhaustive] pub enum cudf::runtime::BoundaryKind
-pub cudf::runtime::BoundaryKind::BoundedControlScalar
-pub cudf::runtime::BoundaryKind::DeviceAbiHandoff
-pub cudf::runtime::BoundaryKind::DeviceToDeviceCopy
-pub cudf::runtime::BoundaryKind::DeviceToHost
-pub cudf::runtime::BoundaryKind::HostToDevice
-pub cudf::runtime::BoundaryKind::InteropLease
-pub cudf::runtime::BoundaryKind::QueryStage
 pub enum cudf::runtime::DenseMatrixLayout
 pub cudf::runtime::DenseMatrixLayout::ColumnMajor
 pub cudf::runtime::DenseMatrixLayout::RowMajor
@@ -6440,12 +6260,6 @@ pub cudf::runtime::ExecutionBudgetEnforcement::ReservationArenaMember
 pub cudf::runtime::ExecutionBudgetEnforcement::StreamBoundReservation
 impl cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetEnforcement::as_str(self) -> &'static str
-#[non_exhaustive] pub enum cudf::runtime::QueryStageKind
-pub cudf::runtime::QueryStageKind::FinalMaterialize
-pub cudf::runtime::QueryStageKind::InteropExport
-pub cudf::runtime::QueryStageKind::InteropImport
-pub cudf::runtime::QueryStageKind::OperatorOutput
-pub cudf::runtime::QueryStageKind::SourceRead
 pub enum cudf::runtime::StreamDependencyOutcome
 pub cudf::runtime::StreamDependencyOutcome::Barrier(cudf::runtime::event::CudaEvent)
 pub cudf::runtime::StreamDependencyOutcome::NoOp
@@ -6484,18 +6298,6 @@ impl<T> core::fmt::Debug for cudf::runtime::BindingExtensionLease<T> where T: co
 pub fn cudf::runtime::BindingExtensionLease<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<T> core::ops::drop::Drop for cudf::runtime::BindingExtensionLease<T> where T: core::any::Any + core::marker::Send + core::marker::Sync
 pub fn cudf::runtime::BindingExtensionLease<T>::drop(&mut self)
-pub struct cudf::runtime::BoundaryObservation
-pub cudf::runtime::BoundaryObservation::columns: usize
-pub cudf::runtime::BoundaryObservation::kind: cudf::BoundaryKind
-pub cudf::runtime::BoundaryObservation::memory: cudf::runtime::QueryMemoryObservation
-pub cudf::runtime::BoundaryObservation::placement: cudf::ExecutionPlacement
-pub cudf::runtime::BoundaryObservation::query_stage: core::option::Option<cudf::runtime::QueryStageKind>
-pub cudf::runtime::BoundaryObservation::rows: usize
-pub cudf::runtime::BoundaryObservation::synchronized_for_host: bool
-impl cudf::BoundaryObservation
-pub fn cudf::BoundaryObservation::new(cudf::BoundaryKind, cudf::ExecutionPlacement, usize, usize, bool) -> Self
-pub fn cudf::BoundaryObservation::with_memory(self, cudf::runtime::QueryMemoryObservation) -> Self
-pub fn cudf::BoundaryObservation::with_query_stage(self, cudf::runtime::QueryStageKind) -> Self
 pub struct cudf::runtime::BudgetedExecutionOutcome<T>
 impl<T> cudf::BudgetedExecutionOutcome<T>
 pub fn cudf::BudgetedExecutionOutcome<T>::into_parts(self) -> (T, cudf::ExecutionBudgetReport)
@@ -6676,18 +6478,6 @@ pub fn cudf::QueryExecutionContext<'a>::runtime(&self) -> &'a cudf::Runtime
 pub fn cudf::QueryExecutionContext<'a>::stream(&self) -> &'a cudf::runtime::stream::CudaStream
 impl core::fmt::Debug for cudf::QueryExecutionContext<'_>
 pub fn cudf::QueryExecutionContext<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct cudf::runtime::QueryMemoryObservation
-pub cudf::runtime::QueryMemoryObservation::device_allocated_bytes: core::option::Option<usize>
-pub cudf::runtime::QueryMemoryObservation::downloaded_bytes: core::option::Option<usize>
-pub cudf::runtime::QueryMemoryObservation::payload_bytes: core::option::Option<usize>
-pub cudf::runtime::QueryMemoryObservation::reservation_bytes: core::option::Option<usize>
-pub cudf::runtime::QueryMemoryObservation::uploaded_bytes: core::option::Option<usize>
-impl cudf::runtime::QueryMemoryObservation
-pub fn cudf::runtime::QueryMemoryObservation::device_resident(core::option::Option<usize>, core::option::Option<usize>) -> Self
-pub fn cudf::runtime::QueryMemoryObservation::empty() -> Self
-pub fn cudf::runtime::QueryMemoryObservation::with_downloaded_bytes(self, usize) -> Self
-pub fn cudf::runtime::QueryMemoryObservation::with_reservation_bytes(self, usize) -> Self
-pub fn cudf::runtime::QueryMemoryObservation::with_uploaded_bytes(self, usize) -> Self
 pub struct cudf::runtime::Runtime
 impl cudf::Runtime
 pub fn cudf::Runtime::affinity_anchor(&self) -> cudf::RuntimeAffinityAnchor
@@ -6782,7 +6572,6 @@ pub fn cudf::RuntimeAffinityId::fmt(&self, &mut core::fmt::Formatter<'_>) -> cor
 pub struct cudf::runtime::RuntimeBuilder
 impl cudf::RuntimeBuilder
 pub fn cudf::RuntimeBuilder::build(self) -> cudf::core::error::Result<cudf::Runtime>
-pub fn cudf::RuntimeBuilder::with_boundary_observer(self, impl cudf::BoundaryObserver) -> Self
 pub fn cudf::RuntimeBuilder::with_device(self, cudf::runtime::device::DeviceId) -> Self
 pub fn cudf::RuntimeBuilder::with_device_memory_manager(self) -> Self
 pub fn cudf::RuntimeBuilder::with_memory_resource(self, cudf::DeviceMemoryResource) -> Self
@@ -6804,7 +6593,6 @@ pub fn cudf::ValidatedPackedMatrix<'_>::element(&self) -> cudf::core::types::Typ
 pub fn cudf::ValidatedPackedMatrix<'_>::is_empty(&self) -> bool
 pub fn cudf::ValidatedPackedMatrix<'_>::layout(&self) -> cudf::DenseMatrixLayout
 pub fn cudf::ValidatedPackedMatrix<'_>::len(&self) -> usize
-pub fn cudf::ValidatedPackedMatrix<'_>::observation(&self) -> core::option::Option<cudf::BoundaryObservation>
 pub fn cudf::ValidatedPackedMatrix<'_>::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::ValidatedPackedMatrix<'_>::row_stride_elements(&self) -> usize
 pub fn cudf::ValidatedPackedMatrix<'_>::rows(&self) -> usize
@@ -6812,10 +6600,6 @@ pub fn cudf::ValidatedPackedMatrix<'_>::shape(&self) -> [usize; 2]
 impl core::fmt::Debug for cudf::ValidatedPackedMatrix<'_>
 pub fn cudf::ValidatedPackedMatrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const cudf::runtime::MAX_BINDING_EXTENSION_SLOTS_PER_BINDING: usize
-pub trait cudf::runtime::BoundaryObserver: core::marker::Send + core::marker::Sync + 'static
-pub fn cudf::runtime::BoundaryObserver::observe(&self, cudf::BoundaryObservation)
-impl<F> cudf::BoundaryObserver for F where F: core::ops::function::Fn(cudf::BoundaryObservation) + core::marker::Send + core::marker::Sync + 'static
-pub fn F::observe(&self, cudf::BoundaryObservation)
 pub fn cudf::runtime::cuda_profiler_start() -> cudf::core::error::Result<()>
 pub fn cudf::runtime::cuda_profiler_stop() -> cudf::core::error::Result<()>
 pub fn cudf::runtime::device_health_snapshot(cudf::runtime::device::DeviceId) -> cudf::runtime::device_health::DeviceHealthSnapshot
@@ -6834,14 +6618,6 @@ pub cudf::AllocatorEventRead::Available(cudf::AllocatorEvent)
 pub cudf::AllocatorEventRead::NotYetRecorded
 pub cudf::AllocatorEventRead::Overwritten
 pub cudf::AllocatorEventRead::Pending
-#[non_exhaustive] pub enum cudf::BoundaryKind
-pub cudf::BoundaryKind::BoundedControlScalar
-pub cudf::BoundaryKind::DeviceAbiHandoff
-pub cudf::BoundaryKind::DeviceToDeviceCopy
-pub cudf::BoundaryKind::DeviceToHost
-pub cudf::BoundaryKind::HostToDevice
-pub cudf::BoundaryKind::InteropLease
-pub cudf::BoundaryKind::QueryStage
 pub enum cudf::CudfAllocationAttribution
 pub cudf::CudfAllocationAttribution::ConfirmedPhysical
 pub cudf::CudfAllocationAttribution::ConfirmedQueryLimit
@@ -7450,18 +7226,6 @@ impl core::fmt::Debug for cudf::runtime::stream::AttemptStreamProviderRegistrati
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::runtime::stream::AttemptStreamProviderRegistration
 pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::drop(&mut self)
-pub struct cudf::BoundaryObservation
-pub cudf::BoundaryObservation::columns: usize
-pub cudf::BoundaryObservation::kind: cudf::BoundaryKind
-pub cudf::BoundaryObservation::memory: cudf::runtime::QueryMemoryObservation
-pub cudf::BoundaryObservation::placement: cudf::ExecutionPlacement
-pub cudf::BoundaryObservation::query_stage: core::option::Option<cudf::runtime::QueryStageKind>
-pub cudf::BoundaryObservation::rows: usize
-pub cudf::BoundaryObservation::synchronized_for_host: bool
-impl cudf::BoundaryObservation
-pub fn cudf::BoundaryObservation::new(cudf::BoundaryKind, cudf::ExecutionPlacement, usize, usize, bool) -> Self
-pub fn cudf::BoundaryObservation::with_memory(self, cudf::runtime::QueryMemoryObservation) -> Self
-pub fn cudf::BoundaryObservation::with_query_stage(self, cudf::runtime::QueryStageKind) -> Self
 pub struct cudf::BudgetExhaustionDetail
 impl cudf::core::error::BudgetExhaustionDetail
 pub fn cudf::core::error::BudgetExhaustionDetail::boundary(&self) -> &str
@@ -7651,14 +7415,9 @@ impl cudf::DataFrame
 pub fn cudf::DataFrame::info(&self) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameInfo>
 pub fn cudf::DataFrame::info_with(&self, cudf::frame::dataframe::InfoDetail) -> cudf::core::error::Result<cudf::frame::dataframe::DataFrameInfo>
 pub fn cudf::DataFrame::memory_identity(&self) -> cudf::DataFrameMemoryIdentity
-pub fn cudf::DataFrame::observe_query_stage(&self, cudf::runtime::QueryStageKind) -> cudf::core::error::Result<cudf::BoundaryObservation>
-pub fn cudf::DataFrame::query_memory_observation(&self) -> cudf::core::error::Result<cudf::runtime::QueryMemoryObservation>
-pub fn cudf::DataFrame::query_stage_observation(&self, cudf::runtime::QueryStageKind) -> cudf::core::error::Result<cudf::BoundaryObservation>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::minimum_parquet_source_read_budget_bytes() -> usize
 pub fn cudf::DataFrame::parquet_source_chunk_exact_preflight(&cudf::io::source::LocalParquetSource, &cudf::io::source::SourceChunk, cudf::io::source::SourceReadMode) -> cudf::core::error::Result<core::option::Option<cudf::ParquetSourceReadPreflight>>
-pub fn cudf::DataFrame::read_json(&cudf::Runtime, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<Self>
-pub fn cudf::DataFrame::read_json_with_options(cudf::frame::dataframe::JsonReadOptions) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet(&cudf::Runtime, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_from_host_buffer(&[u8], cudf::frame::dataframe::ParquetReadOptions<'_>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_many<P>(&cudf::Runtime, impl core::iter::traits::collect::IntoIterator<Item = P>) -> cudf::core::error::Result<Self> where P: core::convert::AsRef<std::path::Path>
@@ -7677,8 +7436,6 @@ pub fn cudf::DataFrame::read_parquet_source_chunks_with_budget_with_evidence(&cu
 pub fn cudf::DataFrame::read_parquet_source_with_mode(&cudf::Runtime, &cudf::io::source::LocalParquetSource, cudf::io::source::SourceReadMode) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::read_parquet_with_budget(cudf::frame::dataframe::ParquetReadOptions<'_>, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::read_parquet_with_options(cudf::frame::dataframe::ParquetReadOptions<'_>) -> cudf::core::error::Result<Self>
-pub fn cudf::DataFrame::write_json(&self, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<()>
-pub fn cudf::DataFrame::write_json_with_options(&self, cudf::frame::dataframe::JsonWriteOptions) -> cudf::core::error::Result<()>
 pub fn cudf::DataFrame::write_parquet(&self, impl core::convert::AsRef<std::path::Path>) -> cudf::core::error::Result<()>
 pub fn cudf::DataFrame::write_parquet_with_options(&self, cudf::frame::dataframe::ParquetWriteOptions) -> cudf::core::error::Result<()>
 impl cudf::DataFrame
@@ -7693,14 +7450,10 @@ pub fn cudf::DataFrame::mixed_left_join_size_data<'a>(&self, &cudf::DataFrame, &
 pub fn cudf::DataFrame::mixed_left_semi_join_indices(&self, &cudf::DataFrame, &cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameJoinIndices>
 pub fn cudf::DataFrame::mixed_left_semi_join_size_data<'a>(&self, &cudf::DataFrame, &'a cudf::ops::ast::AstExpression, cudf::DataFrameMixedJoinOptions) -> cudf::core::error::Result<cudf::DataFrameMixedSingleSideJoinSizeData<'a>>
 impl cudf::DataFrame
-pub fn cudf::DataFrame::try_import_from_device_arrow_table_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowTable, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::DataFrame
 pub fn cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&rapids_interop::prepared::PreparedTableExport<'_>, core::option::Option<alloc::vec::Vec<alloc::string::String>>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_device_table_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::DataFrame::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
 impl cudf::DataFrame
 pub fn cudf::DataFrame::with_execution<'df, 'ctx, 'handles>(&'df self, &'ctx cudf::runtime::execution_context::ExecutionOverrides<'handles>) -> cudf::frame::dataframe::DataFrameExecutionScope<'df, 'ctx, 'handles>
 impl core::fmt::Debug for cudf::DataFrame
@@ -8457,7 +8210,6 @@ pub fn cudf::RuntimeAffinityId::fmt(&self, &mut core::fmt::Formatter<'_>) -> cor
 pub struct cudf::RuntimeBuilder
 impl cudf::RuntimeBuilder
 pub fn cudf::RuntimeBuilder::build(self) -> cudf::core::error::Result<cudf::Runtime>
-pub fn cudf::RuntimeBuilder::with_boundary_observer(self, impl cudf::BoundaryObserver) -> Self
 pub fn cudf::RuntimeBuilder::with_device(self, cudf::runtime::device::DeviceId) -> Self
 pub fn cudf::RuntimeBuilder::with_device_memory_manager(self) -> Self
 pub fn cudf::RuntimeBuilder::with_memory_resource(self, cudf::DeviceMemoryResource) -> Self
@@ -8671,14 +8423,10 @@ pub fn cudf::Series::from_scalar(&cudf::core::scalar::Scalar, usize) -> cudf::co
 impl cudf::Series
 pub fn cudf::Series::str(&self) -> cudf::frame::series::strings::SeriesStringNamespace<'_>
 impl cudf::Series
-pub fn cudf::Series::try_import_from_device_arrow_column_into_runtime(&cudf::interop::arrow_device::ForeignDeviceArrowColumn, &cudf::Runtime) -> cudf::core::error::Result<Self>
-impl cudf::Series
 pub fn cudf::Series::try_import_from_prepared_column_export_into_runtime(&rapids_interop::prepared::PreparedColumnExport<'_>, &cudf::Runtime) -> core::result::Result<Self, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_device_column_export_with_event<'a>(&'a self, &'a cudf::runtime::event::CudaEvent) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'a>, rapids_interop::types::InteropError>
 pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
-impl cudf::Series
-pub fn cudf::Series::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowColumnExport>
 impl core::convert::AsRef<cudf::Series> for cudf::frame::factorization::EncodedSeries
 pub fn cudf::frame::factorization::EncodedSeries::as_ref(&self) -> &cudf::Series
 impl core::convert::TryFrom<cudf::core::Column> for cudf::Series
@@ -9427,7 +9175,6 @@ pub fn cudf::ValidatedPackedMatrix<'_>::element(&self) -> cudf::core::types::Typ
 pub fn cudf::ValidatedPackedMatrix<'_>::is_empty(&self) -> bool
 pub fn cudf::ValidatedPackedMatrix<'_>::layout(&self) -> cudf::DenseMatrixLayout
 pub fn cudf::ValidatedPackedMatrix<'_>::len(&self) -> usize
-pub fn cudf::ValidatedPackedMatrix<'_>::observation(&self) -> core::option::Option<cudf::BoundaryObservation>
 pub fn cudf::ValidatedPackedMatrix<'_>::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::ValidatedPackedMatrix<'_>::row_stride_elements(&self) -> usize
 pub fn cudf::ValidatedPackedMatrix<'_>::rows(&self) -> usize
@@ -9435,10 +9182,6 @@ pub fn cudf::ValidatedPackedMatrix<'_>::shape(&self) -> [usize; 2]
 impl core::fmt::Debug for cudf::ValidatedPackedMatrix<'_>
 pub fn cudf::ValidatedPackedMatrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT: &str
-pub trait cudf::BoundaryObserver: core::marker::Send + core::marker::Sync + 'static
-pub fn cudf::BoundaryObserver::observe(&self, cudf::BoundaryObservation)
-impl<F> cudf::BoundaryObserver for F where F: core::ops::function::Fn(cudf::BoundaryObservation) + core::marker::Send + core::marker::Sync + 'static
-pub fn F::observe(&self, cudf::BoundaryObservation)
 pub trait cudf::CudfType: cudf::core::types::private::Sealed + core::marker::Copy + 'static
 pub const cudf::CudfType::TYPE_ID: cudf::core::types::TypeId
 impl cudf::core::types::CudfType for bool

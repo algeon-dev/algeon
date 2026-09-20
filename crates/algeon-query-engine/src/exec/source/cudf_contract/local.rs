@@ -3,15 +3,11 @@ use std::{path::Path, sync::Arc};
 use cudf::{
     io::source::{
         LocalParquetFile as CudfLocalParquetFile, LocalParquetSource as CudfLocalParquetSource,
-        ParquetVariableWidthEncodingProof as CudfParquetVariableWidthEncodingProof,
-        ParquetVariableWidthPayloadEvidence as CudfParquetVariableWidthPayloadEvidence, SourceChunk as CudfSourceChunk,
+        SourceChunk as CudfSourceChunk,
     },
     ops::ast::AstExpression,
 };
-use query_planning::{
-    parquet_stats::ParquetVariableWidthEncodingProof,
-    source::{ParquetReadStrategy, ParquetReaderDecimalType, ParquetSourceLocation},
-};
+use query_planning::source::{ParquetReadStrategy, ParquetReaderDecimalType, ParquetSourceLocation};
 
 use super::{
     error::{cudf_error_for_chunk, cudf_error_for_file, cudf_error_for_source, path_fact},
@@ -116,7 +112,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
             std::collections::btree_map::Entry::Vacant(entry) => {
                 let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
                 let cudf_file = attach_cudf_row_group_null_counts(cudf_file, source, file);
-                cudf_files.push(attach_cudf_variable_width_payload_evidence(cudf_file, file));
+                cudf_files.push(cudf_file);
                 *entry.insert(cudf_files.len() - 1)
             },
         };
@@ -267,7 +263,6 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_chunk(
     let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.source_cudf")?;
     let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
     let cudf_file = attach_cudf_row_group_null_counts(cudf_file, source, file);
-    let cudf_file = attach_cudf_variable_width_payload_evidence(cudf_file, file);
     cudf_local_parquet_source_from_file(
         source,
         cudf_file,
@@ -568,7 +563,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_file(
         "query_engine.local_parquet_source.file_cudf",
         &file.location,
     )?;
-    Ok(attach_cudf_variable_width_payload_evidence(cudf_file, file))
+    Ok(cudf_file)
 }
 
 /// Re-keys the file's planned row-group null counts from physical file-column
@@ -587,34 +582,4 @@ fn attach_cudf_row_group_null_counts(
         })
         .collect();
     cudf_file.with_row_group_null_counts(null_counts)
-}
-
-fn attach_cudf_variable_width_payload_evidence(
-    cudf_file: CudfLocalParquetFile,
-    file: &LocalParquetFile,
-) -> CudfLocalParquetFile {
-    let evidence = file
-        .variable_width_payload_evidence
-        .iter()
-        .map(|(column_index, evidence)| {
-            let encoding_proof = match evidence.encoding_proof {
-                ParquetVariableWidthEncodingProof::Empty => CudfParquetVariableWidthEncodingProof::Empty,
-                ParquetVariableWidthEncodingProof::Plain => CudfParquetVariableWidthEncodingProof::Plain,
-                ParquetVariableWidthEncodingProof::Dictionary => CudfParquetVariableWidthEncodingProof::Dictionary,
-                ParquetVariableWidthEncodingProof::PlainAndDictionary => {
-                    CudfParquetVariableWidthEncodingProof::PlainAndDictionary
-                },
-            };
-            (
-                *column_index,
-                CudfParquetVariableWidthPayloadEvidence::new(
-                    evidence.physical_column_index,
-                    evidence.selected_row_groups.clone(),
-                    evidence.payload_upper_bound_bytes,
-                    encoding_proof,
-                ),
-            )
-        })
-        .collect();
-    cudf_file.with_variable_width_payload_evidence(evidence)
 }

@@ -4,8 +4,7 @@ use super::{
     PartitionedJoinPartitionOutput, PartitionedJoinRowRange, PartitionedJoinSide, QueryError, ResidentGpuFrame, Result,
     RetryFacts, VecDeque, cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side,
     observe_device_memory_bytes, partition_row_range, partitioned_join_reusable_rejected_reason, probe_side,
-    release_bounded_join_side_frame, release_partitioned_join_side, release_streamed_join_outputs_reverse, side_metric,
-    slice_partition_join_side_range,
+    release_bounded_join_side_frame, release_partitioned_join_side, side_metric, slice_partition_join_side_range,
 };
 use crate::{
     exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
@@ -255,7 +254,8 @@ where
                 }
             },
             Err(error) => {
-                release_partitioned_join_driver_state(Some(left_partitioned), Some(right_partitioned), outputs);
+                release_partitioned_join_side(left_partitioned);
+                release_partitioned_join_side(right_partitioned);
                 return Err(error);
             },
         }
@@ -479,7 +479,6 @@ where
         ) {
             Ok(mut child_outputs) => outputs.append(&mut child_outputs),
             Err(error) => {
-                release_partitioned_join_partition_outputs(outputs);
                 return Err(error);
             },
         }
@@ -517,7 +516,6 @@ where
         let child = match repartitioned_join_child_work(work, &retry_left, &retry_right, partition) {
             Ok(child) => child,
             Err(error) => {
-                release_partitioned_join_partition_outputs(outputs);
                 release_partitioned_join_side(retry_left);
                 release_partitioned_join_side(retry_right);
                 return Err(error);
@@ -535,7 +533,6 @@ where
         ) {
             Ok(mut partition_outputs) => outputs.append(&mut partition_outputs),
             Err(error) => {
-                release_partitioned_join_partition_outputs(outputs);
                 release_partitioned_join_side(retry_left);
                 release_partitioned_join_side(retry_right);
                 return Err(error);
@@ -554,18 +551,10 @@ fn repartition_partitioned_join_work(
     right_partitioned: &PartitionedJoinSide,
     work: PartitionedJoinWorkSlice,
 ) -> Result<PartitionedJoinSides> {
-    let left = slice_partition_join_side_range(
-        execution,
-        JoinSide::Left,
-        plan.node.spec.build_side,
-        left_partitioned,
-        work.partition,
-        work.left,
-    )?;
+    let left = slice_partition_join_side_range(execution, JoinSide::Left, left_partitioned, work.partition, work.left)?;
     let right = match slice_partition_join_side_range(
         execution,
         JoinSide::Right,
-        plan.node.spec.build_side,
         right_partitioned,
         work.partition,
         work.right,
@@ -628,18 +617,11 @@ where
         BoundedJoinSideFrame,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
-    let left_part = slice_partition_join_side_range(
-        execution,
-        JoinSide::Left,
-        plan.node.spec.build_side,
-        left_partitioned,
-        work.partition,
-        work.left,
-    )?;
+    let left_part =
+        slice_partition_join_side_range(execution, JoinSide::Left, left_partitioned, work.partition, work.left)?;
     let right_part = match slice_partition_join_side_range(
         execution,
         JoinSide::Right,
-        plan.node.spec.build_side,
         right_partitioned,
         work.partition,
         work.right,
@@ -928,28 +910,6 @@ pub(super) fn record_partitioned_join_operator_metrics(
     ));
 }
 
-fn release_partitioned_join_partition_outputs(mut outputs: Vec<PartitionedJoinPartitionOutput>) {
-    let mut frames = Vec::with_capacity(outputs.len());
-    while let Some(output) = outputs.pop() {
-        frames.push(output.frame);
-    }
-    release_streamed_join_outputs_reverse(frames);
-}
-
-fn release_partitioned_join_driver_state(
-    left: Option<PartitionedJoinSide>,
-    right: Option<PartitionedJoinSide>,
-    outputs: Vec<ResidentGpuFrame>,
-) {
-    release_streamed_join_outputs_reverse(outputs);
-    if let Some(left) = left {
-        release_partitioned_join_side(left);
-    }
-    if let Some(right) = right {
-        release_partitioned_join_side(right);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,7 +934,7 @@ mod tests {
 
     fn retryable_error_with_fact(key: &'static str, value: &'static str) -> QueryError {
         QueryError::new(
-            QueryErrorCode::CudfResourceExhausted,
+            QueryErrorCode::QueryMemoryLimitExceeded,
             "query_engine.bounded.join.partitioned_retry_test",
             "injected retryable partitioned join retry test error",
         )

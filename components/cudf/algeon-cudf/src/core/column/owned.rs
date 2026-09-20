@@ -916,6 +916,7 @@ impl Column {
     pub(crate) fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
         let target = ExecutionDomain::debug_explicit(identity)?;
         let _consumer_fence = ExecutionDomain::insert_stream_dependency(

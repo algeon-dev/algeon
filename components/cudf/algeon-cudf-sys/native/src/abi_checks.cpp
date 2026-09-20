@@ -2,7 +2,6 @@
 // Rust declares FFI enums with `#[repr(i32)]`, so the C/C++ shim must keep
 // them 32-bit and preserve the discriminants expected by Rust.
 
-#include "cudf_rust/arrow_device.h"
 #include "cudf_rust/ast.h"
 #include "cudf_rust/binary.h"
 #include "cudf_rust/copying.h"
@@ -335,19 +334,7 @@ static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t), 
 static_assert(CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL == static_cast<int>(cudf::nan_equality::ALL_EQUAL));
 static_assert(CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL == static_cast<int>(cudf::nan_equality::UNEQUAL));
 
-// Copying, gather, arrow device, datetime, and strings
-static_assert(sizeof(cudf_arrow_device_export_materialization_t) == sizeof(int32_t), "cudf_arrow_device_export_materialization_t must be 32-bit");
-static_assert(sizeof(cudf_arrow_device_import_materialization_t) == sizeof(int32_t), "cudf_arrow_device_import_materialization_t must be 32-bit");
-static_assert(sizeof(cudf_arrow_device_type_t) == sizeof(int32_t), "cudf_arrow_device_type_t must be 32-bit");
-static_assert(CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW == 0);
-static_assert(CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY == 1);
-static_assert(CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW == 0);
-static_assert(CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY == 1);
-static_assert(CUDF_ARROW_DEVICE_TYPE_CPU == 1);
-static_assert(CUDF_ARROW_DEVICE_TYPE_CUDA == 2);
-static_assert(CUDF_ARROW_DEVICE_TYPE_CUDA_HOST == 3);
-static_assert(CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED == 13);
-
+// Copying, gather, datetime, and strings
 static_assert(sizeof(cudf_datetime_component_t) == sizeof(int32_t), "cudf_datetime_component_t must be 32-bit");
 static_assert(CUDF_DATETIME_COMPONENT_YEAR == 0);
 static_assert(CUDF_DATETIME_COMPONENT_MONTH == 1);

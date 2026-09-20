@@ -33,10 +33,7 @@ use query_engine::{
 };
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
-use crate::{
-    capability::CapabilityReason,
-    native::{LoweringRejection, validate::native_zero_column_count_source_is_safe},
-};
+use crate::{capability::CapabilityReason, native::LoweringRejection};
 
 /// Lowers a normalized native tree into the DataFusion-free query IR.
 ///
@@ -48,22 +45,8 @@ pub(super) fn lower_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
 ) -> Result<NativeQueryPlan, LoweringRejection> {
     match &normalized.root {
-        NormalizedNativeRoot::Aggregate(root)
-            if normalized.single_source_input().is_some_and(|source| source.local_parquet_source_exec().is_some()) =>
-        {
+        NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
             root::lower_slice1_plan(normalized, root)
-        },
-        NormalizedNativeRoot::Aggregate(root)
-            if normalized.single_source_input().is_some_and(|source| {
-                source.table_format_scan_exec().is_some()
-                    && native_zero_column_count_source_is_safe(
-                        source.filter,
-                        root.pre_aggregate_projection,
-                        root.aggregate,
-                    )
-            }) =>
-        {
-            root::lower_table_format_zero_column_count_plan(normalized, root)
         },
         NormalizedNativeRoot::Aggregate(root) => root::lower_joined_aggregate_plan(normalized, root),
         NormalizedNativeRoot::Input(root) => root::lower_input_root_plan(normalized, root),

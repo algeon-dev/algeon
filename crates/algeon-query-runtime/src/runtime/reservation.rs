@@ -13,23 +13,17 @@ use query_planning::error::QueryError;
 pub struct RetryFacts {
     /// Stable retry action string, for example splitting a chunk or reducing
     /// merge fan-in.
-    #[doc(hidden)]
-    pub retry_action: Option<String>,
+    pub(crate) retry_action: Option<String>,
     /// Stable boundary where execution can resume after a retry.
-    #[doc(hidden)]
-    pub resume_boundary: Option<String>,
+    pub(crate) resume_boundary: Option<String>,
     /// Number of source chunks already committed before the failure.
-    #[doc(hidden)]
-    pub committed_chunks: Option<usize>,
+    pub(crate) committed_chunks: Option<usize>,
     /// Number of partial results already committed before the failure.
-    #[doc(hidden)]
-    pub committed_partials: Option<usize>,
+    pub(crate) committed_partials: Option<usize>,
     /// Merge level being processed when the failure occurred.
-    #[doc(hidden)]
-    pub merge_level: Option<usize>,
+    pub(crate) merge_level: Option<usize>,
     /// Merge fan-in attempted when the failure occurred.
-    #[doc(hidden)]
-    pub merge_fan_in: Option<usize>,
+    pub(crate) merge_fan_in: Option<usize>,
 }
 
 impl RetryFacts {

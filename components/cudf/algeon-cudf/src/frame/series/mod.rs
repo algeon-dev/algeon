@@ -16,6 +16,7 @@ mod owned;
 pub(crate) mod reduction;
 mod strings;
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use context::{
     trigger_series_row_range_end_limit_error_for_test, trigger_series_row_range_overflow_error_for_test,
     trigger_series_row_range_start_limit_error_for_test,

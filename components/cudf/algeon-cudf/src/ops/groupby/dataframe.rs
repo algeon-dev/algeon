@@ -486,6 +486,7 @@ impl<'a> GroupBy<'a> {
     pub(crate) fn prepare_groups_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<PreparedGroupByFacts> {
         self.prepare_groups_impl(ctx, "groupby::GroupBy::with_execution::prepare_groups")
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
     }

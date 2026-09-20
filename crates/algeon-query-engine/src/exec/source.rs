@@ -5,18 +5,18 @@ pub use lakehouse_cache::sanitize_cache_component;
 use parquet::file::reader::FileReader;
 
 use super::{
-    ArrowDataType, BinaryOp, BoundedExecutionAttempt, CudfSortOptions, DataFrame, ExecutionBudgetRequest,
-    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, Field, GpuDataFrame, GpuResidentInputMap,
-    GpuResultHandle, LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError,
-    QueryErrorCode, Result, Schema, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode,
-    SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN, append_source_order_columns, budgeted_value, col,
-    comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
-    cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
-    execution_overrides, lit, plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
+    ArrowDataType, BinaryOp, BoundedExecutionAttempt, DataFrame, ExecutionBudgetRequest, ExecutionBudgetToken,
+    ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame, GpuResidentInputMap, GpuResultHandle, LiteralValue,
+    LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError, QueryErrorCode, Result, SourceChunk,
+    SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode, SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN,
+    append_source_order_columns, budgeted_value, comma_separated_usize, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_query_error_with_budget_details, cudf_query_error_without_source,
+    cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error, execution_overrides,
+    plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
 use crate::{
-    chunk::{SourceChunkBatch, source_chunk_row_position_range, source_file_for_chunk},
+    chunk::SourceChunkBatch,
     rapids_backend::rapids_analysis_context,
     runtime::{
         cache::local_parquet::{
@@ -36,7 +36,6 @@ mod gpu_resident;
 mod lakehouse_cache;
 mod metrics;
 mod partition;
-mod position_delete;
 mod predicate;
 mod read;
 mod read_runtime_metrics;
@@ -56,7 +55,6 @@ pub(super) use metrics::{
     attach_row_group_facts, attach_row_group_facts_if_absent, format_row_groups, record_bounded_parquet_source_metrics,
 };
 use partition::inject_partition_columns;
-use position_delete::*;
 use read::read_local_parquet_file;
 pub(in crate::exec) use read_runtime_metrics::observed_chunk_row_group_count;
 use read_runtime_metrics::*;
@@ -215,10 +213,6 @@ fn read_local_parquet_source_uncached(
         return Ok(GpuDataFrame::new(frame));
     }
 
-    if source_requires_position_delete_chunk_reads(source) {
-        return read_position_delete_parquet_source_as_chunks(context, source_node_id, source, metrics);
-    }
-
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
@@ -253,16 +247,6 @@ fn read_local_parquet_source_uncached(
             frame
         };
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
-        let frame = apply_position_deletes_to_data_file(
-            context,
-            source,
-            source_node_id,
-            file,
-            file_index,
-            None,
-            frame,
-            metrics,
-        )?;
         if source.is_count_star_probe_source() {
             let row_count = frame.num_rows() as u64;
             let frame = count_star_probe_weight_frame(context, row_count, false)?.into_frame();
@@ -477,9 +461,6 @@ fn read_local_parquet_chunk_uncached(
     } else {
         None
     };
-    let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.position_deletes")?;
-    let row_position_range =
-        if file.has_position_delete_files() { source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
         attach_row_group_facts(
@@ -540,16 +521,6 @@ fn read_local_parquet_chunk_uncached(
     record_source_read(context, SourceReadFact::SourceReadTime(read_elapsed));
     let frame = outcome.into_value().into_frame();
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
-    let frame = apply_position_deletes_to_data_file(
-        context,
-        source,
-        chunk.source_node_id,
-        file,
-        chunk.file_index,
-        row_position_range,
-        frame,
-        metrics,
-    )?;
     if source.is_count_star_probe_source() {
         let row_count = frame.num_rows() as u64;
         record_source_chunk_read_runtime(
@@ -868,7 +839,6 @@ fn validate_local_parquet_chunk_batch(source: &LocalParquetSource, batch: &Sourc
             || chunk.row_group_indexes.is_empty()
             || chunk.read_columns.is_empty()
             || !chunk.partition_values.is_empty()
-            || source.files.get(chunk.file_index).is_some_and(LocalParquetFile::has_row_delete_files)
         {
             return Err(attach_row_group_facts(
                 QueryError::new(
@@ -904,19 +874,6 @@ fn cudf_error_for_chunk_with_budget_details(
     }
 }
 
-fn cudf_error_for_chunk_read(
-    operation: &'static str,
-    message: &'static str,
-    error: cudf::Error,
-    chunk: &SourceChunk,
-) -> QueryError {
-    if chunk.location.is_local_path() {
-        cudf_query_error(operation, message, error)
-    } else {
-        cudf_query_error_without_source(operation, message, &error)
-    }
-}
-
 fn cudf_error_for_chunk_batch_with_budget_details(
     operation: &'static str,
     message: &'static str,
@@ -934,6 +891,7 @@ fn cudf_error_for_chunk_batch_with_budget_details(
 mod tests {
     use std::time::Duration;
 
+    use arrow::datatypes::{Field, Schema};
     use cudf::{
         io::parquet::{ParquetPruningEvidence, ParquetReadEvidence, RemoteParquetBackendBuildStatus},
         testing::error::new_with_for_test,
@@ -941,15 +899,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        chunk::{SourceChunkBatch, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+        chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
         observability::{
             PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession, RuntimePlanExecutionLifecycle,
         },
         rapids_backend::rapids_analysis_context,
-        source::{
-            CredentialMode, LakehouseCacheFillMode, MissingColumn, ParquetEqualityDeleteFile,
-            ParquetPositionDeleteFile, ResolvedParquetSource,
-        },
+        source::{CredentialMode, LakehouseCacheFillMode, MissingColumn, ResolvedParquetSource},
     };
 
     fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {
@@ -974,75 +929,6 @@ mod tests {
         let names = cache_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
 
         assert_eq!(names, ["src", "dst"]);
-    }
-
-    #[test]
-    fn local_parquet_chunk_batch_rejects_equality_delete_files() {
-        let delete_file = ParquetEqualityDeleteFile::from_resolved_parquet_source(
-            "delete-000",
-            ResolvedParquetSource::local_kvikio("/tmp/delete-000.parquet"),
-            vec![1],
-            vec!["c1".to_string()],
-        )
-        .unwrap();
-        let source = test_source(
-            vec![
-                LocalParquetFile::new("/tmp/source-read-equality-delete.parquet")
-                    .with_row_groups(vec![0, 1])
-                    .with_row_group_bytes(vec![10, 10])
-                    .with_projected_row_group_bytes(vec![10, 10], vec![10, 10])
-                    .with_row_group_rows(vec![10, 10])
-                    .with_equality_delete_files(vec![delete_file]),
-            ],
-            vec!["c1".to_string()],
-        );
-        let node_id = NodeId::from_index_for_internal_use(7);
-        let plan = plan_local_parquet_source_chunks(node_id, &source, SourceChunkPlanningPolicy::new(None, 1))
-            .expect("chunk planning should split the file by row group");
-        assert_eq!(plan.chunks.len(), 2);
-        let batch = SourceChunkBatch {
-            batch_index: 0,
-            chunks: vec![plan.chunks[0].clone()],
-            estimated_source_read_bytes: Some(10),
-            source_batching_reason: "batched".to_string(),
-        };
-
-        let error = validate_local_parquet_chunk_batch(&source, &batch).unwrap_err();
-
-        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-        assert_eq!(error.fact_value("reason"), Some("ineligible_chunk"));
-    }
-
-    #[test]
-    fn position_delete_referenced_data_file_matches_local_file_uri_variants() {
-        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-            "delete-1",
-            ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
-        )
-        .unwrap()
-        .with_referenced_data_file("file:///tmp/data.parquet");
-
-        assert!(position_delete_file_matches_referenced_data_file(&delete_file, "/tmp/data.parquet"));
-
-        let localhost_delete_file = delete_file.with_referenced_data_file("file://localhost/tmp/data.parquet");
-        assert!(position_delete_file_matches_referenced_data_file(&localhost_delete_file, "/tmp/data.parquet"));
-        assert!(!position_delete_file_matches_referenced_data_file(&localhost_delete_file, "/tmp/other.parquet"));
-    }
-
-    #[test]
-    fn position_delete_file_path_filter_values_include_local_file_uri_variants_without_referenced_file() {
-        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-            "delete-1",
-            ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
-        )
-        .unwrap();
-
-        let values = position_delete_file_path_filter_values(&delete_file, "/tmp/data.parquet");
-
-        assert!(values.contains(&"/tmp/data.parquet".to_string()));
-        assert!(values.contains(&"file:/tmp/data.parquet".to_string()));
-        assert!(values.contains(&"file:///tmp/data.parquet".to_string()));
-        assert!(values.contains(&"file://localhost/tmp/data.parquet".to_string()));
     }
 
     #[test]

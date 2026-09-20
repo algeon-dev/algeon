@@ -37,7 +37,7 @@ pub fn plan_local_parquet_source_chunks(
 /// Plans chunks using the execution context to opportunistically range-read
 /// object-store Parquet footers before falling back to conservative read-all
 /// chunks.
-pub fn plan_local_parquet_source_chunks_with_execution_context(
+pub(crate) fn plan_local_parquet_source_chunks_with_execution_context(
     source_node_id: NodeId,
     source: &LocalParquetSource,
     policy: SourceChunkPlanningPolicy,
@@ -86,8 +86,7 @@ fn rapids_source_read_sizing() -> SourceReadSizing<'static> {
 /// and [`plan_local_parquet_source_chunks_with_metadata_cache`]; a caller that
 /// already owns both a cache and a context (for example, to plan with footers
 /// it already loaded) can call it directly instead of duplicating one of those.
-#[doc(hidden)]
-pub fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
+pub(crate) fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     source_node_id: NodeId,
     source: &LocalParquetSource,
     policy: SourceChunkPlanningPolicy,

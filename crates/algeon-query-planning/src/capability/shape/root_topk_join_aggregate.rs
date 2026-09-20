@@ -7,7 +7,7 @@ use super::{
     join_node_with_missing_reason, node_kind_for_fact, node_operator_fact, peel_resident_unary_chain_for_capability,
     sort_input_with_missing_reason,
 };
-use crate::plan::{WindowFrame, WindowNode, column_evidence::plan_node_is_unique_on};
+use crate::plan::{WindowFrame, WindowNode, plan_node_is_unique_on};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RootTopKJoinSubcontract {
@@ -437,12 +437,7 @@ fn root_topk_join_has_aggregate_fan_in_left_context(
         return Ok(false);
     }
     let right_join_keys = join.spec.keys.iter().map(|key| key.right.name().to_owned()).collect::<BTreeSet<_>>();
-    plan_node_is_unique_on(plan, join.inputs[1], &right_join_keys).map_err(|_| {
-        CapabilityDecision::rejected(
-            "root_topk_join_aggregate_output_facts_unavailable",
-            [("node_id", join.inputs[1].to_string()), ("role", "aggregate_fan_in_input".to_string())],
-        )
-    })
+    Ok(plan_node_is_unique_on(plan, join.inputs[1], &right_join_keys))
 }
 
 fn root_topk_join_feeds_grouped_aggregate(

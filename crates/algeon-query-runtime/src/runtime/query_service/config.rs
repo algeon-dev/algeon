@@ -26,7 +26,7 @@ impl QueueBounds {
     /// Frontends may project these values into their own configuration
     /// surfaces, but must not restate them. Keeping the construction here
     /// makes the runtime controller the sole owner of queue defaults.
-    pub const fn canonical_default() -> Self {
+    pub(crate) const fn canonical_default() -> Self {
         Self { max_waiters: 64, max_wait: Duration::from_secs(30) }
     }
 

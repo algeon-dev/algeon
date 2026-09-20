@@ -11,8 +11,8 @@ use std::{
 use cudf::{CudfErrorFailureSource, DataFrame, DeviceId};
 use cudf_sys::test_support;
 use query_runtime::runtime::{
-    DeploymentIoCapability, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
-    GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
+    GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
+    GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
 };
 
 fn unique_fixture_path() -> PathBuf {
@@ -22,7 +22,7 @@ fn unique_fixture_path() -> PathBuf {
 }
 
 fn test_service() -> QueryService {
-    QueryService::new_with_device_profiles_and_deployment_for_test(
+    QueryService::new_with_device_profiles_for_test(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(5) },
         vec![GpuBackendDeviceConfig::new(
@@ -34,7 +34,6 @@ fn test_service() -> QueryService {
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 2, 2)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
-        DeploymentIoCapability::default(),
     )
     .expect("two-attempt runtime service")
 }

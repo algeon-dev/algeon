@@ -44,7 +44,7 @@ impl<T> ReleasedCompiledResource<T> {
 }
 
 impl<T> CompiledPipelineState<T> {
-    pub fn new(pipeline: &CompiledPipeline) -> Result<Self> {
+    pub(crate) fn new(pipeline: &CompiledPipeline) -> Result<Self> {
         let mut resources = BTreeMap::new();
         for resource in pipeline.resources() {
             let previous = resources.insert(
@@ -65,7 +65,7 @@ impl<T> CompiledPipelineState<T> {
         Ok(Self { completed_tasks: BTreeSet::new(), execution_order: Vec::new(), resources })
     }
 
-    pub fn completed_task_count(&self) -> usize {
+    pub(crate) fn completed_task_count(&self) -> usize {
         self.completed_tasks.len()
     }
 
@@ -74,11 +74,11 @@ impl<T> CompiledPipelineState<T> {
         &self.execution_order
     }
 
-    pub fn is_task_completed(&self, task: PipelineTaskId) -> bool {
+    pub(crate) fn is_task_completed(&self, task: PipelineTaskId) -> bool {
         self.completed_tasks.contains(&task)
     }
 
-    pub fn is_resource_live(&self, resource: ResidentResourceId) -> bool {
+    pub(crate) fn is_resource_live(&self, resource: ResidentResourceId) -> bool {
         self.resources.get(&resource).is_some_and(|slot| slot.payload.is_some() && !slot.released)
     }
 
@@ -105,7 +105,7 @@ impl<T> CompiledPipelineState<T> {
         released
     }
 
-    pub fn resource_payload(&self, resource: ResidentResourceId) -> Result<&T> {
+    pub(crate) fn resource_payload(&self, resource: ResidentResourceId) -> Result<&T> {
         let slot = self.resource_slot(resource)?;
         if slot.released {
             return Err(invalid("compiled task requested a released resident resource")
@@ -117,7 +117,7 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
-    pub fn install_lane_claim_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<()> {
+    pub(crate) fn install_lane_claim_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<()> {
         let slot = self.resource_slot_mut(resource)?;
         if slot.released {
             return Err(invalid("compiled lane scratch state received a released resident resource")
@@ -131,7 +131,7 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
-    pub fn replace_resource_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<T> {
+    pub(crate) fn replace_resource_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<T> {
         let slot = self.resource_slot_mut(resource)?;
         if slot.released {
             return Err(invalid("compiled task tried to replace a released resident resource")
@@ -143,7 +143,7 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
-    pub fn prepare_task(&self, task: &PipelineTask) -> Result<()> {
+    pub(crate) fn prepare_task(&self, task: &PipelineTask) -> Result<()> {
         if self.completed_tasks.contains(&task.id()) {
             return Err(invalid("compiled task executed more than once")
                 .with_fact("compiled_task_id", task.id())
@@ -175,7 +175,7 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
-    pub fn can_consume_task_input_resource(&self, task: &PipelineTask, resource: ResidentResourceId) -> bool {
+    pub(crate) fn can_consume_task_input_resource(&self, task: &PipelineTask, resource: ResidentResourceId) -> bool {
         self.resource_slot(resource).is_ok_and(|slot| {
             task.input_resources().contains(&resource)
                 && !slot.released
@@ -185,7 +185,11 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
-    pub fn consume_task_input_resource(&mut self, task: &PipelineTask, resource: ResidentResourceId) -> Result<T> {
+    pub(crate) fn consume_task_input_resource(
+        &mut self,
+        task: &PipelineTask,
+        resource: ResidentResourceId,
+    ) -> Result<T> {
         if self.completed_tasks.contains(&task.id()) {
             return Err(invalid("compiled task consumed an input after completion")
                 .with_fact("compiled_task_id", task.id())
@@ -267,7 +271,7 @@ impl<T> CompiledPipelineState<T> {
         Ok(released)
     }
 
-    pub fn ensure_finished(&self, pipeline: &CompiledPipeline) -> Result<()> {
+    pub(crate) fn ensure_finished(&self, pipeline: &CompiledPipeline) -> Result<()> {
         for task in pipeline.tasks() {
             if !self.completed_tasks.contains(&task.id()) {
                 return Err(invalid("compiled pipeline finished with an incomplete task")

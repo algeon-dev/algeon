@@ -13,23 +13,20 @@ const CLAIM_OPERATION: &str = "query_engine.gpu.owner.claim";
 /// Unforgeable proof that the current construction transaction owns the live
 /// backend lease.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct DeviceOwnerToken<'lease> {
+pub(crate) struct DeviceOwnerToken<'lease> {
     generation: u64,
     _lease: PhantomData<&'lease LiveBackendLease>,
 }
 
 impl DeviceOwnerToken<'_> {
-    #[doc(hidden)]
-    pub fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 }
 
 /// RAII ownership of the one live Algeon GPU backend allowed in this process.
 #[derive(Debug, Clone)]
-#[doc(hidden)]
-pub struct LiveBackendLease {
+pub(crate) struct LiveBackendLease {
     inner: Arc<LiveBackendLeaseInner>,
 }
 
@@ -42,20 +39,17 @@ struct LiveBackendLeaseInner {
 }
 
 impl LiveBackendLease {
-    #[doc(hidden)]
-    pub fn token(&self) -> DeviceOwnerToken<'_> {
+    pub(crate) fn token(&self) -> DeviceOwnerToken<'_> {
         DeviceOwnerToken { generation: self.inner.generation, _lease: PhantomData }
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.inner.generation
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn device_ordinals(&self) -> &[usize] {
+    pub(crate) fn device_ordinals(&self) -> &[usize] {
         &self.inner.device_ordinals
     }
 }
@@ -141,14 +135,12 @@ impl LiveBackendRegistry {
 }
 
 /// Claims the one live backend slot after configuration has been validated.
-#[doc(hidden)]
-pub fn claim_live_backend(device_ordinals: &[usize]) -> Result<LiveBackendLease> {
+pub(crate) fn claim_live_backend(device_ordinals: &[usize]) -> Result<LiveBackendLease> {
     static REGISTRY: OnceLock<LiveBackendRegistry> = OnceLock::new();
     REGISTRY.get_or_init(LiveBackendRegistry::default).claim(device_ordinals)
 }
 
-#[doc(hidden)]
-pub fn normalize_device_ordinals(device_ordinals: &[usize]) -> Result<Vec<usize>> {
+pub(crate) fn normalize_device_ordinals(device_ordinals: &[usize]) -> Result<Vec<usize>> {
     if device_ordinals.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

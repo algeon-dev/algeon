@@ -518,9 +518,8 @@ mod tests {
         },
         plan::{QueryPlan, QueryPlanBuilder},
         runtime::{
-            DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendDeviceConfig,
-            GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-            KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
+            ExecutionContext, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+            GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
             QueueBounds,
             resident::{GpuDataFrame, GpuResidentInputMap},
         },
@@ -556,15 +555,10 @@ mod tests {
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         );
-        let service = QueryService::new_with_device_profiles_and_deployment_for_test(
+        let service = QueryService::new_with_device_profiles_for_test(
             QueryExecutionConfig::default(),
             QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
             vec![profile],
-            DeploymentIoCapability::from_probe_inputs(
-                NvidiaFsProbeStatus::DriverMissing,
-                KvikioCompatModeStatus::Unset,
-                GdsDriverProbeStatus::ProbeUnimplemented,
-            ),
         )
         .expect("runtime-backed service");
         (service, plan, schema)

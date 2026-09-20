@@ -8,6 +8,8 @@
 //! `native_*` facts while this layer maps them into adapter-level
 //! [`ErrorCode`] values suitable for DataFusion.
 
+#[cfg(feature = "server")]
+use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
@@ -15,6 +17,10 @@ use std::{
 };
 
 use datafusion::common::DataFusionError;
+#[cfg(feature = "server")]
+use datafusion::{common::SchemaError, object_store::Error as ObjectStoreError};
+#[cfg(feature = "server")]
+use query_engine::object_store_error::query_error_code_for_object_store_error;
 use query_engine::{
     error::QueryError,
     native_error::{cudf_message_fact, query_error_code_for_cudf_error},
@@ -57,7 +63,8 @@ pub(crate) const ERROR_FACTS_TRUNCATED_KEY: &str = "error_facts_truncated";
 /// identifiers, so operational logs and [`fmt::Debug`] must never carry them.
 /// The server projection owner retains them explicitly for query-caller
 /// surfaces (Flight metadata allowlist, query-stats capture) alongside the
-/// log-safe projection. Do not extend this list without defining the
+/// log-safe projection, and composes them into the Flight status text because
+/// [`Error::message`] omits them. Do not extend this list without defining the
 /// disclosure contract of each projection that consumes it.
 const CLIENT_SCHEMA_DETAIL_FACT_KEYS: &[&str] =
     &["unsupported_column", "unsupported_column_type", "unsupported_column_role"];
@@ -105,6 +112,53 @@ fn find_algeon_error_in<'a>(
     }
 
     error.source().and_then(|source| find_algeon_error_in(source, depth + 1, visited_nodes))
+}
+
+/// Classifies a DataFusion error into the adapter code the Flight server reports.
+///
+/// An Algeon error anywhere in the tree decides first. Otherwise a typed
+/// object-store error in the source chain maps to its source code, and the
+/// deepest DataFusion error reached decides the rest. The walk visits at most
+/// `MAX_SOURCE_CHAIN_DEPTH + 1` layers and classifies the deepest DataFusion
+/// error seen, so an arbitrarily deep wrapper tree still yields a defined code.
+#[cfg(feature = "server")]
+pub(crate) fn classify(error: &DataFusionError) -> ErrorCode {
+    if let Some(adapter) = error.find_algeon_error() {
+        return adapter.code();
+    }
+    let mut deepest = error;
+    let mut object_store = None;
+    let mut layer: Option<&(dyn StdError + 'static)> = Some(error);
+    for _ in 0..=MAX_SOURCE_CHAIN_DEPTH {
+        let Some(current) = layer else { break };
+        if let Some(datafusion) = current.downcast_ref::<DataFusionError>() {
+            deepest = datafusion;
+        } else if let Some(shared) = current.downcast_ref::<Arc<DataFusionError>>() {
+            deepest = shared.as_ref();
+        } else if object_store.is_none() {
+            object_store = current.downcast_ref::<ObjectStoreError>();
+        }
+        layer = current.source();
+    }
+    if let Some(object_store) = object_store {
+        return code_for_native_error(query_error_code_for_object_store_error(object_store));
+    }
+    match deepest {
+        DataFusionError::SQL(_, _) => ErrorCode::SqlParse,
+        DataFusionError::Plan(_) | DataFusionError::Configuration(_) => ErrorCode::DataFusionPlanning,
+        DataFusionError::SchemaError(schema, _) => match schema.as_ref() {
+            SchemaError::FieldNotFound { .. } => ErrorCode::FieldNotFound,
+            SchemaError::AmbiguousReference { .. }
+            | SchemaError::DuplicateQualifiedField { .. }
+            | SchemaError::DuplicateUnqualifiedField { .. } => ErrorCode::DataFusionPlanning,
+        },
+        DataFusionError::NotImplemented(_) => ErrorCode::UnsupportedOperator,
+        DataFusionError::ResourcesExhausted(_) => ErrorCode::HostMemoryExhausted,
+        DataFusionError::ExecutionJoin(join) if join.is_cancelled() => ErrorCode::Cancelled,
+        // Execution errors may include reader internals, so they stay behind
+        // the generic `Internal` client surface.
+        _ => ErrorCode::Internal,
+    }
 }
 
 /// Machine-readable facts attached to an [`Error`].

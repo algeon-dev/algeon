@@ -4,19 +4,14 @@ mod execution;
 mod lifecycle;
 mod owner;
 mod queue;
-pub use cancellation::{
-    AttemptCancellation, AttemptCancellationBoundary, BoundaryCancellationState, cancellation_state_at,
-    effective_queue_expiry,
-};
+pub use cancellation::AttemptCancellation;
 #[doc(hidden)]
 pub use execution::{AttemptExecutionRound, AttemptHostOccurrence};
-#[doc(hidden)]
-pub use lifecycle::AttemptLifecycle;
-pub use lifecycle::AttemptLifecycleError;
+pub(crate) use lifecycle::{AttemptLifecycle, AttemptLifecycleError};
 pub use owner::{
     AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptBegin, AttemptCompletion, AttemptCompletionFactory,
     AttemptHandle, AttemptOwner, BeginAttemptRequest,
 };
-#[doc(hidden)]
-pub use owner::{AttemptFinalizer, AttemptFinalizerSlot};
-pub use queue::{AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptCompletionQueue};
+pub(crate) use owner::{AttemptFinalizer, AttemptFinalizerSlot};
+pub(crate) use queue::AttemptCompletionQueue;
+pub use queue::{AttemptBackendCounters, AttemptBackendCountersSnapshot};

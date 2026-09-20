@@ -7,7 +7,6 @@ const EXECUTION_CONTEXT_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/execution_context.cpp"));
 const EXECUTION_CONTEXT_INTERNAL_HPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/execution_context_internal.hpp"));
-const ARROW_DEVICE_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/arrow_device.cpp"));
 const ARROW_HOST_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/arrow_host.h"));
 const ARROW_HOST_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/arrow_host.cpp"));
 const BINARY_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/binary.h"));
@@ -33,8 +32,6 @@ const GROUPBY_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/nat
 const HASHING_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/hashing.h"));
 const HASHING_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/hashing.cpp"));
 const IO_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/io.h"));
-const IO_CSV_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/io_csv.cpp"));
-const IO_JSON_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/io_json.cpp"));
 const IO_PARQUET_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/io_parquet.cpp"));
 const JOIN_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/cudf_rust/join.h"));
 const JOIN_COMMON_HPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/join_common.hpp"));
@@ -88,8 +85,6 @@ use BINDINGS_RS as DICTIONARY_FFI_RS;
 use BINDINGS_RS as FILTER_FFI_RS;
 use BINDINGS_RS as GROUPBY_FFI_RS;
 use BINDINGS_RS as HASHING_FFI_RS;
-use BINDINGS_RS as IO_CSV_FFI_RS;
-use BINDINGS_RS as IO_JSON_FFI_RS;
 use BINDINGS_RS as IO_PARQUET_FFI_RS;
 use BINDINGS_RS as JOIN_FFI_RS;
 use BINDINGS_RS as PARTITIONING_FFI_RS;

@@ -23,24 +23,24 @@ static NEXT_OPERATOR_STAGE_SPAN_ID: AtomicU64 = AtomicU64::new(1 << 32);
 /// Stable identities that travel with every Started/terminal pair.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeOperatorStageIdentity {
-    pub node_id: Option<String>,
-    pub task_id: Option<RuntimeTaskId>,
-    pub chunk_index: Option<usize>,
-    pub partition_index: Option<usize>,
-    pub attempt: Option<u32>,
-    pub strategy_label: Option<String>,
-    pub input_rows: Option<u64>,
-    pub input_bytes: Option<u64>,
-    pub reserved_bytes: Option<u64>,
-    pub vector_algorithm: Option<String>,
-    pub ml_algorithm: Option<String>,
-    pub vector_relation_role: Option<String>,
-    pub vector_dimension: Option<usize>,
-    pub matrix_layout: Option<String>,
-    pub execution_binding_id: Option<u64>,
-    pub device_ordinal: Option<usize>,
-    pub native_version: Option<(u16, u16, u16)>,
-    pub bounded_control_scalars: Option<(u64, u64)>,
+    pub(crate) node_id: Option<String>,
+    pub(crate) task_id: Option<RuntimeTaskId>,
+    pub(crate) chunk_index: Option<usize>,
+    pub(crate) partition_index: Option<usize>,
+    pub(crate) attempt: Option<u32>,
+    pub(crate) strategy_label: Option<String>,
+    pub(crate) input_rows: Option<u64>,
+    pub(crate) input_bytes: Option<u64>,
+    pub(crate) reserved_bytes: Option<u64>,
+    pub(crate) vector_algorithm: Option<String>,
+    pub(crate) ml_algorithm: Option<String>,
+    pub(crate) vector_relation_role: Option<String>,
+    pub(crate) vector_dimension: Option<usize>,
+    pub(crate) matrix_layout: Option<String>,
+    pub(crate) execution_binding_id: Option<u64>,
+    pub(crate) device_ordinal: Option<usize>,
+    pub(crate) native_version: Option<(u16, u16, u16)>,
+    pub(crate) bounded_control_scalars: Option<(u64, u64)>,
 }
 
 impl RuntimeOperatorStageIdentity {
@@ -130,11 +130,6 @@ impl RuntimeOperatorStageIdentity {
 
     pub fn with_native_version(mut self, major: u16, minor: u16, patch: u16) -> Self {
         self.native_version = Some((major, minor, patch));
-        self
-    }
-
-    pub fn with_bounded_control_scalars(mut self, events: u64, bytes: u64) -> Self {
-        self.bounded_control_scalars = Some((events, bytes));
         self
     }
 
@@ -245,25 +240,6 @@ impl RuntimeOperatorStageGuard {
         self.terminal_recorded = true;
     }
 
-    /// Attach successful bounded host-control evidence to the terminal event.
-    /// The already-emitted Started event intentionally has no speculative
-    /// boundary totals.
-    pub fn finish_with_bounded_control_scalars(
-        mut self,
-        output_rows: Option<u64>,
-        output_bytes: Option<u64>,
-        events: u64,
-        bytes: u64,
-    ) {
-        // `RuntimeOperatorStageGuard` owns a `Drop` implementation so moving
-        // its identity out would make the terminal observation itself fail to
-        // compile. Keep the guard intact and replace the identity from a
-        // cheap clone instead.
-        self.identity = self.identity.clone().with_bounded_control_scalars(events, bytes);
-        self.record(RuntimeOperatorStageState::Finished, output_rows, output_bytes);
-        self.terminal_recorded = true;
-    }
-
     /// Records structured failure or cancellation from a native error.
     pub fn fail(mut self, error: &QueryError) {
         let state = if error.code() == QueryErrorCode::Cancelled {
@@ -313,7 +289,8 @@ impl Drop for RuntimeOperatorStageGuard {
 }
 
 /// Convenience helper that scopes one operator substage around a fallible body.
-pub fn observe_operator_stage<T, F>(
+#[cfg(test)]
+pub(crate) fn observe_operator_stage<T, F>(
     observation: &RuntimeObservationHandle,
     plan_execution_id: Option<PlanExecutionId>,
     parent_span_id: Option<RuntimeSpanId>,

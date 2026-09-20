@@ -1,6 +1,7 @@
 //! Internal factorization operators shared by high-level Series/DataFrame APIs.
 
 mod errors;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
 use std::sync::Arc;

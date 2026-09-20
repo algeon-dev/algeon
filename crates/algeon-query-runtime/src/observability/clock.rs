@@ -16,7 +16,7 @@ pub trait RuntimeObservationClock: Send + Sync + 'static {
 
 /// System monotonic clock with one wall-clock anchor.
 #[derive(Debug)]
-pub struct SystemRuntimeObservationClock {
+pub(crate) struct SystemRuntimeObservationClock {
     origin: Instant,
     unix_epoch_ns: Option<u64>,
 }

@@ -72,7 +72,7 @@ identity. The Dockerfile harvests the cuML CUDA math dependency closure
 
 Use a `cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
 `cuvs_pca`. Their relation arguments are parenthesized SQL subqueries, so the
-same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
+same call shape works over normal tables, Parquet, or cuGraph-derived
 relations. The bounded server runs them inside the admitted query domain, whose
 allocator enforces the query's memory cap. A `cuml` image also serves
 `cuml_tsvd`, `cuml_hdbscan`, `cuml_umap`, `cuml_logistic_regression`,
@@ -144,8 +144,8 @@ the staged binary and image labels remain verifiable.
 docker run --rm --gpus all -p 50051:50051 algeon-server:x86-64-v4
 ```
 
-`docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
-bounded resource profile, cuGraph) and forwards host AWS credentials. The complete,
+`docker/run.sh` is a fuller launcher that wires the common env vars (bounded
+resource profile, cuGraph) and forwards host AWS credentials. The complete,
 code-verified env-var reference lives in the Dockerfile header. It defaults to
 the default `:x86-64-v4` tag; set `ALGEON_SERVER_IMAGE` explicitly to use a
 different repository or tag. Highlights:
@@ -155,8 +155,7 @@ different repository or tag. Highlights:
 - Native memory: automatic bounded capacity is resolved per selected GPU;
   set the three explicit `ALGEON_SERVER_NATIVE_*` profile knobs together only
   for a fixed experiment.
-- Iceberg: `ALGEON_ICEBERG_CATALOG_KIND` (`glue`|`rest`) + `ALGEON_ICEBERG_*`,
-  `AWS_DEFAULT_REGION` (**required** for KvikIO S3).
+- S3: `AWS_DEFAULT_REGION` (**required** for KvikIO S3).
 - cuGraph: `ALGEON_SERVER_CUGRAPH_ENABLED=true` requires an image built with
   `cugraph`; set it to `false` for a lean image.
 - cuML forest inference: `cuml_forest_predict` has no environment variable;

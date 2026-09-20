@@ -21,12 +21,14 @@ use query_planning::{
     util::fnv1a64,
 };
 
-use crate::object_store_error::{object_store_error_detail, object_store_error_kind};
+use crate::object_store_error::{
+    object_store_error_detail, object_store_error_kind, query_error_code_for_object_store_error,
+};
 
 /// Speculative tail size for footer-only object-store metadata reads.
-pub const PARQUET_FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
+pub(crate) const PARQUET_FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
 
-pub const fn parquet_footer_prefetch_bytes(file_size: u64) -> u64 {
+pub(crate) const fn parquet_footer_prefetch_bytes(file_size: u64) -> u64 {
     if file_size < PARQUET_FOOTER_PREFETCH_BYTES { file_size } else { PARQUET_FOOTER_PREFETCH_BYTES }
 }
 
@@ -41,7 +43,7 @@ const FOOTER_SIDECAR_HEADER_BYTES: usize =
     FOOTER_SIDECAR_MAGIC.len() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>();
 
 /// Fetches Parquet footer metadata from object storage without staging the full object.
-pub async fn fetch_object_store_parquet_metadata(
+pub(crate) async fn fetch_object_store_parquet_metadata(
     store: Arc<dyn ObjectStore>,
     location: ObjectStorePath,
 ) -> Result<(Arc<ParquetMetaData>, u64)> {
@@ -116,7 +118,7 @@ pub async fn fetch_object_store_parquet_metadata(
 }
 
 /// Footer sidecar path for a complete lakehouse cache data file.
-pub fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
+pub(crate) fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
     let file_name = data_path.file_name().and_then(|value| value.to_str()).unwrap_or("cache-entry");
     data_path.with_file_name(format!(".{file_name}.footer.v1"))
 }
@@ -125,7 +127,7 @@ pub fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
 ///
 /// Stale sidecars whose recorded file size or content identity does not match
 /// the data file are ignored so callers can fall back to the complete file.
-pub fn read_parquet_footer_sidecar(
+pub(crate) fn read_parquet_footer_sidecar(
     data_path: &Path,
     expected_content_identity: &str,
 ) -> Result<Option<Arc<ParquetMetaData>>> {
@@ -178,7 +180,7 @@ pub fn read_parquet_footer_sidecar(
 }
 
 /// Persists a footer sidecar beside a complete lakehouse cache data file.
-pub fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_identity: &str) -> Result<()> {
+pub(crate) fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_identity: &str) -> Result<()> {
     let mut file = fs::File::open(data_path).map_err(|error| {
         local_metadata_io_error("failed to open complete Parquet cache file for footer sidecar", error, data_path)
     })?;
@@ -338,7 +340,7 @@ fn object_store_metadata_error(
         .with_fact("path", object_store_path_fact(location))
 }
 
-pub fn object_store_query_error(
+pub(crate) fn object_store_query_error(
     operation: &'static str,
     message: &'static str,
     source: object_store::Error,
@@ -374,22 +376,6 @@ impl fmt::Display for RedactedObjectStoreError {
 impl StdError for RedactedObjectStoreError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         Some(&self.source)
-    }
-}
-
-pub fn query_error_code_for_object_store_error(error: &object_store::Error) -> QueryErrorCode {
-    match error {
-        object_store::Error::PermissionDenied { .. } => QueryErrorCode::SourceAccessDenied,
-        object_store::Error::Unauthenticated { .. } => QueryErrorCode::SourceUnauthenticated,
-        object_store::Error::NotFound { .. } => QueryErrorCode::SourceObjectNotFound,
-        object_store::Error::Generic { .. } => match object_store_error_detail(error) {
-            Some("http_401" | "missing_credentials" | "expired_token" | "invalid_access_key") => {
-                QueryErrorCode::SourceUnauthenticated
-            },
-            Some("http_403" | "access_denied" | "signature_mismatch") => QueryErrorCode::SourceAccessDenied,
-            _ => QueryErrorCode::SourceTemporaryFailure,
-        },
-        _ => QueryErrorCode::CudfDependencyFailure,
     }
 }
 

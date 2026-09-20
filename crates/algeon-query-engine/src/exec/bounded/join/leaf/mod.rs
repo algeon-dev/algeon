@@ -4,16 +4,15 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
-    FilterNode, GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    NodeId, ProjectionNode, QueryError, ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk,
+    FilterNode, GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetSource, MemoryControlPolicy, NodeId,
+    ProjectionNode, QueryError, ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk,
     SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
-    apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts, cudf_query_error,
-    execute_bounded_generic_local_parquet_source, execute_filter_with_budget, execute_projection_with_budget,
-    execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
-    join_leaf_prefetch_budget_bytes, observe_device_memory_bytes,
-    plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches, read_gpu_resident_source,
-    read_literal_batch_source, record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
-    unsupported_bounded_shape, validate_local_parquet_source,
+    apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts, cudf_query_error, execute_filter_with_budget,
+    execute_projection_with_budget, execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
+    join_leaf_prefetch_admitted, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
+    plan_source_chunk_batches, read_gpu_resident_source, read_literal_batch_source,
+    record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
+    validate_local_parquet_source,
 };
 use crate::{
     chunk::{
@@ -26,10 +25,7 @@ use crate::{
         dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
     },
     exec::{
-        bounded::{
-            BoundedPlan,
-            chunks::{source_read_budget_bytes, source_read_budget_correction_from_error},
-        },
+        bounded::BoundedPlan,
         source::{
             ScheduledLocalParquetRead, attach_row_group_facts_if_absent, parquet_chunk_path_fact,
             read_local_parquet_chunk_batch, read_local_parquet_chunk_with_reader_dynamic_filter_count,
@@ -348,16 +344,12 @@ impl BoundedJoinLeafLocalParquetSourceStream {
 }
 
 impl BoundedJoinLeafLocalParquetSourcePrefetch {
-    pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
-        self.scheduled.budget_bytes()
-    }
-
     pub(in crate::exec::bounded) fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<ResidentGpuFrame> {
         let is_prefetch = self.scheduled.is_prefetch();
-        let output = self.scheduled.finish(execution)?;
+        let output = self.scheduled.finish()?;
         if is_prefetch {
             execution.metrics().record_source_read_prefetch_completed();
         }
@@ -389,19 +381,9 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
         return Ok(None);
     }
     let chunk = stream.chunks.first().expect("single chunk checked");
-    let requested_bytes = source_read_budget_bytes(execution.context().memory_control_policy(), chunk);
     execution.metrics().record_source_read_prefetch_started();
-    let scheduled = start_join_leaf_scheduled_source_read(
-        execution,
-        &stream.source,
-        chunk,
-        requested_bytes,
-        "join_source_read_prefetch",
-        false,
-        true,
-        1,
-        stream.max_attempts,
-    )?;
+    let scheduled =
+        start_join_leaf_scheduled_source_read(execution, &stream.source, chunk, "join_source_read_prefetch", true, 1)?;
     Ok(Some(BoundedJoinLeafLocalParquetSourcePrefetch { scheduled }))
 }
 
@@ -422,9 +404,6 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
     match source {
         SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source, rapids_analysis_context())?;
-            if source.has_position_delete_visible_scan_limit() {
-                return execute_bounded_generic_local_parquet_source(execution, source, node_id);
-            }
             execute_bounded_join_leaf_local_parquet_source(execution, source, node_id)
         },
         SourceNode::GpuResident(source) => {
@@ -460,10 +439,7 @@ pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_sour
             chunks.push((input.frame, device_bytes));
             Ok(())
         });
-        if let Err(error) = stream_result {
-            release_join_source_chunks_reverse(chunks);
-            return Err(error);
-        }
+        stream_result?;
         return concatenate_join_source_chunks(execution, node_id, chunks);
     }
 
@@ -590,11 +566,11 @@ fn read_join_leaf_source_stream_chunks(
         let mut pending = chunks;
         let mut transformed = Vec::with_capacity(chunk_count);
         while !pending.is_empty() {
-            let (frame, reservation) = pending.remove(0);
+            let (frame, input_device_bytes) = pending.remove(0);
             let output = apply_join_leaf_source_stream_stages(
                 execution,
                 stream,
-                ResidentGpuFrame::with_device_bytes(frame, reservation),
+                ResidentGpuFrame::with_device_bytes(frame, input_device_bytes),
             );
             match output {
                 Ok(output) => {
@@ -602,8 +578,6 @@ fn read_join_leaf_source_stream_chunks(
                     transformed.push((output.frame, device_bytes));
                 },
                 Err(error) => {
-                    release_join_source_chunks_reverse(pending);
-                    release_join_source_chunks_reverse(transformed);
                     return Err(error);
                 },
             }

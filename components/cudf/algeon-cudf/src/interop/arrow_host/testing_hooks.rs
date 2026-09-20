@@ -1,4 +1,10 @@
-use std::sync::Arc;
+use std::{
+    cell::Cell,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use arrow::{
     array::{Array, Int32Array, PrimitiveArray},
@@ -7,10 +13,31 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use crate::{
-    core::error::Result,
-    runtime::{BoundaryObservation, Runtime},
-};
+use crate::{core::error::Result, runtime::Runtime};
+
+thread_local! {
+    static HOST_ARROW_EXPORT_CALL_BASELINE: Cell<usize> = const { Cell::new(0) };
+    static HOST_ARROW_IMPORT_CALL_BASELINE: Cell<usize> = const { Cell::new(0) };
+}
+
+static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub(super) fn record_host_export_call() {
+    HOST_ARROW_EXPORT_CALL_COUNT.fetch_add(1, Ordering::AcqRel);
+}
+
+pub(super) fn record_host_import_call() {
+    HOST_ARROW_IMPORT_CALL_COUNT.fetch_add(1, Ordering::AcqRel);
+}
+
+fn reset_call_count_baseline(counter: &AtomicUsize, baseline: &Cell<usize>) {
+    baseline.set(counter.load(Ordering::Acquire));
+}
+
+fn call_count_since(counter: &AtomicUsize, baseline: &Cell<usize>) -> usize {
+    counter.load(Ordering::Acquire).saturating_sub(baseline.get())
+}
 
 pub(crate) fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
     let buffer = ScalarBuffer::from(vec![1i32]);
@@ -41,19 +68,20 @@ pub(crate) fn trigger_large_string_array_downcast_mismatch_for_test() -> Result<
 }
 
 pub(crate) fn reset_host_interop_observation_for_test() {
-    super::reset_host_interop_observation();
+    HOST_ARROW_EXPORT_CALL_BASELINE.with(|baseline| {
+        reset_call_count_baseline(&HOST_ARROW_EXPORT_CALL_COUNT, baseline);
+    });
+    HOST_ARROW_IMPORT_CALL_BASELINE.with(|baseline| {
+        reset_call_count_baseline(&HOST_ARROW_IMPORT_CALL_COUNT, baseline);
+    });
 }
 
 pub(crate) fn host_export_call_count_for_test() -> usize {
-    super::host_export_call_count()
+    HOST_ARROW_EXPORT_CALL_BASELINE.with(|baseline| call_count_since(&HOST_ARROW_EXPORT_CALL_COUNT, baseline))
 }
 
 pub(crate) fn host_import_call_count_for_test() -> usize {
-    super::host_import_call_count()
-}
-
-pub(crate) fn last_host_boundary_observation_for_test() -> Option<BoundaryObservation> {
-    super::last_host_boundary_observation()
+    HOST_ARROW_IMPORT_CALL_BASELINE.with(|baseline| call_count_since(&HOST_ARROW_IMPORT_CALL_COUNT, baseline))
 }
 
 #[cfg(test)]
@@ -63,7 +91,7 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    use crate::interop::arrow_host::{call_count_since, reset_call_count_baseline};
+    use super::{call_count_since, reset_call_count_baseline};
 
     #[test]
     fn resetting_one_call_count_observer_does_not_rewind_another() {

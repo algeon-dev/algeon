@@ -8,9 +8,9 @@ use fnv::FnvHasher;
 /// fingerprints, schedule projections, and benchmark result checksums compare
 /// values produced by different runs, which is why they use this type.
 ///
-/// [`update_field`](Self::update_field) terminates each field with
-/// [`FIELD_SEPARATOR`](Self::FIELD_SEPARATOR) (`0xff`). That byte never occurs
-/// in UTF-8, so `("ab", "c")` and `("a", "bc")` hash differently.
+/// [`update_field`](Self::update_field) terminates each field with the
+/// separator byte `0xff`. That byte never occurs in UTF-8, so `("ab", "c")`
+/// and `("a", "bc")` hash differently.
 /// [`update_metadata`](Self::update_metadata) hashes the entry count and then
 /// the entries in key order, which makes the result independent of `HashMap`
 /// iteration order.
@@ -23,9 +23,8 @@ pub struct StableFnv1a64 {
 }
 
 impl StableFnv1a64 {
-    pub const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    pub const PRIME: u64 = 0x100000001b3;
-    pub const FIELD_SEPARATOR: u8 = 0xff;
+    pub(crate) const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    pub(crate) const FIELD_SEPARATOR: u8 = 0xff;
 
     pub const fn new() -> Self {
         Self { state: Self::OFFSET_BASIS }

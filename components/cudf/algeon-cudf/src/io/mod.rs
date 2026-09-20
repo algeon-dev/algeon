@@ -1,14 +1,13 @@
 //! Low-level I/O entry points and format-specific modules.
 //!
 //! Most users should start with the high-level [`crate::DataFrame`] helpers
-//! such as `DataFrame::read_json`, `DataFrame::read_parquet`,
-//! `DataFrame::write_json`, or `DataFrame::write_parquet`. `cudf::io` is the
+//! such as `DataFrame::read_parquet` or `DataFrame::write_parquet`. `cudf::io` is the
 //! lower-level table-oriented layer that those conveniences build on.
 //!
 //! # Module Shape
 //!
-//! - [`json`] and [`parquet`] expose file-format readers and writers
-//!   over low-level owned [`Table`] values.
+//! - [`parquet`] exposes file-format readers and writers over low-level owned
+//!   [`Table`] values.
 //! - Host-copy Arrow `RecordBatch` interop lives under
 //!   [`crate::interop::arrow_host`], not under `cudf::io`, because it is an
 //!   external data interchange boundary rather than a file-format reader or
@@ -28,7 +27,7 @@
 //!
 //! # Runtime Placement
 //!
-//! JSON and Parquet option types may carry an explicit [`crate::Runtime`].
+//! Parquet option types may carry an explicit [`crate::Runtime`].
 //! For reads, that runtime determines the device, stream, and memory resource
 //! retained by the returned low-level table. For writes, it controls the
 //! device-pinned stream and memory resource used for the I/O operation itself
@@ -50,7 +49,6 @@ use crate::{
     runtime::{Runtime, execution_resolver::ResolvedExecution},
 };
 
-pub mod json;
 pub mod parquet;
 pub mod source;
 

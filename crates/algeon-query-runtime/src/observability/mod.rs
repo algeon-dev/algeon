@@ -10,25 +10,26 @@ mod operator_stage;
 mod recorder;
 mod runtime_observation;
 
+#[cfg(test)]
+pub(crate) use attempt_report::AttemptFailureOrigin;
 pub use attempt_report::{
-    AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAllocatorEvent, AttemptAllocatorEventAction,
-    AttemptAllocatorEventSource, AttemptAllocatorPoolUsage, AttemptCapacityDisposition, AttemptCleanupDisposition,
-    AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptDisposition, AttemptEvidenceField,
-    AttemptEvidenceProvenance, AttemptFailureFact, AttemptFailureFactKey, AttemptFailureFactValue,
-    AttemptFailureOperation, AttemptFailureOrigin, AttemptFailureStatus, AttemptFailureSummary, AttemptFailureText,
-    AttemptFaultIsolation, AttemptFinalDomainUsage, AttemptHealthTransition, AttemptNativeFault,
-    AttemptNativeFaultEvidence, AttemptNativeFaultKind, AttemptNativeStatus, AttemptQueryId, AttemptResourceEvidence,
-    AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, AttemptTimedDomainUsage,
-    AttemptTimestamps, AttemptTraceContext, AttemptUnattributedAllocatorEvent, CleanupFailurePhase,
-    CleanupFailureSummary, MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V1,
-    QueryAttemptReport, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptLabels,
-    SealedAttemptProjection,
+    AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAllocatorEventSource, AttemptCapacityDisposition,
+    AttemptCleanupDisposition, AttemptDisposition, AttemptEvidenceProvenance, AttemptFailureFactKey,
+    AttemptFailureFactValue, AttemptFailureOperation, AttemptFailureStatus, AttemptFailureSummary,
+    AttemptFinalDomainUsage, AttemptHealthTransition, AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite,
+    AttemptRetryRecovery, AttemptTimestamps, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
+    MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport,
+    RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptLabels, SealedAttemptProjection,
 };
-#[doc(hidden)]
-pub use attempt_report::{
-    AttemptAlternateDeviceEligibility, AttemptTerminalCommit, has_proven_device_local_fault_evidence,
+pub(crate) use attempt_report::{
+    AttemptAllocatorEvent, AttemptAllocatorEventAction, AttemptAllocatorPoolUsage, AttemptAlternateDeviceEligibility,
+    AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptEvidenceField, AttemptFaultIsolation, AttemptNativeFault,
+    AttemptNativeFaultEvidence, AttemptNativeFaultKind, AttemptNativeStatus, AttemptResourceEvidence,
+    AttemptTeardownHealth, AttemptTerminalCommit, AttemptTimedDomainUsage, AttemptUnattributedAllocatorEvent,
+    has_proven_device_local_fault_evidence,
 };
-pub use clock::{DeterministicRuntimeObservationClock, RuntimeObservationClock, SystemRuntimeObservationClock};
+pub use clock::DeterministicRuntimeObservationClock;
+pub(crate) use clock::{RuntimeObservationClock, SystemRuntimeObservationClock};
 pub use jsonl::{
     RuntimeObservationExportError, RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus,
     write_runtime_observation_jsonl,
@@ -37,45 +38,43 @@ pub use lifecycle::{
     RuntimeExecutionObservationScope, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeTaskLifecycle,
     task_attempt_id,
 };
-pub use metrics_recorder::{ExecutionProgress, MetricsRecorder};
-pub use metrics_summary::{
-    MetricsCaptureMode, MetricsCompleteness, QueryMetricsCheckpoint, QueryMetricsSummary, SourceReadFact,
-    SourceReadTotals,
-};
-pub use operator_stage::{
-    RuntimeExecutionStageContext, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, observe_operator_stage,
-    stage_context_from_execution,
-};
+pub(crate) use metrics_recorder::ExecutionProgress;
+pub use metrics_recorder::MetricsRecorder;
+#[cfg(test)]
+pub(crate) use metrics_summary::QueryMetricsSummary;
+pub(crate) use metrics_summary::{MetricsCaptureMode, MetricsCompleteness, QueryMetricsCheckpoint};
+pub use metrics_summary::{SourceReadFact, SourceReadTotals};
+pub(crate) use operator_stage::RuntimeExecutionStageContext;
+pub use operator_stage::{RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, stage_context_from_execution};
+pub(crate) use query_planning::execution_contracts::{RuntimeAttemptId, TaskAttemptId};
 pub use query_planning::{
     error::AttemptFailureCode,
-    execution_contracts::{RuntimeAttemptId, RuntimeTaskId, TaskAttemptId},
-    schedule_projection::{
-        AttemptComposedScheduleOccurrence, AttemptComposedScheduleProjection, AttemptId,
-        COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
-    },
+    execution_contracts::RuntimeTaskId,
+    schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1},
 };
+pub(crate) use recorder::{BudgetWindow, QueryCleanupSealDelivery, in_runtime_observation_delivery};
 pub use recorder::{
-    BudgetWindow, BudgetWindowPeaks, LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig,
+    BudgetWindowPeaks, LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig,
     RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,
     SealedRuntimeObservationSnapshot,
 };
-#[doc(hidden)]
-pub use recorder::{QueryCleanupSealDelivery, in_runtime_observation_delivery};
+pub(crate) use runtime_observation::{
+    AdmissionLifecycleState, JobDefinitionRow, RuntimeAdmissionObservation, RuntimeClockDomain, RuntimeJobId,
+    RuntimeObservationClassLoss, RuntimeObservationFooter, RuntimeObservationManifest, RuntimeObservationReasonLoss,
+    RuntimeOperatorStageObservation, RuntimeSourceLocationId, RuntimeStreamLeaseObservation,
+    RuntimeTaskLifecycleObservation, StreamLeaseAcquisition,
+};
 pub use runtime_observation::{
-    AdmissionLifecycleState, AdmissionRequestId, BarrierDefinitionRow, CompiledEdgeRow, GpuJobLifecycleState,
-    JobDefinitionRow, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow,
-    QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeAdmissionObservation, RuntimeBarrierId,
-    RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
-    RuntimeMeasurementQuality, RuntimeMeasurementScope, RuntimeMeasurementSource, RuntimeObservationClassLoss,
-    RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest,
-    RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecord, RuntimeObservationRecordClass,
-    RuntimeOperatorStageKind, RuntimeOperatorStageObservation, RuntimeOperatorStageState, RuntimePipelineEdgeId,
-    RuntimePlanNodeId, RuntimeQueryId, RuntimeReservationAction, RuntimeReservationDisposition, RuntimeReservationId,
-    RuntimeReservationObservation, RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceMeasurementObservation,
-    RuntimeResourceRow, RuntimeSinkId, RuntimeSourceLocationId, RuntimeSourceReadObservation, RuntimeSpanId,
-    RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope, RuntimeTaskLifecycleObservation, RuntimeTimelineEvent,
-    RuntimeTopologyRecord, RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow, SourceReadLifecycleState,
-    StreamLeaseAcquisition, StreamLeaseLifecycleState, TaskDefinitionRow, TaskLifecycleState, WorkerDefinitionRow,
+    AdmissionRequestId, BarrierDefinitionRow, CompiledEdgeRow, GpuJobLifecycleState, ObservationSequence, PlanEdgeRow,
+    PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow, QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA,
+    RuntimeBarrierId, RuntimeCleanupFailureObservation, RuntimeGpuJobObservation, RuntimeObservationLimits,
+    RuntimeObservationLossReason, RuntimeObservationPayload, RuntimeObservationRecord, RuntimeObservationRecordClass,
+    RuntimeOperatorStageKind, RuntimeOperatorStageState, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeQueryId,
+    RuntimeReservationAction, RuntimeReservationDisposition, RuntimeReservationId, RuntimeReservationObservation,
+    RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSinkId, RuntimeSourceReadObservation,
+    RuntimeSpanId, RuntimeStreamLeaseScope, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
+    RuntimeWorkerId, SinkDefinitionRow, SourceReadLifecycleState, StreamLeaseLifecycleState, TaskDefinitionRow,
+    TaskLifecycleState, WorkerDefinitionRow,
 };
 
 #[cfg(any(test, feature = "test-hooks"))]

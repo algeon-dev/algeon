@@ -88,7 +88,7 @@ pub struct GraphForceAtlas2Params {
 
 impl GraphForceAtlas2Params {
     /// Visits every side-input node id in stable role order.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.vertex_attributes
             .iter()
             .map(|input| input.input)

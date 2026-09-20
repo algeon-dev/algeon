@@ -140,12 +140,12 @@ impl BoundedSourceBatchingPolicy {
         self,
         input_count: usize,
         source_row_group_count: u64,
-        reserved_bytes: u64,
+        observed_device_bytes: u64,
         device_budget_bytes: Option<u64>,
     ) -> bool {
         input_count >= self.source_adjacent_partitioned_aggregate_max_batch_fan_in
             || source_row_group_count >= self.source_adjacent_partitioned_aggregate_max_batch_row_groups
-            || reserved_bytes >= self.source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
+            || observed_device_bytes >= self.source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes)
     }
 
     pub(in crate::exec::bounded) fn source_adjacent_partition_batch_byte_limit_for_budget(

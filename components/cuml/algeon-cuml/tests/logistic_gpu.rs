@@ -1,25 +1,11 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
-use cudf::{BoundaryKind, BoundaryObservation, DenseMatrixLayout, Runtime, RuntimeBuilder};
+use cudf::{DenseMatrixLayout, Runtime, RuntimeBuilder, testing::device_copy};
 use cuml::{CumlResources, DeviceMatrix, ErrorCode, LogisticRegressionModel, LogisticRegressionParams};
 
 #[test]
 fn logistic_regression_adopts_labels_from_another_runtime() {
-    let copies = Arc::new(AtomicUsize::new(0));
-    let observed = Arc::clone(&copies);
-    let runtime = Arc::new(
-        RuntimeBuilder::default()
-            .with_boundary_observer(move |observation: BoundaryObservation| {
-                if observation.kind == BoundaryKind::DeviceToDeviceCopy {
-                    observed.fetch_add(1, Ordering::Relaxed);
-                }
-            })
-            .build()
-            .expect("runtime"),
-    );
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
     let other_runtime = RuntimeBuilder::default().with_device(runtime.device()).build().expect("second runtime");
     let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
     let features = [-4.0_f32, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0];
@@ -32,10 +18,16 @@ fn logistic_regression_adopts_labels_from_another_runtime() {
     let foreign = other_runtime.series(&values).expect("foreign labels");
     assert_ne!(local.placement().stream_debug, foreign.placement().stream_debug);
     let params = LogisticRegressionParams { max_iter: 200, ..Default::default() };
+    let copies_before = device_copy::device_to_device_copy_count_for_test();
     let (baseline, _) = LogisticRegressionModel::fit(&resources, &input, &local, params).expect("baseline fit");
-    assert_eq!(copies.load(Ordering::Relaxed), 0);
+    assert_eq!(device_copy::device_to_device_copy_count_for_test() - copies_before, 0);
+    let copies_before = device_copy::device_to_device_copy_count_for_test();
     let (adopted, _) = LogisticRegressionModel::fit(&resources, &input, &foreign, params).expect("foreign fit");
-    assert_eq!(copies.load(Ordering::Relaxed), 1, "foreign labels require a device copy");
+    assert_eq!(
+        device_copy::device_to_device_copy_count_for_test() - copies_before,
+        1,
+        "foreign labels require a device copy"
+    );
     assert_eq!(
         adopted.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
         baseline.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),

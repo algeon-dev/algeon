@@ -14,10 +14,6 @@ use super::{
     auth::AuthConfig,
     error::{Result, ServerError},
 };
-#[cfg(feature = "iceberg")]
-use crate::server::table_format::scan::{
-    DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity,
-};
 use crate::server::{
     backend::{AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuMemoryOwnership},
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
@@ -25,20 +21,11 @@ use crate::server::{
     native_exec::AlgeonNativeExecutionConfig,
     planner::AlgeonNativeOptimizerConfig,
 };
-#[cfg(feature = "iceberg")]
-use crate::server::{
-    table_format::ALGEON_LAKEHOUSE_CACHE_MAX_BYTES_ENV, table_format::ALGEON_LAKEHOUSE_CACHE_POLICY_ENV,
-    table_format::ALGEON_LAKEHOUSE_CACHE_READ_ENV, table_format::ALGEON_LAKEHOUSE_CACHE_ROOT_ENV,
-    table_format::AWS_ENDPOINT_URL_ENV, table_format::AWS_ENDPOINT_URL_S3_ENV,
-    table_format::TableFormatLakehouseCachePolicy, table_format::TableFormatLakehouseCacheReadPolicy,
-    table_format::TableFormatParquetReadStrategyConfig,
-};
 
 mod admission;
 mod cugraph;
 mod env;
 mod file;
-mod iceberg;
 mod models;
 mod native;
 mod observability;
@@ -59,22 +46,6 @@ pub use env::{
 };
 use env::{DEFAULT_BIND_ADDR, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
 use file::{ServerFileOverlay, load_overlay};
-#[cfg(not(feature = "iceberg"))]
-use iceberg::reject_iceberg_env_without_feature;
-pub use iceberg::{
-    ALGEON_ICEBERG_CATALOG_KIND_ENV, ALGEON_ICEBERG_CATALOG_NAME_ENV, ALGEON_ICEBERG_GLUE_CATALOG_ID_ENV,
-    ALGEON_ICEBERG_GLUE_CATALOG_NAME_ENV, ALGEON_ICEBERG_GLUE_URI_ENV, ALGEON_ICEBERG_NAMESPACE_ENV,
-    ALGEON_ICEBERG_REST_CATALOG_HANDLE_ENV, ALGEON_ICEBERG_REST_PREFIX_ENV, ALGEON_ICEBERG_REST_TOKEN_ENV,
-    ALGEON_ICEBERG_REST_URI_ENV, ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, ALGEON_ICEBERG_S3_ENDPOINT_ENV,
-    ALGEON_ICEBERG_S3_PATH_STYLE_ENV, ALGEON_ICEBERG_S3_REGION_ENV, ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
-    ALGEON_ICEBERG_TABLES_ENV, ALGEON_ICEBERG_WAREHOUSE_ENV,
-};
-#[cfg(feature = "iceberg")]
-pub use iceberg::{
-    GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig, IcebergTableRegistrationConfig,
-};
-#[cfg(feature = "iceberg")]
-use iceberg::{iceberg_config, iceberg_source_storage_profile};
 use models::models_config;
 use native::native_optimizer_config;
 pub use native::{
@@ -126,6 +97,33 @@ const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "ALGEON_SERVER_DEVICE_BUDGET_FRACTION",
 ];
 
+// The Iceberg catalog integration was deleted from the server. Its settings
+// fail closed for the same reason as the legacy switches: a deployment that
+// still sets them would otherwise start without the tables it expects.
+const REMOVED_ICEBERG_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
+    "ALGEON_ICEBERG_CATALOG_KIND",
+    "ALGEON_ICEBERG_CATALOG_NAME",
+    "ALGEON_ICEBERG_NAMESPACE",
+    "ALGEON_ICEBERG_TABLES",
+    "ALGEON_ICEBERG_GLUE_CATALOG_NAME",
+    "ALGEON_ICEBERG_WAREHOUSE",
+    "ALGEON_ICEBERG_GLUE_CATALOG_ID",
+    "ALGEON_ICEBERG_GLUE_URI",
+    "ALGEON_ICEBERG_REST_URI",
+    "ALGEON_ICEBERG_REST_PREFIX",
+    "ALGEON_ICEBERG_REST_TOKEN",
+    "ALGEON_ICEBERG_REST_CATALOG_HANDLE",
+    "ALGEON_ICEBERG_S3_ENDPOINT",
+    "ALGEON_ICEBERG_S3_REGION",
+    "ALGEON_ICEBERG_S3_PATH_STYLE",
+    "ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE",
+    "ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS",
+    "ALGEON_LAKEHOUSE_CACHE_ROOT",
+    "ALGEON_LAKEHOUSE_CACHE_READ",
+    "ALGEON_LAKEHOUSE_CACHE_POLICY",
+    "ALGEON_LAKEHOUSE_CACHE_MAX_BYTES",
+];
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
@@ -154,8 +152,6 @@ pub struct ServerConfig {
     /// Optional mutable workspace overlay that can read through to a
     /// configured source schema while keeping all DDL local to the workspace.
     pub workspace: Option<WorkspaceOverlayConfig>,
-    #[cfg(feature = "iceberg")]
-    pub iceberg: Option<IcebergServerConfig>,
     pub cugraph: Option<CugraphServerConfig>,
     /// Models root for `cuml_forest_predict`, from the `[models]` table.
     /// `None` leaves the function unavailable with `model_root_unconfigured`.
@@ -179,7 +175,11 @@ impl ServerConfig {
 
     pub fn from_env_get(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let mut values = EnvValues::new(&mut get);
-        reject_removed_legacy_server_environment(&mut values)?;
+        reject_removed_server_environment(
+            &mut values,
+            REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES,
+            "this server setting was removed by the resource-only admission contract; remove it",
+        )?;
         let bind_addr = values.socket_addr(ALGEON_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let overlay_path = values.string(ALGEON_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
         let overlay = match overlay_path {
@@ -195,26 +195,11 @@ impl ServerConfig {
         let observability = server_observability_config(&mut values, &overlay.observability)?;
         let native_optimizer_config = native_optimizer_config(&mut values, &overlay.native)?;
         let gpu_device_profiles = server_device_profiles(&overlay.admission, &gpu_devices)?;
-        #[cfg(feature = "iceberg")]
-        let mut native_optimizer_config = native_optimizer_config;
-
-        #[cfg(feature = "iceberg")]
-        let mut iceberg = iceberg_config(&mut values)?;
-
-        #[cfg(feature = "iceberg")]
-        if let Some(config) = iceberg.as_mut() {
-            let profile = iceberg_source_storage_profile(config);
-            config.parquet_read_strategy_config = config
-                .parquet_read_strategy_config
-                .clone()
-                .with_source_storage_profile_remote_direct_capability(&profile);
-            let execution_config =
-                native_optimizer_config.native_execution_config().clone().with_source_storage_profile(profile);
-            native_optimizer_config = native_optimizer_config.with_native_execution_config(execution_config);
-        }
-
-        #[cfg(not(feature = "iceberg"))]
-        reject_iceberg_env_without_feature(&mut values)?;
+        reject_removed_server_environment(
+            &mut values,
+            REMOVED_ICEBERG_SERVER_ENVIRONMENT_VARIABLES,
+            "this server setting belonged to the removed Iceberg integration; remove it",
+        )?;
 
         let cugraph = cugraph_config(&mut values)?;
 
@@ -234,8 +219,6 @@ impl ServerConfig {
             native_optimizer_config,
             auth: overlay.auth,
             workspace,
-            #[cfg(feature = "iceberg")]
-            iceberg,
             cugraph,
             models,
         };
@@ -338,13 +321,14 @@ fn format_device_ordinals(device_ordinals: &[usize]) -> String {
     device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
-fn reject_removed_legacy_server_environment(values: &mut EnvValues<'_>) -> Result<()> {
-    for name in REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES {
+fn reject_removed_server_environment(
+    values: &mut EnvValues<'_>,
+    names: &[&'static str],
+    reason: &'static str,
+) -> Result<()> {
+    for name in names.iter().copied() {
         if values.string(name).is_some() {
-            return Err(ServerError::invalid_config(
-                name,
-                "this server setting was removed by the resource-only admission contract; remove it",
-            ));
+            return Err(ServerError::invalid_config(name, reason));
         }
     }
     Ok(())

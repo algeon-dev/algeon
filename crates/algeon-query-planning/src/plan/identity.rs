@@ -29,8 +29,7 @@ struct DeferredGraphSourceFactSlots {
 }
 
 impl DeferredGraphExecutionScopeIdentity {
-    #[doc(hidden)]
-    pub fn for_plan(plan: &QueryPlan) -> Self {
+    pub(crate) fn for_plan(plan: &QueryPlan) -> Self {
         let canonical = canonical_execution_scope(plan);
         let source_fact_slots = canonical
             .nodes()
@@ -54,8 +53,7 @@ impl DeferredGraphExecutionScopeIdentity {
         Self { execution_scope_fingerprint: format!("{canonical:#?}"), source_fact_slots }
     }
 
-    #[doc(hidden)]
-    pub fn matches(&self, plan: &QueryPlan) -> bool {
+    pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
         let canonical = canonical_execution_scope(plan);
         let mut nodes = canonical.nodes().to_vec();
         for slots in &self.source_fact_slots {

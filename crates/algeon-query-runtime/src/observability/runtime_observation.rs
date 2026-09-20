@@ -99,8 +99,7 @@ impl fmt::Display for AdmissionRequestId {
 pub struct RuntimeSourceLocationId(String);
 
 impl RuntimeSourceLocationId {
-    #[doc(hidden)]
-    pub fn from_keyed_digest(value: String) -> Self {
+    pub(crate) fn from_keyed_digest(value: String) -> Self {
         Self(value)
     }
 
@@ -173,8 +172,7 @@ impl<'de> Deserialize<'de> for RuntimeQueryId {
 pub struct ObservationSequence(u64);
 
 impl ObservationSequence {
-    #[doc(hidden)]
-    pub const fn new(value: u64) -> Self {
+    pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -213,7 +211,7 @@ pub struct RuntimeObservationLimits {
 /// Clock domain for host runtime observations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeClockDomain {
+pub(crate) enum RuntimeClockDomain {
     /// Query-relative time sampled from a monotonic host clock.
     HostMonotonic,
 }
@@ -230,9 +228,9 @@ pub struct RuntimeObservationManifest {
     /// Optional wall-clock anchor captured once when the session is created.
     pub unix_epoch_ns: Option<u64>,
     /// Clock domain used by timeline offsets.
-    pub clock_domain: RuntimeClockDomain,
+    pub(crate) clock_domain: RuntimeClockDomain,
     /// Deterministic per-query retention limits.
-    pub limits: RuntimeObservationLimits,
+    pub(crate) limits: RuntimeObservationLimits,
 }
 
 /// One native plan node in the static topology.
@@ -294,10 +292,10 @@ pub struct SinkDefinitionRow {
 /// One GPU executor job definition.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct JobDefinitionRow {
-    pub plan_execution_id: Option<PlanExecutionId>,
-    pub job_id: RuntimeJobId,
-    pub job_kind: String,
-    pub device_ordinal: u32,
+    pub(crate) plan_execution_id: Option<PlanExecutionId>,
+    pub(crate) job_id: RuntimeJobId,
+    pub(crate) job_kind: String,
+    pub(crate) device_ordinal: u32,
 }
 
 /// One host worker definition used by GPU or source execution.
@@ -474,7 +472,7 @@ pub enum StreamLeaseLifecycleState {
 /// not consult thread-local or task-local ambient state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeStreamLeaseScope {
-    pub plan_execution_id: Option<PlanExecutionId>,
+    pub(crate) plan_execution_id: Option<PlanExecutionId>,
     pub task_id: Option<RuntimeTaskId>,
     pub source_worker_id: Option<RuntimeWorkerId>,
     pub gpu_job_id: Option<RuntimeJobId>,
@@ -486,13 +484,13 @@ impl RuntimeStreamLeaseScope {
         Self { plan_execution_id: Some(plan_execution_id), ..Self::default() }
     }
 
-    pub fn with_source_worker(mut self, task_id: RuntimeTaskId, worker_id: RuntimeWorkerId) -> Self {
+    pub(crate) fn with_source_worker(mut self, task_id: RuntimeTaskId, worker_id: RuntimeWorkerId) -> Self {
         self.task_id = Some(task_id);
         self.source_worker_id = Some(worker_id);
         self
     }
 
-    pub fn with_gpu_worker(mut self, job_id: RuntimeJobId, worker_id: RuntimeWorkerId) -> Self {
+    pub(crate) fn with_gpu_worker(mut self, job_id: RuntimeJobId, worker_id: RuntimeWorkerId) -> Self {
         self.gpu_job_id = Some(job_id);
         self.gpu_worker_id = Some(worker_id);
         self
@@ -543,79 +541,67 @@ pub enum RuntimeMeasurementQuality {
     Estimated,
 }
 
-macro_rules! runtime_observation_body {
-    ($(#[$meta:meta])* $name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-        pub struct $name {
-            $(pub $field: $ty),*
-        }
-    };
+/// Task-lifecycle payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeTaskLifecycleObservation {
+    pub attempt_id: TaskAttemptId,
+    pub(crate) task_kind: String,
+    pub lifecycle: TaskLifecycleState,
 }
 
-runtime_observation_body!(
-    /// Task-lifecycle payload body retained out of line.
-    RuntimeTaskLifecycleObservation { attempt_id: TaskAttemptId, task_kind: String, lifecycle: TaskLifecycleState }
-);
+/// Admission-lifecycle payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAdmissionObservation {
+    pub(crate) admission_request_id: AdmissionRequestId,
+    pub(crate) lifecycle: AdmissionLifecycleState,
+    pub(crate) queue_depth: usize,
+    pub(crate) device_ordinal: Option<u32>,
+    pub grant_bytes: Option<u64>,
+}
 
-runtime_observation_body!(
-    /// Admission-lifecycle payload body retained out of line.
-    RuntimeAdmissionObservation {
-        admission_request_id: AdmissionRequestId,
-        lifecycle: AdmissionLifecycleState,
-        queue_depth: usize,
-        device_ordinal: Option<u32>,
-        grant_bytes: Option<u64>,
-    }
-);
+/// GPU-job payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeGpuJobObservation {
+    pub(crate) job_id: RuntimeJobId,
+    pub(crate) job_kind: String,
+    pub(crate) device_ordinal: u32,
+    pub(crate) worker_id: Option<RuntimeWorkerId>,
+    pub lifecycle: GpuJobLifecycleState,
+}
 
-runtime_observation_body!(
-    /// GPU-job payload body retained out of line.
-    RuntimeGpuJobObservation {
-        job_id: RuntimeJobId,
-        job_kind: String,
-        device_ordinal: u32,
-        worker_id: Option<RuntimeWorkerId>,
-        lifecycle: GpuJobLifecycleState,
-    }
-);
+/// Stream-lease payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeStreamLeaseObservation {
+    pub(crate) lease_id: RuntimeResourceId,
+    pub(crate) device_ordinal: u32,
+    pub scope: RuntimeStreamLeaseScope,
+    pub lifecycle: StreamLeaseLifecycleState,
+}
 
-runtime_observation_body!(
-    /// Stream-lease payload body retained out of line.
-    RuntimeStreamLeaseObservation {
-        lease_id: RuntimeResourceId,
-        device_ordinal: u32,
-        scope: RuntimeStreamLeaseScope,
-        lifecycle: StreamLeaseLifecycleState,
-    }
-);
+/// Source-read payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSourceReadObservation {
+    pub task_id: RuntimeTaskId,
+    pub worker_id: RuntimeWorkerId,
+    pub chunk_index: usize,
+    pub file_index: usize,
+    pub lifecycle: SourceReadLifecycleState,
+}
 
-runtime_observation_body!(
-    /// Source-read payload body retained out of line.
-    RuntimeSourceReadObservation {
-        task_id: RuntimeTaskId,
-        worker_id: RuntimeWorkerId,
-        chunk_index: usize,
-        file_index: usize,
-        lifecycle: SourceReadLifecycleState,
-    }
-);
-
-runtime_observation_body!(
-    /// Resource-measurement payload body retained out of line.
-    RuntimeResourceMeasurementObservation {
-        resource_id: RuntimeResourceId,
-        scope: RuntimeMeasurementScope,
-        source: RuntimeMeasurementSource,
-        quality: RuntimeMeasurementQuality,
-        measurement_kind: String,
-        current_value: u64,
-        delta: i128,
-        limit: Option<u64>,
-        device_ordinal: Option<u32>,
-        grant_bytes: Option<u64>,
-    }
-);
+/// Resource-measurement payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeResourceMeasurementObservation {
+    pub(crate) resource_id: RuntimeResourceId,
+    pub(crate) scope: RuntimeMeasurementScope,
+    pub(crate) source: RuntimeMeasurementSource,
+    pub(crate) quality: RuntimeMeasurementQuality,
+    pub(crate) measurement_kind: String,
+    pub(crate) current_value: u64,
+    pub(crate) delta: i128,
+    pub(crate) limit: Option<u64>,
+    pub(crate) device_ordinal: Option<u32>,
+    pub(crate) grant_bytes: Option<u64>,
+}
 
 /// Context-rich reservation payload body retained out of line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -650,10 +636,11 @@ pub struct RuntimeReservationObservation {
     pub source_read_estimated_bytes: Option<u64>,
 }
 
-runtime_observation_body!(
-    /// Secondary-cleanup-failure payload body retained out of line.
-    RuntimeCleanupFailureObservation { summary: CleanupFailureSummary }
-);
+/// Secondary-cleanup-failure payload body retained out of line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCleanupFailureObservation {
+    pub summary: CleanupFailureSummary,
+}
 
 /// Operator-substage category for blocking native primitives.
 ///
@@ -729,19 +716,19 @@ pub enum RuntimeOperatorStageState {
 pub struct RuntimeOperatorStageObservation {
     pub stage_kind: RuntimeOperatorStageKind,
     pub lifecycle: RuntimeOperatorStageState,
-    pub node_id: Option<String>,
-    pub task_id: Option<RuntimeTaskId>,
+    pub(crate) node_id: Option<String>,
+    pub(crate) task_id: Option<RuntimeTaskId>,
     pub chunk_index: Option<usize>,
-    pub partition_index: Option<usize>,
-    pub attempt: Option<u32>,
+    pub(crate) partition_index: Option<usize>,
+    pub(crate) attempt: Option<u32>,
     pub strategy_label: Option<String>,
     pub input_rows: Option<u64>,
     pub output_rows: Option<u64>,
-    pub input_bytes: Option<u64>,
-    pub output_bytes: Option<u64>,
-    pub reserved_bytes: Option<u64>,
+    pub(crate) input_bytes: Option<u64>,
+    pub(crate) output_bytes: Option<u64>,
+    pub(crate) reserved_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vector_algorithm: Option<String>,
+    pub(crate) vector_algorithm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ml_algorithm: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -751,9 +738,9 @@ pub struct RuntimeOperatorStageObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matrix_layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_binding_id: Option<u64>,
+    pub(crate) execution_binding_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_ordinal: Option<usize>,
+    pub(crate) device_ordinal: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_version_major: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -761,9 +748,9 @@ pub struct RuntimeOperatorStageObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_version_patch: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bounded_control_scalar_events: Option<u64>,
+    pub(crate) bounded_control_scalar_events: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bounded_control_scalar_bytes: Option<u64>,
+    pub(crate) bounded_control_scalar_bytes: Option<u64>,
 }
 
 impl RuntimeOperatorStageObservation {
@@ -833,7 +820,7 @@ impl RuntimeOperatorStageObservation {
         self
     }
 
-    pub fn with_output_rows(mut self, output_rows: u64) -> Self {
+    pub(crate) fn with_output_rows(mut self, output_rows: u64) -> Self {
         self.output_rows = Some(output_rows);
         self
     }
@@ -843,7 +830,7 @@ impl RuntimeOperatorStageObservation {
         self
     }
 
-    pub fn with_output_bytes(mut self, output_bytes: u64) -> Self {
+    pub(crate) fn with_output_bytes(mut self, output_bytes: u64) -> Self {
         self.output_bytes = Some(output_bytes);
         self
     }
@@ -895,14 +882,13 @@ impl RuntimeOperatorStageObservation {
         self
     }
 
-    pub fn with_bounded_control_scalars(mut self, events: u64, bytes: u64) -> Self {
+    pub(crate) fn with_bounded_control_scalars(mut self, events: u64, bytes: u64) -> Self {
         self.bounded_control_scalar_events = Some(events);
         self.bounded_control_scalar_bytes = Some(bytes);
         self
     }
 
-    #[doc(hidden)]
-    pub fn logical_retained_bytes(&self) -> u64 {
+    pub(crate) fn logical_retained_bytes(&self) -> u64 {
         string_bytes(self.stage_kind.as_str())
             + match &self.lifecycle {
                 RuntimeOperatorStageState::Failed { error_code } => string_bytes(error_code),
@@ -945,7 +931,7 @@ pub struct RuntimeTimelineEvent {
     pub monotonic_ns: u64,
     pub plan_execution_id: Option<PlanExecutionId>,
     pub span_id: Option<RuntimeSpanId>,
-    pub parent_span_id: Option<RuntimeSpanId>,
+    pub(crate) parent_span_id: Option<RuntimeSpanId>,
     pub payload: RuntimeObservationPayload,
 }
 
@@ -989,9 +975,9 @@ pub enum RuntimeObservationLossReason {
 
 /// Count of dropped records in one class.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeObservationClassLoss {
-    pub class: RuntimeObservationRecordClass,
-    pub count: u64,
+pub(crate) struct RuntimeObservationClassLoss {
+    pub(crate) class: RuntimeObservationRecordClass,
+    pub(crate) count: u64,
 }
 
 /// Count of dropped records for one reason.
@@ -1035,11 +1021,11 @@ pub struct RuntimeObservationFooter {
     pub retained_bytes: u64,
     pub first_dropped_sequence: Option<ObservationSequence>,
     pub last_attempted_sequence: Option<ObservationSequence>,
-    pub dropped_by_class: Vec<RuntimeObservationClassLoss>,
+    pub(crate) dropped_by_class: Vec<RuntimeObservationClassLoss>,
     pub dropped_by_reason: Vec<RuntimeObservationReasonLoss>,
     pub truncated: bool,
     pub degraded: bool,
-    pub poison_recoveries: u64,
+    pub(crate) poison_recoveries: u64,
     /// The exact sealed attempt report, when this observation belongs to an
     /// execution attempt. This is optional so non-attempt observations retain
     /// their existing JSONL shape.
@@ -1049,7 +1035,7 @@ pub struct RuntimeObservationFooter {
         serialize_with = "serialize_optional_attempt_report",
         deserialize_with = "deserialize_optional_attempt_report"
     )]
-    pub attempt_report: Option<std::sync::Arc<QueryAttemptReport>>,
+    pub(crate) attempt_report: Option<std::sync::Arc<QueryAttemptReport>>,
     /// At least one recorder sequence or accounting counter saturated.
     ///
     /// Saturated values remain monotonic, while this marker prevents exported
@@ -1081,8 +1067,7 @@ fn string_bytes(value: &str) -> u64 {
 }
 
 impl RuntimeTopologyRecord {
-    #[doc(hidden)]
-    pub const fn class(&self) -> RuntimeObservationRecordClass {
+    pub(crate) const fn class(&self) -> RuntimeObservationRecordClass {
         match self {
             Self::PlanNode(_) => RuntimeObservationRecordClass::PlanNode,
             Self::PlanEdge(_) => RuntimeObservationRecordClass::PlanEdge,
@@ -1274,8 +1259,7 @@ impl RuntimeTimelineEvent {
 
 impl QueryAttemptReport {
     /// Projects the sealed observation footer completeness facts into this attempt report.
-    #[doc(hidden)]
-    pub fn set_observation_completeness(&mut self, footer: &RuntimeObservationFooter) {
+    pub(crate) fn set_observation_completeness(&mut self, footer: &RuntimeObservationFooter) {
         self.observation_lost_records = footer.dropped_by_class.iter().map(|loss| loss.count).sum();
         self.observation_retained_records = footer.retained_records;
         self.observation_retained_bytes = footer.retained_bytes;

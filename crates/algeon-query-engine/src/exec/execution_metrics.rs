@@ -34,7 +34,7 @@ struct ExecutionEvidence {
 
 impl ExecutionMetrics {
     /// Binds the metrics of one plan execution; see [`MetricsRecorder::bind`].
-    pub fn bind(
+    pub(crate) fn bind(
         observation: &RuntimeObservationHandle,
         plan_execution_id: PlanExecutionId,
         query_id: &str,
@@ -48,7 +48,7 @@ impl ExecutionMetrics {
     }
 
     /// Where this plan execution's metrics are reduced.
-    pub const fn recorder(&self) -> &MetricsRecorder {
+    pub(crate) const fn recorder(&self) -> &MetricsRecorder {
         &self.recorder
     }
 
@@ -72,7 +72,7 @@ impl ExecutionMetrics {
 
     /// Projects the owner's current metrics onto `base`, which supplies the
     /// identity and policy fields the owner does not reduce.
-    pub fn project_onto(&self, base: &mut QueryMetrics) {
+    pub(crate) fn project_onto(&self, base: &mut QueryMetrics) {
         if let Some(checkpoint) = self.recorder.checkpoint() {
             base.apply_owner_checkpoint(&checkpoint);
         }
@@ -88,7 +88,11 @@ impl ExecutionMetrics {
 
     /// Records one aggregate strategy decision and keeps the cardinality
     /// evidence a completed partial aggregate carries.
-    pub fn record_aggregate_strategy_decision(&self, node_id: impl ToString, facts: &BTreeMap<&'static str, String>) {
+    pub(crate) fn record_aggregate_strategy_decision(
+        &self,
+        node_id: impl ToString,
+        facts: &BTreeMap<&'static str, String>,
+    ) {
         let node_id = node_id.to_string();
         if let Some((structural_key, evidence)) = PartialAggregateCardinality::from_facts(facts) {
             self.evidence().partial_aggregates.insert(&node_id, structural_key, evidence);

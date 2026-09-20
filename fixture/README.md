@@ -6,9 +6,9 @@ requires a separate Rust checkout.
 
 Fixtures are organized by purpose. `demo/` holds the datasets Algeon's examples
 and documentation query; everything else serves unit tests (`graph/cugraph/`,
-`tests/`), benchmarks (`tpc-h/`, `tpc-ds/`, `clickbench/`, `graph/rmat_generate.py`),
-or E2E stacks (`iceberg-local/`). Generated and host-provisioned data is
-gitignored; the small cuGraph parity corpus in `graph/cugraph/` is versioned.
+`tests/`), or benchmarks (`tpc-h/`, `tpc-ds/`, `clickbench/`,
+`graph/rmat_generate.py`). Generated and host-provisioned data is gitignored; the
+small cuGraph parity corpus in `graph/cugraph/` is versioned.
 
 ```
 fixture/
@@ -34,7 +34,6 @@ fixture/
     rmat_generate.py                 # deterministic synthetic R-MAT generator
     synthetic/                       # local R-MAT Parquet fixtures
   tests/                             # Python tests for the fixture scripts
-  iceberg-local/                     # local REST, RustFS, and Moto stack
 ```
 
 ## TPC-H and TPC-DS

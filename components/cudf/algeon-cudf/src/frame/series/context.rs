@@ -6,6 +6,8 @@ use super::{
     },
     reduction::{infer_reduce_output_type, scalar_to_optional_value},
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::Runtime;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -39,7 +41,7 @@ use crate::{
         unary::{self, UnaryOperator},
     },
     runtime::{
-        ExecutionOverrides, Runtime,
+        ExecutionOverrides,
         execution_domain::{ConsumerCompletionFence, ExecutionDomain},
         execution_resolver::ResolvedExecution,
     },
@@ -255,19 +257,23 @@ pub(super) fn default_execution_context() -> ExecutionOverrides<'static> {
     ExecutionOverrides::new()
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 fn range_testing_series() -> Result<Series> {
     let runtime = Runtime::new()?;
     runtime.series(&[1i32, 2, 3])
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_series_row_range_start_limit_error_for_test() -> Result<Series> {
     range_testing_series()?.__debug_gather_range_for_test(usize::MAX, 1, "series::slice")
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_series_row_range_end_limit_error_for_test() -> Result<Series> {
     range_testing_series()?.__debug_gather_range_for_test(i32::MAX as usize, 1, "series::slice")
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_series_row_range_overflow_error_for_test() -> Result<Series> {
     range_testing_series()?.__debug_gather_range_for_test(i32::MAX as usize, usize::MAX, "series::slice")
 }
@@ -1168,6 +1174,7 @@ impl Series {
         Series::from_column(col)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_gather_range_for_test(
         &self,
         start: usize,

@@ -42,6 +42,7 @@ impl JoinFilterReassociationOptions {
 
     /// Enables residual-derived necessary-predicate pushdown for experiments
     /// and targeted tests.
+    #[cfg(test)]
     pub fn with_residual_filter_pushdown(mut self, enabled: bool) -> Self {
         self.residual_filter_pushdown_enabled = enabled;
         self
@@ -67,12 +68,12 @@ pub struct JoinFilterReassociationDiagnostics {
 
 impl JoinFilterReassociationDiagnostics {
     /// Returns true when the pass produced no candidate evidence.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -83,15 +84,15 @@ impl JoinFilterReassociationDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinFilterReassociationCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Parent join candidate considered for reassociation.
-    pub candidate_node_id: NodeId,
+    pub(crate) candidate_node_id: NodeId,
     /// Join crossed while moving the filter, if found.
-    pub crossed_join_node_id: Option<NodeId>,
+    pub(crate) crossed_join_node_id: Option<NodeId>,
     /// Child subtree that receives the filter after reassociation.
-    pub filtered_child_node_id: Option<NodeId>,
+    pub(crate) filtered_child_node_id: Option<NodeId>,
     /// Filter node introduced or moved by the rewrite.
-    pub filtering_node_id: Option<NodeId>,
+    pub(crate) filtering_node_id: Option<NodeId>,
     /// True when the returned plan contains the rewrite.
     pub applied: bool,
     /// Rejection reason when no rewrite was applied.
@@ -119,15 +120,13 @@ pub enum JoinFilterReassociationRejectedReason {
     SharedProjectedParent,
 }
 
-#[doc(hidden)]
-pub struct JoinFilterReassociationResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: JoinFilterReassociationDiagnostics,
+pub(crate) struct JoinFilterReassociationResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: JoinFilterReassociationDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_join_filter_reassociation(
+pub(crate) fn optimize_join_filter_reassociation(
     plan: QueryPlan,
     options: &JoinFilterReassociationOptions,
     resolver: &dyn dimension_pruning::LocalParquetPruningResolver,

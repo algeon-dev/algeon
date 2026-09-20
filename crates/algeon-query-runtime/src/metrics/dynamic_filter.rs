@@ -15,7 +15,7 @@ pub struct DynamicFilterSourceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynamicFilterRuntimeMetrics {
     /// Query-wide diagnostic correlation id, when assigned.
-    pub query_id: Option<QueryId>,
+    pub(crate) query_id: Option<QueryId>,
     /// Plan-local dynamic-filter route id.
     pub dynamic_filter_id: String,
     /// Event kind: `produced`, `skipped`, `applied`, `reader_predicate_rows`,

@@ -9,11 +9,11 @@ use ::arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    BoundaryKind, CudfType, DataFrame, DenseMatrixLayout, ErrorCode, Runtime, TypeId,
+    CudfType, DataFrame, DenseMatrixLayout, ErrorCode, Runtime, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::GpuRecordBatch,
     ops::reshape::interleave_columns,
-    testing::{arrow, boundary, prelude::*},
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -89,15 +89,10 @@ fn numeric_pack_layouts_round_trip<T: CudfType + PartialEq + std::fmt::Debug>(fi
         let nested = runtime.pack_flat_column(&flat, rows, 2, layout).unwrap();
         assert_eq!(nested.element(), T::TYPE_ID);
         assert_eq!(nested.as_column().to_vec::<T>().unwrap(), *expected);
-        boundary::reset_boundary_observation_for_test();
         let validated = nested.validate().unwrap();
-        if matches!(T::TYPE_ID, TypeId::Int8 | TypeId::UInt8) {
-            assert!(boundary::last_boundary_observation_for_test().is_none());
-        }
         assert_eq!(validated.element(), T::TYPE_ID);
         assert_eq!(validated.binding_id(), runtime.binding_id());
         assert!(!validated.as_ptr().unwrap().is_null());
-        assert_eq!(validated.observation().is_some(), matches!(T::TYPE_ID, TypeId::Float32 | TypeId::Float64));
     }
 }
 
@@ -142,8 +137,7 @@ fn float64_finite_validation_rejects_nan_and_infinity() {
     }
     let finite = runtime.column_from_slice(&[1.5f64, -4.0]).unwrap();
     let matrix = runtime.pack_columns(&[&finite], DenseMatrixLayout::RowMajor).unwrap();
-    let validated = matrix.validate().unwrap();
-    assert_eq!(validated.observation().unwrap().memory.downloaded_bytes, Some(4));
+    matrix.validate().unwrap();
 }
 
 fn list_exports_keep_element_binding_and_finite_evidence() {
@@ -156,7 +150,6 @@ fn list_exports_keep_element_binding_and_finite_evidence() {
     let validated = gpu.try_prepare_fixed_size_list_export(0).unwrap();
     assert_eq!(validated.element(), TypeId::Int8);
     assert_eq!(validated.child_byte_offset(), validated.child_offset());
-    assert!(validated.finite_observation().is_none());
     assert_eq!(validated.binding_id(), runtime.binding_id());
     let packed = validated.pack_active_child_into_runtime(&runtime, DenseMatrixLayout::ColumnMajor).unwrap();
     assert_eq!(packed.into_column().to_vec::<i8>().unwrap(), vec![-2, 12, 7, -9]);
@@ -174,7 +167,6 @@ fn list_exports_keep_element_binding_and_finite_evidence() {
     let validated = gpu.try_prepare_uniform_list_export(0).unwrap();
     assert_eq!(validated.element(), TypeId::Float64);
     assert_eq!(validated.child_byte_offset(), validated.child_offset() * 8);
-    assert_eq!(validated.finite_observation().unwrap().rows, 4);
     let packed = validated.pack_active_child_into_runtime(&runtime, DenseMatrixLayout::RowMajor).unwrap();
     assert_eq!(packed.into_column().to_vec::<f64>().unwrap(), vec![1.25, 2.5, -3.0, 4.75]);
 
@@ -308,11 +300,9 @@ fn finite_validation_accepts_empty_matrix_with_bounded_scalar_proof() {
     assert_eq!(validated.len(), 0);
     assert!(validated.is_empty());
     assert_eq!(validated.binding_id(), matrix.binding_id());
-    assert_eq!(validated.observation().unwrap().kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(validated.observation().unwrap().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
-fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary() {
+fn finite_validation_uses_exact_binding() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let second = runtime.column_from_slice(&[10.0f32, 20.0, 30.0]).unwrap();
@@ -320,8 +310,6 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     let placement = matrix.placement();
 
     reset_exec_observation();
-    boundary::reset_boundary_observation_for_test();
-    arrow::reset_arrow_host_interop_observation_for_test();
     let validated = matrix.validate().unwrap();
 
     assert_eq!(validated.len(), matrix.len());
@@ -334,16 +322,6 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     assert_eq!(last_exec_stream_value(), placement.stream_debug);
     assert_eq!(last_sync_stream_value(), placement.stream_debug);
     assert_eq!(last_exec_mr_value(), placement.memory_resource_debug);
-
-    let observation = validated.observation().unwrap();
-    assert_eq!(observation.kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(observation.placement, placement);
-    assert_eq!(observation.rows, matrix.len());
-    assert_eq!(observation.columns, 1);
-    assert!(observation.synchronized_for_host);
-    assert_eq!(observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
-    assert_eq!(boundary::last_boundary_observation_for_test(), Some(observation));
-    assert!(arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
 fn unpack_dense_matrix_recovers_columns_on_device() {
@@ -432,9 +410,6 @@ fn matrix_tests_cases() {
             "finite_validation_accepts_empty_matrix_with_bounded_scalar_proof",
             finite_validation_accepts_empty_matrix_with_bounded_scalar_proof,
         ),
-        (
-            "finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary",
-            finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary,
-        ),
+        ("finite_validation_uses_exact_binding", finite_validation_uses_exact_binding),
     ]);
 }

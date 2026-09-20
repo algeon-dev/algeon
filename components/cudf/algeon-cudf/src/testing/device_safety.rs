@@ -54,11 +54,6 @@ impl DeviceSafetyTestScope {
     pub fn remaining_call_count(&self) -> usize {
         INJECTED.with(|slot| slot.borrow().as_ref().map_or(0, |injected| injected.calls.len()))
     }
-
-    /// Number of device-owned pointers quarantined without owner provenance.
-    pub fn unknown_device_quarantined_count(&self) -> u64 {
-        self.registry.unknown_device_quarantined_count()
-    }
 }
 
 impl Drop for DeviceSafetyTestScope {
@@ -83,8 +78,8 @@ pub fn injected_device_id(ordinal: i32) -> Option<DeviceId> {
     Some(DeviceId::from_validated_ordinal_raw(ordinal))
 }
 
-pub(crate) fn cuda_get_device(current: &mut i32) -> cudf_sys::cudf_status_t {
-    let injected = INJECTED.with(|slot| {
+pub(crate) fn injected_get_device(current: &mut i32) -> Option<cudf_sys::cudf_status_t> {
+    INJECTED.with(|slot| {
         let mut slot = slot.borrow_mut();
         let injected = slot.as_mut()?;
         match injected.calls.pop_front()? {
@@ -96,15 +91,11 @@ pub(crate) fn cuda_get_device(current: &mut i32) -> cudf_sys::cudf_status_t {
             },
             unexpected => panic!("expected CUDA get-device call, got {unexpected:?}"),
         }
-    });
-    injected.unwrap_or_else(|| {
-        // SAFETY: `current` is a valid out pointer for the duration of this call.
-        unsafe { cudf_sys::cudf_cuda_get_device(current) }
     })
 }
 
-pub(crate) fn cuda_set_device(target: i32) -> cudf_sys::cudf_status_t {
-    let injected = INJECTED.with(|slot| {
+pub(crate) fn injected_set_device(target: i32) -> Option<cudf_sys::cudf_status_t> {
+    INJECTED.with(|slot| {
         let mut slot = slot.borrow_mut();
         let injected = slot.as_mut()?;
         match injected.calls.pop_front()? {
@@ -114,9 +105,5 @@ pub(crate) fn cuda_set_device(target: i32) -> cudf_sys::cudf_status_t {
             },
             unexpected => panic!("expected CUDA set-device call, got {unexpected:?}"),
         }
-    });
-    injected.unwrap_or_else(|| {
-        // SAFETY: the caller validated the target device ordinal.
-        unsafe { cudf_sys::cudf_cuda_set_device(target) }
     })
 }

@@ -29,7 +29,7 @@ impl CompiledGpuTaskExecutor<'_> {
         })?;
         let resource = match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source) if !source.has_position_delete_visible_scan_limit() => {
+                SourceNode::LocalParquet(source) => {
                     let sharing = self.resource_sharing(output);
                     let has_multiple_consumers = sharing != ResourceSharing::SingleConsume;
                     // Only consumers the compiled contract resolved as source-stream capable
@@ -121,10 +121,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 },
                 source if self.task_feeds_join_input(task.id()) => {
                     execute_bounded_join_leaf_source(&mut self.execution, source, node_id, &self.gpu_inputs)
-                        .map(CompiledGpuResource::new)
-                },
-                SourceNode::LocalParquet(source) => {
-                    execute_bounded_generic_local_parquet_source(&mut self.execution, source, node_id)
                         .map(CompiledGpuResource::new)
                 },
                 SourceNode::GpuResident(source) => {

@@ -47,7 +47,6 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
     matches!(
         error.code(),
         QueryErrorCode::QueryMemoryLimitExceeded
-            | QueryErrorCode::CudfResourceExhausted
             | QueryErrorCode::CudfTemporaryFailure
             | QueryErrorCode::MemoryReservationFailed
             | QueryErrorCode::ServiceOverloaded
@@ -155,7 +154,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })
     }
 
-    pub fn take_gpu_output(
+    pub(crate) fn take_gpu_output(
         &mut self,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<GpuResultHandle> {

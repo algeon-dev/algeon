@@ -64,7 +64,6 @@ unsafe extern "C" {
     pub fn cudf_test_io_reset_metadata_fault();
     pub fn cudf_test_io_kvikio_active_io_begin() -> cudf_status_t;
     pub fn cudf_test_io_kvikio_active_io_end() -> cudf_status_t;
-    pub fn cudf_test_arrow_device_array_set_device_type(array: cudf_arrow_device_array_handle, device_type: i32);
     pub fn cudf_test_event_reset_observation();
     pub fn cudf_test_event_block_synchronize();
     pub fn cudf_test_event_unblock_synchronize();

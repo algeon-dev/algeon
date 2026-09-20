@@ -4,12 +4,11 @@ use query_engine::{
     admission, attempt,
     error::{self, Result},
     exec::{self, QueryExecutionRequest, execute_query_plan, output::QueryExecutionResult},
-    native_error, observability, parquet_stats,
+    native_error, observability,
     plan::{self, QueryPlan},
     runtime::{
-        self, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendDeviceConfig,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
+        self, ExecutionContext, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
         QueueBounds, resident::GpuResidentInputMap,
     },
     source,
@@ -34,16 +33,10 @@ fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts: usi
             )),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    let deployment = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    );
-    QueryService::new_with_device_profiles_and_deployment_for_test(
+    QueryService::new_with_device_profiles_for_test(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         vec![profile],
-        deployment,
     )
 }
 
@@ -70,16 +63,7 @@ fn runtime_test_service_with_profiles(
     queue_bounds: QueueBounds,
     device_profiles: Vec<GpuBackendDeviceConfig>,
 ) -> Result<QueryService> {
-    QueryService::new_with_device_profiles_and_deployment_for_test(
-        config,
-        queue_bounds,
-        device_profiles,
-        DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::DriverMissing,
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::ProbeUnimplemented,
-        ),
-    )
+    QueryService::new_with_device_profiles_for_test(config, queue_bounds, device_profiles)
 }
 
 include!("cross_attempt_gpu_resident.rs");

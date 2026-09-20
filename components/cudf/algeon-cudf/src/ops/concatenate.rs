@@ -38,6 +38,7 @@ fn checked_len_to_i32(
         .map_err(|_| error::limit_validation_error(operation, message, resource, value_key, "i32::MAX", len, remedy))
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 fn input_column_count_limit_error(operation: &'static str, column_count: usize) -> Error {
     error::limit_validation_error(
         operation,
@@ -50,6 +51,7 @@ fn input_column_count_limit_error(operation: &'static str, column_count: usize) 
     )
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 fn input_table_count_limit_error(operation: &'static str, table_count: usize) -> Error {
     error::limit_validation_error(
         operation,
@@ -225,10 +227,12 @@ pub(crate) fn concatenate_tables_with_exec(
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_concatenate_column_count_limit_error_for_test() -> Result<()> {
     Err(input_column_count_limit_error("concatenate::concatenate_columns", usize::MAX))
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_concatenate_table_count_limit_error_for_test() -> Result<()> {
     Err(input_table_count_limit_error("concatenate::concatenate_tables", usize::MAX))
 }

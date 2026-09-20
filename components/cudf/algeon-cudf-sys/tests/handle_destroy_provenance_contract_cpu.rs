@@ -99,8 +99,6 @@ fn gpu_resources_are_declared_after_retained_provenance_so_they_drop_first() {
         ("cudf_device_buffer_owner", "buffer"),
         ("adopted_device_buffer_column_handle_state", "_data_owner"),
         ("prepared_groupby_owner", "groupby"),
-        ("arrow_device_imported_column_handle_state", "_view"),
-        ("arrow_device_imported_table_root_state", "view"),
     ] {
         let body = type_body(combined, owner);
         let provenance_position =
@@ -258,38 +256,6 @@ fn hash_join_pre_build_sizing_forwards_explicit_execution_context() {
             "*out = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor, exec->stream, *exec->mr);",
         ),
         "hash-join pre-build sizing must inspect nullable string metadata on the resolved stream/MR context"
-    );
-}
-
-#[test]
-fn arrow_device_array_release_carries_provenance_without_global_side_map() {
-    let sources = NativeSources::load();
-    let combined = sources.combined();
-    let array_destroy = sources.function_body("cudf_arrow_device_array_destroy");
-    let mut violations = Vec::new();
-
-    if combined.contains("unordered_map<ArrowDeviceArray*, cudf_handle_provenance>") {
-        violations.push(
-            "ArrowDeviceArray provenance must not live in a global raw-pointer side map; \
-             raw address reuse can attach stale provenance"
-                .to_string(),
-        );
-    }
-    if !combined.contains("release_arrow_device_array_under_provenance") {
-        violations.push(
-            "ArrowDeviceArray release must wrap the ArrowArray release callback so direct \
-             Arrow ABI release uses captured provenance"
-                .to_string(),
-        );
-    }
-    if !array_destroy.body.contains("destroy_arrow_device_array") {
-        violations.push("cudf_arrow_device_array_destroy must delegate to the Arrow release path".to_string());
-    }
-
-    assert!(
-        violations.is_empty(),
-        "Arrow device array release must carry captured provenance in the ABI object.\n{}",
-        violations.join("\n")
     );
 }
 

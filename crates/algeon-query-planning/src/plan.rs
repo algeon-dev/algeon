@@ -14,8 +14,6 @@ use crate::{
 
 mod advisory;
 mod builder;
-#[doc(hidden)]
-pub mod column_evidence;
 mod core;
 mod display;
 mod estimates;
@@ -31,6 +29,7 @@ mod preference;
 mod remap;
 pub mod row_bounds;
 mod sink;
+mod uniqueness;
 mod vector_algorithm;
 
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
@@ -38,10 +37,8 @@ pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 pub use advisory::{AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason};
 pub use builder::QueryPlanBuilder;
 #[doc(hidden)]
-pub use estimates::{
-    advisory_output_bytes, advisory_output_rows, estimated_local_parquet_source_bytes, estimated_output_bytes,
-    estimated_output_rows, estimated_reachable_local_parquet_source_bytes,
-};
+pub use estimates::estimated_output_bytes;
+pub(crate) use estimates::{advisory_output_bytes, advisory_output_rows, estimated_output_rows};
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use gpu_function_options::{
     DenseVectorBinding, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition,
@@ -94,6 +91,7 @@ pub use preference::{
 };
 pub(crate) use remap::{NodeRemap, clone_plan_node_with_inputs, remap_plan_node_inputs};
 pub use sink::ResultSink;
+pub(crate) use uniqueness::plan_node_is_unique_on;
 pub use vector_algorithm::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
     CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,

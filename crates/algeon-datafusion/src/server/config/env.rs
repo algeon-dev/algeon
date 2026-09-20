@@ -42,11 +42,6 @@ impl<'a> EnvValues<'a> {
         names.into_iter().any(|name| self.string(name).is_some())
     }
 
-    #[cfg(feature = "iceberg")]
-    pub(super) fn required_string(&mut self, name: &'static str) -> Result<String> {
-        self.string(name).ok_or_else(|| ServerError::invalid_config(name, "is required"))
-    }
-
     pub(super) fn string(&mut self, name: &'static str) -> Option<String> {
         if let Some(cached) = self.cache.get(name) {
             return cached.clone();

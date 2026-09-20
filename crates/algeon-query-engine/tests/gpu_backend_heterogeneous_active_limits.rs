@@ -4,10 +4,9 @@ use std::{
 };
 
 use query_engine::runtime::{
-    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-    GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
-    GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig,
-    QueueBounds,
+    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+    GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    QueryAdmissionRequest, QueryExecutionConfig, QueueBounds,
 };
 
 const DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -15,14 +14,6 @@ const DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 fn live_backend_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn non_gds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
 }
 
 #[test]
@@ -55,13 +46,9 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
             GpuMemoryOwnership::WholeDeviceExclusive,
         )
     };
-    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
-        vec![device(0, 2), device(1, 1)],
-        controller,
-        non_gds_deployment(),
-    ))
-    .build()
-    .unwrap();
+    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device(0, 2), device(1, 1)], controller))
+        .build()
+        .unwrap();
     let session = core.session_capability();
 
     let first =
@@ -117,7 +104,6 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
     let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
         vec![device(0, DEVICE_CAPACITY_BYTES, 2), device(1, DEVICE_ONE_LIMIT_BYTES, 1)],
         controller,
-        non_gds_deployment(),
     ))
     .build()
     .unwrap();

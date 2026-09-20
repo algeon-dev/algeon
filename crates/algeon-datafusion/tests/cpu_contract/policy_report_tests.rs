@@ -29,18 +29,6 @@ fn capability_reason_codes_are_stable_manifest_values() {
         (CapabilityReason::NativeSourceByteRange, "native_source_byte_range"),
         (CapabilityReason::NativeSourceRowSelection, "native_source_row_selection"),
         (CapabilityReason::NativeSourceSchemaMapping, "native_source_schema_mapping"),
-        (CapabilityReason::TableFormatUnsupported, "table_format_unsupported"),
-        (CapabilityReason::TableFormatPlanningFailed, "table_format_planning_failed"),
-        (CapabilityReason::IcebergNonParquetDataFile, "iceberg_non_parquet_data_file"),
-        (CapabilityReason::IcebergDeleteFilesUnsupported, "iceberg_delete_files_unsupported"),
-        (CapabilityReason::IcebergFieldIdMappingUnsupported, "iceberg_field_id_mapping_unsupported"),
-        (CapabilityReason::IcebergNameMappingUnsupported, "iceberg_name_mapping_unsupported"),
-        (CapabilityReason::IcebergNestedProjectionUnsupported, "iceberg_nested_projection_unsupported"),
-        (CapabilityReason::IcebergPartitionTransformUnsupported, "iceberg_partition_transform_unsupported"),
-        (CapabilityReason::IcebergResidualPredicateUnsupported, "iceberg_residual_predicate_unsupported"),
-        (CapabilityReason::IcebergRowSelectionUnsupported, "iceberg_row_selection_unsupported"),
-        (CapabilityReason::IcebergObjectStoreReadUnsupported, "iceberg_object_store_read_unsupported"),
-        (CapabilityReason::IcebergFileIoSourceAccessUnverified, "iceberg_file_io_source_access_unverified"),
     ];
 
     for (reason, expected) in codes {
@@ -71,8 +59,6 @@ fn capability_reasons_map_to_shared_triage_codes() {
     assert_eq!(CapabilityReason::UnsupportedExpression.triage_code(), TriageCode::UnsupportedExpression);
     assert_eq!(CapabilityReason::NativeBoundedJoinUnsupported.triage_code(), TriageCode::CapabilityEnvelopeRejected);
     assert_eq!(CapabilityReason::NativeSourceNonLocalObjectStore.triage_code(), TriageCode::UnsupportedSource);
-    assert_eq!(CapabilityReason::IcebergObjectStoreReadUnsupported.triage_code(), TriageCode::UnsupportedSource);
-    assert_eq!(CapabilityReason::IcebergFileIoSourceAccessUnverified.triage_code(), TriageCode::UnsupportedSource);
 }
 
 #[test]

@@ -22,6 +22,7 @@ impl MlForestModelDigest {
         Self(Sha256::digest(bytes).into())
     }
 
+    #[cfg(test)]
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -104,7 +105,7 @@ pub enum MlForestPrecision {
 }
 
 impl MlForestPrecision {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Single => "single",
             Self::Double => "double",
@@ -139,7 +140,7 @@ impl MlForestOutputContract {
     }
 
     /// Arrow type of every prediction column.
-    pub const fn prediction_type(self) -> DataType {
+    pub(crate) const fn prediction_type(self) -> DataType {
         match self {
             Self::ClassIndex { .. } => DataType::Int32,
             Self::Score | Self::Vector(_) => DataType::Float32,

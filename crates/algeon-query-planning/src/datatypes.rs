@@ -141,15 +141,13 @@ fn diagnostic_arrow_struct(fields: &Fields) -> String {
     format!("Struct({fields})")
 }
 
-#[doc(hidden)]
-pub fn arrow_fields_match_except_name(left: &Field, right: &Field) -> bool {
+pub(crate) fn arrow_fields_match_except_name(left: &Field, right: &Field) -> bool {
     left.is_nullable() == right.is_nullable()
         && arrow_field_metadata_matches_except_parquet_field_id(left.metadata(), right.metadata())
         && arrow_data_types_match_except_list_child_names(left.data_type(), right.data_type())
 }
 
-#[doc(hidden)]
-pub fn arrow_data_types_match_except_list_child_names(left: &ArrowDataType, right: &ArrowDataType) -> bool {
+pub(crate) fn arrow_data_types_match_except_list_child_names(left: &ArrowDataType, right: &ArrowDataType) -> bool {
     match (left, right) {
         (ArrowDataType::List(left_field), ArrowDataType::List(right_field))
         | (ArrowDataType::LargeList(left_field), ArrowDataType::LargeList(right_field)) => {
@@ -202,7 +200,7 @@ fn is_supported_fixed_size_list_child(field: &FieldRef) -> bool {
     )
 }
 
-pub fn arrow_field_metadata_matches_except_parquet_field_id(
+pub(crate) fn arrow_field_metadata_matches_except_parquet_field_id(
     left: &HashMap<String, String>,
     right: &HashMap<String, String>,
 ) -> bool {
@@ -256,7 +254,7 @@ pub fn is_supported_arrow_implicit_cast(
 }
 
 /// Returns whether a numeric cast widens without narrowing range or precision class.
-pub fn is_supported_numeric_widening_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+pub(crate) fn is_supported_numeric_widening_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     matches!(
         (source_type, target_type),
         (ArrowDataType::Int8, ArrowDataType::Int16 | ArrowDataType::Int32 | ArrowDataType::Int64)

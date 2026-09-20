@@ -221,6 +221,7 @@ impl DataFrame {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         self.sort_values_impl(by, options, output_domain, "dataframe::with_execution::sort_values")
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_sort_values_in_context<I, S>(
         &self,
         by: I,

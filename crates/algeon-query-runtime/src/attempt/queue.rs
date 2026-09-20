@@ -13,10 +13,10 @@ use crate::observability::QueryAttemptReport;
 
 #[derive(Debug, Default)]
 pub struct AttemptBackendCounters {
-    pub attempts_begun: AtomicU64,
-    pub reports_ready: AtomicU64,
-    pub completion_queue_pushed: AtomicU64,
-    pub completion_queue_overflowed: AtomicU64,
+    pub(crate) attempts_begun: AtomicU64,
+    pub(crate) reports_ready: AtomicU64,
+    pub(crate) completion_queue_pushed: AtomicU64,
+    pub(crate) completion_queue_overflowed: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub struct AttemptBackendCountersSnapshot {
 }
 
 impl AttemptBackendCounters {
-    pub fn snapshot(&self) -> AttemptBackendCountersSnapshot {
+    pub(crate) fn snapshot(&self) -> AttemptBackendCountersSnapshot {
         AttemptBackendCountersSnapshot {
             attempts_begun: self.attempts_begun.load(Ordering::Acquire),
             reports_ready: self.reports_ready.load(Ordering::Acquire),
@@ -48,8 +48,7 @@ impl AttemptCompletionQueue {
     pub fn new(capacity: usize) -> Option<Self> {
         (capacity > 0).then(|| Self { capacity, queue: Mutex::new(VecDeque::new()) })
     }
-    #[doc(hidden)]
-    pub fn try_push(&self, report: Arc<QueryAttemptReport>) -> bool {
+    pub(crate) fn try_push(&self, report: Arc<QueryAttemptReport>) -> bool {
         // Blocking is bounded by one VecDeque push or drain; a failed try_lock
         // used to miscount a contended push as a capacity overflow.
         let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -60,7 +59,7 @@ impl AttemptCompletionQueue {
             true
         }
     }
-    pub fn drain(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
+    pub(crate) fn drain(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let n = max.min(queue.len());
         queue.drain(..n).collect()

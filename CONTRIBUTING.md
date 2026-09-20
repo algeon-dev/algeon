@@ -79,7 +79,7 @@ crates:
 ┌───────────────────────────────────────────────────────────────┐
 │ algeon-datafusion (DataFusion Adapter)                        │
 │ - Physical optimizer rules (AlgeonNativePhysicalOptimizerRule)│
-│ - Table providers, Iceberg integration, Parquet scans         │
+│ - Table providers and Parquet scans                           │
 │ - NativeExecutionPlan wrappers & DataFusion metric bridges    │
 └──────────────────────────────┬────────────────────────────────┘
                                │ uses the compatible facade
@@ -162,7 +162,7 @@ intent clear:
 ```text
 feat(lowering): support decimal cast expressions in native projection
 fix(query-engine): release memory grant on cancelled pipeline tasks
-test(iceberg): add partition-pruning regression coverage
+test(query-planning): cover deferred candidate reasons in PlanningReport
 docs: clarify GPU test isolation and lock requirements
 ```
 
@@ -172,8 +172,8 @@ In the PR description, include:
 - A concise summary of the change and its user-facing or technical value.
 - The behavior, API, or contract that changed.
 - The layer that owns the change (DataFusion adapter, `query-planning`,
-  `query-runtime`, `query-engine`, `server`, `iceberg-catalog`,
-  or a component crate under `components/`).
+  `query-runtime`, `query-engine`, `server`, or a component crate under
+  `components/`).
 - The test environment used: CUDA driver and toolkit setup, GPU model, Rust
   toolchain, host OS, and relevant environment variables.
 - The exact test commands or verification steps executed.
@@ -326,7 +326,6 @@ bash scripts/check_all.sh
 - `.config/nextest.toml` is the sole source of test-lane admission: CPU tests
   are opt-in by a `_cpu` target suffix or a listed binary, `_gpu_exclusive`
   targets run alone and last, and every other test runs in the `gpu` group.
-- Do not add external-service E2E tests (such as live Iceberg REST/Glue catalogs)
-  to default Cargo test targets; run them explicitly via
-  `cargo run -p tools --all-features`
-  or fixture scripts under `fixture/`.
+- Do not add external-service E2E tests to default Cargo test targets; run them
+  explicitly via `cargo run -p tools --all-features` or fixture scripts under
+  `fixture/`.

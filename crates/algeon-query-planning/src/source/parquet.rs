@@ -14,7 +14,6 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 #[cfg(test)]
 use super::diagnostics::{redacted_object_store_path_diagnostic, redacted_stable_id_diagnostic};
 use super::{
-    deletes::{ParquetEqualityDeleteFile, ParquetPositionDeleteFile},
     diagnostics::{
         LocalParquetDiagnosticColumns, PredicateDisposition, RejectedSourceFeature, SourceDiagnostics,
         ZeroColumnCountDisposition, files_have_proven_direct_device_read, redacted_debug_value,
@@ -30,7 +29,6 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     expr::{Expr, LiteralValue},
-    parquet_stats::ParquetVariableWidthPayloadEvidence,
 };
 
 /// Synthetic output column used for Parquet plans that only need a row count.
@@ -66,9 +64,9 @@ pub const GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphSimpleDirectedEdgeTopology {
     /// Zero-based physical Parquet root-column index for the source endpoint.
-    pub source_column_index: usize,
+    pub(crate) source_column_index: usize,
     /// Zero-based physical Parquet root-column index for the destination endpoint.
-    pub destination_column_index: usize,
+    pub(crate) destination_column_index: usize,
 }
 
 impl GraphSimpleDirectedEdgeTopology {
@@ -124,49 +122,6 @@ pub struct MissingColumn {
 impl MissingColumn {
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
         Self { name: name.into(), data_type, nullable }
-    }
-}
-
-/// Per-file Iceberg field-id proof for one physical Parquet read column.
-///
-/// The logical output name can differ from the physical Parquet column name
-/// when schema evolution renamed a top-level field. Execution still reads a
-/// normal Parquet projection by physical name, while source output columns map
-/// the decoded read column back to the logical name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ParquetFieldIdReadBinding {
-    /// Iceberg field id that was matched against Parquet footer metadata.
-    pub logical_field_id: i32,
-    /// Logical column name exposed by the table schema.
-    pub logical_name: String,
-    /// Physical top-level Parquet column name in this file.
-    pub physical_name: String,
-    /// Physical top-level Parquet root index in this file.
-    pub physical_root_index: usize,
-    /// Nullability recorded in the physical Parquet/Arrow footer schema.
-    pub nullable: bool,
-    /// Arrow data type recorded in the physical Parquet/Arrow footer schema.
-    pub data_type: DataType,
-}
-
-impl ParquetFieldIdReadBinding {
-    /// Builds one footer-proven field-id read binding.
-    pub fn new(
-        logical_field_id: i32,
-        logical_name: impl Into<String>,
-        physical_name: impl Into<String>,
-        physical_root_index: usize,
-        nullable: bool,
-        data_type: DataType,
-    ) -> Self {
-        Self {
-            logical_field_id,
-            logical_name: logical_name.into(),
-            physical_name: physical_name.into(),
-            physical_root_index,
-            nullable,
-            data_type,
-        }
     }
 }
 
@@ -245,7 +200,7 @@ pub struct LocalParquetSource {
     /// File-schema indices for `read_columns`.
     pub read_column_file_indices: Vec<usize>,
     /// Total physical column count in the source Parquet file schema, when known.
-    pub file_column_count: Option<usize>,
+    pub(crate) file_column_count: Option<usize>,
     /// Source columns expected to survive source-adjacent filters/projections.
     pub projected_output_columns: Vec<String>,
     /// Source references for `projected_output_columns`.
@@ -262,10 +217,6 @@ pub struct LocalParquetSource {
     /// Nullable logical source columns materialized as typed null columns.
     pub missing_columns: Vec<MissingColumn>,
     /// Source-level scan limit applied before source-adjacent native filters.
-    ///
-    /// For files with Iceberg position deletes this is a visible-row stop
-    /// bound: the executor applies deletes for each read chunk before deciding
-    /// whether enough rows have been emitted.
     pub scan_limit: Option<usize>,
     /// Reader-level Parquet predicate applied by the cuDF reader before source-local native filters.
     ///
@@ -281,7 +232,7 @@ pub struct LocalParquetSource {
     /// Source capability and rejection details captured during lowering.
     pub diagnostics: SourceDiagnostics,
     /// Read one physical row-presence column, then emit row-count weights.
-    pub count_star_probe: bool,
+    pub(crate) count_star_probe: bool,
 }
 
 impl LocalParquetSource {
@@ -551,27 +502,6 @@ impl LocalParquetSource {
         self.count_star_probe
     }
 
-    /// Returns true when any data file in this source carries Iceberg position deletes.
-    pub fn has_position_delete_files(&self) -> bool {
-        self.files.iter().any(LocalParquetFile::has_position_delete_files)
-    }
-
-    /// Returns true when any data file in this source carries Iceberg equality deletes.
-    pub fn has_equality_delete_files(&self) -> bool {
-        self.files.iter().any(LocalParquetFile::has_equality_delete_files)
-    }
-
-    /// Returns true when any data file in this source carries Iceberg row-level deletes.
-    pub fn has_row_delete_files(&self) -> bool {
-        self.files.iter().any(LocalParquetFile::has_row_delete_files)
-    }
-
-    /// Returns true when source scan-limit accounting must happen after
-    /// per-chunk row deletes have been applied.
-    pub fn has_position_delete_visible_scan_limit(&self) -> bool {
-        self.scan_limit.is_some() && self.has_row_delete_files() && !self.is_count_star_probe_source()
-    }
-
     fn mark_zero_column_count_represented(&mut self) {
         self.read_columns.clear();
         self.read_column_file_indices.clear();
@@ -615,8 +545,7 @@ impl LocalParquetSource {
         self.files.iter().map(LocalParquetFile::selected_row_group_count).sum()
     }
 
-    #[doc(hidden)]
-    pub fn exact_selected_row_group_rows(&self) -> Option<Vec<u64>> {
+    pub(crate) fn exact_selected_row_group_rows(&self) -> Option<Vec<u64>> {
         self.files.iter().try_fold(Vec::with_capacity(self.selected_row_group_count()), |mut selected_rows, file| {
             let row_group_rows = file.row_group_rows.as_ref()?;
             match file.row_groups.as_ref() {
@@ -645,11 +574,10 @@ impl LocalParquetSource {
     /// denotes complete, unfiltered edge-file rowsets.
     ///
     /// A graph vertex count belongs to the exact source rowset that produced
-    /// it. A scan limit, reader predicate, row-level delete, or selected
-    /// row-group subset changes that rowset, so this deliberately refuses to
-    /// carry the file-level value across such a transformation. Multiple whole
-    /// files are safe to sum: duplicate vertices only make the result more
-    /// conservative.
+    /// it. A scan limit, reader predicate, or selected row-group subset
+    /// changes that rowset, so this deliberately refuses to carry the
+    /// file-level value across such a transformation. Multiple whole files are
+    /// safe to sum: duplicate vertices only make the result more conservative.
     pub fn graph_vertex_upper_bound(&self) -> Option<u64> {
         if !self.has_complete_untransformed_graph_rowset() {
             return None;
@@ -664,7 +592,7 @@ impl LocalParquetSource {
     /// Edge normalization retains this raw source frame while its normalized
     /// graph frame is live. The count therefore belongs to the source rowset,
     /// not to a transformed graph operator or a caller-provided estimate.
-    pub fn graph_raw_edge_row_count(&self) -> Option<u64> {
+    pub(crate) fn graph_raw_edge_row_count(&self) -> Option<u64> {
         self.has_complete_untransformed_graph_rowset().then(|| self.exact_selected_row_count()).flatten()
     }
 
@@ -692,13 +620,7 @@ impl LocalParquetSource {
     fn has_complete_untransformed_graph_rowset(&self) -> bool {
         self.scan_limit.is_none()
             && self.reader_predicate.is_none()
-            && !self.has_row_delete_files()
             && self.files.iter().all(|file| file.row_groups.is_none())
-    }
-
-    /// Number of file entries represented as byte-ranged in diagnostics.
-    pub fn ranged_file_count(&self) -> usize {
-        self.diagnostics.ranged_file_count
     }
 
     /// Whether diagnostics indicate that direct device read is supported.
@@ -712,7 +634,7 @@ impl LocalParquetSource {
 
     /// Returns true when every file represented by this source proves a
     /// physical file column has no nulls in its selected row groups.
-    pub fn selected_file_column_has_no_nulls(&self, file_column_index: usize) -> bool {
+    pub(crate) fn selected_file_column_has_no_nulls(&self, file_column_index: usize) -> bool {
         !self.files.is_empty()
             && self.files.iter().all(|file| file.selected_row_groups_have_no_nulls(file_column_index))
     }
@@ -822,23 +744,15 @@ pub struct LocalParquetFile {
     /// The proof is intentionally stored per file and becomes usable only
     /// through [`LocalParquetSource::has_simple_directed_edge_topology`], which
     /// refuses partial or multi-file sources.
-    pub graph_simple_directed_edge_topology: Option<GraphSimpleDirectedEdgeTopology>,
+    pub(crate) graph_simple_directed_edge_topology: Option<GraphSimpleDirectedEdgeTopology>,
     /// Per-file-column null counts by row group, keyed by physical root column index.
     ///
     /// Inner vectors are indexed by physical row-group number, not selected
     /// row-group position. `None` means the footer did not prove a null count
     /// for that column chunk.
     pub row_group_null_counts: BTreeMap<usize, Vec<Option<u64>>>,
-    /// Footer-proven variable-width payload bounds keyed by physical root-column index.
-    pub variable_width_payload_evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
-    /// Per-file field-id bindings proven from table-format and Parquet footer metadata.
-    pub field_id_read_bindings: Vec<ParquetFieldIdReadBinding>,
-    /// Position-delete files associated with this data file.
-    pub position_delete_files: Vec<ParquetPositionDeleteFile>,
-    /// Equality-delete files associated with this data file.
-    pub equality_delete_files: Vec<ParquetEqualityDeleteFile>,
     /// Values for `LocalParquetSource::partition_columns` in source order.
     pub partition_values: Vec<LiteralValue>,
 }
@@ -861,11 +775,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("graph_vertex_upper_bound", &self.graph_vertex_upper_bound)
             .field("graph_simple_directed_edge_topology", &self.graph_simple_directed_edge_topology)
             .field("row_group_null_counts", &self.row_group_null_counts)
-            .field("variable_width_payload_evidence", &self.variable_width_payload_evidence)
             .field("reader_decimal_types", &self.reader_decimal_types)
-            .field("field_id_read_bindings", &self.field_id_read_bindings)
-            .field("position_delete_files", &self.position_delete_files)
-            .field("equality_delete_files", &self.equality_delete_files)
             .field("partition_values", &self.partition_values)
             .finish()
     }
@@ -893,11 +803,7 @@ impl LocalParquetFile {
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
-            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
-            field_id_read_bindings: Vec::new(),
-            position_delete_files: Vec::new(),
-            equality_delete_files: Vec::new(),
             partition_values: Vec::new(),
         }
     }
@@ -923,11 +829,7 @@ impl LocalParquetFile {
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
-            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
-            field_id_read_bindings: Vec::new(),
-            position_delete_files: Vec::new(),
-            equality_delete_files: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -952,11 +854,7 @@ impl LocalParquetFile {
             graph_vertex_upper_bound: None,
             graph_simple_directed_edge_topology: None,
             row_group_null_counts: BTreeMap::new(),
-            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
-            field_id_read_bindings: Vec::new(),
-            position_delete_files: Vec::new(),
-            equality_delete_files: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1050,18 +948,9 @@ impl LocalParquetFile {
         self
     }
 
-    /// Sets footer-proven variable-width payload evidence keyed by physical root-column index.
-    pub fn with_variable_width_payload_evidence(
-        mut self,
-        evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
-    ) -> Self {
-        self.variable_width_payload_evidence = evidence;
-        self
-    }
-
     /// Returns true when footer stats prove this file column has no nulls in
     /// every selected row group represented by this file descriptor.
-    pub fn selected_row_groups_have_no_nulls(&self, file_column_index: usize) -> bool {
+    pub(crate) fn selected_row_groups_have_no_nulls(&self, file_column_index: usize) -> bool {
         let Some(null_counts) = self.row_group_null_counts.get(&file_column_index) else {
             return false;
         };
@@ -1069,48 +958,10 @@ impl LocalParquetFile {
         selected.iter().all(|row_group| null_counts.get(*row_group).and_then(|count| *count) == Some(0))
     }
 
-    /// Footer-proven variable-width payload bounds keyed by physical root-column index.
-    pub fn variable_width_payload_evidence(&self) -> &BTreeMap<usize, ParquetVariableWidthPayloadEvidence> {
-        &self.variable_width_payload_evidence
-    }
-
     /// Sets per-read-column decimal storage types proven from Parquet metadata.
     pub fn with_reader_decimal_types(mut self, reader_decimal_types: Vec<ParquetReaderDecimalType>) -> Self {
         self.reader_decimal_types = reader_decimal_types;
         self
-    }
-
-    /// Sets per-file field-id bindings proven from footer metadata.
-    pub fn with_field_id_read_bindings(mut self, bindings: Vec<ParquetFieldIdReadBinding>) -> Self {
-        self.field_id_read_bindings = bindings;
-        self
-    }
-
-    /// Sets position-delete files associated with this data file.
-    pub fn with_position_delete_files(mut self, delete_files: Vec<ParquetPositionDeleteFile>) -> Self {
-        self.position_delete_files = delete_files;
-        self
-    }
-
-    /// Sets equality-delete files associated with this data file.
-    pub fn with_equality_delete_files(mut self, delete_files: Vec<ParquetEqualityDeleteFile>) -> Self {
-        self.equality_delete_files = delete_files;
-        self
-    }
-
-    /// Returns true when this data file requires Iceberg position deletes.
-    pub fn has_position_delete_files(&self) -> bool {
-        !self.position_delete_files.is_empty()
-    }
-
-    /// Returns true when this data file requires Iceberg equality deletes.
-    pub fn has_equality_delete_files(&self) -> bool {
-        !self.equality_delete_files.is_empty()
-    }
-
-    /// Returns true when this data file requires Iceberg row-level deletes.
-    pub fn has_row_delete_files(&self) -> bool {
-        self.has_position_delete_files() || self.has_equality_delete_files()
     }
 
     /// Sets values for represented partition columns.
@@ -1292,28 +1143,6 @@ mod tests {
                 "location debug output leaked {sensitive}: {rendered_location}"
             );
         }
-    }
-
-    #[test]
-    fn position_delete_debug_redacts_referenced_data_file() {
-        let referenced = "s3://secret-bucket/private/data.parquet?X-Amz-Signature=abc";
-        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
-            "delete-1",
-            ResolvedParquetSource::remote_kvikio(
-                "s3://delete-bucket/private/delete.parquet?X-Amz-Signature=def",
-                CredentialMode::SharedProcessEnv,
-            ),
-        )
-        .unwrap()
-        .with_referenced_data_file(referenced);
-        let file = LocalParquetFile::new("/tmp/data.parquet").with_position_delete_files(vec![delete_file]);
-
-        let rendered = format!("{file:?}");
-        for sensitive in ["secret-bucket", "private/data", "X-Amz-Signature", "delete-bucket"] {
-            assert!(!rendered.contains(sensitive), "debug output leaked {sensitive}: {rendered}");
-        }
-        assert!(rendered.contains("referenced_data_file"));
-        assert!(rendered.contains("referenced_data_file:fnv64:"));
     }
 
     #[test]

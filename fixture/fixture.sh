@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unified public fixture entrypoint for benchmark data, demo datasets, and local Iceberg E2E.
+# Unified public fixture entrypoint for benchmark data and demo datasets.
 
 set -euo pipefail
 
@@ -18,8 +18,6 @@ Usage:
   fixture/fixture.sh amazon-reviews prepare [--category NAME] [--out-dir PATH] [--force]
   fixture/fixture.sh kuairand prepare [--variant pure|1k|27k] [--out-dir PATH] [--force] [--download]
   fixture/fixture.sh merrec prepare [--partition NAME] [--input-parquet PATH] [--out-dir PATH] [--force] [--download-sample]
-  fixture/fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
-  fixture/fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
 TPC-H / TPC-DS generation uses tpchgen-rs and rewrites the final Parquet layout
 with sorted, Snappy-compressed row groups by default. Run a gen_*.py with --help
@@ -295,26 +293,6 @@ case "${domain}:${command}" in
     ;;
   merrec:prepare)
     exec python3 "${SCRIPT_DIR}/demo/merrec/scripts/prepare.py" "$@"
-    ;;
-  iceberg:rest)
-    subcommand="${1:-}"
-    if [[ "${subcommand}" != "load" ]]; then
-      echo "error: unsupported iceberg rest command '${subcommand}' (expected load)" >&2
-      usage >&2
-      exit 2
-    fi
-    shift
-    exec "${SCRIPT_DIR}/iceberg-local/rest_load.sh" "$@"
-    ;;
-  iceberg:glue-moto)
-    subcommand="${1:-}"
-    if [[ "${subcommand}" != "load" ]]; then
-      echo "error: unsupported iceberg glue-moto command '${subcommand}' (expected load)" >&2
-      usage >&2
-      exit 2
-    fi
-    shift
-    exec "${SCRIPT_DIR}/iceberg-local/glue_moto_load.sh" "$@"
     ;;
   -h:*|--help:*)
     usage

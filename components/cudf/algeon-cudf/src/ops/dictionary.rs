@@ -27,6 +27,7 @@
 
 mod errors;
 mod result_shape;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
 use std::{ptr, sync::Arc};

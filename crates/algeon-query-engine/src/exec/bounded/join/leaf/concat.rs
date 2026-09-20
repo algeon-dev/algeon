@@ -40,7 +40,3 @@ pub(super) fn concatenate_join_source_chunks(
     let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(output_frame, output_bytes))
 }
-
-pub(super) fn release_join_source_chunks_reverse(mut chunks: Vec<(GpuDataFrame, u64)>) {
-    while chunks.pop().is_some() {}
-}

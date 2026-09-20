@@ -14,19 +14,7 @@ use crate::{
     datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result as QueryResult},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr},
-    plan::{NodeId, PlanNode, QueryPlan},
 };
-
-/// Strategy capability facts attached to one aggregate node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AggregateStrategyCapability {
-    /// Native aggregate node id.
-    pub node_id: NodeId,
-    /// Aggregate execution stage represented by this capability decision.
-    pub stage: AggregateExecutionStage,
-    /// Strategy decision and local candidate rejection facts.
-    pub decision: AggregateStrategyCapabilityDecision,
-}
 
 /// Aggregate execution stage being evaluated for strategy selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,7 +49,7 @@ pub enum AggregateStateContract {
 
 impl AggregateStateContract {
     /// Stable diagnostic label for this aggregate state contract.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Plain => "plain",
             Self::DedupGroupOnly => "dedup_group_only",
@@ -70,7 +58,7 @@ impl AggregateStateContract {
     }
 }
 
-pub fn aggregate_state_contract(spec: &AggregateSpec) -> Option<AggregateStateContract> {
+pub(crate) fn aggregate_state_contract(spec: &AggregateSpec) -> Option<AggregateStateContract> {
     if spec.grouping_sets.is_some() {
         return None;
     }
@@ -160,16 +148,16 @@ pub struct AggregateStrategyExecutionOptions {
 impl AggregateStrategyExecutionOptions {
     const MAX_RATIO_PPM: u64 = 1_000_000;
 
-    pub const DEFAULT_ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
-    pub const DEFAULT_ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS: u64 = 100_000;
-    pub const DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 5;
-    pub const DEFAULT_EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 100_000;
-    pub const DEFAULT_EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
-    pub const DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
-    pub const DEFAULT_EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
-    pub const DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
-    pub const DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
-    pub const DEFAULT_PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
+    pub(crate) const DEFAULT_ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
+    pub(crate) const DEFAULT_ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS: u64 = 100_000;
+    pub(crate) const DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 5;
+    pub(crate) const DEFAULT_EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 100_000;
+    pub(crate) const DEFAULT_EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
+    pub(crate) const DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
+    pub(crate) const DEFAULT_EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
+    pub(crate) const DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
+    pub(crate) const DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
+    pub(crate) const DEFAULT_PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
     pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS: u64 = 64;
     pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES: u64 = 384 * 1024 * 1024;
     pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN: u64 = 64;
@@ -275,38 +263,15 @@ impl AggregateStrategyExecutionOptions {
         self
     }
 
-    pub fn with_exact_grouped_key_cardinality_probe_max_key_columns(mut self, columns: usize) -> Self {
-        self.exact_grouped_key_cardinality_probe_max_key_columns = columns;
-        self
-    }
-
-    pub fn with_exact_single_string_avg_cardinality_probe_min_input_rows(mut self, rows: u64) -> Self {
-        self.exact_single_string_avg_cardinality_probe_min_input_rows = rows;
-        self
-    }
-
-    pub fn with_exact_single_key_cardinality_probe_min_input_rows(mut self, rows: u64) -> Self {
-        self.exact_single_key_cardinality_probe_min_input_rows = rows;
-        self
-    }
-
+    #[cfg(test)]
     pub fn with_exact_grouped_key_cardinality_probe_min_input_rows(mut self, rows: u64) -> Self {
         self.exact_grouped_key_cardinality_probe_min_input_rows = rows;
         self
     }
 
-    pub fn with_exact_single_string_key_prepared_max_groups(mut self, groups: u64) -> Self {
-        self.exact_single_string_key_prepared_max_groups = groups;
-        self
-    }
-
+    #[cfg(test)]
     pub fn with_exact_three_key_cardinality_probe_max_input_rows(mut self, rows: u64) -> Self {
         self.exact_three_key_cardinality_probe_max_input_rows = rows;
-        self
-    }
-
-    pub fn with_exact_five_key_cardinality_probe_max_input_rows(mut self, rows: u64) -> Self {
-        self.exact_five_key_cardinality_probe_max_input_rows = rows;
         self
     }
 
@@ -320,11 +285,13 @@ impl AggregateStrategyExecutionOptions {
         self
     }
 
+    #[cfg(test)]
     pub fn with_source_adjacent_prepared_sort_groupby_max_source_read_bytes(mut self, bytes: u64) -> Self {
         self.source_adjacent_prepared_sort_groupby_max_source_read_bytes = bytes;
         self
     }
 
+    #[cfg(test)]
     pub fn with_source_adjacent_prepared_sort_groupby_max_fan_in(mut self, fan_in: u64) -> Self {
         self.source_adjacent_prepared_sort_groupby_max_fan_in = fan_in;
         self
@@ -535,33 +502,6 @@ pub fn aggregate_strategy_capability_decision(
             .join(";"),
     );
     AggregateStrategyCapabilityDecision { selected_strategy, rejected_candidates, facts }
-}
-
-/// Collects aggregate strategy capability facts for grouped aggregate nodes.
-#[doc(hidden)]
-pub fn analyze_aggregate_strategies(plan: &QueryPlan) -> Vec<AggregateStrategyCapability> {
-    plan.nodes()
-        .iter()
-        .filter_map(|node| {
-            let PlanNode::Aggregate(aggregate) = &node.kind else {
-                return None;
-            };
-            if aggregate.spec.group_exprs.is_empty() {
-                return None;
-            }
-            let input_schema = plan.node(aggregate.input)?.output_schema();
-            // Compiled aggregate tasks run single-shot: partial/final state
-            // never crosses a compiled edge (it is merged inside the task),
-            // so strategies that require a partial stage are unavailable here.
-            // The executor re-derives its own internal staging at runtime.
-            let stage = AggregateExecutionStage::Single;
-            Some(AggregateStrategyCapability {
-                node_id: node.id,
-                stage,
-                decision: aggregate_strategy_capability_decision(&aggregate.spec, input_schema, stage),
-            })
-        })
-        .collect()
 }
 
 fn encoded_key_partial_rejected_reason(

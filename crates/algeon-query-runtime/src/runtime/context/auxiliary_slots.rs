@@ -21,8 +21,7 @@ const ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL: Duration = Duration::from_milli
 /// one attempt cannot retain another attempt's share of the global auxiliary
 /// stream pool.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct AttemptAuxiliarySlots {
+pub(crate) struct AttemptAuxiliarySlots {
     device_ordinal: usize,
     capacity: usize,
     state: Mutex<AttemptAuxiliarySlotState>,
@@ -37,14 +36,12 @@ struct AttemptAuxiliarySlotState {
 
 /// RAII ownership of one admitted attempt's auxiliary stream allowance.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct AttemptAuxiliaryPermit {
+pub(crate) struct AttemptAuxiliaryPermit {
     slots: Arc<AttemptAuxiliarySlots>,
 }
 
 impl AttemptAuxiliarySlots {
-    #[doc(hidden)]
-    pub fn new(device_ordinal: usize, capacity: usize) -> Arc<Self> {
+    pub(crate) fn new(device_ordinal: usize, capacity: usize) -> Arc<Self> {
         debug_assert!(capacity > 0, "admission profiles normalize auxiliary slot capacity to at least one");
         Arc::new(Self {
             device_ordinal,
@@ -59,8 +56,7 @@ impl AttemptAuxiliarySlots {
         self.capacity
     }
 
-    #[doc(hidden)]
-    pub fn acquire_with_cancellation(
+    pub(crate) fn acquire_with_cancellation(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
         operation: &'static str,
@@ -68,8 +64,7 @@ impl AttemptAuxiliarySlots {
         self.acquire_inner(Some(cancellation), None, operation)
     }
 
-    #[doc(hidden)]
-    pub fn acquire_with_cancellation_deadline(
+    pub(crate) fn acquire_with_cancellation_deadline(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
         deadline: Instant,
@@ -83,8 +78,7 @@ impl AttemptAuxiliarySlots {
     /// A holder of an attempt auxiliary permit must never block on another
     /// permit of the same attempt, so work that already owns one takes what
     /// is left over instead of waiting for it.
-    #[doc(hidden)]
-    pub fn try_acquire(self: &Arc<Self>, operation: &'static str) -> Result<Option<AttemptAuxiliaryPermit>> {
+    pub(crate) fn try_acquire(self: &Arc<Self>, operation: &'static str) -> Result<Option<AttemptAuxiliaryPermit>> {
         let mut state = self.state.lock().map_err(|_error| {
             QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
                 .with_fact("device_ordinal", self.device_ordinal)
@@ -99,8 +93,7 @@ impl AttemptAuxiliarySlots {
 
     /// Asynchronously acquires one attempt-local auxiliary slot without
     /// parking the caller's Tokio worker while another fragment owns it.
-    #[doc(hidden)]
-    pub async fn acquire_with_cancellation_deadline_async(
+    pub(crate) async fn acquire_with_cancellation_deadline_async(
         self: &Arc<Self>,
         cancellation: &ExecutionCancellation,
         deadline: Instant,

@@ -58,7 +58,7 @@ Per-user category preferences from Mercari US browsing events, October 2023.
 
 Every `cuvs_*` execution relation is a parenthesized `SELECT` subquery. The
 relation remains an explicit planner child, so it can use ordinary session
-tables, views, CTEs, Parquet scans, Iceberg tables, or a preceding SQL result.
+tables, views, CTEs, Parquet scans, or a preceding SQL result.
 Bare table identifiers and quoted table-name strings are not execution inputs.
 
 For metadata-only validation, `gpu_validate_call` instead resolves a named

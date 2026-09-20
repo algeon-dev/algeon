@@ -22,7 +22,7 @@ mod final_merge_policy;
 mod partitioned;
 mod plan;
 mod post_stages;
-pub mod sizing;
+pub(crate) mod sizing;
 mod source_adjacent;
 mod stream;
 
@@ -40,10 +40,7 @@ use partitioned::{
 pub(super) use plan::{BoundedPlan, BoundedUnaryStage, SourceAggregateTopK};
 use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection};
 pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
-use sizing::{
-    partial_aggregate_work_reservation_upper_bound_bytes,
-    statistical_partial_aggregate_work_reservation_upper_bound_bytes,
-};
+use sizing::partial_aggregate_work_reservation_upper_bound_bytes;
 pub(in crate::exec::bounded) use source_adjacent::execute_source_aggregate_with_dispatch;
 pub(in crate::exec::bounded) use stream::{
     execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_source_stream,
@@ -237,7 +234,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    input_reserved_bytes: u64,
+    input_device_bytes: u64,
 ) -> Result<ResidentGpuFrame> {
     if should_execute_datafusion_exact_floating_statistical_aggregate(execution.context(), &aggregate.spec) {
         return execute_compiled_bounded_exact_host_aggregate_from_frame(
@@ -247,10 +244,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
             input_schema,
             output_schema,
             input,
-            input_reserved_bytes,
         );
     }
-    if should_partition_compiled_grouped_aggregate(execution.context(), aggregate, input_reserved_bytes) {
+    if should_partition_compiled_grouped_aggregate(execution.context(), aggregate, input_device_bytes) {
         return execute_compiled_bounded_partitioned_aggregate_from_frame(
             execution,
             node_id,
@@ -258,7 +254,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
             input_schema,
             output_schema,
             input,
-            input_reserved_bytes,
+            input_device_bytes,
         );
     }
 
@@ -291,7 +287,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_fra
     output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
 ) -> Result<ResidentGpuFrame> {
-    let input_reserved_bytes = input.device_bytes();
+    let input_device_bytes = input.device_bytes();
     execute_compiled_bounded_aggregate_from_frame(
         execution,
         node_id,
@@ -299,7 +295,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_fra
         input_schema,
         output_schema,
         input.frame,
-        input_reserved_bytes,
+        input_device_bytes,
     )
 }
 
@@ -310,10 +306,8 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    input_reserved_bytes: u64,
 ) -> Result<ResidentGpuFrame> {
     let stage = "compiled_exact_host_welford_aggregate";
-    let _ = input_reserved_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
@@ -396,15 +390,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_fr
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
 ) -> Result<ResidentGpuFrame> {
-    let input = empty_resident_frame_for_schema(
-        execution,
-        node_id,
-        input_schema,
-        ReservationKind::OperatorOutput,
-        "compiled_aggregate_empty_input",
-        "compiled_aggregate_empty_input",
-    )?;
-    let input_reserved_bytes = input.device_bytes();
+    let input = empty_resident_frame_for_schema(execution, node_id, input_schema)?;
+    let input_device_bytes = input.device_bytes();
     execute_compiled_bounded_aggregate_from_frame(
         execution,
         node_id,
@@ -412,7 +399,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_fr
         input_schema,
         output_schema,
         input.frame,
-        input_reserved_bytes,
+        input_device_bytes,
     )
 }
 
@@ -420,9 +407,6 @@ fn empty_resident_frame_for_schema(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     schema: &ArrowSchemaRef,
-    reservation_kind: ReservationKind,
-    memory_boundary: &'static str,
-    stage: &'static str,
 ) -> Result<ResidentGpuFrame> {
     let arrays = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
     let batch = RecordBatch::try_new_with_options(
@@ -449,18 +433,7 @@ fn empty_resident_frame_for_schema(
     })?;
     let frame = GpuDataFrame::new(frame);
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
-    let _ = (reservation_kind, memory_boundary, stage);
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
-}
-
-pub(in crate::exec::bounded::aggregate) fn release_partials_reverse(mut partials: Vec<CommittedPartial>) {
-    while partials.pop().is_some() {}
-}
-
-pub(in crate::exec::bounded::aggregate) fn release_nested_partials_reverse(mut partitions: Vec<Vec<CommittedPartial>>) {
-    while let Some(partition) = partitions.pop() {
-        release_partials_reverse(partition);
-    }
 }
 
 /// Correlates source-owned partial kernels with the chunk attempt and lane

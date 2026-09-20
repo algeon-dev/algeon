@@ -2,13 +2,12 @@ use std::time::Instant;
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy, CommittedPartial, ExecutionBudgetToken,
-    ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetFile, LocalParquetSource, ParquetReadStrategy,
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetSource, ParquetReadStrategy,
     PartialAggregateInputEvidence, ProjectionNode, Result, ScheduledLocalParquetReadOutput, SourceChunk,
     SourceChunkBatch, attach_chunk_resource_facts, execute_filter_with_budget, execute_partial_aggregate_with_budget,
-    execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    execution::release_committed_partials_reverse, execution_budget_token_for_boundary, is_retryable_chunk_error,
-    is_source_adjacent_grouped_aggregate, observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint,
-    plan_source_chunk_batches, projection_regexp_replace_prepare,
+    execute_projection_with_budget, execute_projection_with_budget_and_prepared, execution_budget_token_for_boundary,
+    is_retryable_chunk_error, is_source_adjacent_grouped_aggregate, observe_device_memory_bytes,
+    partial_aggregate_source_chunk_fingerprint, plan_source_chunk_batches, projection_regexp_replace_prepare,
     read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
 };
 use crate::{
@@ -23,7 +22,6 @@ pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
 ) -> bool {
     bounded.has_source_adjacent_stages()
         && bounded.source.partition_columns.is_empty()
-        && !bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && bounded.source.scan_limit.is_none()
         && bounded
             .source
@@ -47,9 +45,6 @@ pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batches_for_work_w
     chunks: &[SourceChunk],
     work_width: usize,
 ) -> Vec<SourceChunkBatch> {
-    if bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files) {
-        return singleton_source_chunk_batches(chunks);
-    }
     let batching_policy = BoundedSourceBatchingPolicy::default();
     let max_batch_source_read_bytes = batching_policy.source_adjacent_raw_source_batch_target_bytes(
         context.memory_control_policy(),
@@ -98,25 +93,6 @@ pub(in crate::exec::bounded::chunks) fn source_chunk_requires_remote_direct_read
     matches!(chunk.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect)
 }
 
-pub(in crate::exec::bounded::chunks) fn singleton_source_chunk_batches(
-    chunks: &[SourceChunk],
-) -> Vec<SourceChunkBatch> {
-    chunks
-        .iter()
-        .enumerate()
-        .map(|(batch_index, chunk)| SourceChunkBatch {
-            batch_index,
-            chunks: vec![chunk.clone()],
-            estimated_source_read_bytes: chunk
-                .estimated_source_read_bytes
-                .or(chunk.known_row_group_bytes)
-                .or(chunk.estimated_chunk_bytes)
-                .or(chunk.known_file_bytes),
-            source_batching_reason: "source_gate:position_deletes".to_string(),
-        })
-        .collect()
-}
-
 pub(in crate::exec::bounded) struct SourceAdjacentBatchOutput {
     pub(in crate::exec::bounded) partials: Vec<CommittedPartial>,
     pub(in crate::exec::bounded) chunk_count: u64,
@@ -147,7 +123,7 @@ fn execute_source_adjacent_batch_retry(
     };
     let max_attempts = max_retry_attempts.max(1);
     let source = if batch.is_singleton() {
-        read_bounded_chunk_source(execution, bounded.source, &batch.chunks[0], attempt, max_attempts).map_err(|error| {
+        read_bounded_chunk_source(execution, bounded.source, &batch.chunks[0]).map_err(|error| {
             attach_chunk_resource_facts(
                 error,
                 &batch.chunks[0],
@@ -204,7 +180,6 @@ fn execute_source_adjacent_batch_retry(
             let right = match execute_source_adjacent_batch_retry(execution, bounded, right, next_attempt) {
                 Ok(right) => right,
                 Err(error) => {
-                    release_committed_partials_reverse(output.partials);
                     return Err(error);
                 },
             };

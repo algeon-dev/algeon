@@ -30,7 +30,7 @@ fn device_memory_failure_trackers() -> &'static DeviceMemoryFailureTrackerRegist
 /// Per-device allocation-failure counters observed by the device memory
 /// manager failure callback.
 #[derive(Debug, Clone)]
-pub struct DeviceMemoryFailureTracker {
+pub(crate) struct DeviceMemoryFailureTracker {
     inner: Arc<DeviceMemoryFailureTrackerInner>,
 }
 
@@ -67,8 +67,7 @@ pub struct DeviceMemoryFailureReport {
 
 impl DeviceMemoryFailureTracker {
     /// Creates a zeroed tracker for one CUDA device ordinal.
-    #[doc(hidden)]
-    pub fn new(device_ordinal: usize) -> Self {
+    pub(crate) fn new(device_ordinal: usize) -> Self {
         Self {
             inner: Arc::new(DeviceMemoryFailureTrackerInner {
                 device_ordinal,
@@ -90,8 +89,7 @@ impl DeviceMemoryFailureTracker {
     /// creates an unbound candidate only while the process manager is still
     /// uninstalled. This prevents a fresh counter from being substituted for
     /// the callback's original `(device, installation_generation)` owner.
-    #[doc(hidden)]
-    pub fn for_installation_state(
+    pub(crate) fn for_installation_state(
         device_ordinal: usize,
         state: cudf::DeviceMemoryManagerInstallationState,
     ) -> Result<Self> {
@@ -205,8 +203,7 @@ impl DeviceMemoryFailureTracker {
         Ok(trackers.pending.entry(device_ordinal).or_insert_with(|| Self::new(device_ordinal)).clone())
     }
 
-    #[doc(hidden)]
-    pub fn commit_installation_generation(&self, generation: u64) -> Result<()> {
+    pub(crate) fn commit_installation_generation(&self, generation: u64) -> Result<()> {
         self.bind_installation_generation(generation)?;
         let device_ordinal = self.device_ordinal();
         let mut trackers =
@@ -249,8 +246,7 @@ impl DeviceMemoryFailureTracker {
         Ok(())
     }
 
-    #[doc(hidden)]
-    pub fn bind_installation_generation(&self, generation: u64) -> Result<()> {
+    pub(crate) fn bind_installation_generation(&self, generation: u64) -> Result<()> {
         if generation == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::Internal,
@@ -315,8 +311,7 @@ impl DeviceMemoryFailureTracker {
     /// The callback records counters without deciding allocation retry or
     /// reclamation. It must remain allocation-free and lock-free because RMM
     /// invokes it inside allocation failure handling.
-    #[doc(hidden)]
-    pub fn failure_callback(&self) -> Arc<dyn Fn(cudf::DeviceMemoryFailureInfo) + Send + Sync + 'static> {
+    pub(crate) fn failure_callback(&self) -> Arc<dyn Fn(cudf::DeviceMemoryFailureInfo) + Send + Sync + 'static> {
         let tracker = self.clone();
         Arc::new(move |info| {
             if info.source != DeviceMemoryFailureSource::Physical {
@@ -326,14 +321,12 @@ impl DeviceMemoryFailureTracker {
         })
     }
 
-    #[doc(hidden)]
-    pub fn mark_callback_installed(&self) {
+    pub(crate) fn mark_callback_installed(&self) {
         self.inner.callback_installed.store(true, Ordering::Release);
         self.inner.callback_install_unavailable.store(false, Ordering::Release);
     }
 
-    #[doc(hidden)]
-    pub fn mark_callback_install_unavailable(&self) {
+    pub(crate) fn mark_callback_install_unavailable(&self) {
         self.inner.callback_installed.store(false, Ordering::Release);
         self.inner.callback_install_unavailable.store(true, Ordering::Release);
     }
@@ -351,7 +344,7 @@ impl DeviceMemoryFailureTracker {
     }
 
     /// Returns a point-in-time report.
-    pub fn report(&self) -> DeviceMemoryFailureReport {
+    pub(crate) fn report(&self) -> DeviceMemoryFailureReport {
         DeviceMemoryFailureReport {
             device_ordinal: self.inner.device_ordinal,
             callback_installed: self.inner.callback_installed.load(Ordering::Acquire),

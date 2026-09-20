@@ -24,15 +24,18 @@ mod select;
 mod sort_ops;
 
 pub use column_ops::WithColumnExpr;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use concat_ops::trigger_concat_by_name_missing_planned_dtype_for_test;
 pub use concat_ops::{ConcatByNameOptions, SchemaAlignment};
 pub use context::DataFrameExecutionScope;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use fillna_ops::trigger_dataframe_dropna_subset_count_limit_error_for_test;
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
 pub use gpu_record_batch::{
     GpuRecordBatch, HostBatchCursor, HostBatchCursorConfig, PreparedHostBatch, ValidatedFixedSizeListExport,
     ValidatedUniformListExport,
 };
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use gpu_record_batch::{
     fixed_size_list_structural_proof_build_count_for_test, reset_fixed_size_list_structural_proof_build_count_for_test,
 };
@@ -42,8 +45,8 @@ pub use info::{
     InfoDetail,
 };
 pub use io::{
-    JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions, ParquetSourceChunkReadOutput,
-    ParquetSourceReadPreflight, ParquetWriteOptions,
+    MultiParquetReadOptions, ParquetReadOptions, ParquetSourceChunkReadOutput, ParquetSourceReadPreflight,
+    ParquetWriteOptions,
 };
 pub use join::{
     DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
@@ -55,6 +58,7 @@ pub use join::{
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use partition_ops::HashPartitionedDataFrame;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use row_ops::{
     trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
     trigger_dataframe_row_range_start_limit_error_for_test,

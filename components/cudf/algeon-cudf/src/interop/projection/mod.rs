@@ -3,6 +3,7 @@ use super::*;
 mod device;
 mod host;
 mod support;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
 use support::*;

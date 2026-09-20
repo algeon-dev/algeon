@@ -131,27 +131,6 @@ fn prepared_import_duplicate_non_ex_production_apis_are_removed() {
 }
 
 #[test]
-fn arrow_device_entries_use_required_exec_options() {
-    for (function, end_marker) in [
-        ("cudf_arrow_device_column_export", "cudf_status_t cudf_arrow_device_table_export"),
-        ("cudf_arrow_device_table_export", "cudf_status_t cudf_arrow_device_column_import"),
-        ("cudf_arrow_device_column_import", "cudf_status_t cudf_arrow_device_table_import"),
-        ("cudf_arrow_device_table_import", "cudf_arrow_device_schema_destroy"),
-    ] {
-        let body = function_region_by_function_name(ARROW_DEVICE_CPP, function, end_marker);
-        assert!(
-            body.contains("cudf_resolve_required_exec_options(options, &exec)"),
-            "{function} must use the strict execution-options resolver"
-        );
-        assert!(
-            !body.contains("cudf_resolve_exec_options(options"),
-            "{function} must not accept permissive/ambient execution options"
-        );
-        assert!(!body.contains("cudf_make_exec_context"), "{function} must not seed execution from ambient defaults");
-    }
-}
-
-#[test]
 fn arrow_host_entries_use_required_exec_options() {
     let body = function_region(ARROW_HOST_CPP, "cudf_status_t cudf_arrow_host_column_import_ex", "CUDF_RUST_CATCH");
     assert!(

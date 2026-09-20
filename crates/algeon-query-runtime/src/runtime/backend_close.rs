@@ -38,24 +38,20 @@ const CLEANUP_SLICE: Duration = Duration::from_millis(100);
 
 /// Signals the pre-created cleanup coordinator unless construction reaches
 /// publication. This is intentionally armed before the first GPU mutation.
-#[doc(hidden)]
-pub struct ConstructionRollback {
+pub(crate) struct ConstructionRollback {
     coordinator: Option<Arc<CloseCoordinator>>,
 }
 
 impl ConstructionRollback {
-    #[doc(hidden)]
-    pub fn new(coordinator: Arc<CloseCoordinator>) -> Self {
+    pub(crate) fn new(coordinator: Arc<CloseCoordinator>) -> Self {
         Self { coordinator: Some(coordinator) }
     }
 
-    #[doc(hidden)]
-    pub fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.coordinator.take();
     }
 
-    #[doc(hidden)]
-    pub fn attach_cleanup_facts(&mut self, error: QueryError) -> QueryError {
+    pub(crate) fn attach_cleanup_facts(&mut self, error: QueryError) -> QueryError {
         let Some(coordinator) = self.coordinator.take() else {
             return error.with_fact("rollback_cleanup", "not_armed");
         };
@@ -82,11 +78,9 @@ impl Drop for ConstructionRollback {
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct CloseCoordinator {
+pub(crate) struct CloseCoordinator {
     sender: Mutex<Option<mpsc::Sender<()>>>,
-    #[doc(hidden)]
-    pub state: Arc<CloseCompletion>,
+    pub(crate) state: Arc<CloseCompletion>,
     lifecycle: BackendLifecycle,
     join: Mutex<Option<thread::JoinHandle<()>>>,
     process_exit_requested: Arc<AtomicBool>,
@@ -94,8 +88,7 @@ pub struct CloseCoordinator {
 }
 
 impl CloseCoordinator {
-    #[doc(hidden)]
-    pub fn spawn(resource: Arc<ResourceCore>, observation: Arc<ObservationCore>) -> Result<Arc<Self>> {
+    pub(crate) fn spawn(resource: Arc<ResourceCore>, observation: Arc<ObservationCore>) -> Result<Arc<Self>> {
         let (sender, receiver) = mpsc::channel();
         let state = Arc::new(CloseCompletion::new());
         let process_exit_requested = Arc::new(AtomicBool::new(false));
@@ -135,8 +128,7 @@ impl CloseCoordinator {
         Ok(coordinator)
     }
 
-    #[doc(hidden)]
-    pub fn activate_process_exit(self: &Arc<Self>) {
+    pub(crate) fn activate_process_exit(self: &Arc<Self>) {
         let shutdown: Arc<dyn ProcessExitShutdown> = Arc::clone(self) as _;
         let registration = register_cuda_process_exit_shutdown(shutdown);
         *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
@@ -150,8 +142,7 @@ impl CloseCoordinator {
         }
     }
 
-    #[doc(hidden)]
-    pub fn signal(&self) -> bool {
+    pub(crate) fn signal(&self) -> bool {
         let gate_winner = self.lifecycle.close();
         if !gate_winner {
             return false;
@@ -164,8 +155,7 @@ impl CloseCoordinator {
         true
     }
 
-    #[doc(hidden)]
-    pub fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
+    pub(crate) fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
         self.signal();
         let snapshot = self.state.wait_until(deadline, &self.lifecycle)?;
         self.join_after_quiescence()?;
@@ -173,8 +163,7 @@ impl CloseCoordinator {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn worker_join_is_reclaimed_for_test(&self) -> bool {
+    pub(crate) fn worker_join_is_reclaimed_for_test(&self) -> bool {
         self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none()
     }
 
@@ -411,8 +400,7 @@ const PHASE_OBSERVATION_QUIESCENT: u8 = 3;
 const PHASE_FAILED: u8 = 4;
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct CloseCompletion {
+pub(crate) struct CloseCompletion {
     wait: Mutex<CloseWaitState>,
     changed: Condvar,
     deadline_elapsed: AtomicU64,
@@ -441,8 +429,7 @@ enum CleanupPhaseProgress {
 }
 
 impl CloseCompletion {
-    #[doc(hidden)]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             wait: Mutex::new(CloseWaitState { phase: PHASE_OPEN, failure: None }),
             changed: Condvar::new(),
@@ -506,8 +493,7 @@ impl CloseCompletion {
         self.changed.notify_all();
     }
 
-    #[doc(hidden)]
-    pub fn snapshot(&self, lifecycle: &BackendLifecycle) -> GpuBackendCloseSnapshot {
+    pub(crate) fn snapshot(&self, lifecycle: &BackendLifecycle) -> GpuBackendCloseSnapshot {
         let state = self.wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.snapshot_with(state.phase, state.failure.is_some(), lifecycle)
     }
@@ -526,8 +512,11 @@ impl CloseCompletion {
         }
     }
 
-    #[doc(hidden)]
-    pub fn wait_until(&self, deadline: Instant, lifecycle: &BackendLifecycle) -> Result<GpuBackendCloseSnapshot> {
+    pub(crate) fn wait_until(
+        &self,
+        deadline: Instant,
+        lifecycle: &BackendLifecycle,
+    ) -> Result<GpuBackendCloseSnapshot> {
         let mut state = super::deadline::mutex_lock_until(&self.wait, deadline).map_err(|error| match error {
             super::deadline::DeadlineMutexLockError::Poisoned => close_wait_poisoned_error(),
             super::deadline::DeadlineMutexLockError::TimedOut => close_timeout_error(self.snapshot(lifecycle)),
@@ -600,8 +589,7 @@ fn panic_message(panic: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
-#[doc(hidden)]
-pub fn reject_reentrant_observation_close() -> Result<()> {
+pub(crate) fn reject_reentrant_observation_close() -> Result<()> {
     if in_runtime_observation_delivery() {
         return Err(QueryError::new(
             QueryErrorCode::Internal,

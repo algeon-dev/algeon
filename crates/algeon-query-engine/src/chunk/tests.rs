@@ -24,8 +24,7 @@ use crate::{
     runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
     source::{
         CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, LocalParquetFile, LocalParquetSource,
-        ParquetPositionDeleteFile, ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation,
-        ResolvedParquetSource,
+        ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
     },
 };
 
@@ -109,14 +108,6 @@ fn source_from_file(file: LocalParquetFile) -> LocalParquetSource {
 
 fn local_source() -> LocalParquetSource {
     source_from_file(local_source_file())
-}
-
-fn position_delete_file() -> ParquetPositionDeleteFile {
-    ParquetPositionDeleteFile::from_resolved_parquet_source(
-        "delete-0",
-        ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
-    )
-    .unwrap()
 }
 
 fn missing_metadata_source() -> LocalParquetSource {
@@ -500,55 +491,6 @@ fn chunk_planning_prefers_footer_row_counts_over_whole_file_synthetic_count() {
     );
     assert!(plan.chunks.iter().all(|chunk| chunk.source_file_row_group_rows.as_deref() == Some(&[2, 2, 1][..])));
     fs::remove_file(path).unwrap();
-}
-
-#[test]
-fn source_chunk_planning_splits_position_delete_files_into_row_position_chunks() {
-    let file = LocalParquetFile::new("/tmp/position-delete-source.parquet")
-        .with_row_group_bytes(vec![100, 200, 300])
-        .with_projected_row_group_bytes(vec![50, 100, 150], vec![100, 200, 300])
-        .with_pure_filter_row_group_bytes(vec![0, 0, 0], vec![0, 0, 0])
-        .with_row_group_rows(vec![10, 20, 30])
-        .with_position_delete_files(vec![position_delete_file()]);
-    let source = source_from_file(file);
-
-    let plan = plan_local_parquet_source_chunks(
-        NodeId::from_index_for_internal_use(3),
-        &source,
-        SourceChunkPlanningPolicy::for_position_delete_scan_limit(),
-    )
-    .unwrap();
-
-    assert_eq!(plan.chunk_count(), 3);
-    assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
-    assert_eq!(plan.chunks[1].row_group_indexes, vec![1]);
-    assert_eq!(
-        source_chunk_row_position_range(&plan.chunks[1]).unwrap(),
-        Some(SourceChunkRowPositionRange { start: 10, end: 30 })
-    );
-}
-
-#[test]
-fn position_delete_source_scan_limit_does_not_raw_trim_chunk_plan() {
-    let mut source = source_from_file(
-        LocalParquetFile::new("/tmp/position-delete-source.parquet")
-            .with_row_group_bytes(vec![100, 200, 300])
-            .with_projected_row_group_bytes(vec![50, 100, 150], vec![100, 200, 300])
-            .with_pure_filter_row_group_bytes(vec![0, 0, 0], vec![0, 0, 0])
-            .with_row_group_rows(vec![10, 20, 30])
-            .with_position_delete_files(vec![position_delete_file()]),
-    );
-    source.scan_limit = Some(1);
-
-    let plan = plan_local_parquet_source_chunks(
-        NodeId::from_index_for_internal_use(3),
-        &source,
-        SourceChunkPlanningPolicy::for_position_delete_scan_limit(),
-    )
-    .unwrap();
-
-    assert_eq!(plan.chunk_count(), 3);
-    assert!(plan.chunks.iter().all(|chunk| chunk.scan_limit_rows.is_none()));
 }
 
 #[test]

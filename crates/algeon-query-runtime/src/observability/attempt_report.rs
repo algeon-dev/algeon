@@ -110,7 +110,8 @@ pub enum AttemptHealthTransition {
 ///
 /// The source error remains untouched on its returned path. This is only the
 /// bounded, redacted summary that may enter an immutable attempt report.
-pub const MAX_ATTEMPT_FAILURE_TEXT_BYTES: usize = 256;
+pub(crate) const MAX_ATTEMPT_FAILURE_TEXT_BYTES: usize = 256;
+#[cfg(test)]
 const MAX_ATTEMPT_FAILURE_TEXT_INSPECTION_BYTES: usize = 1024;
 const MAX_ATTEMPT_FAILURE_FACTS: usize = 4;
 
@@ -134,7 +135,7 @@ pub enum AttemptFailureStatus {
 }
 
 impl AttemptFailureStatus {
-    pub const fn from_query_error_status(status: QueryErrorStatus) -> Self {
+    pub(crate) const fn from_query_error_status(status: QueryErrorStatus) -> Self {
         match status {
             QueryErrorStatus::Permanent => Self::Permanent,
             QueryErrorStatus::Temporary => Self::Temporary,
@@ -203,7 +204,7 @@ impl AttemptFailureFact {
 
 /// Bounded, UTF-8-safe and redacted diagnostic text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AttemptFailureText {
+pub(crate) struct AttemptFailureText {
     value: String,
     truncated: bool,
     redacted: bool,
@@ -275,7 +276,8 @@ impl<'de> Deserialize<'de> for AttemptFailureText {
 
 impl AttemptFailureText {
     /// Retains only a deterministic safe projection of arbitrary error bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
         let inspected_len = bytes.len().min(MAX_ATTEMPT_FAILURE_TEXT_INSPECTION_BYTES);
         let inspected = &bytes[..inspected_len];
         let invalid_utf8 = std::str::from_utf8(inspected).is_err();
@@ -294,15 +296,18 @@ impl AttemptFailureText {
         &self.value
     }
 
-    pub const fn truncated(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn truncated(&self) -> bool {
         self.truncated
     }
 
-    pub const fn redacted(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn redacted(&self) -> bool {
         self.redacted
     }
 
-    pub const fn invalid_utf8(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn invalid_utf8(&self) -> bool {
         self.invalid_utf8
     }
 }
@@ -334,6 +339,7 @@ fn looks_like_sql_statement(value: &str) -> bool {
     })
 }
 
+#[cfg(test)]
 fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
     if value.len() <= max_bytes {
         return (value.to_string(), false);
@@ -525,7 +531,7 @@ impl AttemptFailureSummary {
         self.operation
     }
 
-    pub fn text(&self) -> Option<&AttemptFailureText> {
+    pub(crate) fn text(&self) -> Option<&AttemptFailureText> {
         self.text.as_ref()
     }
 
@@ -571,7 +577,7 @@ impl CleanupFailureSummary {
         }
     }
 
-    pub const fn stream_synchronization_failed() -> Self {
+    pub(crate) const fn stream_synchronization_failed() -> Self {
         Self {
             phase: CleanupFailurePhase::QueryServiceStreamSynchronization,
             failure: AttemptFailureSummary::control(AttemptFailureCode::StreamSynchronizationFailed),
@@ -579,7 +585,7 @@ impl CleanupFailureSummary {
         }
     }
 
-    pub const fn callback_abandoned() -> Self {
+    pub(crate) const fn callback_abandoned() -> Self {
         Self {
             phase: CleanupFailurePhase::QueryServiceCallbackAbandoned,
             failure: AttemptFailureSummary::control(AttemptFailureCode::CleanupCallbackAbandoned),
@@ -599,8 +605,7 @@ impl CleanupFailureSummary {
         self.complete
     }
 
-    #[doc(hidden)]
-    pub fn mark_incomplete(&mut self) {
+    pub(crate) fn mark_incomplete(&mut self) {
         self.complete = false;
     }
 }
@@ -615,20 +620,20 @@ impl CleanupFailureSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptFinalDomainUsage {
     pub domain_id: u64,
-    pub active: bool,
-    pub active_members: u64,
-    pub ceiling_bytes: u64,
-    pub allocation_limit_bytes: u64,
+    pub(crate) active: bool,
+    pub(crate) active_members: u64,
+    pub(crate) ceiling_bytes: u64,
+    pub(crate) allocation_limit_bytes: u64,
     pub current_bytes: u64,
     pub peak_bytes: u64,
-    pub total_bytes: u64,
-    pub current_aligned_bytes: u64,
+    pub(crate) total_bytes: u64,
+    pub(crate) current_aligned_bytes: u64,
     pub peak_aligned_bytes: u64,
-    pub total_allocations: u64,
-    pub current_allocations: u64,
-    pub peak_allocations: u64,
-    pub failed_allocation_count: u64,
-    pub largest_failed_allocation_bytes: u64,
+    pub(crate) total_allocations: u64,
+    pub(crate) current_allocations: u64,
+    pub(crate) peak_allocations: u64,
+    pub(crate) failed_allocation_count: u64,
+    pub(crate) largest_failed_allocation_bytes: u64,
 }
 
 impl From<cudf::QueryMemoryDomainUsage> for AttemptFinalDomainUsage {
@@ -662,7 +667,7 @@ impl From<cudf::QueryMemoryDomainUsage> for AttemptFinalDomainUsage {
 /// entire backend rather than guessing a device owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AttemptFaultIsolation {
+pub(crate) enum AttemptFaultIsolation {
     DeviceLocal,
     Unknown,
 }
@@ -673,7 +678,7 @@ pub enum AttemptFaultIsolation {
 /// not infer a CUDA status from a later runtime query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AttemptTeardownHealth {
+pub(crate) enum AttemptTeardownHealth {
     Completed,
     StreamSynchronizationFailed,
     CallbackAbandoned,
@@ -683,7 +688,7 @@ pub enum AttemptTeardownHealth {
 /// the terminal release commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AttemptDeviceHealthStatus {
+pub(crate) enum AttemptDeviceHealthStatus {
     Healthy,
     Unhealthy,
 }
@@ -695,7 +700,7 @@ pub enum AttemptDeviceHealthStatus {
 /// classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AttemptNativeFaultKind {
+pub(crate) enum AttemptNativeFaultKind {
     CurrentDeviceQueryFailed,
     OwnerDeviceEntryFailed,
     AmbientDeviceRestoreFailed,
@@ -711,25 +716,25 @@ pub enum AttemptNativeFaultKind {
 /// parses display text or samples CUDA after the original native failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AttemptNativeStatus {
+pub(crate) enum AttemptNativeStatus {
     Cudf(u32),
     Cuda(i32),
 }
 
 /// First structured native fault retained by cuDF's device-health authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttemptNativeFault {
-    pub kind: AttemptNativeFaultKind,
-    pub status: Option<AttemptNativeStatus>,
+pub(crate) struct AttemptNativeFault {
+    pub(crate) kind: AttemptNativeFaultKind,
+    pub(crate) status: Option<AttemptNativeStatus>,
 }
 
 /// Terminal health counters from the authoritative cuDF device record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AttemptDeviceHealth {
-    pub status: AttemptDeviceHealthStatus,
-    pub fault_count: u64,
-    pub rejected_operation_count: u64,
-    pub quarantined_teardown_count: u64,
+pub(crate) struct AttemptDeviceHealth {
+    pub(crate) status: AttemptDeviceHealthStatus,
+    pub(crate) fault_count: u64,
+    pub(crate) rejected_operation_count: u64,
+    pub(crate) quarantined_teardown_count: u64,
 }
 
 /// Bounded cuDF/cuGraph native-fault evidence assembled by the release commit.
@@ -740,12 +745,12 @@ pub struct AttemptDeviceHealth {
 /// instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptNativeFaultEvidence {
-    pub isolation: AttemptFaultIsolation,
-    pub teardown_health: AttemptTeardownHealth,
+    pub(crate) isolation: AttemptFaultIsolation,
+    pub(crate) teardown_health: AttemptTeardownHealth,
     /// No device health sample is retained when cleanup lost isolation before
     /// the engine could establish a truthful device-local observation.
-    pub device_health: Option<AttemptDeviceHealth>,
-    pub first_fault: Option<AttemptNativeFault>,
+    pub(crate) device_health: Option<AttemptDeviceHealth>,
+    pub(crate) first_fault: Option<AttemptNativeFault>,
 }
 
 /// How one bounded resource-evidence field was obtained.
@@ -780,19 +785,19 @@ pub struct AttemptEvidenceField<T> {
 }
 
 impl<T> AttemptEvidenceField<T> {
-    pub const fn attempt_exact(value: T) -> Self {
+    pub(crate) const fn attempt_exact(value: T) -> Self {
         Self { provenance: AttemptEvidenceProvenance::AttemptExact, value: Some(value) }
     }
 
-    pub const fn device_snapshot(value: T) -> Self {
+    pub(crate) const fn device_snapshot(value: T) -> Self {
         Self { provenance: AttemptEvidenceProvenance::DeviceSnapshot, value: Some(value) }
     }
 
-    pub const fn sampled_at_terminal_boundary(value: T) -> Self {
+    pub(crate) const fn sampled_at_terminal_boundary(value: T) -> Self {
         Self { provenance: AttemptEvidenceProvenance::SampledAtTerminalBoundary, value: Some(value) }
     }
 
-    pub const fn unavailable() -> Self {
+    pub(crate) const fn unavailable() -> Self {
         Self { provenance: AttemptEvidenceProvenance::Unavailable, value: None }
     }
 }
@@ -809,8 +814,8 @@ pub struct AttemptTimedDomainUsage {
     /// Query-relative monotonic time recorded from the attempt clock while
     /// sampling the usage. This is intentionally separate from the outcome
     /// terminal timestamp and from the post-cleanup sample time.
-    pub sampled_ns: u64,
-    pub usage: AttemptFinalDomainUsage,
+    pub(crate) sampled_ns: u64,
+    pub(crate) usage: AttemptFinalDomainUsage,
     /// Kept separate from logical usage so physical pool pages never widen the grant.
     pub pool_usage: Option<AttemptAllocatorPoolUsage>,
 }
@@ -828,7 +833,7 @@ pub enum AttemptAllocatorEventSource {
 /// Closed allocator callback action copied from one allocator-ring record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AttemptAllocatorEventAction {
+pub(crate) enum AttemptAllocatorEventAction {
     Decline,
     Retry,
     TrimAndRetry,
@@ -839,9 +844,9 @@ pub enum AttemptAllocatorEventAction {
 /// Bounded async-pool counters copied from one allocator-ring record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAllocatorPoolUsage {
-    pub reserved_current_bytes: u64,
+    pub(crate) reserved_current_bytes: u64,
     pub reserved_high_bytes: u64,
-    pub used_current_bytes: u64,
+    pub(crate) used_current_bytes: u64,
     pub used_high_bytes: u64,
 }
 
@@ -854,24 +859,24 @@ pub struct AttemptAllocatorPoolUsage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAllocatorEvent {
     pub sequence: u64,
-    pub monotonic_time_ns: AttemptEvidenceField<u64>,
+    pub(crate) monotonic_time_ns: AttemptEvidenceField<u64>,
     pub requested_bytes: u64,
     pub source: AttemptAllocatorEventSource,
-    pub action: AttemptEvidenceField<AttemptAllocatorEventAction>,
-    pub callback_attempt: u32,
-    pub trim_retry_count: u32,
-    pub pool_usage: AttemptEvidenceField<AttemptAllocatorPoolUsage>,
+    pub(crate) action: AttemptEvidenceField<AttemptAllocatorEventAction>,
+    pub(crate) callback_attempt: u32,
+    pub(crate) trim_retry_count: u32,
+    pub(crate) pool_usage: AttemptEvidenceField<AttemptAllocatorPoolUsage>,
 }
 
 /// A device-level allocator sample which was deliberately not attributed to
 /// the attempt. It is diagnostic context only and does not establish cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptUnattributedAllocatorEvent {
-    pub device_ordinal: usize,
+    pub(crate) device_ordinal: usize,
     /// Query-relative monotonic time at which the release commit sampled this
     /// retained ring record.
-    pub sampled_ns: u64,
-    pub event: AttemptAllocatorEvent,
+    pub(crate) sampled_ns: u64,
+    pub(crate) event: AttemptAllocatorEvent,
 }
 
 /// One bounded, truthful resource-evidence block committed with an admitted
@@ -883,31 +888,31 @@ pub struct AttemptUnattributedAllocatorEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptResourceEvidence {
     pub ledger_sequence: AttemptEvidenceField<u64>,
-    pub ledger_sample_ns: AttemptEvidenceField<u64>,
-    pub configured_limit_bytes: AttemptEvidenceField<u64>,
-    pub headroom_bytes: AttemptEvidenceField<u64>,
-    pub backend_reserve_bytes: AttemptEvidenceField<u64>,
-    pub managed_capacity_bytes: AttemptEvidenceField<u64>,
-    pub live_grants_bytes: AttemptEvidenceField<u64>,
-    pub resident_owner_bytes: AttemptEvidenceField<u64>,
-    pub protected_slot: AttemptEvidenceField<bool>,
-    pub protected_reserve_bytes: AttemptEvidenceField<u64>,
+    pub(crate) ledger_sample_ns: AttemptEvidenceField<u64>,
+    pub(crate) configured_limit_bytes: AttemptEvidenceField<u64>,
+    pub(crate) headroom_bytes: AttemptEvidenceField<u64>,
+    pub(crate) backend_reserve_bytes: AttemptEvidenceField<u64>,
+    pub(crate) managed_capacity_bytes: AttemptEvidenceField<u64>,
+    pub(crate) live_grants_bytes: AttemptEvidenceField<u64>,
+    pub(crate) resident_owner_bytes: AttemptEvidenceField<u64>,
+    pub(crate) protected_slot: AttemptEvidenceField<bool>,
+    pub(crate) protected_reserve_bytes: AttemptEvidenceField<u64>,
     pub cache_evictable_resident_bytes: AttemptEvidenceField<u64>,
     pub cache_pinned_in_use_bytes: AttemptEvidenceField<u64>,
-    pub active_attempt_count: AttemptEvidenceField<u64>,
+    pub(crate) active_attempt_count: AttemptEvidenceField<u64>,
     pub grant_id: AttemptEvidenceField<u64>,
-    pub grant_cap_bytes: AttemptEvidenceField<u64>,
+    pub(crate) grant_cap_bytes: AttemptEvidenceField<u64>,
     pub domain_id: AttemptEvidenceField<u64>,
-    pub domain_cap_bytes: AttemptEvidenceField<u64>,
+    pub(crate) domain_cap_bytes: AttemptEvidenceField<u64>,
     pub outcome_terminal_usage: AttemptEvidenceField<AttemptTimedDomainUsage>,
-    pub post_cleanup_usage: AttemptEvidenceField<AttemptTimedDomainUsage>,
+    pub(crate) post_cleanup_usage: AttemptEvidenceField<AttemptTimedDomainUsage>,
     pub allocator_event: AttemptEvidenceField<AttemptAllocatorEvent>,
     pub unattributed_device_allocator_event: AttemptEvidenceField<AttemptUnattributedAllocatorEvent>,
 }
 
 impl AttemptResourceEvidence {
     /// Starts a block with every non-derivable value explicitly unavailable.
-    pub const fn unavailable() -> Self {
+    pub(crate) const fn unavailable() -> Self {
         Self {
             ledger_sequence: AttemptEvidenceField::unavailable(),
             ledger_sample_ns: AttemptEvidenceField::unavailable(),
@@ -941,8 +946,7 @@ impl AttemptResourceEvidence {
 /// that observes the cleanup result and returns (or retains) capacity. The
 /// attempt owner projects this value into [`QueryAttemptReport`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct AttemptTerminalCommit {
+pub(crate) struct AttemptTerminalCommit {
     capacity_disposition: AttemptCapacityDisposition,
     final_domain_usage: Option<AttemptFinalDomainUsage>,
     health_transition: AttemptHealthTransition,
@@ -955,8 +959,7 @@ pub struct AttemptTerminalCommit {
 /// set captured at admission. This is internal finalizer input rather than a
 /// second scheduler decision: it only gates retry advice in the sealed report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AttemptAlternateDeviceEligibility {
+pub(crate) enum AttemptAlternateDeviceEligibility {
     NotApplicable,
     Eligible,
     NoEligibleAlternate,
@@ -964,8 +967,7 @@ pub enum AttemptAlternateDeviceEligibility {
 }
 
 impl AttemptTerminalCommit {
-    #[doc(hidden)]
-    pub const fn new(
+    pub(crate) const fn new(
         capacity_disposition: AttemptCapacityDisposition,
         final_domain_usage: Option<AttemptFinalDomainUsage>,
         health_transition: AttemptHealthTransition,
@@ -982,16 +984,14 @@ impl AttemptTerminalCommit {
 
     /// Adds the sole terminal native-health observation from the owning
     /// release commit. The finalizer remains the only report producer.
-    #[doc(hidden)]
-    pub const fn with_native_fault_evidence(mut self, evidence: AttemptNativeFaultEvidence) -> Self {
+    pub(crate) const fn with_native_fault_evidence(mut self, evidence: AttemptNativeFaultEvidence) -> Self {
         self.native_fault_evidence = Some(evidence);
         self
     }
 
     /// Adds the sole bounded resource-evidence block from the owning release
     /// commit. The finalizer remains the only report producer.
-    #[doc(hidden)]
-    pub const fn with_resource_evidence(mut self, evidence: AttemptResourceEvidence) -> Self {
+    pub(crate) const fn with_resource_evidence(mut self, evidence: AttemptResourceEvidence) -> Self {
         self.resource_evidence = Some(evidence);
         self
     }
@@ -999,44 +999,39 @@ impl AttemptTerminalCommit {
     /// Adds the one post-quarantine eligibility result taken from the frozen
     /// compatible-device set. A new admission still owns its own placement;
     /// this value never reserves or selects an alternate device.
-    #[doc(hidden)]
-    pub const fn with_alternate_device_eligibility(mut self, eligibility: AttemptAlternateDeviceEligibility) -> Self {
+    pub(crate) const fn with_alternate_device_eligibility(
+        mut self,
+        eligibility: AttemptAlternateDeviceEligibility,
+    ) -> Self {
         self.alternate_device_eligibility = eligibility;
         self
     }
 
-    #[doc(hidden)]
-    pub const fn capacity_disposition(self) -> AttemptCapacityDisposition {
+    pub(crate) const fn capacity_disposition(self) -> AttemptCapacityDisposition {
         self.capacity_disposition
     }
 
-    #[doc(hidden)]
-    pub const fn final_domain_usage(self) -> Option<AttemptFinalDomainUsage> {
+    pub(crate) const fn final_domain_usage(self) -> Option<AttemptFinalDomainUsage> {
         self.final_domain_usage
     }
 
-    #[doc(hidden)]
-    pub const fn health_transition(self) -> AttemptHealthTransition {
+    pub(crate) const fn health_transition(self) -> AttemptHealthTransition {
         self.health_transition
     }
 
-    #[doc(hidden)]
-    pub const fn native_fault_evidence(self) -> Option<AttemptNativeFaultEvidence> {
+    pub(crate) const fn native_fault_evidence(self) -> Option<AttemptNativeFaultEvidence> {
         self.native_fault_evidence
     }
 
-    #[doc(hidden)]
-    pub const fn resource_evidence(self) -> Option<AttemptResourceEvidence> {
+    pub(crate) const fn resource_evidence(self) -> Option<AttemptResourceEvidence> {
         self.resource_evidence
     }
 
-    #[doc(hidden)]
-    pub const fn alternate_device_eligibility(self) -> AttemptAlternateDeviceEligibility {
+    pub(crate) const fn alternate_device_eligibility(self) -> AttemptAlternateDeviceEligibility {
         self.alternate_device_eligibility
     }
 
-    #[doc(hidden)]
-    pub const fn has_consistent_capacity_health_transition(self) -> bool {
+    pub(crate) const fn has_consistent_capacity_health_transition(self) -> bool {
         matches!(
             (self.capacity_disposition, self.health_transition),
             (AttemptCapacityDisposition::Released, AttemptHealthTransition::HealthyReuse)
@@ -1046,8 +1041,7 @@ impl AttemptTerminalCommit {
         )
     }
 
-    #[doc(hidden)]
-    pub const fn is_admitted_cleanup_commit(self) -> bool {
+    pub(crate) const fn is_admitted_cleanup_commit(self) -> bool {
         !matches!(self.capacity_disposition, AttemptCapacityDisposition::NotAdmitted)
             && self.has_consistent_capacity_health_transition()
     }
@@ -1209,8 +1203,7 @@ impl AttemptRetryAdvice {
     /// report. This consumes only closed report facts and terminal evidence;
     /// it deliberately never turns a coarse temporary error status or an
     /// arbitrary error message into a retry recommendation.
-    #[doc(hidden)]
-    pub fn from_sealed_attempt(
+    pub(crate) fn from_sealed_attempt(
         outcome: &RuntimeTerminalOutcome,
         primary_failure: Option<&AttemptFailureSummary>,
         capacity_disposition: AttemptCapacityDisposition,
@@ -1332,8 +1325,7 @@ fn has_proven_device_local_fault(
 /// a conservative quarantine. The release finalizer and sealed report share
 /// this predicate so alternate eligibility cannot be calculated for weaker
 /// evidence than the report will accept.
-#[doc(hidden)]
-pub fn has_proven_device_local_fault_evidence(evidence: &AttemptNativeFaultEvidence) -> bool {
+pub(crate) fn has_proven_device_local_fault_evidence(evidence: &AttemptNativeFaultEvidence) -> bool {
     if evidence.isolation != AttemptFaultIsolation::DeviceLocal {
         return false;
     }
@@ -1667,8 +1659,7 @@ impl RuntimeTerminalOutcome {
     /// terminal native error. Ordinary caller cancellation intentionally
     /// remains a text-free control outcome, while an expired deadline retains
     /// its stable reason beside the same `Cancelled` terminal outcome.
-    #[doc(hidden)]
-    pub fn primary_failure_from_query_error(
+    pub(crate) fn primary_failure_from_query_error(
         error: &QueryError,
         operation: AttemptFailureOperation,
     ) -> Option<AttemptFailureSummary> {
@@ -1678,16 +1669,14 @@ impl RuntimeTerminalOutcome {
         }
     }
 
-    #[doc(hidden)]
-    pub const fn from_primary_failure(summary: &AttemptFailureSummary) -> Self {
+    pub(crate) const fn from_primary_failure(summary: &AttemptFailureSummary) -> Self {
         match summary.code() {
             AttemptFailureCode::Cancelled => Self::Cancelled,
             _ => Self::failed(summary),
         }
     }
 
-    #[doc(hidden)]
-    pub fn fallback_failure_summary(&self) -> Option<AttemptFailureSummary> {
+    pub(crate) fn fallback_failure_summary(&self) -> Option<AttemptFailureSummary> {
         match self {
             Self::Succeeded => None,
             Self::Failed { error_code, error_status } => Some(AttemptFailureSummary {

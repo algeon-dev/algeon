@@ -12,9 +12,8 @@ use super::{
     lower_join_residual_predicate, materialize_bounded_join_leaf_local_parquet_source_stream,
     materialize_compiled_keyed_equality_join_indices_with_preflight, observe_device_memory_bytes,
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
-    record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame,
-    release_streamed_join_outputs_reverse, residual_input_columns, side_metric,
-    stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
+    record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame, residual_input_columns,
+    side_metric, stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
     unsupported_bounded_shape, validate_executable_join_subset,
 };
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
@@ -200,7 +199,6 @@ pub(super) fn release_partitioned_join_side(side: PartitionedJoinSide) {
 pub(super) fn slice_partition_join_side_range(
     execution: &mut BoundedExecutionAttempt<'_>,
     side: JoinSide,
-    build_side: JoinSide,
     input: &PartitionedJoinSide,
     partition: usize,
     range: PartitionedJoinRowRange,
@@ -216,7 +214,6 @@ pub(super) fn slice_partition_join_side_range(
         .with_fact("range_offset", range.offset)
         .with_fact("range_rows", range.len));
     }
-    let _ = build_side;
     if matches!(input, PartitionedJoinSide::Split { .. }) && range.offset == 0 && range.len == partition_len {
         // A split partition already is the whole join input for this partition;
         // sharing its columns avoids one partition-sized copy per probe chunk.

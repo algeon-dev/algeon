@@ -2,9 +2,9 @@
 
 Algeon's examples, documentation, and demo benchmarks query these
 datasets. They are real public data, too large to version, and kept apart from
-the unit-test corpora (`fixture/graph/cugraph/`, `fixture/tests/`), the
+the unit-test corpora (`fixture/graph/cugraph/`, `fixture/tests/`) and the
 benchmark generators (`fixture/tpc-h/`, `fixture/tpc-ds/`, `fixture/clickbench/`,
-`fixture/graph/rmat_generate.py`), and the E2E stacks (`fixture/iceberg-local/`).
+`fixture/graph/rmat_generate.py`).
 
 | Dataset | Upstream | Parquet tables | Converter | Consumers |
 | :--- | :--- | :--- | :--- | :--- |

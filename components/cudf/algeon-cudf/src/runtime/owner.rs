@@ -8,7 +8,6 @@ use super::{
     ExecutionOverrides,
     affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeLeaseAnchor, RuntimeLeaseOwner},
     binding_extension::{BindingExtensionInitError, BindingExtensionLease},
-    boundary::{BoundaryObserver, BoundaryObserverRef},
     budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
     device_guard::{DeviceEntryGuard, DeviceGuard},
@@ -129,7 +128,6 @@ pub struct RuntimeBuilder {
     stream: Option<CudaStream>,
     mr_selection: MemoryResourceSelection,
     device: Option<DeviceId>,
-    boundary_observer: Option<BoundaryObserverRef>,
 }
 
 enum MemoryResourceSelection {
@@ -140,12 +138,7 @@ enum MemoryResourceSelection {
 
 impl Default for RuntimeBuilder {
     fn default() -> Self {
-        Self {
-            stream: None,
-            mr_selection: MemoryResourceSelection::DeviceMemoryManager,
-            device: None,
-            boundary_observer: None,
-        }
+        Self { stream: None, mr_selection: MemoryResourceSelection::DeviceMemoryManager, device: None }
     }
 }
 
@@ -853,9 +846,11 @@ impl Runtime {
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_retained_lifetime_count(&self) -> usize {
         self.domain.debug_retained_lifetime_count()
     }
@@ -949,17 +944,6 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Attach an opt-in boundary diagnostics observer to this runtime.
-    ///
-    /// The observer is inherited by objects created through the runtime and by
-    /// same-device execution domains derived from borrowed stream or
-    /// memory-resource overrides. It receives successful host/device and
-    /// interop boundary observations synchronously.
-    pub fn with_boundary_observer(mut self, observer: impl BoundaryObserver) -> Self {
-        self.boundary_observer = Some(Arc::new(observer));
-        self
-    }
-
     /// Build a runtime with one explicit retained provenance bundle.
     ///
     /// If [`with_device`](Self::with_device) was called, resources are created
@@ -981,7 +965,7 @@ impl RuntimeBuilder {
     ///   on different devices.
     pub fn build(self) -> Result<Runtime> {
         let device = self.resolve_device()?;
-        let RuntimeBuilder { stream, mr_selection, boundary_observer, .. } = self;
+        let RuntimeBuilder { stream, mr_selection, .. } = self;
 
         // Temporarily switch to the target device so that any auto-created
         // stream or memory resource lands on the correct GPU.
@@ -999,7 +983,7 @@ impl RuntimeBuilder {
             },
             MemoryResourceSelection::DeviceMemoryManager => device_manager.resource().clone(),
         };
-        let domain = ExecutionDomain::from_handles_on_device(device, stream, mr, boundary_observer)?;
+        let domain = ExecutionDomain::from_handles_on_device(device, stream, mr)?;
         Ok(Runtime { domain, lease_owner: RuntimeLeaseOwner::new() })
     }
 

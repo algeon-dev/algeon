@@ -46,17 +46,15 @@ use query_engine::{
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, KvikioCompatModeStatus,
-        MemoryControlPolicy, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
-        QueueBounds, SourceSchedulerPolicy,
+        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
+        MemoryControlPolicy, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
+        SourceSchedulerPolicy,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
-        MissingColumn, ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource,
-        SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+        MissingColumn, PartitionColumn, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
     },
 };
 #[cfg(feature = "cugraph")]
@@ -139,14 +137,6 @@ impl BackendTestPolicy {
     }
 }
 
-fn non_gds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
-}
-
 fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCore {
     static BACKEND: OnceLock<(BackendTestPolicy, GpuBackendCore)> = OnceLock::new();
     let (installed_policy, backend) = BACKEND.get_or_init(|| {
@@ -174,7 +164,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
                 .with_source_work_per_attempt(policy.source_work_per_attempt),
             GpuMemoryOwnership::WholeDeviceExclusive,
         );
-        let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
+        let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller))
             .build()
             .expect("native execution suite backend");
         (policy, backend)

@@ -5,6 +5,10 @@ readonly source_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/check_n
 readonly test_root="$(mktemp -d)"
 trap 'rm -rf "${test_root}"' EXIT
 
+# Fixture commits must not depend on the developer's signing setup; a signing
+# key that needs a passphrase fails without a terminal.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false
+
 git_configure() {
   git -C "$1" config user.email test@example.invalid
   git -C "$1" config user.name 'Native Source Policy Test'

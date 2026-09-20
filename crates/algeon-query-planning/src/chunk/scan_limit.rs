@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    source::{LocalParquetFile, LocalParquetSource, parquet_source_path_fact},
+    source::{LocalParquetSource, parquet_source_path_fact},
 };
 
 #[doc(hidden)]
@@ -18,12 +18,6 @@ pub fn apply_source_scan_limit_to_chunks(
     let Some(scan_limit) = source.scan_limit else {
         return Ok(chunks);
     };
-    if source.files.iter().any(LocalParquetFile::has_row_delete_files) {
-        // Raw-row prefix trimming can under-produce visible rows when the
-        // prefix is deleted. Execution must apply row deletes per chunk
-        // before deciding whether a scan limit is satisfied.
-        return Ok(chunks);
-    }
     if chunks.is_empty() {
         return Ok(chunks);
     }
@@ -72,8 +66,7 @@ pub fn apply_source_scan_limit_to_chunks(
     Ok(limited)
 }
 
-#[doc(hidden)]
-pub fn scan_limited_chunk_prefix(
+pub(crate) fn scan_limited_chunk_prefix(
     source: &LocalParquetSource,
     chunk: SourceChunk,
     keep_rows: u64,
@@ -105,8 +98,7 @@ pub fn scan_limited_chunk_prefix(
     ))
 }
 
-#[doc(hidden)]
-pub fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(Vec<usize>, u64)> {
+pub(crate) fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(Vec<usize>, u64)> {
     let row_group_rows = chunk.source_file_row_group_rows.as_ref().ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -161,8 +153,7 @@ pub fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Resul
     .with_fact("selected_rows", selected_rows))
 }
 
-#[doc(hidden)]
-pub fn rewrite_scan_limited_chunk_selection(
+pub(crate) fn rewrite_scan_limited_chunk_selection(
     source: &LocalParquetSource,
     mut chunk: SourceChunk,
     selected_row_groups: Vec<usize>,
@@ -209,22 +200,22 @@ pub fn rewrite_scan_limited_chunk_selection(
     chunk
 }
 
-#[doc(hidden)]
-pub fn sum_selected_row_group_values(values: Option<&Vec<u64>>, row_groups: &[usize]) -> Option<u64> {
+pub(crate) fn sum_selected_row_group_values(values: Option<&Vec<u64>>, row_groups: &[usize]) -> Option<u64> {
     let values = values?;
     row_groups.iter().try_fold(0u64, |total, row_group| values.get(*row_group)?.checked_add(total))
 }
 
-#[doc(hidden)]
-pub fn scan_limited_proportional_file_bytes(chunk: &SourceChunk, selected_row_group_count: usize) -> Option<u64> {
+pub(crate) fn scan_limited_proportional_file_bytes(
+    chunk: &SourceChunk,
+    selected_row_group_count: usize,
+) -> Option<u64> {
     if selected_row_group_count == 0 {
         return Some(0);
     }
     proportional_bytes(chunk.known_file_bytes, selected_row_group_count, source_file_row_group_count_basis(chunk))
 }
 
-#[doc(hidden)]
-pub fn source_file_row_group_count_basis(chunk: &SourceChunk) -> usize {
+pub(crate) fn source_file_row_group_count_basis(chunk: &SourceChunk) -> usize {
     chunk
         .source_file_row_group_rows
         .as_ref()

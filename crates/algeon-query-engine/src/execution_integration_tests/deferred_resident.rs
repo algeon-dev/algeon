@@ -12,27 +12,7 @@ fn shared_roles_fixture() -> (plan::QueryPlan, Arc<ArrowSchema>) {
         .with_row_groups(vec![0])
         .with_row_group_rows(vec![100])
         .with_row_group_bytes(vec![4_096])
-        .with_projected_row_group_bytes(vec![4_096], vec![4_096])
-        .with_variable_width_payload_evidence(BTreeMap::from([
-            (
-                0,
-                parquet_stats::ParquetVariableWidthPayloadEvidence::new(
-                    0,
-                    vec![0],
-                    400,
-                    parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
-                ),
-            ),
-            (
-                1,
-                parquet_stats::ParquetVariableWidthPayloadEvidence::new(
-                    1,
-                    vec![0],
-                    800,
-                    parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
-                ),
-            ),
-        ]));
+        .with_projected_row_group_bytes(vec![4_096], vec![4_096]);
     let mut builder = plan::QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![file],
@@ -72,27 +52,7 @@ fn shared_two_join_fixture() -> (
         .with_row_groups(vec![0])
         .with_row_group_rows(vec![6])
         .with_row_group_bytes(vec![512])
-        .with_projected_row_group_bytes(vec![512], vec![512])
-        .with_variable_width_payload_evidence(BTreeMap::from([
-            (
-                0,
-                parquet_stats::ParquetVariableWidthPayloadEvidence::new(
-                    0,
-                    vec![0],
-                    6,
-                    parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
-                ),
-            ),
-            (
-                1,
-                parquet_stats::ParquetVariableWidthPayloadEvidence::new(
-                    1,
-                    vec![0],
-                    6,
-                    parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
-                ),
-            ),
-        ]));
+        .with_projected_row_group_bytes(vec![512], vec![512]);
     let mut producer_builder = QueryPlanBuilder::new();
     let similarity = producer_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![similarity_file],

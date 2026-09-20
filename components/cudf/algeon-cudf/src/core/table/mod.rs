@@ -4,6 +4,7 @@
 
 mod errors;
 mod owned;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 mod view;
 

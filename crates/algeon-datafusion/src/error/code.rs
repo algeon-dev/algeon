@@ -78,6 +78,13 @@ pub enum ErrorCode {
     /// A bounded host-staging boundary exceeded its configured cumulative byte
     /// ceiling before GPU admission or a device-to-host copy.
     HostStagingLimitExceeded,
+    /// DataFusion's host memory pool rejected a reservation.
+    ///
+    /// This is a temporary resource condition of the host-side pool only.
+    /// Device memory is governed by the query domain allocator and reports
+    /// through [`Self::QueryMemoryLimitExceeded`], [`Self::DeviceOutOfMemory`],
+    /// and [`Self::DeviceAllocationFailed`].
+    HostMemoryExhausted,
     /// cuDF reported a temporary dependency/runtime failure.
     CudfTemporaryFailure,
     /// cuDF reported a persistent dependency/runtime failure.
@@ -161,6 +168,7 @@ impl ErrorCode {
         Self::SizeOverflow,
         Self::HostMaterializationLimitExceeded,
         Self::HostStagingLimitExceeded,
+        Self::HostMemoryExhausted,
         Self::CudfTemporaryFailure,
         Self::CudfPersistentFailure,
         Self::CudfDependencyFailure,
@@ -219,23 +227,24 @@ impl ErrorCode {
             Self::SizeOverflow => 23,
             Self::HostMaterializationLimitExceeded => 24,
             Self::HostStagingLimitExceeded => 25,
-            Self::CudfTemporaryFailure => 26,
-            Self::CudfPersistentFailure => 27,
-            Self::CudfDependencyFailure => 28,
-            Self::AlgorithmDidNotConverge => 29,
-            Self::CudfInvariantViolation => 30,
-            Self::MemoryReservationFailed => 31,
-            Self::ServiceOverloaded => 32,
-            Self::QueryBudgetUnavailable => 33,
-            Self::QueryMemoryLimitExceeded => 34,
-            Self::DeviceOutOfMemory => 35,
-            Self::DeviceAllocationFailed => 36,
-            Self::DeviceFault => 37,
-            Self::CleanupFailed => 38,
-            Self::InternalInvariantViolation => 39,
-            Self::FlightFrameTooLarge => 40,
-            Self::ServerTransportFailure => 41,
-            Self::Internal => 42,
+            Self::HostMemoryExhausted => 26,
+            Self::CudfTemporaryFailure => 27,
+            Self::CudfPersistentFailure => 28,
+            Self::CudfDependencyFailure => 29,
+            Self::AlgorithmDidNotConverge => 30,
+            Self::CudfInvariantViolation => 31,
+            Self::MemoryReservationFailed => 32,
+            Self::ServiceOverloaded => 33,
+            Self::QueryBudgetUnavailable => 34,
+            Self::QueryMemoryLimitExceeded => 35,
+            Self::DeviceOutOfMemory => 36,
+            Self::DeviceAllocationFailed => 37,
+            Self::DeviceFault => 38,
+            Self::CleanupFailed => 39,
+            Self::InternalInvariantViolation => 40,
+            Self::FlightFrameTooLarge => 41,
+            Self::ServerTransportFailure => 42,
+            Self::Internal => 43,
         }
     }
 
@@ -268,6 +277,7 @@ impl ErrorCode {
             Self::SizeOverflow => "size_overflow",
             Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
             Self::HostStagingLimitExceeded => "host_staging_limit_exceeded",
+            Self::HostMemoryExhausted => "host_memory_exhausted",
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
@@ -427,6 +437,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::SizeOverflow
         | ErrorCode::HostMaterializationLimitExceeded
         | ErrorCode::HostStagingLimitExceeded
+        | ErrorCode::HostMemoryExhausted
         | ErrorCode::MemoryReservationFailed
         | ErrorCode::ServiceOverloaded
         | ErrorCode::QueryBudgetUnavailable
@@ -448,17 +459,12 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     }
 }
 
-/// Maps each adapter error code to its stable retry/remediation status.
+/// Maps a native engine error code to the closest adapter code.
 ///
-/// Attempt retry advice is derived only after terminal evidence is sealed.
-/// [`ErrorStatus::Persistent`] means a repeated or known-continuing dependency
-/// failure that requires escalation or intervention, while
-/// [`ErrorStatus::Permanent`] means the request, input, configuration, or code
-/// must change before the same operation can succeed.
-// Native-to-adapter mapping is intentionally lossy at the top-level code:
-// native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
-// the adapter has no shape-specific code. The exact native code remains
-// available in the `native_code` fact attached by `Error::from_native`.
+/// The mapping is intentionally lossy at the top-level code: native
+/// `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because the
+/// adapter has no shape-specific code. The exact native code remains available
+/// in the `native_code` fact attached by `Error::from_native`.
 pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
     match code {
         QueryErrorCode::Cancelled => ErrorCode::Cancelled,
@@ -496,12 +502,20 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
     }
 }
 
+/// Maps each adapter error code to its stable retry/remediation status.
+///
+/// Attempt retry advice is derived only after terminal evidence is sealed.
+/// [`ErrorStatus::Persistent`] means a repeated or known-continuing dependency
+/// failure that requires escalation or intervention, while
+/// [`ErrorStatus::Permanent`] means the request, input, configuration, or code
+/// must change before the same operation can succeed.
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
         ErrorCode::Cancelled => ErrorStatus::Permanent,
         ErrorCode::CudfResourceExhausted
         | ErrorCode::CudfTemporaryFailure
         | ErrorCode::SourceTemporaryFailure
+        | ErrorCode::HostMemoryExhausted
         | ErrorCode::MemoryReservationFailed
         | ErrorCode::ServiceOverloaded
         | ErrorCode::QueryBudgetUnavailable

@@ -10,8 +10,8 @@ use super::fingerprint::*;
 /// Stable identity for one GPU-local Parquet source scan or chunk.
 ///
 /// The key fingerprints the complete source scan contract: schema, projection,
-/// predicates, resolved read contract, file content identity, deletes, and
-/// chunk boundaries. It is local-process data, never a persistence format.
+/// predicates, resolved read contract, file content identity, and chunk
+/// boundaries. It is local-process data, never a persistence format.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[doc(hidden)]
 pub struct GpuLocalParquetSourceCacheKey {
@@ -29,8 +29,7 @@ impl GpuLocalParquetSourceCacheKey {
     /// Complete canonical identity used only as input to a one-way cache
     /// observation fingerprint.  Callers must not surface this string: it
     /// contains the private source contract that the cache key protects.
-    #[doc(hidden)]
-    pub fn event_fingerprint_source(&self) -> &str {
+    pub(crate) fn event_fingerprint_source(&self) -> &str {
         &self.fingerprint
     }
 
@@ -126,8 +125,6 @@ fn push_complete_source_contract(output: &mut String, source: &LocalParquetSourc
         // across different values would detach pricing from its source.
         push_optional_u64(output, format!("file.{index}.graph_vertex_upper_bound"), file.graph_vertex_upper_bound);
         push_reader_decimal_types(output, format!("file.{index}.reader_decimal_types"), &file.reader_decimal_types);
-        push_position_delete_files(output, format!("file.{index}.position_delete_files"), &file.position_delete_files);
-        push_equality_delete_files(output, format!("file.{index}.equality_delete_files"), &file.equality_delete_files);
         let partition_values = file.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
         push_string_vec(output, format!("file.{index}.partition_values"), &partition_values);
     }

@@ -19,8 +19,7 @@ use tokio::{runtime::Runtime as TokioRuntime, task::JoinHandle};
 
 use super::{
     super::{
-        CacheFillByteBudget, CacheFillBytePermit, DeploymentIoCapability, LakehouseCacheFillConfig,
-        SourceStorageProfile,
+        CacheFillByteBudget, CacheFillBytePermit, SourceStorageProfile,
         cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
         cache_fill::CacheFillOperationPermit,
         object_store::{ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey},
@@ -29,11 +28,6 @@ use super::{
 };
 
 impl ExecutionContext {
-    /// Returns the service-level lakehouse cache-fill resource configuration.
-    pub fn lakehouse_cache_fill_config(&self) -> &LakehouseCacheFillConfig {
-        &self.lakehouse_cache_fill_config
-    }
-
     /// Returns the service-level CUDA stream pool used by source-read workers.
     pub fn service_stream_pool(&self) -> QueryServiceStreamPool {
         QueryServiceStreamPool {
@@ -54,7 +48,8 @@ impl ExecutionContext {
     }
 
     /// Maximum background lakehouse cache-fill operations admitted concurrently.
-    pub fn lakehouse_cache_fill_max_concurrent_ops(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn lakehouse_cache_fill_max_concurrent_ops(&self) -> usize {
         self.lakehouse_cache_fill_concurrency.max_concurrent_ops()
     }
 
@@ -65,7 +60,8 @@ impl ExecutionContext {
     }
 
     /// Returns credential-free background cache-fill events observed by this context so far.
-    pub fn lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
+    #[cfg(test)]
+    pub(crate) fn lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
         self.lakehouse_cache_fill_events.events().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
     }
 
@@ -211,11 +207,6 @@ impl ExecutionContext {
             let value = future_factory().await;
             on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
         })
-    }
-
-    /// Returns deployment-level IO capability diagnostics.
-    pub fn deployment_io_capability(&self) -> &DeploymentIoCapability {
-        &self.deployment_io_capability
     }
 
     #[cfg(any(test, feature = "test-hooks"))]

@@ -633,7 +633,6 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             match stream_result {
                 Ok(()) => Ok(BoundedCompiledJoinProbeState::HashStreamed { build, outputs }),
                 Err(error) => {
-                    release_streamed_join_outputs_reverse(outputs);
                     release_bounded_root_hash_join_build_state(build);
                     Err(error)
                 },
@@ -654,7 +653,6 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             match stream_result {
                 Ok(()) => Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs }),
                 Err(error) => {
-                    release_streamed_join_outputs_reverse(outputs);
                     release_compiled_filtered_join_build_state(build);
                     Err(error)
                 },
@@ -755,7 +753,6 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                         Ok(input) => input,
                         Err(error) => {
                             inputs.release_all(execution);
-                            release_streamed_join_outputs_reverse(outputs);
                             release_compiled_filtered_join_build_state(build);
                             return Err(error);
                         },
@@ -767,7 +764,6 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                         Ok(output) => outputs.push(output),
                         Err(error) => {
                             inputs.release_all(execution);
-                            release_streamed_join_outputs_reverse(outputs);
                             release_compiled_filtered_join_build_state(build);
                             return Err(error);
                         },
@@ -1032,8 +1028,7 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
         BoundedCompiledJoinProbeState::Hash(probe) => {
             release_bounded_root_hash_join_probe_state(probe);
         },
-        BoundedCompiledJoinProbeState::HashStreamed { build, outputs } => {
-            release_streamed_join_outputs_reverse(outputs);
+        BoundedCompiledJoinProbeState::HashStreamed { build, .. } => {
             release_bounded_root_hash_join_build_state(build);
         },
         BoundedCompiledJoinProbeState::HashLazyStream(probe) => {
@@ -1043,8 +1038,7 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
         BoundedCompiledJoinProbeState::Filtered(probe) => {
             release_compiled_filtered_join_probe_state(probe);
         },
-        BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
-            release_streamed_join_outputs_reverse(outputs);
+        BoundedCompiledJoinProbeState::FilteredStreamed { build, .. } => {
             release_compiled_filtered_join_build_state(build);
         },
         BoundedCompiledJoinProbeState::Prepared(probe) => {
@@ -1055,21 +1049,17 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
         BoundedCompiledJoinProbeState::MixedLeftMatched(probe) => {
             release_compiled_mixed_left_join_probe_state(probe);
         },
-        BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
-            release_streamed_join_outputs_reverse(outputs);
+        BoundedCompiledJoinProbeState::MixedStreamed { build, .. } => {
             release_bounded_join_side_frame(build.input);
         },
-        BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, .. } => {
-            release_streamed_join_outputs_reverse(outputs);
+        BoundedCompiledJoinProbeState::OneShotStreamed { build, .. } => {
             release_bounded_compiled_join_build_state(BoundedCompiledJoinBuildState::Prepared(build));
         },
         BoundedCompiledJoinProbeState::OneShotLazyStream(probe) => {
             probe.inputs.release_all(execution);
             release_bounded_join_side_frame(probe.build.input);
         },
-        BoundedCompiledJoinProbeState::PartitionedStreamed { outputs, .. } => {
-            release_streamed_join_outputs_reverse(outputs);
-        },
+        BoundedCompiledJoinProbeState::PartitionedStreamed { .. } => {},
         BoundedCompiledJoinProbeState::PartitionedLazyStream(probe) => {
             probe.inputs.release_all(execution);
             release_partitioned_join_side(probe.build_partitioned);
@@ -1126,10 +1116,6 @@ fn concatenate_streamed_hash_join_outputs(
         },
     };
     Ok(ResidentGpuFrame::with_device_bytes(output_frame, output_bytes))
-}
-
-fn release_streamed_join_outputs_reverse(mut outputs: Vec<ResidentGpuFrame>) {
-    outputs.clear();
 }
 
 fn compiled_join_input_columns(

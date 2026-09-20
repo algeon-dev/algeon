@@ -86,7 +86,6 @@ impl QueryGpuCoverage {
         coverage: FinalPlanCoverage,
         candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
         cugraph_calls: Vec<QueryGpuCugraphCall>,
-        planning_did_io: bool,
         diagnostics: Option<&NativePlanningDiagnostics>,
     ) -> Self {
         let runtime_caveats = super::physical::runtime_caveats(coverage, &cugraph_calls, &validated_under);
@@ -95,7 +94,7 @@ impl QueryGpuCoverage {
             candidate_outcomes,
             cugraph_calls,
             runtime_caveats,
-            planning_did_io,
+            planning_did_io: false,
             validated_under,
             input_physical_plan_root: diagnostics
                 .map(|diagnostics| diagnostics.input_plan_root.clone())

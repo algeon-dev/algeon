@@ -18,6 +18,7 @@ mod ffi;
 pub mod classification;
 pub mod code;
 pub mod facts;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
 pub use classification::{
@@ -670,11 +671,6 @@ pub(crate) fn usize_to_i32(value: usize, operation: &'static str, field: &'stati
     i32::try_from(value).map_err(|_| range_limit_error(operation, field, "i32::MAX", value))
 }
 
-/// Convert a `usize` to an `i64`, producing a range-limit error on overflow.
-pub(crate) fn usize_to_i64(value: usize, operation: &'static str, field: &'static str) -> Result<i64> {
-    i64::try_from(value).map_err(|_| range_limit_error(operation, field, "i64::MAX", value))
-}
-
 fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> ErrorCode {
     if status == cudf_sys::CUDF_ERROR_INVALID_OPERATION
         && message.contains("device memory manager already exists with different physical-base options")
@@ -720,6 +716,7 @@ fn is_transient_cuda_io_message(message: &str) -> bool {
     invalid_value && copy_context
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 fn error_for_ffi_status(status: cudf_sys::cudf_status_t, operation: &'static str, message: String) -> Error {
     error_for_ffi_status_with_detail(status, operation, message, None)
 }

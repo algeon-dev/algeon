@@ -34,7 +34,7 @@ pub struct RuntimeObservationSession {
 /// This compatibility hook is retained for recorder-only owners. Attempt
 /// owners use the crate-private seal provider below so the embedded value and
 /// completion delivery share the same immutable allocation.
-pub type AttemptReportProvider = Arc<dyn Fn() -> QueryAttemptReport + Send + Sync>;
+pub(crate) type AttemptReportProvider = Arc<dyn Fn() -> QueryAttemptReport + Send + Sync>;
 
 /// Attempt-owned report construction after the recorder has computed its
 /// complete footer.
@@ -83,8 +83,7 @@ impl RuntimeObservationSealObserver {
 /// Deferred observer delivery for an already-sealed query cleanup.
 /// The seal has published the report; delivery runs after capacity release
 /// and never gates reuse.
-#[doc(hidden)]
-pub struct QueryCleanupSealDelivery {
+pub(crate) struct QueryCleanupSealDelivery {
     pub(super) owner: Option<RuntimeObservationOwner>,
     pub(super) deferred: Option<DeferredRuntimeObservationSeal>,
     pub(super) already_sealed: Option<SealedRuntimeObservationSnapshot>,
@@ -96,8 +95,7 @@ impl QueryCleanupSealDelivery {
     }
 
     /// Runs observer delivery, returning the sealed snapshot.
-    #[doc(hidden)]
-    pub fn deliver(self) -> Option<SealedRuntimeObservationSnapshot> {
+    pub(crate) fn deliver(self) -> Option<SealedRuntimeObservationSnapshot> {
         if let Some(owner) = self.owner
             && let Some(deferred) = self.deferred
         {
@@ -153,9 +151,8 @@ impl RuntimeObservationSession {
         Self { handle: RuntimeObservationHandle::with_clock(query_id, trace_id, config, clock) }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn with_source_location_test_key(
+    #[cfg(test)]
+    pub(crate) fn with_source_location_test_key(
         query_id: impl Into<RuntimeQueryId>,
         trace_id: Option<RuntimeTraceId>,
         config: RuntimeObservationConfig,
@@ -309,6 +306,7 @@ impl RuntimeObservationSessionInner {
         self.record_event_timestamped(context, |_monotonic_ns| build_payload()).0
     }
 
+    #[cfg(test)]
     pub(super) fn record_event_sized<F>(
         &self,
         context: RuntimeEventContext,

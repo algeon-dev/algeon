@@ -22,24 +22,29 @@ mod source_read;
 mod task;
 
 use correlation::inherited_query_id;
-pub use query_planning::correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId};
+pub(crate) use query_planning::correlation::CompiledTaskId;
+pub use query_planning::correlation::{PlanNodeId, QueryId, TraceId};
 
-pub use self::{
+pub(crate) use self::{
     aggregate::AggregateStrategyDecisionMetrics,
+    correlation::PlanTaskMapping,
+    dynamic_filter::DynamicFilterRuntimeMetrics,
+    task::{TaskOperatorMetrics, TaskRuntimeMetrics},
+};
+pub use self::{
     backend_descriptor::{
-        BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BACKEND_METRIC_DESCRIPTORS, BackendDurationHistogramProjection,
-        BackendDurationProjectionError, BackendMetric, BackendMetricDescriptor, BackendMetricKind, BackendMetricLabel,
-        BackendMetricUnit, BackendMetricUpdatePoint, backend_metric_descriptors, project_backend_duration_histogram,
+        BACKEND_ATTEMPT_DURATION_BUCKETS_NS, BACKEND_METRIC_DESCRIPTORS, BackendDurationProjectionError, BackendMetric,
+        BackendMetricDescriptor, BackendMetricKind, BackendMetricLabel, BackendMetricUnit, BackendMetricUpdatePoint,
+        backend_metric_descriptors, project_backend_duration_histogram,
     },
     boundary::BoundaryMetrics,
-    correlation::PlanTaskMapping,
-    descriptor::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, QUERY_METRIC_DESCRIPTORS},
-    dynamic_filter::{DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot},
+    descriptor::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit},
+    dynamic_filter::DynamicFilterSourceSnapshot,
     graph::GraphAlgorithmRuntimeMetrics,
     join::{JoinOperatorMetrics, JoinStrategyDecisionMetrics},
     operator::OperatorMetrics,
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
-    task::{BudgetedExecutionEvent, TaskOperatorMetrics, TaskRuntimeMetrics},
+    task::BudgetedExecutionEvent,
 };
 use crate::observability::{MetricsCaptureMode, MetricsCompleteness};
 
@@ -250,9 +255,9 @@ pub struct QueryMetrics {
 pub struct MetricsProjection {
     /// Revision of the one checkpoint this value was projected from, or `None`
     /// once projections from several checkpoints were merged into it.
-    pub revision: Option<u64>,
+    pub(crate) revision: Option<u64>,
     /// Whether that checkpoint's owner had already sealed.
-    pub sealed: bool,
+    pub(crate) sealed: bool,
     pub completeness: MetricsCompleteness,
 }
 

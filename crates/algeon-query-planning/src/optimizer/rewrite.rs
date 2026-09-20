@@ -47,8 +47,7 @@ pub(super) fn sink_reachable_nodes(plan: &QueryPlan) -> BTreeSet<NodeId> {
     reachable
 }
 
-#[doc(hidden)]
-pub fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
+pub(crate) fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut counts = vec![0; plan.node_count()];
     for node in plan.nodes() {
         for input in node.input_ids() {

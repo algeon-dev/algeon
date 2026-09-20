@@ -189,7 +189,7 @@ pub(super) fn decode_logical_graph_result(
     };
     for column in output_columns {
         (root, root_schema) =
-            decode_relation_column(builder, root, root_schema, column.name, column.nullable, codebook, true)?;
+            decode_relation_column(builder, root, root_schema, column.name, column.nullable, codebook)?;
     }
     Ok((root, root_schema))
 }
@@ -301,7 +301,6 @@ fn decode_relation_column(
     column: &str,
     nullable: bool,
     codebook: NodeId,
-    preserves_total_payload_bound: bool,
 ) -> Result<(NodeId, SchemaRef)> {
     schema.field_with_name(column).map_err(|_| {
         plan(format!("cuGraph logical vertex mapping could not decode missing result column '{column}'"))
@@ -341,8 +340,6 @@ fn decode_relation_column(
     .with_output_projection(output_projection)
     .with_build_side(JoinSide::Right)
     .with_at_most_one_match_per_bounded_row(JoinSide::Left);
-    let spec =
-        if preserves_total_payload_bound { spec.with_preserved_total_payload_bound_for_output(column) } else { spec };
     Ok((builder.add_join(relation, codebook, spec, Arc::clone(&output_schema)), output_schema))
 }
 

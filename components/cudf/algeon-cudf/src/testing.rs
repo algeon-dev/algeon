@@ -41,17 +41,19 @@ pub mod prelude {
 
 pub use crate::core::{column::ColumnView, table::TableView};
 
-pub mod boundary {
-    use crate::runtime::{BoundaryObservation, last_boundary_observation, record_boundary_observation};
+pub mod device_copy {
+    use crate::frame::testing_hooks;
 
-    /// Reset the last query-facing boundary observation used by integration tests.
-    pub fn reset_boundary_observation_for_test() {
-        record_boundary_observation(None);
-    }
-
-    /// Read the last query-facing boundary observation, if any.
-    pub fn last_boundary_observation_for_test() -> Option<BoundaryObservation> {
-        last_boundary_observation()
+    /// Read how many `Series::copy_into_runtime` and `DataFrame::copy_into_runtime`
+    /// calls deep-copied device data into another retained provenance.
+    ///
+    /// The total is process-wide and monotonic. Callers compare values read
+    /// before and after the call under test. A copy made concurrently by
+    /// another test in the same process would inflate that delta, so exact
+    /// delta assertions rely on each test running in its own process, which is
+    /// the nextest default.
+    pub fn device_to_device_copy_count_for_test() -> usize {
+        testing_hooks::device_to_device_copy_count_for_test()
     }
 }
 

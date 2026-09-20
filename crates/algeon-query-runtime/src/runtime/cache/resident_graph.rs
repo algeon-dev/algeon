@@ -3,7 +3,7 @@
 //! The cache has no local byte budget, copy limit, reservation-id range, or
 //! build singleflight. Physical allocation belongs to the one device-scoped
 //! [`cudf::CacheAllocationDomain`], while every retained graph owns exactly
-//! one [`super::CacheResidency`] authority charged to the device ledger.
+//! one `CacheResidency` authority charged to the device ledger.
 
 use std::{
     collections::HashMap,
@@ -21,9 +21,7 @@ use query_planning::{
     plan::{GraphResidencyOrientation, ResidentGraphKey},
 };
 
-use super::{
-    CacheExecutionReservation, CacheGraphActivity, CacheResidency, CacheResidencyChargeTransaction, CacheResidencyPin,
-};
+use super::{CacheGraphActivity, CacheResidency, CacheResidencyChargeTransaction, CacheResidencyPin};
 use crate::{native_error::cudf_query_error, runtime::gpu::DeviceLedger};
 
 const OPERATION: &str = "query_engine.runtime.cache.resident_graph";
@@ -31,14 +29,10 @@ const OPERATION: &str = "query_engine.runtime.cache.resident_graph";
 /// Point-in-time graph-cache state. Host singleflight counters deliberately do
 /// not belong here: request coalescing is not resident GPU state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct GpuResidentGraphCacheSnapshot {
-    #[doc(hidden)]
-    pub available_entries: usize,
-    #[doc(hidden)]
-    pub checked_out_entries: usize,
-    #[doc(hidden)]
-    pub closed: bool,
+pub(crate) struct GpuResidentGraphCacheSnapshot {
+    pub(crate) available_entries: usize,
+    pub(crate) checked_out_entries: usize,
+    pub(crate) closed: bool,
 }
 
 /// Result of attempting to retain a newly built graph.
@@ -230,8 +224,7 @@ impl fmt::Debug for GpuResidentGraphCache {
 
 impl GpuResidentGraphCache {
     /// Attaches this graph subdomain to the device's one shared cache domain.
-    #[doc(hidden)]
-    pub fn new(ledger: DeviceLedger, domain: cudf::CacheAllocationDomain) -> Result<Self> {
+    pub(crate) fn new(ledger: DeviceLedger, domain: cudf::CacheAllocationDomain) -> Result<Self> {
         let device_ordinal = ledger.device_ordinal();
         if domain.device().ordinal() != device_ordinal {
             return Err(QueryError::new(
@@ -264,15 +257,13 @@ impl GpuResidentGraphCache {
     }
 
     /// Stable identity of the shared source/graph cache allocation domain.
-    #[doc(hidden)]
-    pub fn cache_allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
+    pub(crate) fn cache_allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
         self.inner.allocation_domain.id()
     }
 
     /// Shared physical allocation domain used by both resident cache subdomains.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn cache_allocation_domain(&self) -> &cudf::CacheAllocationDomain {
+    pub(crate) fn cache_allocation_domain(&self) -> &cudf::CacheAllocationDomain {
         &self.inner.allocation_domain
     }
 
@@ -294,23 +285,6 @@ impl GpuResidentGraphCache {
         let charged_cache_bytes =
             snapshot.cache_evictable_resident_bytes.saturating_add(snapshot.cache_pinned_in_use_bytes);
         Ok(self.inner.ledger.profile().cache_cap_bytes.saturating_sub(charged_cache_bytes))
-    }
-
-    /// Reserves the remaining proven-safe cache capacity for one graph
-    /// execution.  A parked graph must execute on this allocation domain, so
-    /// cuGraph's transient result/workspace allocations need a ledger owner
-    /// for their whole lifetime as well as the graph's retained charge.
-    ///
-    /// Returning `None` means no transient allocation can be proven safe; a
-    /// caller must return the checkout and execute through the attempt domain
-    /// instead of using this cache runtime without a charge.
-    #[doc(hidden)]
-    pub fn begin_execution_reservation(&self) -> Result<Option<CacheExecutionReservation>> {
-        let bytes = self.available_reservation_bytes()?;
-        if bytes == 0 {
-            return Ok(None);
-        }
-        CacheExecutionReservation::begin(self.inner.ledger.clone(), bytes)
     }
 
     /// A scope that does not return to its retained baseline may still own
@@ -373,8 +347,7 @@ impl GpuResidentGraphCache {
     /// Pins an available entry before source-side graph preparation commits to
     /// a cache hit. Once [`Self::close`] begins, no final pin is admitted.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn try_pin_available_key(
+    pub(crate) fn try_pin_available_key(
         &self,
         resident_key: &ResidentGraphKey,
     ) -> Result<Option<GpuResidentGraphPreparationPin>> {
@@ -495,8 +468,7 @@ impl GpuResidentGraphCache {
     /// Closes and drains all available graphs before `deadline`. Checked-out or
     /// already-pinned entries retain their charges until their owners return;
     /// expiry therefore reports a timeout with accounting intact.
-    #[doc(hidden)]
-    pub fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
         self.close()?;
         let mut primary_error = None;
         loop {
@@ -542,8 +514,7 @@ impl GpuResidentGraphCache {
         }
     }
 
-    #[doc(hidden)]
-    pub fn snapshot(&self) -> Result<GpuResidentGraphCacheSnapshot> {
+    pub(crate) fn snapshot(&self) -> Result<GpuResidentGraphCacheSnapshot> {
         let state = self.lock()?;
         Ok(GpuResidentGraphCacheSnapshot {
             available_entries: state.available.len(),
@@ -552,8 +523,7 @@ impl GpuResidentGraphCache {
         })
     }
 
-    #[doc(hidden)]
-    pub fn activity(&self) -> Result<CacheGraphActivity> {
+    pub(crate) fn activity(&self) -> Result<CacheGraphActivity> {
         let state = self.lock()?;
         Ok(CacheGraphActivity {
             available_entries: state.available.len(),
@@ -903,12 +873,6 @@ where T: GpuResidentGraphTransposition
 impl<T> GpuResidentGraphCheckout<T>
 where T: GpuResidentGraphTransposition
 {
-    /// The exact scope runtime that constructed this parked graph.
-    #[doc(hidden)]
-    pub fn runtime(&self) -> Arc<cudf::Runtime> {
-        Arc::new(self.entry.allocation_scope.runtime().clone())
-    }
-
     /// Keeps the exact cache allocation scope alive while an exclusive
     /// checkout contributes allocator-event evidence for one attempt.
     #[doc(hidden)]
@@ -941,8 +905,7 @@ where T: GpuResidentGraphTransposition
     /// Requires cached execution to return the graph-specific allocation scope
     /// to the exact retained baseline before its transient ledger reservation
     /// may be released.
-    #[doc(hidden)]
-    pub fn verify_retained_scope_usage(&self) -> Result<()> {
+    pub(crate) fn verify_retained_scope_usage(&self) -> Result<()> {
         let current = self.entry.allocation_scope.usage().map_err(|error| {
             cudf_query_error(OPERATION, "failed to read checked-out resident graph allocation-scope usage", error)
                 .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())

@@ -128,7 +128,6 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 family_id: "cuvs",
                 display_name: "cuVS",
                 install_operation: "algeon_datafusion.cuvs_sql.install",
-                relation_planner_name: "CuvsRelationPlanner",
                 extension_planner: Arc::new(CuvsExtensionPlanner),
                 relation_planner: cuvs_relation_planner(),
                 gpu_family: Arc::new(CuvsGpuFunctionFamily::new(availability)),
@@ -149,7 +148,6 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 family_id: "cuml",
                 display_name: "cuML",
                 install_operation: "algeon_datafusion.cuml_sql.install",
-                relation_planner_name: "CumlRelationPlanner",
                 extension_planner: Arc::new(CumlExtensionPlanner),
                 relation_planner: cuml_relation_planner_with_store(model_store.clone()),
                 gpu_family: Arc::new(CumlGpuFunctionFamily::new(availability, model_store)),
@@ -164,7 +162,6 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 family_id: "cugraph",
                 display_name: "cuGraph",
                 install_operation: "algeon_datafusion.cugraph_sql.install",
-                relation_planner_name: "CugraphRelationPlanner",
                 extension_planner: Arc::new(CugraphExtensionPlanner),
                 relation_planner: cugraph_relation_planner(config.clone()),
                 gpu_family: Arc::new(CugraphGpuFunctionFamily::new(config)),
@@ -184,7 +181,6 @@ struct GpuSqlFamilyInstall {
     family_id: &'static str,
     display_name: &'static str,
     install_operation: &'static str,
-    relation_planner_name: &'static str,
     extension_planner: Arc<dyn ExtensionPlanner + Send + Sync>,
     relation_planner: Arc<dyn RelationPlanner>,
     gpu_family: Arc<dyn GpuFunctionFamily>,
@@ -219,8 +215,10 @@ fn install_gpu_sql_family(
             .ok_or_else(planner_conflict)?,
     };
     if family_was_installed {
-        let has_relation_planner = builder.relation_planners().as_ref().is_none_or(|relation_planners| {
-            relation_planners.iter().any(|planner| format!("{planner:?}").contains(family.relation_planner_name))
+        let has_relation_planner = query_planner.family_relation_planner(family.family_id).is_some_and(|installed| {
+            builder.relation_planners().as_ref().is_some_and(|relation_planners| {
+                relation_planners.iter().any(|planner| Arc::ptr_eq(planner, installed))
+            })
         });
         if !query_planner.contains_family(family.family_id) || !has_relation_planner {
             return Err(Error::new(
@@ -236,7 +234,8 @@ fn install_gpu_sql_family(
         }
         return Ok(builder);
     }
-    let query_planner = query_planner.with_family(family.family_id, family.extension_planner);
+    let query_planner =
+        query_planner.with_family(family.family_id, family.extension_planner, Arc::clone(&family.relation_planner));
     builder.relation_planners().get_or_insert_with(Vec::new).insert(0, family.relation_planner);
     Ok(builder.with_query_planner(Arc::new(query_planner)))
 }

@@ -77,12 +77,12 @@ pub struct LocalParquetSourceReuseDiagnostics {
 
 impl LocalParquetSourceReuseDiagnostics {
     /// Returns true when the pass produced no candidate evidence.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -126,15 +126,13 @@ pub enum LocalParquetSourceReuseRejectedReason {
     DynamicFilterConsumerConflict,
 }
 
-#[doc(hidden)]
-pub struct LocalParquetSourceReuseResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: LocalParquetSourceReuseDiagnostics,
+pub(crate) struct LocalParquetSourceReuseResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: LocalParquetSourceReuseDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_local_parquet_source_reuse(
+pub(crate) fn optimize_local_parquet_source_reuse(
     plan: QueryPlan,
     options: &LocalParquetSourceReuseOptions,
     dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
@@ -426,7 +424,6 @@ fn source_contract_supported(source: &LocalParquetSource) -> bool {
         && source_output_schema_override_supported(source)
         && !source.is_zero_column_count_source()
         && !source.is_count_star_probe_source()
-        && !source.has_row_delete_files()
         && source.partition_columns.is_empty()
         && source.missing_columns.is_empty()
         && source

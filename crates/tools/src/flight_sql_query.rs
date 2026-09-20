@@ -12,7 +12,7 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use futures::TryStreamExt;
 use tonic::transport::Channel;
 
-use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
+use crate::connection_retry::{ConnectionRetryConfig, connect_with_retry};
 
 type QueryResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -69,7 +69,6 @@ async fn connect_flight_sql(url: &str) -> QueryResult<FlightSqlServiceClient<Cha
     connect_with_retry(
         url,
         ConnectionRetryConfig::fixed_attempts(600, Duration::from_millis(100)),
-        || Ok(BeforeConnect::Continue),
         FlightSqlServiceClient::new,
         |error| format!("Flight SQL server did not accept connections at {url}: {:?}", Some(error)),
     )

@@ -9,11 +9,10 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet},
     fmt::{self, Formatter},
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     task::{Context, Poll},
-    thread,
     time::Duration,
 };
 
@@ -958,7 +957,7 @@ impl QueryAdmissionTicket {
 
     fn mark_admission_facts_recorded(&self, task_key: usize, epoch: u64) -> bool {
         let Ok(mut state) = self.state.lock() else {
-            eprintln!("[algeon-datafusion] warning: failed to mark poisoned query admission ticket facts state");
+            tracing::warn!("failed to mark poisoned query admission ticket facts state");
             return false;
         };
         let Some(round) = state.rounds.get_mut(&task_key) else {
@@ -973,7 +972,7 @@ impl QueryAdmissionTicket {
 
     fn release_epoch_context(self: &Arc<Self>, task_key: usize, epoch: u64, force: bool) {
         let Ok(mut state) = self.state.lock() else {
-            eprintln!("[algeon-datafusion] warning: failed to release poisoned query admission ticket state");
+            tracing::warn!("failed to release poisoned query admission ticket state");
             return;
         };
         let Some(round) = state.rounds.get_mut(&task_key) else {
@@ -994,7 +993,7 @@ impl QueryAdmissionTicket {
 
     fn release_execution_round(self: &Arc<Self>, task_key: usize, epoch: u64) {
         let Ok(mut state) = self.state.lock() else {
-            eprintln!("[algeon-datafusion] warning: failed to release poisoned query admission execution round state");
+            tracing::warn!("failed to release poisoned query admission execution round state");
             return;
         };
         let Some(round) = state.rounds.get_mut(&task_key) else {
@@ -1019,7 +1018,7 @@ impl QueryAdmissionTicket {
             Some(handle) => handle.finish(),
             None => self.finish_observation(
                 &round.observation,
-                round.terminal_outcome.unwrap_or_else(|| Self::drop_outcome(RuntimeTerminalOutcome::Dropped)),
+                round.terminal_outcome.unwrap_or(RuntimeTerminalOutcome::Dropped),
             ),
         }
     }
@@ -1044,13 +1043,9 @@ impl QueryAdmissionTicket {
         }
     }
 
-    fn drop_outcome(normal: RuntimeTerminalOutcome) -> RuntimeTerminalOutcome {
-        if thread::panicking() { RuntimeTerminalOutcome::Panicked } else { normal }
-    }
-
     fn reset_admitting(&self, task_key: usize) {
         let Ok(mut state) = self.state.lock() else {
-            eprintln!("[algeon-datafusion] warning: failed to reset poisoned query admission ticket state");
+            tracing::warn!("failed to reset poisoned query admission ticket state");
             return;
         };
         state.admitting.remove(&task_key);
@@ -1111,8 +1106,7 @@ impl Drop for QueryAdmissionTicket {
         let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
         let initial_observation = state.initial_observation.take();
         let orphaned_rounds = state.rounds.drain().map(|(_, round)| round).collect::<Vec<_>>();
-        let outcome =
-            if thread::panicking() { RuntimeTerminalOutcome::Panicked } else { RuntimeTerminalOutcome::Dropped };
+        let outcome = RuntimeTerminalOutcome::Dropped;
         if let Some(observation) = initial_observation {
             Self::finish_observation_isolated(&observation, outcome.clone(), observation_capture.as_ref());
         }
@@ -1150,7 +1144,7 @@ impl Drop for QueryAdmissionPendingContextGuard {
         }
         self.released = true;
         if let NativeRuntimeObservation::Local(owner) = &self.observation {
-            owner.record_terminal_outcome(QueryAdmissionTicket::drop_outcome(RuntimeTerminalOutcome::Cancelled));
+            owner.record_terminal_outcome(RuntimeTerminalOutcome::Cancelled);
         }
         self.ticket.release_epoch_context(self.task_key, self.epoch, true);
     }
@@ -1188,7 +1182,7 @@ impl Drop for QueryAdmissionExecutionRoundGuard {
             return;
         }
         if !self.terminal_outcome_recorded {
-            self.record_terminal_outcome(QueryAdmissionTicket::drop_outcome(RuntimeTerminalOutcome::Dropped));
+            self.record_terminal_outcome(RuntimeTerminalOutcome::Dropped);
         }
         self.released = true;
         self.ticket.release_execution_round(self.task_key, self.epoch);
@@ -1207,10 +1201,7 @@ impl TicketAdmitResetGuard {
 impl Drop for TicketAdmitResetGuard {
     fn drop(&mut self) {
         if !self.disarmed {
-            self.ticket.finish_observation(
-                &self.observation,
-                QueryAdmissionTicket::drop_outcome(RuntimeTerminalOutcome::Cancelled),
-            );
+            self.ticket.finish_observation(&self.observation, RuntimeTerminalOutcome::Cancelled);
         }
         self.reset();
     }
@@ -1378,20 +1369,30 @@ impl Stream for NativeAdmissionRoundStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        match this.inner.as_mut().poll_next(cx) {
-            Poll::Ready(None) => {
+        // Only a panic raised by this round's own poll may classify the round
+        // as `Panicked`; a guard dropped during an unrelated unwind records
+        // `Dropped`.
+        let polled = catch_unwind(AssertUnwindSafe(|| this.inner.as_mut().poll_next(cx)));
+        match polled {
+            Err(panic) => {
+                if let Some(round_guard) = &mut this.round_guard {
+                    round_guard.record_terminal_outcome(RuntimeTerminalOutcome::Panicked);
+                }
+                resume_unwind(panic)
+            },
+            Ok(Poll::Ready(None)) => {
                 if let Some(round_guard) = &mut this.round_guard {
                     round_guard.record_terminal_outcome(RuntimeTerminalOutcome::Succeeded);
                 }
                 Poll::Ready(None)
             },
-            Poll::Ready(Some(Err(error))) => {
+            Ok(Poll::Ready(Some(Err(error)))) => {
                 if let Some(round_guard) = &mut this.round_guard {
                     round_guard.record_datafusion_error(&error);
                 }
                 Poll::Ready(Some(Err(error)))
             },
-            other => other,
+            Ok(other) => other,
         }
     }
 }

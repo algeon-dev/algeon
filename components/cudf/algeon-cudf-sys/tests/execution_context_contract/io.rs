@@ -3,11 +3,6 @@ use super::*;
 #[test]
 fn io_ex_entries_use_required_exec_options() {
     for (source, function, end_marker) in [
-        (IO_CSV_CPP, "cudf_io_read_csv_ex", "cudf_status_t cudf_io_write_csv_ex"),
-        (IO_CSV_CPP, "cudf_io_write_csv_ex", "}  // extern \"C\""),
-        (IO_JSON_CPP, "cudf_io_read_json_ex", "cudf_io_read_json_with_metadata_ex"),
-        (IO_JSON_CPP, "cudf_io_read_json_with_metadata_ex", "cudf_io_write_json_ex"),
-        (IO_JSON_CPP, "cudf_io_write_json_ex", "} // extern \"C\""),
         (IO_PARQUET_CPP, "cudf_io_read_parquet_ex", "cudf_status_t cudf_io_read_parquet_from_host_buffer_ex"),
         (IO_PARQUET_CPP, "cudf_io_read_parquet_from_host_buffer_ex", "cudf_io_write_parquet_ex"),
         (IO_PARQUET_CPP, "cudf_io_write_parquet_ex", "cudf_status_t cudf_io_read_parquet_with_metadata_ex"),
@@ -90,21 +85,6 @@ fn remote_parquet_device_read_orders_external_device_write_after_requested_strea
 #[test]
 fn io_duplicate_non_ex_production_apis_are_removed() {
     for (name, source, marker) in [
-        ("IO native header", IO_H, "cudf_status_t cudf_io_read_csv("),
-        ("CSV native source", IO_CSV_CPP, "cudf_status_t cudf_io_read_csv("),
-        ("CSV Rust FFI", IO_CSV_FFI_RS, "pub fn cudf_io_read_csv("),
-        ("IO native header", IO_H, "cudf_status_t cudf_io_write_csv("),
-        ("CSV native source", IO_CSV_CPP, "cudf_status_t cudf_io_write_csv("),
-        ("CSV Rust FFI", IO_CSV_FFI_RS, "pub fn cudf_io_write_csv("),
-        ("IO native header", IO_H, "cudf_status_t cudf_io_read_json("),
-        ("JSON native source", IO_JSON_CPP, "cudf_status_t cudf_io_read_json("),
-        ("JSON Rust FFI", IO_JSON_FFI_RS, "pub fn cudf_io_read_json("),
-        ("IO native header", IO_H, "cudf_status_t cudf_io_read_json_with_metadata("),
-        ("JSON native source", IO_JSON_CPP, "cudf_status_t cudf_io_read_json_with_metadata("),
-        ("JSON Rust FFI", IO_JSON_FFI_RS, "pub fn cudf_io_read_json_with_metadata("),
-        ("IO native header", IO_H, "cudf_status_t cudf_io_write_json("),
-        ("JSON native source", IO_JSON_CPP, "cudf_status_t cudf_io_write_json("),
-        ("JSON Rust FFI", IO_JSON_FFI_RS, "pub fn cudf_io_write_json("),
         ("IO native header", IO_H, "cudf_status_t cudf_io_read_parquet("),
         ("Parquet native source", IO_PARQUET_CPP, "cudf_status_t cudf_io_read_parquet("),
         ("Parquet Rust FFI", IO_PARQUET_FFI_RS, "pub fn cudf_io_read_parquet("),
@@ -118,33 +98,9 @@ fn io_duplicate_non_ex_production_apis_are_removed() {
         assert!(!source.contains(marker), "{name} must not retain duplicate non-_ex production API `{marker}`");
     }
 
-    for (source_name, source, marker) in [
-        ("CSV native source", IO_CSV_CPP, "cudf_io_read_csv_ex(filepath, delimiter, has_header, out, nullptr)"),
-        (
-            "CSV native source",
-            IO_CSV_CPP,
-            "cudf_io_write_csv_ex(table, filepath, column_names, num_columns, delimiter, include_header, nullptr)",
-        ),
-        ("JSON native source", IO_JSON_CPP, "cudf_io_read_json_ex(filepath, lines, out, nullptr)"),
-        (
-            "JSON native source",
-            IO_JSON_CPP,
-            "cudf_io_read_json_with_metadata_ex(filepath, lines, out_table, out_names, out_num_names, nullptr)",
-        ),
-        (
-            "JSON native source",
-            IO_JSON_CPP,
-            "cudf_io_write_json_ex(table, filepath, column_names, num_columns, lines, include_nulls, nullptr)",
-        ),
-        (
-            "Parquet native source",
-            IO_PARQUET_CPP,
-            "cudf_io_write_parquet_ex(table, filepath, column_names, num_columns, row_group_size_rows, dictionary_policy, nullptr)",
-        ),
-    ] {
-        assert!(
-            !contains_normalized(source, marker),
-            "{source_name} must not delegate to strict `_ex` with null options via `{marker}`"
-        );
-    }
+    let marker = "cudf_io_write_parquet_ex(table, filepath, column_names, num_columns, row_group_size_rows, dictionary_policy, nullptr)";
+    assert!(
+        !contains_normalized(IO_PARQUET_CPP, marker),
+        "Parquet native source must not delegate to strict `_ex` with null options via `{marker}`"
+    );
 }

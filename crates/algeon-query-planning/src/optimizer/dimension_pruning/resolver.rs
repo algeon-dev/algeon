@@ -62,9 +62,11 @@ pub trait LocalParquetPruningResolver {
 /// For callers that do not want dimension-derived pruning or filtered-range
 /// derivation to read anything: every method answers "unknown," so every
 /// pass in this module skips rather than applying a rewrite built on nothing.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoDimensionPruningFacts;
 
+#[cfg(test)]
 impl LocalParquetPruningResolver for NoDimensionPruningFacts {
     fn dimension_scan_admitted(&self, _source: &LocalParquetSource, _max_dimension_rows: u64) -> bool {
         false

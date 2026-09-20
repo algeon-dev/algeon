@@ -3,14 +3,14 @@
 //! Frontends construct plans through [`QueryPlanBuilder`] so node ids stay
 //! stable and forward references are impossible. Equivalent nodes (same kind
 //! and facts) are interned as a small CSE step.
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use super::{
     AggregateNode, AggregateSpec, EdgeNormalizeNode, EdgeNormalizeSpec, Expr, Field, FilterNode, GraphAlgorithmNode,
     GraphAlgorithmSpec, GraphConstructionPolicy, JoinNode, JoinSpec, LimitNode, LimitSpec, MlAlgorithmNode,
     MlAlgorithmSpec, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink,
     Schema, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode,
-    VectorAlgorithmSpec, WindowNode, WindowSpec,
+    VectorAlgorithmSpec, WindowNode, WindowSpec, uniqueness::partial_plan_node_is_unique_on,
 };
 use crate::error::{QueryError, QueryErrorCode, Result};
 
@@ -50,7 +50,7 @@ impl QueryPlanBuilder {
     }
 
     /// Returns the diagnostic frontend volume attached to an occurrence.
-    pub fn advisory_output(&self, node: NodeId) -> Option<&super::AdvisoryOutputBinding> {
+    pub(crate) fn advisory_output(&self, node: NodeId) -> Option<&super::AdvisoryOutputBinding> {
         self.advisory_outputs.iter().find(|binding| binding.node == node)
     }
 
@@ -228,9 +228,9 @@ impl QueryPlanBuilder {
 
     /// Returns whether the engine-owned output facts prove uniqueness on the
     /// requested physical columns for the current partial plan.
-    pub fn output_is_unique_on(&self, node: NodeId, columns: &std::collections::BTreeSet<String>) -> Result<bool> {
+    pub fn output_is_unique_on(&self, node: NodeId, columns: &BTreeSet<String>) -> bool {
         self.assert_input_exists(node);
-        Ok(super::column_evidence::partial_plan_node_is_unique_on(&self.nodes, node, columns))
+        partial_plan_node_is_unique_on(&self.nodes, node, columns)
     }
 
     /// Adds a typed vector algorithm node and validates all relation references.

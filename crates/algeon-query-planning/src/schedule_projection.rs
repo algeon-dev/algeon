@@ -143,7 +143,7 @@ impl AttemptComposedScheduleProjection {
                 )
     }
 
-    pub fn fingerprint_for(
+    pub(crate) fn fingerprint_for(
         attempt_wide_fixed_bytes: u64,
         producer_occurrences: &[AttemptComposedScheduleOccurrence],
         consumer_scope_fingerprint: &str,

@@ -24,14 +24,17 @@ use crate::observability::{
     AttemptHealthTransition, AttemptNativeFault, AttemptNativeFaultEvidence, AttemptNativeFaultKind,
     AttemptNativeStatus, AttemptTeardownHealth, QueryBoundaryKind,
 };
+#[cfg(test)]
+use crate::observability::{
+    CleanupFailurePhase, CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeObservationPayload,
+};
 use crate::{
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
         AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureOperation,
         AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit,
-        AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary, QUERY_ATTEMPT_REPORT_SCHEMA_V1,
-        QueryAttemptReport, RuntimeCleanupFailureObservation, RuntimeObservationClock, RuntimeObservationConfig,
-        RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
+        AttemptTraceContext, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationClock,
+        RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner,
         RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
         SystemRuntimeObservationClock,
     },
@@ -123,16 +126,14 @@ pub struct AttemptAdmissionBinding {
 /// It may record the canonical terminal outcome before cleanup, but consuming
 /// it is the only way to establish finalization and therefore report-ready for
 /// an admitted attempt.
-#[doc(hidden)]
-pub struct AttemptFinalizer(Arc<AttemptCore>);
+pub(crate) struct AttemptFinalizer(Arc<AttemptCore>);
 
 /// Shared routing for one [`AttemptFinalizer`]. Cloning an admission binding
 /// clones this routing handle, never the finalizer itself. Before admission,
 /// the owner-side path consumes it with `NotRequired`; after a grant is
 /// published, the admission envelope takes it exactly once.
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct AttemptFinalizerSlot(Arc<Mutex<Option<AttemptFinalizer>>>);
+pub(crate) struct AttemptFinalizerSlot(Arc<Mutex<Option<AttemptFinalizer>>>);
 
 impl Clone for AttemptHandle {
     fn clone(&self) -> Self {
@@ -530,8 +531,7 @@ impl AttemptOwner {
         Self::begin_with_clock(request, permit, counters, queue, Arc::new(SystemRuntimeObservationClock::new()))
     }
 
-    #[doc(hidden)]
-    pub fn begin_with_clock(
+    pub(crate) fn begin_with_clock(
         request: BeginAttemptRequest,
         permit: ObservationPermit,
         counters: Arc<AttemptBackendCounters>,
@@ -662,8 +662,7 @@ impl AttemptOwner {
     /// [`AttemptAdmissionBinding`], so they cannot detach observation sealing
     /// from the corresponding release commitment.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn observation_owner_for_test(&self) -> RuntimeObservationOwner {
+    pub(crate) fn observation_owner_for_test(&self) -> RuntimeObservationOwner {
         self.0.observation_owner.clone()
     }
 
@@ -795,8 +794,7 @@ impl fmt::Debug for AttemptAdmissionBinding {
 impl AttemptAdmissionBinding {
     /// Engine-minted identity retained only for post-callback allocator-event
     /// correlation. Request callers cannot replace or synthesize it.
-    #[doc(hidden)]
-    pub const fn attempt_id(&self) -> AttemptId {
+    pub(crate) const fn attempt_id(&self) -> AttemptId {
         self.attempt_id
     }
 
@@ -872,8 +870,7 @@ impl AttemptFinalizerSlot {
             .ok_or(AttemptLifecycleError::FinalizationUnavailable)
     }
 
-    #[doc(hidden)]
-    pub fn take_for_admission(&self) -> Result<AttemptFinalizer, AttemptLifecycleError> {
+    pub(crate) fn take_for_admission(&self) -> Result<AttemptFinalizer, AttemptLifecycleError> {
         self.take()
     }
 
@@ -881,16 +878,14 @@ impl AttemptFinalizerSlot {
     /// borrowed error to its transport-safe terminal outcome. This does not
     /// consume the finalizer: an unadmitted path still consumes it with
     /// `NotRequired`, while an admitted envelope consumes it after cleanup.
-    #[doc(hidden)]
-    pub fn record_primary_failure(&self, summary: AttemptFailureSummary) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn record_primary_failure(&self, summary: AttemptFailureSummary) -> Result<(), AttemptLifecycleError> {
         let guard = self.0.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let finalizer = guard.as_ref().ok_or(AttemptLifecycleError::FinalizationUnavailable)?;
         finalizer.record_primary_failure(summary);
         Ok(())
     }
 
-    #[doc(hidden)]
-    pub fn finalize_not_admitted(
+    pub(crate) fn finalize_not_admitted(
         &self,
         fallback: RuntimeTerminalOutcome,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
@@ -903,21 +898,18 @@ impl AttemptFinalizer {
     ///
     /// The query service must not manufacture a timestamp when no admission
     /// binding transferred this linear finalizer into its ownership.
-    #[doc(hidden)]
-    pub fn monotonic_ns(&self) -> u64 {
+    pub(crate) fn monotonic_ns(&self) -> u64 {
         self.0.monotonic_ns()
     }
 
-    #[doc(hidden)]
-    pub fn record_primary_failure(&self, summary: AttemptFailureSummary) {
+    pub(crate) fn record_primary_failure(&self, summary: AttemptFailureSummary) {
         self.0.lock_lifecycle().primary_failure(summary);
     }
 
     /// Establishes the lifecycle terminal outcome before committing admitted
     /// cleanup and capacity facts. The resolved outcome must then be passed
     /// to the observation seal so footer, report, and terminal boundary agree.
-    #[doc(hidden)]
-    pub fn terminalize_for_release(
+    pub(crate) fn terminalize_for_release(
         &self,
         fallback: RuntimeTerminalOutcome,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
@@ -947,8 +939,7 @@ impl AttemptFinalizer {
     /// Consumes the sole post-cleanup finalizer. This remains crate-private so
     /// request callers cannot manufacture cleanup/capacity facts for another
     /// attempt or race the envelope that owns the immutable grant.
-    #[doc(hidden)]
-    pub fn finalize_admitted(self, commit: AttemptTerminalCommit) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn finalize_admitted(self, commit: AttemptTerminalCommit) -> Result<(), AttemptLifecycleError> {
         let mut lifecycle = self.0.lock_lifecycle();
         lifecycle.terminal_commit(commit, self.0.monotonic_ns())?;
         Ok(())
@@ -1044,7 +1035,8 @@ impl AttemptHandle {
     /// Counts one secondary cleanup failure in the lifecycle before trying to
     /// retain its optional timeline projection. Timeline loss therefore never
     /// changes the sealed report's exact cleanup accounting.
-    pub fn record_cleanup_failure(&self, phase: CleanupFailurePhase, cleanup_error: &QueryError) {
+    #[cfg(test)]
+    pub(crate) fn record_cleanup_failure(&self, phase: CleanupFailurePhase, cleanup_error: &QueryError) {
         let summary = CleanupFailureSummary::from_native_error(phase, cleanup_error);
         self.0.lock_lifecycle().cleanup_failure(summary.clone());
         let Some(observation) = self.0.observation.get() else { return };

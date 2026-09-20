@@ -975,7 +975,7 @@ use tokio::{
 use tonic::transport::Channel;
 
 #[cfg(not(test))]
-use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
+use crate::connection_retry::{ConnectionRetryConfig, connect_with_retry};
 
 #[cfg(not(test))]
 type FlightClient = FlightSqlServiceClient<Channel>;
@@ -1050,7 +1050,6 @@ async fn connect(url: &str, attempts: usize, url_host_port: &str) -> ToolResult<
     connect_with_retry(
         url,
         ConnectionRetryConfig::fixed_attempts(attempts, CONNECT_BACKOFF),
-        || Ok(BeforeConnect::Continue),
         FlightSqlServiceClient::new,
         |error| format!("Flight SQL server did not accept connections at {url_host_port}: {:?}", Some(error)),
     )

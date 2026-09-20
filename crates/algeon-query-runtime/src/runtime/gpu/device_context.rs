@@ -16,8 +16,7 @@ use crate::{
 
 /// Service runtime state for one CUDA device ordinal.
 #[derive(Debug, Clone)]
-#[doc(hidden)]
-pub struct DeviceContext {
+pub(crate) struct DeviceContext {
     inner: Arc<DeviceContextInner>,
 }
 
@@ -39,12 +38,11 @@ struct DeviceContextInner {
 
 impl DeviceContext {
     /// Creates a per-device service context.
-    #[doc(hidden)]
     #[expect(
         clippy::too_many_arguments,
         reason = "service construction inputs are distinct admission and ownership values"
     )]
-    pub fn new(
+    pub(crate) fn new(
         device: cudf::DeviceId,
         stream_pool: ServiceStreamPool,
         mr_manager: cudf::DeviceMemoryManager,
@@ -173,35 +171,32 @@ impl DeviceContext {
     }
 
     /// Service stream pool for this device.
-    pub fn stream_pool(&self) -> &ServiceStreamPool {
+    pub(crate) fn stream_pool(&self) -> &ServiceStreamPool {
         &self.inner.stream_pool
     }
 
     /// Immutable process-installation record captured before this device was
     /// published in the backend core.
-    pub fn memory_manager_installation(&self) -> cudf::DeviceMemoryManagerInstallationState {
+    pub(crate) fn memory_manager_installation(&self) -> cudf::DeviceMemoryManagerInstallationState {
         self.inner.memory_manager_installation
     }
 
-    #[doc(hidden)]
-    pub fn engine_health_identity(&self) -> EngineDeviceHealthIdentity {
+    pub(crate) fn engine_health_identity(&self) -> EngineDeviceHealthIdentity {
         self.inner.engine_health_identity
     }
 
     /// Signal-only allocation-failure counters from the device memory manager callback.
-    pub fn memory_failure_report(&self) -> DeviceMemoryFailureReport {
+    pub(crate) fn memory_failure_report(&self) -> DeviceMemoryFailureReport {
         self.inner.memory_failure_tracker.report()
     }
 
     /// Per-device versioned immutable-grant ledger.
-    #[doc(hidden)]
-    pub fn ledger(&self) -> &Arc<DeviceLedger> {
+    pub(crate) fn ledger(&self) -> &Arc<DeviceLedger> {
         &self.inner.ledger
     }
 
     /// Per-device attempt lane array (`A_d` lanes, one per admitted attempt).
-    #[doc(hidden)]
-    pub fn lane_permits(&self) -> &Arc<DeviceLanePermits> {
+    pub(crate) fn lane_permits(&self) -> &Arc<DeviceLanePermits> {
         &self.inner.lane_permits
     }
 
@@ -211,7 +206,7 @@ impl DeviceContext {
     }
 
     /// Device managed capacity used for granted accounting.
-    pub fn capacity_bytes(&self) -> u64 {
+    pub(crate) fn capacity_bytes(&self) -> u64 {
         self.inner.ledger.managed_capacity_bytes()
     }
 
@@ -221,8 +216,7 @@ impl DeviceContext {
     /// is its device-context boundary: it samples the sibling runtime's
     /// process-lifetime fault state and synchronously closes this device's
     /// ledger before placement can issue another grant.
-    #[doc(hidden)]
-    pub fn synchronize_native_admission_health(&self) -> Result<bool> {
+    pub(crate) fn synchronize_native_admission_health(&self) -> Result<bool> {
         let health = device_health_snapshot(self.inner.device);
         if health.status() != DeviceHealthStatus::Unhealthy {
             return Ok(false);
@@ -239,8 +233,7 @@ impl DeviceContext {
     ///
     /// The ledger transaction owns both the active-attempt count and the
     /// grant bytes; there is no separate slot to acquire.
-    #[doc(hidden)]
-    pub fn try_admit_attempt(
+    pub(crate) fn try_admit_attempt(
         &self,
         waiter_id: AdmissionRequestId,
         attempt_id: AttemptId,

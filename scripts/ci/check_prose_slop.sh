@@ -106,7 +106,9 @@ def collect_files(mode, targets, excludes):
             if p.suffix.lower() in DOC_EXTENSIONS and p.is_file():
                 files.append(p)
     else:
-        search_roots = targets if targets else DEFAULT_TARGETS
+        # docs/ and note/ are gitignored private trees, so a default target may be
+        # absent from a checkout; explicitly named paths must exist.
+        search_roots = targets if targets else [target for target in DEFAULT_TARGETS if Path(target).exists()]
         for target in search_roots:
             p = Path(target)
             if p.is_file():

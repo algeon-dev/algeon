@@ -132,7 +132,7 @@ const fn metric(
 }
 
 /// QueryMetrics scalar and nested-row descriptors.
-pub const QUERY_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
+pub(crate) const QUERY_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
     metric(
         "input_batches",
         MetricUnit::Count,

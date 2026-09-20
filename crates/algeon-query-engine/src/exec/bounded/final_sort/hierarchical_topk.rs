@@ -2,9 +2,9 @@ use super::{
     AggregateLaneDispatch, CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode,
     LimitSpec, QueryError, QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, SortLaneCandidate,
     TopKLevelItem, commit_topk_merge_level, concat_committed_frames_with_token, cudf_query_error_with_budget_details,
-    estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes, execute_limit_on_frame_with_token,
-    execute_limit_spec_with_token, execute_limit_with_token, execute_sort_lane_candidate, final_sort_retry_facts,
-    final_sort_rows_per_chunk, final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
+    estimated_bytes_per_row, execute_limit_on_frame_with_token, execute_limit_spec_with_token,
+    execute_limit_with_token, execute_sort_lane_candidate, final_sort_retry_facts, final_sort_rows_per_chunk,
+    final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
     record_final_sort_retry_error, reduce_merge_fan_in, sort_lane_fan_out, sort_lane_params,
     sort_topk_candidate_with_budget, split_sort_candidate_ranges, stream_candidate_chunk_hint, topk_candidate_rows,
 };
@@ -13,7 +13,6 @@ use crate::exec::retry::backoff_before_retry;
 #[derive(Clone, Copy)]
 struct TopKCandidatePlan {
     keep_rows: usize,
-    bytes_per_row: u64,
     rows_per_chunk: usize,
 }
 
@@ -22,7 +21,6 @@ struct TopKSliceAttempt {
     offset: usize,
     length: usize,
     keep_rows: usize,
-    bytes_per_row: u64,
     attempt: usize,
 }
 
@@ -60,12 +58,6 @@ impl FinalSortExecutor<'_, '_, '_> {
     ) -> Result<CommittedPartial> {
         let keep_rows = topk_candidate_rows(limit.spec)?;
         if keep_rows == 0 {
-            let output_reservation = match self.reserve_estimated_final_sort_output(0, initial_attempt) {
-                Ok(reservation) => reservation,
-                Err(error) => {
-                    return Err(error);
-                },
-            };
             let token = match self.final_sort_budget_token("final_sort_limit", initial_attempt) {
                 Ok(token) => token,
                 Err(error) => {
@@ -84,7 +76,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                     return Err(error);
                 },
             };
-            return self.finalize_final_sort_output_reservation(output, output_reservation, initial_attempt);
+            return self.observe_final_sort_output(output, initial_attempt);
         }
 
         let input_rows = input.frame.num_rows();
@@ -109,7 +101,7 @@ impl FinalSortExecutor<'_, '_, '_> {
         let initial: Result<Vec<CommittedPartial>> = if sort_lane_fan_out(self.dispatch, ranges.len(), initial_attempt)
         {
             let dispatch = self.dispatch.expect("sort lane fan-out requires a lane dispatcher");
-            match self.lane_frame_candidates(dispatch, &input, keep_rows, bytes_per_row, ranges, initial_attempt) {
+            match self.lane_frame_candidates(dispatch, &input, keep_rows, ranges, initial_attempt) {
                 Ok(candidates) => Ok(candidates),
                 // The frame input is intact (candidates borrowed it), so a
                 // retryable fan-out failure retries serially at attempt 2:
@@ -121,20 +113,12 @@ impl FinalSortExecutor<'_, '_, '_> {
                 {
                     record_final_sort_retry_error(&error, self.execution.metrics());
                     backoff_before_retry(self.execution.context(), "query_engine.exec.bounded.final_sort_lane_retry")?;
-                    self.initial_topk_candidates(
-                        &input,
-                        TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
-                        2,
-                    )
+                    self.initial_topk_candidates(&input, TopKCandidatePlan { keep_rows, rows_per_chunk }, 2)
                 },
                 Err(error) => Err(error),
             }
         } else {
-            self.initial_topk_candidates(
-                &input,
-                TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
-                initial_attempt,
-            )
+            self.initial_topk_candidates(&input, TopKCandidatePlan { keep_rows, rows_per_chunk }, initial_attempt)
         };
         let mut candidates = match initial {
             Ok(candidates) => candidates,
@@ -187,15 +171,6 @@ impl FinalSortExecutor<'_, '_, '_> {
             return Ok(candidate);
         }
 
-        let output_reservation = match self.reserve_estimated_final_sort_output(
-            estimated_limited_output_bytes(candidate.device_bytes(), candidate.frame.num_rows(), limit.spec)?,
-            self.max_attempts,
-        ) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                return Err(error);
-            },
-        };
         let token = match self.final_sort_budget_token("final_sort_limit", self.max_attempts) {
             Ok(token) => token,
             Err(error) => {
@@ -221,7 +196,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                 ));
             },
         };
-        self.finalize_final_sort_output_reservation(output, output_reservation, self.max_attempts)
+        self.observe_final_sort_output(output, self.max_attempts)
     }
 
     /// Sorts and truncates one frame's row ranges on execution lanes.
@@ -235,7 +210,6 @@ impl FinalSortExecutor<'_, '_, '_> {
         dispatch: &AggregateLaneDispatch,
         input: &CommittedPartial,
         keep_rows: usize,
-        bytes_per_row: u64,
         ranges: Vec<(usize, usize)>,
         attempt: usize,
     ) -> Result<Vec<CommittedPartial>> {
@@ -251,7 +225,6 @@ impl FinalSortExecutor<'_, '_, '_> {
                 Ok(state.ranges.next().map(|(offset, length)| SortLaneCandidate {
                     input: ResidentGpuFrame::with_device_bytes(state.parent.clone(), state.parent_bytes),
                     slice: Some((offset, length)),
-                    bytes_per_row,
                     boundary: "final_sort_topk_chunk",
                 }))
             },
@@ -285,13 +258,7 @@ impl FinalSortExecutor<'_, '_, '_> {
             |state, execution| match state.payload.next_yielded_frame(execution) {
                 Some(Ok(mut yielded)) => {
                     let input = yielded.take_for_release();
-                    let bytes_per_row = estimated_bytes_per_row(input.device_bytes(), input.frame.num_rows());
-                    Ok(Some(SortLaneCandidate {
-                        input,
-                        slice: None,
-                        bytes_per_row,
-                        boundary: "final_sort_topk_stream_chunk",
-                    }))
+                    Ok(Some(SortLaneCandidate { input, slice: None, boundary: "final_sort_topk_stream_chunk" }))
                 },
                 Some(Err(error)) => Err(error),
                 None => Ok(None),
@@ -316,16 +283,9 @@ impl FinalSortExecutor<'_, '_, '_> {
         let mut offset = 0;
         while offset < input_rows {
             let length = plan.rows_per_chunk.min(input_rows - offset);
-            match self.topk_slice_attempt(
-                input,
-                TopKSliceAttempt {
-                    offset,
-                    length,
-                    keep_rows: plan.keep_rows,
-                    bytes_per_row: plan.bytes_per_row,
-                    attempt,
-                },
-            ) {
+            match self
+                .topk_slice_attempt(input, TopKSliceAttempt { offset, length, keep_rows: plan.keep_rows, attempt })
+            {
                 Ok(candidate) => candidates.push(candidate),
                 Err(error) => {
                     return Err(error);
@@ -475,13 +435,6 @@ impl FinalSortExecutor<'_, '_, '_> {
             },
         };
         let first = first.take_for_release();
-        let output_reservation = match self.reserve_estimated_final_sort_output(0, attempt) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                inputs.release_remaining_frames();
-                return Err(error);
-            },
-        };
         let token = match self.final_sort_budget_token("final_sort_limit", attempt) {
             Ok(token) => token,
             Err(error) => {
@@ -503,22 +456,12 @@ impl FinalSortExecutor<'_, '_, '_> {
             },
         };
         inputs.release_remaining_frames();
-        self.finalize_final_sort_output_reservation(output, output_reservation, attempt)
+        self.observe_final_sort_output(output, attempt)
     }
 
     fn topk_slice_attempt(&mut self, input: &CommittedPartial, slice: TopKSliceAttempt) -> Result<CommittedPartial> {
         const BOUNDARY: &str = "final_sort_topk_chunk";
-        let output_rows = slice.keep_rows.min(slice.length);
-        let output_reservation = match self
-            .reserve_estimated_final_sort_output(estimate_rows_bytes(slice.bytes_per_row, output_rows), slice.attempt)
-        {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                return Err(error);
-            },
-        };
         self.sort_and_limit_topk_candidate(
-            output_reservation,
             BOUNDARY,
             slice.attempt,
             slice.keep_rows,
@@ -557,18 +500,8 @@ impl FinalSortExecutor<'_, '_, '_> {
         }
 
         const BOUNDARY: &str = "final_sort_topk_stream_chunk";
-        let bytes_per_row = estimated_bytes_per_row(input.device_bytes(), input_rows);
-        let output_rows = keep_rows.min(input_rows);
-        let output_reservation =
-            match self.reserve_estimated_final_sort_output(estimate_rows_bytes(bytes_per_row, output_rows), attempt) {
-                Ok(reservation) => reservation,
-                Err(error) => {
-                    return Err(error);
-                },
-            };
         let ResidentGpuFrame { frame, .. } = input;
         self.sort_and_limit_topk_candidate(
-            output_reservation,
             BOUNDARY,
             attempt,
             keep_rows,
@@ -579,7 +512,6 @@ impl FinalSortExecutor<'_, '_, '_> {
 
     fn sort_and_limit_topk_candidate(
         &mut self,
-        output_reservation: u64,
         memory_boundary: &'static str,
         attempt: usize,
         keep_rows: usize,
@@ -653,7 +585,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                 ));
             },
         };
-        self.finalize_final_sort_output_reservation(frame, output_reservation, attempt)
+        self.observe_final_sort_output(frame, attempt)
     }
 
     fn topk_merge_level_attempt(
@@ -690,20 +622,7 @@ impl FinalSortExecutor<'_, '_, '_> {
     ) -> Result<CommittedPartial> {
         debug_assert!(candidates.len() > 1);
         const BOUNDARY: &str = "final_sort_topk_merge";
-        let requested_bytes = candidates.iter().map(|candidate| candidate.device_bytes()).sum::<u64>();
-        let candidate_rows = candidates.iter().map(|candidate| candidate.frame.num_rows()).sum::<usize>();
-        let bytes_per_row = estimated_bytes_per_row(requested_bytes, candidate_rows);
-        let output_rows = merge.keep_rows.min(candidate_rows);
-        let output_reservation = match self
-            .reserve_estimated_final_sort_output(estimate_rows_bytes(bytes_per_row, output_rows), merge.attempt)
-        {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                return Err(error);
-            },
-        };
         self.sort_and_limit_topk_candidate(
-            output_reservation,
             BOUNDARY,
             merge.attempt,
             merge.keep_rows,
@@ -720,15 +639,6 @@ impl FinalSortExecutor<'_, '_, '_> {
         limit: &LimitNode,
         attempt: usize,
     ) -> Result<CommittedPartial> {
-        let output_reservation = match self.reserve_estimated_final_sort_output(
-            estimated_limited_output_bytes(candidate.device_bytes(), candidate.frame.num_rows(), limit.spec)?,
-            attempt,
-        ) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                return Err(error);
-            },
-        };
         let token = match self.final_sort_budget_token("final_sort_limit", attempt) {
             Ok(token) => token,
             Err(error) => {
@@ -754,6 +664,6 @@ impl FinalSortExecutor<'_, '_, '_> {
                 ));
             },
         };
-        self.finalize_final_sort_output_reservation(output, output_reservation, attempt)
+        self.observe_final_sort_output(output, attempt)
     }
 }

@@ -31,14 +31,14 @@ installs cuVS SQL and a backend is configured; see
 
 ## Iceberg support
 
-Iceberg is **not supported in this release**, and it cannot be enabled from
-source: there is no `iceberg` feature in any manifest. The DataFusion
-integration moved out of apache/iceberg-rust into
-[apache/datafusion-iceberg](https://github.com/apache/datafusion-iceberg)
-(iceberg-rust#3029, merged 2026-09-17). That project already targets
-DataFusion 55, but it is not published to crates.io and still pins `iceberg` by
-git rev, so it cannot be referenced from a published manifest. Iceberg support
-returns once it ships a release.
+Iceberg tables are not a supported source. The earlier Algeon integration was
+removed together with its `iceberg` Cargo feature and its server catalog
+settings, and the server refuses to start when a removed setting is present
+(see [Removed Iceberg settings](./configuration.mdx#removed-iceberg-settings)).
+A future integration would start from the upstream DataFusion Iceberg table
+provider in
+[apache/datafusion-iceberg](https://github.com/apache/datafusion-iceberg).
+Local and `s3://` Parquet sources remain supported.
 
 ## Common flow
 
@@ -56,10 +56,10 @@ returns once it ships a release.
    in plain DataFusion (`CREATE EXTERNAL TABLE ... STORED AS PARQUET` or
    `register_parquet`); see
    [Execute one attempt per query](./datafusion-session.mdx#execute-one-attempt-per-query).
-   The server reads local Parquet or Iceberg tables from a REST or Glue
-   catalog configured under
-   [Iceberg and workspace](./configuration.mdx#iceberg-and-workspace). If you
-   use the `cugraph_*` or `cuvs_*` UDTFs, list and validate the installed
+   The server reads Parquet tables that clients register with
+   `CREATE EXTERNAL TABLE`, as in the
+   [citation network walkthrough](../guides/datasets/citation-network.mdx#register-the-tables).
+   If you use the `cugraph_*` or `cuvs_*` UDTFs, list and validate the installed
    calls with [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx).
 4. **Check whether a query runs on the GPU.** Before shipping a query, ask for
    its planned execution path, and the reason for any part that stays on the

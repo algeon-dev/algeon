@@ -33,8 +33,7 @@ pub struct GpuExecutorLease {
 }
 
 impl GpuExecutorLease {
-    #[doc(hidden)]
-    pub fn from_pool(pool: GpuExecutionPool) -> Self {
+    pub(crate) fn from_pool(pool: GpuExecutionPool) -> Self {
         Self { pool, execution_class: GpuExecutionJobClass::Lifecycle }
     }
 
@@ -42,8 +41,7 @@ impl GpuExecutorLease {
     ///
     /// The caller must already hold the attempt auxiliary permit that backs
     /// it, for at least the lifetime of the jobs this lease runs.
-    #[doc(hidden)]
-    pub fn from_pool_for_auxiliary_fragment(pool: GpuExecutionPool) -> Self {
+    pub(crate) fn from_pool_for_auxiliary_fragment(pool: GpuExecutionPool) -> Self {
         Self { pool, execution_class: GpuExecutionJobClass::Execution }
     }
 

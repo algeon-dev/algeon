@@ -1,4 +1,4 @@
-//! Parquet and JSON reader and writer entry points for [`DataFrame`].
+//! Parquet reader and writer entry points for [`DataFrame`].
 
 mod options;
 mod source_budget;
@@ -8,9 +8,7 @@ mod source_read;
 use std::{path::Path, sync::Arc};
 
 use options::validate_parquet_projection;
-pub use options::{
-    JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions, ParquetWriteOptions,
-};
+pub use options::{MultiParquetReadOptions, ParquetReadOptions, ParquetWriteOptions};
 use source_budget::{
     PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES, parquet_source_batch_budget_context, source_preflight_column_bytes,
     source_preflight_named_columns, source_preflight_row_count,
@@ -31,11 +29,11 @@ use crate::{
         table::Table,
     },
     io::{
-        TableReadOutput, json, parquet,
+        TableReadOutput, parquet,
         source::{LocalParquetSource, SourceChunk, SourceReadMode, plan_local_parquet_source_chunks},
     },
     runtime::{
-        BoundaryKind, BudgetedExecutionOutcome, ExecutionBudgetToken, QueryStageKind, Runtime,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, Runtime,
         execution_domain::{ConsumerCompletionFence, ExecutionDomain},
     },
 };
@@ -326,14 +324,7 @@ impl DataFrame {
             unreachable!("empty file list was rejected before reading");
         };
         let rest_refs: Vec<&DataFrame> = rest.iter().collect();
-        let frame = first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?;
-        frame.record_boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::SourceRead,
-            false,
-            operation,
-        )?;
-        Ok(frame)
+        first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))
     }
 
     /// Read a checked local Parquet source and return its final output.
@@ -365,8 +356,8 @@ impl DataFrame {
         let operation = "dataframe::read_parquet_source";
         let plan =
             plan_local_parquet_source_chunks(source, Default::default()).map_err(|error| error.reanchor(operation))?;
-        let frame = if plan.chunks().is_empty() {
-            empty_parquet_source_frame(runtime, source, mode)?
+        if plan.chunks().is_empty() {
+            empty_parquet_source_frame(runtime, source, mode)
         } else {
             let mut frames = Vec::with_capacity(plan.chunks().len());
             for chunk in plan.chunks() {
@@ -381,16 +372,8 @@ impl DataFrame {
                 unreachable!("empty chunks handled before split_first");
             };
             let rest_refs: Vec<&DataFrame> = rest.iter().collect();
-            first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?
-        };
-
-        frame.record_boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::SourceRead,
-            false,
-            operation,
-        )?;
-        Ok(frame)
+            first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))
+        }
     }
 
     /// Execute one planned local Parquet source chunk.
@@ -416,14 +399,7 @@ impl DataFrame {
         mode: SourceReadMode,
     ) -> Result<ParquetSourceChunkReadOutput> {
         let operation = "dataframe::read_parquet_source_chunk";
-        let output = read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)?;
-        output.frame().record_boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::SourceRead,
-            false,
-            operation,
-        )?;
-        Ok(output)
+        read_parquet_source_chunk_frame(runtime, source, chunk, mode, operation)
     }
 
     /// Execute one planned local Parquet source chunk from a caller-owned host
@@ -453,15 +429,7 @@ impl DataFrame {
         host_buffer: &[u8],
     ) -> Result<ParquetSourceChunkReadOutput> {
         let operation = "dataframe::read_parquet_source_chunk_from_host_buffer";
-        let output =
-            read_parquet_source_chunk_frame_from_host_buffer(runtime, source, chunk, mode, host_buffer, operation)?;
-        output.frame().record_boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::SourceRead,
-            false,
-            operation,
-        )?;
-        Ok(output)
+        read_parquet_source_chunk_frame_from_host_buffer(runtime, source, chunk, mode, host_buffer, operation)
     }
 
     /// Execute one planned local Parquet source chunk under a hard budget token.
@@ -550,15 +518,6 @@ impl DataFrame {
             .frame()
             .device_allocated_size_bytes()
             .map_err(|error| error.reanchor(operation))
-            .map_err(|error| token.annotate_error(error, operation))?;
-        output
-            .frame()
-            .record_boundary_observation_for_query_stage(
-                BoundaryKind::HostToDevice,
-                QueryStageKind::SourceRead,
-                false,
-                operation,
-            )
             .map_err(|error| token.annotate_error(error, operation))?;
         let report = token
             .reservation_enforced_report()
@@ -654,78 +613,6 @@ impl DataFrame {
         let exec_options = write_domain.enter_execution()?;
         parquet::write_parquet_with_exec(&tv, &table_options, exec_options.options())?;
         write_domain.synchronize_for_host_visibility("dataframe::write_parquet_with_options")
-    }
-
-    /// Read a JSON Lines (NDJSON) file into a `DataFrame`, using key names
-    /// from the JSON objects as column names.
-    ///
-    /// # Cost
-    /// Same as [`read_json_with_options`](Self::read_json_with_options):
-    /// host file I/O, GPU allocation for the decoded columns, and host-to-
-    /// device transfer of decoded field data.
-    pub fn read_json(runtime: &Runtime, path: impl AsRef<Path>) -> Result<Self> {
-        Self::read_json_with_options(JsonReadOptions::builder().filepath(path).with_runtime(runtime).build())
-    }
-
-    /// Read a JSON file into a `DataFrame` using caller-provided
-    /// [`JsonReadOptions`].
-    ///
-    /// Column names are extracted from JSON key names when the low-level
-    /// reader can recover them truthfully from the file.
-    ///
-    /// # Cost
-    /// Performs host file I/O, allocates new GPU-backed columns for the
-    /// decoded result, and copies decoded field data into device memory.
-    pub fn read_json_with_options(options: JsonReadOptions) -> Result<Self> {
-        let operation = "dataframe::read_json_with_options";
-        let table_options = options.to_table_options();
-        let result = json::read_json_table(&table_options).map_err(|error| error.reanchor(operation))?;
-        let (table, names) = require_reader_schema_names(result, operation, "json reader")?;
-        let frame = Self::from_table(table, names).map_err(|error| error.reanchor(operation))?;
-        frame.record_boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::SourceRead,
-            false,
-            operation,
-        )?;
-        Ok(frame)
-    }
-
-    /// Write this `DataFrame` to a JSON Lines (NDJSON) file, using column
-    /// names from the DataFrame schema as JSON keys.
-    ///
-    /// # Cost
-    /// Same as [`write_json_with_options`](Self::write_json_with_options):
-    /// serializes device-backed columns to a host file sink and synchronizes
-    /// the retained write execution domain before returning.
-    pub fn write_json(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.write_json_with_options(JsonWriteOptions::builder().filepath(path).build())
-    }
-
-    /// Write this `DataFrame` to a JSON file using caller-provided options.
-    ///
-    /// The DataFrame's schema names are always used as the output JSON key
-    /// names so the high-level round-trip path remains truthful.
-    ///
-    /// # Cost
-    /// Serializes device-backed columns to a host file sink. This may fence
-    /// the DataFrame's retained execution domain before launching the write
-    /// when the caller supplies a different write runtime on the same device,
-    /// and it synchronizes the retained write execution domain before
-    /// returning so the output file is host-visible on success.
-    pub fn write_json_with_options(&self, options: JsonWriteOptions) -> Result<()> {
-        let names: Vec<&str> = self.column_names();
-        let opts = options.to_table_options(&names);
-        let write_domain = if let Some(runtime) = opts.runtime() {
-            Arc::clone(runtime.execution_domain())
-        } else {
-            Arc::clone(&self.domain)
-        };
-        let _consumer_fence = prepare_write_domain(&self.domain, &write_domain, "dataframe::write_json_with_options")?;
-        let tv = self.build_table_view()?;
-        let exec_options = write_domain.enter_execution()?;
-        json::write_json_with_exec(&tv, &opts, exec_options.options())?;
-        write_domain.synchronize_for_host_visibility("dataframe::write_json_with_options")
     }
 }
 

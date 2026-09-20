@@ -224,17 +224,7 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #   ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #                                      datafusion_exact_host_welford | gpu_native_tolerant
 #
-# ── Iceberg catalog (feature `iceberg`; omit all to disable) ────────────────
-#   ALGEON_ICEBERG_CATALOG_KIND         glue | rest
-#   ALGEON_ICEBERG_CATALOG_NAME  ALGEON_ICEBERG_NAMESPACE  ALGEON_ICEBERG_WAREHOUSE
-#   ALGEON_ICEBERG_TABLES               optional "alias=table,table2"
-#   ALGEON_ICEBERG_GLUE_CATALOG_ID  ALGEON_ICEBERG_GLUE_URI   (kind=glue)
-#   ALGEON_ICEBERG_REST_URI  ALGEON_ICEBERG_REST_PREFIX  ALGEON_ICEBERG_REST_TOKEN  (kind=rest)
-#   ALGEON_ICEBERG_S3_ENDPOINT / _REGION / _PATH_STYLE
-#   ALGEON_ICEBERG_S3_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN  (static creds)
-#   ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain         (use AWS SDK default chain)
-#   ALGEON_LAKEHOUSE_CACHE_ROOT / _READ / _POLICY / _MAX_BYTES
-#   ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS                (default 60)
+# ── S3 access ───────────────────────────────────────────────────────────────
 #   AWS_DEFAULT_REGION                 REQUIRED for KvikIO S3 (reads ONLY this var;
 #                                      AWS_REGION alone -> unsigned reqs -> 403)
 #   AWS_REGION  AWS_PROFILE  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN

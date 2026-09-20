@@ -3,7 +3,7 @@ use super::{
     MemoryControlPolicy, NodeId, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy,
     SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
     apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
-    record_bounded_parquet_source_metrics, unsupported_bounded_shape, validate_local_parquet_source,
+    record_bounded_parquet_source_metrics, validate_local_parquet_source,
 };
 use crate::rapids_backend::rapids_analysis_context;
 
@@ -69,12 +69,6 @@ fn plan_bounded_local_parquet_source_stream(
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source, rapids_analysis_context())?;
-    if source.has_position_delete_visible_scan_limit() {
-        return Err(unsupported_bounded_shape(
-            "bounded join leaf streaming does not own Iceberg position-delete visible-row scan-limit stopping",
-            "position_delete_visible_scan_limit_requires_materialized_source",
-        ));
-    }
     let mut planning_policy = local_parquet_source_stream_chunk_planning_policy(context, source, memory_model);
     if let Some(chunk_cap_hints) = chunk_cap_hints {
         planning_policy = apply_source_adjacent_aggregate_chunk_caps(planning_policy, chunk_cap_hints);

@@ -33,16 +33,14 @@ use crate::{
 
 /// Soft managed-capacity calculation for one installed device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum DeviceRegistryCapacityPolicy {
+pub(crate) enum DeviceRegistryCapacityPolicy {
     Automatic { headroom_bytes: u64, fallback_bytes: u64, fraction: Option<GpuMemoryFraction> },
     Explicit { limit_bytes: u64 },
 }
 
 /// Physical allocation ownership represented by the process manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum DeviceRegistryMemoryPartition {
+pub(crate) enum DeviceRegistryMemoryPartition {
     WholeDevice,
     StaticPartition { allocation_limit_bytes: usize },
 }
@@ -58,35 +56,22 @@ impl DeviceRegistryMemoryPartition {
 
 /// Fully resolved, independent installation profile for one device.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct DeviceRegistryInstallProfile {
-    #[doc(hidden)]
-    pub stream_pool_size: usize,
+pub(crate) struct DeviceRegistryInstallProfile {
+    pub(crate) stream_pool_size: usize,
     /// Immutable native capabilities consumed before placement and queueing.
-    #[doc(hidden)]
-    pub device_capabilities: DeviceCapabilities,
-    #[doc(hidden)]
-    pub max_active_attempts: usize,
-    #[doc(hidden)]
-    pub capacity_policy: DeviceRegistryCapacityPolicy,
-    #[doc(hidden)]
-    pub backend_reserve_bytes: u64,
-    #[doc(hidden)]
-    pub cache_cap_bytes: u64,
-    #[doc(hidden)]
-    pub default_query_limit_bytes: Option<u64>,
-    #[doc(hidden)]
-    pub source_work_per_attempt: usize,
-    #[doc(hidden)]
-    pub worker_job_capacity: usize,
-    #[doc(hidden)]
-    pub lane_count: usize,
+    pub(crate) device_capabilities: DeviceCapabilities,
+    pub(crate) max_active_attempts: usize,
+    pub(crate) capacity_policy: DeviceRegistryCapacityPolicy,
+    pub(crate) backend_reserve_bytes: u64,
+    pub(crate) cache_cap_bytes: u64,
+    pub(crate) default_query_limit_bytes: Option<u64>,
+    pub(crate) source_work_per_attempt: usize,
+    pub(crate) worker_job_capacity: usize,
+    pub(crate) lane_count: usize,
     /// Whether public diagnostics may actively sample CUDA/NVML telemetry for
     /// this ordinal. This never participates in admission or placement.
-    #[doc(hidden)]
-    pub install_telemetry: bool,
-    #[doc(hidden)]
-    pub memory_partition: DeviceRegistryMemoryPartition,
+    pub(crate) install_telemetry: bool,
+    pub(crate) memory_partition: DeviceRegistryMemoryPartition,
 }
 
 impl DeviceRegistryInstallProfile {
@@ -97,16 +82,15 @@ impl DeviceRegistryInstallProfile {
 
 /// Configuration used when installing a device registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct DeviceRegistryConfig {
+pub(crate) struct DeviceRegistryConfig {
     /// CUDA ordinals enabled for the service. Empty means all visible devices.
-    pub device_ordinals: Vec<usize>,
+    pub(crate) device_ordinals: Vec<usize>,
     /// Stream-pool size installed for each enabled device.
-    pub stream_pool_size: usize,
+    pub(crate) stream_pool_size: usize,
     /// Fixed capacity headroom subtracted from each device's total memory.
-    pub capacity_headroom_bytes: u64,
+    pub(crate) capacity_headroom_bytes: u64,
     /// Fallback capacity used if the headroom calculation underflows.
-    pub fallback_capacity_bytes: u64,
+    pub(crate) fallback_capacity_bytes: u64,
     device_profiles: HashMap<usize, DeviceRegistryInstallProfile>,
 }
 
@@ -124,20 +108,18 @@ impl DeviceRegistryConfig {
 
     /// Sets the per-device capacity calculation parameters.
     #[cfg(test)]
-    pub fn with_capacity_policy(mut self, headroom_bytes: u64, fallback_bytes: u64) -> Self {
+    pub(crate) fn with_capacity_policy(mut self, headroom_bytes: u64, fallback_bytes: u64) -> Self {
         self.capacity_headroom_bytes = headroom_bytes;
         self.fallback_capacity_bytes = fallback_bytes;
         self
     }
 
-    #[doc(hidden)]
-    pub fn with_device_profile(mut self, device_ordinal: usize, profile: DeviceRegistryInstallProfile) -> Self {
+    pub(crate) fn with_device_profile(mut self, device_ordinal: usize, profile: DeviceRegistryInstallProfile) -> Self {
         self.device_profiles.insert(device_ordinal, profile);
         self
     }
 
-    #[doc(hidden)]
-    pub fn profile(&self, device_ordinal: usize) -> Option<&DeviceRegistryInstallProfile> {
+    pub(crate) fn profile(&self, device_ordinal: usize) -> Option<&DeviceRegistryInstallProfile> {
         self.device_profiles.get(&device_ordinal)
     }
 }
@@ -152,23 +134,17 @@ pub(crate) struct DeviceRegistry {
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ResolvedDeviceInstallPlan {
-    #[doc(hidden)]
-    pub device_ordinal: usize,
-    #[doc(hidden)]
-    pub facts: super::DeviceFacts,
-    #[doc(hidden)]
-    pub profile: DeviceRegistryInstallProfile,
-    #[doc(hidden)]
-    pub resource_profile: DeviceResourceProfile,
+pub(crate) struct ResolvedDeviceInstallPlan {
+    pub(crate) device_ordinal: usize,
+    pub(crate) facts: super::DeviceFacts,
+    pub(crate) profile: DeviceRegistryInstallProfile,
+    pub(crate) resource_profile: DeviceResourceProfile,
 }
 
 /// Complete immutable device plan set frozen before the first process-memory
 /// manager is installed.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ResolvedDeviceInstallPlans {
+pub(crate) struct ResolvedDeviceInstallPlans {
     plans: Vec<ResolvedDeviceInstallPlan>,
     device_ordinals: Vec<usize>,
     max_ordinal: usize,
@@ -176,14 +152,12 @@ pub struct ResolvedDeviceInstallPlans {
 
 impl ResolvedDeviceInstallPlans {
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn plans(&self) -> &[ResolvedDeviceInstallPlan] {
+    pub(crate) fn plans(&self) -> &[ResolvedDeviceInstallPlan] {
         &self.plans
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn device_ordinals(&self) -> &[usize] {
+    pub(crate) fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
     }
 
@@ -202,14 +176,10 @@ struct ManagedDevice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct EngineDeviceHealthIdentity {
-    #[doc(hidden)]
-    pub device_health_generation: u64,
-    #[doc(hidden)]
-    pub backend_health_generation: u64,
-    #[doc(hidden)]
-    pub memory_manager_installation_generation: u64,
+pub(crate) struct EngineDeviceHealthIdentity {
+    pub(crate) device_health_generation: u64,
+    pub(crate) backend_health_generation: u64,
+    pub(crate) memory_manager_installation_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -221,8 +191,7 @@ struct PersistentDeviceHealthRecord {
 impl DeviceRegistry {
     /// Resolves and freezes every requested device plan without installing a
     /// process memory manager, stream pool, governor, or execution context.
-    #[doc(hidden)]
-    pub fn resolve_install_plans(
+    pub(crate) fn resolve_install_plans(
         inventory: &dyn GpuInventory,
         config: &DeviceRegistryConfig,
         probe: Option<&dyn GpuBackendConstructionProbe>,
@@ -286,8 +255,7 @@ impl DeviceRegistry {
     /// snapshot per device to freeze the managed capacity (`M`) against
     /// post-install reality; the manager installation itself consumes device
     /// memory that pre-install facts cannot see.
-    #[doc(hidden)]
-    pub fn install_resolved(
+    pub(crate) fn install_resolved(
         resolved: ResolvedDeviceInstallPlans,
         owner: &DeviceOwnerToken<'_>,
         probe: Option<&dyn GpuBackendConstructionProbe>,
@@ -468,7 +436,7 @@ impl DeviceRegistry {
     }
 
     /// Looks up a context by CUDA device ordinal.
-    pub fn context_by_ordinal(&self, ordinal: usize) -> Result<&DeviceContext> {
+    pub(crate) fn context_by_ordinal(&self, ordinal: usize) -> Result<&DeviceContext> {
         self.contexts.get(ordinal).and_then(Option::as_ref).ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -480,43 +448,40 @@ impl DeviceRegistry {
     }
 
     /// Iterates installed contexts in ordinal order.
-    pub fn contexts(&self) -> impl Iterator<Item = &DeviceContext> {
+    pub(crate) fn contexts(&self) -> impl Iterator<Item = &DeviceContext> {
         self.contexts.iter().filter_map(Option::as_ref)
     }
 
     /// Allocation-failure reports for all installed devices.
-    pub fn memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
+    pub(crate) fn memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
         self.contexts().map(DeviceContext::memory_failure_report).collect()
     }
 
     /// Enabled CUDA ordinals in placement order.
-    pub fn device_ordinals(&self) -> &[usize] {
+    pub(crate) fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
     }
 
     /// CUDA ordinals whose immutable startup profile enables live telemetry.
     /// This diagnostic selection is independent of the admission device set.
-    #[doc(hidden)]
-    pub fn telemetry_device_ordinals(&self) -> &[usize] {
+    pub(crate) fn telemetry_device_ordinals(&self) -> &[usize] {
         &self.telemetry_device_ordinals
     }
 
     /// Number of installed device contexts.
-    #[doc(hidden)]
-    pub fn resource_profile(&self, device_ordinal: usize) -> Option<&DeviceResourceProfile> {
+    pub(crate) fn resource_profile(&self, device_ordinal: usize) -> Option<&DeviceResourceProfile> {
         self.resource_profiles.iter().find(|profile| profile.device_ordinal == device_ordinal)
     }
 
     /// Whether one installed device can execute every immutable capability
     /// requirement of an attempt. This reads only the profile frozen during
     /// installation; it never consults live CUDA state.
-    #[doc(hidden)]
-    pub fn supports_capabilities(&self, device_ordinal: usize, requirements: &[ExecutionCapability]) -> bool {
+    pub(crate) fn supports_capabilities(&self, device_ordinal: usize, requirements: &[ExecutionCapability]) -> bool {
         self.resource_profile(device_ordinal)
             .is_some_and(|profile| profile.device_capabilities.supports_all(requirements))
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.device_ordinals.len()
     }
 }

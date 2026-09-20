@@ -9,6 +9,7 @@ pub(crate) mod row_range;
 pub mod scalar;
 pub(crate) mod schema;
 pub mod table;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 pub mod types;
 

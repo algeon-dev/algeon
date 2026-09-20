@@ -17,7 +17,7 @@ impl SharedSubplanMaterializationDiagnostics {
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.candidate_count += other.candidate_count;
         self.applied_count += other.applied_count;
@@ -29,9 +29,9 @@ impl SharedSubplanMaterializationDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedSubplanMaterializationCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Stable fingerprint for the repeated aggregate family.
-    pub family_key: String,
+    pub(crate) family_key: String,
     /// Aggregate nodes that belong to this repeated family.
     pub aggregate_node_ids: Vec<NodeId>,
     /// Number of aggregate nodes in the repeated family.
@@ -53,9 +53,9 @@ pub struct SharedSubplanMaterializationCandidateDiagnostics {
     /// Runtime single-pass threshold bytes consulted by aggregate execution, if known at optimization time.
     pub filtered_aggregate_memory_threshold_bytes: Option<u64>,
     /// Stable threshold policy when exact runtime budget bytes are not optimizer-visible.
-    pub filtered_aggregate_memory_threshold_policy: String,
+    pub(crate) filtered_aggregate_memory_threshold_policy: String,
     /// Abstract local-source fingerprints used for family grouping.
-    pub source_fingerprints: Vec<String>,
+    pub(crate) source_fingerprints: Vec<String>,
     /// Number of exact source variants after retaining reader-predicate text.
     pub exact_source_variant_count: usize,
     /// Sum of selected source bytes across all repeated branches, if known.

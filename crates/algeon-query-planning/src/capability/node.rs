@@ -164,7 +164,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCon
         PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(plan, node.id, aggregate),
         PlanNode::Window(window) => window_node_executable_decision(node.id, window),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
-        PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
+        PlanNode::Limit(limit) => limit_node_executable_decision(node.id, limit),
         PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join, ctx),
         PlanNode::Union(union) => union_node_executable_decision(plan, node.id, union),
         PlanNode::EdgeNormalize(edge_normalize) => {
@@ -514,7 +514,7 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> Capability
     CapabilityDecision::Satisfied
 }
 
-fn limit_node_executable_decision(_plan: &QueryPlan, node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
+fn limit_node_executable_decision(node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
     if let Some(fetch) = limit.spec.fetch
         && limit.spec.skip.checked_add(fetch).is_none()
     {
@@ -1015,15 +1015,15 @@ fn edge_normalize_node_executable_decision(
 pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
     let mut properties = Vec::new();
     if node.facts.placement == DataPlacement::Device {
-        properties.push(ProducedProperty::ResidentFrame);
+        properties.push(ProducedProperty::Resident);
     }
     match &node.kind {
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
-            properties.push(ProducedProperty::ScalarFrame);
+            properties.push(ProducedProperty::Scalar);
         },
-        PlanNode::Aggregate(_) => properties.push(ProducedProperty::GroupedFrame),
-        PlanNode::Window(_) => properties.push(ProducedProperty::OrderedFrame),
-        PlanNode::Sort(_) => properties.push(ProducedProperty::OrderedFrame),
+        PlanNode::Aggregate(_) => properties.push(ProducedProperty::Grouped),
+        PlanNode::Window(_) => properties.push(ProducedProperty::Ordered),
+        PlanNode::Sort(_) => properties.push(ProducedProperty::Ordered),
         _ => {},
     }
     properties

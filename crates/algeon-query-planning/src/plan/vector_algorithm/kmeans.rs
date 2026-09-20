@@ -15,7 +15,7 @@ pub enum VectorKMeansInit {
 
 impl VectorKMeansInit {
     /// Stable diagnostic label.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::KMeansPlusPlus => "kmeans_plus_plus",
             Self::Random => "random",
@@ -101,7 +101,7 @@ pub enum VectorKMeansMetric {
 }
 
 impl VectorKMeansMetric {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::L2Expanded => "l2_expanded",
             Self::L2SqrtExpanded => "l2_sqrt_expanded",

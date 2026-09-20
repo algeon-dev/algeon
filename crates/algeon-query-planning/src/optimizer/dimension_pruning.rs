@@ -31,14 +31,16 @@ mod resolver;
 mod seed;
 
 pub use eval::I64ExprRangeAccumulator;
-#[doc(hidden)]
-pub use eval::derive_i64_expr_range_from_filtered_subtree;
+pub(crate) use eval::derive_i64_expr_range_from_filtered_subtree;
 use eval::{array_i64_value, derive_dimension_key_filter, eval_bool};
+pub(crate) use key_filter::select_overlapping_row_groups;
 pub use key_filter::{
-    DIMENSION_KEY_FILTER_MAX_RUNS, DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, RowGroupOverlapSelection,
-    dimension_key_filter_from_batch, select_overlapping_row_groups,
+    DIMENSION_KEY_FILTER_MAX_RUNS, DimensionKeyAccumulator, DimensionKeyFilter, KeyRange,
+    dimension_key_filter_from_batch,
 };
-pub use resolver::{LocalParquetPruningResolver, NoDimensionPruningFacts};
+pub use resolver::LocalParquetPruningResolver;
+#[cfg(test)]
+pub use resolver::NoDimensionPruningFacts;
 pub use seed::seed_dimension_derived_reader_predicates;
 use seed::{aggregate_group_output_name, remap_unqualified_columns, seed_reader_predicates_from_group_key_filters};
 
@@ -98,12 +100,12 @@ pub struct DimensionDerivedRowGroupPruningDiagnostics {
 
 impl DimensionDerivedRowGroupPruningDiagnostics {
     /// Returns true when the pass produced no candidate evidence.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -114,11 +116,11 @@ impl DimensionDerivedRowGroupPruningDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionDerivedRowGroupPruningCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Join node whose equality key supplied the dimension/fact mapping.
-    pub candidate_node_id: NodeId,
+    pub(crate) candidate_node_id: NodeId,
     /// Source node scanned to derive the dimension key range.
-    pub dimension_source_node_id: Option<NodeId>,
+    pub(crate) dimension_source_node_id: Option<NodeId>,
     /// Source node whose row-group selection was narrowed.
     pub target_source_node_id: Option<NodeId>,
     /// Dimension join-key column after lineage tracing.
@@ -134,7 +136,7 @@ pub struct DimensionDerivedRowGroupPruningCandidateDiagnostics {
     /// Target row groups selected after pruning.
     pub selected_row_groups_after: Option<usize>,
     /// Configured row limit for scanning a filtered dimension source.
-    pub max_dimension_rows: u64,
+    pub(crate) max_dimension_rows: u64,
     /// True when the returned plan uses the narrowed row-group selection.
     pub applied: bool,
     /// Rejection reason when no pruning was applied.
@@ -385,20 +387,20 @@ pub fn optimize_dimension_derived_row_group_pruning(
 /// Plan-shape candidate for dimension-derived fact row-group pruning.
 ///
 /// Local-path sources are discovered and applied by
-/// `optimize_dimension_derived_row_group_pruning`. Object-store/table-format
-/// sources are discovered here and resolved by the DataFusion adapter, keeping
-/// this crate free of catalog/object-store dependencies.
+/// `optimize_dimension_derived_row_group_pruning`. Object-store sources are
+/// discovered here and resolved by the DataFusion adapter, keeping this crate
+/// free of object-store dependencies.
 ///
 /// A request is only eligibility evidence. The resolver must still derive a
 /// non-empty key range, find target stats, and prove a real row-group reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionDerivedPruningRequest {
     /// Source node whose reader predicate, once evaluated, yields the join-key range.
-    pub dimension_source_node_id: NodeId,
+    pub(crate) dimension_source_node_id: NodeId,
     /// Dimension source column that carries the join key.
     pub dimension_key_column: String,
     /// Fact source node whose row groups can be pruned by the derived range.
-    pub target_source_node_id: NodeId,
+    pub(crate) target_source_node_id: NodeId,
     /// Fact source column that carries the join key.
     pub target_key_column: String,
 }
@@ -575,15 +577,15 @@ pub struct LocalParquetRowGroupSelection {
 
 /// Outcome of [`apply_local_parquet_row_group_selections`].
 #[derive(Debug, Clone)]
-pub struct LocalParquetRowGroupSelectionApplyResult {
+pub(crate) struct LocalParquetRowGroupSelectionApplyResult {
     /// Plan with the source row-group selection narrowed when pruning applied.
-    pub plan: QueryPlan,
+    pub(crate) plan: QueryPlan,
     /// Whether pruning strictly narrowed the source.
-    pub applied: bool,
+    pub(crate) applied: bool,
     /// Total candidate row groups before pruning.
-    pub before: usize,
+    pub(crate) before: usize,
     /// Retained row groups after pruning.
-    pub after: usize,
+    pub(crate) after: usize,
 }
 
 /// Applies externally-derived row-group selections to a `LocalParquetSource`.
@@ -593,7 +595,7 @@ pub struct LocalParquetRowGroupSelectionApplyResult {
 /// narrowed, never widened. An empty result is treated as non-applied for now
 /// because native empty-source representation is not modeled by this patching
 /// API.
-pub fn apply_local_parquet_row_group_selections(
+pub(crate) fn apply_local_parquet_row_group_selections(
     plan: QueryPlan,
     source_node_id: NodeId,
     selections: &[LocalParquetRowGroupSelection],
@@ -710,7 +712,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
         // The caller supplies one key range per CURRENTLY-SELECTED row group, in
         // selection order. Map the kept positions back to physical row-group ids
         // through the file's existing selection so a pre-existing `row_groups`
-        // (e.g. a table-format file-level selection) is narrowed, never replaced
+        // (e.g. a frontend file-level selection) is narrowed, never replaced
         // by raw positions. If the supplied stats do not align with the file's
         // selection, skip entirely rather than risk an unsound remap.
         let candidates = file.selected_or_all_row_groups(row_group_key_ranges.len());

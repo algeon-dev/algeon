@@ -1,5 +1,7 @@
 use std::{ops::Deref, sync::Arc};
 
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::Runtime;
 use crate::{
     core::{
         column::{Column, position_sequence_in_domain},
@@ -8,7 +10,7 @@ use crate::{
     },
     frame::series::{IntoSeries, Series},
     ops::{copying, lookup},
-    runtime::{ExecutionOverrides, Runtime, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
+    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,7 @@ impl DictionaryEncodingOptions {
     }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_codebook_key_count_limit_error_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     position_sequence_in_domain((i32::MAX as usize) + 1, runtime.execution_domain(), "codebook::from_keys").map(|_| ())

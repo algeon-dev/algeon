@@ -59,36 +59,6 @@ pub enum CapabilityReason {
     NativeSourceRowSelection,
     /// Source schema mapping cannot be represented natively.
     NativeSourceSchemaMapping,
-    /// Table-format scan requested an unsupported feature.
-    TableFormatUnsupported,
-    /// Table-format scan inspection failed or no scan plan could be built
-    /// before a native scan could be lowered.
-    TableFormatPlanningFailed,
-    /// Iceberg data file is not Parquet.
-    IcebergNonParquetDataFile,
-    /// Iceberg delete files are present and unsupported.
-    IcebergDeleteFilesUnsupported,
-    /// Iceberg field-id mapping is required and unsupported.
-    IcebergFieldIdMappingUnsupported,
-    /// Iceberg name mapping is required and unsupported.
-    IcebergNameMappingUnsupported,
-    /// Iceberg projection includes nested fields unsupported by native scans.
-    IcebergNestedProjectionUnsupported,
-    /// Iceberg partition transform cannot be represented natively.
-    IcebergPartitionTransformUnsupported,
-    /// Iceberg residual predicate cannot be represented natively.
-    IcebergResidualPredicateUnsupported,
-    /// Iceberg row selection cannot be represented natively.
-    IcebergRowSelectionUnsupported,
-    /// Iceberg object-store read cannot be lowered to native local reads.
-    IcebergObjectStoreReadUnsupported,
-    /// Iceberg remote S3 FileIO cannot be proven to use the frozen
-    /// CPU/native source-access policy.
-    IcebergFileIoSourceAccessUnverified,
-    /// Iceberg metadata contains an encrypted data or delete file.
-    IcebergEncryptedFileUnsupported,
-    /// An Iceberg metadata scalar cannot be materialized by the native source.
-    IcebergScalarValueUnsupported,
 }
 
 impl CapabilityReason {
@@ -97,7 +67,7 @@ impl CapabilityReason {
     /// Internal diagnostics projections use this list to assert that a new
     /// reason cannot accidentally ship without actionable guidance.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 33] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
@@ -117,20 +87,6 @@ impl CapabilityReason {
         Self::NativeSourceByteRange,
         Self::NativeSourceRowSelection,
         Self::NativeSourceSchemaMapping,
-        Self::TableFormatUnsupported,
-        Self::TableFormatPlanningFailed,
-        Self::IcebergNonParquetDataFile,
-        Self::IcebergDeleteFilesUnsupported,
-        Self::IcebergFieldIdMappingUnsupported,
-        Self::IcebergNameMappingUnsupported,
-        Self::IcebergNestedProjectionUnsupported,
-        Self::IcebergPartitionTransformUnsupported,
-        Self::IcebergResidualPredicateUnsupported,
-        Self::IcebergRowSelectionUnsupported,
-        Self::IcebergObjectStoreReadUnsupported,
-        Self::IcebergFileIoSourceAccessUnverified,
-        Self::IcebergEncryptedFileUnsupported,
-        Self::IcebergScalarValueUnsupported,
     ];
 
     /// Stable snake-case reason code used by reports and tests.
@@ -155,20 +111,6 @@ impl CapabilityReason {
             Self::NativeSourceByteRange => "native_source_byte_range",
             Self::NativeSourceRowSelection => "native_source_row_selection",
             Self::NativeSourceSchemaMapping => "native_source_schema_mapping",
-            Self::TableFormatUnsupported => "table_format_unsupported",
-            Self::TableFormatPlanningFailed => "table_format_planning_failed",
-            Self::IcebergNonParquetDataFile => "iceberg_non_parquet_data_file",
-            Self::IcebergDeleteFilesUnsupported => "iceberg_delete_files_unsupported",
-            Self::IcebergFieldIdMappingUnsupported => "iceberg_field_id_mapping_unsupported",
-            Self::IcebergNameMappingUnsupported => "iceberg_name_mapping_unsupported",
-            Self::IcebergNestedProjectionUnsupported => "iceberg_nested_projection_unsupported",
-            Self::IcebergPartitionTransformUnsupported => "iceberg_partition_transform_unsupported",
-            Self::IcebergResidualPredicateUnsupported => "iceberg_residual_predicate_unsupported",
-            Self::IcebergRowSelectionUnsupported => "iceberg_row_selection_unsupported",
-            Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
-            Self::IcebergFileIoSourceAccessUnverified => "iceberg_file_io_source_access_unverified",
-            Self::IcebergEncryptedFileUnsupported => "iceberg_encrypted_file_unsupported",
-            Self::IcebergScalarValueUnsupported => "iceberg_scalar_value_unsupported",
         }
     }
 
@@ -189,21 +131,7 @@ impl CapabilityReason {
             | Self::NativeSourcePartitionValues
             | Self::NativeSourceByteRange
             | Self::NativeSourceRowSelection
-            | Self::NativeSourceSchemaMapping
-            | Self::TableFormatUnsupported
-            | Self::IcebergNonParquetDataFile
-            | Self::IcebergDeleteFilesUnsupported
-            | Self::IcebergFieldIdMappingUnsupported
-            | Self::IcebergNameMappingUnsupported
-            | Self::IcebergNestedProjectionUnsupported
-            | Self::IcebergPartitionTransformUnsupported
-            | Self::IcebergResidualPredicateUnsupported
-            | Self::IcebergRowSelectionUnsupported
-            | Self::IcebergObjectStoreReadUnsupported
-            | Self::IcebergFileIoSourceAccessUnverified
-            | Self::IcebergEncryptedFileUnsupported
-            | Self::IcebergScalarValueUnsupported => TriageCode::UnsupportedSource,
-            Self::TableFormatPlanningFailed => TriageCode::InvalidPlan,
+            | Self::NativeSourceSchemaMapping => TriageCode::UnsupportedSource,
             Self::NativeSortPreservingMergeUnsupported
             | Self::NativeDistributedAggregateUnsupported
             | Self::NativePartitionPreservingSortUnsupported

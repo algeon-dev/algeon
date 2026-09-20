@@ -22,8 +22,7 @@ type QueryResourceEpochIdleCallback = Arc<dyn Fn() + Send + Sync>;
 
 /// Revocable lifetime shared by every resource derived from one query service.
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct QueryServiceEpoch {
+pub(crate) struct QueryServiceEpoch {
     inner: Arc<QueryServiceEpochInner>,
 }
 
@@ -50,8 +49,7 @@ impl fmt::Debug for QueryServiceEpoch {
 }
 
 impl QueryServiceEpoch {
-    #[doc(hidden)]
-    pub fn new(on_idle: Option<QueryServiceEpochIdleCallback>) -> Self {
+    pub(crate) fn new(on_idle: Option<QueryServiceEpochIdleCallback>) -> Self {
         Self {
             inner: Arc::new(QueryServiceEpochInner {
                 open: AtomicBool::new(true),
@@ -62,8 +60,7 @@ impl QueryServiceEpoch {
         }
     }
 
-    #[doc(hidden)]
-    pub fn retain_existing_user(&self) -> QueryServiceEpochUser {
+    pub(crate) fn retain_existing_user(&self) -> QueryServiceEpochUser {
         self.inner.active_users.fetch_add(1, Ordering::AcqRel);
         QueryServiceEpochUser { epoch: self.clone() }
     }
@@ -80,13 +77,11 @@ impl QueryServiceEpoch {
         Ok(user)
     }
 
-    #[doc(hidden)]
-    pub fn check_open(&self, operation: &'static str) -> Result<()> {
+    pub(crate) fn check_open(&self, operation: &'static str) -> Result<()> {
         if self.inner.open.load(Ordering::Acquire) { Ok(()) } else { Err(query_service_epoch_closed(operation)) }
     }
 
-    #[doc(hidden)]
-    pub fn invalidate(&self) {
+    pub(crate) fn invalidate(&self) {
         self.inner.open.store(false, Ordering::Release);
         self.inner.idle_changed.notify_all();
     }
@@ -122,8 +117,7 @@ impl QueryServiceEpoch {
         self.inner.idle_changed.notify_all();
     }
 
-    #[doc(hidden)]
-    pub fn wait_for_idle_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+    pub(crate) fn wait_for_idle_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         let mut state = match mutex_lock_until(&self.inner.idle_state, deadline) {
             Ok(state) => state,
             Err(DeadlineMutexLockError::Poisoned) => {
@@ -201,8 +195,7 @@ fn query_service_epoch_idle_timeout(operation: &'static str, active_users: usize
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct QueryServiceEpochUser {
+pub(crate) struct QueryServiceEpochUser {
     epoch: QueryServiceEpoch,
 }
 
@@ -212,8 +205,7 @@ pub struct QueryServiceEpochUser {
 /// owns the query lifetime separately, so the epoch cannot form a cycle with
 /// the query's uncounted root-context template.
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct QueryResourceEpoch {
+pub(crate) struct QueryResourceEpoch {
     inner: Arc<QueryResourceEpochInner>,
 }
 
@@ -234,8 +226,7 @@ impl fmt::Debug for QueryResourceEpoch {
 }
 
 impl QueryResourceEpoch {
-    #[doc(hidden)]
-    pub fn new(on_idle: Option<QueryResourceEpochIdleCallback>) -> Self {
+    pub(crate) fn new(on_idle: Option<QueryResourceEpochIdleCallback>) -> Self {
         Self {
             inner: Arc::new(QueryResourceEpochInner {
                 open: AtomicBool::new(true),
@@ -245,8 +236,11 @@ impl QueryResourceEpoch {
         }
     }
 
-    #[doc(hidden)]
-    pub fn acquire(&self, owner: Arc<dyn Send + Sync>, operation: &'static str) -> Result<Arc<QueryResourceAnchor>> {
+    pub(crate) fn acquire(
+        &self,
+        owner: Arc<dyn Send + Sync>,
+        operation: &'static str,
+    ) -> Result<Arc<QueryResourceAnchor>> {
         self.check_open(operation)?;
         self.inner.active_users.fetch_add(1, Ordering::AcqRel);
         let anchor = Arc::new(QueryResourceAnchor { epoch: self.clone(), _owner: owner });
@@ -257,19 +251,16 @@ impl QueryResourceEpoch {
         Ok(anchor)
     }
 
-    #[doc(hidden)]
-    pub fn check_open(&self, operation: &'static str) -> Result<()> {
+    pub(crate) fn check_open(&self, operation: &'static str) -> Result<()> {
         if self.inner.open.load(Ordering::Acquire) { Ok(()) } else { Err(query_resource_epoch_closed(operation)) }
     }
 
-    #[doc(hidden)]
-    pub fn invalidate(&self) {
+    pub(crate) fn invalidate(&self) {
         self.inner.open.store(false, Ordering::Release);
         self.notify_if_idle();
     }
 
-    #[doc(hidden)]
-    pub fn is_idle(&self) -> bool {
+    pub(crate) fn is_idle(&self) -> bool {
         self.inner.active_users.load(Ordering::Acquire) == 0
     }
 
@@ -299,8 +290,7 @@ impl QueryResourceEpoch {
 ///
 /// Clones of the surrounding context/resource share this anchor. The owner is
 /// deliberately held by the anchor rather than by [`QueryResourceEpoch`].
-#[doc(hidden)]
-pub struct QueryResourceAnchor {
+pub(crate) struct QueryResourceAnchor {
     epoch: QueryResourceEpoch,
     _owner: Arc<dyn Send + Sync>,
 }
@@ -336,16 +326,14 @@ fn query_resource_epoch_closed(operation: &'static str) -> QueryError {
 
 /// Shared counted owner attached to cloneable service-derived resources.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct QueryServiceResourceEpoch {
+pub(crate) struct QueryServiceResourceEpoch {
     epoch: QueryServiceEpoch,
     _user: QueryServiceEpochUser,
     query_anchor: Option<Arc<QueryResourceAnchor>>,
 }
 
 impl QueryServiceResourceEpoch {
-    #[doc(hidden)]
-    pub fn acquire(
+    pub(crate) fn acquire(
         epoch: &QueryServiceEpoch,
         query_anchor: Option<&Arc<QueryResourceAnchor>>,
         operation: &'static str,
@@ -361,8 +349,7 @@ impl QueryServiceResourceEpoch {
         Ok(Arc::new(Self { epoch: epoch.clone(), _user: user, query_anchor }))
     }
 
-    #[doc(hidden)]
-    pub fn check_open(&self, operation: &'static str) -> Result<()> {
+    pub(crate) fn check_open(&self, operation: &'static str) -> Result<()> {
         self.epoch.check_open(operation)?;
         if let Some(anchor) = &self.query_anchor {
             anchor.check_open(operation)?;
@@ -371,8 +358,8 @@ impl QueryServiceResourceEpoch {
     }
 
     /// Whether this lease also retains its query anchor.
-    #[doc(hidden)]
-    pub fn has_query_anchor(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_query_anchor(&self) -> bool {
         self.query_anchor.is_some()
     }
 
@@ -382,8 +369,7 @@ impl QueryServiceResourceEpoch {
     /// query anchor: keeping the query epoch alive would stall report
     /// publication and the frozen-resident handoff. The returned lease keeps
     /// the device generation alive until the retained GPU bytes release.
-    #[doc(hidden)]
-    pub fn service_generation_only(&self, operation: &'static str) -> Result<Arc<Self>> {
+    pub(crate) fn service_generation_only(&self, operation: &'static str) -> Result<Arc<Self>> {
         self.epoch.check_open(operation)?;
         let user = self.epoch.retain_existing_user();
         // Re-check after retaining: a close that began between the two checks

@@ -1,17 +1,15 @@
 //! Source chunk planning and runtime metadata facade.
 
 #[cfg(test)]
-pub(crate) use query_planning::chunk::decimal;
-pub use query_planning::chunk::{
-    LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES, SourceChunk,
-    SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
-    SourceChunkRowPositionRange, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
-    local_parquet_source_has_exact_read_preflight, plan_source_chunk_batches, plan_source_chunk_batches_with_row_cap,
+pub(crate) use query_planning::chunk::{
+    LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES, decimal,
 };
 pub(crate) use query_planning::chunk::{
-    object_store_decimal_reader_predicate_requires_footer_contract, source_chunk_row_position_range,
-    source_file_for_chunk,
+    SourceChunk, SourceChunkBatch, SourceChunkPlan, annotate_source_chunk_batching_reasons,
+    object_store_decimal_reader_predicate_requires_footer_contract, plan_source_chunk_batches,
+    plan_source_chunk_batches_with_row_cap, source_file_for_chunk,
 };
+pub use query_planning::chunk::{SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceTaskMemoryModel};
 
 #[cfg(test)]
 mod tests;
@@ -19,13 +17,13 @@ mod tests;
 #[cfg(test)]
 pub(crate) use crate::source_chunk::metadata;
 pub use crate::source_chunk::{
-    SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_execution_context,
-    plan_local_parquet_source_chunks_with_metadata_cache,
+    SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
 };
 pub(crate) use crate::source_chunk::{
     metadata::{
         footer_verified_object_store_reader_decimal_types,
         footer_verified_object_store_reader_decimal_types_with_supplied_cache,
     },
+    plan_local_parquet_source_chunks_with_execution_context,
     plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
 };

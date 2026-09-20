@@ -30,8 +30,8 @@ impl DeviceCapability {
 
 /// Immutable capability metadata for one installed CUDA device.
 ///
-/// Existing supported hardware uses [`Self::all`]: every declared execution
-/// capability is available on that device.
+/// Existing supported hardware declares every execution capability available on
+/// that device.
 /// Installers may instead freeze an exact list for heterogeneous deployments.
 /// A non-modeled requirement is never accepted merely because it appears in
 /// an exact list; the planner must establish the contract first.
@@ -54,7 +54,7 @@ impl Default for DeviceCapabilities {
 
 impl DeviceCapabilities {
     /// Supports every declared execution capability.
-    pub const fn all() -> Self {
+    pub(crate) const fn all() -> Self {
         Self { support: DeviceCapabilitySupport::All }
     }
 
@@ -73,8 +73,7 @@ impl DeviceCapabilities {
         Self { support: DeviceCapabilitySupport::Exact(exact) }
     }
 
-    #[doc(hidden)]
-    pub fn supports(&self, requirement: &ExecutionCapability) -> bool {
+    pub(crate) fn supports(&self, requirement: &ExecutionCapability) -> bool {
         match &self.support {
             DeviceCapabilitySupport::All => true,
             DeviceCapabilitySupport::Exact(capabilities) => {
@@ -83,8 +82,7 @@ impl DeviceCapabilities {
         }
     }
 
-    #[doc(hidden)]
-    pub fn supports_all(&self, requirements: &[ExecutionCapability]) -> bool {
+    pub(crate) fn supports_all(&self, requirements: &[ExecutionCapability]) -> bool {
         requirements.iter().all(|requirement| self.supports(requirement))
     }
 
@@ -93,8 +91,7 @@ impl DeviceCapabilities {
     /// An absent requirement is safe only when every execution capability is
     /// accepted. Exact profiles must not interpret an empty implicit set as a
     /// evidence that the attempt can execute on the device.
-    #[doc(hidden)]
-    pub const fn requires_explicit_attempt_requirement(&self) -> bool {
+    pub(crate) const fn requires_explicit_attempt_requirement(&self) -> bool {
         matches!(self.support, DeviceCapabilitySupport::Exact(_))
     }
 }
@@ -110,17 +107,17 @@ pub struct DeviceResourceProfile {
     pub device_ordinal: usize,
     /// Capability metadata frozen with this device's resource envelope.
     pub device_capabilities: DeviceCapabilities,
-    pub configured_limit_bytes: u64,
-    pub headroom_bytes: u64,
-    pub backend_reserve_bytes: u64,
-    pub usable_capacity_bytes: u64,
+    pub(crate) configured_limit_bytes: u64,
+    pub(crate) headroom_bytes: u64,
+    pub(crate) backend_reserve_bytes: u64,
+    pub(crate) usable_capacity_bytes: u64,
     pub managed_capacity_bytes: u64,
     pub default_query_limit_bytes: u64,
     pub max_active_attempts: usize,
     pub root_lane_count: usize,
     pub root_stream_count: usize,
     pub source_work_per_attempt: usize,
-    pub aux_source_work_capacity: usize,
+    pub(crate) aux_source_work_capacity: usize,
     pub stream_pool_size: usize,
     pub worker_job_capacity: usize,
     pub cache_cap_bytes: u64,
@@ -134,21 +131,21 @@ pub struct DeviceResourceProfile {
 /// stream counts, and aux-source-work arithmetic stay computed outputs on
 /// [`DeviceResourceProfile`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceResourceEnvelope {
+pub(crate) struct DeviceResourceEnvelope {
     /// Device ordinal this envelope resolves for.
-    pub device_ordinal: usize,
+    pub(crate) device_ordinal: usize,
     /// Capability metadata frozen with this device's resource envelope.
-    pub device_capabilities: DeviceCapabilities,
+    pub(crate) device_capabilities: DeviceCapabilities,
     /// Total configured allocation limit before headroom.
-    pub configured_limit_bytes: u64,
+    pub(crate) configured_limit_bytes: u64,
     /// Headroom subtracted from the configured limit before backend reserve.
-    pub headroom_bytes: u64,
+    pub(crate) headroom_bytes: u64,
     /// Backend-reserved bytes unavailable to managed attempts.
-    pub backend_reserve_bytes: u64,
+    pub(crate) backend_reserve_bytes: u64,
     /// Default per-query limit guaranteed inside managed capacity.
-    pub default_query_limit_bytes: u64,
+    pub(crate) default_query_limit_bytes: u64,
     /// Maximum simultaneously admitted attempts.
-    pub max_active_attempts: usize,
+    pub(crate) max_active_attempts: usize,
     /// Auxiliary slots granted per attempt.
     ///
     /// Each slot backs one auxiliary permit holder of the attempt: an
@@ -157,13 +154,13 @@ pub struct DeviceResourceEnvelope {
     /// this count sizes the attempt's fork pool, not its operator width.
     /// Execution width is the minimum of this envelope, the free permits,
     /// the device execution-job capacity, and the ready work.
-    pub source_work_per_attempt: usize,
+    pub(crate) source_work_per_attempt: usize,
     /// Installed stream-pool size; must cover root and auxiliary work.
-    pub stream_pool_size: usize,
+    pub(crate) stream_pool_size: usize,
     /// Installed worker-job capacity; must cover root and auxiliary work.
-    pub worker_job_capacity: usize,
+    pub(crate) worker_job_capacity: usize,
     /// Bounded per-device cache share reserved alongside the default query limit.
-    pub cache_cap_bytes: u64,
+    pub(crate) cache_cap_bytes: u64,
 }
 
 impl DeviceResourceProfile {
@@ -181,7 +178,7 @@ impl DeviceResourceProfile {
     /// This is a capacity-allocation policy, not a per-query estimate: with
     /// no frozen residents the profile admits `N` default grants. An
     /// explicitly configured default keeps its value after validation.
-    pub fn derive_default_query_limit_bytes(
+    pub(crate) fn derive_default_query_limit_bytes(
         device_ordinal: usize,
         managed_capacity_bytes: u64,
         cache_cap_bytes: u64,
@@ -214,7 +211,7 @@ impl DeviceResourceProfile {
 
     /// Resolves all resource-controller arithmetic for one device from its
     /// immutable resource envelope.
-    pub fn resolve(envelope: DeviceResourceEnvelope) -> Result<Self> {
+    pub(crate) fn resolve(envelope: DeviceResourceEnvelope) -> Result<Self> {
         let DeviceResourceEnvelope {
             device_ordinal,
             device_capabilities,

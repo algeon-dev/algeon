@@ -269,13 +269,46 @@ impl ParquetFileReaderFactory for RejectingParquetFileReaderFactory {
     }
 }
 
+/// Wraps the rejecting factory under a name that starts with the DataFusion
+/// default factory's, so a prefix match on `Debug` output would accept it.
+#[derive(Debug)]
+struct DefaultParquetFileReaderFactoryProxy {
+    inner: RejectingParquetFileReaderFactory,
+}
+
+impl ParquetFileReaderFactory for DefaultParquetFileReaderFactoryProxy {
+    fn create_reader(
+        &self,
+        partition_index: usize,
+        partitioned_file: PartitionedFile,
+        metadata_size_hint: Option<usize>,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
+        self.inner.create_reader(partition_index, partitioned_file, metadata_size_hint, metrics)
+    }
+}
+
 pub(super) fn parquet_scan_with_custom_reader_factory(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_reader_factory(path, Arc::new(RejectingParquetFileReaderFactory))
+}
+
+pub(super) fn parquet_scan_with_default_lookalike_reader_factory(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    parquet_scan_with_reader_factory(
+        path,
+        Arc::new(DefaultParquetFileReaderFactoryProxy { inner: RejectingParquetFileReaderFactory }),
+    )
+}
+
+fn parquet_scan_with_reader_factory(
+    path: &std::path::Path,
+    factory: Arc<dyn ParquetFileReaderFactory>,
+) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
-    let parquet_source = ParquetSource::new(file_scan.file_source().table_schema().clone())
-        .with_parquet_file_reader_factory(Arc::new(RejectingParquetFileReaderFactory));
+    let parquet_source =
+        ParquetSource::new(file_scan.file_source().table_schema().clone()).with_parquet_file_reader_factory(factory);
     let file_scan = FileScanConfigBuilder::from(file_scan.clone())
         .with_source(Arc::new(parquet_source) as Arc<dyn FileSource>)
         .build();

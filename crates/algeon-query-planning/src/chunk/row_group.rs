@@ -20,8 +20,7 @@ pub struct RowGroupMetadata {
 }
 
 impl RowGroupMetadata {
-    #[doc(hidden)]
-    pub fn row_group_count(&self) -> usize {
+    pub(crate) fn row_group_count(&self) -> usize {
         self.row_group_bytes
             .as_ref()
             .or(self.projected_uncompressed_bytes.as_ref())
@@ -32,63 +31,51 @@ impl RowGroupMetadata {
             .map_or(0, Vec::len)
     }
 
-    #[doc(hidden)]
-    pub fn row_group_bytes(&self, row_group: usize) -> Option<u64> {
+    pub(crate) fn row_group_bytes(&self, row_group: usize) -> Option<u64> {
         self.row_group_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
-    #[doc(hidden)]
-    pub fn projected_compressed_bytes(&self, row_group: usize) -> Option<u64> {
+    pub(crate) fn projected_compressed_bytes(&self, row_group: usize) -> Option<u64> {
         self.projected_compressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
-    #[doc(hidden)]
-    pub fn projected_uncompressed_bytes(&self, row_group: usize) -> Option<u64> {
+    pub(crate) fn projected_uncompressed_bytes(&self, row_group: usize) -> Option<u64> {
         self.projected_uncompressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
-    #[doc(hidden)]
-    pub fn pure_filter_compressed_bytes(&self, row_group: usize) -> Option<u64> {
+    pub(crate) fn pure_filter_compressed_bytes(&self, row_group: usize) -> Option<u64> {
         self.pure_filter_compressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
-    #[doc(hidden)]
-    pub fn pure_filter_uncompressed_bytes(&self, row_group: usize) -> Option<u64> {
+    pub(crate) fn pure_filter_uncompressed_bytes(&self, row_group: usize) -> Option<u64> {
         self.pure_filter_uncompressed_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
     }
 
-    #[doc(hidden)]
-    pub fn row_group_rows(&self, row_group: usize) -> Option<u64> {
+    pub(crate) fn row_group_rows(&self, row_group: usize) -> Option<u64> {
         self.row_group_rows.as_ref().and_then(|rows| rows.get(row_group).copied())
     }
 
-    #[doc(hidden)]
-    pub fn row_group_bytes_vec(&self) -> Option<Vec<u64>> {
+    pub(crate) fn row_group_bytes_vec(&self) -> Option<Vec<u64>> {
         self.row_group_bytes.clone()
     }
 
-    #[doc(hidden)]
-    pub fn projected_compressed_bytes_vec(&self) -> Option<Vec<u64>> {
+    pub(crate) fn projected_compressed_bytes_vec(&self) -> Option<Vec<u64>> {
         self.projected_compressed_bytes.clone()
     }
 
-    #[doc(hidden)]
-    pub fn projected_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
+    pub(crate) fn projected_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
         self.projected_uncompressed_bytes.clone()
     }
 
-    #[doc(hidden)]
-    pub fn pure_filter_compressed_bytes_vec(&self) -> Option<Vec<u64>> {
+    pub(crate) fn pure_filter_compressed_bytes_vec(&self) -> Option<Vec<u64>> {
         self.pure_filter_compressed_bytes.clone()
     }
 
-    #[doc(hidden)]
-    pub fn pure_filter_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
+    pub(crate) fn pure_filter_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
         self.pure_filter_uncompressed_bytes.clone()
     }
 
-    #[doc(hidden)]
-    pub fn row_group_rows_vec(&self) -> Option<Vec<u64>> {
+    pub(crate) fn row_group_rows_vec(&self) -> Option<Vec<u64>> {
         self.row_group_rows.clone()
     }
 }

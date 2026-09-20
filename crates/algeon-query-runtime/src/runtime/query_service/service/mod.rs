@@ -40,9 +40,10 @@ mod shutdown;
 pub(in crate::runtime::query_service) mod transaction;
 #[cfg(feature = "qualification")]
 pub use api::DeviceQuarantineInjection;
+#[cfg(test)]
+pub(crate) use api::QueryAdmissionOutcome;
 pub use api::{
-    QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
-    QueryServiceDeviceAdmissionSnapshot,
+    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
 };
 pub(in crate::runtime::query_service::service) use queue::query_service_shutdown_timeout;
 pub(in crate::runtime::query_service) use requests::PlacedAdmissionCommit;
@@ -378,7 +379,7 @@ impl QueryService {
     /// native cuDF health untouched. A caller can therefore validate fallback
     /// after a quarantine without claiming to have produced a real CUDA fault.
     #[cfg(feature = "qualification")]
-    pub fn inject_device_quarantine(&self, device_ordinal: usize) -> Result<DeviceQuarantineInjection> {
+    pub(crate) fn inject_device_quarantine(&self, device_ordinal: usize) -> Result<DeviceQuarantineInjection> {
         const REASON: &str = "controlled validation device quarantine";
 
         let injection = {

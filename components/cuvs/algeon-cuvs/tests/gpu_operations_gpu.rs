@@ -418,7 +418,6 @@ fn integer_list_exports_activate_and_pack_with_their_element() {
     let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
     let batch = GpuRecordBatch::new(frame, schema).unwrap();
     let validated = batch.try_prepare_fixed_size_list_export(0).unwrap();
-    assert!(validated.finite_observation().is_none());
     let lease = resources.activate_validated_fixed_size_list_tensor::<i8>(&validated).unwrap();
     assert_eq!(lease.tensor().shape(), &[2, 2]);
     lease.complete().unwrap().synchronize().unwrap();
@@ -438,7 +437,6 @@ fn integer_list_exports_activate_and_pack_with_their_element() {
     let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
     let batch = GpuRecordBatch::new(frame, schema).unwrap();
     let validated = batch.try_prepare_uniform_list_export(0).unwrap();
-    assert!(validated.finite_observation().is_none());
     let lease = resources.activate_validated_uniform_list_tensor::<u8>(&validated).unwrap();
     assert_eq!(lease.tensor().shape(), &[2, 2]);
     lease.complete().unwrap().synchronize().unwrap();

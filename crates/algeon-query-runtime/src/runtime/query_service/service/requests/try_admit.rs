@@ -35,18 +35,17 @@ impl QueryService {
     /// Returns `Ok(None)` when all admission slots are active or when queued
     /// requests already exist and this caller must not bypass them.
     #[cfg(test)]
-    pub fn try_admit_query(&self) -> Result<Option<QueryHandle>> {
+    pub(crate) fn try_admit_query(&self) -> Result<Option<QueryHandle>> {
         self.try_admit_query_with_request(QueryAdmissionRequest::new())
     }
 
     /// Attempts to admit a query with consolidated request-scoped metadata.
     #[cfg(test)]
-    pub fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {
+    pub(crate) fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {
         self.try_admit_query_with_request_and_permits(request, None, None, None)
     }
 
-    #[doc(hidden)]
-    pub fn try_admit_query_with_backend_permits(
+    pub(crate) fn try_admit_query_with_backend_permits(
         &self,
         request: QueryAdmissionRequest,
         observation_permit: ObservationPermit,

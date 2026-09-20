@@ -45,12 +45,12 @@ pub struct ProjectionSimplificationDiagnostics {
 
 impl ProjectionSimplificationDiagnostics {
     /// Returns true when the pass produced no candidate evidence.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -61,13 +61,13 @@ impl ProjectionSimplificationDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionSimplificationCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Projection node considered before rewrite.
-    pub candidate_node_id: NodeId,
+    pub(crate) candidate_node_id: NodeId,
     /// Input node that replaces the projection when applied.
-    pub replacement_node_id: Option<NodeId>,
+    pub(crate) replacement_node_id: Option<NodeId>,
     /// True when this candidate was removed from the returned plan.
-    pub applied: bool,
+    pub(crate) applied: bool,
     /// Rejection reason when the projection was not removed.
     pub rejected_reason: Option<ProjectionSimplificationRejectedReason>,
 }
@@ -85,18 +85,13 @@ pub enum ProjectionSimplificationRejectedReason {
     ShapeContract,
 }
 
-#[doc(hidden)]
-pub struct ProjectionSimplificationResult {
-    #[doc(hidden)]
-    pub plan: QueryPlan,
-    #[doc(hidden)]
-    pub change: super::NativeOptimizerChange,
-    #[doc(hidden)]
-    pub diagnostics: ProjectionSimplificationDiagnostics,
+pub(crate) struct ProjectionSimplificationResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: ProjectionSimplificationDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_projection_simplification(
+pub(crate) fn optimize_projection_simplification(
     plan: QueryPlan,
     options: &ProjectionSimplificationOptions,
 ) -> ProjectionSimplificationResult {

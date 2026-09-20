@@ -44,7 +44,7 @@ impl StreamFanoutReplayDiagnostics {
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -55,28 +55,29 @@ impl StreamFanoutReplayDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFanoutReplayCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Shared producer node whose subtree is replayed for each join probe.
-    pub fanout_node_id: NodeId,
+    pub(crate) fanout_node_id: NodeId,
     /// Number of direct consumers of the shared producer node.
     pub consumer_count: usize,
     /// Join-probe consumer nodes that share this producer.
-    pub join_probe_consumer_node_ids: Vec<NodeId>,
+    pub(crate) join_probe_consumer_node_ids: Vec<NodeId>,
     /// True when the returned plan duplicates the producer subtree. A
     /// candidate is rejected only when it lies outside the sink-reachable
     /// subtree.
     pub applied: bool,
 }
 
-#[doc(hidden)]
-pub struct StreamFanoutReplayResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: StreamFanoutReplayDiagnostics,
+pub(crate) struct StreamFanoutReplayResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: StreamFanoutReplayDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_stream_fanout_replay(plan: QueryPlan, options: &StreamFanoutReplayOptions) -> StreamFanoutReplayResult {
+pub(crate) fn optimize_stream_fanout_replay(
+    plan: QueryPlan,
+    options: &StreamFanoutReplayOptions,
+) -> StreamFanoutReplayResult {
     if !options.enabled {
         return StreamFanoutReplayResult {
             plan,

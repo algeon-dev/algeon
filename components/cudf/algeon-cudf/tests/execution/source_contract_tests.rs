@@ -17,7 +17,6 @@ const GROUPBY_AGG_RS: &str = include_str!("../../src/ops/groupby/agg.rs");
 const GROUPBY_SHIFT_RS: &str = include_str!("../../src/ops/groupby/shift.rs");
 const HASHING_RS: &str = include_str!("../../src/ops/hashing.rs");
 const IO_MOD_RS: &str = include_str!("../../src/io/mod.rs");
-const IO_JSON_RS: &str = include_str!("../../src/io/json.rs");
 const IO_PARQUET_EVIDENCE_RS: &str = include_str!("../../src/io/parquet/evidence.rs");
 const IO_PARQUET_MOD_RS: &str = include_str!("../../src/io/parquet/mod.rs");
 const IO_PARQUET_OPTIONS_RS: &str = include_str!("../../src/io/parquet/options.rs");
@@ -55,25 +54,6 @@ const UNARY_RS: &str = include_str!("../../src/ops/unary.rs");
 const VALIDATION_RS: &str = include_str!("../../src/ops/validation.rs");
 const MATRIX_RS: &str = include_str!("../../src/runtime/matrix.rs");
 
-const SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX: &[(&str, &str)] = &[
-    (
-        "cudf_arrow_device_column_export",
-        "execution-sensitive Arrow Device ABI export; accepts explicit cudf_exec_options_t despite legacy name",
-    ),
-    (
-        "cudf_arrow_device_column_import",
-        "execution-sensitive Arrow Device ABI import; accepts explicit cudf_exec_options_t despite legacy name",
-    ),
-    (
-        "cudf_arrow_device_table_export",
-        "execution-sensitive Arrow Device ABI export; accepts explicit cudf_exec_options_t despite legacy name",
-    ),
-    (
-        "cudf_arrow_device_table_import",
-        "execution-sensitive Arrow Device ABI import; accepts explicit cudf_exec_options_t despite legacy name",
-    ),
-];
-
 const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_memory_manager_attach_reservation_to_arena_raw", "reservation attachment lifecycle and accounting"),
     ("cudf_query_memory_domain_attach_raw_stream", "reservation attachment lifecycle and accounting"),
@@ -82,15 +62,6 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_aggregation_create_std", "descriptor-only aggregation factory"),
     ("cudf_aggregation_create_variance", "descriptor-only aggregation factory"),
     ("cudf_aggregation_destroy", "pure lifecycle"),
-    ("cudf_arrow_device_array_destroy", "pure lifecycle"),
-    ("cudf_arrow_device_array_device_id", "metadata-only Arrow Device ABI accessor"),
-    ("cudf_arrow_device_array_device_type", "metadata-only Arrow Device ABI accessor"),
-    ("cudf_arrow_device_array_has_sync_event", "metadata-only Arrow Device ABI accessor"),
-    ("cudf_arrow_device_array_sync_event_raw", "raw-pointer-only Arrow Device ABI accessor"),
-    ("cudf_arrow_device_schema_destroy", "pure lifecycle"),
-    ("cudf_arrow_device_table_column_name", "metadata-only Arrow Device ABI accessor"),
-    ("cudf_arrow_device_table_fixed_width_values_ptr", "raw-pointer-only Arrow Device ABI accessor"),
-    ("cudf_arrow_device_table_num_columns", "metadata-only Arrow Device ABI accessor"),
     ("cudf_ast_column_reference_create", "descriptor-only AST construction"),
     ("cudf_ast_expression_destroy", "pure lifecycle"),
     ("cudf_ast_literal_create", "descriptor-only AST construction"),
@@ -316,9 +287,7 @@ fn fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence() {
         body.contains("binary::binary_operation_vv")
             && body.contains("ReduceAgg::Min")
             && body.contains("ReduceAgg::Max")
-            && body.contains("value::<i32>()")
-            && body.contains("BoundaryKind::BoundedControlScalar")
-            && body.contains("record_boundary_observation_in_domain"),
+            && body.contains("value::<i32>()"),
         "FixedSizeList validation must compare offsets on device and return only bounded scalar evidence"
     );
     assert!(
@@ -328,13 +297,7 @@ fn fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence() {
 }
 
 fn finite_float32_validation_publishes_only_bounded_control_scalar_evidence() {
-    for required in [
-        "cudf_sys::cudf_float32_non_finite_count_ex",
-        "BoundaryKind::BoundedControlScalar",
-        "with_downloaded_bytes(control_scalar_bytes)",
-        "validation_evidence",
-        "bounded_control_scalar",
-    ] {
+    for required in ["cudf_sys::cudf_float32_non_finite_count_ex", "validation_evidence", "bounded_control_scalar"] {
         assert!(VALIDATION_RS.contains(required), "finite validation must retain `{required}`");
     }
     for forbidden in ["to_vec", "to_host", "RecordBatch", "cudaDeviceSynchronize"] {
@@ -1014,32 +977,25 @@ fn sorting_is_sorted_uses_explicit_retained_execution_options() {
 }
 
 fn io_write_helpers_require_explicit_execution_options() {
-    for (source, function, ex_call, ambient_call) in [
-        (IO_JSON_RS, "write_json_with_exec", "cudf_sys::cudf_io_write_json_ex", "cudf_sys::cudf_io_write_json("),
-        (
-            IO_PARQUET_WRITE_RS,
-            "write_parquet_with_exec",
-            "cudf_sys::cudf_io_write_parquet_ex",
-            "cudf_sys::cudf_io_write_parquet(",
-        ),
-    ] {
-        let body = function_region(source, &format!("pub(crate) fn {function}"), "\n}\n");
-        assert!(
-            body.contains("exec_options: &cudf_sys::cudf_exec_options_t"),
-            "{function} must require explicit execution options"
-        );
-        assert!(!body.contains("exec_options: Option"), "{function} must not accept optional execution options");
-        assert!(body.contains(ex_call), "{function} must call the explicit FFI entry point");
-        assert!(!body.contains(ambient_call), "{function} must not call the ambient non-_ex FFI entry point");
-        assert!(!body.contains("match exec_options"), "{function} must not branch on optional execution options");
-    }
+    let function = "write_parquet_with_exec";
+    let body = function_region(IO_PARQUET_WRITE_RS, &format!("pub(crate) fn {function}"), "\n}\n");
+    assert!(
+        body.contains("exec_options: &cudf_sys::cudf_exec_options_t"),
+        "{function} must require explicit execution options"
+    );
+    assert!(!body.contains("exec_options: Option"), "{function} must not accept optional execution options");
+    assert!(body.contains("cudf_sys::cudf_io_write_parquet_ex"), "{function} must call the explicit FFI entry point");
+    assert!(
+        !body.contains("cudf_sys::cudf_io_write_parquet("),
+        "{function} must not call the ambient non-_ex FFI entry point"
+    );
+    assert!(!body.contains("match exec_options"), "{function} must not branch on optional execution options");
 }
 
 fn safe_io_layer_contains_no_process_global_libcudf_lock() {
     let mut violations = Vec::new();
     let scanned_sources = [
         ("io/mod.rs", IO_MOD_RS),
-        ("io/json.rs", IO_JSON_RS),
         ("io/parquet/evidence.rs", IO_PARQUET_EVIDENCE_RS),
         ("io/parquet/mod.rs", IO_PARQUET_MOD_RS),
         ("io/parquet/options.rs", IO_PARQUET_OPTIONS_RS),
@@ -1102,18 +1058,13 @@ fn safe_io_layer_contains_no_process_global_libcudf_lock() {
 }
 
 fn safe_layer_non_ex_ffi_calls_stay_classified() {
-    let explicit_without_suffix =
-        classified_names(SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX, "SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX");
     let non_execution =
         classified_names(SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST, "SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST");
     let calls = safe_layer_cudf_sys_calls();
 
     let mut violations = Vec::new();
     for (name, locations) in &calls {
-        if name.ends_with("_ex")
-            || explicit_without_suffix.contains_key(name.as_str())
-            || non_execution.contains_key(name.as_str())
-        {
+        if name.ends_with("_ex") || non_execution.contains_key(name.as_str()) {
             continue;
         }
 
@@ -1121,7 +1072,7 @@ fn safe_layer_non_ex_ffi_calls_stay_classified() {
     }
 
     let mut stale = Vec::new();
-    for (name, classification) in explicit_without_suffix.iter().chain(non_execution.iter()) {
+    for (name, classification) in &non_execution {
         if !calls.contains_key(*name) {
             stale.push(format!("{name}: {classification}"));
         }
@@ -1129,8 +1080,7 @@ fn safe_layer_non_ex_ffi_calls_stay_classified() {
 
     if !violations.is_empty() || !stale.is_empty() {
         panic!(
-            "safe-layer non-_ex cudf-sys calls must be explicitly classified as either \
-             execution-sensitive calls with explicit options despite legacy naming, or as \
+            "safe-layer non-_ex cudf-sys calls must be explicitly classified as \
              non-execution-sensitive metadata/descriptor/lifecycle/runtime/test helpers.\n\
              unclassified calls:\n{}\n\nstale classifications:\n{}",
             violations.join("\n"),

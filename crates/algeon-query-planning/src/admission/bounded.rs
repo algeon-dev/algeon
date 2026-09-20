@@ -18,8 +18,8 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     capability::{
-        CapabilityAnalysis, CapabilityEnvelope, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, CapabilityScope,
+        CapabilityEnvelope, CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection,
+        CapabilityScope,
     },
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateFunction, AggregateSpec, Expr},
@@ -30,7 +30,6 @@ use crate::{
         aggregate_spec_has_floating_statistical_aggregate, datafusion_exact_host_accumulator,
         datafusion_exact_host_group_key_supported,
     },
-    source::SourceNode,
 };
 
 /// Capability-envelope admission evidence for a compiled bounded pipeline.
@@ -43,7 +42,6 @@ use crate::{
 /// rebuilt artifact. A mismatch is never a fallback.
 #[derive(Debug, Clone)]
 pub struct BoundedPipelineAdmission {
-    analysis: CapabilityAnalysis,
     envelope: CapabilityEnvelope,
     pipeline: CompiledPipeline,
     sink_kind: SinkBoundaryKind,
@@ -52,11 +50,6 @@ pub struct BoundedPipelineAdmission {
 }
 
 impl BoundedPipelineAdmission {
-    /// Capability facts used to admit the plan.
-    pub fn analysis(&self) -> &CapabilityAnalysis {
-        &self.analysis
-    }
-
     /// Compiled pipeline admitted for bounded execution.
     pub fn pipeline(&self) -> &CompiledPipeline {
         &self.pipeline
@@ -198,7 +191,7 @@ pub struct BoundedPipelineDecision {
 }
 
 impl BoundedPipelineDecision {
-    /// Admitted analysis, envelope, and compiled pipeline, when applicable.
+    /// Admitted envelope and compiled pipeline, when applicable.
     pub fn admission(&self) -> Option<&BoundedPipelineAdmission> {
         self.admission.as_ref()
     }
@@ -226,15 +219,6 @@ pub fn bounded_pipeline_decision(
     let Some(admission) = capability_first_bounded_pipeline_admission(plan, ctx)? else {
         return Ok(BoundedPipelineDecision { admission: None, rejection_projection: None, execution_error: None });
     };
-    if !plan.contains_graph_algorithm()
-        && let Some(rejection_projection) = row_delete_application_rejection_projection(plan)
-    {
-        return Ok(BoundedPipelineDecision {
-            admission: None,
-            rejection_projection: Some(rejection_projection),
-            execution_error: None,
-        });
-    }
     if let Some(rejection_projection) =
         statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
     {
@@ -284,33 +268,6 @@ pub fn bounded_pipeline_decision(
             })
         },
     }
-}
-
-fn row_delete_application_rejection_projection(plan: &QueryPlan) -> Option<CapabilityRejectionProjection> {
-    let unreachable = plan.unreachable_node_ids();
-    plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).find_map(|node| match &node.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LocalParquet(source) if source.has_row_delete_files() => {
-                let position_delete_files =
-                    source.files.iter().map(|file| file.position_delete_files.len()).sum::<usize>();
-                let equality_delete_files =
-                    source.files.iter().map(|file| file.equality_delete_files.len()).sum::<usize>();
-                Some(CapabilityRejectionProjection {
-                    owner: CapabilityRejectionOwner::Node(node.id),
-                    category: CapabilityRejectionCategory::UnsupportedNodeOperator,
-                    contract_scope: CapabilityScope::Node,
-                    boundary: "row_delete_application",
-                    reason: "row_delete_application_unsupported",
-                    facts: BTreeMap::from([
-                        ("position_delete_files", position_delete_files.to_string()),
-                        ("equality_delete_files", equality_delete_files.to_string()),
-                    ]),
-                })
-            },
-            _ => None,
-        },
-        _ => None,
-    })
 }
 
 /// Rejects a plan whose floating statistical aggregates the selected execution
@@ -443,8 +400,7 @@ fn capability_admission_from_capability_first(
         .with_fact("execution_mode", CapabilityEnvelopeStatus::Admitted.as_str())
         .with_fact("candidate_status", "admitted")
     })?;
-    let (analysis, pipeline) = admission.into_parts();
-    let pipeline = pipeline.ok_or_else(|| {
+    let pipeline = admission.into_pipeline().ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.bounded.capability_admission",
@@ -457,7 +413,6 @@ fn capability_admission_from_capability_first(
         sink_kind: sink_boundary_kind_for_plan(plan),
         scope: AttemptExecutionScope::for_query_plan(plan),
         statistical_aggregate_execution_mode,
-        analysis,
         envelope,
         pipeline,
     })
@@ -519,7 +474,11 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
 
     use super::*;
-    use crate::{expr::AggregateExpr, plan::QueryPlanBuilder, source::LocalParquetSource};
+    use crate::{
+        expr::AggregateExpr,
+        plan::QueryPlanBuilder,
+        source::{LocalParquetSource, SourceNode},
+    };
 
     fn statistical_aggregate_plan(extra: AggregateExpr, extra_output: Field) -> QueryPlan {
         let input_schema = Arc::new(Schema::new(vec![

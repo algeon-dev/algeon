@@ -68,7 +68,7 @@ use workloads::tpch::write_tiny_tpch_parquet_dataset;
 
 use crate::{
     capability::CapabilityReason,
-    native::{NativeLoweringResult, lower_physical_plan_to_native},
+    native::{FooterScope, NativeLoweringResult, lower_physical_plan_to_native},
     native_report::{
         CandidateOutcomeKind, NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput,
         NativeFallbackPressureWorkloadItem,

@@ -29,7 +29,7 @@
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/stage-docker-payload.sh                  # cugraph,cuvs,cuml,nvml
+#   bash docker/stage-docker-payload.sh                  # server.features in .config/policies/cpu-packaging.toml
 #   FEATURES=nvml bash docker/stage-docker-payload.sh    # lean cudf-only
 #   NO_STRIP=1 bash docker/stage-docker-payload.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh    # reuse only verified canonical artifact
@@ -54,7 +54,7 @@ DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" normalize-features \
-    --features "${FEATURES:-cugraph,cuvs,cuml,nvml}")"
+    --features "${FEATURES:-$(python3 "$POLICY_HELPER" shipped-features)}")"
 
 eval "$(python3 "$POLICY_HELPER" describe)"
 

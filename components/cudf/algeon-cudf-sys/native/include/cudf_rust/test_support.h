@@ -74,9 +74,6 @@ void cudf_test_io_reset_metadata_fault(void);
 cudf_status_t cudf_test_io_kvikio_active_io_begin(void);
 cudf_status_t cudf_test_io_kvikio_active_io_end(void);
 
-void cudf_test_arrow_device_array_set_device_type(cudf_arrow_device_array_handle array,
-                                                  int32_t device_type);
-
 void cudf_test_event_reset_observation(void);
 void cudf_test_event_block_synchronize(void);
 void cudf_test_event_unblock_synchronize(void);

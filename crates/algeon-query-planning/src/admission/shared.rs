@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     backend::AnalysisContext,
-    capability::{CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionProjection},
+    capability::{CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionProjection},
     error::Result,
     pipeline::{
         CompiledPipeline, PipelineCompilation, PipelineTaskKind, ResidentDataForm, ResidentResource,
@@ -22,7 +22,6 @@ pub(super) enum CapabilityFirstCandidateStatus {
 
 #[derive(Debug, Clone)]
 pub(super) struct CapabilityFirstPipelineAdmission {
-    analysis: CapabilityAnalysis,
     pipeline: Option<CompiledPipeline>,
     envelope: Option<CapabilityEnvelope>,
     rejection_projection: Option<CapabilityRejectionProjection>,
@@ -46,13 +45,12 @@ impl CapabilityFirstPipelineAdmission {
         self.rejection_projection.as_ref()
     }
 
-    pub(super) fn into_parts(self) -> (CapabilityAnalysis, Option<CompiledPipeline>) {
-        (self.analysis, self.pipeline)
+    pub(super) fn into_pipeline(self) -> Option<CompiledPipeline> {
+        self.pipeline
     }
 
-    fn admitted(analysis: CapabilityAnalysis, envelope: CapabilityEnvelope, pipeline: CompiledPipeline) -> Self {
+    fn admitted(envelope: CapabilityEnvelope, pipeline: CompiledPipeline) -> Self {
         Self {
-            analysis,
             pipeline: Some(pipeline),
             envelope: Some(envelope),
             rejection_projection: None,
@@ -60,13 +58,8 @@ impl CapabilityFirstPipelineAdmission {
         }
     }
 
-    fn rejected(
-        analysis: CapabilityAnalysis,
-        pipeline: Option<CompiledPipeline>,
-        projection: CapabilityRejectionProjection,
-    ) -> Self {
+    fn rejected(pipeline: Option<CompiledPipeline>, projection: CapabilityRejectionProjection) -> Self {
         Self {
-            analysis,
             pipeline,
             envelope: None,
             rejection_projection: Some(projection),
@@ -95,7 +88,7 @@ fn capability_first_bounded_pipeline_admission_impl(
     let analysis = plan.capability_analysis(ctx);
     if let Some(projection) = analysis.first_local_rejection_projection() {
         if plan.contains_join() || plan.contains_vector_algorithm() || plan.contains_ml_algorithm() {
-            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(None, projection)));
         }
         return Ok(None);
     }
@@ -108,7 +101,7 @@ fn capability_first_bounded_pipeline_admission_impl(
         // pipeline that does not exist.
         PipelineCompilation::Rejected(projection) => {
             if plan.contains_join() || plan.contains_vector_algorithm() || plan.contains_ml_algorithm() {
-                return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+                return Ok(Some(CapabilityFirstPipelineAdmission::rejected(None, projection)));
             }
             return Ok(None);
         },
@@ -130,13 +123,13 @@ fn capability_first_bounded_pipeline_admission_impl(
         match envelope_admission {
             CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
             CapabilityEnvelopeAdmission::Rejected { projection } => {
-                return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)));
+                return Ok(Some(CapabilityFirstPipelineAdmission::rejected(Some(pipeline), projection)));
             },
         }
     };
     match compiled_bounded_query_plan_support(plan, &analysis, &pipeline)? {
         CompiledBoundedPipelineSupport::Supported => {
-            Ok(Some(CapabilityFirstPipelineAdmission::admitted(analysis, envelope, pipeline)))
+            Ok(Some(CapabilityFirstPipelineAdmission::admitted(envelope, pipeline)))
         },
         CompiledBoundedPipelineSupport::Unsupported(projection) => {
             if converged {
@@ -145,7 +138,7 @@ fn capability_first_bounded_pipeline_admission_impl(
                 // hard refusal of a query that already runs today.
                 return Ok(None);
             }
-            Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)))
+            Ok(Some(CapabilityFirstPipelineAdmission::rejected(Some(pipeline), projection)))
         },
     }
 }

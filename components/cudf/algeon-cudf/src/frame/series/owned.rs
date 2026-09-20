@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use super::context::default_execution_context;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::frame::testing_hooks;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -13,10 +15,7 @@ use crate::{
         factorization::{Codebook, DictionaryEncodingOptions, Factorized},
     },
     ops::{binary::BinaryOperator, concatenate, replace::FillPolicy, sorting::SortOptions, unary::UnaryOperator},
-    runtime::{
-        BoundaryKind, BoundaryObservation, ExecutionPlacement, QueryStageKind, Runtime,
-        execution_domain::ExecutionDomain, record_boundary_observation_in_domain,
-    },
+    runtime::{ExecutionPlacement, Runtime, execution_domain::ExecutionDomain},
 };
 
 pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
@@ -613,16 +612,14 @@ impl Series {
     /// provenance, this reuses the existing GPU allocation. Otherwise the
     /// column is fenced and deep-copied into the target runtime.
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Series> {
+        #[cfg(any(test, feature = "test-hooks"))]
         let should_copy = !ExecutionDomain::same_provenance(self.column.execution_domain(), runtime.execution_domain());
         let column =
             Self::clone_or_copy_into_domain(&self.column, runtime.execution_domain(), "series::copy_into_runtime")?;
         let series = Self::from_column_arc(column).map_err(|e| e.reanchor("series::copy_into_runtime"))?;
+        #[cfg(any(test, feature = "test-hooks"))]
         if should_copy {
-            record_boundary_observation_in_domain(
-                runtime.execution_domain(),
-                BoundaryObservation::new(BoundaryKind::DeviceToDeviceCopy, runtime.placement(), self.len(), 1, false)
-                    .with_query_stage(QueryStageKind::OperatorOutput),
-            );
+            testing_hooks::record_device_to_device_copy();
         }
         Ok(series)
     }

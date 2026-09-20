@@ -24,15 +24,10 @@ use super::{
     lower_native_input, lower_native_input_with_scan_limit, projection_outputs,
     sort::lower_sort_ordering_with_input,
     source::{
-        SourceUnprojectedFilterOutput, available_table_format_scan_plan, lower_empty_table_format_count_star_source,
-        lower_required_file_source_projection_exprs, lower_source_filter_and_projection,
-        lower_table_format_count_star_fallback_source, lower_table_format_count_star_mixed_row_count_source,
-        lower_table_format_zero_column_count_source, preserve_resolved_source_diagnostics,
-        reader_predicate_proves_local_parquet_at_most_one_row, required_scan_projection,
-        required_scan_projection_requires_native_projection, required_scan_projection_schema,
+        SourceUnprojectedFilterOutput, lower_required_file_source_projection_exprs, lower_source_filter_and_projection,
+        preserve_resolved_source_diagnostics, reader_predicate_proves_local_parquet_at_most_one_row,
+        required_scan_projection, required_scan_projection_requires_native_projection, required_scan_projection_schema,
         source_bindings_for_schema, source_reader_pushdown_predicate,
-        table_format_count_star_mixed_row_count_metadata_can_split, table_format_count_star_probe_can_lower,
-        table_format_scan_rejection, table_format_zero_column_count_metadata_is_available,
     },
     source_scan_limit_from_limit_spec,
     unary::add_projection_node_with_input,
@@ -63,7 +58,7 @@ pub(super) fn lower_slice1_plan(
     root: &NormalizedNativeAggregateRoot<'_>,
 ) -> Result<NativeQueryPlan, LoweringRejection> {
     let source = normalized.single_source_input().ok_or(CapabilityReason::UnsupportedOperator)?;
-    let source_exec = source.local_parquet_source_exec().ok_or_else(|| table_format_scan_rejection(source))?;
+    let source_exec = source.scan;
     let filter = source.filter;
     let pre_aggregate_projection = root.pre_aggregate_projection;
     let aggregate = root.aggregate;
@@ -271,82 +266,6 @@ pub(super) fn lower_slice1_plan(
             aggregate_output_bindings,
         )
     };
-    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
-    finish_with_post_projection_sort_limit(
-        builder,
-        aggregate_output,
-        post_aggregate_projection,
-        sort,
-        normalized.limit,
-        root.projection_order,
-    )
-}
-
-pub(super) fn lower_table_format_zero_column_count_plan(
-    normalized: &NormalizedNativePlan<'_>,
-    root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<NativeQueryPlan, LoweringRejection> {
-    let source = normalized.single_source_input().ok_or(CapabilityReason::UnsupportedOperator)?;
-    let scan_exec = source.table_format_scan_exec().ok_or_else(|| table_format_scan_rejection(source))?;
-    let scan_plan = available_table_format_scan_plan(scan_exec)?;
-    let aggregate = root.aggregate;
-    let post_aggregate_projection = root.post_aggregate_projection;
-    let sort = normalized.sort.as_ref();
-
-    validate_aggregate_root_operator_schemas(root, None, post_aggregate_projection, sort)?;
-    validate_aggregate_for_native_lowering(aggregate, root.aggregate_allows_partial)?;
-    if let Some(sort) = sort {
-        validate_sort_ordering(sort.ordering(), sort.input_schema())?;
-    }
-
-    let mut builder = NativeQueryPlanBuilder::new();
-    let count_weight_input = table_format_zero_column_count_metadata_is_available(scan_plan)
-        || table_format_count_star_mixed_row_count_metadata_can_split(scan_plan)
-        || table_format_count_star_probe_can_lower(scan_plan);
-    let source_input = if scan_plan.data_files.is_empty() {
-        lower_empty_table_format_count_star_source(scan_exec, &mut builder)?
-    } else if table_format_zero_column_count_metadata_is_available(scan_plan) {
-        lower_table_format_zero_column_count_source(scan_exec, &mut builder)?
-    } else if table_format_count_star_mixed_row_count_metadata_can_split(scan_plan) {
-        lower_table_format_count_star_mixed_row_count_source(scan_exec, &mut builder)?
-    } else {
-        lower_table_format_count_star_fallback_source(scan_exec, &mut builder)?
-    };
-    let (aggregate_output_schema, aggregate_output_bindings) =
-        executable_schema_and_bindings(&root.aggregate_output_schema, &RequiredFields::all())?;
-    let aggregate_spec = if count_weight_input {
-        rename_aggregate_spec_outputs(lower_zero_column_count_aggregate_spec(aggregate)?, &aggregate_output_bindings)?
-    } else {
-        let prepared_aggregate_input =
-            prepare_aggregate_input_with_full_synthetic_projection(&mut builder, source_input, aggregate)?;
-        let aggregate_spec = rename_aggregate_spec_outputs(
-            lower_aggregate_spec(aggregate, &prepared_aggregate_input)?,
-            &aggregate_output_bindings,
-        )?;
-        let aggregate_output = LoweredNativeInput::with_bindings(
-            builder.add_aggregate(
-                prepared_aggregate_input.input.node,
-                aggregate_spec,
-                Arc::clone(&aggregate_output_schema),
-            ),
-            aggregate_output_schema,
-            aggregate_output_bindings,
-        );
-        super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
-        return finish_with_post_projection_sort_limit(
-            builder,
-            aggregate_output,
-            post_aggregate_projection,
-            sort,
-            normalized.limit,
-            root.projection_order,
-        );
-    };
-    let aggregate_output = LoweredNativeInput::with_bindings(
-        builder.add_aggregate(source_input.node, aggregate_spec, Arc::clone(&aggregate_output_schema)),
-        aggregate_output_schema,
-        aggregate_output_bindings,
-    );
     super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
     finish_with_post_projection_sort_limit(
         builder,

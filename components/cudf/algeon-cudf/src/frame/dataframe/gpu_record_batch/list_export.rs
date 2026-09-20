@@ -15,9 +15,8 @@ use crate::{
         types::TypeId,
     },
     interop::cuda_stream_handle,
-    ops::validation::FiniteValidationProof,
     runtime::{
-        BoundaryObservation, DenseMatrixLayout, ExecutionBindingId, ExecutionPlacement, PackedMatrix, Runtime,
+        DenseMatrixLayout, ExecutionBindingId, ExecutionPlacement, PackedMatrix, Runtime,
         execution_domain::ExecutionDomain, matrix_element_bytes,
     },
 };
@@ -33,7 +32,6 @@ pub(super) struct FixedSizeListStructuralProof {
     pub(super) producer_column_identity: usize,
     pub(super) binding_id: ExecutionBindingId,
     pub(super) placement: ExecutionPlacement,
-    pub(super) observation: Option<BoundaryObservation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +46,6 @@ pub(super) struct UniformListProof {
     pub(super) producer_column_identity: usize,
     pub(super) binding_id: ExecutionBindingId,
     pub(super) placement: ExecutionPlacement,
-    pub(super) offsets_observation: BoundaryObservation,
 }
 
 impl UniformListProof {
@@ -128,7 +125,6 @@ pub struct ValidatedFixedSizeListExport<'a> {
     pub(super) export: PreparedColumnExport<'a>,
     pub(super) producer_domain: RetainedProducerDomain,
     pub(super) proof: FixedSizeListStructuralProof,
-    pub(super) finite_proof: Option<FiniteValidationProof>,
     pub(super) root_column_id: ColumnId,
     pub(super) child_column_id: ColumnId,
     pub(super) child_values_buffer_id: BufferId,
@@ -155,7 +151,6 @@ pub struct ValidatedUniformListExport<'a> {
     pub(super) export: PreparedColumnExport<'a>,
     pub(super) producer_domain: RetainedProducerDomain,
     pub(super) proof: UniformListProof,
-    pub(super) finite_proof: Option<FiniteValidationProof>,
     pub(super) root_column_id: ColumnId,
     pub(super) offsets_buffer_id: BufferId,
     pub(super) child_column_id: ColumnId,
@@ -206,15 +201,6 @@ impl ValidatedUniformListExport<'_> {
 
     pub fn placement(&self) -> ExecutionPlacement {
         self.proof.placement
-    }
-
-    pub fn offsets_observation(&self) -> BoundaryObservation {
-        self.proof.offsets_observation
-    }
-
-    /// Finite-scan evidence for floating children; `None` for integer children.
-    pub fn finite_observation(&self) -> Option<BoundaryObservation> {
-        self.finite_proof.map(FiniteValidationProof::observation)
     }
 
     pub fn root_column_id(&self) -> ColumnId {
@@ -331,17 +317,6 @@ impl ValidatedFixedSizeListExport<'_> {
     /// Exact producer placement covered by the proof.
     pub fn placement(&self) -> ExecutionPlacement {
         self.proof.placement
-    }
-
-    /// Bounded control-scalar evidence used to build the structural proof.
-    /// Empty inputs require no scalar read and therefore return `None`.
-    pub fn structural_observation(&self) -> Option<BoundaryObservation> {
-        self.proof.observation
-    }
-
-    /// Finite-scan evidence for floating children; `None` for integer children.
-    pub fn finite_observation(&self) -> Option<BoundaryObservation> {
-        self.finite_proof.map(FiniteValidationProof::observation)
     }
 
     /// Semantic root list-column identity retained by the prepared export.

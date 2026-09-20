@@ -108,7 +108,7 @@ write_clean_snapshots() {
   printf '%s\n' "${baseline_bench}" >"${dir}/bench.txt"
   printf '%s\n' "${baseline_cudf}" >"${dir}/algeon-cudf.txt"
   printf '%s\n' "${baseline_cugraph}" >"${dir}/algeon-cugraph.txt"
-  cp .config/policies/public-api/algeon-datafusion-hidden.tsv "${dir}/"
+  cp .config/policies/public-api/*-hidden.tsv "${dir}/"
 }
 
 run_check() {
@@ -159,7 +159,8 @@ assert_not_contains() {
 
 CHECK_SCRIPT=scripts/ci/check_public_api_surface.sh
 
-# 1. Clean baseline: check passes for all eight independently snapshotted crates.
+# 1. Clean baseline: check passes for all eight independently snapshotted crates
+# and every hidden ledger matches its crate's source.
 clean_dir="${tmp_dir}/snapshots/clean"
 write_clean_snapshots "${clean_dir}"
 run_check clean "${clean_dir}" "${CHECK_SCRIPT}" check --all-features
@@ -172,7 +173,10 @@ assert_contains "${tmp_dir}/clean.output" "PASS: algeon-interop public API match
 assert_contains "${tmp_dir}/clean.output" "PASS: bench public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cudf public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cugraph public API matches"
-echo "PASS: clean snapshot matches for all eight independently snapshotted crates"
+for hidden_ledger in algeon-cudf algeon-datafusion algeon-query-engine algeon-query-planning algeon-query-runtime; do
+  assert_contains "${tmp_dir}/clean.output" "hidden symbols license-checked against ${hidden_ledger}-hidden.tsv"
+done
+echo "PASS: clean snapshot matches for all eight independently snapshotted crates and five hidden ledgers"
 
 # 2. Fault injection: a forbidden item reappears in one crate's public API.
 # This is the regression this whole check exists to catch, and it must fail
@@ -215,7 +219,7 @@ echo "PASS: a failing underlying tool is reported per-crate rather than swallowe
 # intentional API change has a real, reviewable approval path.
 write_dir="${tmp_dir}/snapshots/write_roundtrip"
 mkdir -p "${write_dir}"
-cp .config/policies/public-api/algeon-datafusion-hidden.tsv "${write_dir}/"
+cp .config/policies/public-api/*-hidden.tsv "${write_dir}/"
 run_check write_mode "${write_dir}" "${CHECK_SCRIPT}" write --all-features
 assert_status write_mode 0
 assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/algeon-datafusion.txt"
@@ -419,5 +423,277 @@ if python3 scripts/ci/check_native_component_architecture.py "${native_snapshot_
 fi
 assert_contains "${tmp_dir}/native_stale.output" "stale approved top-level namespaces for algeon-cudf: runtime"
 echo "PASS: stale approved top-level namespace fails closed"
+
+# Hidden-ledger fault injection through the surface script: one crate's ledger
+# loses a row and another gains a stale row, and each failure names its symbol
+# without masking the other crates' results.
+hidden_drift_dir="${tmp_dir}/snapshots/hidden_drift"
+write_clean_snapshots "${hidden_drift_dir}"
+sed -i '0,/^query_runtime::/{//d}' "${hidden_drift_dir}/algeon-query-runtime-hidden.tsv"
+printf 'query_planning::plan::core::gone\tcross-crate\towner\tconsumer\tcondition\n' \
+  >>"${hidden_drift_dir}/algeon-query-planning-hidden.tsv"
+run_check hidden_drift "${hidden_drift_dir}" "${CHECK_SCRIPT}" check --all-features
+assert_status hidden_drift 1
+assert_contains "${tmp_dir}/hidden_drift.output" "unlisted hidden symbol query_runtime::"
+assert_contains "${tmp_dir}/hidden_drift.output" "stale ledger entry query_planning::plan::core::gone [cross-crate] matches no hidden site"
+assert_contains "${tmp_dir}/hidden_drift.output" "hidden symbols license-checked against algeon-query-engine-hidden.tsv"
+echo "PASS: a missing or stale row in one crate's hidden ledger fails closed without masking the others"
+
+# Hidden-ledger scanner fixtures: throwaway crates scanned in isolation, so
+# these never depend on the real crates' hidden surface.
+HIDDEN_CHECKER=scripts/ci/check_public_api_hidden.py
+hidden_dir="${tmp_dir}/hidden"
+
+write_hidden_ledger() {
+  local file=$1
+  shift
+  local row
+  printf 'symbol\tfeature\towner\tconsumer\tremoval_condition\n' >"${file}"
+  for row in "$@"; do
+    printf '%s\t%s\towner\tconsumer\tcondition\n' "${row%%|*}" "${row##*|}" >>"${file}"
+  done
+}
+
+write_clean_ledger_variant() {
+  local file=$1
+  local excluded=$2
+  shift 2
+  local rows=()
+  local row
+  for row in "${hidden_clean_rows[@]}"; do
+    [[ "${row}" == "${excluded}" ]] || rows+=("${row}")
+  done
+  write_hidden_ledger "${file}" "${rows[@]}" "$@"
+}
+
+run_hidden() {
+  local name=$1
+  local src=$2
+  local ledger=$3
+  local status=0
+  python3 "${HIDDEN_CHECKER}" "${src}" fixture "${ledger}" >"${tmp_dir}/${name}.output" 2>&1 || status=$?
+  printf '%s\n' "${status}" >"${tmp_dir}/${name}.status"
+}
+
+mkdir -p "${hidden_dir}/clean/src"
+cat >"${hidden_dir}/clean/src/lib.rs" <<'RS'
+pub mod engine;
+#[cfg(feature = "test-hooks")]
+mod seam;
+#[cfg(test)]
+mod tests;
+#[cfg(any(test, feature = "server"))]
+pub mod frontend;
+#[cfg(feature = "bench-support")]
+pub mod bench {
+    #[doc(hidden)]
+    pub fn bench_probe() {}
+}
+#[cfg(feature = "cuml")]
+#[doc(hidden)]
+pub fn capability_only() {}
+#[cfg(test)]
+mod unit {
+    #[doc(hidden)]
+    pub fn test_only() {}
+}
+#[cfg(all(test, feature = "server"))]
+#[doc(hidden)]
+pub fn test_and_server() {}
+
+#[doc(hidden)]
+pub use engine::{Alpha, Beta as Gamma, nested::{Delta, Epsilon}};
+
+pub struct Config {
+    #[doc(hidden)]
+    pub tuning: u8,
+    pub open: u8,
+}
+
+pub enum Mode {
+    A,
+    #[doc(hidden)]
+    Internal,
+}
+
+#[doc(hidden)]
+pub struct Legacy(#[doc(hidden)] pub usize);
+
+#[doc(hidden)]
+pub(crate) fn narrowed() {}
+RS
+cat >"${hidden_dir}/clean/src/engine.rs" <<'RS'
+use std::fmt;
+
+pub struct Alpha;
+pub struct Beta;
+pub struct Wrapper<T>(pub T);
+
+pub mod nested {
+    pub struct Delta;
+    pub struct Epsilon;
+
+    impl super::Alpha {
+        #[doc(hidden)]
+        pub fn from_nested() -> Self {
+            Self
+        }
+    }
+}
+
+impl Alpha {
+    #[doc(hidden)]
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn narrowed(&self) {}
+}
+
+impl Beta {
+    #[doc(hidden)]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<T> From<T> for Wrapper<T> {
+    #[doc(hidden)]
+    fn from(value: T) -> Self {
+        Wrapper(value)
+    }
+}
+
+impl<T: Clone> fmt::Display for Wrapper<T> {
+    #[doc(hidden)]
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("wrapper")
+    }
+}
+
+pub trait Probe {
+    #[doc(hidden)]
+    fn probe(&self);
+}
+RS
+printf '#[doc(hidden)]\npub fn hook() {}\n' >"${hidden_dir}/clean/src/seam.rs"
+printf '#[doc(hidden)]\npub struct Handler;\n' >"${hidden_dir}/clean/src/frontend.rs"
+printf '#[doc(hidden)]\npub fn only_in_tests() {}\n' >"${hidden_dir}/clean/src/tests.rs"
+
+hidden_clean_rows=(
+  'fixture::Alpha|cross-crate'
+  'fixture::Config.tuning|cross-crate'
+  'fixture::Delta|cross-crate'
+  'fixture::Epsilon|cross-crate'
+  'fixture::Gamma|cross-crate'
+  'fixture::Legacy|cross-crate'
+  'fixture::Legacy.0|cross-crate'
+  'fixture::Mode::Internal|cross-crate'
+  'fixture::bench::bench_probe|bench-support'
+  'fixture::capability_only|cross-crate'
+  'fixture::engine::<Wrapper as Display>::fmt|cross-crate'
+  'fixture::engine::<Wrapper as From<T>>::from|cross-crate'
+  'fixture::engine::Alpha::new|cross-crate'
+  'fixture::engine::Beta::new|cross-crate'
+  'fixture::engine::Probe::probe|cross-crate'
+  'fixture::engine::nested::Alpha::from_nested|cross-crate'
+  'fixture::frontend::Handler|server'
+  'fixture::seam::hook|test-hooks'
+)
+
+# Same-named methods in two impls, inherent and trait impls, `pub use` groups,
+# hidden fields and variants, and cfg-derived features resolve to one row each;
+# cfg(test) items and pub(crate) items need no row.
+write_clean_ledger_variant "${hidden_dir}/clean.tsv" ""
+run_hidden hidden_clean "${hidden_dir}/clean/src" "${hidden_dir}/clean.tsv"
+assert_status hidden_clean 0
+assert_contains "${tmp_dir}/hidden_clean.output" "PASS: 18 hidden symbols license-checked against clean.tsv"
+echo "PASS: hidden scanner resolves impls, trait impls, use groups, members, and cfg-derived features"
+
+write_clean_ledger_variant "${hidden_dir}/missing_beta.tsv" 'fixture::engine::Beta::new|cross-crate'
+run_hidden hidden_missing_beta "${hidden_dir}/clean/src" "${hidden_dir}/missing_beta.tsv"
+assert_status hidden_missing_beta 1
+assert_contains "${tmp_dir}/hidden_missing_beta.output" "unlisted hidden symbol fixture::engine::Beta::new [cross-crate] has no ledger entry"
+assert_not_contains "${tmp_dir}/hidden_missing_beta.output" "unlisted hidden symbol fixture::engine::Alpha::new"
+echo "PASS: a hidden method without a row fails without implicating a same-named method of another type"
+
+write_clean_ledger_variant "${hidden_dir}/module_level.tsv" 'fixture::engine::Alpha::new|cross-crate' \
+  'fixture::engine::new|cross-crate'
+run_hidden hidden_module_level "${hidden_dir}/clean/src" "${hidden_dir}/module_level.tsv"
+assert_status hidden_module_level 1
+assert_contains "${tmp_dir}/hidden_module_level.output" "unlisted hidden symbol fixture::engine::Alpha::new [cross-crate]"
+assert_contains "${tmp_dir}/hidden_module_level.output" "stale ledger entry fixture::engine::new [cross-crate] matches no hidden site"
+echo "PASS: a module-qualified row cannot stand in for a method of a type"
+
+write_clean_ledger_variant "${hidden_dir}/wrong_feature.tsv" 'fixture::seam::hook|test-hooks' \
+  'fixture::seam::hook|cross-crate'
+run_hidden hidden_wrong_feature "${hidden_dir}/clean/src" "${hidden_dir}/wrong_feature.tsv"
+assert_status hidden_wrong_feature 1
+assert_contains "${tmp_dir}/hidden_wrong_feature.output" "unlisted hidden symbol fixture::seam::hook [test-hooks]"
+assert_contains "${tmp_dir}/hidden_wrong_feature.output" "stale ledger entry fixture::seam::hook [cross-crate]"
+echo "PASS: a row whose feature differs from the cfg-derived feature fails in both directions"
+
+write_clean_ledger_variant "${hidden_dir}/unapproved.tsv" 'fixture::seam::hook|test-hooks' \
+  'fixture::seam::hook|nightly'
+run_hidden hidden_unapproved "${hidden_dir}/clean/src" "${hidden_dir}/unapproved.tsv"
+assert_status hidden_unapproved 1
+assert_contains "${tmp_dir}/hidden_unapproved.output" "has unapproved feature 'nightly'"
+echo "PASS: a ledger feature outside the approved set is rejected"
+
+write_clean_ledger_variant "${hidden_dir}/stale.tsv" "" 'fixture::engine::removed|cross-crate'
+run_hidden hidden_stale "${hidden_dir}/clean/src" "${hidden_dir}/stale.tsv"
+assert_status hidden_stale 1
+assert_contains "${tmp_dir}/hidden_stale.output" "stale ledger entry fixture::engine::removed [cross-crate] matches no hidden site"
+echo "PASS: a ledger row without a site fails closed"
+
+# A hidden attribute the scanner cannot attach to an item must not pass silently.
+mkdir -p "${hidden_dir}/macro/src"
+cat >"${hidden_dir}/macro/src/lib.rs" <<'RS'
+macro_rules! make {
+    () => {
+        #[doc(hidden)]
+        pub fn generated() {}
+    };
+}
+make!();
+RS
+write_hidden_ledger "${hidden_dir}/macro.tsv"
+run_hidden hidden_macro "${hidden_dir}/macro/src" "${hidden_dir}/macro.tsv"
+assert_status hidden_macro 1
+assert_contains "${tmp_dir}/hidden_macro.output" "#[doc(hidden)] in a position the scanner does not classify"
+echo "PASS: a hidden attribute inside a macro body fails closed"
+
+# Two impls that differ only in generic arguments would share one symbol.
+mkdir -p "${hidden_dir}/ambiguous/src"
+cat >"${hidden_dir}/ambiguous/src/lib.rs" <<'RS'
+pub struct Holder<T>(T);
+
+impl Holder<u8> {
+    #[doc(hidden)]
+    pub fn build() {}
+}
+
+impl Holder<u16> {
+    #[doc(hidden)]
+    pub fn build() {}
+}
+RS
+write_hidden_ledger "${hidden_dir}/ambiguous.tsv" 'fixture::Holder::build|cross-crate'
+run_hidden hidden_ambiguous "${hidden_dir}/ambiguous/src" "${hidden_dir}/ambiguous.tsv"
+assert_status hidden_ambiguous 1
+assert_contains "${tmp_dir}/hidden_ambiguous.output" "fixture::Holder::build [cross-crate] is recorded at several sites"
+echo "PASS: a symbol shared by two sites is reported as ambiguous instead of merged"
+
+# A file no `mod` declaration reaches cannot be classified, so a hidden item in it fails.
+mkdir -p "${hidden_dir}/orphan/src"
+printf 'pub mod reachable;\n' >"${hidden_dir}/orphan/src/lib.rs"
+printf 'pub fn plain() {}\n' >"${hidden_dir}/orphan/src/reachable.rs"
+printf '#[doc(hidden)]\npub fn stray() {}\n' >"${hidden_dir}/orphan/src/stray.rs"
+write_hidden_ledger "${hidden_dir}/orphan.tsv"
+run_hidden hidden_orphan "${hidden_dir}/orphan/src" "${hidden_dir}/orphan.tsv"
+assert_status hidden_orphan 1
+assert_contains "${tmp_dir}/hidden_orphan.output" "no \`mod\` declaration reaches it"
+echo "PASS: a hidden item in a file outside the module tree fails closed"
 
 echo "OK: public API surface snapshot check fault-injection tests passed."

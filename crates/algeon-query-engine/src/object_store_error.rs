@@ -1,5 +1,5 @@
 //! Object-store error classification shared by native metadata reads, adapter
-//! footer pruning, and table-format scans.
+//! footer pruning, and adapter DataFusion error classification.
 //!
 //! The kind and detail strings are diagnostic fact values; classification
 //! reads the typed variant first and falls back to the rendered source chain
@@ -8,6 +8,7 @@
 use std::error::Error as StdError;
 
 use object_store::Error as ObjectStoreError;
+use query_planning::error::QueryErrorCode;
 
 /// Maximum source-chain layers rendered by [`error_chain_text`].
 ///
@@ -47,6 +48,27 @@ pub fn object_store_error_detail(error: &ObjectStoreError) -> Option<&'static st
         ObjectStoreError::NotFound { .. } => Some("not_found"),
         ObjectStoreError::Generic { source, .. } => classify_generic_object_store_source(source.as_ref()),
         _ => None,
+    }
+}
+
+/// Native error code for a typed object-store failure.
+///
+/// Access, credential, and missing-object variants keep their source codes.
+/// A `Generic` error is a temporary source failure unless its detail names a
+/// credential or access problem.
+pub fn query_error_code_for_object_store_error(error: &ObjectStoreError) -> QueryErrorCode {
+    match error {
+        ObjectStoreError::PermissionDenied { .. } => QueryErrorCode::SourceAccessDenied,
+        ObjectStoreError::Unauthenticated { .. } => QueryErrorCode::SourceUnauthenticated,
+        ObjectStoreError::NotFound { .. } => QueryErrorCode::SourceObjectNotFound,
+        ObjectStoreError::Generic { .. } => match object_store_error_detail(error) {
+            Some("http_401" | "missing_credentials" | "expired_token" | "invalid_access_key") => {
+                QueryErrorCode::SourceUnauthenticated
+            },
+            Some("http_403" | "access_denied" | "signature_mismatch") => QueryErrorCode::SourceAccessDenied,
+            _ => QueryErrorCode::SourceTemporaryFailure,
+        },
+        _ => QueryErrorCode::CudfDependencyFailure,
     }
 }
 
@@ -94,7 +116,7 @@ fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Op
 
 /// Renders `source` and its causes joined by `": "`, keeping at most
 /// 32 cause layers and 16 KiB of text (cut on a UTF-8 boundary).
-pub fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
+pub(crate) fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
     let mut text = bounded_layer_text(&source.to_string(), MAX_ERROR_CHAIN_BYTES);
     let mut current = source.source();
     for _ in 0..MAX_ERROR_CHAIN_DEPTH {

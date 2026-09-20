@@ -27,7 +27,7 @@ impl ExecutionCapability {
     }
 
     /// Returns the stable capability identity.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         self.name
     }
 }
@@ -40,25 +40,20 @@ pub const CUGRAPH_GRAPH_EXECUTION_CAPABILITY: ExecutionCapability = ExecutionCap
 /// The scope is retained rather than a capability label alone: a label would
 /// let evidence issued for one graph plan authorize an unrelated one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct AttestedCugraphGraphExecutionScope {
-    #[doc(hidden)]
-    pub execution_scope_fingerprint: String,
-    #[doc(hidden)]
-    pub deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
+pub(crate) struct AttestedCugraphGraphExecutionScope {
+    pub(crate) execution_scope_fingerprint: String,
+    pub(crate) deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
 }
 
 impl AttestedCugraphGraphExecutionScope {
-    #[doc(hidden)]
-    pub fn for_plan(plan: &QueryPlan) -> Self {
+    pub(crate) fn for_plan(plan: &QueryPlan) -> Self {
         Self {
             execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
             deferred_execution_scope_identity: None,
         }
     }
 
-    #[doc(hidden)]
-    pub fn matches(&self, plan: &QueryPlan) -> bool {
+    pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
         self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
             || self.deferred_execution_scope_identity.as_ref().is_some_and(|scope| scope.matches(plan))
     }
@@ -71,15 +66,12 @@ pub struct AttemptCapabilityEvidence {
     #[doc(hidden)]
     pub required_capabilities: Vec<ExecutionCapability>,
     /// Graph plans admitted for cuGraph execution.
-    #[doc(hidden)]
-    pub attested_cugraph_graph_execution_scopes: Vec<AttestedCugraphGraphExecutionScope>,
+    pub(crate) attested_cugraph_graph_execution_scopes: Vec<AttestedCugraphGraphExecutionScope>,
     /// Plan-scope and output-schema identity for each admitted fragment.
-    #[doc(hidden)]
-    pub execution_scopes: Vec<AttemptExecutionScope>,
+    pub(crate) execution_scopes: Vec<AttemptExecutionScope>,
     /// GPU UDTF occurrences and CPU dependency boundaries for this
     /// DataFusion invocation.
-    #[doc(hidden)]
-    pub execution_manifest: Option<AttemptExecutionManifest>,
+    pub(crate) execution_manifest: Option<AttemptExecutionManifest>,
 }
 
 impl AttemptCapabilityEvidence {
@@ -184,11 +176,6 @@ impl AttemptCapabilityEvidence {
         {
             scope.deferred_execution_scope_identity = Some(DeferredGraphExecutionScopeIdentity::for_plan(plan));
         }
-    }
-
-    #[doc(hidden)]
-    pub fn push_execution_scope(&mut self, scope: AttemptExecutionScope) {
-        self.execution_scopes.push(scope);
     }
 
     #[doc(hidden)]

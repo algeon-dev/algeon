@@ -135,6 +135,7 @@ impl DataFrame {
             },
         )
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_merge_in_context(
         &self,
         right: &DataFrame,

@@ -27,7 +27,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use cudf::runtime::CudaStream;
@@ -35,7 +35,7 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
 use super::DeviceResourceProfile;
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 use super::{DeviceCapabilities, DeviceResourceEnvelope};
 use crate::{
     observability::{AdmissionRequestId, AttemptId},
@@ -46,7 +46,7 @@ const OPERATION: &str = "query_engine.gpu.device_ledger";
 
 /// Admission health of one device ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeviceAdmissionHealth {
+pub(crate) enum DeviceAdmissionHealth {
     /// New attempts may be admitted.
     Open,
     /// New admission is closed; in-flight attempts finish and release.
@@ -64,53 +64,48 @@ impl DeviceAdmissionHealth {
 
 /// Atomic read of one device ledger at one observation sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LedgerSnapshot {
-    pub device_ordinal: usize,
-    pub sequence: u64,
-    pub managed_capacity_bytes: u64,
+pub(crate) struct LedgerSnapshot {
+    pub(crate) device_ordinal: usize,
+    pub(crate) sequence: u64,
+    pub(crate) managed_capacity_bytes: u64,
     /// Cache share `K` carved out of the managed capacity.
-    pub cache_cap_bytes: u64,
+    pub(crate) cache_cap_bytes: u64,
     /// Query share `Q = M - K` promisable to grants plus frozen residents.
-    pub query_share_bytes: u64,
-    pub default_query_limit_bytes: u64,
-    pub max_active_attempts: usize,
-    pub active_attempts: usize,
-    pub live_grants_bytes: u64,
+    pub(crate) query_share_bytes: u64,
+    pub(crate) default_query_limit_bytes: u64,
+    pub(crate) max_active_attempts: usize,
+    pub(crate) active_attempts: usize,
+    pub(crate) live_grants_bytes: u64,
     /// Bytes owned by frozen resident domains.
-    pub frozen_resident_bytes: u64,
+    pub(crate) frozen_resident_bytes: u64,
     /// Aggregate bytes retained by live resident owners.
-    pub resident_owner_bytes: u64,
+    pub(crate) resident_owner_bytes: u64,
     /// Logical root stream slots still available to a new admitted attempt.
     ///
     /// These values are derived from the immutable profile and active grants
     /// while holding the ledger lock. They are not a separately sampled CUDA
     /// stream-pool counter, so placement never combines independently read
     /// resource gauges into an unsound admission fact.
-    pub root_streams_available: usize,
+    pub(crate) root_streams_available: usize,
     /// Logical auxiliary stream slots still available to admitted attempts.
-    pub auxiliary_streams_available: usize,
+    pub(crate) auxiliary_streams_available: usize,
     /// Logical root worker slots still available to a new admitted attempt.
-    pub root_worker_slots_available: usize,
+    pub(crate) root_worker_slots_available: usize,
     /// Logical auxiliary worker slots still available to admitted attempts.
-    pub auxiliary_worker_slots_available: usize,
+    pub(crate) auxiliary_worker_slots_available: usize,
     /// Worker slots committed by active attempts under the frozen profile.
-    pub worker_depth: usize,
-    pub protected_slot: bool,
-    pub protected_reserve_bytes: u64,
-    pub cache_evictable_resident_bytes: u64,
-    pub cache_pinned_in_use_bytes: u64,
-    pub health: DeviceAdmissionHealth,
+    pub(crate) worker_depth: usize,
+    pub(crate) protected_slot: bool,
+    pub(crate) protected_reserve_bytes: u64,
+    pub(crate) cache_evictable_resident_bytes: u64,
+    pub(crate) cache_pinned_in_use_bytes: u64,
+    pub(crate) health: DeviceAdmissionHealth,
 }
 
 impl LedgerSnapshot {
     /// Total logical stream slots available under the immutable profile.
-    pub fn stream_slots_available(&self) -> usize {
+    pub(crate) fn stream_slots_available(&self) -> usize {
         self.root_streams_available.saturating_add(self.auxiliary_streams_available)
-    }
-
-    /// Total logical worker slots available under the immutable profile.
-    pub fn worker_slots_available(&self) -> usize {
-        self.root_worker_slots_available.saturating_add(self.auxiliary_worker_slots_available)
     }
 
     /// Resolves and checks one query cap against this atomic snapshot.
@@ -119,7 +114,7 @@ impl LedgerSnapshot {
     /// grants plus the candidate grant must fit the query share. The cache
     /// share never participates, so filling the cache cannot shrink query
     /// admission and admitting queries cannot spend cache bytes.
-    pub fn admissible_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Option<u64> {
+    pub(crate) fn admissible_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Option<u64> {
         self.active_attempts.checked_add(1).filter(|active| *active <= self.max_active_attempts)?;
         let resident_capacity = self.query_share_bytes.checked_sub(self.frozen_resident_bytes)?;
         let query_cap = requested_cap_bytes.unwrap_or_else(|| self.default_query_limit_bytes.min(resident_capacity));
@@ -135,7 +130,7 @@ impl LedgerSnapshot {
 
     /// Whether this snapshot's resident ownership leaves enough query-share
     /// capacity for the requested cap, ignoring active attempts.
-    pub fn can_ever_fit_query_cap(&self, requested_cap_bytes: Option<u64>) -> bool {
+    pub(crate) fn can_ever_fit_query_cap(&self, requested_cap_bytes: Option<u64>) -> bool {
         let Some(resident_capacity) = self.query_share_bytes.checked_sub(self.frozen_resident_bytes) else {
             return false;
         };
@@ -150,7 +145,7 @@ pub struct DeviceLedgerReport {
     pub device_ordinal: usize,
     pub sequence: u64,
     pub managed_capacity_bytes: u64,
-    pub default_query_limit_bytes: u64,
+    pub(crate) default_query_limit_bytes: u64,
     pub max_active_attempts: usize,
     pub active_attempts: usize,
     pub live_grants_bytes: u64,
@@ -160,24 +155,24 @@ pub struct DeviceLedgerReport {
     /// Logical root stream slots available at this report's sequence.
     pub root_streams_available: usize,
     /// Logical auxiliary stream slots available at this report's sequence.
-    pub auxiliary_streams_available: usize,
+    pub(crate) auxiliary_streams_available: usize,
     /// Logical root worker slots available at this report's sequence.
     pub root_worker_slots_available: usize,
     /// Logical auxiliary worker slots available at this report's sequence.
-    pub auxiliary_worker_slots_available: usize,
+    pub(crate) auxiliary_worker_slots_available: usize,
     /// Worker slots committed by active attempts at this report's sequence.
-    pub worker_depth: usize,
+    pub(crate) worker_depth: usize,
     /// Query-share bytes not currently covered by live grants or frozen
     /// residents (`Q - R - Σ Gᵢ`). Cache charges never participate.
     pub available_bytes: u64,
     /// Immediately grantable query-share bytes, projected from the same
     /// snapshot as `available_bytes` (`Q - R - Σ Gᵢ`).
-    pub free_bytes: u64,
+    pub(crate) free_bytes: u64,
     /// Cache-internal evictable accounting, reported separately from active
     /// grants and pinned cache bytes.
     pub evictable_bytes: u64,
-    pub protected_slot: bool,
-    pub protected_reserve_bytes: u64,
+    pub(crate) protected_slot: bool,
+    pub(crate) protected_reserve_bytes: u64,
     pub cache_evictable_resident_bytes: u64,
     /// Resident-cache bytes temporarily pinned by an active cache lease.
     pub cache_pinned_in_use_bytes: u64,
@@ -192,14 +187,14 @@ pub struct DeviceLedgerGrantRow {
     pub admission_request_id: AdmissionRequestId,
     pub grant_bytes: u64,
     pub resident_owner_bytes: u64,
-    pub frozen_resident_bytes: Option<u64>,
+    pub(crate) frozen_resident_bytes: Option<u64>,
 }
 
 /// Immutable identity assigned when a device ledger commits one attempt grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GrantIdentity {
-    pub attempt_id: AttemptId,
-    pub generation: u64,
+    pub(crate) attempt_id: AttemptId,
+    pub(crate) generation: u64,
 }
 
 /// The ledger mutation that advanced an observation sequence.
@@ -209,8 +204,7 @@ pub struct GrantIdentity {
 /// snapshot as their complete input and must not synchronously re-enter the
 /// same ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub enum LedgerTransitionKind {
+pub(crate) enum LedgerTransitionKind {
     AdmissionClosed,
     GrantAdmitted,
     GrantFrozenResident,
@@ -229,22 +223,19 @@ pub enum LedgerTransitionKind {
 
 /// One immutable ledger mutation observed atomically with its state change.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct LedgerTransition {
-    pub kind: LedgerTransitionKind,
-    pub snapshot: LedgerSnapshot,
+pub(crate) struct LedgerTransition {
+    pub(crate) kind: LedgerTransitionKind,
+    pub(crate) snapshot: LedgerSnapshot,
 }
 
 /// In-lock observer of one atomic ledger transition.
-#[doc(hidden)]
-pub type LedgerTransitionObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
+pub(crate) type LedgerTransitionObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
 
 /// Post-lock observer of a grant release.
 ///
 /// Release observers preserve the queue wakeup ordering: the grant has left
 /// the ledger and the state mutex is no longer held when they run.
-#[doc(hidden)]
-pub type LedgerReleaseObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
+pub(crate) type LedgerReleaseObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
 
 /// Per-device versioned immutable-grant ledger.
 #[derive(Clone)]
@@ -364,8 +355,7 @@ impl DeviceLedgerState {
 
 impl DeviceLedger {
     /// Creates one ledger over an immutable per-device profile.
-    #[doc(hidden)]
-    pub fn new(profile: DeviceResourceProfile) -> Self {
+    pub(crate) fn new(profile: DeviceResourceProfile) -> Self {
         Self {
             inner: Arc::new(DeviceLedgerInner {
                 profile,
@@ -385,9 +375,8 @@ impl DeviceLedger {
     }
 
     /// Test constructor deriving a valid profile from raw capacity inputs.
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn for_test(device_ordinal: usize, managed_capacity_bytes: u64, max_active_attempts: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn for_test(device_ordinal: usize, managed_capacity_bytes: u64, max_active_attempts: usize) -> Self {
         let max_active_attempts = max_active_attempts.max(1);
         let source_work = 1usize;
         let slots = max_active_attempts.saturating_mul(2).max(max_active_attempts);
@@ -416,9 +405,8 @@ impl DeviceLedger {
     }
 
     /// Test convenience: admit one attempt with an explicit query cap.
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn admit_with_configured_floor_and_soft_working_set_hint_for_test(
+    #[cfg(test)]
+    pub(crate) fn admit_with_configured_floor_and_soft_working_set_hint_for_test(
         &self,
         waiter_id: AdmissionRequestId,
         query_cap_bytes: u64,
@@ -438,7 +426,7 @@ impl DeviceLedger {
     }
 
     /// Managed capacity in bytes (immutable).
-    pub fn managed_capacity_bytes(&self) -> u64 {
+    pub(crate) fn managed_capacity_bytes(&self) -> u64 {
         self.inner.profile.managed_capacity_bytes
     }
 
@@ -518,8 +506,7 @@ impl DeviceLedger {
     /// Registration is additive. Each invocation receives a snapshot whose
     /// sequence is exactly the transition sequence; observer panics are
     /// isolated from admission and release.
-    #[doc(hidden)]
-    pub fn register_transition_observer(&self, observer: LedgerTransitionObserver) -> Result<()> {
+    pub(crate) fn register_transition_observer(&self, observer: LedgerTransitionObserver) -> Result<()> {
         let mut registered = self.inner.transition_observers.lock().map_err(|_error| {
             QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger transition-observer mutex was poisoned")
                 .with_fact("reason", "transition_observer_mutex_poisoned")
@@ -536,8 +523,7 @@ impl DeviceLedger {
     /// The observer runs only after a grant release has committed and the
     /// ledger mutex has been released. This preserves the queue-wakeup
     /// contract without conflating it with atomic state observation.
-    #[doc(hidden)]
-    pub fn register_release_observer(&self, observer: LedgerReleaseObserver) -> Result<()> {
+    pub(crate) fn register_release_observer(&self, observer: LedgerReleaseObserver) -> Result<()> {
         let mut registered = self.inner.release_observers.lock().map_err(|_error| {
             QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger release-observer mutex was poisoned")
                 .with_fact("reason", "release_observer_mutex_poisoned")
@@ -550,7 +536,7 @@ impl DeviceLedger {
     }
 
     /// One atomic ledger snapshot for placement, reports, and metrics.
-    pub fn snapshot(&self) -> Result<LedgerSnapshot> {
+    pub(crate) fn snapshot(&self) -> Result<LedgerSnapshot> {
         let state = self.lock_state("snapshot")?;
         Ok(self.snapshot_locked(&state))
     }
@@ -592,7 +578,7 @@ impl DeviceLedger {
     }
 
     /// Public diagnostic report for this ledger.
-    pub fn report(&self) -> Result<DeviceLedgerReport> {
+    pub(crate) fn report(&self) -> Result<DeviceLedgerReport> {
         let state = self.lock_state("report")?;
         let snapshot = self.snapshot_locked(&state);
         let grants = state
@@ -640,13 +626,13 @@ impl DeviceLedger {
     }
 
     /// Current device admission health.
-    pub fn health(&self) -> Result<DeviceAdmissionHealth> {
+    pub(crate) fn health(&self) -> Result<DeviceAdmissionHealth> {
         let state = self.lock_state("health")?;
         Ok(state.health.clone())
     }
 
     /// Closes new admission on this device; in-flight grants still release.
-    pub fn close_admission(&self, reason: impl Into<String>) -> Result<u64> {
+    pub(crate) fn close_admission(&self, reason: impl Into<String>) -> Result<u64> {
         let mut state = self.lock_state("close_admission")?;
         let generation = match &state.health {
             DeviceAdmissionHealth::Open => 1,
@@ -663,8 +649,7 @@ impl DeviceLedger {
     /// contexts can observe the same fault concurrently, but only the first
     /// observation may advance the ledger health generation and define its
     /// closure reason.
-    #[doc(hidden)]
-    pub fn close_admission_if_open(&self, reason: impl Into<String>) -> Result<bool> {
+    pub(crate) fn close_admission_if_open(&self, reason: impl Into<String>) -> Result<bool> {
         let mut state = self.lock_state("close_admission_if_open")?;
         if !matches!(state.health, DeviceAdmissionHealth::Open) {
             return Ok(false);
@@ -676,8 +661,7 @@ impl DeviceLedger {
 
     /// Returns the cap that could be admitted right now.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn candidate_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Result<Option<u64>> {
+    pub(crate) fn candidate_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Result<Option<u64>> {
         let state = self.lock_state("candidate_max_new_grant_bytes")?;
         let snapshot = self.snapshot_locked(&state);
         Ok(snapshot.admissible_query_cap_bytes(requested_cap_bytes))
@@ -688,8 +672,7 @@ impl DeviceLedger {
     /// The grant is exactly the explicit cap, or the default cap resolved
     /// against resident ownership in this transaction. It is never clamped to
     /// transient capacity and planner estimates do not participate.
-    #[doc(hidden)]
-    pub fn try_admit_for_attempt(
+    pub(crate) fn try_admit_for_attempt(
         &self,
         waiter_id: AdmissionRequestId,
         attempt_id: AttemptId,
@@ -712,8 +695,7 @@ impl DeviceLedger {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn try_admit(
+    pub(crate) fn try_admit(
         &self,
         waiter_id: AdmissionRequestId,
         requested_cap_bytes: Option<u64>,
@@ -769,10 +751,8 @@ impl DeviceLedger {
         if self.in_transition_observer() {
             self.panic_on_transition_observer_reentrancy("release_grant");
         }
-        let Ok(mut state) = self.inner.state.lock() else {
-            eprintln!("[query-engine] warning: device ledger release observed a poisoned mutex");
-            return;
-        };
+        // The state is integer accounting; returning early on a poisoned lock would leak the grant for good.
+        let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(active) = state.grants.remove(&grant_id) else {
             return;
         };
@@ -780,6 +760,7 @@ impl DeviceLedger {
             state.frozen_resident_bytes = state.frozen_resident_bytes.saturating_sub(resident_bytes);
         }
         let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantReleased);
+        // Release observers lock service admission mutexes, so they run outside the ledger lock.
         drop(state);
         if let Some(observers) = self.release_observers() {
             for observer in observers.iter() {
@@ -797,8 +778,7 @@ impl DeviceLedger {
     /// query-first admission orders promise identical capacity. The query
     /// share bound (`R + Σ Gᵢ <= Q`) independently keeps the combined
     /// commitment within `M`.
-    #[doc(hidden)]
-    pub fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
+    pub(crate) fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
         if bytes == 0 {
             return Ok(true);
         }
@@ -818,8 +798,7 @@ impl DeviceLedger {
     /// The aggregate cache charge is unchanged. This narrow transition is
     /// deliberately private to the shared residency state machine: callers
     /// must not maintain independent pinned counters beside the ledger.
-    #[doc(hidden)]
-    pub fn pin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
+    pub(crate) fn pin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
         if bytes == 0 {
             return Ok(());
         }
@@ -847,8 +826,7 @@ impl DeviceLedger {
     }
 
     /// Moves one exact resident-cache charge from pinned back to evictable.
-    #[doc(hidden)]
-    pub fn unpin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
+    pub(crate) fn unpin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
         if bytes == 0 {
             return Ok(());
         }
@@ -881,15 +859,13 @@ impl DeviceLedger {
     /// undercharged release. The residency state machine calls it only after
     /// GPU-safe destruction has completed, so a mismatched byte count must
     /// fail closed instead of releasing another entry's charge.
-    #[doc(hidden)]
-    pub fn release_cache_residency_charge_after_destroy(&self, bytes: u64) -> Result<()> {
+    pub(crate) fn release_cache_residency_charge_after_destroy(&self, bytes: u64) -> Result<()> {
         self.release_exact_evictable_cache_charge(bytes, "release_cache_residency_charge_after_destroy")
     }
 
     /// Returns unused conservative pre-reservation bytes before a cache entry
     /// has been committed. No physical allocation owns this excess yet.
-    #[doc(hidden)]
-    pub fn release_cache_residency_precharge_excess(&self, bytes: u64) -> Result<()> {
+    pub(crate) fn release_cache_residency_precharge_excess(&self, bytes: u64) -> Result<()> {
         self.release_exact_evictable_cache_charge(bytes, "release_cache_residency_precharge_excess")
     }
 
@@ -912,14 +888,6 @@ impl DeviceLedger {
         state.evictable_bytes -= bytes;
         self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::EvictableReleased);
         Ok(())
-    }
-
-    /// Bytes currently charged to evictable caches.
-    #[cfg(test)]
-    #[doc(hidden)]
-    pub fn evictable_bytes(&self) -> Result<u64> {
-        let state = self.lock_state("evictable_bytes")?;
-        Ok(state.evictable_bytes)
     }
 }
 
@@ -993,8 +961,7 @@ impl Drop for MemoryGrantInner {
 }
 
 impl MemoryGrant {
-    #[doc(hidden)]
-    pub fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
+    pub(crate) fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
         Self { inner: Arc::clone(&self.inner), resource_epoch: Some(resource_epoch) }
     }
 
@@ -1003,7 +970,7 @@ impl MemoryGrant {
     }
 
     /// Unique ledger-local grant id.
-    pub fn grant_id(&self) -> u64 {
+    pub(crate) fn grant_id(&self) -> u64 {
         self.inner.identity.generation
     }
 
@@ -1017,8 +984,7 @@ impl MemoryGrant {
         self.inner.admission_request_id
     }
 
-    #[doc(hidden)]
-    pub fn identity_key(&self) -> usize {
+    pub(crate) fn identity_key(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
 
@@ -1029,9 +995,8 @@ impl MemoryGrant {
         self.inner.grant_bytes
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn freeze_resident(&self, resident_bytes: u64) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) fn freeze_resident(&self, resident_bytes: u64) -> Result<()> {
         self.prepare_frozen_resident_charge(resident_bytes, None)?;
         self.publish_frozen_resident()
     }
@@ -1233,7 +1198,7 @@ impl MemoryGrant {
         Ok(())
     }
 
-    pub fn is_frozen_resident(&self) -> bool {
+    pub(crate) fn is_frozen_resident(&self) -> bool {
         self.inner.frozen.load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -1243,8 +1208,7 @@ impl MemoryGrant {
     }
 
     /// Device-resident bytes currently owned by live values under this grant.
-    #[doc(hidden)]
-    pub fn resident_owner_bytes(&self) -> u64 {
+    pub(crate) fn resident_owner_bytes(&self) -> u64 {
         self.inner.resident_owner_bytes.load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -1419,14 +1383,12 @@ impl ResidentOwnerLease {
     }
 
     /// Bytes retained by this handle in the owning memory grant.
-    #[doc(hidden)]
-    pub fn bytes(&self) -> u64 {
+    pub(crate) fn bytes(&self) -> u64 {
         self.inner.bytes
     }
 
     /// Whether this retention consumes capacity from `grant`.
-    #[doc(hidden)]
-    pub fn belongs_to(&self, grant: &MemoryGrant) -> bool {
+    pub(crate) fn belongs_to(&self, grant: &MemoryGrant) -> bool {
         self.inner.grant.identity_key() == grant.identity_key()
     }
 
@@ -1435,8 +1397,8 @@ impl ResidentOwnerLease {
     /// A leased owner keeps the device generation alive until its GPU bytes
     /// are released. Grants admitted straight from a ledger, without a query
     /// service epoch, have no generation to share.
-    #[doc(hidden)]
-    pub fn has_resource_epoch(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_resource_epoch(&self) -> bool {
         self.inner.grant.resource_epoch.is_some()
     }
 
@@ -1444,19 +1406,17 @@ impl ResidentOwnerLease {
     ///
     /// Resident owners must never retain it: the query epoch has to retire
     /// for the attempt report and the frozen-resident handoff to publish.
-    #[doc(hidden)]
-    pub fn retains_query_anchor(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn retains_query_anchor(&self) -> bool {
         self.inner.grant.resource_epoch.as_ref().is_some_and(|epoch| epoch.has_query_anchor())
     }
 
-    #[doc(hidden)]
-    pub fn identity_key(&self) -> usize {
+    pub(crate) fn identity_key(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
 
     /// Retains a derived output owner under the same grant.
-    #[doc(hidden)]
-    pub fn retain_derived_owner(&self, bytes: u64) -> Result<Option<Self>> {
+    pub(crate) fn retain_derived_owner(&self, bytes: u64) -> Result<Option<Self>> {
         self.inner.grant.retain_resident_owner(bytes)
     }
 }

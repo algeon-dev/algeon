@@ -165,20 +165,6 @@ pub(super) fn unsupported_category(
         | CapabilityReason::NativeSourceByteRange
         | CapabilityReason::NativeSourceRowSelection
         | CapabilityReason::NativeSourceSchemaMapping => Some("source".to_string()),
-        CapabilityReason::TableFormatUnsupported
-        | CapabilityReason::TableFormatPlanningFailed
-        | CapabilityReason::IcebergNonParquetDataFile
-        | CapabilityReason::IcebergDeleteFilesUnsupported
-        | CapabilityReason::IcebergFieldIdMappingUnsupported
-        | CapabilityReason::IcebergNameMappingUnsupported
-        | CapabilityReason::IcebergNestedProjectionUnsupported
-        | CapabilityReason::IcebergPartitionTransformUnsupported
-        | CapabilityReason::IcebergResidualPredicateUnsupported
-        | CapabilityReason::IcebergRowSelectionUnsupported
-        | CapabilityReason::IcebergObjectStoreReadUnsupported
-        | CapabilityReason::IcebergFileIoSourceAccessUnverified
-        | CapabilityReason::IcebergEncryptedFileUnsupported
-        | CapabilityReason::IcebergScalarValueUnsupported => Some("table_format".to_string()),
         CapabilityReason::NativeSortPreservingMergeUnsupported
         | CapabilityReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
         CapabilityReason::NativeOrderedOutputUnsupported => Some("operator_ordering".to_string()),

@@ -3,8 +3,7 @@ use std::collections::VecDeque;
 use super::{
     BoundedExecutionAttempt, BoundedJoinLeafSourceStreamDynamicFilterStage, GpuDataFrame, LocalParquetSource, NodeId,
     Result, ScheduledLocalParquetRead, SourceChunk, attach_join_source_read_resource_facts,
-    join_leaf_prefetch_budget_bytes, observe_device_memory_bytes, record_dynamic_filter_reader_predicate_rows,
-    release_join_source_chunks_reverse, source_read_budget_bytes,
+    join_leaf_prefetch_admitted, observe_device_memory_bytes, record_dynamic_filter_reader_predicate_rows,
 };
 
 pub(super) fn read_join_leaf_source_chunks_with_scheduler(
@@ -18,14 +17,7 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_scheduler")?;
-    start_next_required_join_leaf_read(
-        execution,
-        source,
-        source_chunks,
-        &mut pending,
-        &mut next_chunk_index,
-        max_attempts,
-    )?;
+    start_next_required_join_leaf_read(execution, source, source_chunks, &mut pending, &mut next_chunk_index)?;
 
     let mut chunks = Vec::with_capacity(source_chunks.len());
     for (index, chunk) in source_chunks.iter().enumerate() {
@@ -33,17 +25,15 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
             execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_scheduler")
         {
             abandon_join_leaf_reads(execution, pending);
-            release_join_source_chunks_reverse(chunks);
             return Err(error);
         }
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
-        let output = match scheduled.finish(execution) {
+        let output = match scheduled.finish() {
             Ok(output) => output,
             Err(error) => {
                 abandon_join_leaf_reads(execution, pending);
-                release_join_source_chunks_reverse(chunks);
                 return Err(attach_join_source_read_resource_facts(error, node_id, chunk, 1, max_attempts));
             },
         };
@@ -54,7 +44,6 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
             Ok(bytes) => bytes,
             Err(error) => {
                 abandon_join_leaf_reads(execution, pending);
-                release_join_source_chunks_reverse(chunks);
                 return Err(error);
             },
         };
@@ -72,16 +61,10 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
         );
         chunks.push((output.frame, observed_bytes));
 
-        if let Err(error) = fill_optional_join_leaf_reads(
-            execution,
-            source,
-            source_chunks,
-            &mut pending,
-            &mut next_chunk_index,
-            max_attempts,
-        ) {
+        if let Err(error) =
+            fill_optional_join_leaf_reads(execution, source, source_chunks, &mut pending, &mut next_chunk_index)
+        {
             abandon_join_leaf_reads(execution, pending);
-            release_join_source_chunks_reverse(chunks);
             return Err(error);
         }
         if pending.is_empty()
@@ -92,10 +75,8 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
                 source_chunks,
                 &mut pending,
                 &mut next_chunk_index,
-                max_attempts,
             )
         {
-            release_join_source_chunks_reverse(chunks);
             return Err(error);
         }
     }
@@ -109,20 +90,15 @@ pub(super) fn start_next_required_join_leaf_read(
     chunks: &[SourceChunk],
     pending: &mut VecDeque<ScheduledLocalParquetRead>,
     next_chunk_index: &mut usize,
-    max_attempts: usize,
 ) -> Result<()> {
     if let Some(chunk) = chunks.get(*next_chunk_index) {
-        let requested_bytes = source_read_budget_bytes(execution.context().memory_control_policy(), chunk);
         pending.push_back(start_join_leaf_scheduled_source_read(
             execution,
             source,
             chunk,
-            requested_bytes,
             "join_source_read",
             false,
-            false,
             1,
-            max_attempts,
         )?);
         *next_chunk_index += 1;
     }
@@ -134,7 +110,6 @@ pub(super) fn fill_optional_join_leaf_reads(
     chunks: &[SourceChunk],
     pending: &mut VecDeque<ScheduledLocalParquetRead>,
     next_chunk_index: &mut usize,
-    max_attempts: usize,
 ) -> Result<()> {
     // Keep one optional read ahead so decoded output cannot starve the next required read.
     let prefetch_target = usize::from(execution.context().source_scheduler_policy().max_source_reads_in_flight() > 1);
@@ -142,55 +117,42 @@ pub(super) fn fill_optional_join_leaf_reads(
         let Some(chunk) = chunks.get(*next_chunk_index) else {
             break;
         };
-        let Some(requested_bytes) = join_leaf_prefetch_budget_bytes(execution.context().memory_control_policy(), chunk)
-        else {
+        if !join_leaf_prefetch_admitted(execution.context().memory_control_policy(), chunk) {
             execution.metrics().record_source_read_prefetch_skipped();
             break;
-        };
+        }
         execution.metrics().record_source_read_prefetch_started();
         pending.push_back(start_join_leaf_scheduled_source_read(
             execution,
             source,
             chunk,
-            requested_bytes,
             "join_source_read_prefetch",
-            false,
             true,
             1,
-            max_attempts,
         )?);
         *next_chunk_index += 1;
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
-)]
 pub(super) fn start_join_leaf_scheduled_source_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    requested_bytes: u64,
     memory_boundary: &'static str,
-    hard_token_budget: bool,
     prefetch: bool,
     attempt: usize,
-    max_attempts: usize,
 ) -> Result<ScheduledLocalParquetRead> {
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
     execution.metrics().record_source_chunk_attempt();
-    let source_token_budget = if hard_token_budget { requested_bytes } else { execution.device_budget_bytes() };
     ScheduledLocalParquetRead::spawn(
         execution.context().clone(),
         execution.metrics().clone(),
         source.clone(),
         chunk.clone(),
-        source_token_budget,
+        execution.device_budget_bytes(),
         memory_boundary,
         prefetch,
         attempt,
-        max_attempts,
     )
 }
 

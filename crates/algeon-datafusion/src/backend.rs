@@ -27,9 +27,8 @@ pub use query_engine::runtime::{
 use query_engine::{
     error::QueryError,
     runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus, QueryExecutionConfig,
-        QueueBounds, probe_device_capacity,
+        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendSession, MemoryControlPolicy,
+        QueryExecutionConfig, QueueBounds, probe_device_capacity,
     },
 };
 #[cfg(all(test, feature = "cugraph"))]
@@ -483,7 +482,7 @@ fn validated_backend_construction(
     let service_config = backend_query_execution_config(&execution_config)?;
     let queue_bounds = backend_queue_bounds(&queue_policy);
     let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
-    let mut core_draft = GpuBackendCoreDraft::new(devices.clone(), controller, nongds_deployment());
+    let mut core_draft = GpuBackendCoreDraft::new(devices.clone(), controller);
     // Mirror `build()`: derive unset installation bounds from the profile
     // before validating, otherwise a default profile with more than one
     // active slot fails its own dry run on constructor placeholders.
@@ -577,16 +576,6 @@ impl InstalledTestGpuBackend {
 impl Default for InstalledTestGpuBackend {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-impl InstalledTestGpuBackend {
-    // Only the withheld `iceberg` GPU test target drives an explicit close.
-    #[cfg_attr(not(feature = "iceberg"), expect(dead_code, reason = "iceberg test target is withheld"))]
-    pub(crate) fn close_and_wait(mut self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
-        let backend = self.backend.take().expect("test backend remains live until fixture drop");
-        backend.close_and_wait(timeout)
     }
 }
 
@@ -762,14 +751,6 @@ fn validate_positive_usize(field: &'static str, value: usize) -> Result<()> {
 
 fn invalid_backend_config(field: &'static str, message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.backend.config", message).with_fact("field", field)
-}
-
-fn nongds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
 }
 
 #[cfg(test)]

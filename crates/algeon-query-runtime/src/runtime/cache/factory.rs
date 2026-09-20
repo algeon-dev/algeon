@@ -24,16 +24,14 @@ use crate::{
 /// `None` is returned when the ledger profile has a zero cache cap.  Thus the
 /// disabled baseline creates no CUDA allocator domain at all.
 #[derive(Debug, Clone)]
-#[doc(hidden)]
-pub struct DeviceCacheAllocationFactory {
+pub(crate) struct DeviceCacheAllocationFactory {
     ledger: DeviceLedger,
     domain: Arc<cudf::CacheAllocationDomain>,
 }
 
 impl DeviceCacheAllocationFactory {
     /// Create the one physical cache domain for `ledger`, if caching is enabled.
-    #[doc(hidden)]
-    pub fn new(ledger: DeviceLedger) -> Result<Option<Self>> {
+    pub(crate) fn new(ledger: DeviceLedger) -> Result<Option<Self>> {
         let capacity = ledger.profile().cache_cap_bytes;
         if capacity == 0 {
             return Ok(None);
@@ -71,8 +69,7 @@ impl DeviceCacheAllocationFactory {
     }
 
     /// Lease the shared domain for the source-cache subdomain.
-    #[doc(hidden)]
-    pub fn source_cache(&self) -> Result<GpuLocalParquetSourceCache> {
+    pub(crate) fn source_cache(&self) -> Result<GpuLocalParquetSourceCache> {
         let lease = self.domain.lease_runtime().map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.cache.factory.source",
@@ -85,16 +82,14 @@ impl DeviceCacheAllocationFactory {
 
     /// Lease the shared domain for the graph-cache subdomain.
     #[cfg(feature = "cugraph")]
-    #[doc(hidden)]
-    pub fn graph_cache(&self) -> Result<GpuResidentGraphCache> {
+    pub(crate) fn graph_cache(&self) -> Result<GpuResidentGraphCache> {
         GpuResidentGraphCache::new(self.ledger.clone(), (*self.domain).clone())
     }
 
     /// Samples the one physical allocation domain shared by both cache
     /// subdomains.  Callers add their own activity observations; this owner
     /// intentionally has no duplicate resident-byte counter.
-    #[doc(hidden)]
-    pub fn report(&self) -> Result<DeviceCacheReport> {
+    pub(crate) fn report(&self) -> Result<DeviceCacheReport> {
         const MAX_COHERENCE_ATTEMPTS: usize = 4;
         for _ in 0..MAX_COHERENCE_ATTEMPTS {
             let before = self.ledger.report()?;

@@ -36,7 +36,7 @@ use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode, Result},
     native::{
-        NativeLoweringResult, lower_count_only_physical_plan_to_native, lower_physical_plan_to_native,
+        FooterScope, NativeLoweringResult, lower_count_only_physical_plan_to_native, lower_physical_plan_to_native,
         native_plan_reproduces_declared_output_ordering, reestablish_declared_output_ordering_if_needed,
         wrap_candidate_with_declared_output_ordering_sort,
     },
@@ -81,6 +81,7 @@ pub(super) fn optimize_count_only_native_plan(
     native_optimizer_options: &NativeOptimizerOptions,
     native_plan_cost_options: &NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    let _footers = FooterScope::enter();
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
     let lowering = lower_count_only_physical_plan_to_native(lowering_input);
     replace_lowered_root_or_keep_plan(
@@ -99,6 +100,7 @@ pub(super) fn optimize_final_native_plan(
     native_optimizer_options: &NativeOptimizerOptions,
     native_plan_cost_options: &NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
+    let _footers = FooterScope::enter();
     let mut relation_inputs = LoweredRelationInputs::default();
     let plan = lower_gpu_resident_producer_relation_inputs(
         plan,
@@ -329,7 +331,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
                 &lowering.report,
                 reason,
                 NativeCandidateCostEvidence::from_cost_facts(facts),
-            ),
+            )?,
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
             capability_contract: NativeCapabilityContractDiagnostics::default(),
@@ -611,7 +613,7 @@ fn native_execution_cost_selection_report(
     report: &PlanningReport,
     cost_reason: NativePlanCostReason,
     evidence: NativeCandidateCostEvidence,
-) -> PlanningReport {
+) -> Result<PlanningReport> {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
         CandidateOutcome::Selected { candidate } => CandidateOutcome::NotSelectedByCost {
             candidate: candidate.clone(),
@@ -736,7 +738,8 @@ mod tests {
             &report,
             NativePlanCostReason::SmallSelectiveTopK,
             NativeCandidateCostEvidence::from_cost_facts(facts.clone()),
-        );
+        )
+        .expect("cost selection keeps the outcome count");
 
         assert!(matches!(
             report.outcomes(),

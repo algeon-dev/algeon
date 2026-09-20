@@ -18,10 +18,6 @@ use super::{
     parquet_chunk_path_fact, read_local_parquet_chunk,
 };
 use crate::{
-    exec::{
-        bounded::chunks::{record_chunk_retry_error, source_read_budget_correction_from_error},
-        retry::backoff_before_retry,
-    },
     observability::{
         CleanupFailurePhase, CleanupFailureSummary, MetricsRecorder, RuntimeEventContext, RuntimeObservationHandle,
         RuntimeObservationPayload, RuntimeObservationRecordClass, RuntimePlanNodeId, RuntimeSourceReadObservation,
@@ -36,8 +32,6 @@ static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
 pub(in crate::exec) struct ScheduledLocalParquetRead {
     chunk: SourceChunk,
     state: ScheduledLocalParquetReadState,
-    budget_bytes: u64,
-    budget_boundary: &'static str,
     prefetch: bool,
 }
 
@@ -46,9 +40,6 @@ enum ScheduledLocalParquetReadState {
     Running {
         worker: SupervisedWorker<ScheduledLocalParquetReadResult>,
         source_read_lease: Box<AttemptWorkLease>,
-        source: Box<LocalParquetSource>,
-        attempt: usize,
-        max_attempts: usize,
         observation: Option<Arc<SourceReadObservation>>,
     },
     /// A read already issued from an attempt work lease, which ran inline on
@@ -57,13 +48,7 @@ enum ScheduledLocalParquetReadState {
     /// The caller holds the attempt auxiliary permit behind that lease, so
     /// leasing a second one here would let a holder of one permit block on
     /// another permit of the same attempt.
-    Inline {
-        result: Box<ScheduledLocalParquetReadResult>,
-        source: Box<LocalParquetSource>,
-        attempt: usize,
-        max_attempts: usize,
-        observation: Option<Arc<SourceReadObservation>>,
-    },
+    Inline { result: Box<ScheduledLocalParquetReadResult>, observation: Option<Arc<SourceReadObservation>> },
 }
 
 pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
@@ -442,7 +427,6 @@ impl ScheduledLocalParquetRead {
         budget_boundary: &'static str,
         prefetch: bool,
         attempt: usize,
-        max_attempts: usize,
     ) -> Result<Self> {
         let observation = SourceReadObservation::new(&context, &chunk, attempt);
         // A read issued from an attempt work lease already holds that
@@ -454,26 +438,11 @@ impl ScheduledLocalParquetRead {
             let result = run_source_read_worker(
                 queue_start,
                 observation.clone(),
-                read_local_parquet_chunk_worker(
-                    context,
-                    source.clone(),
-                    chunk.clone(),
-                    budget_bytes,
-                    budget_boundary,
-                    metrics,
-                ),
+                read_local_parquet_chunk_worker(context, source, chunk.clone(), budget_bytes, budget_boundary, metrics),
             );
             return Ok(Self {
                 chunk,
-                state: ScheduledLocalParquetReadState::Inline {
-                    result: Box::new(result),
-                    source: Box::new(source),
-                    attempt,
-                    max_attempts,
-                    observation,
-                },
-                budget_bytes,
-                budget_boundary,
+                state: ScheduledLocalParquetReadState::Inline { result: Box::new(result), observation },
                 prefetch,
             });
         }
@@ -488,7 +457,7 @@ impl ScheduledLocalParquetRead {
             &worker_executor,
             read_local_parquet_chunk_worker(
                 thread_context,
-                source.clone(),
+                source,
                 chunk.clone(),
                 budget_bytes,
                 budget_boundary,
@@ -500,13 +469,8 @@ impl ScheduledLocalParquetRead {
             state: ScheduledLocalParquetReadState::Running {
                 worker,
                 source_read_lease: Box::new(source_read_lease),
-                source: Box::new(source),
-                attempt,
-                max_attempts,
                 observation,
             },
-            budget_bytes,
-            budget_boundary,
             prefetch,
         })
     }
@@ -515,17 +479,10 @@ impl ScheduledLocalParquetRead {
         self.prefetch
     }
 
-    pub(in crate::exec) const fn budget_bytes(&self) -> u64 {
-        self.budget_bytes
-    }
-
-    pub(in crate::exec) fn finish(
-        self,
-        execution: &mut BoundedExecutionAttempt<'_>,
-    ) -> Result<ScheduledLocalParquetReadOutput> {
-        let ScheduledLocalParquetRead { chunk, state, budget_boundary, .. } = self;
-        let (result, retry_context) = match state {
-            ScheduledLocalParquetReadState::Inline { result, source, attempt, max_attempts, observation } => {
+    pub(in crate::exec) fn finish(self) -> Result<ScheduledLocalParquetReadOutput> {
+        let ScheduledLocalParquetRead { chunk, state, .. } = self;
+        let result = match state {
+            ScheduledLocalParquetReadState::Inline { result, observation } => {
                 // The inline read already completed on the caller's stream;
                 // record the degenerate join interval so the source-read
                 // lifecycle stays a single shape for both arms.
@@ -533,16 +490,9 @@ impl ScheduledLocalParquetRead {
                     observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns: 0 });
                 }
-                (*result, Some((*source, attempt, max_attempts)))
+                *result
             },
-            ScheduledLocalParquetReadState::Running {
-                worker,
-                source_read_lease,
-                source,
-                attempt,
-                max_attempts,
-                observation,
-            } => {
+            ScheduledLocalParquetReadState::Running { worker, source_read_lease, observation } => {
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
                 }
@@ -585,46 +535,22 @@ impl ScheduledLocalParquetRead {
                 // The lease held the worker's stream registered through the
                 // join above; it releases at the end of this arm.
                 let _source_read_lease = source_read_lease;
-                (result, Some((*source, attempt, max_attempts)))
+                result
             },
         };
-        match result.frame {
-            Ok((frame, readiness)) => {
-                // Synchronizing the readiness event at the commit point is the coordinator's
-                // completion observation for this chunk, so a late decode failure is reported
-                // with this chunk's facts and not at an unrelated later host synchronize.
-                if let Some(readiness) = readiness {
-                    readiness.synchronize_for_commit(&chunk)?;
-                }
-                Ok(ScheduledLocalParquetReadOutput {
-                    chunk,
-                    frame,
-                    observed_bytes: 0,
-                    observed_row_group_count: result.observed_row_group_count,
-                })
-            },
-            Err(error) => {
-                if let Some((source, attempt, max_attempts)) = retry_context
-                    && let Some(retry) = try_finish_scheduled_source_read_with_corrected_budget(
-                        execution,
-                        &source,
-                        &chunk,
-                        budget_boundary,
-                        &error,
-                        attempt,
-                        max_attempts,
-                    )?
-                {
-                    return Ok(ScheduledLocalParquetReadOutput {
-                        chunk,
-                        frame: retry.frame,
-                        observed_bytes: 0,
-                        observed_row_group_count: retry.observed_row_group_count,
-                    });
-                }
-                Err(error)
-            },
+        let (frame, readiness) = result.frame?;
+        // Synchronizing the readiness event at the commit point is the coordinator's
+        // completion observation for this chunk, so a late decode failure is reported
+        // with this chunk's facts and not at an unrelated later host synchronize.
+        if let Some(readiness) = readiness {
+            readiness.synchronize_for_commit(&chunk)?;
         }
+        Ok(ScheduledLocalParquetReadOutput {
+            chunk,
+            frame,
+            observed_bytes: 0,
+            observed_row_group_count: result.observed_row_group_count,
+        })
     }
 
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
@@ -660,46 +586,6 @@ impl ScheduledLocalParquetRead {
         }
         execution.record_source_read(SourceReadFact::PrefetchAbandoned);
     }
-}
-
-fn try_finish_scheduled_source_read_with_corrected_budget(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-    budget_boundary: &'static str,
-    error: &QueryError,
-    attempt: usize,
-    max_attempts: usize,
-) -> Result<Option<ScheduledLocalParquetReadRetryOutput>> {
-    execution.context().check_cancellation("query_engine.source_scheduler.budget_retry")?;
-    if attempt >= max_attempts {
-        return Ok(None);
-    }
-    let Some(correction) = source_read_budget_correction_from_error(execution, error) else {
-        return Ok(None);
-    };
-    record_chunk_retry_error(error, execution.metrics());
-    execution.record_source_read(SourceReadFact::ChunkRetried);
-    backoff_before_retry(execution.context(), "query_engine.source_scheduler.budget_retry")?;
-    execution.record_source_read(SourceReadFact::ChunkAttempted);
-    let frame = read_local_parquet_chunk(
-        execution.context(),
-        source,
-        chunk,
-        correction.corrected_budget_bytes(),
-        budget_boundary,
-        execution.metrics(),
-    )
-    .map_err(|error| correction.attach_to_error(error))?;
-    Ok(Some(ScheduledLocalParquetReadRetryOutput {
-        frame,
-        observed_row_group_count: observed_chunk_row_group_count(chunk).map(|count| count as u64),
-    }))
-}
-
-struct ScheduledLocalParquetReadRetryOutput {
-    frame: GpuDataFrame,
-    observed_row_group_count: Option<u64>,
 }
 
 #[cfg(test)]

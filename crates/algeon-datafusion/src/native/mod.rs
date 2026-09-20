@@ -4,6 +4,7 @@
 //! planning/source diagnostics, but does not execute or allocate GPU memory.
 
 mod expression_contract;
+mod footers;
 pub(crate) mod lakehouse_pruning;
 pub(crate) mod literal;
 mod lowering;
@@ -18,6 +19,7 @@ mod validate;
 pub(crate) use expression_contract::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject,
 };
+pub(crate) use footers::FooterScope;
 
 /// Rejection raised while lowering a normalized candidate.
 ///
@@ -141,6 +143,7 @@ fn lower_physical_plan_to_native_with_mode(
     plan: Arc<dyn ExecutionPlan>,
     mode: NativeLoweringMode,
 ) -> NativeLoweringResult {
+    let _footers = FooterScope::enter();
     let normalized = normalize_native_plan(plan.as_ref()).map(|mut normalized| {
         if mode == NativeLoweringMode::Final {
             make_declared_ordered_hash_join_fetch_explicit(
@@ -293,20 +296,7 @@ fn unsupported_column_for_input(input: &NormalizedNativeInput<'_>) -> Option<Uns
             {
                 return Some(detail);
             }
-            if let Some(scan_plan) = source.table_format_scan_exec().and_then(|scan| scan.scan_plan())
-                && let Some(column) = scan_plan.first_unsupported_column()
-            {
-                return Some(UnsupportedColumnDetail::new(
-                    column.logical_name,
-                    diagnostic_arrow_type(column.data_type),
-                    column.role.code(),
-                ));
-            }
-            let schema = match source.scan {
-                normalize::NormalizedNativeScan::LocalParquet(scan) => scan.schema(),
-                normalize::NormalizedNativeScan::TableFormat(scan) => scan.schema(),
-            };
-            unsupported_column_for_schema(&schema, "source")
+            unsupported_column_for_schema(&source.scan.schema(), "source")
         },
         NormalizedNativeInput::GpuResidentSource(source) => {
             unsupported_column_for_schema(&source.source_exec.schema(), "source")

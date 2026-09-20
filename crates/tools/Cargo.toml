@@ -44,6 +44,9 @@ shadow-estimate-report = [
 ]
 cugraph-oracle = [
   "dep:cudf",
+  # The path-included cuGraph SQL fixtures read cudf's host Arrow call counters
+  # (`cudf::testing::arrow`).
+  "cudf/test-hooks",
   "dep:datafusion",
   "dep:algeon-datafusion",
   "dep:query-engine",
@@ -58,6 +61,8 @@ single-node-multi-gpu-validate = ["dep:workloads"]
 single-node-multi-gpu-validate-run = [
   "single-node-multi-gpu-validate",
   "dep:cudf",
+  # The physical memory-pressure probe is a cudf test seam (`cudf::testing::memory`).
+  "cudf/test-hooks",
   "dep:cudf-sys",
   "dep:cuvs-sys",
   "dep:cuml-sys",
@@ -109,7 +114,6 @@ parquet = { workspace = true, features = ["arrow"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 prost = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"], optional = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }

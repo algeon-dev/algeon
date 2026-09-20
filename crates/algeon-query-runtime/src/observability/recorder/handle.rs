@@ -131,7 +131,7 @@ impl RuntimeObservationHandle {
     }
 
     /// Returns whether this session constructs and records trace payloads.
-    pub const fn is_enabled(&self) -> bool {
+    pub(crate) const fn is_enabled(&self) -> bool {
         self.config.is_enabled() && self.inner.is_some()
     }
 
@@ -170,12 +170,6 @@ impl RuntimeObservationHandle {
     /// Returns a keyed, query-scoped source-location identity when recording is enabled.
     pub fn source_location_id(&self, value: &str) -> Option<RuntimeSourceLocationId> {
         self.trace_inner().and_then(|inner| inner.source_location_digest_key.source_location_id(value))
-    }
-
-    /// Exact retained byte size of a keyed source-location id without hashing
-    /// or allocating the id itself.
-    pub fn source_location_id_retained_bytes(&self) -> Option<u64> {
-        self.trace_inner().and_then(|inner| inner.source_location_digest_key.retained_id_bytes())
     }
 
     /// Lazily constructs and records a query-level event.
@@ -219,7 +213,8 @@ impl RuntimeObservationHandle {
     /// The payload closure is not invoked when the record or byte cap already
     /// rejects `logical_bytes`, so variable-size strings and row-group vectors
     /// are never cloned merely to discover that capture is exhausted.
-    pub fn record_with_context_sized<F>(
+    #[cfg(test)]
+    pub(crate) fn record_with_context_sized<F>(
         &self,
         context: RuntimeEventContext,
         logical_bytes: u64,
@@ -351,11 +346,6 @@ impl RuntimeObservationHandle {
         }
     }
 
-    /// Returns whether a sealed snapshot was produced by this recorder session.
-    pub fn owns_snapshot(&self, snapshot: &SealedRuntimeObservationSnapshot) -> bool {
-        self.sealed_snapshot().is_some_and(|sealed| sealed.is_same_snapshot(snapshot))
-    }
-
     /// Folds one source-read fact into a plan execution's exact totals.
     ///
     /// This runs whether or not trace capture is enabled, and before any
@@ -409,7 +399,7 @@ impl RuntimeObservationHandle {
 
     /// Returns whether this handle reaches a query-bound owner, which is
     /// where metrics are reduced even when trace capture is off.
-    pub const fn has_owner(&self) -> bool {
+    pub(crate) const fn has_owner(&self) -> bool {
         self.inner.is_some()
     }
 

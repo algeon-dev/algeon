@@ -3,7 +3,7 @@
 //! These labels describe aggregate evaluation contracts and preserved report
 //! vocabulary, not admission or product modes; the bounded resource
 //! controller owns the single bounded execution path. Result placement is
-//! represented by `QueryOutputMode` in the execution layer.
+//! carried by the plan's `ResultSink`.
 
 use std::{fmt, str::FromStr};
 
@@ -83,12 +83,7 @@ pub struct StatisticalAggregateExecutionModeParseError {
     value: String,
 }
 
-impl StatisticalAggregateExecutionModeParseError {
-    /// Returns the unrecognized label after ASCII-lowercase normalization.
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-}
+impl StatisticalAggregateExecutionModeParseError {}
 
 impl fmt::Display for StatisticalAggregateExecutionModeParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -120,8 +115,8 @@ impl StatisticalAggregateToleranceContract {
 
 /// Capability-envelope status used by admission reports.
 ///
-/// The single bounded controller owns admission. [`Self::as_str`] emits the
-/// stable serialized wire labels.
+/// The single bounded controller owns admission. The `Display` implementation
+/// emits the stable serialized wire labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityEnvelopeStatus {
     /// The plan is ready for bounded execution.
@@ -134,7 +129,7 @@ pub enum CapabilityEnvelopeStatus {
 
 impl CapabilityEnvelopeStatus {
     /// Stable wire label emitted by report serializers.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Admitted => "bounded",
             Self::Deferred => "deferred_bounded",

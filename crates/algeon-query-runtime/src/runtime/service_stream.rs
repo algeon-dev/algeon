@@ -21,11 +21,9 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 #[cfg(test)]
 use super::DeviceFacts;
-#[doc(hidden)]
-pub use super::stream_cleanup::StreamCleanupOutcome;
+pub(crate) use super::stream_cleanup::StreamCleanupOutcome;
 #[cfg(test)]
-#[doc(hidden)]
-pub use super::stream_cleanup::block_stream_cleanup_thread_for_test;
+pub(crate) use super::stream_cleanup::block_stream_cleanup_thread_for_test;
 #[cfg(test)]
 use super::stream_cleanup::{
     STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION, STREAM_CLEANUP_SUPERVISOR_JOINED, STREAM_CLEANUP_SUPERVISOR_NOT_JOINED,
@@ -55,7 +53,7 @@ use crate::{
 /// startup allocation count. [`default_service_stream_pool_size_for_device`]
 /// uses this value as the fallback when device SM count detection is
 /// unavailable and as the upper bound when detection succeeds.
-pub const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
+pub(crate) const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
 const STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
@@ -66,7 +64,7 @@ static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
 /// multiprocessor count cannot be detected, this returns
 /// [`DEFAULT_SERVICE_STREAM_POOL_SIZE`]. The detected value is cached per
 /// device ordinal for the process lifetime.
-pub fn default_service_stream_pool_size_for_device(device: DeviceId) -> usize {
+pub(crate) fn default_service_stream_pool_size_for_device(device: DeviceId) -> usize {
     static DEFAULT_SIZES: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
     let sizes = DEFAULT_SIZES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut sizes = match sizes.lock() {
@@ -127,22 +125,12 @@ type ServiceStreamPoolRegistry = HashMap<(usize, usize), Weak<ServiceStreamPoolI
 /// stream slots. Auxiliary (child/source-read) acquisition can never consume
 /// a future root slot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StreamPermitClass {
+pub(crate) enum StreamPermitClass {
     /// Per-attempt root execution stream.
     Root,
     /// Fragment and source-read streams.
     #[default]
     Auxiliary,
-}
-
-impl StreamPermitClass {
-    /// Stable diagnostic label for this permit class.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Root => "root",
-            Self::Auxiliary => "auxiliary",
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -187,7 +175,7 @@ impl ServiceStreamPool {
     }
 
     /// Creates a pool with explicit root/auxiliary stream-slot capacities.
-    pub fn new_with_classes(
+    pub(crate) fn new_with_classes(
         device: DeviceId,
         pool_size: usize,
         root_capacity: usize,
@@ -238,7 +226,7 @@ impl ServiceStreamPool {
     /// injected its own pool yet. Pools are keyed by `(device ordinal,
     /// pool_size)` so differently sized service tests do not silently share a
     /// capacity contract.
-    pub fn for_device(device: DeviceId, pool_size: usize) -> Result<Self> {
+    pub(crate) fn for_device(device: DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
         static POOLS: OnceLock<Mutex<ServiceStreamPoolRegistry>> = OnceLock::new();
         let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -264,14 +252,13 @@ impl ServiceStreamPool {
     }
 
     /// Maximum number of simultaneously leased streams.
-    pub fn pool_size(&self) -> usize {
+    pub(crate) fn pool_size(&self) -> usize {
         self.inner.pool_size
     }
 
     /// Permit-class counters for partition assertions.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn class_counters(&self) -> (usize, usize, usize, usize) {
+    pub(crate) fn class_counters(&self) -> (usize, usize, usize, usize) {
         let state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.root_outstanding, self.inner.root_capacity, state.aux_outstanding, self.inner.aux_capacity)
     }
@@ -282,15 +269,13 @@ impl ServiceStreamPool {
     /// This is a quiescence boundary for benchmark warmup and graceful service
     /// drain. It does not create runtimes that were never needed.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn wait_until_idle(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+    pub(crate) fn wait_until_idle(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         self.wait_until_quiescent(0, deadline, operation)
     }
 
     /// Prevent new acquisitions and destroy every currently idle runtime.
     /// Leased runtimes are discarded after their deferred synchronization.
-    #[doc(hidden)]
-    pub fn close(&self, operation: &'static str) -> Result<()> {
+    pub(crate) fn close(&self, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_all();
         let idle = match self.inner.state.try_lock() {
@@ -316,8 +301,7 @@ impl ServiceStreamPool {
     /// Close this pool and wait until every lease and deferred cleanup has
     /// completed, then explicitly stop and join the cleanup supervisor, under
     /// the caller's absolute shutdown deadline.
-    #[doc(hidden)]
-    pub fn close_and_wait_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+    pub(crate) fn close_and_wait_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_all();
         let mut state = self.lock_state_until(deadline, operation)?;
@@ -400,8 +384,7 @@ impl ServiceStreamPool {
     /// Wait until exactly `expected_leased_runtimes` created runtimes remain
     /// checked out and every other runtime has completed cleanup.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn wait_until_quiescent(
+    pub(crate) fn wait_until_quiescent(
         &self,
         expected_leased_runtimes: usize,
         deadline: Instant,
@@ -468,8 +451,7 @@ impl ServiceStreamPool {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn fail_next_synchronization_for_test(&self) {
+    pub(crate) fn fail_next_synchronization_for_test(&self) {
         self.inner.cleanup_probe.with_test_probe(|probe| {
             probe.force_next_synchronization_failure.store(true, Ordering::Release);
         });
@@ -488,7 +470,7 @@ impl ServiceStreamPool {
     }
 
     /// Acquire a lease of the given permit class, blocking when the class is full.
-    pub fn acquire_with_class(&self, permit_class: StreamPermitClass) -> Result<StreamLease> {
+    pub(crate) fn acquire_with_class(&self, permit_class: StreamPermitClass) -> Result<StreamLease> {
         self.acquire_inner(
             None,
             None,
@@ -501,7 +483,7 @@ impl ServiceStreamPool {
 
     /// Acquire a CUDA stream/runtime lease while observing cooperative cancellation.
     #[cfg(test)]
-    pub fn acquire_with_cancellation(
+    pub(crate) fn acquire_with_cancellation(
         &self,
         cancellation: &ExecutionCancellation,
         operation: &'static str,
@@ -519,7 +501,7 @@ impl ServiceStreamPool {
     /// Acquire a CUDA stream/runtime lease while observing cancellation and an
     /// absolute wait deadline.
     #[cfg(test)]
-    pub fn acquire_with_cancellation_deadline(
+    pub(crate) fn acquire_with_cancellation_deadline(
         &self,
         cancellation: &ExecutionCancellation,
         deadline: Instant,
@@ -537,8 +519,7 @@ impl ServiceStreamPool {
 
     /// Acquires a lease while recording host-side wait and lifecycle evidence.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn acquire_observed_with_cancellation_deadline(
+    pub(crate) fn acquire_observed_with_cancellation_deadline(
         &self,
         cancellation: &ExecutionCancellation,
         deadline: Instant,
@@ -556,8 +537,7 @@ impl ServiceStreamPool {
         )
     }
 
-    #[doc(hidden)]
-    pub fn acquire_observed_with_cancellation_deadline_and_class(
+    pub(crate) fn acquire_observed_with_cancellation_deadline_and_class(
         &self,
         cancellation: &ExecutionCancellation,
         deadline: Instant,
@@ -569,8 +549,7 @@ impl ServiceStreamPool {
         self.acquire_inner(Some(cancellation), Some(deadline), operation, observation, scope, permit_class)
     }
 
-    #[doc(hidden)]
-    pub fn acquire_observed_with_cancellation(
+    pub(crate) fn acquire_observed_with_cancellation(
         &self,
         cancellation: &ExecutionCancellation,
         operation: &'static str,
@@ -586,8 +565,7 @@ impl ServiceStreamPool {
         )
     }
 
-    #[doc(hidden)]
-    pub fn acquire_observed_with_cancellation_and_class(
+    pub(crate) fn acquire_observed_with_cancellation_and_class(
         &self,
         cancellation: &ExecutionCancellation,
         operation: &'static str,
@@ -962,14 +940,12 @@ impl StreamLease {
         &self.pool
     }
 
-    #[doc(hidden)]
-    pub fn with_resource_epoch(mut self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
+    pub(crate) fn with_resource_epoch(mut self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
         self.resource_epoch = Some(resource_epoch);
         self
     }
 
-    #[doc(hidden)]
-    pub fn install_cleanup_completion(
+    pub(crate) fn install_cleanup_completion(
         &self,
         before_quiescence: impl FnOnce(StreamCleanupOutcome) + Send + 'static,
         after_quiescence: impl FnOnce() + Send + 'static,
@@ -991,8 +967,7 @@ impl StreamLease {
         true
     }
 
-    #[doc(hidden)]
-    pub fn device(&self) -> DeviceId {
+    pub(crate) fn device(&self) -> DeviceId {
         self.runtime.as_ref().expect("stream lease runtime is present").device()
     }
 

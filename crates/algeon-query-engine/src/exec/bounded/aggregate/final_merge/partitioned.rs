@@ -10,8 +10,7 @@ use super::{
     execute_final_aggregate_projection, execution_budget_token_for_boundary, final_merge_retry_facts,
     lower_final_aggregate_spec, observe_device_memory_bytes, partition_final_merge_partial,
     partitioned_final_merge_partition_count, partitioned_final_merge_topk_candidate,
-    record_grouped_aggregate_strategy_decision, reduce_merge_fan_in, release_nested_partials_reverse,
-    release_partials_reverse,
+    record_grouped_aggregate_strategy_decision, reduce_merge_fan_in,
 };
 use crate::{
     exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
@@ -53,7 +52,6 @@ pub(in crate::exec::bounded::aggregate) fn execute_incremental_source_adjacent_f
         ) {
             Ok(frame) => frame,
             Err(error) => {
-                release_partials_reverse(merged_partitions);
                 return Err(error);
             },
         };
@@ -111,7 +109,8 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
     let all_empty_grouping_sets = bounded.aggregate.0.spec.grouping_sets.is_some()
         && (partials.is_empty() || partials.iter().all(|partial| partial.frame.num_rows() == 0));
     if all_empty_grouping_sets {
-        release_partials_reverse(partials);
+        // The empty-input aggregate allocates below, so the partials cannot wait for end of scope.
+        drop(partials);
         let frame = execute_compiled_bounded_aggregate_from_empty_input(
             execution,
             bounded.aggregate_id,
@@ -197,7 +196,6 @@ fn execute_final_merge_level_attempt(
         match execute_final_merge_group_attempt(execution, bounded, group, attempt, max_attempts) {
             Ok(partial) => output.push(MergeLevelItem::Merged(Box::new(partial))),
             Err(error) => {
-                release_merge_level_items(output);
                 return Err(error);
             },
         }
@@ -360,8 +358,6 @@ fn execute_partitioned_final_aggregate_merge(
         ) {
             Ok(partitions) => partitions,
             Err(error) => {
-                release_nested_partials_reverse(partition_inputs);
-                release_partials_reverse(pending);
                 return Err(error);
             },
         };
@@ -440,12 +436,12 @@ fn execute_partitioned_final_merge_group(
     ) {
         Ok(token) => token,
         Err(error) => {
-            release_partials_reverse(inputs);
             return Err(error);
         },
     };
     let result = merge_partitioned_final_aggregate_partials(execution, bounded, partition_index, &inputs, &token);
-    release_partials_reverse(inputs);
+    // The top-k stage allocates below, so the merged inputs cannot wait for end of scope.
+    drop(inputs);
     let frame = result?;
     let frame = apply_partitioned_final_merge_topk(execution, bounded, partition_index, frame, topk, topk_stats)?;
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
@@ -562,13 +558,7 @@ fn commit_final_merge_level(
         }
     }
 
-    while partials.pop().is_some() {}
-
     next_partials
-}
-
-fn release_merge_level_items(mut items: Vec<MergeLevelItem>) {
-    while items.pop().is_some() {}
 }
 
 fn is_retryable_final_merge_error(error: &QueryError) -> bool {

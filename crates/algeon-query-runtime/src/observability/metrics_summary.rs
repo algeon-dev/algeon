@@ -55,26 +55,26 @@ pub enum SourceReadFact {
 /// Exact source-read totals for one query.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceReadTotals {
-    pub input_batches: u64,
-    pub input_rows: u64,
+    pub(crate) input_batches: u64,
+    pub(crate) input_rows: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
-    pub read_columns: u64,
-    pub source_chunks_planned: u64,
-    pub source_chunks_attempted: u64,
-    pub source_chunks_committed: u64,
-    pub source_chunks_retried: u64,
-    pub row_groups_planned: u64,
-    pub row_groups_committed: u64,
-    pub source_read_prefetches_started: u64,
-    pub source_read_prefetches_completed: u64,
-    pub source_read_prefetches_skipped: u64,
-    pub source_read_prefetches_abandoned: u64,
-    pub source_metadata_load_time: Duration,
+    pub(crate) read_columns: u64,
+    pub(crate) source_chunks_planned: u64,
+    pub(crate) source_chunks_attempted: u64,
+    pub(crate) source_chunks_committed: u64,
+    pub(crate) source_chunks_retried: u64,
+    pub(crate) row_groups_planned: u64,
+    pub(crate) row_groups_committed: u64,
+    pub(crate) source_read_prefetches_started: u64,
+    pub(crate) source_read_prefetches_completed: u64,
+    pub(crate) source_read_prefetches_skipped: u64,
+    pub(crate) source_read_prefetches_abandoned: u64,
+    pub(crate) source_metadata_load_time: Duration,
     pub source_read_queue_wait_time: Duration,
-    pub parquet_read_time: Duration,
-    pub source_read_time: Duration,
+    pub(crate) parquet_read_time: Duration,
+    pub(crate) source_read_time: Duration,
 }
 
 impl SourceReadTotals {
@@ -152,7 +152,7 @@ pub struct QueryMetricsSummary {
 /// bounded capture that happened to retain everything. Zero retained rows and
 /// zero losses under [`Self::Disabled`] say nothing about completeness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetricsCaptureMode {
+pub(crate) enum MetricsCaptureMode {
     /// Trace capture was off; only totals exist.
     Disabled,
     /// Detail rows were retained up to the recorder's record and byte limits.
@@ -172,24 +172,25 @@ impl MetricsCaptureMode {
 /// What a metrics checkpoint can and cannot claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetricsCompleteness {
-    pub capture_mode: MetricsCaptureMode,
+    pub(crate) capture_mode: MetricsCaptureMode,
     /// Detail rows the recorder declined to retain.
-    pub detail_rows_dropped: u64,
+    pub(crate) detail_rows_dropped: u64,
     /// Whether any detail row was dropped.
     pub truncated: bool,
     /// Whether a total saturated, so totals are no longer exact.
-    pub totals_saturated: bool,
+    pub(crate) totals_saturated: bool,
 }
 
 impl MetricsCompleteness {
     /// Whether the checkpoint's detail rows are every row that was recorded.
-    pub const fn detail_is_complete(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn detail_is_complete(&self) -> bool {
         matches!(self.capture_mode, MetricsCaptureMode::Bounded) && !self.truncated
     }
 
     /// Stable report label for the retained detail: `not_captured` when trace
     /// capture was off, `incomplete` when rows were declined, else `complete`.
-    pub const fn detail_status(&self) -> &'static str {
+    pub(crate) const fn detail_status(&self) -> &'static str {
         match (self.capture_mode, self.truncated) {
             (MetricsCaptureMode::Disabled, _) => "not_captured",
             (MetricsCaptureMode::Bounded, true) => "incomplete",
@@ -206,16 +207,16 @@ impl MetricsCompleteness {
 /// revision can skip it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryMetricsCheckpoint {
-    pub revision: u64,
+    pub(crate) revision: u64,
     /// Whether the owner has sealed, so no later revision will follow.
-    pub sealed: bool,
+    pub(crate) sealed: bool,
     pub summary: QueryMetricsSummary,
     /// Retained source-read detail rows, in recording order.
     pub source_read_rows: Vec<SourceReadRuntimeMetrics>,
     /// Reduction of every other metrics family, with its growing detail rows
     /// already bounded. Its source-read fields are unused; see `summary`.
-    pub metrics: QueryMetrics,
-    pub completeness: MetricsCompleteness,
+    pub(crate) metrics: QueryMetrics,
+    pub(crate) completeness: MetricsCompleteness,
 }
 
 #[cfg(test)]

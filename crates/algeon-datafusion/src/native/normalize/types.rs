@@ -9,9 +9,8 @@ use datafusion::{
 use query_engine::expr::LimitSpec;
 
 use super::{
-    AggregateExec, AlgeonIcebergScanExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, ExecutionPlan,
-    FilterExec, GpuCandidate, HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec, UnionExec,
-    WindowAggExec, wrap_shape,
+    AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, ExecutionPlan, FilterExec, GpuCandidate,
+    HashJoinExec, LexOrdering, NestedLoopJoinExec, ProjectionExec, SortExec, UnionExec, WindowAggExec, wrap_shape,
 };
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
@@ -229,45 +228,19 @@ impl NormalizedNativeGpuResidentSource<'_> {
 /// scan, filter, and output columns together.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSource<'a> {
-    pub(in crate::native) scan: NormalizedNativeScan<'a>,
+    pub(in crate::native) scan: &'a DataSourceExec,
     pub(in crate::native) filter: Option<&'a FilterExec>,
 }
 
 impl NormalizedNativeSource<'_> {
-    pub(in crate::native) fn local_parquet_source_exec(&self) -> Option<&DataSourceExec> {
-        match self.scan {
-            NormalizedNativeScan::LocalParquet(source_exec) => Some(source_exec),
-            NormalizedNativeScan::TableFormat(_) => None,
-        }
-    }
-
-    pub(in crate::native) fn table_format_scan_exec(&self) -> Option<&AlgeonIcebergScanExec> {
-        match self.scan {
-            NormalizedNativeScan::LocalParquet(_) => None,
-            NormalizedNativeScan::TableFormat(scan_exec) => Some(scan_exec),
-        }
-    }
-
     fn shape(&self) -> String {
-        let source_shape = match self.scan {
-            NormalizedNativeScan::LocalParquet(_) => "LocalParquetScan".to_string(),
-            NormalizedNativeScan::TableFormat(scan_exec) => {
-                format!("TableFormatScan({})", scan_exec.table_format().code())
-            },
-        };
+        let source_shape = "LocalParquetScan".to_string();
         if self.filter.is_some() { wrap_shape("FilterExec", source_shape) } else { source_shape }
     }
 
     fn operator_count(&self) -> usize {
         1 + usize::from(self.filter.is_some())
     }
-}
-
-/// Source scan leaf recognized by native normalization.
-#[derive(Debug, Clone, Copy)]
-pub(in crate::native) enum NormalizedNativeScan<'a> {
-    LocalParquet(&'a DataSourceExec),
-    TableFormat(&'a AlgeonIcebergScanExec),
 }
 
 /// Non-source filter in a recursive native input tree.

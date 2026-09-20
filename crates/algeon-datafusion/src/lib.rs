@@ -57,9 +57,7 @@
 //! `cugraph` feature off, cuGraph UDTFs fail closed with a typed
 //! capability error; with `cuvs` or `cuml` off, the corresponding SQL family
 //! remains discoverable but execution fails before input staging; with
-//! `nvml` off, NVML telemetry reads report unavailable. Iceberg source support
-//! remains outside the enabled release feature set until iceberg-rust 0.12.
-//! The `bench-support`,
+//! `nvml` off, NVML telemetry reads report unavailable. The `bench-support`,
 //! `qualification` feature is an internal harness. Enable `server` to embed
 //! the Algeon Flight SQL server alongside the adapter.
 
@@ -88,4 +86,3 @@ pub mod report;
 pub mod server;
 pub mod session;
 pub mod source_cardinality;
-pub mod table_format;

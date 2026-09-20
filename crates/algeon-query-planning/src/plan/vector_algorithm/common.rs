@@ -18,7 +18,7 @@ impl VectorRowIdBinding {
     }
 
     /// Stable diagnostic label.
-    pub fn diagnostic_label(&self) -> &str {
+    pub(crate) fn diagnostic_label(&self) -> &str {
         match self {
             Self::RowIndex => "row_index",
             Self::Column(name) => name,
@@ -67,7 +67,7 @@ pub enum VectorDistanceMetric {
 
 impl VectorDistanceMetric {
     /// Stable diagnostic label.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::L2Expanded => "l2_expanded",
             Self::L2SqrtExpanded => "l2_sqrt_expanded",

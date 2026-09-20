@@ -18,7 +18,7 @@ use crate::{
     plan::ProjectionOutput,
 };
 
-pub fn validate_expr(
+pub(crate) fn validate_expr(
     expr: &Expr,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
@@ -245,7 +245,7 @@ fn validate_timestamp_second_integer_cast_expr(
     require_integral_type(&source_type, "timestamp cast source")
 }
 
-pub fn validate_projection_output_expr(
+pub(crate) fn validate_projection_output_expr(
     output: &ProjectionOutput,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
@@ -283,7 +283,7 @@ fn validate_expr_with_expected_type(
     }
 }
 
-pub fn validate_column(
+pub(crate) fn validate_column(
     name: &str,
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
@@ -319,7 +319,7 @@ pub fn validate_column(
     Ok(field.data_type().clone())
 }
 
-pub fn validate_literal(value: &LiteralValue, ctx: AnalysisContext<'_>) -> Result<ArrowDataType> {
+pub(crate) fn validate_literal(value: &LiteralValue, ctx: AnalysisContext<'_>) -> Result<ArrowDataType> {
     if matches!(value, LiteralValue::IntervalMonthDayNano { .. }) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -777,7 +777,7 @@ fn validate_like_escape_contract(escape: &str) -> Result<()> {
     }
 }
 
-pub fn comma_separated(columns: &BTreeSet<String>) -> String {
+pub(crate) fn comma_separated(columns: &BTreeSet<String>) -> String {
     columns.iter().cloned().collect::<Vec<_>>().join(",")
 }
 

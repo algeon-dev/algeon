@@ -800,10 +800,7 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
     let error = adapter_error(&error);
 
     assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
-    assert_eq!(
-        error.message(),
-        "GPU execution does not support projected column `first_unsupported` with Arrow type `List(Decimal128(10, 2))`"
-    );
+    assert_eq!(error.message(), "GPU execution does not support a projected column with an unsupported Arrow type");
     assert_eq!(error.fact_value("reason"), Some("unsupported_type"));
     assert_eq!(error.fact_value("unsupported_column"), Some("first_unsupported"));
     assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Decimal128(10, 2))"));

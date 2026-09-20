@@ -102,7 +102,11 @@ impl TokenStore {
         let mut bytes = [0u8; 32];
         SysRng.try_fill_bytes(&mut bytes).expect("system random source must be available to issue bearer tokens");
         let token = base64_url_no_pad(&bytes);
-        let expires_at = ttl.map(|ttl| Instant::now() + ttl);
+        let expires_at = ttl
+            .map(|ttl| {
+                expiry_after(ttl).ok_or_else(|| Status::internal("bearer token TTL exceeds the representable expiry"))
+            })
+            .transpose()?;
         self.inner.insert(token.clone(), TokenEntry { principal, expires_at });
         Ok(token)
     }
@@ -142,6 +146,13 @@ impl TokenStore {
     }
 }
 
+/// Expiry of a token issued now with `ttl`, or `None` when the sum exceeds
+/// [`Instant`]'s range. Config validation and [`TokenStore::issue`] apply the
+/// same bound.
+pub(super) fn expiry_after(ttl: Duration) -> Option<Instant> {
+    Instant::now().checked_add(ttl)
+}
+
 fn base64_url_no_pad(bytes: &[u8]) -> String {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     URL_SAFE_NO_PAD.encode(bytes)
@@ -177,6 +188,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1));
         assert!(store.validate(&token).is_none(), "expired token must reject");
         assert_eq!(store.len(), 0, "expired entry must be removed from the map");
+    }
+
+    #[test]
+    fn issue_rejects_ttl_beyond_the_instant_range() {
+        let store = TokenStore::new();
+        let status = store.issue(principal("alice"), Some(Duration::MAX)).unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(store.len(), 0, "a refused issuance must not insert a token");
     }
 
     #[test]

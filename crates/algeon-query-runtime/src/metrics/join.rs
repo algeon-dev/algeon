@@ -6,7 +6,7 @@ use super::{QueryId, QueryMetrics};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinStrategyDecisionMetrics {
     /// Query-wide diagnostic correlation id, when assigned.
-    pub query_id: Option<QueryId>,
+    pub(crate) query_id: Option<QueryId>,
     /// Native join node id.
     pub node_id: String,
     /// Stable decision fact keys and values.

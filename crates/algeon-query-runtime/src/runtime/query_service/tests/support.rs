@@ -321,13 +321,6 @@ fn wait_for_sealed_observation(
         std::thread::yield_now();
     }
 }
-fn non_gds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
-}
 fn test_ledger(
     managed_capacity_bytes: u64,
     max_active_attempts: usize,
@@ -443,12 +436,7 @@ fn runtime_test_service_with_profiles(
     queue_bounds: QueueBounds,
     device_profiles: Vec<GpuBackendDeviceConfig>,
 ) -> Result<QueryService> {
-    QueryService::new_with_device_profiles_and_deployment_for_test(
-        config,
-        queue_bounds,
-        device_profiles,
-        non_gds_deployment(),
-    )
+    QueryService::new_with_device_profiles_for_test(config, queue_bounds, device_profiles)
 }
 
 /// Runtime-backed service tests must install the same explicit per-device

@@ -13,7 +13,6 @@ use super::{
         analyze_root_full_sort_join_aggregate_admission, analyze_root_join_admission,
         analyze_root_topk_join_aggregate_admission, analyze_union_pipeline_admission,
     },
-    analyze_aggregate_strategies,
     edge::{analyze_input_edges, analyze_sink_edge, mark_shared_producer_edge_contracts},
     graph::collect_reachable_node_ids,
     invariant::analyze_invariants,
@@ -32,7 +31,7 @@ impl QueryPlan {
 
 /// Runs bounded capability analysis for diagnostics, report projection, and
 /// native bounded-join admission.
-pub fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> CapabilityAnalysis {
+pub(crate) fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> CapabilityAnalysis {
     let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node, ctx)).collect::<Vec<_>>();
     let mut edges =
         plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
@@ -40,7 +39,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<'_>) ->
     mark_shared_producer_edge_contracts(plan, &mut edges);
 
     let invariants = analyze_invariants(plan, &edges);
-    let aggregate_strategies = analyze_aggregate_strategies(plan);
     let root_join_admission = analyze_root_join_admission(plan, &nodes, &edges);
     let multi_join_aggregate_over_join_subplan_topk_admission =
         analyze_multi_join_aggregate_over_join_subplan_topk_admission(plan, &nodes, &edges, &invariants);
@@ -83,7 +81,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<'_>) ->
         nodes,
         edges,
         invariants,
-        aggregate_strategies,
         reachable_node_ids,
         root_join_admission,
         multi_join_aggregate_over_join_subplan_topk_admission,

@@ -93,10 +93,6 @@ FEATURES=nvml bash docker/stage-docker-payload.sh
 bash docker/build-image.sh
 ```
 
-Iceberg remains a supported source design, but release images wait for the
-upstream iceberg-rust 0.12 release and its compatibility validation. Until
-then, the staging defaults intentionally omit the `iceberg` feature.
-
 For this lean image, set `ALGEON_SERVER_CUGRAPH_ENABLED=false` when using direct
 `docker run` or before using `docker/run.sh`. A server built without the
 `cugraph` feature exposes the frontend but returns a structured
@@ -154,7 +150,8 @@ docker ps --filter ancestor=algeon-server:x86-64-v4
 
 `docker/run.sh` is a convenience launcher for local demo runs. It uses
 host networking, enables cuGraph SQL by default, sets bounded native memory
-knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
+knobs, sets the AWS region for S3 Parquet reads (default `us-east-1`), and
+forwards host AWS credentials. It defaults to
 `algeon-server:x86-64-v4`; set `ALGEON_SERVER_IMAGE` explicitly for a
 different repository or tag:
 
@@ -168,9 +165,9 @@ Print the exact command without running it:
 bash docker/run.sh --dry-run
 ```
 
-Use direct `docker run` when you want a minimal server with no Iceberg catalog
-environment. Use `docker/run.sh` when you want the local REST catalog defaults
-and the cuGraph SQL surface enabled. For a lean image, run:
+Use direct `docker run` when you want a minimal server with no extra
+environment. Use `docker/run.sh` when you want the cuGraph SQL surface enabled
+and the AWS settings applied. For a lean image, run:
 
 ```bash
 ALGEON_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
@@ -218,6 +215,7 @@ algorithms
 - Startup fails with a missing CUDA library such as `libcublas.so.13`: rebuild
   the image with matching `CUDA_RUNTIME_IMAGE` and `CUDA_BASE_IMAGE` build
   args, keeping both on the same CUDA minor.
-- `docker/run.sh` starts a server with `iceberg_enabled=true`: this is expected
-  for that wrapper. Direct `docker run` leaves Iceberg disabled unless you pass
-  `ALGEON_ICEBERG_*` variables.
+- Startup fails with an error naming an `ALGEON_ICEBERG_*` or
+  `ALGEON_LAKEHOUSE_CACHE_*` variable and mentioning the removed Iceberg
+  integration: unset the variable. The full list is in
+  [Removed Iceberg settings](../integration/configuration.mdx#removed-iceberg-settings).

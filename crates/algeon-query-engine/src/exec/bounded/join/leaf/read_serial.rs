@@ -4,8 +4,7 @@ use super::{
     is_retryable_chunk_error, join_leaf_source_chunk_batches_for_execution, observe_device_memory_bytes,
     read_local_parquet_chunk_batch, read_local_parquet_chunk_with_reader_dynamic_filter_count,
     record_chunk_retry_error, record_dynamic_filter_reader_predicate_batch_rows,
-    record_dynamic_filter_reader_predicate_rows, release_join_source_chunks_reverse, source_chunk_batch_target_bytes,
-    source_read_budget_correction_from_error, split_retryable_chunk,
+    record_dynamic_filter_reader_predicate_rows, source_chunk_batch_target_bytes, split_retryable_chunk,
 };
 use crate::exec::{retry::backoff_before_retry, source::observed_chunk_row_group_count};
 
@@ -63,7 +62,6 @@ pub(super) fn read_join_leaf_source_batches_serial(
                     chunks.append(&mut outputs);
                 },
                 Err(error) => {
-                    release_join_source_chunks_reverse(chunks);
                     return Err(error);
                 },
             }
@@ -82,7 +80,6 @@ pub(super) fn read_join_leaf_source_batches_serial(
                 chunks.append(&mut outputs);
             },
             Err(error) => {
-                release_join_source_chunks_reverse(chunks);
                 return Err(error);
             },
         }
@@ -144,10 +141,7 @@ pub(super) fn read_join_leaf_source_batch_or_split(
                     outputs.append(&mut right_outputs);
                     Ok(outputs)
                 },
-                Err(error) => {
-                    release_join_source_chunks_reverse(outputs);
-                    Err(error)
-                },
+                Err(error) => Err(error),
             }
         },
         Err(error) => Err(error),
@@ -305,7 +299,7 @@ pub(super) fn read_join_leaf_source_chunk_attempt_uncommitted(
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_chunk")?;
     execution.metrics().record_source_chunk_attempt();
     let source_token_budget = execution.device_budget_bytes();
-    let frame = match read_local_parquet_chunk_with_reader_dynamic_filter_count(
+    let frame = read_local_parquet_chunk_with_reader_dynamic_filter_count(
         execution.context(),
         source,
         chunk,
@@ -313,34 +307,8 @@ pub(super) fn read_join_leaf_source_chunk_attempt_uncommitted(
         budget_boundary,
         reader_dynamic_filters.len(),
         execution.metrics(),
-    ) {
-        Ok(frame) => frame,
-        Err(error) => {
-            match try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
-                execution,
-                source,
-                chunk,
-                &error,
-                reader_dynamic_filters,
-                attempt,
-                max_attempts,
-            ) {
-                Ok(Some(frame)) => frame,
-                Ok(None) => {
-                    return Err(attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts));
-                },
-                Err(retry_error) => {
-                    return Err(attach_join_source_read_resource_facts(
-                        retry_error,
-                        node_id,
-                        chunk,
-                        attempt.saturating_add(1),
-                        max_attempts,
-                    ));
-                },
-            }
-        },
-    };
+    )
+    .map_err(|error| attach_join_source_read_resource_facts(error, node_id, chunk, attempt, max_attempts))?;
     let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &frame, execution.metrics());
     Ok((frame, observed_bytes))
@@ -348,37 +316,4 @@ pub(super) fn read_join_leaf_source_chunk_attempt_uncommitted(
 
 pub(super) fn committed_join_source_chunk_row_groups(chunk: &SourceChunk) -> u64 {
     observed_chunk_row_group_count(chunk).unwrap_or_else(|| chunk.row_group_count()) as u64
-}
-
-pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-    error: &QueryError,
-    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
-    attempt: usize,
-    max_attempts: usize,
-) -> Result<Option<GpuDataFrame>> {
-    execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_budget_retry")?;
-    if attempt >= max_attempts {
-        return Ok(None);
-    }
-    let Some(correction) = source_read_budget_correction_from_error(execution, error) else {
-        return Ok(None);
-    };
-    record_chunk_retry_error(error, execution.metrics());
-    execution.metrics().record_source_chunk_retry();
-    backoff_before_retry(execution.context(), "query_engine.exec.bounded.join_leaf_source_budget_retry")?;
-    execution.metrics().record_source_chunk_attempt();
-    read_local_parquet_chunk_with_reader_dynamic_filter_count(
-        execution.context(),
-        source,
-        chunk,
-        correction.corrected_budget_bytes(),
-        "join_source_read",
-        reader_dynamic_filters.len(),
-        execution.metrics(),
-    )
-    .map(Some)
-    .map_err(|error| correction.attach_to_error(error))
 }

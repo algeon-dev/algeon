@@ -102,23 +102,20 @@ impl QueryHandle {
         self.config.source_chunk_planning_mode
     }
 
-    /// Lakehouse cache-fill resource policy assigned to this admitted query.
-    pub fn lakehouse_cache_fill_config(&self) -> LakehouseCacheFillConfig {
-        self.config.lakehouse_cache_fill.clone()
-    }
-
     /// Floating statistical aggregate execution contract assigned to this admitted query.
     pub fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
         self.config.statistical_aggregate_execution_mode
     }
 
     /// Dynamic-filter execution policy assigned to this admitted query.
-    pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
+    #[cfg(test)]
+    pub(crate) fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
         self.config.dynamic_filter_execution_options
     }
 
     /// Keyed-hash join strategy policy assigned to this admitted query.
-    pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
+    #[cfg(test)]
+    pub(crate) fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
         self.config.keyed_hash_join_strategy_options
     }
 
@@ -143,7 +140,8 @@ impl QueryHandle {
     }
 
     /// Acquires an admitted execution context without blocking the caller's async runtime.
-    pub async fn acquire_context_async(self: &Arc<Self>) -> Result<AdmittedQueryContext> {
+    #[cfg(test)]
+    pub(crate) async fn acquire_context_async(self: &Arc<Self>) -> Result<AdmittedQueryContext> {
         self.acquire_context_with_cancellation_async(ExecutionCancellation::new()).await
     }
 
@@ -211,8 +209,7 @@ impl QueryHandle {
         self.gpu_execution_pool().map(GpuExecutorLease::from_pool)
     }
 
-    #[doc(hidden)]
-    pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+    pub(crate) fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
         let operation = "query_engine.query_service.gpu_execution_pool";
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let service = self.lifetime.service()?;
@@ -416,7 +413,6 @@ impl QueryHandle {
             runtime_stream_lease_scope: stream_scope,
             runtime,
             gpu_execution_pool,
-            memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
             memory_grant: Some(memory_grant),
             grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
@@ -439,7 +435,6 @@ impl QueryHandle {
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             object_store_control_runtime: Arc::clone(&resources.object_store_control_runtime),
             source_object_stores: Arc::clone(&resources.source_object_stores),
-            deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation,
             statistical_aggregate_execution_mode: service.config.statistical_aggregate_execution_mode,
             datafusion_order_tracking: false,

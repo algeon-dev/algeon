@@ -200,36 +200,6 @@ fn execution_placement_summary_is_publicly_reexported() {
 }
 
 #[test]
-fn boundary_observation_shape_is_publicly_reexported() {
-    use cudf::{
-        BoundaryKind, BoundaryObservation, BoundaryObserver, DataFrame, Runtime,
-        runtime::{QueryMemoryObservation, QueryStageKind},
-    };
-
-    fn assert_observation(_: BoundaryObservation) {}
-    fn assert_observer(_: &dyn BoundaryObserver) {}
-
-    let rt = Runtime::builder().build().unwrap();
-    let observer = |_observation: BoundaryObservation| {};
-    assert_observer(&observer);
-    let df = DataFrame::from_series([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
-    let memory = QueryMemoryObservation::device_resident(Some(12), Some(16)).with_downloaded_bytes(12);
-    let observation =
-        BoundaryObservation::new(BoundaryKind::DeviceToHost, df.placement(), df.num_rows(), df.num_columns(), true)
-            .with_query_stage(QueryStageKind::FinalMaterialize)
-            .with_memory(memory);
-
-    assert_observation(observation);
-    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observation.query_stage, Some(QueryStageKind::FinalMaterialize));
-    assert_eq!(observation.placement, df.placement());
-    assert_eq!(observation.rows, 3);
-    assert_eq!(observation.columns, 1);
-    assert!(observation.synchronized_for_host);
-    assert_eq!(observation.memory.downloaded_bytes, Some(12));
-}
-
-#[test]
 fn query_execution_context_is_publicly_reexported() {
     use cudf::{DataFrame, QueryExecutionContext, Runtime, SortOptions};
 
@@ -413,13 +383,12 @@ fn frame_submodules_expose_specialized_high_level_types() {
     use cudf::{
         DataFrame, Runtime,
         frame::{
-            dataframe::{GpuRecordBatch, JsonReadOptions, MultiParquetReadOptions, ParquetReadOptions},
+            dataframe::{GpuRecordBatch, MultiParquetReadOptions, ParquetReadOptions},
             factorization::{DictionaryEncodingOptions, DictionaryKeyOrder},
         },
     };
 
     let rt = Runtime::builder().build().unwrap();
-    let _json = JsonReadOptions::builder().filepath("data.jsonl").with_runtime(&rt).build();
     let _parquet = ParquetReadOptions::builder().filepath("data.parquet").with_runtime(&rt).build();
     let _multi_parquet =
         MultiParquetReadOptions::builder().filepaths(&["part-0.parquet", "part-1.parquet"]).with_runtime(&rt).build();

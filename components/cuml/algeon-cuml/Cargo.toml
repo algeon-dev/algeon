@@ -31,5 +31,6 @@ rapids-interop.workspace = true
 [build-dependencies]
 
 [dev-dependencies]
+cudf = { workspace = true, features = ["test-hooks"] }
 cuml-sys = { workspace = true, features = ["test-hooks"] }
 static_assertions.workspace = true

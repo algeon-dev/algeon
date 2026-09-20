@@ -1,9 +1,6 @@
 use cudf::{
     Runtime, Series,
-    interop::{
-        arrow_device::DeviceArrowColumnExport,
-        contract::{CompletionAuthority, InteropError, PreparedColumnExport, ReadStartAuthority},
-    },
+    interop::contract::{CompletionAuthority, InteropError, PreparedColumnExport, ReadStartAuthority},
 };
 
 fn assert_series_prepared_export(
@@ -14,7 +11,6 @@ fn assert_series_prepared_export(
 #[test]
 fn interop_canonical_contract_imports_are_publicly_importable() {
     let _ = std::any::TypeId::of::<Runtime>();
-    let _ = std::any::TypeId::of::<DeviceArrowColumnExport>();
     let _ = CompletionAuthority::SynchronousByReturn;
     let _ = ReadStartAuthority::SynchronousByReturn;
 

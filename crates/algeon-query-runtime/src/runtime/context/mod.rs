@@ -14,9 +14,8 @@ use query_planning::{
 use tokio::runtime::Runtime as TokioRuntime;
 
 use super::{
-    CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig,
-    MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode,
-    SourceSchedulerPolicy, StreamLease,
+    CacheFillByteBudget, GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy,
+    MemoryGrant, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, StreamLease,
     allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
     attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
     cache::local_parquet::GpuLocalParquetSourceCache,
@@ -50,16 +49,15 @@ mod lakehouse;
 mod leases;
 mod stream_pool;
 
-pub use auxiliary_slots::{AttemptAuxiliaryPermit, AttemptAuxiliarySlots};
-#[doc(hidden)]
-pub use builder::ExecutionContextBuilder;
+pub(crate) use auxiliary_slots::{AttemptAuxiliaryPermit, AttemptAuxiliarySlots};
+pub(crate) use builder::ExecutionContextBuilder;
 pub(super) use builder::validate_service_stream_pool_device;
 pub use builder::{RuntimeObservationBuildError, RuntimeObservedExecutionContextBuilder};
 pub use cancellation::ExecutionCancellation;
-pub use epoch::{
+pub(crate) use epoch::{
     QueryResourceAnchor, QueryResourceEpoch, QueryServiceEpoch, QueryServiceEpochUser, QueryServiceResourceEpoch,
 };
-pub use stream_pool::QueryServiceStreamPool;
+pub(crate) use stream_pool::QueryServiceStreamPool;
 
 /// Immutable execution configuration shared by native query execution.
 ///
@@ -106,12 +104,6 @@ pub struct ExecutionContext {
     runtime: Arc<CudfRuntime>,
     /// Dedicated executor used for synchronous GPU work on this context's device.
     gpu_execution_pool: GpuExecutionPool,
-    /// Runtime allocator construction policy recorded for diagnostics.
-    ///
-    /// This does not replace the allocator owned by an injected runtime. When an
-    /// external runtime is supplied, the runtime's existing memory resource is
-    /// authoritative and this field records [`MemoryResourcePolicy::ExternalRuntime`].
-    memory_policy: MemoryResourcePolicy,
     /// Engine-level memory control contract for bounded execution.
     ///
     /// Bounded fields drive chunk planning, reservation admission, and
@@ -169,8 +161,6 @@ pub struct ExecutionContext {
     object_store_control_runtime: Arc<TokioRuntime>,
     /// Cached object-store clients used by metadata and cache-maintenance work.
     source_object_stores: Arc<SourceObjectStoreRegistry>,
-    /// Deployment-level IO capability probes used for readiness/reporting.
-    deployment_io_capability: DeploymentIoCapability,
     /// Cooperative cancellation flag observed at native execution boundaries.
     cancellation: ExecutionCancellation,
     /// Selected execution contract for floating statistical aggregates.
@@ -273,7 +263,7 @@ impl ActivatedDeferredResidentInput {
 /// service stream. Holding this value keeps the underlying stream lease alive
 /// for at least as long as the borrowed context can be used.
 #[derive(Debug)]
-pub struct LeasedExecutionContext {
+pub(crate) struct LeasedExecutionContext {
     context: ExecutionContext,
 }
 
@@ -368,13 +358,8 @@ impl LeasedExecutionContext {
         Self { context }
     }
 
-    /// Returns the context backed by the owned stream lease.
-    pub fn context(&self) -> &ExecutionContext {
-        &self.context
-    }
-
     /// Consumes the wrapper and keeps the owned stream lease on the context.
-    pub fn into_context(self) -> ExecutionContext {
+    pub(crate) fn into_context(self) -> ExecutionContext {
         self.context
     }
 }
@@ -395,7 +380,6 @@ pub(super) struct ExecutionContextParts {
     pub(super) runtime_stream_lease_scope: RuntimeStreamLeaseScope,
     pub(super) runtime: Arc<CudfRuntime>,
     pub(super) gpu_execution_pool: GpuExecutionPool,
-    pub(super) memory_policy: MemoryResourcePolicy,
     pub(super) memory_control_policy: MemoryControlPolicy,
     pub(super) memory_grant: Option<MemoryGrant>,
     pub(super) grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
@@ -418,7 +402,6 @@ pub(super) struct ExecutionContextParts {
     pub(super) lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
     pub(super) object_store_control_runtime: Arc<TokioRuntime>,
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
-    pub(super) deployment_io_capability: DeploymentIoCapability,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     pub(super) datafusion_order_tracking: bool,
@@ -431,29 +414,16 @@ pub(super) struct ExecutionContextParts {
 
 impl ExecutionContext {
     /// Starts a builder for an [`ExecutionContext`].
-    // No production callers; kept private-but-present so tests/ui/public_api
-    // pins that this factory stays unreachable outside the crate.
+    // Only tests build contexts this way; production contexts come from query-service admission.
     pub fn builder() -> ExecutionContextBuilder {
         ExecutionContextBuilder::default()
-    }
-
-    /// Builds a context around an owned cudf runtime.
-    ///
-    /// The resulting context records [`MemoryResourcePolicy::ExternalRuntime`]
-    /// because the runtime, including its allocator and stream, has already been
-    /// constructed by the caller.
-    // No production callers; kept private-but-present so tests/ui/public_api
-    // pins that this constructor stays unreachable outside the crate.
-    pub fn from_runtime(runtime: CudfRuntime) -> Result<Self> {
-        Self::from_shared_runtime(Arc::new(runtime))
     }
 
     /// Builds a context around a shared cudf runtime.
     ///
     /// Use this when multiple plans or adapter layers must share the same CUDA
-    /// stream, device placement, allocator policy, or boundary observer state.
-    // No production callers; kept private-but-present so tests/ui/public_api
-    // pins that this constructor stays unreachable outside the crate.
+    /// stream, device placement, or allocator policy.
+    // Only tests build contexts this way; production contexts come from query-service admission.
     pub fn from_shared_runtime(runtime: Arc<CudfRuntime>) -> Result<Self> {
         let service_stream_pool =
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
@@ -476,7 +446,6 @@ impl ExecutionContext {
             runtime_stream_lease_scope: RuntimeStreamLeaseScope::default(),
             runtime,
             gpu_execution_pool,
-            memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             memory_grant: None,
             grant_memory_domain: None,
@@ -502,7 +471,6 @@ impl ExecutionContext {
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             object_store_control_runtime: default_object_store_control_runtime()?,
             source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
-            deployment_io_capability: DeploymentIoCapability::cached_current_host(),
             cancellation: ExecutionCancellation::new(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             datafusion_order_tracking: false,
@@ -531,7 +499,6 @@ impl ExecutionContext {
             runtime: parts.runtime,
             gpu_execution_pool: parts.gpu_execution_pool,
             stream_lease_guard: parts.stream_lease_guard,
-            memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
             memory_grant: parts.memory_grant,
             grant_memory_domain: parts.grant_memory_domain,
@@ -554,7 +521,6 @@ impl ExecutionContext {
             lakehouse_cache_fill_events: parts.lakehouse_cache_fill_events,
             object_store_control_runtime: parts.object_store_control_runtime,
             source_object_stores: parts.source_object_stores,
-            deployment_io_capability: parts.deployment_io_capability,
             cancellation: parts.cancellation,
             statistical_aggregate_execution_mode: parts.statistical_aggregate_execution_mode,
             datafusion_order_tracking: parts.datafusion_order_tracking,
@@ -639,8 +605,7 @@ impl ExecutionContext {
         })
     }
 
-    #[doc(hidden)]
-    pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+    pub(crate) fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
         let resource_epoch = self.acquire_resource_epoch("query_engine.runtime.context.gpu_execution_pool")?;
         Ok(match resource_epoch {
             Some(resource_epoch) => self.gpu_execution_pool.with_resource_epoch(resource_epoch),
@@ -765,10 +730,9 @@ impl ExecutionContext {
     /// memory-control policy is relaxed. This is intentionally narrower than
     /// rebuilding from the shared cudf runtime, which would drop cancellation,
     /// source IO profiles, cache handles, and event sinks.
-    // No production callers; kept private-but-present so tests/ui/public_api
-    // pins that this downgrade stays unreachable outside the crate.
-    #[doc(hidden)]
-    pub fn for_unbounded_fragment(&self) -> Self {
+    // Only tests call this downgrade; production contexts come from query-service admission.
+    #[cfg(test)]
+    pub(crate) fn for_unbounded_fragment(&self) -> Self {
         let mut context = self.clone();
         context.memory_control_policy = MemoryControlPolicy::Unbounded;
         context
@@ -829,11 +793,6 @@ impl ExecutionContext {
     /// CUDA device that runs this context's work.
     pub fn device(&self) -> DeviceId {
         self.runtime.device()
-    }
-
-    /// Returns the memory-resource construction policy recorded for this context.
-    pub fn memory_policy(&self) -> MemoryResourcePolicy {
-        self.memory_policy
     }
 
     /// Returns the engine-level memory control policy.
@@ -921,7 +880,8 @@ impl ExecutionContext {
     }
 
     /// Immutable grant identity owned by this admitted attempt domain.
-    pub fn attempt_allocation_grant_identity(&self) -> Option<GrantIdentity> {
+    #[cfg(test)]
+    pub(crate) fn attempt_allocation_grant_identity(&self) -> Option<GrantIdentity> {
         self.attempt_allocation_domain.as_ref().map(AttemptAllocationDomain::grant_identity)
     }
 

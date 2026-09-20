@@ -9,13 +9,9 @@ use datafusion::{
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
-use parquet::{
-    arrow::parquet_to_arrow_schema,
-    file::reader::{FileReader, SerializedFileReader},
-};
+use parquet::arrow::parquet_to_arrow_schema;
 use query_engine::{
     datatypes::is_supported_arrow_type,
-    expr::LiteralValue as NativeLiteralValue,
     source::{
         MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
         SourceColumnRef as NativeSourceColumnRef,
@@ -25,6 +21,7 @@ use query_engine::{
 use crate::{
     capability::CapabilityReason,
     native::{
+        footers::parquet_footer,
         pruning::{
             local_object_path_to_filesystem, scan_predicate_is_dynamic_filter_hint,
             scan_predicate_without_dynamic_filter_hints,
@@ -74,12 +71,6 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     pub(in crate::native) predicate_columns: Vec<String>,
     /// Required partition columns represented as synthetic native source columns.
     pub(in crate::native) partition_columns: Vec<NativePartitionColumn>,
-    /// Optional literal values for synthetic partition-style columns.
-    ///
-    /// `None` means the value must come from file partition metadata. `Some`
-    /// represents a table-format default value materialized for every row of
-    /// the file.
-    pub(in crate::native) partition_column_values: Vec<Option<NativeLiteralValue>>,
     /// DataFusion table partition-column indices required by this source.
     pub(in crate::native) partition_column_indices: Vec<usize>,
     /// Required nullable table columns missing from the physical file schema.
@@ -89,12 +80,6 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     /// This preserves the adapter-side view of the scan projection so later
     /// lowering can connect DataFusion expressions to native source columns.
     pub(in crate::native) scan_output_columns: Vec<String>,
-    /// Whether this requirement exists only to preserve row presence.
-    ///
-    /// Table-format field-id rebinding must keep such carriers backed by a
-    /// physical file read; a missing/default synthetic value does not prove row
-    /// positions for source execution.
-    pub(in crate::native) requires_physical_row_presence: bool,
 }
 
 /// Computes source column roles for aggregate-root native lowering.
@@ -126,11 +111,9 @@ pub(in crate::native) fn required_parquet_column_requirements(
             pure_filter_column_source_refs: Vec::new(),
             predicate_columns: Vec::new(),
             partition_columns: Vec::new(),
-            partition_column_values: Vec::new(),
             partition_column_indices: Vec::new(),
             missing_columns: Vec::new(),
             scan_output_columns: Vec::new(),
-            requires_physical_row_presence: false,
         });
     }
 
@@ -193,12 +176,10 @@ pub(in crate::native) fn required_parquet_column_requirements(
     let mut pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
     let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
 
-    let mut requires_physical_row_presence = false;
     if read_columns.is_empty() && required_source_columns.is_empty() {
         let carrier = first_supported_physical_file_column(&file_schema)?;
         read_columns.insert(carrier.clone());
         pure_filter_columns.push(carrier);
-        requires_physical_row_presence = true;
     }
 
     let read_columns = read_columns.into_iter().collect::<Vec<_>>();
@@ -222,11 +203,9 @@ pub(in crate::native) fn required_parquet_column_requirements(
         pure_filter_column_source_refs,
         predicate_columns: filter_columns.into_iter().collect(),
         partition_columns,
-        partition_column_values: vec![None; partition_column_indices.len()],
         partition_column_indices,
         missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
-        requires_physical_row_presence,
     })
 }
 
@@ -281,12 +260,10 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     let mut read_columns =
         read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<Vec<_>>();
     let mut pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
-    let mut requires_physical_row_presence = false;
     if read_columns.is_empty() && filter_columns.is_empty() && output_columns.is_empty() {
         let carrier = first_supported_physical_file_column(&file_schema)?;
         read_columns.push(carrier.clone());
         pure_filter_columns.push(carrier);
-        requires_physical_row_presence = true;
     }
     let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
     let projected_output_columns = ordered_output_columns;
@@ -309,11 +286,9 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
         pure_filter_column_source_refs,
         predicate_columns: filter_columns.into_iter().collect(),
         partition_columns,
-        partition_column_values: vec![None; partition_column_indices.len()],
         partition_column_indices,
         missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
-        requires_physical_row_presence,
     })
 }
 
@@ -409,9 +384,8 @@ fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, 
 
 fn local_parquet_footer_schema(location: &str) -> Result<SchemaRef, CapabilityReason> {
     let path = local_object_path_to_filesystem(location);
-    let reader =
-        SerializedFileReader::try_from(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
-    let metadata = reader.metadata().file_metadata();
+    let footer = parquet_footer(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
+    let metadata = footer.file_metadata();
     let schema = parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata())
         .map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
     Ok(Arc::new(schema))

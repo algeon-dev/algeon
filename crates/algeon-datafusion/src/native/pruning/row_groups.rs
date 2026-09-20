@@ -6,9 +6,9 @@ use parquet::file::metadata::{ColumnChunkMetaData, RowGroupMetaData};
 use query_engine::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
 
 use super::{
-    BinaryExpr, CastExpr, Column, FileReader, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr,
-    IsNullExpr, Literal, Operator, ParquetSource, PartitionedFile, PhysicalExpr, ScalarValue, SchemaRef,
-    SerializedFileReader, Statistics, coalesced_local_parquet_scan_files, local_object_path_to_filesystem,
+    BinaryExpr, CastExpr, Column, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr, IsNullExpr,
+    Literal, Operator, ParquetSource, PartitionedFile, PhysicalExpr, ScalarValue, SchemaRef, Statistics,
+    coalesced_local_parquet_scan_files, local_object_path_to_filesystem, parquet_footer,
     validate_pruning_only_parquet_predicate,
 };
 
@@ -59,8 +59,7 @@ fn metadata_row_group_selection(
     predicate: RowGroupPruningExpr,
 ) -> Option<MetadataRowGroupSelection> {
     let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
-    let reader = SerializedFileReader::try_from(path.as_path()).ok()?;
-    let metadata = reader.metadata();
+    let metadata = parquet_footer(path.as_path()).ok()?;
     let schema = metadata.file_metadata().schema_descr();
     let total_row_groups = metadata.num_row_groups();
     if total_row_groups == 0 {

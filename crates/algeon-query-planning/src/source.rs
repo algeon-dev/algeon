@@ -18,7 +18,6 @@ use arrow::{
 
 use crate::error::{QueryError, QueryErrorCode, Result};
 
-mod deletes;
 mod diagnostics;
 mod footer_facts;
 mod location;
@@ -28,7 +27,7 @@ mod read_policy;
 mod reader_predicate_literals;
 mod validation;
 
-pub use deletes::{ParquetEqualityDeleteFile, ParquetPositionDeleteFile};
+pub(crate) use diagnostics::parquet_source_stable_id_fact;
 pub use diagnostics::{
     ByteRangeDisposition, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
     ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceDiagnostics,
@@ -37,15 +36,14 @@ pub use diagnostics::{
 #[doc(hidden)]
 pub use diagnostics::{
     local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
-    parquet_source_path_fact, parquet_source_stable_id_fact, redacted_object_store_path_diagnostic,
-    redacted_path_diagnostic,
+    parquet_source_path_fact, redacted_object_store_path_diagnostic, redacted_path_diagnostic,
 };
 pub use footer_facts::SourceFooterFacts;
 pub use location::ParquetSourceLocation;
 pub use parquet::{
     GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
-    GraphSimpleDirectedEdgeTopology, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetFieldIdReadBinding,
-    ParquetReaderDecimalType, ParquetReaderDecimalTypeId, PartitionColumn, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN,
+    GraphSimpleDirectedEdgeTopology, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetReaderDecimalType,
+    ParquetReaderDecimalTypeId, PartitionColumn, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN,
 };
 pub use read_policy::{
     CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetReadStrategy,
@@ -53,10 +51,13 @@ pub use read_policy::{
 };
 #[doc(hidden)]
 pub use reader_predicate_literals::{
-    ReaderPredicateDecimalScaleError, reader_predicate_decimal_raw_for_integer_value,
-    reader_predicate_expr_references_decimal_column, reader_predicate_integer_literal_as,
-    reader_predicate_integer_literal_as_decimal_raw, reader_predicate_integer_literal_raw,
-    reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as, reader_predicate_unsigned_literal_raw,
+    ReaderPredicateDecimalScaleError, reader_predicate_expr_references_decimal_column,
+    reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,
+    reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as,
+};
+pub(crate) use reader_predicate_literals::{
+    reader_predicate_decimal_raw_for_integer_value, reader_predicate_integer_literal_raw,
+    reader_predicate_unsigned_literal_raw,
 };
 #[doc(hidden)]
 pub use validation::validate_literal_batch_source;
@@ -112,7 +113,7 @@ pub enum SourceNode {
 
 impl SourceNode {
     /// Returns the native output schema exposed by this source node.
-    pub fn output_schema(&self) -> &SchemaRef {
+    pub(crate) fn output_schema(&self) -> &SchemaRef {
         match self {
             Self::LocalParquet(source) => source.output_schema(),
             Self::GpuResident(source) => &source.schema,
@@ -193,7 +194,7 @@ pub struct GpuResidentSource {
     pub graph_vertex_upper_bound: Option<u64>,
     /// One source-owned key whose values are unique in this exact resident
     /// result, expressed in native schema names.
-    pub unique_key_columns: Option<BTreeSet<String>>,
+    pub(crate) unique_key_columns: Option<BTreeSet<String>>,
 }
 
 impl GpuResidentSource {

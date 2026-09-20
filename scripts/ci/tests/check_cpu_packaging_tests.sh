@@ -39,6 +39,30 @@ assert "x86-64-v4" in cpu["deployment_requirement"]
 PY
 echo "PASS: CPU packaging has one fixed x86-64-v4 contract"
 
+shipped=$(python3 "${HELPER}" shipped-features)
+[[ "${shipped}" == "$(python3 "${HELPER}" normalize-features --features "${shipped}")" ]] \
+  || fail "server.features is not in canonical form: ${shipped}"
+if grep -Eq 'FEATURES:-[A-Za-z]' docker/stage-docker-payload.sh; then
+  fail "docker staging hard-codes a default feature list instead of reading server.features"
+fi
+grep -Fq 'cpu_packaging_policy.py shipped-features' scripts/check_all.sh \
+  || fail "the shipped-clippy phase does not read server.features"
+cp "${POLICY}" "${tmp_dir}/unsorted-features-policy.toml"
+python3 - "${tmp_dir}/unsorted-features-policy.toml" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+assert '\nfeatures = ["cugraph", "cuml"' in text
+path.write_text(text.replace('\nfeatures = ["cugraph", "cuml"', '\nfeatures = ["cuml", "cugraph"', 1))
+PY
+status=0
+python3 "${HELPER}" --policy "${tmp_dir}/unsorted-features-policy.toml" shipped-features \
+  >"${tmp_dir}/unsorted-features.output" 2>&1 || status=$?
+[[ "${status}" -eq 2 ]] || fail "an unsorted server.features list was accepted"
+echo "PASS: packaging and the shipped clippy lane read one canonical feature list"
+
 cat >"${tmp_dir}/bin/cargo" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
@@ -105,7 +129,7 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   RUSTFLAGS='-C target-cpu=native' \
   CARGO_BUILD_RUSTFLAGS='-C target-cpu=x86-64-v3' \
   python3 "${HELPER}" build \
-    --features 'nvml,iceberg' \
+    --features 'nvml' \
     --target-root "${target_root}" \
     --manifest "${ROOT}/crates/algeon-server/Cargo.toml" \
     --explicit-env "ALGEON_NATIVE_DIR=${tmp_dir}/native" \
@@ -124,7 +148,7 @@ with open(sys.argv[1], encoding="utf-8") as record_file:
 cpu = record["cpu"]
 command = record["cargo_command"]
 assert record["record_kind"] == "canonical-build-record"
-assert record["features"] == ["iceberg", "nvml"]
+assert record["features"] == ["nvml"]
 assert cpu["baseline"] == "x86-64-v4"
 assert cpu["target_triple"] == "x86_64-unknown-linux-gnu"
 assert cpu["effective_rustflags"] == ["-C", "target-cpu=x86-64-v4"]
@@ -150,7 +174,7 @@ echo "PASS: canonical command and build record reflect exact policy inputs"
 
 env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   python3 "${HELPER}" verify-build \
-    --features 'iceberg,nvml' \
+    --features 'nvml' \
     --binary "${binary}" --record "${build_record}" \
     >"${tmp_dir}/reuse.output"
 echo "PASS: verified canonical artifact can be reused"
@@ -159,7 +183,7 @@ cp "${binary}" "${tmp_dir}/binary.backup"
 printf 'tamper\n' >>"${binary}"
 status=0
 python3 "${HELPER}" verify-build \
-  --features 'iceberg,nvml' \
+  --features 'nvml' \
   --binary "${binary}" --record "${build_record}" \
   >"${tmp_dir}/tampered-binary.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "tampered canonical artifact was accepted"
@@ -177,7 +201,7 @@ text = path.read_text()
 path.write_text(text.replace('deployment_requirement = "The host CPU', 'deployment_requirement = "CHANGED: The host CPU', 1))
 PY
 python3 "${HELPER}" --policy "${tmp_dir}/prose-policy.toml" verify-build \
-  --features 'iceberg,nvml' \
+  --features 'nvml' \
   --binary "${binary}" --record "${build_record}" \
   >"${tmp_dir}/prose-policy.output"
 echo "PASS: prose change in policy does not invalidate artifact reuse"
@@ -193,7 +217,7 @@ path.write_text(text.replace('baseline = "x86-64-v4"', 'baseline = "x86-64-v3"',
 PY
 status=0
 python3 "${HELPER}" --policy "${tmp_dir}/tampered-policy.toml" verify-build \
-  --features 'iceberg,nvml' \
+  --features 'nvml' \
   --binary "${binary}" --record "${build_record}" \
   >"${tmp_dir}/tampered-policy.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "changed policy was accepted for artifact reuse"
@@ -255,7 +279,7 @@ if rg -n 'CPU_PACKAGE_PROFILE|tuned-local-v3|cpu_profile_kind|cpu_profile' \
 fi
 
 status=0
-CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" FEATURES=iceberg SKIP_CARGO_BUILD=1 \
+CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" FEATURES=nvml SKIP_CARGO_BUILD=1 \
   bash docker/stage-docker-payload.sh >"${tmp_dir}/skip-without-provenance.output" 2>&1 || status=$?
 [[ "${status}" -ne 0 ]] || fail "SKIP_CARGO_BUILD reused an artifact without canonical build record"
 grep -Fq 'build-record' "${tmp_dir}/skip-without-provenance.output" \
@@ -326,7 +350,7 @@ chmod +x "${tmp_dir}/bin/docker"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
-FEATURES=iceberg,nvml \
+FEATURES=nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
@@ -375,7 +399,7 @@ echo "PASS: image builder verifies manifest and supplies Docker build inputs"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
-FEATURES=iceberg,nvml \
+FEATURES=nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
@@ -389,7 +413,7 @@ PATH="${tmp_dir}/bin:${PATH}" \
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-static-external-logger" \
-FEATURES=iceberg,nvml \
+FEATURES=nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 ALGEON_NATIVE_DIR="${tmp_dir}/native" \
@@ -443,7 +467,7 @@ PATH="${tmp_dir}/bin:${PATH}" \
 [[ -f "${tmp_dir}/docker-dist-cugraph/lib/libcuvs.so" ]] || fail "cuGraph-only package omitted canonical libcuvs.so"
 [[ ! -e "${tmp_dir}/docker-dist-cugraph/lib/libcuvs_c.so" ]] || fail "cuGraph-only package unexpectedly staged libcuvs_c.so"
 
-build_fake_variant cugraph,cuvs
+build_fake_variant cuvs,cugraph
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-combined" \
 FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \

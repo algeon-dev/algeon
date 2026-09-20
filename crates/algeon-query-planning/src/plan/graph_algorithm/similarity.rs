@@ -43,7 +43,7 @@ impl GraphSimilarityParams {
     }
 
     /// Visits the required pair-relation input in stable execution order.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         std::iter::once(self.vertex_pairs.input)
     }
 }
