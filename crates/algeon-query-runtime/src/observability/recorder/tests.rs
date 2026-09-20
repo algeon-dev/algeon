@@ -9,10 +9,14 @@ use std::{
     time::Duration,
 };
 
+use query_planning::error::{QueryError, QueryErrorCode};
+
 use super::*;
 use crate::{
     metrics::{BudgetedExecutionEvent, SourceReadRuntimeMetrics},
-    observability::{DeterministicRuntimeObservationClock, PlanNodeRow, QueryBoundaryKind, RuntimePlanNodeId},
+    observability::{
+        CleanupFailurePhase, DeterministicRuntimeObservationClock, PlanNodeRow, QueryBoundaryKind, RuntimePlanNodeId,
+    },
 };
 
 #[test]
@@ -694,4 +698,16 @@ fn each_plan_execution_projects_only_its_own_facts() {
 
     let unseen = handle.metrics_checkpoint(&PlanExecutionId::new("plan-never-ran")).unwrap();
     assert_eq!(unseen.summary, QueryMetricsSummary::default(), "an execution with no facts reports empty totals");
+}
+
+#[test]
+fn cleanup_failure_tally_never_publishes_a_saturated_exact_count() {
+    let mut tally = CleanupFailureTally::with_count_for_test(u64::MAX);
+    tally.record(CleanupFailureSummary::from_native_error(
+        CleanupFailurePhase::QueryServiceCleanup,
+        &QueryError::new(QueryErrorCode::Internal, "test.cleanup", "overflow probe"),
+    ));
+
+    assert_eq!(tally.count(), u64::MAX);
+    assert!(!tally.complete());
 }

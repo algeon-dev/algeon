@@ -3,10 +3,63 @@
 use std::collections::BTreeMap;
 
 use super::{
-    ObservationSequence, PlanExecutionId, QueryMetrics, QueryMetricsSummary, RetainedTopologyRecord,
-    RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationRecordClass,
+    CleanupFailureSummary, ObservationSequence, PlanExecutionId, QueryMetrics, QueryMetricsSummary,
+    RetainedTopologyRecord, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationRecordClass,
     RuntimeObservationSealObserver, RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, SourceReadRuntimeMetrics,
 };
+
+/// Exact cleanup-failure accounting for an attempt report. It sits outside the
+/// record limits, so bounded timeline loss never changes the count or the
+/// first summary.
+#[derive(Debug, Clone)]
+pub(crate) struct CleanupFailureTally {
+    count: u64,
+    complete: bool,
+    first: Option<CleanupFailureSummary>,
+}
+
+impl Default for CleanupFailureTally {
+    fn default() -> Self {
+        Self { count: 0, complete: true, first: None }
+    }
+}
+
+impl CleanupFailureTally {
+    /// Retains only the first cleanup failure while accounting every observed
+    /// one. Overflow is marked incomplete rather than published as a
+    /// saturated exact value.
+    pub(super) fn record(&mut self, summary: CleanupFailureSummary) {
+        if let Some(first) = &mut self.first {
+            // The report retains one representative summary. Once another
+            // cleanup failure is observed that representative is necessarily
+            // incomplete, even though the count remains exact below.
+            first.mark_incomplete();
+        } else {
+            self.first = Some(summary);
+        }
+        match self.count.checked_add(1) {
+            Some(next) => self.count = next,
+            None => self.complete = false,
+        }
+    }
+
+    pub(crate) fn count(&self) -> u64 {
+        self.count
+    }
+
+    pub(crate) fn complete(&self) -> bool {
+        self.complete
+    }
+
+    pub(crate) fn first(&self) -> Option<&CleanupFailureSummary> {
+        self.first.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_count_for_test(count: u64) -> Self {
+        Self { count, ..Self::default() }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct RuntimeObservationRecorderState {
@@ -25,6 +78,7 @@ pub(super) struct RuntimeObservationRecorderState {
     pub(super) counter_overflow: bool,
     pub(super) sealed_snapshot: Option<SealedRuntimeObservationSnapshot>,
     pub(super) seal_observers: Vec<RuntimeObservationSealObserver>,
+    pub(super) cleanup_failures: CleanupFailureTally,
     // Metrics reduction shares this lock with retention and loss accounting,
     // so one revision always describes totals, retained rows, and completeness
     // together. It is partitioned by plan execution because one query can run

@@ -3,14 +3,11 @@
 #[cfg(test)]
 use std::sync::Barrier;
 #[cfg(test)]
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     collections::BTreeMap,
     mem, sync,
-    sync::{
-        Arc, Condvar, MutexGuard, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Condvar, MutexGuard, Weak, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -22,7 +19,7 @@ use super::{
         super::context::{AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch},
         *,
     },
-    release::{QueryHandleRelease, QueryHandleReleaseGuard, take_owned_for_cleanup},
+    release::{QueryHandleRelease, QueryHandleReleaseGuard},
 };
 #[cfg(test)]
 use crate::runtime::attempt_domain::AttemptAllocationDomain;
@@ -89,9 +86,47 @@ impl Drop for RootContextSetupClaimGuard {
     }
 }
 
+/// The admitted attempt's resources until the one release takes them.
+#[derive(Debug)]
+pub(super) struct LifetimeResources {
+    service: Arc<QueryServiceInner>,
+    completion: QueryCompletion,
+    service_epoch_user: QueryServiceEpochUser,
+    pub(super) envelope: AdmissionEnvelope,
+    pub(super) root_context: Option<ExecutionContext>,
+    pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
+    terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
+}
+
+impl LifetimeResources {
+    pub(super) fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
+        self.completion.observation_owner()
+    }
+}
+
+#[derive(Debug)]
+enum LifetimeState {
+    /// Admitted; execution contexts may be acquired.
+    Active(Box<LifetimeResources>),
+    /// Release was requested. Contexts already in flight keep the resources
+    /// until the query epoch goes idle; no new context starts.
+    Releasing(Box<LifetimeResources>),
+    /// The one release took the resources.
+    Released,
+}
+
+impl LifetimeState {
+    fn resources(&mut self) -> Option<&mut LifetimeResources> {
+        match self {
+            Self::Active(resources) | Self::Releasing(resources) => Some(resources),
+            Self::Released => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::runtime::query_service) struct QueryHandleLifetime {
-    service: Mutex<Option<Arc<QueryServiceInner>>>,
+    state: Mutex<LifetimeState>,
     pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
     pub(super) attempt_id: AttemptId,
@@ -99,22 +134,15 @@ pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     /// context has drained. Report commit then consumes its one unambiguous
     /// cache-scope event after CUDA cleanup is fenced.
     cache_scope_allocator_correlation: Mutex<AttemptCacheScopeAllocatorCorrelation>,
-    completion: Mutex<Option<QueryCompletion>>,
-    service_epoch_user: Mutex<Option<QueryServiceEpochUser>>,
     device_ordinal: usize,
     /// Immutable admission inputs retained only until the post-cleanup report
     /// commit can determine whether a quarantined device has a truthful
     /// alternate retry target. They never drive a second placement.
     admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     compatible_devices: Vec<usize>,
-    release_requested: AtomicBool,
-    released: AtomicBool,
     pub(super) query_epoch: QueryResourceEpoch,
-    pub(super) root_context: Mutex<Option<ExecutionContext>>,
     root_context_setup: RootContextSetupCoordinator,
     pub(super) attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
-    pub(super) attempt_stream_provider_route: Mutex<Option<Arc<AttemptStreamProviderRoute>>>,
-    envelope: Mutex<Option<AdmissionEnvelope>>,
     pub(super) admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
@@ -122,7 +150,6 @@ pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     envelope_release_gate: Mutex<Option<Arc<EnvelopeReleaseGate>>>,
     #[cfg(test)]
     root_context_binding_gate: Mutex<Option<Arc<RootContextBindingGate>>>,
-    terminal_domain_usage: Mutex<Option<cudf::QueryMemoryDomainUsage>>,
 }
 
 impl QueryHandleLifetime {
@@ -177,26 +204,27 @@ impl QueryHandleLifetime {
                 }
             });
             Self {
-                service: Mutex::new(Some(service)),
+                state: Mutex::new(LifetimeState::Active(Box::new(LifetimeResources {
+                    service,
+                    completion,
+                    service_epoch_user,
+                    envelope,
+                    root_context: None,
+                    attempt_stream_provider_route: None,
+                    terminal_domain_usage: None,
+                }))),
                 admission_request_id,
                 observation,
                 attempt_id,
                 cache_scope_allocator_correlation: Mutex::new(
                     AttemptCacheScopeAllocatorCorrelation::for_admitted_attempt(Some(attempt_id)),
                 ),
-                completion: Mutex::new(Some(completion)),
-                service_epoch_user: Mutex::new(Some(service_epoch_user)),
                 device_ordinal,
                 admitted_device_requirements,
                 compatible_devices,
-                release_requested: AtomicBool::new(false),
-                released: AtomicBool::new(false),
                 query_epoch: QueryResourceEpoch::new(Some(on_query_idle)),
-                root_context: Mutex::new(None),
                 root_context_setup: RootContextSetupCoordinator::new(),
                 attempt_auxiliary_slots,
-                attempt_stream_provider_route: Mutex::new(None),
-                envelope: Mutex::new(Some(envelope)),
                 admitted_capability_evidence,
                 #[cfg(test)]
                 release_commit_gate: Mutex::new(None),
@@ -204,19 +232,28 @@ impl QueryHandleLifetime {
                 envelope_release_gate: Mutex::new(None),
                 #[cfg(test)]
                 root_context_binding_gate: Mutex::new(None),
-                terminal_domain_usage: Mutex::new(None),
             }
         })
     }
 
-    pub(super) fn lock_envelope(&self) -> Result<MutexGuard<'_, Option<AdmissionEnvelope>>> {
-        self.envelope.lock().map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "query_engine.query_service.context",
-                "query service admission envelope mutex was poisoned",
-            )
+    fn lock_state(&self) -> MutexGuard<'_, LifetimeState> {
+        self.state.lock().unwrap_or_else(|error| {
+            eprintln!("[query-engine] warning: recovering poisoned query service handle lifetime state");
+            error.into_inner()
         })
+    }
+
+    /// Runs `with` on the attempt's resources while they exist: before the
+    /// one release takes them, including while a requested release waits for
+    /// in-flight contexts.
+    pub(super) fn with_resources<T>(&self, with: impl FnOnce(&mut LifetimeResources) -> Result<T>) -> Result<T> {
+        let mut state = self.lock_state();
+        with(state.resources().ok_or_else(|| self.released_error())?)
+    }
+
+    /// Whether the handle still accepts new execution contexts.
+    fn is_active(&self) -> bool {
+        matches!(*self.lock_state(), LifetimeState::Active(_))
     }
 
     pub(super) fn cache_scope_allocator_correlation(&self) -> AttemptCacheScopeAllocatorCorrelation {
@@ -238,7 +275,7 @@ impl QueryHandleLifetime {
     /// Attempt allocation domain clone for disposition tests.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn envelope_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
-        self.lock_envelope().ok()?.as_ref().and_then(|envelope| envelope.domain().cloned())
+        self.with_resources(|resources| Ok(resources.envelope.domain().cloned())).ok().flatten()
     }
 
     /// Admission-envelope identity evidence for transaction tests:
@@ -247,13 +284,15 @@ impl QueryHandleLifetime {
     pub(in crate::runtime::query_service) fn envelope_evidence(
         &self,
     ) -> Option<(Option<u64>, u64, Option<DeviceWorkerScope>)> {
-        self.lock_envelope().ok()?.as_ref().map(|envelope| {
-            (
+        self.with_resources(|resources| {
+            let envelope = &resources.envelope;
+            Ok((
                 envelope.domain().map(|domain| domain.domain_id()),
                 envelope.memory_grant().grant_id(),
                 envelope.worker_scope(),
-            )
+            ))
         })
+        .ok()
     }
 
     /// Arms a barrier inside this handle's release commit, after the health
@@ -276,8 +315,8 @@ impl QueryHandleLifetime {
         gate
     }
 
-    /// Pauses root-context setup after it has consumed the root binding while
-    /// the admission envelope remains locked. This makes release/setup races
+    /// Pauses root-context setup after it has consumed the root binding and
+    /// before the root context exists. This makes release/setup races
     /// deterministic without exposing a production lifecycle seam.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn arm_root_context_binding_gate(&self) -> Arc<RootContextBindingGate> {
@@ -309,7 +348,10 @@ impl QueryHandleLifetime {
         &self,
         usage: cudf::QueryMemoryDomainUsage,
     ) {
-        *self.terminal_domain_usage.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(usage);
+        let _ = self.with_resources(|resources| {
+            resources.terminal_domain_usage = Some(usage);
+            Ok(())
+        });
     }
 
     /// Installs an unrelated root-stream completion to exercise the
@@ -318,24 +360,24 @@ impl QueryHandleLifetime {
     /// before it returns admission capacity.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn install_foreign_root_stream_cleanup_completion_for_test(&self) {
-        let root_context = self.root_context.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        let root_context = root_context.as_ref().expect("root context is acquired before injecting cleanup collision");
-        assert!(root_context.install_root_stream_cleanup_completion(|_| {}, || {}));
+        let installed = self.with_resources(|resources| {
+            let root_context =
+                resources.root_context.as_ref().expect("root context is acquired before injecting cleanup collision");
+            Ok(root_context.install_root_stream_cleanup_completion(|_| {}, || {}))
+        });
+        assert!(installed.expect("handle is not released"));
     }
 
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn memory_grant(&self) -> Result<MemoryGrant> {
-        self.lock_envelope()?
-            .as_ref()
-            .map(|envelope| envelope.memory_grant().clone())
-            .ok_or_else(|| self.released_error())
+        self.with_resources(|resources| Ok(resources.envelope.memory_grant().clone()))
     }
 
     pub(super) fn acquire_resource_anchor(
         self: &Arc<Self>,
         operation: &'static str,
     ) -> Result<Arc<QueryResourceAnchor>> {
-        if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+        if !self.is_active() {
             return Err(self.released_error());
         }
         let owner: Arc<dyn Send + Sync> = Arc::clone(self) as _;
@@ -350,7 +392,7 @@ impl QueryHandleLifetime {
     }
 
     fn reserve_context_setup(&self, operation: &'static str) -> Result<ContextSetupClaim> {
-        if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+        if !self.is_active() {
             return Err(self.released_error());
         }
         let mut state = self.lock_root_context_setup(operation)?;
@@ -367,7 +409,7 @@ impl QueryHandleLifetime {
     fn wait_for_root_context_setup(&self, cancellation: &ExecutionCancellation, operation: &'static str) -> Result<()> {
         loop {
             cancellation.check(operation)?;
-            if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            if !self.is_active() {
                 return Err(self.released_error());
             }
             let state = self.lock_root_context_setup(operation)?;
@@ -395,7 +437,7 @@ impl QueryHandleLifetime {
     ) -> Result<()> {
         loop {
             cancellation.check(operation)?;
-            if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            if !self.is_active() {
                 return Err(self.released_error());
             }
             // Register before looking at the state so a transition cannot be
@@ -475,46 +517,64 @@ impl QueryHandleLifetime {
     }
 
     pub(super) fn request_release(&self) {
-        self.release_requested.store(true, Ordering::Release);
+        {
+            let mut state = self.lock_state();
+            if let LifetimeState::Active(_) = &*state {
+                let LifetimeState::Active(resources) = mem::replace(&mut *state, LifetimeState::Released) else {
+                    unreachable!("the state was just matched as active");
+                };
+                *state = LifetimeState::Releasing(resources);
+            }
+        }
         self.query_epoch.invalidate();
         self.wake_root_context_setup_waiters();
         self.release_if_ready();
     }
 
     fn release_if_ready(&self) {
-        if !self.release_requested.load(Ordering::Acquire) || !self.query_epoch.is_idle() {
+        if !self.query_epoch.is_idle() {
             return;
         }
-        if self.released.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let root_context = take_owned_for_cleanup(&self.root_context, "root context");
-        let attempt_stream_provider_route =
-            take_owned_for_cleanup(&self.attempt_stream_provider_route, "attempt stream provider route");
-        let envelope = take_owned_for_cleanup(&self.envelope, "admission envelope");
-        let completion = take_owned_for_cleanup(&self.completion, "query completion");
-        let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
+        let resources = {
+            let mut state = self.lock_state();
+            if !matches!(*state, LifetimeState::Releasing(_)) {
+                return;
+            }
+            match mem::replace(&mut *state, LifetimeState::Released) {
+                LifetimeState::Releasing(resources) => *resources,
+                LifetimeState::Active(_) | LifetimeState::Released => {
+                    unreachable!("the state was just matched as releasing")
+                },
+            }
+        };
+        let LifetimeResources {
+            service,
+            completion,
+            service_epoch_user,
+            envelope,
+            root_context,
+            attempt_stream_provider_route,
+            terminal_domain_usage,
+        } = resources;
         let cache_scope_allocator_correlation = self.take_cache_scope_allocator_correlation();
         #[cfg(test)]
-        let release_commit_gate = take_owned_for_cleanup(&self.release_commit_gate, "release commit gate");
+        let release_commit_gate = self.release_commit_gate.lock().unwrap_or_else(sync::PoisonError::into_inner).take();
         #[cfg(test)]
-        let envelope_release_gate = take_owned_for_cleanup(&self.envelope_release_gate, "envelope release gate");
-        let terminal_domain_usage = take_owned_for_cleanup(&self.terminal_domain_usage, "terminal domain usage");
-        let service = take_owned_for_cleanup(&self.service, "query service")
-            .expect("query handle lifetime retains its service until the one release path");
+        let envelope_release_gate =
+            self.envelope_release_gate.lock().unwrap_or_else(sync::PoisonError::into_inner).take();
         let mut release = QueryHandleRelease {
             service: Some(service),
             admission_request_id: self.admission_request_id,
             observation: self.observation.clone(),
-            completion,
-            service_epoch_user,
+            completion: Some(completion),
+            service_epoch_user: Some(service_epoch_user),
             cache_scope_allocator_correlation,
             device_ordinal: self.device_ordinal,
             admitted_device_requirements: self.admitted_device_requirements.clone(),
             compatible_devices: self.compatible_devices.clone(),
             root_context,
             attempt_stream_provider_route,
-            envelope,
+            envelope: Some(envelope),
             pending_frozen_resident_publish: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             release_commit_gate,
@@ -583,26 +643,7 @@ impl QueryHandleLifetime {
     }
 
     pub(super) fn service(&self) -> Result<Arc<QueryServiceInner>> {
-        self.service
-            .lock()
-            .map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "query_engine.query_service.context",
-                    "query service handle mutex was poisoned",
-                )
-                .with_fact("reason", "query_service_handle_poisoned")
-            })?
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| self.released_error())
-    }
-
-    pub(super) fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
-        match self.completion.lock() {
-            Ok(completion) => completion.as_ref().and_then(QueryCompletion::observation_owner),
-            Err(error) => error.into_inner().as_ref().and_then(QueryCompletion::observation_owner),
-        }
+        self.with_resources(|resources| Ok(Arc::clone(&resources.service)))
     }
 }
 

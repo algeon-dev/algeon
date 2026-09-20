@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::{
-    CleanupFailureSummary, LiveRuntimeObservationSnapshot, PlanExecutionId, QueryAttemptReport, RetainedTopologyRecord,
+    CleanupFailureTally, LiveRuntimeObservationSnapshot, PlanExecutionId, QueryAttemptReport, RetainedTopologyRecord,
     RuntimeEventContext, RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationConfig,
     RuntimeObservationDeliveryGuard, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationManifest,
     RuntimeObservationOwner, RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecordClass,
@@ -31,27 +31,16 @@ pub struct RuntimeObservationSession {
 
 /// Construction-time provider of the fixed execution-attempt summary embedded at seal.
 ///
-/// This compatibility hook is retained for recorder-only owners. Attempt
-/// owners use the crate-private seal provider below so the embedded value and
-/// completion delivery share the same immutable allocation.
+/// This compatibility hook is retained for recorder-only owners. An attempt
+/// passes the crate-private seal provider below to each seal of its session,
+/// so the embedded value and completion delivery share the same immutable
+/// allocation.
 pub(crate) type AttemptReportProvider = Arc<dyn Fn() -> QueryAttemptReport + Send + Sync>;
 
 /// Attempt-owned report construction after the recorder has computed its
-/// complete footer.
-pub(super) type AttemptReportSealProvider =
-    Arc<dyn Fn(&RuntimeObservationFooter) -> Arc<QueryAttemptReport> + Send + Sync>;
-
-/// Crate-internal authority that selects the canonical attempt outcome before
-/// the recorder fixes the footer. Attempt-owned observations use this to
-/// collapse recorder-local pending outcomes into the attempt lifecycle's one
-/// terminal state.
-pub(super) type RuntimeObservationTerminalOutcomeResolver =
-    Arc<dyn Fn(RuntimeTerminalOutcome) -> RuntimeTerminalOutcome + Send + Sync>;
-
-/// Engine-owned lifecycle routing for a cleanup failure. The recorder invokes
-/// this before optional timeline retention, so bounded capture loss cannot
-/// change the immutable attempt report.
-pub(super) type AttemptCleanupFailureRecorder = Arc<dyn Fn(CleanupFailureSummary) + Send + Sync>;
+/// complete footer, given the session's exact cleanup-failure tally.
+pub(crate) type AttemptReportSealProvider =
+    Arc<dyn Fn(&RuntimeObservationFooter, &CleanupFailureTally) -> Arc<QueryAttemptReport> + Send + Sync>;
 
 pub(super) struct RuntimeObservationSessionInner {
     pub(super) manifest: RuntimeObservationManifest,
@@ -504,7 +493,7 @@ impl RuntimeObservationSessionInner {
         // The provider runs only after the complete footer exists. It returns
         // the exact immutable report that completion receivers publish, rather
         // than a pre-seal report which would be missing report-ready facts.
-        footer.attempt_report = attempt_report_provider.map(|provider| provider(&footer));
+        footer.attempt_report = attempt_report_provider.map(|provider| provider(&footer, &state.cleanup_failures));
         debug_assert!(
             footer.attempt_report.as_ref().is_none_or(|report| { footer.terminal.as_ref() == Some(&report.outcome) })
         );

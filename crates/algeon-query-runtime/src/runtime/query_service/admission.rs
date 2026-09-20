@@ -15,7 +15,7 @@ use super::{
     admission_rejection, record_admission_lifecycle,
 };
 use crate::{
-    attempt::{AttemptAdmission, AttemptLifecycleError},
+    attempt::{AttemptAdmission, AttemptLifecycleError, AttemptReportPublisher},
     observability::{
         AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionFact, AttemptAdmissionWaitFact,
         AttemptFailureOperation, AttemptFailureSummary, AttemptId, AttemptTerminalCommit, QueryCleanupSealDelivery,
@@ -468,6 +468,9 @@ pub(super) fn missing_device_admission_entry_error(device_ordinal: usize) -> Que
 pub(crate) struct QueryCompletion {
     observation_owner: Option<RuntimeObservationOwner>,
     attempt_admission: Option<AttemptAdmission>,
+    // Outlives `attempt_admission`, which is consumed before the seal: the
+    // seal of an attempt's observation builds the attempt report with it.
+    attempt_report: Option<AttemptReportPublisher>,
     observation_permit: Option<ObservationPermit>,
     observation_activity: Option<QueryActivityLease>,
     completion_dispatcher: Option<ObservationCompletionDispatcher>,
@@ -485,6 +488,7 @@ impl QueryCompletion {
     ) -> Self {
         Self {
             observation_owner,
+            attempt_report: attempt_admission.as_ref().map(AttemptAdmission::report_publisher),
             attempt_admission,
             observation_permit,
             observation_activity,
@@ -616,8 +620,13 @@ impl QueryCompletion {
         // The seal publishes the report inline so capacity reuse always
         // follows report-ready. A seal panic already completed degraded
         // delivery inside the recorder; suppress it like the combined path.
+        let attempt_report = self.attempt_report.take();
         let delivery = owner.and_then(|owner| {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.seal_query_cleanup(outcome))).ok()
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match attempt_report {
+                Some(report) => owner.seal_attempt_cleanup(outcome, report.seal_provider()),
+                None => owner.seal_query_cleanup(outcome),
+            }))
+            .ok()
         });
         QueryCompletionActivityTail { activity, dispatcher, delivery, permit }
     }
@@ -670,7 +679,9 @@ impl QueryCompletion {
         let owner = self.observation_owner.take();
         let permit = self.observation_permit.take();
         let activity = self.observation_activity.take();
-        let finalized = match self.attempt_admission.take() {
+        // `Some(outcome)` seals an attempt's observation with its report;
+        // `None` suppresses publication.
+        let attempt_outcome = match self.attempt_admission.take() {
             // This completion was already admitted but reached a recovery path
             // before its post-cleanup commit ran. Publishing would invent
             // admitted cleanup/capacity facts, so fail publication instead.
@@ -678,23 +689,30 @@ impl QueryCompletion {
                 eprintln!(
                     "[query-engine] warning: admitted completion dropped before finalization; suppressing report publication"
                 );
-                false
+                None
             },
             Some(admission) => match admission.finish_not_admitted(fallback.clone()) {
-                Ok(_) => true,
+                Ok(outcome) => Some(Some(outcome)),
                 Err(error) => {
                     eprintln!(
                         "[query-engine] warning: failed to finalize unadmitted attempt before seal; suppressing report publication: {error}"
                     );
-                    false
+                    None
                 },
             },
-            None => true,
+            None => Some(None),
         };
-        if finalized && let Some(owner) = owner {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = owner.finish_query_cleanup(fallback);
-            }));
+        let attempt_report = self.attempt_report.take();
+        if let (Some(attempt_outcome), Some(owner)) = (attempt_outcome, owner) {
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match (attempt_outcome, attempt_report) {
+                    (Some(outcome), Some(report)) => {
+                        let _ = owner.finish_attempt(outcome, report.seal_provider());
+                    },
+                    _ => {
+                        let _ = owner.finish_query_cleanup(fallback);
+                    },
+                }));
         }
         // The permit fences observer delivery but cannot include an opaque
         // activity destructor: that destructor may synchronously reenter
@@ -774,6 +792,7 @@ impl Drop for QueryCompletion {
         let recovered = Self {
             observation_owner: self.observation_owner.take(),
             attempt_admission: self.attempt_admission.take(),
+            attempt_report: self.attempt_report.take(),
             observation_permit: self.observation_permit.take(),
             observation_activity: self.observation_activity.take(),
             completion_dispatcher: self.completion_dispatcher.take(),
