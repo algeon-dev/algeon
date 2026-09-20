@@ -521,10 +521,31 @@ fn timed_cpu_run(fingerprint: &str) -> execution::TimedQueryRun {
 fn timed_native_run(fingerprint: &str) -> execution::TimedNativeQueryRun {
     execution::TimedNativeQueryRun {
         samples: vec![Duration::from_millis(5)],
+        planning_samples: vec![Duration::from_millis(2)],
+        plan_plus_execution_samples: vec![Duration::from_millis(7)],
+        iteration_wall_samples: vec![Duration::from_millis(8)],
         final_measurement: query_measurement(fingerprint),
         metrics: NativeDataFusionExecutionMetrics::default(),
         timing_metrics: NativeTpchTimingMetrics::default(),
     }
+}
+
+#[test]
+fn benchmark_sidecar_keeps_each_planning_and_execution_sample() {
+    let dir = unique_temp_dir("algeon-tpch-samples-test");
+    let mut native = timed_native_run("same");
+    native.samples.push(Duration::from_millis(11));
+    native.planning_samples.push(Duration::from_millis(3));
+    native.plan_plus_execution_samples.push(Duration::from_millis(14));
+    native.iteration_wall_samples.push(Duration::from_millis(15));
+
+    artifacts::write_samples(&dir, "q01", None, Some(&native)).expect("write samples");
+    let text = std::fs::read_to_string(dir.join("q01.samples.tsv")).expect("read samples");
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[1], "1\t\t2.000\t5.000\t7.000\t8.000");
+    assert_eq!(lines[2], "2\t\t3.000\t11.000\t14.000\t15.000");
+    std::fs::remove_dir_all(dir).expect("remove samples directory");
 }
 
 fn query_measurement(fingerprint: &str) -> execution::QueryMeasurement {

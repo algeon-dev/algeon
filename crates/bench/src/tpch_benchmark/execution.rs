@@ -1,10 +1,12 @@
 use std::{
     collections::BTreeMap,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use super::*;
+
+pub(super) type ObservationCapture = Arc<Mutex<Option<query_engine::observability::SealedRuntimeObservationSnapshot>>>;
 
 #[derive(Debug, Clone)]
 pub(super) struct QueryMeasurement {
@@ -61,6 +63,9 @@ impl FailureDetails {
 #[derive(Debug, Clone)]
 pub(super) struct TimedNativeQueryRun {
     pub(super) samples: Vec<Duration>,
+    pub(super) planning_samples: Vec<Duration>,
+    pub(super) plan_plus_execution_samples: Vec<Duration>,
+    pub(super) iteration_wall_samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
     pub(super) metrics: NativeDataFusionExecutionMetrics,
     pub(super) timing_metrics: NativeTpchTimingMetrics,
@@ -84,7 +89,7 @@ pub(super) async fn plan_native_query(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    plan_native_query_with_resources(metadata, query, config, &NativeTpchRuntimeResources::unavailable()).await
+    plan_native_query_with_resources(metadata, query, config, &NativeTpchRuntimeResources::unavailable(), None).await
 }
 
 async fn plan_native_query_with_resources(
@@ -92,8 +97,9 @@ async fn plan_native_query_with_resources(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
+    observation_capture: Option<ObservationCapture>,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    let optimizer_config = native_optimizer_config(config, resources);
+    let optimizer_config = native_optimizer_config(config, resources, observation_capture);
     let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let builder = SessionStateBuilder::new_with_default_features().with_config(native_session_config(config));
     let builder = resources.install_on(builder)?;
@@ -111,11 +117,18 @@ async fn plan_native_query_with_resources(
 pub(super) fn native_optimizer_config(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
+    observation_capture: Option<ObservationCapture>,
 ) -> AlgeonNativeOptimizerConfig {
     let base = resources.optimizer_config().unwrap_or_else(|| {
         AlgeonNativeOptimizerConfig::default()
             .with_native_execution_config(config.native_execution_config_with_resources(resources))
     });
+    let base = if let Some(capture) = observation_capture {
+        let execution_config = base.native_execution_config().clone().with_benchmark_observation_capture(capture);
+        base.with_native_execution_config(execution_config)
+    } else {
+        base
+    };
     config.native_execution.configure_native_optimizer(base).expect("native TPC-H benchmark installs the native rule")
 }
 
@@ -291,10 +304,13 @@ pub(super) async fn run_native_query_iterations(
     config: &NativeTpchBenchmarkConfig,
     expected_planning_row: &NativeDataFusionPlanningRow,
     resources: &NativeTpchRuntimeResources,
+    artifact_dir: Option<&std::path::Path>,
+    pending_observations: &mut Vec<(String, ObservationCapture)>,
 ) -> Result<TimedNativeQueryRun, NativeRunFailure> {
     for _ in 0..config.warmup_iterations {
-        let planned =
-            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
+        let planned = plan_native_query_with_resources(metadata, query, config, resources, None)
+            .await
+            .map_err(native_not_started)?;
         if planned.planning_row.outcome == Some(CandidateOutcomeKind::Selected) {
             validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
                 .map_err(native_not_started)?;
@@ -309,11 +325,18 @@ pub(super) async fn run_native_query_iterations(
     }
 
     let mut samples = Vec::with_capacity(config.iterations);
+    let mut planning_samples = Vec::with_capacity(config.iterations);
+    let mut plan_plus_execution_samples = Vec::with_capacity(config.iterations);
+    let mut iteration_wall_samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
     let mut measured_metrics = Vec::with_capacity(config.iterations);
-    for _ in 0..config.iterations {
-        let planned =
-            plan_native_query_with_resources(metadata, query, config, resources).await.map_err(native_not_started)?;
+    for iteration in 0..config.iterations {
+        let iteration_started = Instant::now();
+        let observation_capture = (iteration == 0 && artifact_dir.is_some()).then(|| Arc::new(Mutex::new(None)));
+        let planned = plan_native_query_with_resources(metadata, query, config, resources, observation_capture.clone())
+            .await
+            .map_err(native_not_started)?;
+        planning_samples.push(iteration_started.elapsed());
         if planned.planning_row.outcome != Some(CandidateOutcomeKind::Selected) {
             return Err(NativeRunFailure {
                 runtime_started: false,
@@ -327,13 +350,23 @@ pub(super) async fn run_native_query_iterations(
         let started = Instant::now();
         let (batches, metrics) = collect_native_plan_once(Arc::clone(&planned.plan)).await.map_err(native_started)?;
         samples.push(started.elapsed());
+        plan_plus_execution_samples.push(iteration_started.elapsed());
         final_measurement = Some(measure_output(&schema, &batches).map_err(native_started)?);
+        iteration_wall_samples.push(iteration_started.elapsed());
         measured_metrics.push(metrics);
+        if let (Some(dir), Some(capture)) = (artifact_dir, observation_capture) {
+            super::artifacts::write_measured_plan(dir, query.id, &planned, planning_samples[0])
+                .map_err(native_started)?;
+            pending_observations.push((query.id.to_string(), capture));
+        }
     }
     let metrics = aggregate_native_execution_metrics(&measured_metrics);
     let timing_metrics = NativeTpchTimingMetrics::mean_from_metrics(&measured_metrics);
     Ok(TimedNativeQueryRun {
         samples,
+        planning_samples,
+        plan_plus_execution_samples,
+        iteration_wall_samples,
         final_measurement: final_measurement.expect("validated benchmark config requires iterations"),
         metrics,
         timing_metrics,

@@ -27,7 +27,7 @@
 use std::{
     collections::BTreeMap,
     error::Error,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -74,6 +74,7 @@ mod tests;
 /// native path as the qualified `E2E-Flight` service, but not the gRPC
 /// transport or the Flight host-Arrow streaming above it.
 const QUALIFICATION: &str = "integration-engine";
+const PLAN_ARTIFACT_DIR_ENV: &str = "ALGEON_GOODPUT_PLAN_ARTIFACT_DIR";
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let config = Arc::new(GoodputConfig::from_env()?);
@@ -195,6 +196,14 @@ async fn calibrate(
     identity: &CalibrationIdentity,
 ) -> Result<(), Box<dyn Error>> {
     let calibration_caps = config.cap_assignment.calibration_caps(items, config.query_cap_bytes)?;
+    let plan_artifact_dir =
+        std::env::var_os(PLAN_ARTIFACT_DIR_ENV).filter(|value| !value.is_empty()).map(PathBuf::from);
+    if plan_artifact_dir.is_some() && config.calibration_warmup_reps == 0 {
+        return Err(format!("{PLAN_ARTIFACT_DIR_ENV} requires at least one calibration warmup rep").into());
+    }
+    if let Some(dir) = plan_artifact_dir.as_deref() {
+        std::fs::create_dir_all(dir)?;
+    }
     let mut rows = Vec::with_capacity(items.len());
     for (item, &calibration_cap) in items.iter().zip(&calibration_caps) {
         let ctx = session_for(sessions, item)?;
@@ -204,8 +213,16 @@ async fn calibrate(
         let mut output_rows = 0_usize;
         let mut output_fingerprint = String::new();
         for rep in 0..(config.calibration_warmup_reps + config.calibration_reps) {
-            let outcome =
-                run_attempt(backend, ctx, config, item, calibration_cap, format!("calibrate-{}-{rep}", item.id)).await;
+            let outcome = run_attempt(
+                backend,
+                ctx,
+                config,
+                item,
+                calibration_cap,
+                format!("calibrate-{}-{rep}", item.id),
+                (rep == 0 && config.calibration_warmup_reps > 0).then_some(plan_artifact_dir.as_deref()).flatten(),
+            )
+            .await;
             let facts = ReportFacts::from(outcome.report.as_deref());
             if outcome.error_message.is_some() || facts.terminal_outcome != "succeeded" {
                 return Err(format!(
@@ -333,6 +350,7 @@ async fn measure(
                 &item,
                 arrival.requested_query_cap_bytes,
                 format!("goodput-{}-{}", config.group, arrival.sequence),
+                None,
             )
             .await;
             (arrival, item, outcome)
@@ -391,6 +409,7 @@ async fn measure(
         attempt_counters,
     };
     report.write_all()?;
+    crate::loaded_libraries::write_loaded_libraries(&config.run_dir())?;
     println!("{}", report::SUMMARY_COLUMNS.join("\t"));
     println!("{}", report.summary_fields().join("\t"));
     eprintln!(

@@ -12,6 +12,8 @@ pub mod tpcds_three_way_bench;
 pub mod tpch_benchmark;
 
 mod gpu_backend;
+mod loaded_libraries;
+mod plan_artifacts;
 
 #[doc(hidden)]
 pub mod stress_harness;
