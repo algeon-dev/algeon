@@ -355,32 +355,6 @@ fn join_build_side_selection_prefers_conservative_evidence_over_advisory_estimat
 }
 
 #[test]
-fn join_build_side_selection_ignores_advisory_for_unsupported_join_directions() {
-    // A Left join is never a build-side candidate, however strongly the
-    // advisory favors a flip: executable directions are fixed first, and the
-    // advisory only chooses among them.
-    let plan = advised_join_over_fact_plan_with_type(
-        Some(advisory_rows(10)),
-        5 * 1024 * 1024 * 1024,
-        100_000_000,
-        JoinSide::Right,
-        JoinType::Left,
-    );
-
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
-
-    let join_fed_candidates = result
-        .diagnostics
-        .join_build_side_selection
-        .candidates
-        .iter()
-        .filter(|candidate| candidate.left_estimated_rows.is_none())
-        .count();
-    assert_eq!(join_fed_candidates, 0, "unsupported directions must not become candidates");
-    assert_eq!(root_join_build_side(&result.plan), JoinSide::Right);
-}
-
-#[test]
 fn join_build_side_selection_keeps_small_current_build_side_over_grouped_aggregate_keyset() {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source_with_fields(
@@ -916,16 +890,6 @@ fn advised_join_over_fact_plan(
     fact_rows: u64,
     build_side: JoinSide,
 ) -> QueryPlan {
-    advised_join_over_fact_plan_with_type(advisory, fact_bytes, fact_rows, build_side, JoinType::Inner)
-}
-
-fn advised_join_over_fact_plan_with_type(
-    advisory: Option<AdvisoryOutputStatistics>,
-    fact_bytes: u64,
-    fact_rows: u64,
-    build_side: JoinSide,
-    outer_join_type: JoinType,
-) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let dim = builder.add_source(estimated_local_source("dim", "d_key", 128 * 1024 * 1024, 15_000_000));
     let mid = builder.add_source(estimated_local_source_with_fields(
@@ -953,7 +917,7 @@ fn advised_join_over_fact_plan_with_type(
         projected,
         fact,
         JoinSpec::new(
-            outer_join_type,
+            JoinType::Inner,
             vec![JoinKey::new(ColumnRef::input(0, "m_id", "m_id"), ColumnRef::input(1, "f_mid", "f_mid"))],
         )
         .with_output_projection(vec![

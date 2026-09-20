@@ -76,6 +76,32 @@ fn cross_device_value_drop_does_not_quarantine_teardown_device() {
     );
 }
 
+#[test]
+fn cross_device_pool_resource_release_does_not_quarantine_its_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+    let (device_a, device_b) = first_two_test_devices();
+    let pool_b = DeviceMemoryResource::pool_on(device_b, 16 * 1024 * 1024, None).unwrap();
+    // Building a runtime on the pool registers the runtime stream, so the
+    // pool's final release fences that stream before native destruction.
+    let runtime_b = Runtime::builder().with_device(device_b).with_memory_resource(pool_b.clone()).build().unwrap();
+    let series_b = runtime_b.series(&[1i32, 2, 3]).unwrap();
+    drop(series_b);
+    drop(runtime_b);
+    {
+        let _entry_a = DeviceEntryGuard::enter(device_a, "test::cross_device_pool_release").unwrap();
+        drop(pool_b);
+    }
+    assert_eq!(
+        device_health_snapshot(device_b).status(),
+        DeviceHealthStatus::Healthy,
+        "releasing B's pool while A is entered must fence and destroy it, not quarantine B"
+    );
+    let runtime_b = Runtime::builder().with_device(device_b).build().unwrap();
+    assert_eq!(runtime_b.series(&[4i32]).unwrap().len(), 1, "B still admits work after the release");
+}
+
 fn should_run_multi_gpu_test() -> bool {
     if std::env::var(SKIP_MULTI_GPU_ENV).unwrap_or_default() == "1" {
         eprintln!("skipping multi-GPU test because {SKIP_MULTI_GPU_ENV}=1");

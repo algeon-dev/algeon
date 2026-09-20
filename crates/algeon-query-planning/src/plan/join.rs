@@ -87,9 +87,10 @@ pub struct JoinSpec {
     pub at_most_one_match_side: Option<JoinSide>,
     /// Frontend estimate of this join's whole output.
     ///
-    /// Advisory only: optimizer passes may consult it where the conservative
-    /// estimates are unknown, but it is never a proof, a capability input, or
-    /// an admission requirement. Absent when the frontend had no estimate.
+    /// Advisory only: build-side selection may consult it among executable
+    /// join directions when conservative estimates cannot order the sides, but
+    /// it is never a proof, a capability input, or an admission requirement.
+    /// Absent when the frontend had no estimate.
     #[doc(hidden)]
     pub advisory_output_statistics: Option<AdvisoryOutputStatistics>,
 }

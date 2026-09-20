@@ -13,9 +13,10 @@ use algeon_datafusion::{
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport},
     planner::{
-        ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonFinalPlanRequirementRule, AlgeonNativeOptimizerConfig,
-        AlgeonNativePhysicalOptimizerRule, CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
-        DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan,
+        ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonFinalPlanRequirementRule, AlgeonGpuExecutionMode,
+        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
+        CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
+        classify_final_plan,
     },
     report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
@@ -28,6 +29,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
+    arrow::util::pretty::pretty_format_batches,
     common::{DataFusionError, config::ConfigOptions},
     datasource::{memory::MemorySourceConfig, physical_plan::ParquetSource, source::DataSourceExec},
     execution::{SessionStateBuilder, context::TaskContext, object_store::ObjectStoreUrl},
@@ -1363,6 +1365,73 @@ fn native_float32_casts_match_arrow_cpu_casts_bit_for_bit() {
         );
     }
     assert_eq!(f32::from_bits(cpu_bits[0].0), 16_777_216.0, "Arrow double-rounds the first decimal");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// DataFusion's `rank()`, `dense_rank()`, and `percent_rank()` are one `Rank`
+/// type that differs only in a private rank kind. Only `rank()` has a native
+/// kernel, so the other two stay in DataFusion under NativePreferred and
+/// NativeRequired rejects the completed plan.
+#[test]
+fn dense_rank_and_percent_rank_windows_stay_in_datafusion() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-rank-family");
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("key", DataType::Int32, false),
+            Field::new("payload", DataType::Int32, false),
+        ]));
+        // The tie inside partition 1 is where rank() and dense_rank() differ.
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+                Arc::new(Int32Array::from(vec![1, 1, 1, 1, 2, 2])),
+                Arc::new(Int32Array::from(vec![10, 10, 20, 30, 5, 7])),
+            ],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = || SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let preferred = SessionContext::new_with_state(
+        test_gpu_backend()
+            .install_on(SessionStateBuilder::new().with_default_features().with_config(config()))
+            .unwrap()
+            .build(),
+    );
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    for ctx in [&preferred, &required, &cpu] {
+        block_on(ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    }
+
+    for function in ["dense_rank", "percent_rank"] {
+        let query =
+            format!("SELECT id, {function}() OVER (PARTITION BY key ORDER BY payload) AS r FROM input ORDER BY id");
+        let plan = block_on(block_on(preferred.sql(&query)).unwrap().create_physical_plan()).unwrap();
+        let tree = displayable(plan.as_ref()).indent(false).to_string();
+        assert!(tree.contains("WindowAggExec"), "{function}() must stay a DataFusion window:\n{tree}");
+        let rows = |batches: Vec<RecordBatch>| pretty_format_batches(&batches).unwrap().to_string();
+        let actual = rows(block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap());
+        let expected = rows(block_on(block_on(cpu.sql(&query)).unwrap().collect()).unwrap());
+        assert_eq!(actual, expected, "{function}() under NativePreferred must match DataFusion");
+
+        let error = block_on(block_on(required.sql(&query)).unwrap().create_physical_plan())
+            .expect_err("NativeRequired must reject a window without native semantics");
+        let adapter_error = error.find_algeon_error().expect("the rejection must stay a typed Algeon error");
+        assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied, "{function}()");
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

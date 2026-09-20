@@ -1631,6 +1631,7 @@ pub fn cudf::DataFrame::assign<I, S>(&self, I) -> cudf::core::error::Result<Self
 pub fn cudf::DataFrame::cast_column(&self, &str, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::cast_column_with_budget(&self, &str, impl core::convert::Into<cudf::core::types::DataType>, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::with_column(&self, &str, impl cudf::IntoSeries) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrame::with_column_with_budget(&self, &str, cudf::Series, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::with_columns<I, T>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 pub fn cudf::DataFrame::with_columns_with_budget<I, T>(&self, I, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 impl cudf::DataFrame
@@ -3253,6 +3254,7 @@ pub fn cudf::DataFrame::assign<I, S>(&self, I) -> cudf::core::error::Result<Self
 pub fn cudf::DataFrame::cast_column(&self, &str, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::cast_column_with_budget(&self, &str, impl core::convert::Into<cudf::core::types::DataType>, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::with_column(&self, &str, impl cudf::IntoSeries) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrame::with_column_with_budget(&self, &str, cudf::Series, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::with_columns<I, T>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 pub fn cudf::DataFrame::with_columns_with_budget<I, T>(&self, I, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 impl cudf::DataFrame
@@ -7303,6 +7305,7 @@ pub fn cudf::DataFrame::assign<I, S>(&self, I) -> cudf::core::error::Result<Self
 pub fn cudf::DataFrame::cast_column(&self, &str, impl core::convert::Into<cudf::core::types::DataType>) -> cudf::core::error::Result<Self>
 pub fn cudf::DataFrame::cast_column_with_budget(&self, &str, impl core::convert::Into<cudf::core::types::DataType>, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::with_column(&self, &str, impl cudf::IntoSeries) -> cudf::core::error::Result<Self>
+pub fn cudf::DataFrame::with_column_with_budget(&self, &str, cudf::Series, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>>
 pub fn cudf::DataFrame::with_columns<I, T>(&self, I) -> cudf::core::error::Result<Self> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 pub fn cudf::DataFrame::with_columns_with_budget<I, T>(&self, I, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<Self>> where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<cudf::frame::dataframe::WithColumnExpr>
 impl cudf::DataFrame

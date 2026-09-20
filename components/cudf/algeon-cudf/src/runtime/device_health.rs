@@ -17,10 +17,7 @@ use std::{
     },
 };
 
-use super::{
-    DeviceId,
-    device_guard::{SuspendedDeviceEntry, current_entered_device},
-};
+use super::DeviceId;
 use crate::core::error::{Error, ErrorCode, Result, check_status_in_without_device_report};
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::testing::device_safety::injected_health_registry;
@@ -306,20 +303,13 @@ pub(crate) fn check_device_status_in(
     check_status_in_without_device_report(status, operation)
 }
 
-/// Teardown retries after suspending the thread's active device entry.
-///
-/// The suspend drains the thread's device stack, so one retry always reaches
-/// an empty stack and either enters the teardown device or proves a genuine
-/// entry failure worth quarantining.
-const CROSS_DEVICE_TEARDOWN_RETRIES: u32 = 1;
-
 /// Consume one device-owned pointer and invoke its destructor only after the
 /// current host thread has proven entry to the immutable owner device.
 ///
-/// When the thread holds another device's entry, that entry suspends for one
-/// teardown retry instead of quarantining the teardown device. On entry
-/// failure ownership is still consumed exactly once, native FFI is not
-/// called, and the allocation is quarantined for process lifetime.
+/// When the thread holds another device's entry, the teardown entry suspends
+/// it instead of quarantining the teardown device. On entry failure ownership
+/// is still consumed exactly once, native FFI is not called, and the
+/// allocation is quarantined for process lifetime.
 pub fn drop_device_resource<T>(
     raw: &mut *mut T,
     device: DeviceId,
@@ -331,27 +321,10 @@ pub fn drop_device_resource<T>(
         return;
     }
 
-    let mut suspended: Option<SuspendedDeviceEntry> = None;
-    for _ in 0..=CROSS_DEVICE_TEARDOWN_RETRIES {
-        match super::device_guard::DeviceEntryGuard::enter_for_teardown(device, operation) {
-            // The entry guard drops before `suspended`, so its ambient
-            // restore and pop happen before the suspended entries resume.
-            Ok(_entry) => return destroy(owned),
-            Err(error) => {
-                let retryable = suspended.is_none() && current_entered_device().is_some_and(|active| active != device);
-                if !retryable {
-                    return quarantine_device_resource(device, operation, &error);
-                }
-                match super::device_guard::DeviceEntryGuard::suspend_active_device() {
-                    Some(entry) => suspended = Some(entry),
-                    None => return quarantine_device_resource(device, operation, &error),
-                }
-            },
-        }
+    match super::device_guard::DeviceEntryGuard::enter_for_teardown(device, operation) {
+        Ok(_entry) => destroy(owned),
+        Err(error) => quarantine_device_resource(device, operation, &error),
     }
-    // Only reachable with a zero retry budget: fail closed like any other
-    // entry failure.
-    quarantine_device_resource(device, operation, &"cross-device teardown retries exhausted");
 }
 
 /// Record a native resource intentionally leaked because its device-bound

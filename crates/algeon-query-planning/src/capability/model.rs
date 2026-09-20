@@ -639,8 +639,6 @@ pub enum CapabilityEnvelope {
     ComposedPipeline,
 }
 
-impl CapabilityEnvelope {}
-
 /// Capability authority result for capability-envelope selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityEnvelopeAdmission {

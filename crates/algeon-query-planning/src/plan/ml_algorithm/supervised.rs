@@ -39,8 +39,6 @@ pub enum MlSplitCriterion {
     Entropy,
 }
 
-impl MlSplitCriterion {}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct MlRandomForestParams {
     pub training: MlRelationBinding,

@@ -119,9 +119,20 @@ impl DeviceEntryGuard {
     }
 
     /// Teardown bypasses the unhealthy admission check, but must still prove
-    /// owner-device entry before a native destructor may run.
-    pub(crate) fn enter_for_teardown(owner: DeviceId, operation: &'static str) -> Result<Self> {
-        Self::enter_impl(owner, operation, false)
+    /// owner-device entry before a native destructor or fence may run.
+    ///
+    /// An active entry on another device is suspended for the teardown and
+    /// resumes when the returned entry drops, so releasing the last reference
+    /// to another device's resource inside a scope never quarantines that
+    /// device. Nested entry rejects device changes, so the entered stack holds
+    /// one device and a single suspend drains it.
+    pub(crate) fn enter_for_teardown(owner: DeviceId, operation: &'static str) -> Result<TeardownEntry> {
+        let suspended = match current_entered_device() {
+            Some(active) if active != owner => Self::suspend_active_device(),
+            _ => None,
+        };
+        let entry = Self::enter_impl(owner, operation, false)?;
+        Ok(TeardownEntry { _entry: entry, _suspended: suspended })
     }
 
     fn enter_impl(owner: DeviceId, operation: &'static str, require_healthy: bool) -> Result<Self> {
@@ -186,14 +197,11 @@ impl DeviceEntryGuard {
     /// Suspends the thread's active device entry so another device's teardown
     /// can enter. Returns `None` when no entry is active.
     ///
-    /// The entered stack holds one owner device at a time (nested entry
-    /// rejects device changes), so one suspend drains the whole stack and a
-    /// single teardown retry always reaches an empty stack. Dropping the
-    /// returned guard restores the suspended entries; the retry's entry guard
-    /// must unwind first so its ambient restore and pop happen before the
-    /// resume. The CUDA current device is untouched: entries are suspended,
-    /// not exited.
-    pub(crate) fn suspend_active_device() -> Option<SuspendedDeviceEntry> {
+    /// Dropping the returned guard restores the suspended entries; the
+    /// teardown's entry guard must unwind first so its ambient restore and pop
+    /// happen before the resume. The CUDA current device is untouched: entries
+    /// are suspended, not exited.
+    fn suspend_active_device() -> Option<SuspendedDeviceEntry> {
         THREAD_AUTHORITY.with(|authority| {
             let mut authority = authority.borrow_mut();
             let owner = authority.entered_devices.last().copied()?;
@@ -205,10 +213,18 @@ impl DeviceEntryGuard {
     }
 }
 
-/// A suspended host-thread device entry; dropping it resumes the entries.
+/// Owner-device entry for one teardown, from
+/// [`DeviceEntryGuard::enter_for_teardown`].
 ///
-/// See [`DeviceEntryGuard::suspend_active_device`].
-pub(crate) struct SuspendedDeviceEntry {
+/// Field order is drop order: the teardown entry pops and restores the ambient
+/// device before the suspended entries resume.
+pub(crate) struct TeardownEntry {
+    _entry: DeviceEntryGuard,
+    _suspended: Option<SuspendedDeviceEntry>,
+}
+
+/// A suspended host-thread device entry; dropping it resumes the entries.
+struct SuspendedDeviceEntry {
     owner: DeviceId,
     depth: usize,
     ambient: Option<DeviceId>,
@@ -329,8 +345,11 @@ mod tests {
         assert_eq!(scope.health_snapshot(ambient).fault_count(), 0);
     }
 
+    /// Teardown of another device's resource inside a nested entry suspends
+    /// the active entries instead of failing with a nested cross-device
+    /// error, and resumes them after the teardown entry unwinds.
     #[test]
-    fn suspend_active_device_drains_nested_entries_and_resumes_after_teardown_entry() {
+    fn teardown_entry_suspends_nested_entries_on_another_device_and_resumes_them() {
         let scope = DeviceSafetyTestScope::install([
             get(cudf_sys::CUDF_SUCCESS, 1),
             set(0, cudf_sys::CUDF_SUCCESS),
@@ -344,18 +363,11 @@ mod tests {
 
         let outer = DeviceEntryGuard::enter(owner, "outer_suspend_entry").expect("outer entry");
         let nested = DeviceEntryGuard::enter(owner, "nested_suspend_entry").expect("nested entry");
-        let suspended = DeviceEntryGuard::suspend_active_device().expect("active entry suspends");
-        assert_eq!(current_entered_device(), None);
-        assert!(DeviceEntryGuard::suspend_active_device().is_none(), "empty stack suspends to None");
-        {
-            let teardown =
-                DeviceEntryGuard::enter_for_teardown(other, "suspended_teardown").expect("teardown enters cleanly");
-            assert_eq!(current_entered_device(), Some(other));
-            drop(teardown);
-            assert_eq!(current_entered_device(), None);
-        }
-        drop(suspended);
-        assert_eq!(current_entered_device(), Some(owner));
+        let teardown =
+            DeviceEntryGuard::enter_for_teardown(other, "suspended_teardown").expect("teardown enters cleanly");
+        assert_eq!(current_entered_device(), Some(other));
+        drop(teardown);
+        assert_eq!(current_entered_device(), Some(owner), "the suspended entries resume");
         drop(outer);
         assert_eq!(current_entered_device(), Some(owner));
         drop(nested);

@@ -361,8 +361,6 @@ impl EmptyGraphSideInputPolicy {
     }
 }
 
-impl GraphOutputSchemaKind {}
-
 /// Registry-level metadata for a graph operation.
 ///
 /// One entry per [`GraphAlgorithm`] variant. The registry is the place new

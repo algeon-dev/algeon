@@ -205,12 +205,8 @@ impl QueryPlan {
     /// Returns this plan with the source plan's frontend advisory volumes,
     /// invalidating every binding whose node or dependency changed.
     ///
-    /// These records are diagnostic input and low-priority optimizer hints. Build-side
-    /// selection may use them only among executable alternatives when stronger
-    /// native evidence does not determine a choice. They are not native bounds and
-    /// cannot justify capability, admission, or grant size. A chosen executable
-    /// strategy is recorded in the compiled plan. Rewrites invalidate a record when
-    /// its occurrence, schema, or dependencies change.
+    /// These records are diagnostic input only; build-side selection reads a
+    /// join's own `JoinSpec::advisory_output_statistics`, not these bindings.
     pub(crate) fn with_advisory_outputs_from(mut self, source: &Self) -> Self {
         let mut unchanged = vec![false; self.node_count()];
         for node in self.nodes() {

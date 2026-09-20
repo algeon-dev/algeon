@@ -278,6 +278,38 @@ impl DataFrame {
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
 
+    /// Add or replace one precomputed column under a hard execution-budget
+    /// token.
+    ///
+    /// The result takes the token's output domain, which `series` must
+    /// already carry, for example the output of a budgeted operation under
+    /// the same token. As in
+    /// [`with_columns_with_budget`](Self::with_columns_with_budget), unchanged
+    /// columns of another provenance are copied into that domain through the
+    /// token. The report records the resulting DataFrame device footprint and
+    /// row count.
+    pub fn with_column_with_budget(
+        &self,
+        name: &str,
+        series: Series,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<Self>> {
+        let operation = "dataframe::with_column_with_budget";
+        let output = token
+            .execution_overrides()
+            .resolve_output_domain(&self.domain)
+            .and_then(|output_domain| self.with_column_in_domain(name, series, output_domain, operation))
+            .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
+        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
+        let report = token
+            .reservation_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output.num_rows());
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
     pub(crate) fn with_columns_in_context<I, T>(
         &self,
         exprs: I,

@@ -4081,6 +4081,7 @@ dependencies = [
  "opentelemetry-proto",
  "parquet",
  "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
